@@ -32,6 +32,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -39,7 +40,25 @@
 /* Buffer size for a human-readable channel label. Sized to hold a trunk-scan
  * target id (dsd_trunk_scan_target.id[64]) unchanged; a channel-map CSV name is
  * truncated to 63 characters plus the terminator. */
-#define DSD_CHANNEL_LABEL_SIZE   64
+#define DSD_CHANNEL_LABEL_SIZE 64
+
+/* One avoided --trunk-scan target as the trunk-scan coordinator publishes it (issue #672), in target-list order: its
+ * 1-based position in the list, its frequency, and its id and label columns ("" when the target has no label). The
+ * list lives in dsd_state::trunk_scan_avoids (dsd_state_trunk_scan_avoids_set()). */
+typedef struct dsd_trunk_scan_avoid_entry {
+    uint32_t ordinal;
+    uint32_t pad; /* explicit, so a byte copy carries no indeterminate padding */
+    uint64_t frequency_hz;
+    char id[DSD_CHANNEL_LABEL_SIZE];
+    char label[DSD_CHANNEL_LABEL_SIZE];
+} dsd_trunk_scan_avoid_entry;
+
+/* One --trunk-scan target list as the coordinator publishes it (issue #697, dsd_state::trunk_scan_lists). */
+typedef struct {
+    char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE]; /**< File name without folder and extension; "" past the last list */
+    uint8_t enabled;                          /**< 1 = switched on: its targets are in the rotation */
+    uint16_t targets;                         /**< Targets the list holds */
+} dsd_trunk_scan_list_publication;
 
 /* Exact sync-word hits a frame sync join rule looks back over (src/dsp/dsd_frame_sync.c). A rule that joins on hits a
  * frame apart has to remember every hit of the frames it looks back over, not only the latest: before a lock the
@@ -766,6 +785,7 @@ typedef enum {
     DSD_SCAN_STAY_HANGTIME = 9,       /**< -Y legacy rule: waiting out -t since the last sync */
     DSD_SCAN_STAY_CARRIER = 10,       /**< analog row: its carrier is open (issue #526) */
     DSD_SCAN_STAY_TONE_PENDING = 11,  /**< analog row: carrier open, the tone policy still checking (issue #527) */
+    DSD_SCAN_STAY_NO_LIST = 12,       /**< -Y with no channel map of the user's: nothing to step to (issue #697) */
 } dsd_scan_stay_reason;
 
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
@@ -1056,6 +1076,15 @@ struct dsd_state {
     dsd_key_set scan_keys_baseline;
     dsd_key_set scan_keys_active;
     uint8_t scan_keys_active_set;
+    /* The avoided --trunk-scan targets the coordinator published (issue #672), trunk_scan_avoid_count entries in a heap
+     * store of trunk_scan_avoid_capacity; NULL until the first publication. Only the coordinator fills it (its reserve
+     * helper, stamping trunk_scan_avoid_rev); the coordinator's detach, initState() and freeState() release it. The
+     * LCN umbrella free (dsd_state_trunk_lcn_free()) leaves it alone: a live state's list changes only with a new
+     * trunk_scan_avoid_rev or, at initState(), a new state_instance, which the snapshot's gated copy keys on. Never
+     * inside a UI_SNAPSHOT_COPY_RANGE, for the same reason as the stores above. */
+    dsd_trunk_scan_avoid_entry* trunk_scan_avoids;
+    size_t trunk_scan_avoid_count;
+    size_t trunk_scan_avoid_capacity;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -2535,6 +2564,23 @@ struct dsd_state {
      * overrides while it is parked and shutdown puts back; a save writes it. Written by the coordinator beside the
      * configured gain. Valid while trunk_scan_target_count > 0. */
     uint8_t trunk_scan_configured_trunk_enable; /**< 1 = trunking configured on */
+    /* The --trunk-scan target lists (issue #697), written by the coordinator at its start, at each list switched on
+     * or off and at each hop, and cleared when it detaches. trunk_scan_lists[i] is list i + 1 (its name, whether it
+     * is on, and its target count); trunk_scan_lists_seq moves at every start and change of them and never repeats a
+     * value in the process. trunk_scan_active_list: the list (1-based) of the target on air, 0 when none is (paused
+     * included); trunk_scan_active_list_off: that target's list is off, so the receiver stays there only until another
+     * target can take it, as it stays on an avoided one (trunk_scan_active_avoided; either can hold, or both).
+     * trunk_scan_rotation_count: the targets of the lists that are on, avoided ones included;
+     * trunk_scan_rotation_ordinal: the target on air's 1-based position among them, 0 while its list is off or none is
+     * on air. The identity ordinal (trunk_scan_active_ordinal, the position among every loaded target) does not move
+     * when a list does. */
+    uint8_t trunk_scan_list_count;
+    uint8_t trunk_scan_active_list;
+    uint8_t trunk_scan_active_list_off;
+    uint16_t trunk_scan_rotation_ordinal;
+    uint16_t trunk_scan_rotation_count;
+    uint32_t trunk_scan_lists_seq;
+    dsd_trunk_scan_list_publication trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
     /* The scan row on air, for the "this channel" editors (issue #518): the scanner that owns it (dsd_scan_row_scanner,
      * 0 = none), the scan session (a new one for every trunk-scan coordinator and -Y scan, so an edit opened on one never
      * lands on the next), the row (a --trunk-scan target's index, a -Y channel map row), the session-edit fields
@@ -2548,6 +2594,30 @@ struct dsd_state {
     uint16_t scan_row_listed;
     /* The number dsd_opts::scan_row_scope_seq took when the row's options were installed (dsd_scan_mode_options()). */
     uint32_t scan_row_scope_seq;
+    /* Identities and revisions of the two avoid stores (issue #672), all drawn from dsd_state_rev_next(), which never
+     * repeats a value in the process, so a frontend copy keyed on them never mistakes another state's or list's value
+     * for its own. state_instance: stamped once per initState(). lcn_list_rev: the positional identity of the LCN list
+     * (trunk_lcn_freq, its tail, lcn_freq_count, trunk_lcn_name), new at initState() and at every wholesale replacement
+     * (dsd_state_trunk_lcn_replace_begin()); an append or an in-place row write keeps it, since the frequency in an
+     * LCN identity catches those. lcn_avoid_rev: moves whenever what an LCN avoid list shows could change -- a flag
+     * actually set or cleared, a new lcn_list_rev, a frequency or name write to an avoided row -- and is never an
+     * identity. lcn_avoid_total: the avoided rows within lcn_freq_count, which unlike lcn_avoid_count never saturates;
+     * both are kept by dsd_state_trunk_lcn_avoid_set()/_clear(). trunk_scan_avoid_rev: moves at each coordinator
+     * rebuild of trunk_scan_avoids and at its detach, and at nothing else (no target hop, pause or resume).
+     * trunk_scan_session: the coordinator's session, a trunk-scan identity's other half, kept while paused (unlike
+     * scan_row_session). trunk_scan_avoids_ok: 1 unless the coordinator could not allocate the list it last tried to
+     * publish. The storage helpers (reserves, frees, snapshot copies) stamp none of them. scan_avoids_complete: 1 on a
+     * live state (initState()); on a UI snapshot, 1 only when every copy of the LCN tail, names and avoid flags and of
+     * trunk_scan_avoids, at this hop and the one before it, held all the source had (ui_snapshot.c), so a frontend
+     * never takes a list a failed allocation cut short for the whole list. */
+    uint64_t state_instance;
+    uint64_t lcn_list_rev;
+    uint64_t lcn_avoid_rev;
+    size_t lcn_avoid_total;
+    uint64_t trunk_scan_avoid_rev;
+    uint32_t trunk_scan_session;
+    uint8_t trunk_scan_avoids_ok;
+    uint8_t scan_avoids_complete;
     /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice
      * anchors are monotonic seconds (-1 = unset this visit); roll_seen restarts the
      * visit on external lcn_freq_roll changes; hold_seen is lcn_scan_hold as of the
@@ -2639,6 +2709,10 @@ struct dsd_state {
      * A state an earlier run used keeps that run's decode-domain stamps, which no rebase reaches, so a run moves the
      * decode clock onto an I/Q replay's capture clock only on a fresh one (dsd_engine_decode_clock_enter_replay()). */
     uint8_t engine_fresh;
+    /* 1 when initState() could not allocate a buffer decoding needs (the rolling dibit and DMR payload buffers, the
+     * audio output buffers, the vocoder parameters): the state is safe to freeState() but not to run, and every
+     * frontend that starts a decoder refuses (apps/dsd-cli/main.c, the Android nativeInit). */
+    uint8_t init_failed;
 };
 
 // cppcheck-suppress-end uninitMemberVarNoCtor
@@ -2852,11 +2926,44 @@ dsd_state_trunk_lcn_slot_const(const dsd_state* state, int i) {
 int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
 
 /**
- * Free the scan-list heap tail, the per-row name, avoid and key stores, and the
+ * Free the scan-list heap tail, the per-row name, avoid and key stores and the
  * scan key swap state, and zero their pointers/capacities. The embedded
- * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release.
+ * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release. The
+ * published trunk-scan avoid list is not an LCN store and is left alone: only
+ * its owner empties it, with a new revision (dsd_state_trunk_scan_avoids_free()
+ * from the trunk-scan detach, initState() or freeState()). A storage helper: it stamps no revision.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
+
+/**
+ * The next value of the process-wide revision counter (issue #672): never 0, never repeated, never reset, so a value
+ * stamped on one state, list or publication is never taken by another. state_instance, lcn_list_rev, lcn_avoid_rev
+ * and trunk_scan_avoid_rev are all drawn from it.
+ */
+uint64_t dsd_state_rev_next(void);
+
+/**
+ * Begin a wholesale replacement of the LCN list (issue #672): drop the avoid flags, which index rows that no longer
+ * exist (lcn_avoid_count and lcn_avoid_total go to 0), and stamp a new lcn_list_rev and lcn_avoid_rev. The caller then
+ * writes the rows, names and lcn_freq_count of the new list directly. Every writer that replaces the list calls it:
+ * initState() aside (which stamps its own), the channel-map adopt and clear, the P25 CC selection's automatic anchor and
+ * a trunk-scan target's list restore. A NULL state is ignored.
+ */
+void dsd_state_trunk_lcn_replace_begin(dsd_state* state);
+
+/**
+ * Write @p hz into LCN row @p row in place or as an append past lcn_freq_count (issue #672), growing the heap tail when
+ * the row needs it; lcn_freq_count is not changed (dsd_state_trunk_lcn_count_raise()). Stamps lcn_avoid_rev only when
+ * the row is avoided and its value changes. Every writer that changes one row of an existing list goes through it.
+ * Returns 0, or -1 on a NULL state, a negative row or a failed allocation (nothing written).
+ */
+int dsd_state_trunk_lcn_freq_write(dsd_state* state, int row, long int hz);
+
+/**
+ * Raise lcn_freq_count to at least @p count (never lower it), the second half of an append (issue #672). When avoid
+ * flags past the old count come into the list, lcn_avoid_count/lcn_avoid_total count them and lcn_avoid_rev is stamped.
+ */
+void dsd_state_trunk_lcn_count_raise(dsd_state* state, int count);
 
 /** Usable encoded base/spacing within the portable trunk frequency range. */
 int dsd_p25_iden_params_usable(long base, int spacing);
@@ -2901,7 +3008,8 @@ int dsd_state_trunk_lcn_name_reserve(dsd_state* state, size_t count);
 void dsd_state_trunk_lcn_name_free(dsd_state* state);
 
 /**
- * Store the name of scan-list row @p index. The name is truncated to
+ * Store the name of scan-list row @p index; an avoided row whose name changes stamps lcn_avoid_rev (issue #672).
+ * The name is truncated to
  * DSD_CHANNEL_LABEL_SIZE - 1 bytes without splitting a UTF-8 character, has
  * control characters replaced with spaces (so a stray tab or CR never reaches
  * the terminal), and is trimmed of leading and trailing ASCII whitespace --
@@ -2956,8 +3064,9 @@ int dsd_state_trunk_lcn_keys_present(const dsd_state* state);
 /**
  * Flag scan-list row @p index as avoided (@p avoided != 0) or put it back. Setting a
  * flag grows the store on demand; clearing a row the store does not reach allocates
- * nothing. Recounts lcn_avoid_count over the rows within lcn_freq_count. Returns 0 on
- * success, -1 on allocation failure or a NULL state.
+ * nothing. Recounts lcn_avoid_count (saturating) and lcn_avoid_total over the rows
+ * within lcn_freq_count, and stamps lcn_avoid_rev only when the flag changes. Returns 0
+ * on success, -1 on allocation failure or a NULL state.
  */
 int dsd_state_trunk_lcn_avoid_set(dsd_state* state, size_t index, int avoided);
 
@@ -2966,9 +3075,34 @@ int dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index);
 
 /**
  * Put every avoided row back. Returns how many rows within lcn_freq_count were
- * avoided; the store keeps its capacity. lcn_avoid_count is zeroed.
+ * avoided (lcn_avoid_count, so saturated); the store keeps its capacity.
+ * lcn_avoid_count and lcn_avoid_total are zeroed, and lcn_avoid_rev is stamped when
+ * any flag was set.
  */
 int dsd_state_trunk_lcn_avoid_clear(dsd_state* state);
+
+/**
+ * Ensure the published trunk-scan avoid list (dsd_state::trunk_scan_avoids) can hold @p count entries, growing it by
+ * doubling. Returns 0, or -1 on a NULL state or a failed allocation (the list and its count kept). A storage helper:
+ * it stamps nothing.
+ */
+int dsd_state_trunk_scan_avoids_reserve(dsd_state* state, size_t count);
+
+/**
+ * Replace the published trunk-scan avoid list with a copy of @p count entries (@p entries may be NULL when @p count is
+ * 0). On a failed allocation the list is left empty (count 0, no stale entries) and -1 returned; -1 too for a NULL
+ * state. A storage helper: it stamps nothing -- the coordinator stamps trunk_scan_avoid_rev after a rebuild.
+ */
+int dsd_state_trunk_scan_avoids_set(dsd_state* state, const dsd_trunk_scan_avoid_entry* entries, size_t count);
+
+/** Free the published trunk-scan avoid list and zero its pointer, count and capacity. Stamps nothing. */
+void dsd_state_trunk_scan_avoids_free(dsd_state* state);
+
+#ifdef DSD_NEO_TEST_HOOKS
+/* Let the next N allocations of the scan-list reserve helpers (the LCN tail, name, avoid and trunk-scan avoid stores)
+   succeed and fail every one after; -1 (the default) disables the seam. */
+void dsd_state_trunk_lcn_test_alloc_fail_after(long successful_allocations);
+#endif
 
 /** Rows below lcn_freq_count that carry a frequency and are not avoided. */
 int dsd_state_trunk_lcn_usable_count(const dsd_state* state);

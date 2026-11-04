@@ -101,8 +101,10 @@ wire_attachment(DecoderHost* host, UiController* controller, const AppPrefs* pre
         const QVariantMap target = kind == QStringLiteral("saved")  ? systems->getByUid(uid)
                                    : kind == QStringLiteral("scan") ? scanLists->getByUid(uid)
                                                                     : QVariantMap();
+        // Issue #697: a scan session's other lists start with its own, as the bundle it was last started as.
         controller->requestAutoStart(prefs->autoStartOnAttach(), prefs->onboardingDone(), kind, uid, target,
-                                     attachedKind);
+                                     attachedKind,
+                                     kind == QStringLiteral("scan") ? prefs->lastStartedCompanions() : QStringList());
     });
 }
 
@@ -114,6 +116,15 @@ ui_apply_style(void) {
     // token set, and the Material style would fight those with its own metrics,
     // ripples and theming.
     QQuickStyle::setStyle(QStringLiteral("Basic"));
+}
+
+// The command surface QML sends through. A put back (issue #672) names an entry of the avoid list the Monitor shows,
+// by its key, so the bridge reads the metrics' list.
+static CommandBridge*
+make_command_bridge(QQmlApplicationEngine& engine, MetricsModel* metrics) {
+    auto* commands = new CommandBridge(&engine);
+    commands->setScanAvoids(metrics->scanAvoidModel());
+    return commands;
 }
 
 static DecryptionProfilesModel*
@@ -141,10 +152,15 @@ wire_decryption_profiles(QQmlApplicationEngine& engine, DecoderHost* host, Saved
 }
 
 static void
-wire_target_files(ScanListStarter* starter, const ImportedFilesModel* files) {
+wire_target_files(ScanListStarter* starter, ScanListsModel* scanLists, const ImportedFilesModel* files) {
     starter->setTargetFileLookup([files](const QString& path) {
         const int row = files->rowForPath(path);
         return row >= 0 && files->get(row).value("type") == "trunkTargets";
+    });
+    // Issue #697: Home and the Scan with other lists sheet count a CSV list's targets as its import accepted them.
+    scanLists->setAcceptedRowsLookup([files](const QString& path) {
+        const int row = files->rowForPath(path);
+        return row >= 0 ? files->get(row).value("accepted").toInt() : -1;
     });
 }
 
@@ -256,7 +272,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
 
     auto* metrics = new MetricsModel(&engine);
     auto* network = new P25NetworkModel(&engine); // WP-F2
-    auto* commands = new CommandBridge(&engine);
+    auto* commands = make_command_bridge(engine, metrics);
     DiagnosticsLog::installTap();
     // The log is process-lifetime and never destroyed, so its last records are made durable here (or, on Android, by
     // main()'s final flush after the teardown, which this only asks to start).
@@ -274,7 +290,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* scanLists = new ScanListsModel(&engine);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
     auto* importedFiles = new ImportedFilesModel(host, &engine);
-    wire_target_files(scanListStarter, importedFiles);
+    wire_target_files(scanListStarter, scanLists, importedFiles);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
     auto* history = make_history(engine);

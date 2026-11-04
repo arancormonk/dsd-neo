@@ -36,7 +36,8 @@ scan_visit_should_yield_from_frame(const dsd_opts* opts, dsd_state* state) {
         return dsd_engine_signal_search_should_yield(opts, state);
     }
     if (dsd_trunk_scan_owns_tuner(opts, state)) {
-        return dsd_engine_trunk_scan_visit_expired(opts, state) || dsd_engine_trunk_scan_receive_expired(opts, state);
+        return dsd_engine_trunk_scan_visit_expired(opts, state) || dsd_engine_trunk_scan_receive_expired(opts, state)
+               || dsd_engine_trunk_scan_departure_due(opts, state);
     }
     if (dsd_engine_trunk_receive_release_due(opts, state)) {
         return 1;

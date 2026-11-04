@@ -161,6 +161,12 @@ Item {
             {file: "RadioReferenceScreen"},
             {file: "RadioSheet"},
             {file: "ReceivePolicySheet", properties: {bridge: receiveBridge}},
+            // Issue #672: open on one avoided channel, so a row is made.
+            {file: "ScanAvoidSheet", open: function (sheet) {
+                testContext.setScanAvoids([{key: "k0", label: "Row 1  851.012500 MHz  Fire Dispatch"}]);
+                testContext.setMetric("scanAvoidCount", 1);
+                sheet.open();
+            }},
             {file: "ScanEntryRow", properties: {parseInteger: function (text) { return parseInt(text, 10); },
                 frequencyValid: function () { return true; }}},
             {file: "ScanListCard", properties: {listName: "County scan", entryCount: 3}},
@@ -238,6 +244,8 @@ Item {
                 reason: "The band's ends drawn under the coarse tuning rail, a scale; the rail reads its own frequency and steps by its actions."},
             {file: "SignalSearchScreen.qml", name: "savedMore",
                 reason: "\"+N\", how many saved names the line leaves out; the saved line's name reads every one of them."},
+            {file: "ScanAvoidSheet.qml", name: "entryLabel", readBy: function (text) { return findNear(text, "scanAvoidPutBack"); },
+                reason: "Its Put back reads the entry in its name (\"Put back Row 1  851.012500 MHz  Fire Dispatch\"), the row's one node."},
             {file: "MonitorScreen.qml", name: /^(liveLabelProbe|rowNameProbe|rowMetaProbe)$/,
                 reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."}
         ]

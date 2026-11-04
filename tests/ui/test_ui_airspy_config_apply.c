@@ -24,6 +24,13 @@
 #include "dsd-neo/runtime/config.h"
 #include "dsd-neo/runtime/decode_mode.h"
 
+/* The drain's own dispatch of a config apply; what a scan list toggle would retain does not apply to one. */
+static int
+apply_config_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd) {
+    int32_t scan_list_code = 0;
+    return apply_cmd(opts, state, cmd, &scan_list_code);
+}
+
 static int test_context;
 static int test_creates;
 static int test_fail_create;
@@ -226,7 +233,7 @@ test_config_apply(int failure) {
         test_fail_create = 1;
         seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
         assert(carrier_codes_kept(state)); /* the reopen failed: the old centre runs again */
         assert(test_outputs == 1);
         assert(test_creates == 2); /* failed candidate, then rollback */
@@ -238,7 +245,7 @@ test_config_apply(int failure) {
         cfg->rtl_bw_khz = 12;
         cfg->rtl_volume = 2;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
         assert(test_outputs == 2);
         assert(test_retunes == 0 && opts->rtlsdr_center_freq == 851000000);
         assert(carrier_codes_kept(state));
@@ -247,7 +254,7 @@ test_config_apply(int failure) {
         cfg->rtl_sql = -55;
         seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_retunes == 1 && test_freq == 852000000 && test_creates == 0);
         assert(carrier_codes_forgotten(state)); /* retuned live to another carrier */
         assert(test_squelches == 1 && fabsf(test_sql - (float)dsd_squelch_level_from_sql(-55)) < 1e-8f);
@@ -258,7 +265,7 @@ test_config_apply(int failure) {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "853M");
         seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 1 && test_retunes == 1);
         assert(carrier_codes_forgotten(state)); /* reopened on another carrier */
         assert(test_open_freq == 853000000 && test_open_bw == 24 && test_open_volume == 3);
@@ -266,12 +273,12 @@ test_config_apply(int failure) {
         cfg->rtl_volume = 1;
         seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 2 && test_open_volume == 1);
         assert(carrier_codes_kept(state)); /* reopened on the same carrier */
         cfg->rtl_sql = 0;
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
         assert(test_creates == 2 && test_retunes == 1 && test_sql == 0.0f);
         assert(carrier_codes_kept(state));
         const int tune_results[] = {RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED};
@@ -281,7 +288,7 @@ test_config_apply(int failure) {
             test_tune_result = tune_results[i];
             seed_carrier_codes(state);
             DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
-            int status = apply_cmd(opts, state, cmd);
+            int status = apply_config_cmd(opts, state, cmd);
             if (test_tune_result != RTL_STREAM_TUNE_TIMEOUT) {
                 /* DEFERRED was never queued, so it must not be reported as applied. */
                 assert(status == UI_CMD_APPLY_FAILED && opts->rtlsdr_center_freq == old_frequency);
@@ -356,7 +363,7 @@ test_config_refused_width(void) {
         test_creates = 0;
         test_open_bw = -1;
         test_refuse_rate = up_front ? 0 : 24000;
-        assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
         assert(state->rtl_ctx == (RtlSdrContext*)&test_context);
         assert(strcmp(opts->audio_in_dev, "airspy") == 0 && opts->airspy.sample_rate == 0);
         if (up_front) {
@@ -424,7 +431,7 @@ test_config_apply_72(void) {
     DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
     test_creates = 0;
     test_open_bw = -1;
-    assert(apply_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
+    assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
     assert(test_creates == 1 && test_open_bw == 72);
     assert(opts->rtl_dsp_bw_khz == 72 && strcmp(opts->audio_in_dev, "airspy") == 0);
     assert(strncmp(state->ui_msg, "Config not applied", strlen("Config not applied")) != 0);

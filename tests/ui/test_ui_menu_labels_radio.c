@@ -74,6 +74,22 @@ dsd_rr_available(void) {
     return 1;
 }
 
+/* The Avoids rows read only the scan avoid view's summary (issue #672); its list half, which reads the -Y store, links
+   against these. */
+int
+dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return 0;
+}
+
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) {
+    (void)state;
+    (void)index;
+    return "";
+}
+
 /* menu_labels.c reaches dsd_user_imports_dir() from rr_imports_available(); this
  * target links no libraries at all, so the runtime definition is stubbed here. */
 static const char* g_imports_dir = "/tmp/dsd-neo-imports";
@@ -164,8 +180,21 @@ rtl_stream_get_tuner_autogain(void) {
     return g_rtl_tuner_autogain;
 }
 
+/* Issue #672 (B9): the metrics a label reads come from the frame's pair (recorded here). The readers that acquire the
+   snapshots themselves are defined too, as acquisitions: each one counts, and picks up the publication that landed
+   mid-frame (g_pending_rf_mod) into the frame's state buffer, as the single consumer's buffer refresh would. */
+static const dsd_opts* g_metrics_opts;
+static const dsd_state* g_metrics_state;
+static int g_acquisitions;
+static dsd_state* g_frame_state_buffer;
+static int g_pending_rf_mod = -1;
+
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) {
+    g_metrics_opts = opts;
+    g_metrics_state = state;
+    (void)snr_fallbacks;
     DSD_MEMSET(out, 0, sizeof(*out));
     out->output_kind = g_rtl_output_kind;
     out->cqpsk_enable = g_rtl_cqpsk;
@@ -178,6 +207,27 @@ dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
     out->auto_ppm_enabled = g_rtl_auto_ppm;
     out->tuner_autogain = g_rtl_tuner_autogain;
     return 0;
+}
+
+static void
+acquire_publication(void) {
+    g_acquisitions++;
+    if (g_frame_state_buffer != NULL && g_pending_rf_mod >= 0) {
+        g_frame_state_buffer->rf_mod = g_pending_rf_mod;
+        g_pending_rf_mod = -1;
+    }
+}
+
+int
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+    acquire_publication();
+    return dsd_app_frontend_get_metrics_for_snapshot(NULL, NULL, out, 0U);
+}
+
+int
+dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
+    acquire_publication();
+    return dsd_app_frontend_get_metrics_for_snapshot(NULL, NULL, out, snr_fallbacks);
 }
 
 static int
@@ -341,9 +391,42 @@ test_radio_config_labels(void) {
     return rc;
 }
 
+/* Issue #672 (B9): one frame reads one publication. The TED row's predicate reads the receiver's metrics and then the
+   frame's modulation; a publication that lands meanwhile (a QPSK channel turning C4FM) must not reach the rest of the
+   frame, which an acquisition through the metrics would make happen. No label or predicate acquires; the metrics come
+   from the frame's pair. */
+static int
+test_frame_reads_one_publication(void) {
+    int rc = 0;
+    char b[160];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+    state.rf_mod = 1;
+    g_frame_state_buffer = &state;
+    g_pending_rf_mod = 0;
+    g_acquisitions = 0;
+    g_metrics_opts = NULL;
+    g_metrics_state = NULL;
+
+    rc |= expect_int("one frame: TED offered on the frame's QPSK", is_ted_allowed(&ctx), 1);
+    rc |= expect_int("one frame: the modulation the predicate read stays", is_mod_qpsk(&ctx), 1);
+    rc |= expect_str("one frame: a metrics label", lbl_iq_dc_k(&ctx, b, sizeof(b)), "IQ DC shift k... [0]");
+    rc |= expect_int("one frame: modulation unchanged after the label", is_mod_qpsk(&ctx), 1);
+    rc |= expect_int("one frame: no acquisition", g_acquisitions, 0);
+    rc |= expect_int("one frame: metrics read the frame's options", g_metrics_opts == &opts, 1);
+    rc |= expect_int("one frame: metrics read the frame's state", g_metrics_state == &state, 1);
+
+    g_frame_state_buffer = NULL;
+    g_pending_rf_mod = -1;
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_frame_reads_one_publication();
     rc |= test_radio_modulation_predicates();
     rc |= test_radio_dsp_labels();
     rc |= test_radio_tuning_labels();

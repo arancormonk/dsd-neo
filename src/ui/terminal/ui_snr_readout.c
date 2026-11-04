@@ -4,6 +4,8 @@
  */
 
 #include "ui_snr_readout.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/app_control/frontend.h>
@@ -23,17 +25,17 @@ ui_snr_mod_label(int rf_mod) {
 }
 
 ui_snr_readout
-ui_snr_readout_for_mod(int rf_mod) {
+ui_snr_readout_for_mod(const dsd_opts* opts, const dsd_state* state, int rf_mod) {
     ui_snr_readout out;
     out.mod_label = ui_snr_mod_label(rf_mod);
 
 #ifdef USE_RADIO
-    /* One fetch with every fallback filled, then the shared selection rule. Fetching
-     * per modulation with a single-fallback mask meant three consumes for one readout,
-     * and left each frontend free to disagree about which estimator a modulation uses.
-     * See dsd_app_frontend_snr_for_mod(). */
+    /* One fetch with every fallback filled, from the frame's pair, then the shared
+     * selection rule. Fetching per modulation with a single-fallback mask meant three
+     * consumes for one readout, and left each frontend free to disagree about which
+     * estimator a modulation uses. See dsd_app_frontend_snr_for_mod(). */
     dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_ALL);
+    (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, DSD_FRONTEND_SNR_FALLBACK_ALL);
 
     const dsd_frontend_snr_readout snr = dsd_app_frontend_snr_for_mod(&metrics, rf_mod);
     /* Carried through even when invalid: it is the reading this modulation's estimator
@@ -41,6 +43,8 @@ ui_snr_readout_for_mod(int rf_mod) {
     out.snr_db = snr.snr_db;
     out.valid = snr.valid;
 #else
+    (void)opts;
+    (void)state;
     out.valid = 0;
     out.snr_db = (double)UI_SNR_INVALID_DB;
 #endif

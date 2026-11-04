@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/scan_row_view.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
@@ -10,9 +9,11 @@
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_actions.h"
+#include "menu_internal.h"
 #include "menu_prompts.h"
 
 /* One prompt chain at a time. Its destination is captured before any chooser opens. */
@@ -139,10 +140,13 @@ receive_scope(void* context, int selected) {
     }
 }
 
+/* The editor copies what it edits from the frame's snapshot pair (the menu's context) as it opens, so the choosers and
+   prompts answered in later frames work on that copy. */
 static void
 receive_open(void* context, int kind) {
-    const dsd_opts* opts = dsd_app_get_latest_opts_snapshot();
-    const dsd_state* state = dsd_app_get_latest_snapshot();
+    const UiCtx* c = (const UiCtx*)context;
+    const dsd_opts* opts = c ? c->opts : NULL;
+    const dsd_state* state = c ? c->state : NULL;
     if (!opts) {
         ui_statusf("Start the decoder before editing receive settings");
         return;

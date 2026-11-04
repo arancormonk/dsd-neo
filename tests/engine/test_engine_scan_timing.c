@@ -143,6 +143,7 @@ static int
 start_scan(dsd_opts* opts, dsd_state* state, void* context) {
     (void)context;
     opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list */
     opts->use_rigctl = 1;
     opts->setmod_bw = 0;
     opts->trunk_hangtime = 2.0f;
@@ -205,6 +206,7 @@ test_legacy_deadline_matches_rotation(void) {
     initOpts(opts);
     initState(state);
     opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list */
     state->lcn_freq_count = 2;
     /* Zero-frequency rows advance the visit without needing a physical tuner. */
     *dsd_state_trunk_lcn_slot(state, 0) = 0;
@@ -241,6 +243,7 @@ test_analog_carrier_deadline_matches_rotation(void) {
     initOpts(opts);
     initState(state);
     opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list */
     opts->analog_only = 1;
     opts->monitor_input_audio = 1;
     opts->audio_in_type = AUDIO_IN_WAV;
@@ -292,7 +295,8 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
     opts->trunk_hangtime = configured_hangtime;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof(opts->trunk_scan_targets_csv), "%s", path);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     g_pending = 0;
     /* The scan's own stamps, the SM stamps below and every tick read one decode instant. */

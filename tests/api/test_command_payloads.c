@@ -53,6 +53,24 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
     return capture(cmd_id, payload, payload_sz);
 }
 
+/* What the queue answers a scan_list_set: QUEUED, or REJECTED as it does a full queue (the session stand-in below is
+   always open). */
+static int g_scan_list_submit_rc = DSD_APP_COMMAND_SUBMIT_QUEUED;
+static uint32_t g_scan_list_requests = 5150U;
+
+int
+dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload) {
+    if (g_scan_list_submit_rc != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        return g_scan_list_submit_rc;
+    }
+    return capture(DSD_APP_CMD_SCAN_LIST_SET, payload, sizeof *payload);
+}
+
+uint32_t
+dsd_app_scan_list_request_next(void) {
+    return ++g_scan_list_requests;
+}
+
 int
 dsd_app_command_action(int cmd_id) {
     return capture(cmd_id, NULL, 0U);
@@ -562,6 +580,148 @@ test_structured(void) {
     assert(g_last_id == DSD_APP_CMD_RR_APPLY_IMPORT && rr.decode_mode == (int32_t)DSDCFG_MODE_TETRA);
 }
 
+/* scan_avoid_remove (issue #672): each kind's identity reaches the payload exact; a missing field, the other kind's
+   name, a negative row and a session that is 0 or past UINT32_MAX (which would alias another) are refused. */
+static void
+test_scan_avoid_remove(void) {
+    dsd_app_scan_avoid_remove_payload p = {0};
+    assert(ok("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":\"18446744073709551615\","
+              "\"list_rev\":7,\"row\":3,\"frequency_hz\":851012500}}"));
+    assert(g_last_id == DSD_APP_CMD_SCAN_AVOID_REMOVE && g_last_n == sizeof p);
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.kind == DSD_APP_SCAN_AVOID_KIND_LCN && p.instance == UINT64_MAX && p.list_rev == 7U && p.row == 3);
+    assert(p.frequency_hz == 851012500U && p.session == 0U && p.target_id[0] == '\0' && p.pad == 0U);
+
+    assert(ok("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":4294967295,"
+              "\"target_id\":\"county-p25\"}}"));
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN && p.session == UINT32_MAX);
+    assert(strcmp(p.target_id, "county-p25") == 0 && p.row == -1 && p.instance == 0U);
+
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"channel\",\"session\":1,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,"
+            "\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,\"row\":-1,"
+            "\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":0,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":4294967297,"
+            "\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":\"\"}}");
+    /* Session and the 64-bit fields as a client whose numbers are doubles sends them; garbage of each type refused. */
+    assert(ok("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":\"0x10\",\"list_rev\":\"9\","
+              "\"row\":2147483647,\"frequency_hz\":\"0\",\"label\":\"Row 1\"}}"));
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.instance == 16U && p.list_rev == 9U && p.row == INT32_MAX && p.frequency_hz == 0U);
+    assert(ok(
+        "{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":\"7\",\"target_id\":\"a\"}}"));
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    assert(p.session == 7U);
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":1,\"session\":1,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":-1,\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":\"4294967296\","
+            "\"target_id\":\"a\"}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":7}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,"
+            "\"row\":2147483648,\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":-2,"
+            "\"row\":0,\"frequency_hz\":3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"lcn\",\"instance\":1,\"list_rev\":2,"
+            "\"row\":0,\"frequency_hz\":-3}}");
+    refused("{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scanx\",\"session\":1,\"target_id\":\"a\"}}");
+    char* long_id = repeat_char('a', sizeof p.target_id);
+    char request[256];
+    DSD_SNPRINTF(
+        request, sizeof request,
+        "{\"cmd\":\"scan_avoid_remove\",\"params\":{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":\"%s\"}}",
+        long_id);
+    refused(request);
+    free(long_id);
+}
+
+/* Run a scan_list_set the queue admits: the payload it submitted, and the reply's echo of the request id it carries. */
+static dsd_app_scan_list_set_payload
+scan_list_set_admitted(const char* params) {
+    char request[256];
+    DSD_SNPRINTF(request, sizeof request, "{\"id\":4,\"cmd\":\"scan_list_set\",\"params\":%s}", params);
+    dsd_json_buf out;
+    dsd_json_buf_init(&out);
+    const int before = g_submits;
+    assert(run(request, &out) && g_submits == before + 1);
+    dsd_app_scan_list_set_payload p = {0};
+    assert(g_last_id == DSD_APP_CMD_SCAN_LIST_SET && g_last_n == sizeof p);
+    DSD_MEMCPY(&p, g_last, sizeof p);
+    /* The id is the app-control counter's, never the client's, and the reply names it as its result will. */
+    assert(p.request == g_scan_list_requests && p.pad == 0U);
+    char expect[96];
+    DSD_SNPRINTF(expect, sizeof expect, "\"cmd\":\"scan_list_set\",\"status\":\"queued\",\"request\":%u}",
+                 (unsigned)p.request);
+    if (strstr(out.data, expect) == NULL) {
+        DSD_FPRINTF(stderr, "scan_list_set %s answered %s", params, out.data);
+        assert(0);
+    }
+    dsd_json_buf_free(&out);
+    return p;
+}
+
+/* scan_list_set (issue #697): a list number or "all", on or off, and the session it names reach the payload, with a
+   request id from app-control's counter that the reply echoes; anything else is refused, a client's own request id
+   included (it would collide with the ids the terminal and Qt draw from the same counter). */
+static void
+test_scan_list_set(void) {
+    dsd_app_scan_list_set_payload p = scan_list_set_admitted("{\"list\":2,\"enabled\":0,\"session\":4294967295}");
+    assert(p.list == 2 && p.enabled == 0U && p.session == UINT32_MAX);
+    const uint32_t first = p.request;
+    p = scan_list_set_admitted("{\"list\":\"all\",\"enabled\":1,\"session\":3}");
+    assert(p.list == DSD_APP_SCAN_LIST_ALL && p.enabled == 1U && p.session == 3U && p.request == first + 1U);
+    p = scan_list_set_admitted("{\"list\":8,\"enabled\":1,\"session\":\"7\"}");
+    assert(p.list == 8 && p.enabled == 1U && p.session == 7U);
+
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{}}");
+    refused("{\"cmd\":\"scan_list_set\"}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":0,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":9,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":-1,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":65538,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":2.0,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":\"2\",\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":\"every\",\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":\"All\",\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":\"allx\",\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":[1],\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":null,\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"enabled\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":2,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":-1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":\"1\",\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":true,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"session\":3}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":0}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":-1}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":4294967296}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":\"4294967296\"}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":1.5}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":true}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":3,\"request\":77}}");
+    refused("{\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":1,\"session\":3,\"request\":null}}");
+    /* A refusal takes no request id. */
+    assert(g_scan_list_requests == p.request);
+
+    /* The queue refuses a toggle it has no room for (it never evicts one): a synchronous error, nothing pending. */
+    g_scan_list_submit_rc = DSD_APP_COMMAND_SUBMIT_REJECTED;
+    dsd_json_buf out;
+    dsd_json_buf_init(&out);
+    const int before = g_submits;
+    assert(!run("{\"id\":5,\"cmd\":\"scan_list_set\",\"params\":{\"list\":1,\"enabled\":0,\"session\":3}}", &out));
+    assert(g_submits == before);
+    assert(strstr(out.data, "{\"id\":5,\"ok\":false,\"cmd\":\"scan_list_set\",\"error\":{\"code\":\"queue_full\"")
+           == out.data);
+    assert(strstr(out.data, "\"request\"") == NULL);
+    dsd_json_buf_free(&out);
+    g_scan_list_submit_rc = DSD_APP_COMMAND_SUBMIT_QUEUED;
+}
+
 static void
 test_config(void) {
     assert(ok("{\"cmd\":\"config_apply\",\"params\":{\"sections\":{\"trunking\":{\"enabled\":true}}}}"));
@@ -609,6 +769,8 @@ main(void) {
     test_keys();
     test_receive();
     test_structured();
+    test_scan_avoid_remove();
+    test_scan_list_set();
     test_config();
     test_response_framing();
     free(g_last);

@@ -5,10 +5,11 @@
  * read-result handling. Reads that keep timing out or overflowing, or one read that hangs, are silence: once it
  * reaches the limit (5000 ms; here 300 ms where a case must trip and 2000 ms where it must not, sampled every 20 ms)
  * the session ends for its receiver (-ETIMEDOUT), through the unplug-owner grace, inside which samples that resume
- * keep it running and a stop keeps it silent. A control transaction holding the driver lock is not silence. A setup
- * or buffer failure is reported at once as a device failure that is not the receiver's ending; an exception or a
- * fatal result from a read ends the session for its receiver; either wakes the demod waiting on the input ring. A
- * stop, during setup, during the grace or while streaming, is silent, and a monitor that cannot start fails the start.
+ * keep it running and a stop keeps it silent. A control transaction holding the driver lock is not silence, and one
+ * waiting for it goes before the reader's next read. A setup or buffer failure is reported at once as a device
+ * failure that is not the receiver's ending; an exception or a fatal result from a read ends the session for its
+ * receiver; either wakes the demod waiting on the input ring. A stop, during setup, during the grace or while
+ * streaming, is silent, and a monitor that cannot start fails the start.
  */
 
 #include <assert.h>
@@ -57,6 +58,7 @@ enum read_mode : int {
     READ_FAIL,        /* a fatal stream error at once */
     READ_THROW,       /* an exception at once */
     READ_HANG,        /* one read that blocks until released (5 s at most), then a timeout */
+    READ_EMPTY,       /* no samples after 2 ms */
 };
 
 struct fake_soapy {
@@ -72,9 +74,29 @@ struct fake_soapy {
     std::atomic<int> release{0};
     /* READ_SAMPLES: the read after this many sample reads overflows once (0: never). */
     std::atomic<int> overflow_after{0};
+    /* While set, reads that begin with a control waiting for this device's driver lock count in reads_past_control. */
+    std::atomic<rtl_device*> watched{nullptr};
+    std::atomic<int> reads_past_control{0};
 };
 
 fake_soapy g_fake;
+
+/* Poll @p done every millisecond until it holds or @p timeout_ms of real time passed: whether it held. The deadline is
+ * on the clock, not a count of sleeps, which a loaded runner stretches. */
+template <typename Done>
+bool
+wait_for(Done done, uint64_t timeout_ms) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + timeout_ms;
+    for (;;) {
+        if (done()) {
+            return true;
+        }
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return false;
+        }
+        dsd_sleep_ms(1U);
+    }
+}
 
 int
 fake_setup(void* ctx, size_t* mtu_elems) {
@@ -95,6 +117,10 @@ fake_read(void* ctx, void* buff, size_t elems, long timeout_us) {
     (void)buff;
     (void)timeout_us;
     fake->reads.fetch_add(1, std::memory_order_acq_rel);
+    const rtl_device* watched = fake->watched.load(std::memory_order_acquire);
+    if (watched != nullptr && rtl_device_test_soapy_controls_waiting(watched) > 0) {
+        fake->reads_past_control.fetch_add(1, std::memory_order_acq_rel);
+    }
     switch (fake->mode.load(std::memory_order_acquire)) {
         case READ_TIMEOUT: dsd_sleep_ms(10U); return RTL_DEVICE_TEST_SOAPY_TIMEOUT;
         case READ_OVERFLOW: dsd_sleep_ms(5U); return RTL_DEVICE_TEST_SOAPY_OVERFLOW;
@@ -102,12 +128,11 @@ fake_read(void* ctx, void* buff, size_t elems, long timeout_us) {
         case READ_THROW: return RTL_DEVICE_TEST_SOAPY_THROW;
         case READ_HANG:
             fake->hung.store(1, std::memory_order_release);
-            for (int waited_ms = 0; waited_ms < 5000 && !fake->release.load(std::memory_order_acquire); ++waited_ms) {
-                dsd_sleep_ms(1U);
-            }
+            (void)wait_for([fake] { return fake->release.load(std::memory_order_acquire) != 0; }, 5000U);
             fake->hung.store(0, std::memory_order_release);
             fake->mode.store(READ_TIMEOUT, std::memory_order_release);
             return RTL_DEVICE_TEST_SOAPY_TIMEOUT;
+        case READ_EMPTY: dsd_sleep_ms(2U); return 0;
         case READ_SAMPLES:
         default:
             if (fake->overflow_after.load(std::memory_order_acquire) > 0
@@ -137,6 +162,8 @@ reset_fake(int mode) {
     g_fake.hung.store(0);
     g_fake.release.store(0);
     g_fake.overflow_after.store(0);
+    g_fake.watched.store(nullptr);
+    g_fake.reads_past_control.store(0);
 }
 
 void
@@ -180,10 +207,13 @@ device_state(rtl_device* dev) {
 
 void
 wait_reader_exited(rtl_device* dev) {
-    for (int waited_ms = 0; waited_ms < 3000 && !device_state(dev).reader_exited; ++waited_ms) {
-        dsd_sleep_ms(1U);
-    }
-    assert(device_state(dev).reader_exited);
+    assert(wait_for([dev] { return device_state(dev).reader_exited != 0; }, 3000U));
+}
+
+/* Wait until the stand-in driver returned samples @p reads times since its reset. */
+void
+wait_sample_reads(int reads) {
+    assert(wait_for([reads] { return g_fake.sample_reads.load() >= reads; }, 3000U));
 }
 
 /* Poll until the receiver's ending is committed: the time it was seen, or 0 when @p timeout_ms passed first. */
@@ -236,9 +266,7 @@ expect_running(unsigned int generation) {
 /* Wait until the verdict after @p in_grace began waiting out the unplug-owner grace, however late its thread runs. */
 void
 wait_verdict_in_grace(unsigned int in_grace) {
-    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == in_grace; ++waited_ms) {
-        dsd_sleep_ms(1U);
-    }
+    (void)wait_for([in_grace] { return rtl_device_test_verdicts_in_grace() != in_grace; }, 5000U);
     assert(rtl_device_test_verdicts_in_grace() == in_grace + 1U);
 }
 
@@ -278,9 +306,7 @@ start_waiter(ring_waiter* waiter, input_ring_state* ring) {
     waiter->ring = ring;
     const int created = dsd_thread_create(&waiter->thread, wait_for_ring_wake, waiter);
     assert(created == 0);
-    while (!waiter->waiting.load(std::memory_order_acquire)) {
-        dsd_sleep_ms(1U);
-    }
+    assert(wait_for([waiter] { return waiter->waiting.load(std::memory_order_acquire) != 0; }, 3000U));
     /* The waiter holds the lock until its wait releases it. */
     dsd_mutex_lock(&ring->ready_m);
     dsd_mutex_unlock(&ring->ready_m);
@@ -303,9 +329,7 @@ expect_silence_ends_session(input_ring_state* ring, int mode) {
     ring_waiter waiter;
     start_waiter(&waiter, ring);
     rtl_device* dev = start_device(ring);
-    while (g_fake.sample_reads.load() < 5) {
-        dsd_sleep_ms(1U);
-    }
+    wait_sample_reads(5);
     g_fake.mode.store(mode);
     const uint64_t silent_ms = dsd_realtime_mono_ms();
     const uint64_t ended_ms = wait_receiver_ended(3000U);
@@ -362,9 +386,7 @@ long_control_hold_does_not_accrue(input_ring_state* ring) {
     reset_fake(READ_SAMPLES);
     const unsigned int generation = dsd_input_failure_generation();
     rtl_device* dev = start_device(ring);
-    while (g_fake.sample_reads.load() < 5) {
-        dsd_sleep_ms(1U);
-    }
+    wait_sample_reads(5);
     const int held = rtl_device_test_soapy_control_hold(dev, kOutlastMs);
     assert(held == 0);
     const int after_hold = g_fake.sample_reads.load();
@@ -373,6 +395,33 @@ long_control_hold_does_not_accrue(input_ring_state* ring) {
     expect_running(generation);
     end_device(dev);
     expect_running(generation);
+}
+
+/* A control waiting for the driver lock takes it before the reader's next read. The reader takes the lock again the
+ * moment a read returns, here with no work in between (empty reads), and a mutex goes to whichever thread runs first:
+ * a control woken by the unlock would lose it to read after read, the more so on a busy CPU. Each control here starts
+ * while a read holds the lock, and a read may begin just as a control starts waiting, once per control; any more read
+ * ahead of a waiting control. */
+void
+controls_go_before_next_read(input_ring_state* ring) {
+    constexpr int kControls = 20;
+    rtl_device_test_set_progress_limit_ms(kSteadyLimitMs);
+    reset_session();
+    reset_fake(READ_EMPTY);
+    rtl_device* dev = start_device(ring);
+    assert(wait_for([] { return g_fake.reads.load() >= 5; }, 3000U));
+    g_fake.watched.store(dev);
+    for (int i = 0; i < kControls; ++i) {
+        const int held = rtl_device_test_soapy_control_hold(dev, 1U);
+        assert(held == 0);
+    }
+    g_fake.watched.store(nullptr);
+    const int past = g_fake.reads_past_control.load();
+    if (past > kControls) {
+        DSD_FPRINTF(stderr, "%d reads began while a control waited, over %d controls\n", past, kControls);
+    }
+    assert(past <= kControls);
+    end_device(dev);
 }
 
 /* A control waiting for the driver lock behind a hung read. */
@@ -403,9 +452,7 @@ timeouts_do_not_pause_accrual(input_ring_state* ring) {
     const unsigned int generation = dsd_input_failure_generation();
     const uint64_t started_ms = dsd_realtime_mono_ms();
     rtl_device* dev = start_device(ring);
-    while (!g_fake.hung.load()) {
-        dsd_sleep_ms(1U);
-    }
+    assert(wait_for([] { return g_fake.hung.load() != 0; }, 3000U));
     control_waiter control;
     control.dev = dev;
     const int created = dsd_thread_create(&control.thread, run_control, &control);
@@ -472,9 +519,7 @@ expect_read_failure(input_ring_state* ring, int mode, int native_code) {
     ring_waiter waiter;
     start_waiter(&waiter, ring);
     rtl_device* dev = start_device(ring);
-    while (g_fake.sample_reads.load() < 5) {
-        dsd_sleep_ms(1U);
-    }
+    wait_sample_reads(5);
     g_fake.mode.store(mode);
     const uint64_t ended = wait_receiver_ended(3000U);
     assert(ended != 0U);
@@ -528,9 +573,7 @@ expect_stop_during_setup(input_ring_state* ring, int setup_result) {
     g_fake.setup_result.store(setup_result);
     const unsigned int generation = dsd_input_failure_generation();
     rtl_device* dev = start_device(ring);
-    while (!g_fake.setup_entered.load()) {
-        dsd_sleep_ms(1U);
-    }
+    assert(wait_for([] { return g_fake.setup_entered.load() != 0; }, 3000U));
     const int stopped = rtl_device_stop_async(dev);
     assert(stopped == 0);
     const rtl_device_test_soapy_state state = device_state(dev);
@@ -580,9 +623,7 @@ intentional_stop_silent(input_ring_state* ring) {
     reset_fake(READ_SAMPLES);
     const unsigned int generation = dsd_input_failure_generation();
     rtl_device* dev = start_device(ring);
-    while (g_fake.sample_reads.load() < 5) {
-        dsd_sleep_ms(1U);
-    }
+    wait_sample_reads(5);
     assert(device_state(dev).reader_entered == 1);
     const int stopped = rtl_device_stop_async(dev);
     assert(stopped == 0);
@@ -596,9 +637,7 @@ intentional_stop_silent(input_ring_state* ring) {
 
     reset_fake(READ_TIMEOUT);
     dev = start_device(ring);
-    while (g_fake.reads.load() < 5) {
-        dsd_sleep_ms(1U);
-    }
+    assert(wait_for([] { return g_fake.reads.load() >= 5; }, 3000U));
     rtl_device_test_soapy_device_free(dev);
     dsd_sleep_ms(100U);
     expect_running(generation);
@@ -628,14 +667,10 @@ restart_clears_stream_counters(input_ring_state* ring) {
     reset_session();
     reset_fake(READ_TIMEOUT);
     rtl_device* dev = start_device(ring);
-    for (int i = 0; i < 1000 && g_fake.reads.load() < 6; i++) {
-        dsd_sleep_ms(1);
-    }
+    (void)wait_for([] { return g_fake.reads.load() >= 6; }, 1000U);
     const int timeout_reads = g_fake.reads.load();
     g_fake.mode.store(READ_OVERFLOW);
-    for (int i = 0; i < 1000 && g_fake.reads.load() < timeout_reads + 7; i++) {
-        dsd_sleep_ms(1);
-    }
+    (void)wait_for([timeout_reads] { return g_fake.reads.load() >= timeout_reads + 7; }, 1000U);
     const int stopped = rtl_device_stop_async(dev);
     assert(stopped == 0);
     const auto before = device_state(dev);
@@ -643,10 +678,7 @@ restart_clears_stream_counters(input_ring_state* ring) {
     reset_fake(READ_SAMPLES);
     const int started = rtl_device_start_async(dev, kBufLen);
     assert(started == 0);
-    for (int i = 0; i < 1000 && g_fake.sample_reads.load() < 5; i++) {
-        dsd_sleep_ms(1);
-    }
-    assert(g_fake.sample_reads.load() >= 5);
+    wait_sample_reads(5);
     const int stopped_again = rtl_device_stop_async(dev);
     assert(stopped_again == 0);
     const auto after = device_state(dev);
@@ -778,6 +810,7 @@ const test_case kCases[] = {
     {"overflows_past_limit_end_session", overflows_past_limit_end_session},
     {"resumed_samples_during_grace_cancel", resumed_samples_during_grace_cancel},
     {"long_control_hold_does_not_accrue", long_control_hold_does_not_accrue},
+    {"controls_go_before_next_read", controls_go_before_next_read},
     {"timeouts_do_not_pause_accrual", timeouts_do_not_pause_accrual},
     {"setup_failure_reports_once_and_wakes_decoder", setup_failure_reports_once_and_wakes_decoder},
     {"exception_reports_once", exception_reports_once},

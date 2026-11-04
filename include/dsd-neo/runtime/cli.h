@@ -20,6 +20,8 @@
 extern "C" {
 #endif
 
+struct dsd_fp_mode_scope;
+
 /** Return codes for dsd_parse_args. */
 #define DSD_PARSE_CONTINUE 0
 #define DSD_PARSE_ONE_SHOT 1
@@ -108,8 +110,11 @@ void dsd_cli_usage(void);
  */
 int dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path);
 
-/** @brief Enable FTZ/DAZ CPU modes when requested via env. */
-void dsd_bootstrap_enable_ftz_daz_if_enabled(void);
+/** @brief Resolve DSD_NEO_FTZ_DAZ into the run's floating-point mode and apply it to the calling (decoder) thread;
+ * see <dsd-neo/runtime/fp_mode.h>. Called once at the start of each run, before any stream or watchdog thread.
+ * @p caller (may be NULL) keeps the thread's own MXCSR: dsd_runtime_fp_mode_scope_leave() puts it back when the run
+ * returns. */
+void dsd_bootstrap_apply_fp_mode(struct dsd_fp_mode_scope* caller);
 /** @brief Select default audio output device when not explicitly set. */
 void dsd_bootstrap_choose_audio_output(dsd_opts* opts);
 /** @brief Select default audio input device when not explicitly set. */

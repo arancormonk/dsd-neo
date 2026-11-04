@@ -744,6 +744,8 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     }
     (void)svc_leave_channel_scan(opts, dst);
     dsd_scan_keys_leave(dst);
+    // A new list: session avoids index rows that no longer exist, and LCN identities taken on the old one go stale.
+    dsd_state_trunk_lcn_replace_begin(dst);
     DSD_MEMCPY(dst->trunk_chan_map, src->trunk_chan_map, sizeof dst->trunk_chan_map);
     DSD_MEMCPY(dst->trunk_chan_map_used, src->trunk_chan_map_used, sizeof dst->trunk_chan_map_used);
     dst->trunk_chan_map_used_count = src->trunk_chan_map_used_count;
@@ -768,9 +770,7 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
     dsd_state_lcn_nav_reset(dst);
-    // Session avoids and the scan hold index rows that no longer exist.
-    dsd_state_trunk_lcn_avoid_free(dst);
-    dst->lcn_avoid_count = 0;
+    // The scan hold indexes rows that no longer exist, as the avoids did.
     dst->lcn_scan_hold = 0;
     // The visit the per-visit cap was measuring belonged to a row that no longer exists.
     dst->scan_visit_since_m = -1.0;
@@ -923,11 +923,11 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     // Clearing the map leaves -Y: hand the foreground keyring back to the globals first.
     (void)svc_leave_channel_scan(opts, state);
     dsd_scan_keys_leave(state);
+    dsd_state_trunk_lcn_replace_begin(state);
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
     dsd_state_lcn_nav_reset(state);
-    state->lcn_avoid_count = 0;
     state->lcn_scan_hold = 0;
     // Nothing left to visit, so the per-visit cap has nothing to measure from.
     state->scan_visit_since_m = -1.0;

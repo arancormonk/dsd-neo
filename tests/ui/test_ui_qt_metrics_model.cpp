@@ -11,7 +11,10 @@
  * the poll happened to read on the same frame — which is what these cases pin.
  */
 
+#include <QAbstractItemModel>
 #include <QCoreApplication>
+#include <QDebug>
+#include <QLatin1Char>
 #include <QList>
 #include <QMap>
 #include <QObject>
@@ -23,14 +26,16 @@
 #include <cmath>
 #include <cstring>
 #include <dsd-neo/core/receive_types.h>
-#include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <utility>
 
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/core/access_code.h>
@@ -41,7 +46,11 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/source_alias.h>
+/* The scan-list store helpers (issue #672) have no C++ linkage of their own. */
+extern "C" {
 #include <dsd-neo/core/state.h>
+}
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -55,12 +64,16 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <functional>
 #include <memory>
+#include <vector>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include "../test_support/radio_policy_test.h"
 #include "metrics_model.h"
+#include "scan_avoid_list_model.h"
+#include "scan_list_toggle_model.h"
 
 namespace {
 
@@ -142,6 +155,37 @@ dsd_app_scan_timing_view(const dsd_opts* opts, const dsd_state* state, double no
     return 1;
 }
 
+/*
+ * Issue #697: the scan-list switch calls the toggle model's default backend makes. Never reached here: the cases
+ * that switch a list hand the model a backend of their own.
+ */
+extern "C" uint32_t
+dsd_app_scan_list_request_next(void) {
+    return 0;
+}
+
+extern "C" int
+dsd_app_command_scan_list_set(const dsd_app_scan_list_set_payload* payload) {
+    (void)payload;
+    return DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+extern "C" int
+dsd_app_scan_list_results_since(uint64_t after_sequence, dsd_app_scan_list_result* out, int cap) {
+    (void)after_sequence;
+    (void)out;
+    (void)cap;
+    return 0;
+}
+
+extern "C" int
+dsd_app_scan_list_result_get(dsd_app_scan_list_result* out) {
+    if (out != nullptr) {
+        *out = dsd_app_scan_list_result{};
+    }
+    return 0;
+}
+
 extern "C" dsd_frontend_snr_readout
 dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod) {
     (void)metrics;
@@ -150,6 +194,684 @@ dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod) {
     out.valid = 0;
     out.snr_db = 0.0;
     return out;
+}
+
+/* Issue #672: a -Y list of @p rows rows, 851.0125 MHz up in 12.5 kHz steps, as a channel map leaves it. */
+static void
+seed_lcn_rows(dsd_state* state, int rows) {
+    expect("the LCN rows fit", dsd_state_trunk_lcn_reserve(state, static_cast<size_t>(rows)) == 0);
+    for (int i = 0; i < rows; ++i) {
+        *dsd_state_trunk_lcn_slot(state, i) = 851012500L + (12500L * i);
+    }
+    state->lcn_freq_count = rows;
+}
+
+/* The coordinator's published avoid list: @p count targets "t1".. of session @p session, with a new revision, as
+   trunk_scan_publish_avoids() leaves it. */
+static void
+publish_trunk_avoids(dsd_state* state, uint32_t session, size_t count) {
+    std::vector<dsd_trunk_scan_avoid_entry> entries(count);
+    for (size_t i = 0; i < count; ++i) {
+        entries[i] = dsd_trunk_scan_avoid_entry{};
+        entries[i].ordinal = static_cast<uint32_t>(i + 1U);
+        entries[i].frequency_hz = 851012500ULL + (12500ULL * i);
+        DSD_SNPRINTF(entries[i].id, sizeof entries[i].id, "t%zu", i + 1U);
+    }
+    expect("the trunk-scan avoid list is published",
+           dsd_state_trunk_scan_avoids_set(state, entries.empty() ? nullptr : entries.data(), count) == 0);
+    state->trunk_scan_session = session;
+    state->trunk_scan_avoid_rev = dsd_state_rev_next();
+}
+
+namespace {
+
+/* What a list model told its views since the last take(): each structural change as "-first:last", "+first:last",
+   "~first:last>dest", "=row" for a label, "reset". */
+class ModelLog {
+  public:
+    explicit ModelLog(QAbstractItemModel* model) {
+        QObject::connect(model, &QAbstractItemModel::rowsRemoved, [this](const QModelIndex&, int first, int last) {
+            m_events.append(QStringLiteral("-%1:%2").arg(first).arg(last));
+        });
+        QObject::connect(model, &QAbstractItemModel::rowsInserted, [this](const QModelIndex&, int first, int last) {
+            m_events.append(QStringLiteral("+%1:%2").arg(first).arg(last));
+        });
+        QObject::connect(model, &QAbstractItemModel::rowsMoved,
+                         [this](const QModelIndex&, int first, int last, const QModelIndex&, int dest) {
+                             m_events.append(QStringLiteral("~%1:%2>%3").arg(first).arg(last).arg(dest));
+                         });
+        QObject::connect(model, &QAbstractItemModel::dataChanged, [this](const QModelIndex& from, const QModelIndex&) {
+            m_events.append(QStringLiteral("=%1").arg(from.row()));
+        });
+        QObject::connect(model, &QAbstractItemModel::modelReset, [this] { m_events.append(QStringLiteral("reset")); });
+    }
+
+    QString
+    take() {
+        const QString joined = m_events.join(QLatin1Char(' '));
+        m_events.clear();
+        return joined;
+    }
+
+  private:
+    QStringList m_events;
+};
+
+} // namespace
+
+static QStringList
+model_keys(const QAbstractItemModel& model) {
+    QStringList keys;
+    for (int i = 0; i < model.rowCount(); ++i) {
+        keys.append(model.data(model.index(i, 0), dsd_qt::ScanAvoidListModel::KeyRole).toString());
+    }
+    return keys;
+}
+
+static dsd_qt::ScanAvoidListModel::Entry
+avoid_entry(const char* key, const char* label) {
+    dsd_qt::ScanAvoidListModel::Entry entry{QString::fromUtf8(key), QString::fromUtf8(label), {}};
+    entry.identity.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    return entry;
+}
+
+/* ---- Issue #697: the Scan lists sheet's rows ---- */
+
+/* The app-control side of the toggle model, scripted: requests are numbered from 101, every submit is kept, a case
+   queues the results it wants answered, and a case can make the queue refuse. */
+namespace {
+struct ToggleRig {
+    uint32_t nextRequest = 101;
+    QList<dsd_app_scan_list_set_payload> sent;
+    QList<dsd_app_scan_list_result> results;
+    uint64_t latest = 0;
+    bool queueFull = false;
+    int publishPerRead = 0; /* results that land while each read runs: a busy decoder */
+
+    dsd_qt::ScanListToggleModel::Backend
+    backend() {
+        dsd_qt::ScanListToggleModel::Backend b;
+        b.requestNext = [this] { return nextRequest++; };
+        b.submit = [this](const dsd_app_scan_list_set_payload& payload) {
+            if (queueFull) {
+                return static_cast<int>(DSD_APP_COMMAND_SUBMIT_REJECTED);
+            }
+            sent << payload;
+            return static_cast<int>(DSD_APP_COMMAND_SUBMIT_QUEUED);
+        };
+        /* As the real history does, only the last DSD_APP_RESULT_HISTORY results are kept. */
+        b.resultsSince = [this](uint64_t after, dsd_app_scan_list_result* out, int cap) {
+            for (int i = 0; i < publishPerRead; ++i) {
+                answer(8000U + static_cast<uint32_t>(latest), DSD_APP_SCAN_LIST_SET_UNCHANGED, 10);
+            }
+            const uint64_t oldest =
+                latest > uint64_t{DSD_APP_RESULT_HISTORY} ? latest - DSD_APP_RESULT_HISTORY + 1U : 1U;
+            int n = 0;
+            for (const auto& result : results) {
+                if (result.sequence > after && result.sequence >= oldest && n < cap) {
+                    out[n++] = result;
+                }
+            }
+            return n;
+        };
+        b.latestSequence = [this] { return latest; };
+        return b;
+    }
+
+    /* Answer request @p request with @p code, the decoder's lists then at @p listsSeq. */
+    void
+    answer(uint32_t request, int32_t code, uint32_t listsSeq) {
+        dsd_app_scan_list_result result{};
+        result.sequence = ++latest;
+        result.request = request;
+        result.code = code;
+        result.lists_seq = listsSeq;
+        results << result;
+    }
+};
+} // namespace
+
+/* Three lists of session 7 at lists_seq @p seq: security (12 targets), hospital (1, on air), municipality (3). */
+static dsd_app_scan_list_view
+three_lists(uint32_t seq, bool securityOn = true, bool hospitalOn = true, bool paused = false) {
+    dsd_app_scan_list_view view{};
+    view.session = 7U;
+    view.lists_seq = seq;
+    view.list_count = 3U;
+    view.running = paused ? 0U : 1U;
+    view.paused = paused ? 1U : 0U;
+    view.toggleable = paused ? 0U : 1U;
+    const char* names[] = {"security", "hospital", "municipality"};
+    const uint16_t targets[] = {12U, 1U, 3U};
+    const bool on[] = {securityOn, hospitalOn, true};
+    for (int i = 0; i < 3; ++i) {
+        view.lists[i].number = static_cast<uint8_t>(i + 1);
+        view.lists[i].enabled = on[i] ? 1U : 0U;
+        view.lists[i].targets = targets[i];
+        view.lists[i].has_active = i == 1 ? 1U : 0U;
+        DSD_SNPRINTF(view.lists[i].name, sizeof view.lists[i].name, "%s", names[i]);
+    }
+    view.active_list = 2U;
+    return view;
+}
+
+static QVariant
+toggle_row(const dsd_qt::ScanListToggleModel& model, int row, int role) {
+    return model.data(model.index(row, 0), role);
+}
+
+static bool
+toggle_row_is(const dsd_qt::ScanListToggleModel& model, int row, bool on, bool pending, const QString& note) {
+    using M = dsd_qt::ScanListToggleModel;
+    return toggle_row(model, row, M::OnRole).toBool() == on
+           && toggle_row(model, row, M::PendingRole).toBool() == pending
+           && toggle_row(model, row, M::NoteRole).toString() == note;
+}
+
+/* The rows a view gives, a switch that waits for its answer and then holds what it asked for until the lists show
+   it, and a later change from elsewhere taking over. */
+static void
+test_scan_list_toggle_switch_and_hold() {
+    using M = dsd_qt::ScanListToggleModel;
+    ToggleRig rig;
+    rig.latest = 40; /* an earlier answer, before this session: never matched */
+    rig.answer(101, DSD_APP_SCAN_LIST_SET_OK, 3);
+    M model;
+    model.setBackend(rig.backend());
+    model.refresh(three_lists(10));
+    expect("three rows", model.count() == 3 && model.rowCount() == 3);
+    expect("a row's fields", toggle_row(model, 1, M::NumberRole).toInt() == 2
+                                 && toggle_row(model, 1, M::NameRole).toString() == QStringLiteral("hospital")
+                                 && toggle_row(model, 1, M::TargetsRole).toInt() == 1
+                                 && toggle_row(model, 1, M::OnAirRole).toBool()
+                                 && !toggle_row(model, 0, M::OnAirRole).toBool());
+    expect("all on, none waiting", toggle_row_is(model, 1, true, false, QString()));
+    expect("the sheet's counts",
+           model.switchable() && !model.paused() && model.listsOn() == 3 && model.targetsOn() == 16);
+    expect("the answer from before the session is not this row's", toggle_row_is(model, 0, true, false, QString()));
+
+    expect("hospital off is sent", model.setEnabled(2, false));
+    expect("one request, as the payload names it", rig.sent.size() == 1 && rig.sent.at(0).session == 7U
+                                                       && rig.sent.at(0).request == 101U && rig.sent.at(0).list == 2
+                                                       && rig.sent.at(0).enabled == 0U);
+    expect("the row waits, showing what it asked for", toggle_row_is(model, 1, false, true, QString()));
+    expect("a waiting row takes no second switch", !model.setEnabled(2, true) && rig.sent.size() == 1);
+    expect("the counts follow the rows", model.listsOn() == 2 && model.targetsOn() == 15);
+    model.refresh(three_lists(10));
+    expect("no answer yet: still waiting", toggle_row_is(model, 1, false, true, QString()));
+
+    /* The answer before the snapshot that shows it: the row keeps what it asked for. */
+    rig.answer(101, DSD_APP_SCAN_LIST_SET_OK, 11);
+    model.refresh(three_lists(10));
+    expect("answered OK ahead of the snapshot: off, not waiting", toggle_row_is(model, 1, false, false, QString()));
+    model.refresh(three_lists(11, true, false));
+    expect("the snapshot shows it", toggle_row_is(model, 1, false, false, QString()));
+    /* Switched back on from elsewhere: the snapshot is the truth from then on. */
+    model.refresh(three_lists(12, true, true));
+    expect("a later change from elsewhere shows", toggle_row_is(model, 1, true, false, QString()));
+}
+
+/* More answers than the history keeps went by between two refreshes: the row's own may be among those lost, so it
+   stops waiting and shows the snapshot, with no reason, and takes a switch again. */
+static void
+test_scan_list_toggle_history_gap() {
+    ToggleRig rig;
+    dsd_qt::ScanListToggleModel model;
+    model.setBackend(rig.backend());
+    model.refresh(three_lists(10));
+    expect("security off is sent", model.setEnabled(1, false));
+    expect("the row waits", toggle_row_is(model, 0, false, true, QString()));
+    for (int i = 0; i < DSD_APP_RESULT_HISTORY + 4; ++i) {
+        rig.answer(9000U + static_cast<uint32_t>(i), DSD_APP_SCAN_LIST_SET_UNCHANGED, 10);
+    }
+    model.refresh(three_lists(10));
+    expect("a gap ends the wait: the snapshot, no reason", toggle_row_is(model, 0, true, false, QString()));
+    expect("and the row switches again", model.setEnabled(1, false) && rig.sent.size() == 2);
+}
+
+/* More than the history keeps went by between two refreshes, but the row's own answer is still kept, on the third
+   page of sixteen: every kept page is read before any wait is given up, so the row takes its answer. */
+static void
+test_scan_list_toggle_answer_kept_past_a_gap() {
+    ToggleRig rig;
+    dsd_qt::ScanListToggleModel model;
+    model.setBackend(rig.backend());
+    model.refresh(three_lists(10));
+    expect("security off is sent", model.setEnabled(1, false));
+    for (int i = 0; i < 50; ++i) {
+        rig.answer(9000U + static_cast<uint32_t>(i), DSD_APP_SCAN_LIST_SET_UNCHANGED, 10);
+    }
+    rig.answer(rig.sent.at(0).request, DSD_APP_SCAN_LIST_SET_OK, 11);
+    for (int i = 0; i < 30; ++i) {
+        rig.answer(9100U + static_cast<uint32_t>(i), DSD_APP_SCAN_LIST_SET_UNCHANGED, 11);
+    }
+    model.refresh(three_lists(10));
+    expect("the kept answer switches the row: off, not waiting", toggle_row_is(model, 0, false, false, QString()));
+}
+
+/* Answers were lost while results kept coming, so no refresh's read reached the newest: the row keeps waiting until a
+   read drains, then stops waiting and shows the snapshot. */
+static void
+test_scan_list_toggle_gap_while_results_keep_coming() {
+    ToggleRig rig;
+    dsd_qt::ScanListToggleModel model;
+    model.setBackend(rig.backend());
+    model.refresh(three_lists(10));
+    expect("security off is sent", model.setEnabled(1, false));
+    for (int i = 0; i < 100; ++i) {
+        rig.answer(9000U + static_cast<uint32_t>(i), DSD_APP_SCAN_LIST_SET_UNCHANGED, 10);
+    }
+    rig.publishPerRead = 16;
+    model.refresh(three_lists(10));
+    expect("still waiting while results keep coming", toggle_row_is(model, 0, false, true, QString()));
+    model.refresh(three_lists(10));
+    expect("still waiting on the next refresh", toggle_row_is(model, 0, false, true, QString()));
+    rig.publishPerRead = 0;
+    model.refresh(three_lists(10));
+    expect("drained: the wait ends, the snapshot shows", toggle_row_is(model, 0, true, false, QString()));
+}
+
+/* A refusal puts the switch back and says why beside it, until the lists move past the ones it described; a paused
+   refusal also goes once a resume this model saw follows the pause. */
+static void
+test_scan_list_toggle_refusals() {
+    ToggleRig rig;
+    dsd_qt::ScanListToggleModel model;
+    model.setBackend(rig.backend());
+    model.refresh(three_lists(10));
+    expect("security off is sent", model.setEnabled(1, false));
+    rig.answer(101, DSD_APP_SCAN_LIST_SET_REFUSED_LAST, 10);
+    model.refresh(three_lists(10));
+    const QString nothing = QStringLiteral("Nothing else to scan. Switch on another list first.");
+    expect("refused: back on, with the reason", toggle_row_is(model, 0, true, false, nothing));
+    model.refresh(three_lists(10));
+    expect("the reason stays while the lists stand", toggle_row_is(model, 0, true, false, nothing));
+    model.refresh(three_lists(11));
+    expect("the reason goes once the lists move", toggle_row_is(model, 0, true, false, QString()));
+
+    /* Every other code's reason. */
+    const struct {
+        int32_t code;
+        const char* note;
+    } codes[] = {
+        {DSD_APP_SCAN_LIST_SET_BUSY, "The scan was busy. Try again."},
+        {DSD_APP_SCAN_LIST_SET_STALE, "The scan changed. Nothing was switched."},
+        {DSD_APP_SCAN_LIST_SET_UNAVAILABLE, "The trunk scan is not running."},
+        {DSD_APP_SCAN_LIST_SET_SEARCH, "Stop Signal search first."},
+        {DSD_APP_SCAN_LIST_SET_DROPPED, "Not applied. Try again."},
+        {DSD_APP_SCAN_LIST_SET_INVALID, "Not applied."},
+        {DSD_APP_SCAN_LIST_SET_UNCHANGED, ""},
+    };
+
+    uint32_t seq = 11;
+    for (const auto& c : codes) {
+        const uint32_t request = rig.nextRequest;
+        expect("municipality off is sent", model.setEnabled(3, false));
+        rig.answer(request, c.code, seq);
+        model.refresh(three_lists(seq));
+        expect(c.note, toggle_row_is(model, 2, true, false, QString::fromUtf8(c.note)));
+        model.refresh(three_lists(++seq));
+    }
+
+    /* Dropped before a drain reached it, carrying older lists than the ones shown at the switch: the reason stays
+       until the view passes the lists the switch was made on. */
+    const uint32_t dropped = rig.nextRequest;
+    expect("security off is sent again", model.setEnabled(1, false));
+    rig.answer(dropped, DSD_APP_SCAN_LIST_SET_DROPPED, seq - 3);
+    model.refresh(three_lists(seq));
+    expect("a dropped switch's reason stays at the lists it was made on",
+           toggle_row_is(model, 0, true, false, QStringLiteral("Not applied. Try again.")));
+    model.refresh(three_lists(++seq));
+    expect("and goes once they move", toggle_row_is(model, 0, true, false, QString()));
+
+    /* Paused: the answer can come in a frame that still shows the scan running. */
+    const uint32_t pausedRequest = rig.nextRequest;
+    expect("hospital off is sent", model.setEnabled(2, false));
+    rig.answer(pausedRequest, DSD_APP_SCAN_LIST_SET_PAUSED, seq);
+    model.refresh(three_lists(seq));
+    const QString pausedNote = QStringLiteral("The scan is paused. Resume it first.");
+    expect("a paused refusal before the pause shows", toggle_row_is(model, 1, true, false, pausedNote));
+    model.refresh(three_lists(seq, true, true, true));
+    expect("kept while paused", toggle_row_is(model, 1, true, false, pausedNote));
+    expect("paused: nothing can be switched", !model.switchable() && model.paused() && !model.setEnabled(1, false));
+    model.refresh(three_lists(seq));
+    expect("gone on the resume", toggle_row_is(model, 1, true, false, QString()));
+
+    /* The queue refused it: never pending, the row says so until the lists move. */
+    rig.queueFull = true;
+    const int sentBefore = static_cast<int>(rig.sent.size());
+    expect("a full queue sends nothing", !model.setEnabled(3, false) && rig.sent.size() == sentBefore);
+    expect("not sent, said beside the row",
+           toggle_row_is(model, 2, true, false, QStringLiteral("Not sent. Try again.")));
+    rig.queueFull = false;
+    model.refresh(three_lists(++seq));
+    expect("not sent goes once the lists move", toggle_row_is(model, 2, true, false, QString()));
+}
+
+/* A new session drops every waiting switch and reason, and an answer to the old request is never matched. */
+static void
+test_scan_list_toggle_session_change() {
+    ToggleRig rig;
+    dsd_qt::ScanListToggleModel model;
+    model.setBackend(rig.backend());
+    int resets = 0;
+    QObject::connect(&model, &QAbstractItemModel::modelReset, [&]() { ++resets; });
+    model.refresh(three_lists(10));
+    expect("security off is sent", model.setEnabled(1, false));
+    expect("waiting", toggle_row_is(model, 0, false, true, QString()));
+    dsd_app_scan_list_view next = three_lists(1);
+    next.session = 8U;
+    resets = 0;
+    model.refresh(next);
+    expect("a new session is a new set of rows", resets == 1);
+    expect("the old switch no longer waits", toggle_row_is(model, 0, true, false, QString()));
+    rig.answer(101, DSD_APP_SCAN_LIST_SET_REFUSED_LAST, 1);
+    model.refresh(next);
+    expect("its answer is not this session's", toggle_row_is(model, 0, true, false, QString()));
+    model.clear();
+    expect("no session, no rows", model.count() == 0 && !model.switchable() && !model.setEnabled(1, false));
+}
+
+/* The header's readings and the sheet's rows from a snapshot: the lists, the list on air, and the rotation's place
+   among the targets of the lists that are on. */
+static void
+test_scan_list_readings() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_session = 7U;
+    state.trunk_scan_lists_seq = 4U;
+    state.trunk_scan_list_count = 2U;
+    DSD_SNPRINTF(state.trunk_scan_lists[0].name, sizeof state.trunk_scan_lists[0].name, "%s", "security");
+    DSD_SNPRINTF(state.trunk_scan_lists[1].name, sizeof state.trunk_scan_lists[1].name, "%s", "hospital");
+    state.trunk_scan_lists[0].enabled = 1U;
+    state.trunk_scan_lists[0].targets = 12U;
+    state.trunk_scan_lists[1].enabled = 0U;
+    state.trunk_scan_lists[1].targets = 2U;
+    state.trunk_scan_active_list = 2U;
+    state.trunk_scan_active_list_off = 1U;
+    state.trunk_scan_rotation_ordinal = 0U;
+    state.trunk_scan_rotation_count = 12U;
+    state.trunk_scan_active_ordinal = 13U;
+    state.trunk_scan_target_count = 14U;
+    dsd_qt::MetricsModel model;
+    model.refresh(&opts, &state);
+    expect("the lists are read",
+           model.scanListCount() == 2 && model.scanActiveList() == 2 && model.scanActiveListOff());
+    expect("the rotation's place: none while its list is off",
+           model.scanRotationActive() && model.scanRotationOrdinal() == 0 && model.scanRotationCount() == 12);
+    state.trunk_scan_active_list = 1U;
+    state.trunk_scan_active_list_off = 0U;
+    state.trunk_scan_rotation_ordinal = 3U;
+    model.refresh(&opts, &state);
+    expect("the rotation's place among the lists that are on, not the union's",
+           model.scanActiveList() == 1 && !model.scanActiveListOff() && model.scanRotationOrdinal() == 3
+               && model.scanRotationCount() == 12 && model.scanTargetOrdinal() == 13);
+    state.trunk_scan_paused = 1U;
+    model.refresh(&opts, &state);
+    expect("a paused scan has no place", model.scanRotationOrdinal() == 0 && model.scanRotationCount() == 0);
+    state.trunk_scan_paused = 0U;
+    expect("the sheet's rows", model.scanListModel()->count() == 2 && model.scanListModel()->listsOn() == 1
+                                   && model.scanListModel()->targetsOn() == 12);
+    model.clear();
+    expect("cleared with the session", model.scanListCount() == 0 && model.scanListModel()->count() == 0);
+    freeState(&state);
+}
+
+/* Issue #672 (S8): the list model turns one list into the next by key, in runs, so a delegate keeps its item while its
+   entry stays, and only the rows that changed are announced. */
+static void
+test_scan_avoid_list_model_diff() {
+    dsd_qt::ScanAvoidListModel model;
+    ModelLog log(&model);
+    model.apply({avoid_entry("a", "A"), avoid_entry("b", "B"), avoid_entry("c", "C"), avoid_entry("d", "D")});
+    expect("a first list is one insert", log.take() == QStringLiteral("+0:3"));
+    model.apply({avoid_entry("a", "A"), avoid_entry("b", "B"), avoid_entry("c", "C"), avoid_entry("d", "D")});
+    expect("the same list announces nothing", log.take().isEmpty());
+    /* One out, one in, the same count: a remove and an insert, never a rebuild of the rows that stay. */
+    model.apply({avoid_entry("a", "A"), avoid_entry("c", "C"), avoid_entry("d", "D"), avoid_entry("e", "E")});
+    expect("an equal-count membership change removes and inserts", log.take() == QStringLiteral("-1:1 +3:3"));
+    expect("the rows follow the new list", model_keys(model) == QStringList({"a", "c", "d", "e"}));
+    /* Runs: two left at the front, two new in the middle. */
+    model.apply({avoid_entry("d", "D"), avoid_entry("x", "X"), avoid_entry("y", "Y"), avoid_entry("e", "E")});
+    expect("a run is one remove or one insert", log.take() == QStringLiteral("-0:1 +1:2"));
+    /* A reordered target list moves the rows, by runs. */
+    model.apply({avoid_entry("y", "Y"), avoid_entry("e", "E"), avoid_entry("d", "D"), avoid_entry("x", "X")});
+    expect("a reorder moves the rows", log.take() == QStringLiteral("~2:3>0"));
+    expect("the moved rows read in the new order", model_keys(model) == QStringList({"y", "e", "d", "x"}));
+    /* A new label for a kept key is a data change of that row alone. */
+    model.apply({avoid_entry("y", "Y"), avoid_entry("e", "E2"), avoid_entry("d", "D"), avoid_entry("x", "X")});
+    expect("a relabel is a data change", log.take() == QStringLiteral("=1"));
+    expect("the row reads its new label",
+           model.data(model.index(1, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString() == QStringLiteral("E2"));
+    /* Two entries with one key break the contract; the model starts over rather than guess. */
+    model.apply({avoid_entry("q", "Q"), avoid_entry("q", "Q")});
+    expect("duplicate keys reset", log.take() == QStringLiteral("reset") && model.rowCount() == 2);
+    model.clear();
+    expect("clear removes every row", log.take() == QStringLiteral("-0:1") && model.rowCount() == 0);
+    expect("no row, no entry", model.entry(QStringLiteral("q")).isEmpty());
+
+    /* Keys: an LCN identity by every part, a trunk-scan one by session and id, an id that looks like an arg() marker
+       kept as it is. The entry carries 64-bit values as decimal strings. */
+    dsd_app_scan_avoid_remove_payload lcn{};
+    lcn.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+    lcn.instance = 18446744073709551615ULL;
+    lcn.list_rev = 9007199254740993ULL;
+    lcn.row = 3;
+    lcn.frequency_hz = 851012500ULL;
+    expect("an LCN key", dsd_qt::ScanAvoidListModel::keyOf(lcn)
+                             == QStringLiteral("lcn:18446744073709551615:9007199254740993:3:851012500"));
+    dsd_app_scan_avoid_remove_payload trunk{};
+    trunk.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+    trunk.session = 4294967295U;
+    DSD_SNPRINTF(trunk.target_id, sizeof trunk.target_id, "%s", "%1:x");
+    expect("a trunk-scan key", dsd_qt::ScanAvoidListModel::keyOf(trunk) == QStringLiteral("trunk:4294967295:%1:x"));
+    model.apply({{dsd_qt::ScanAvoidListModel::keyOf(lcn), QStringLiteral("Row 4  851.012500 MHz"), lcn},
+                 {dsd_qt::ScanAvoidListModel::keyOf(trunk), QStringLiteral("#1  %1:x  frequency unknown"), trunk}});
+    const QVariantMap row = model.entry(dsd_qt::ScanAvoidListModel::keyOf(lcn));
+    expect("an LCN entry", row.value("kind").toInt() == DSD_APP_SCAN_AVOID_KIND_LCN
+                               && row.value("instance").toString() == QStringLiteral("18446744073709551615")
+                               && row.value("listRev").toString() == QStringLiteral("9007199254740993")
+                               && row.value("frequencyHz").toString() == QStringLiteral("851012500")
+                               && row.value("row").toInt() == 3
+                               && row.value("label").toString() == QStringLiteral("Row 4  851.012500 MHz"));
+    const QVariantMap target = model.entry(dsd_qt::ScanAvoidListModel::keyOf(trunk));
+    expect("a trunk-scan entry", target.value("kind").toInt() == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN
+                                     && target.value("session").toULongLong() == 4294967295ULL
+                                     && target.value("targetId").toString() == QStringLiteral("%1:x"));
+}
+
+/* Issue #672: the Monitor's avoid list and its readings, from the app-control view over the held snapshot. Built only
+   when the view's key moves; a hop, a call or a refresh with nothing new announces nothing. */
+static void
+test_scan_avoids() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    dsd_qt::MetricsModel model;
+    dsd_qt::ScanAvoidListModel* list = model.scanAvoidModel();
+    ModelLog log(list);
+    int avoidSignals = 0;
+    int controlSignals = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::scanAvoidsChanged, [&] { ++avoidSignals; });
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&] { ++controlSignals; });
+
+    model.refresh(&opts, &state);
+    expect("no store, nothing to manage", !model.scanAvoidsManageable() && model.scanAvoidCount() == 0
+                                              && model.scanAvoidsAvailable() && list->rowCount() == 0);
+
+    /* B1: -Y stopped (the -T hunts still skip its avoided rows): listed and manageable, with no rotation running. */
+    seed_lcn_rows(&state, 4);
+    expect("row 1 avoided", dsd_state_trunk_lcn_avoid_set(&state, 1U, 1) == 0);
+    expect("row 3 avoided", dsd_state_trunk_lcn_avoid_set(&state, 3U, 1) == 0);
+    avoidSignals = 0;
+    model.refresh(&opts, &state);
+    expect("a stopped -Y list's avoids are manageable",
+           !model.scanRotationActive() && model.scanAvoidsManageable() && model.scanAvoidsAvailable()
+               && model.scanAvoidsTotalKnown() && model.scanAvoidCount() == 2);
+    expect("one announcement", avoidSignals == 1 && log.take() == QStringLiteral("+0:1"));
+    expect("labels from the view", list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+                                       == QStringLiteral("Row 2  851.025000 MHz"));
+    const QString row1 = list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::KeyRole).toString();
+    expect("keys carry the identity", row1 == dsd_qt::ScanAvoidListModel::keyOf([&] {
+                                          dsd_app_scan_avoid_remove_payload id{};
+                                          id.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+                                          id.instance = state.state_instance;
+                                          id.list_rev = state.lcn_list_rev;
+                                          id.row = 1;
+                                          id.frequency_hz = 851025000ULL;
+                                          return id;
+                                      }()));
+
+    /* Nothing new for the list: a running rotation, a hop, a call. The list is not rebuilt or announced. */
+    opts.scanner_mode = 1;
+    avoidSignals = 0;
+    model.refresh(&opts, &state, true);
+    state.lcn_scan_hold = 1;
+    model.refresh(&opts, &state);
+    expect("the controls moved", controlSignals > 0);
+    expect("the list did not", avoidSignals == 0 && log.take().isEmpty());
+
+    /* A put back removes its row alone. */
+    expect("row 1 put back", dsd_state_trunk_lcn_avoid_set(&state, 1U, 0) == 0);
+    model.refresh(&opts, &state);
+    expect("one row leaves", log.take() == QStringLiteral("-0:0") && model.scanAvoidCount() == 1 && avoidSignals == 1);
+    /* One in, one out at the same count. */
+    expect("row 0 avoided", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1) == 0);
+    expect("row 3 put back", dsd_state_trunk_lcn_avoid_set(&state, 3U, 0) == 0);
+    avoidSignals = 0;
+    model.refresh(&opts, &state);
+    expect("an equal-count change is a remove and an insert", log.take() == QStringLiteral("-0:0 +0:0"));
+    expect("the count did not move, so its reading says nothing", avoidSignals == 0 && model.scanAvoidCount() == 1);
+
+    /* An incomplete snapshot (B2): no rows to act on, the count unknown, Clear still offered. */
+    state.scan_avoids_complete = 0U;
+    model.refresh(&opts, &state);
+    expect("an incomplete copy is not listed", !model.scanAvoidsAvailable() && !model.scanAvoidsTotalKnown()
+                                                   && model.scanAvoidCount() == 0 && model.scanAvoidsManageable());
+    expect("its rows are dropped", log.take() == QStringLiteral("-0:0"));
+    state.scan_avoids_complete = 1U;
+    model.refresh(&opts, &state);
+    expect("a whole copy lists them again",
+           model.scanAvoidsAvailable() && model.scanAvoidCount() == 1 && log.take() == QStringLiteral("+0:0"));
+
+    /* T2: a build that fails reads unavailable with no rows, and the next refresh at the same key builds it. */
+    expect("row 2 avoided", dsd_state_trunk_lcn_avoid_set(&state, 2U, 1) == 0);
+    model.failScanAvoidBuildsForTest(1);
+    model.refresh(&opts, &state);
+    expect("a failed build is unavailable", !model.scanAvoidsAvailable() && !model.scanAvoidsTotalKnown()
+                                                && model.scanAvoidCount() == 0 && model.scanAvoidsManageable()
+                                                && list->rowCount() == 0);
+    log.take();
+    model.refresh(&opts, &state);
+    expect("the same key builds again",
+           model.scanAvoidsAvailable() && model.scanAvoidCount() == 2 && log.take() == QStringLiteral("+0:1"));
+
+    /* A trunk scan's targets win while it is configured, paused too (D3), keyed by session and id. */
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    publish_trunk_avoids(&state, 7U, 2U);
+    model.refresh(&opts, &state);
+    expect("the trunk scan's targets",
+           model.scanAvoidCount() == 2 && model_keys(*list) == QStringList({"trunk:7:t1", "trunk:7:t2"}));
+    expect("a trunk-scan label", list->data(list->index(1, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+                                     == QStringLiteral("#2  t2  851.025000 MHz"));
+    log.take();
+    /* The app writes each target's uid as its id: the list names a target by the channel name Main hands the model
+       (issue #671), else by its label column, and keeps the id only for a target with neither. A rename is a data
+       change of that row alone. */
+    model.setChannelNames({{"t1", "Fire Dispatch"}});
+    model.refresh(&opts, &state);
+    expect("a target named by its channel",
+           list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+               == QStringLiteral("#1  Fire Dispatch  851.012500 MHz"));
+    expect("only that row is relabelled", log.take() == QStringLiteral("=0"));
+    /* A channel name longer than a target id holds is cut on a character boundary, never inside one: 32 two-byte
+       characters (64 bytes) keep 31, with no replacement character in the row or in Put back's spoken name. */
+    model.setChannelNames({{"t1", QString(32, QChar(0x00E9))}});
+    model.refresh(&opts, &state);
+    {
+        const QString label = list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString();
+        expect("a long channel name is cut between characters",
+               label == QStringLiteral("#1  ") + QString(31, QChar(0x00E9)) + QStringLiteral("  851.012500 MHz")
+                   && !label.contains(QChar(0xFFFD)));
+    }
+    model.setChannelNames({{"t1", "Fire Dispatch"}});
+    model.refresh(&opts, &state);
+    log.take();
+    {
+        dsd_trunk_scan_avoid_entry labelled[2] = {};
+        for (uint32_t i = 0; i < 2U; ++i) {
+            labelled[i].ordinal = i + 1U;
+            labelled[i].frequency_hz = 851012500ULL + (12500ULL * i);
+            DSD_SNPRINTF(labelled[i].id, sizeof labelled[i].id, "t%u", i + 1U);
+        }
+        DSD_SNPRINTF(labelled[1].label, sizeof labelled[1].label, "%s", "County");
+        expect("labelled targets published", dsd_state_trunk_scan_avoids_set(&state, labelled, 2U) == 0);
+        state.trunk_scan_avoid_rev = dsd_state_rev_next();
+    }
+    model.refresh(&opts, &state);
+    expect("a target with no channel name by its label column",
+           list->data(list->index(1, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+               == QStringLiteral("#2  County  851.025000 MHz"));
+    model.setChannelNames({});
+    model.refresh(&opts, &state);
+    expect("an unnamed target keeps its id",
+           list->data(list->index(0, 0), dsd_qt::ScanAvoidListModel::LabelRole).toString()
+               == QStringLiteral("#1  t1  851.012500 MHz"));
+    log.take();
+    state.trunk_scan_paused = 1U;
+    avoidSignals = 0;
+    model.refresh(&opts, &state);
+    expect("paused, the list stays and is manageable",
+           model.scanAvoidsManageable() && model.scanAvoidCount() == 2 && log.take().isEmpty() && avoidSignals == 0);
+    state.trunk_scan_paused = 0U;
+    /* A hop to another target publishes nothing new for the list. */
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "t3");
+    model.refresh(&opts, &state, true);
+    expect("a hop rebuilds nothing", log.take().isEmpty() && avoidSignals == 0);
+    /* The coordinator could not allocate its list: unavailable, nothing listed, Clear still offered. */
+    state.trunk_scan_avoids_ok = 0U;
+    model.refresh(&opts, &state);
+    expect("an unallocated trunk-scan list is not listed",
+           !model.scanAvoidsAvailable() && model.scanAvoidCount() == 0 && model.scanAvoidsManageable());
+    state.trunk_scan_avoids_ok = 1U;
+
+    /* A stop drops the list with the session; the next refresh builds it again. */
+    model.clear();
+    expect("a cleared model lists nothing", list->rowCount() == 0 && model.scanAvoidCount() == 0
+                                                && !model.scanAvoidsManageable() && model.scanAvoidsAvailable());
+    model.refresh(&opts, &state);
+    expect("the next session builds its own", model.scanAvoidCount() == 2);
+    opts.trunk_scan_enabled = 0;
+    publish_trunk_avoids(&state, 0U, 0U);
+    DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof state.trunk_scan_active_id);
+    freeState(&state);
+}
+
+/* Issue #672 (S8): a long list costs only what changed. 10,000 avoided rows, the first put back: one remove, and the
+   rest of the rows keep their items. */
+static void
+test_scan_avoids_large_list() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    seed_lcn_rows(&state, 10001);
+    for (size_t row = 0; row < 10000U; ++row) {
+        (void)dsd_state_trunk_lcn_avoid_set(&state, row, 1);
+    }
+    dsd_qt::MetricsModel model;
+    ModelLog log(model.scanAvoidModel());
+    model.refresh(&opts, &state);
+    expect("10,000 avoided rows", model.scanAvoidCount() == 10000 && log.take() == QStringLiteral("+0:9999"));
+    expect("the first put back", dsd_state_trunk_lcn_avoid_set(&state, 0U, 0) == 0);
+    model.refresh(&opts, &state);
+    expect("one remove, nothing else", log.take() == QStringLiteral("-0:0") && model.scanAvoidCount() == 9999);
+    freeState(&state);
 }
 
 static void
@@ -2118,6 +2840,16 @@ main(int argc, char** argv) {
     test_slot_kind_and_labels();
     test_scan_row();
     test_scan_state();
+    test_scan_avoid_list_model_diff();
+    test_scan_list_toggle_switch_and_hold();
+    test_scan_list_toggle_refusals();
+    test_scan_list_toggle_history_gap();
+    test_scan_list_toggle_answer_kept_past_a_gap();
+    test_scan_list_toggle_gap_while_results_keep_coming();
+    test_scan_list_toggle_session_change();
+    test_scan_list_readings();
+    test_scan_avoids();
+    test_scan_avoids_large_list();
     test_dmr_ras_and_crc_policy();
     test_rigctl_audio_passband();
     test_options_readiness();
@@ -2513,22 +3245,29 @@ main(int argc, char** argv) {
     expect("plain trunking is not a rotation", !model.scanRotationActive());
     opts.trunk_enable = 0;
     state.lcn_scan_hold = 1;
-    state.lcn_avoid_count = 3;
+    /* Issue #672: the count is the avoid list's entries, from the store the view reads (the -Y rows' flags, the
+       coordinator's published targets), never the saturating counters beside them. */
+    seed_lcn_rows(&state, 4);
+    for (size_t row = 0; row < 3U; ++row) {
+        expect("an avoid flag is set", dsd_state_trunk_lcn_avoid_set(&state, row, 1) == 0);
+    }
+    state.lcn_avoid_count = 9;
     state.trunk_scan_hold = 0;
-    state.trunk_scan_avoided_count = 7;
+    publish_trunk_avoids(&state, 5U, 7U);
+    state.trunk_scan_avoided_count = 9;
     state.trunk_scan_active_avoided = 1;
     opts.scanner_mode = 1;
     model.refresh(&opts, &state);
     expect("-Y is a rotation", model.scanRotationActive());
     expect("-Y hold reads the scan-list flag", model.scanHold());
-    expect("-Y avoids read the scan-list count", model.scanAvoidCount() == 3);
+    expect("-Y avoids are the avoided rows", model.scanAvoidCount() == 3);
     expect("-Y never parks on an avoided row", !model.scanTargetAvoided());
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 1;
     model.refresh(&opts, &state);
     expect("trunk scan is a rotation", model.scanRotationActive());
     expect("trunk scan hold reads the coordinator's flag", !model.scanHold());
-    expect("trunk scan avoids read the coordinator's count", model.scanAvoidCount() == 7);
+    expect("trunk scan avoids are the coordinator's published targets", model.scanAvoidCount() == 7);
     expect("trunk scan reports the avoided fallback", model.scanTargetAvoided());
     // WP-S1: the held snapshot supplies target identity and lifecycle clearing.
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof state.trunk_scan_active_id, "%s", "dispatch");
@@ -2552,13 +3291,16 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("co-active rotations still count as one", model.scanRotationActive());
     expect("co-active hold reads the coordinator's flag", !model.scanHold());
-    expect("co-active avoids read the coordinator's count", model.scanAvoidCount() == 7);
+    expect("co-active avoids are the coordinator's published targets", model.scanAvoidCount() == 7);
     expect("co-active avoided fallback comes from trunk scan", model.scanTargetAvoided());
     opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 0;
     state.lcn_scan_hold = 0;
+    (void)dsd_state_trunk_lcn_avoid_clear(&state);
     state.lcn_avoid_count = 0;
+    state.lcn_freq_count = 0;
     state.trunk_scan_hold = 0;
+    publish_trunk_avoids(&state, 0U, 0U);
     state.trunk_scan_avoided_count = 0;
     state.trunk_scan_active_avoided = 0;
 

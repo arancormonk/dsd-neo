@@ -10,8 +10,10 @@
  * The terminal "Imported Systems" browser shows one row per RadioReference
  * system, not one per file: the group list and the channel map an import wrote
  * share a system id, and are folded back together here. Everything in this
- * header is pure or filesystem-only - no curses, no app_control - so it links
- * against the runtime alone and is tested directly on a scratch directory.
+ * header is pure - no curses, and no file I/O: rr_library_scan() folds what the
+ * app-control imports listing (dsd_app_imports_list()) hands it - so it links
+ * against that service and the runtime alone and is tested directly on a
+ * scratch directory.
  *
  * This header is internal to src/ui/terminal/ and should NOT be installed.
  */
@@ -85,7 +87,8 @@ int rr_library_add(RrLibrary* lib, const char* csv_path, const dsd_rr_provenance
 /**
  * @brief Scan an imports directory into a library.
  *
- * Walks @p dir, reads each ".csv" that has a readable sidecar, and folds it in.
+ * Folds in each ".csv" with a readable sidecar that dsd_app_imports_list()
+ * finds in @p dir.
  * Files without a sidecar are skipped, as they cannot be refreshed or re-applied.
  * Systems are left in first-seen order; the caller sorts if it wants a stable one.
  *

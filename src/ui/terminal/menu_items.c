@@ -302,6 +302,16 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
              "and must fit the DSP bandwidth; on audio input with a rigctl peer (-U) it is the AM passband the peer is "
              "asked for.",
      .on_select = act_set_am_bw},
+    /* The rigctl peer is a receiver like the inputs above: beside the passband rows it is asked for (issue #697). */
+    {.id = "input.rigctl",
+     .label_fn = lbl_rigctl,
+     .help = "Tune an external radio through a rigctl server.",
+     .hotkey = "9",
+     .on_select = io_rigctl_config},
+    {.id = "input.setmod",
+     .label = "Rigctl setmod bandwidth...",
+     .help = "Bandwidth in Hz passed with rigctl setmod.",
+     .on_select = act_setmod_bw},
     {.id = "input.warn",
      .label_fn = lbl_input_warn,
      .help = "Warn in the footer when the input level falls below this many dBFS.",
@@ -650,6 +660,29 @@ static const NcMenuItem TRUNK_P25_ITEMS[] = {
      .submenu_len = NC_LEN(P25_TIMING_ITEMS)},
 };
 
+/* Issue #672 D1: avoid, list and put back, Clear last after a separator. The submenu hides itself while none of its
+   rows is offered. */
+static const NcMenuItem TRUNK_AVOID_ITEMS[] = {
+    {.id = "trunk.avoid",
+     .label = "Avoid current channel",
+     .help = "Skip the channel or trunk-scan target on air for the rest of the session and step to the next one.",
+     .hotkey = "b",
+     .is_enabled = scan_rotation_active,
+     .on_select = act_scan_avoid},
+    {.id = "trunk.avoid_list",
+     .label_fn = lbl_scan_avoid_list,
+     .help = "The channels or trunk-scan targets avoided this session. Enter puts one back into the rotation; nothing "
+             "retunes.",
+     .is_enabled = scan_avoids_manageable,
+     .on_select = act_scan_avoid_list},
+    {.id = "trunk.avoid_sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "trunk.avoid_clear",
+     .label_fn = lbl_scan_avoid_clear,
+     .help = "Put every avoided channel or trunk-scan target back into the rotation.",
+     .is_enabled = scan_avoids_manageable,
+     .on_select = act_scan_avoid_clear},
+};
+
 const NcMenuItem TRUNK_MENU_ITEMS[] = {
     {.id = "trunk.on",
      .label_fn = lbl_trunk,
@@ -689,17 +722,20 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .hotkey = "Y",
      .is_enabled = scan_rotation_active,
      .on_select = act_scan_hold_toggle},
-    {.id = "trunk.avoid",
-     .label = "Avoid current channel",
-     .help = "Skip the channel or trunk-scan target on air for the rest of the session and step to the next one.",
-     .hotkey = "b",
-     .is_enabled = scan_rotation_active,
-     .on_select = act_scan_avoid},
-    {.id = "trunk.avoid_clear",
-     .label_fn = lbl_scan_avoid_clear,
-     .help = "Put every avoided channel or trunk-scan target back into the rotation.",
-     .is_enabled = scan_rotation_active,
-     .on_select = act_scan_avoid_clear},
+    {.id = "trunk.avoids",
+     .label = "Avoids",
+     .help = "Avoid the channel on air, list the avoided ones, put them back.",
+     .submenu = TRUNK_AVOID_ITEMS,
+     .submenu_len = NC_LEN(TRUNK_AVOID_ITEMS)},
+    /* Issue #697: the --trunk-scan target lists, switched on or off for the session. */
+    {.id = "trunk.scan_lists",
+     .label_fn = lbl_scan_lists,
+     .help = "Switch the trunk scan's target lists on or off for this session; the rotation scans the lists that are "
+             "on. Switching off the list on air moves to another list at once. Not saved: the next start uses the "
+             "lists as configured.",
+     .hotkey = "#",
+     .is_enabled = scan_lists_offered,
+     .on_select = act_scan_lists},
     {.id = "trunk.sep1", .kind = NC_ITEM_SEPARATOR},
     {.id = "trunk.follow",
      .label = "Follow",
@@ -716,16 +752,6 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .help = "Control-channel hunting, retune, Phase 2 parameters, timers.",
      .submenu = TRUNK_P25_ITEMS,
      .submenu_len = NC_LEN(TRUNK_P25_ITEMS)},
-    {.id = "trunk.sep2", .kind = NC_ITEM_SEPARATOR},
-    {.id = "trunk.rigctl",
-     .label_fn = lbl_rigctl,
-     .help = "Tune an external radio through a rigctl server.",
-     .hotkey = "9",
-     .on_select = io_rigctl_config},
-    {.id = "trunk.setmod",
-     .label = "Rigctl setmod bandwidth...",
-     .help = "Bandwidth in Hz passed with rigctl setmod.",
-     .on_select = act_setmod_bw},
 };
 const size_t TRUNK_MENU_ITEMS_LEN = NC_LEN(TRUNK_MENU_ITEMS);
 
@@ -1185,15 +1211,11 @@ const size_t CONFIG_MENU_ITEMS_LEN = NC_LEN(CONFIG_MENU_ITEMS);
 // Advanced
 // ============================================================================
 const NcMenuItem ADV_MENU_ITEMS[] = {
+    {.id = "adv.ftz", .label_fn = lbl_ftz_daz, .kind = NC_ITEM_STATUS},
     {.id = "adv.rt_sched",
      .label_fn = lbl_rt_sched,
      .help = "Best-effort realtime scheduling for the decode threads (needs privileges).",
      .on_select = act_rt_sched},
-    {.id = "adv.mt", .label_fn = lbl_mt, .help = "Light worker pool for hot DSP loops.", .on_select = act_mt},
-    {.id = "adv.ftz",
-     .label_fn = lbl_ftz_daz,
-     .help = "Flush-to-zero / denormals-are-zero on x86 SSE.",
-     .on_select = act_toggle_ftz_daz},
     {.id = "adv.win_freeze",
      .label_fn = lbl_window_freeze,
      .help = "Freeze the symbol window selection and stop auto-centering.",

@@ -77,6 +77,15 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
     return stat(path, st);
 }
 
+int
+dsd_remove_file(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    return remove(path);
+}
+
 int64_t
 dsd_path_free_bytes(const char* path) {
     if (!path || path[0] == '\0') {

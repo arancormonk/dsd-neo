@@ -97,6 +97,8 @@ Main Menu
 │   ├── Squelch... [off]                         (radio and audio input: a level in dB, off, auto[+N] or noise[+N])
 │   ├── NFM bandwidth... [default]               (-fA, or a width set; radio, or audio input with rigctl)
 │   ├── AM bandwidth... [default]                (-fM, a width set, or a low rate; radio, or audio input with rigctl)
+│   ├── Rigctl: <host:port> [Off]                9
+│   ├── Rigctl setmod bandwidth...
 │   ├── Low-input warning... [-40.0 dBFS]
 │   ├── Invert signal [Off]                      i
 │   ├── Airspy receiver controls                 (Airspy input only)
@@ -179,8 +181,12 @@ Main Menu
 │   ├── Next channel                             L   (while trunking or scanning, not while a scan is paused)
 │   ├── Previous channel                         J   (while trunking or scanning, not while a scan is paused)
 │   ├── Scan hold [Off]                          Y   (while a -Y or --trunk-scan scan runs)
-│   ├── Avoid current channel                    b   (while a -Y or --trunk-scan scan runs)
-│   ├── Clear avoids [0]                             (while a -Y or --trunk-scan scan runs)
+│   ├── Avoids                                       (hidden while none of its rows is offered)
+│   │   ├── Avoid current channel                b   (while a -Y or --trunk-scan scan runs)
+│   │   ├── Avoided channels... [0]                  (while a scan runs, or avoids are left: -Y stopped, -T, paused)
+│   │   ├── ─────
+│   │   └── Clear avoids [0]                         (as Avoided channels...)
+│   ├── Scan lists... [2 of 3 on]                #   (while a --trunk-scan scan with two or more lists runs)
 │   ├── ─────
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
@@ -208,22 +214,19 @@ Main Menu
 │   │   ├── Imported RadioReference systems...       (RadioReference builds)
 │   │   ├── RadioReference username... [(not set)]   (RadioReference builds)
 │   │   └── RadioReference application key...        (RadioReference builds without a baked-in key)
-│   ├── P25
-│   │   ├── Prefer CC candidates [On]
-│   │   ├── LCW explicit retune [Off]
-│   │   ├── Phase 2 parameters...
-│   │   └── Timing
-│   │       ├── VC grace... [0.000 s]
-│   │       ├── Minimum follow dwell... [0.000 s]
-│   │       ├── Grant-to-voice timeout... [0.000 s]
-│   │       ├── CC hunt grace... [0.000 s]
-│   │       ├── Safety-net extra... [0.000 s]
-│   │       ├── Safety-net margin... [0.000 s]
-│   │       ├── Phase 1 error hold... [0.0%]
-│   │       └── Phase 1 error hold time... [0.000 s]
-│   ├── ─────
-│   ├── Rigctl: <host:port> [Off]                9
-│   └── Rigctl setmod bandwidth...
+│   └── P25
+│       ├── Prefer CC candidates [On]
+│       ├── LCW explicit retune [Off]
+│       ├── Phase 2 parameters...
+│       └── Timing
+│           ├── VC grace... [0.000 s]
+│           ├── Minimum follow dwell... [0.000 s]
+│           ├── Grant-to-voice timeout... [0.000 s]
+│           ├── CC hunt grace... [0.000 s]
+│           ├── Safety-net extra... [0.000 s]
+│           ├── Safety-net margin... [0.000 s]
+│           ├── Phase 1 error hold... [0.0%]
+│           └── Phase 1 error hold time... [0.000 s]
 ├── Encryption
 │   ├── Mute encrypted audio [On]
 │   ├── Lock out encrypted calls [Off]           e   (edits configured value; adds (target: On/Off) when a parked row differs)
@@ -323,9 +326,8 @@ Main Menu
 │   ├── Save config as...
 │   └── Save as default config
 ├── Advanced
+│   ├── SSE FTZ/DAZ [Default] (set DSD_NEO_FTZ_DAZ before start)
 │   ├── Realtime scheduling [Off]
-│   ├── Intra-block multithreading [Off]
-│   ├── SSE FTZ/DAZ [On]
 │   ├── Freeze symbol window [Off]
 │   ├── Simulate no-carrier event                Z
 │   ├── ─────
@@ -407,7 +409,7 @@ A refused entry reopens the prompt with the text typed and the reason inside it,
 names the frequency the receiver took, `Accepted: frequency -> 851.012500 MHz (pending)` one still being applied,
 `Deferred; retry: frequency -> ...` one the receiver could not take yet (retry it), and `Failed: ...` one that did
 not tune; `; scan paused` follows a tune that paused a running scan, or took back a `-Y` resume still waiting on its
-row. A manual tune from Qt/Android or the control API (`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding 769.768750 MHz (1 avoided)`) name their frequency
+row. A manual tune from Qt/Android or the control API (`Applied: tuned -> 851.012500 MHz`) and the `-Y` avoid (`Avoiding row 2 (769.768750 MHz, 1 avoided)`) name their frequency
 the same way. During single-system P25 trunking the entry selects a new control channel
 (`Applied: P25 control channel -> 851.012500 MHz`; see "Trunking & Scanning" in `docs/cli.md`).
 
@@ -416,7 +418,35 @@ avoids, edits and place, and the receiver stays on the frequency typed. `y` resu
 "Channel Labels"); a refused tune leaves the scan running. The row is hidden during an I/Q replay, which plays the
 tuning its capture recorded, and on audio input without a connected rigctl peer; there `=` opens one line of help
 instead (`An I/Q replay cannot retune: it plays the tuning it recorded.`, or
-`Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).`).
+`Nothing to tune: this input needs a connected rigctl peer (key 9, or Input > Rigctl).`).
+
+### Avoided channels
+
+`b` takes the channel on air, or the `--trunk-scan` target, out of the rotation for the rest of the session (issue
+#672). Trunking > Avoids > **Avoided channels... [N]** lists what is out, one entry per row, with what tells two
+entries apart first:
+
+- a `-Y` row: `Row 3  462.037500 MHz  Marion` (its row in the channel map, its frequency, its name if it has one);
+- a trunk-scan target: `#2  county-p25  851.012500 MHz  County Fire` (its place in the target list, its id, its
+  frequency, its label if it has one).
+
+A row the map left without a frequency reads `frequency unknown`. Enter puts the highlighted entry back into the
+rotation and closes the list; the toast names the entry as the list does (`Put back row 3 (462.037500 MHz, 1
+avoided)`, `Put back target #2 County Fire (0 avoided)`; a target with no label is named by its id). Nothing retunes:
+the receiver stays where it is, unless it is on an avoided target the scan fell back onto. It then leaves as soon as
+another target can take it, and putting one back can let it leave at once. A hold, a target cooling down after a
+failed retune and the dwell are left as they were. Esc closes the list and changes nothing. **Clear avoids** puts
+every entry back at once.
+
+The list and Clear are offered while a scan runs (with none avoided, the list says `No avoided channels`) and,
+outside one, while avoids are left. A `-Y` list's avoids outlive the scan: the DMR and NXDN control-channel hunts under
+`-T` still skip those rows, so with `-Y` stopped, under `-T` and on a paused scan the list and Clear stay, and the main
+screen keeps the count (see "Channel Labels"). Avoid current channel needs a running scan. Avoids are never saved.
+
+If the scan list changed after the list opened (a map reload or a restart), Enter puts nothing back and says
+`Scan list changed; nothing put back`; open the list again. `[?]` in place of the count means the screen's copy of the
+avoids is not whole yet (a `-Y` list's Scan Mode row reads `Avoids: ?` then): the list says `Avoided channel list not
+ready; try again`, and Clear still works.
 
 ### Decoder mode
 
@@ -692,7 +722,7 @@ kHz]`, or `[peer's own]` without `-B`, and the prompt says so (`NFM passband Hz 
 passband Hz (5000..20000; 0 = default 6000)`). An edit that changes the passband in force is asked of the peer at once
 (`Applied: NFM passband -> 12.5 kHz`, or `Applied: NFM passband -> 12.5 kHz (-B)` back on `-B`), and one the peer
 refuses, or whose reply is lost, is put back (`Refused: NFM bandwidth -> 20 kHz: the rigctl peer refused the passband`);
-Trunking > `Rigctl setmod bandwidth...` is asked of the peer the same way while `-B` stands in. The Pulse, TCP, UDP, WAV
+Input > `Rigctl setmod bandwidth...` is asked of the peer the same way while `-B` stands in. The Pulse, TCP, UDP, WAV
 and stdin channel rows show that passband after the squelch, `Passband: NFM 12.5 kHz (-B);` (`NFM 20 kHz`,
 `AM 6 kHz (default)`, `NFM peer's own`, or `NFM 12.5 kHz (row; default -B 12.5 kHz)` while a row's own width is on air),
 whenever the rows are offered; on a digital session that offers them for an explicit width, the field reads what every
@@ -742,6 +772,7 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `J` | Previous channel: the same list as `L`, one step back; a running scan carries on forward from there. Same requirements |
 | `Y` | Hold the scan on the channel or target on air; press again to resume (`J` and `L` still move while held) |
 | `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
+| `#` | Scan lists: switch `--trunk-scan` target lists on or off for the session (see "Scan lists") |
 | `g` | Toggle follow group calls |
 | `w` | Toggle allow/white-list mode (uses imported group list) |
 | `u` | Toggle follow private calls |
@@ -750,10 +781,11 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
-While a scan is paused, `Y`, `b`, `J`, `L` and "Clear avoids" are refused with `Scan paused: resume it first`; the
-avoids, and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Under `--trunk-scan`, running or
-paused, `t` is refused with `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning
-trunking on stops the scan.
+While a scan is paused, `Y`, `b`, `J`, `L` and a scan-list switch are refused with `Scan paused: resume it first`; the
+avoids, and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Trunking > Avoids > **Avoided
+channels...** and **Clear avoids** still work while paused: they only change which entries the rotation skips, and
+nothing retunes. Under `--trunk-scan`, running or paused, `t` is refused with
+`Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on stops the scan.
 
 **Mouse wheel.** Off by default: turn on Display → **Mouse wheel steps channels**, or set `terminal_mouse_wheel = true`
 under `[output]` in the config file (Save config keeps the menu setting). While a `-Y` or `--trunk-scan` list runs,
@@ -845,6 +877,43 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 | `[` / `]` | Event history previous/next |
 | `\\` | Toggle event history slot (or toggle M17 TX in encoder mode) |
 
+### Scan lists
+
+A `--trunk-scan` session can load several target lists (`--trunk-scan FILE` once per list, `--trunk-scan-off FILE`
+for one that starts off; see `docs/trunk-scan.md`). `#`, or Trunking > **Scan lists... [2 of 3 on]**, opens them, one
+row per list with its number, name (the file name), state and size, `on air` beside the list of the target on air,
+then **All lists on**:
+
+```
+Scan lists (2 of 3 on, 13 targets)
+
+1  security      On   12 targets  on air
+2  hospital      Off   1 target
+3  municipality  On    1 target
+All lists on
+```
+
+Enter switches the highlighted list the other way, or every list on. The row says `Switching off…` until the decoder
+answers, then shows the new state, or why it did not switch beside the list (`Nothing else to scan` when it is the last
+list with a target left to scan, `Scan paused: resume it first` while the scan is paused); the main screen's toast line
+has the whole answer. A reason stays only while it is true: it goes once the lists change (another list switched here or
+from another frontend), and the paused one when the scan resumes. A pause and resume that both fall between two screen
+updates go unseen, so that paused reason stays until the row is asked again, the lists change or the lists close (a
+decided limit). A "try again" note (`Busy; try again`, `Not sent; try again`, `Not applied; try again`) stays until that
+row is asked again or the lists change; it has no timeout, and Enter on another row leaves it. Several rows can wait at
+once, and Enter on a row that is waiting does nothing. Switching off the list on air moves the receiver to a target of
+another list at once, as `L` would, and any switch takes effect at once while the target on air is waiting to leave (its
+list is off, or it is an avoided target the scan fell back onto). On a DMR repeater carrier any other switch waits for
+the carrier to end, so its row says `Switching off…` or `Switching on…` until then and the call goes on undisturbed; an
+attempt to switch off the list on air when it is the last list to scan, which is refused, interrupts that carrier for a
+moment. The lists stay open until Esc or Left, and close by themselves when the scan stops or restarts. A switch lasts
+for the session: Config save and the exit autosave keep the lists as configured.
+
+The menu row is offered while a trunk scan with two or more lists runs. `#` also opens the lists while the scan is
+paused, where every switch is refused at once with `Scan paused: resume it first` beside the row, nothing is sent to
+the decoder (so a DMR call on air is never held up by it), and the footer reads
+`Arrows  Esc/Left: close, then y resumes the scan`; it says what it needs where there are none to switch.
+
 ## Channel Labels
 
 While scanning, the screen says which channel you are listening to.
@@ -881,8 +950,19 @@ With `--trunk-scan` the same section names its place in the rotation and the tar
 the list's `Avoids: N`.
 
 `county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation (right
-aligned to the count's digits, `( 3/12)`). The row
-shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
+aligned to the count's digits, `( 3/12)`): among the targets of the lists that are on, avoided ones included. With two
+or more target lists the row also names the list of the target on air after its id. While the target on air belongs to
+a list that was just switched off, the position reads `(-/m)` until the receiver leaves it, and `[list off]` shows in
+the room `[avoided]` takes (one cell wider then, so an 80-column row keeps room for the list's name); a target that is
+both shows `[avoided]`, since `(-/m)` already says its list is off:
+
+```
+| Trunk Scan: (2/3)                 Target: gate-b List: security
+| Trunk Scan: (-/2)      [list off] Target: gate-b List: security
+```
+
+On a narrow terminal the row drops whole fields from its end: the avoid count, then the list's name, then the id. The
+row shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
 Scan Mode row above it shows no name, so the screen never names two channels at once.
 
 A scan paused by a frequency entry (or by `y` under `--trunk-scan`) keeps its row, without a row's frequency, a
@@ -891,6 +971,17 @@ target or a timing row, since the receiver is on the operator's frequency; the l
 ```
 | Scan Mode: PAUSED (y resumes) Avoids: 2
 | Trunk Scan: PAUSED (y resumes)
+| Trunk Scan: PAUSED (y resumes) Lists: 2/3 on Avoids: 2
+```
+
+The last form is a trunk scan with two or more target lists: how many of them the resume scans.
+
+With `-Y` stopped, its avoids stay for the session (the `-T` control-channel hunts skip those rows too), and while any
+are left the Scan Mode row says the scan is off and how many rows it left out. Trunking > Avoids lists them and puts
+them back (see "Avoided channels"):
+
+```
+| Scan Mode: OFF Avoids: 2
 ```
 
 ### Scan Timing

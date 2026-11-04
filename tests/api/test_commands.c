@@ -78,6 +78,11 @@ header_command_ids(int* ids, size_t cap) {
             if (value == DSD_APP_CMD_SIGNAL_SEARCH_START || value == DSD_APP_CMD_SIGNAL_SEARCH_CONTROL) {
                 continue;
             }
+            /* The terminal menu's own hand-off of a re-parsed environment to the decoder thread: an API client sets no
+               DSD_NEO_* variables in the decoder's process, so there is nothing for it to apply. */
+            if (value == DSD_APP_CMD_RUNTIME_CONFIG_APPLY) {
+                continue;
+            }
             assert(n < cap);
             ids[n++] = value;
         }
@@ -148,6 +153,8 @@ static const sample k_samples[] = {
     {"am_bandwidth_set", "{\"value\":0}"},
     {"tone_filter_set", "{\"mode\":1,\"list\":\"100.0\"}"},
     {"receive_set", "{\"kind\":1,\"enabled\":1,\"allow\":\"7\",\"block\":\"8\"}"},
+    {"scan_avoid_remove", "{\"kind\":\"trunk_scan\",\"session\":1,\"target_id\":\"county-p25\"}"},
+    {"scan_list_set", "{\"list\":2,\"enabled\":0,\"session\":1}"},
     {"scan_row_edit", "{\"scanner\":2,\"session\":1,\"row\":0,\"field\":1,\"action\":1,\"squelch_db\":-50}"},
     {"pulse_out_set", "{\"value\":\"default\"}"},
     {"pulse_in_set", "{\"value\":\"default\"}"},
@@ -333,6 +340,53 @@ check_rtl_set_bw_72_on_airspy(void) {
 }
 #endif
 
+/* Issue #697: scan_list_set takes its request id from app-control's counter, the one the terminal and Qt draw theirs
+   from, and the reply echoes it as a number, so an API request never shares an id with a frontend's; the decoder's
+   result for it carries that id. */
+static void
+check_scan_list_set_request_ids(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    assert(opts != NULL && state != NULL);
+    initOpts(opts);
+    opts->audio_out_type = 9; /* the null output: no host audio stream */
+    initState(state);
+    dsd_app_frontend_runtime_start(opts, state);
+
+    const uint32_t ui_first = dsd_app_scan_list_request_next();
+    dsd_json_node* resp = execute("scan_list_set", "{\"list\":2,\"enabled\":0,\"session\":1}");
+    assert(is_ok(resp));
+    const dsd_json_node* echoed = dsd_json_obj_get(resp, "request");
+    uint64_t api_request = 0U;
+    assert(echoed != NULL && echoed->type == DSD_JSON_NUMBER && dsd_json_as_u64(echoed, &api_request) == 0);
+    dsd_json_free(resp);
+    const uint32_t ui_second = dsd_app_scan_list_request_next();
+    assert(api_request != 0U && api_request != ui_first && api_request != ui_second);
+    assert(api_request == (uint64_t)ui_first + 1U && ui_second == ui_first + 2U);
+
+    /* A frontend's toggle beside it: two results, each under its own caller's id. */
+    dsd_app_scan_list_set_payload ui = {0};
+    ui.session = 1U;
+    ui.request = ui_second;
+    ui.list = 1;
+    ui.enabled = 1U;
+    assert(dsd_app_command_scan_list_set(&ui) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    dsd_app_scan_list_result newest = {0};
+    (void)dsd_app_scan_list_result_get(&newest);
+    assert(dsd_app_drain_cmds(opts, state) == 2);
+    dsd_app_scan_list_result results[4];
+    assert(dsd_app_scan_list_results_since(newest.sequence, results, 4) == 2);
+    assert(results[0].request == api_request && results[0].list == 2 && results[0].enabled == 0U);
+    assert(results[0].session == 1U && results[0].code == DSD_APP_SCAN_LIST_SET_UNAVAILABLE);
+    assert(results[1].request == ui_second && results[1].list == 1 && results[1].enabled == 1U);
+    assert(results[1].sequence == results[0].sequence + 1U);
+
+    dsd_app_frontend_runtime_stop();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
 int
 main(void) {
     int ids[MAX_IDS];
@@ -448,6 +502,7 @@ main(void) {
     assert(strcmp(error_code(resp), "unknown_command") == 0);
     dsd_json_free(resp);
     dsd_app_frontend_runtime_stop();
+    check_scan_list_set_request_ids();
 
     dsd_json_free(root);
     dsd_json_buf_free(&catalog);

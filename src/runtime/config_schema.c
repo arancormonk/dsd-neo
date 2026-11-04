@@ -138,7 +138,16 @@ static const dsdcfg_schema_entry_t s_schema[] = {
 
     /* [trunk_scan] section */
     {"trunk_scan", "enabled", "Enable single-tuner trunk scan mode", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
-    {"trunk_scan", "targets_csv", "Trunk scan target list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv", "Trunk scan target list CSV file path (list 1)", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv_2", "Trunk scan list 2 target CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv_3", "Trunk scan list 3 target CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv_4", "Trunk scan list 4 target CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv_5", "Trunk scan list 5 target CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv_6", "Trunk scan list 6 target CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv_7", "Trunk scan list 7 target CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "targets_csv_8", "Trunk scan list 8 target CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
+    {"trunk_scan", "lists_off", "Trunk scan lists that start switched off, by number (e.g. 2, 3)", "", NULL,
+     DSDCFG_TYPE_STRING, 0, 0},
     {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000},
     {"trunk_scan", "activity_hold_ms", "Default conventional DMR/NXDN activity hold", "1200", NULL, DSDCFG_TYPE_INT,
      250, 600000},

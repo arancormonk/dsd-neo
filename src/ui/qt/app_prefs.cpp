@@ -93,6 +93,10 @@ enum Key {
     // Issue #668: how much of what was heard just before an NFM call each recording starts with
     // (--analog-record-preroll-ms). Portable with the other recording choices.
     kRecordingAnalogPrerollMs,
+    // Issue #697: the other scan lists a scan session scans with its own, as accepted and as last started. Device-local
+    // (list UIDs a restore can re-mint), and removed by a restore.
+    kAcceptedStartCompanions,
+    kLastStartedCompanions,
     kKeyCount
 };
 
@@ -139,6 +143,8 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/acceptedStartUid", false},
     {"recording/analogMaxGapMs", true},
     {"recording/analogPrerollMs", true},
+    {"listen/acceptedStartCompanions", false},
+    {"listen/lastStartedCompanions", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -863,6 +869,61 @@ AppPrefs::setAcceptedStartUid(const QString& value) {
     }
     m_settings.setValue(key_name(kAcceptedStartUid), value);
     Q_EMIT acceptedStartChanged();
+}
+
+namespace {
+/* A list of UIDs as stored: a list, or one UID the ini backend handed back as text; empty entries dropped. */
+QStringList
+stored_uids(const QVariant& stored) {
+    QStringList uids = stored.toStringList();
+    uids.removeAll(QString());
+    return uids;
+}
+} // namespace
+
+QStringList
+AppPrefs::acceptedStartCompanions() const {
+    return stored_uids(m_settings.value(key_name(kAcceptedStartCompanions)));
+}
+
+void
+AppPrefs::setAcceptedStartCompanions(const QStringList& value) {
+    if (acceptedStartCompanions() == value) {
+        return;
+    }
+    if (value.isEmpty()) {
+        m_settings.remove(key_name(kAcceptedStartCompanions));
+    } else {
+        m_settings.setValue(key_name(kAcceptedStartCompanions), value);
+    }
+    Q_EMIT acceptedStartChanged();
+}
+
+QStringList
+AppPrefs::lastStartedCompanions() const {
+    return stored_uids(m_settings.value(key_name(kLastStartedCompanions)));
+}
+
+void
+AppPrefs::setLastStartedCompanions(const QStringList& value) {
+    if (lastStartedCompanions() == value) {
+        return;
+    }
+    if (value.isEmpty()) {
+        m_settings.remove(key_name(kLastStartedCompanions));
+    } else {
+        m_settings.setValue(key_name(kLastStartedCompanions), value);
+    }
+    Q_EMIT lastStartedCompanionsChanged();
+}
+
+bool
+AppPrefs::forgetScanCompanions() {
+    Settings settings;
+    settings.remove(key_name(kAcceptedStartCompanions));
+    settings.remove(key_name(kLastStartedCompanions));
+    settings.sync();
+    return settings.status() == QSettings::NoError;
 }
 
 double

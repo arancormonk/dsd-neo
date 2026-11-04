@@ -556,7 +556,7 @@ struct Output {
             std::fclose(file);
         }
         if (path[0]) {
-            std::remove(path);
+            (void)dsd_remove_file(path);
         }
     }
 };

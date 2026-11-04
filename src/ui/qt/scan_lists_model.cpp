@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
+#include <QDir>
 #include <QFile>
 #include <QHash>
 #include <QJsonArray>
@@ -13,6 +14,7 @@
 #include <Qt>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <utility>
+#include "app_prefs.h"
 #include "json_store.h"
 #include "realtime_clock.h"
 #include "scan_lists_model.h"
@@ -93,13 +95,21 @@ ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
         if (!value.isObject()) {
             continue;
         }
+        const QString stored = value.toObject().value(QStringLiteral("uid")).toString();
         auto row = normalize(value.toObject().toVariantMap());
         auto id = row.value("uid").toString();
         if (id.isEmpty() || ids.contains(id)) {
             row["uid"] = id = uuid();
         }
+        // Issue #697: a UID minted here is not the one anything stored before this load named.
+        m_uidsRepaired = m_uidsRepaired || id != stored;
         ids.insert(id);
         m_rows << row;
+    }
+    // Issue #697: a remembered scan session names its other lists by uid; after a re-mint those may be other lists
+    // or none, so they are forgotten, as a restore forgets them.
+    if (m_uidsRepaired) {
+        (void)AppPrefs::forgetScanCompanions();
     }
 }
 
@@ -204,6 +214,9 @@ ScanListsModel::remove(int row) {
     m_rows = std::move(next);
     endRemoveRows();
     if (QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,63}$")).match(uid).hasMatch()) {
+        // The generated targets: the list's folder (issue #697), hidden files included (removeRecursively() takes
+        // every entry), and the file older versions wrote beside it.
+        QDir(json_store_path(QStringLiteral("scan_lists/") + uid)).removeRecursively();
         QFile::remove(json_store_path(QStringLiteral("scan_lists/") + uid + QStringLiteral(".csv")));
     }
     Q_EMIT countChanged();
@@ -213,6 +226,15 @@ ScanListsModel::remove(int row) {
 void
 ScanListsModel::touch(int row) {
     update(row, {{"lastHeard", realtimeSecsSinceEpoch()}});
+}
+
+int
+ScanListsModel::entryCount(const QVariantMap& list) const {
+    if (list.value("targetSource") != "csv") {
+        return static_cast<int>(list.value("entries").toList().size());
+    }
+    const int accepted = m_acceptedRows ? m_acceptedRows(list.value("targetsCsvPath").toString()) : -1;
+    return accepted > 0 ? accepted : 0;
 }
 
 QStringList

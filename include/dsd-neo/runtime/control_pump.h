@@ -70,20 +70,26 @@ void dsd_runtime_set_publish_pending(dsd_controls_pending_fn fn);
  */
 int dsd_runtime_publish_pending(void);
 
+/** The query dsd_runtime_controls_need_frame_loop() asks, given the decoder's own state. */
+typedef int (*dsd_controls_need_frame_loop_fn)(const dsd_state* state);
+
 /**
  * @brief Register (or, with NULL, unregister) the query dsd_runtime_controls_need_frame_loop() asks.
  */
-void dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn);
+void dsd_runtime_set_controls_need_frame_loop(dsd_controls_need_frame_loop_fn fn);
 
 /**
  * @brief Whether a queued command needs the frame loop between frames: any but the deferrable ones (display, audio,
- * keys and decryption, recording, front-end tweaks such as RF gain or squelch level). 1 when the registered query says
- * so, 0 without one.
+ * keys and decryption, recording, front-end tweaks such as RF gain or squelch level, scan flag edits on a target that
+ * stays). 1 when the registered query says so, 0 without one.
  *
  * A decoder that holds one carrier in a loop of its own (dmrBS()) asks it at each burst boundary and returns to the
- * frame loop, which applies the command; other commands wait for the carrier to end (issue #637).
+ * frame loop, which applies the command; other commands wait for the carrier to end (issue #637). @p state is that
+ * decoder's own state, on its thread: a scan flag edit (a trunk-scan list switch, a put back, a clear; issues #672,
+ * #697) is judged against it, and takes the frame loop when it leaves the target on air or starts or cancels the
+ * departure that target owes.
  */
-int dsd_runtime_controls_need_frame_loop(void);
+int dsd_runtime_controls_need_frame_loop(const dsd_state* state);
 
 #ifdef __cplusplus
 }

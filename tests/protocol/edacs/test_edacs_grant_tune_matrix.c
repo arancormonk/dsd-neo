@@ -92,6 +92,7 @@ static int g_skip_dibit_count = 0;
 static long g_last_vc_freq = 0;
 static long g_last_cc_freq = 0;
 static long g_rigctl_current_freq = 0;
+static int g_rigctl_freq_queries = 0;
 static int g_tcp_read_count = 0;
 static int g_tcp_close_count = 0;
 static int g_tcp_fail_at = -1;
@@ -347,6 +348,7 @@ edacs_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_s
 static long int
 edacs_hook_get_current_freq_hz(const dsd_opts* opts) {
     (void)opts;
+    g_rigctl_freq_queries++;
     return g_rigctl_current_freq;
 }
 
@@ -836,6 +838,7 @@ edacs_setup_fixture(const edacs_grant_case* test_case) {
     g_last_vc_freq = 0;
     g_last_cc_freq = 0;
     g_rigctl_current_freq = 0;
+    g_rigctl_freq_queries = 0;
 }
 
 static void
@@ -862,6 +865,7 @@ edacs_setup_state_fixture(int ea_mode) {
     g_last_vc_freq = 0;
     g_last_cc_freq = 0;
     g_rigctl_current_freq = 0;
+    g_rigctl_freq_queries = 0;
     edacs_install_hooks();
 }
 
@@ -1266,12 +1270,103 @@ edacs_run_standard_state_cases(void) {
     rc |= edacs_expect(g_state.p25_cc_freq == 856012500L && g_state.trunk_cc_freq == 856012500L,
                        "standard-site-id-rtl-capture", "state", "updated CC frequency from captured RTL LCN");
 
+    /* A -Y list's placeholder row (frequency 0, parked on purpose) whose number is the site's CC LCN: an imported
+       list is the user's, and the site never writes into it. */
+    edacs_setup_state_fixture(0);
+    g_opts.trunk_enable = 0;
+    g_opts.scanner_mode = 1;
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "scan.csv");
+    g_state.lcn_freq_count = 13;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 856012500U;
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(13, 1, 0x13, 0), 0);
+    rc |= edacs_expect(g_state.edacs_cc_lcn == 13, "standard-site-id-user-list", "state", "tracked CC LCN");
+    rc |= edacs_expect(g_state.trunk_lcn_freq[12] == 0 && g_state.lcn_freq_count == 13, "standard-site-id-user-list",
+                       "state", "placeholder row of an imported list left at 0");
+
+    /* The same placeholder under -T: the list keeps its 0, the control channel is the frequency heard, and the end
+       of a call returns to it. */
+    edacs_setup_state_fixture(0);
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "site.csv");
+    g_state.lcn_freq_count = 13;
+    g_state.p25_cc_freq = 0;
+    g_state.trunk_cc_freq = 0;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 856012500U;
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(13, 1, 0x13, 0), 0);
+    rc |= edacs_expect(g_state.trunk_lcn_freq[12] == 0 && g_state.lcn_freq_count == 13,
+                       "standard-site-id-user-list-trunked", "state", "placeholder row of an imported list left at 0");
+    rc |=
+        edacs_expect(g_state.p25_cc_freq == 856012500L && g_state.trunk_cc_freq == 856012500L,
+                     "standard-site-id-user-list-trunked", "state", "control channel learned from the frequency heard");
+    g_opts.trunk_is_tuned = 1;
+    eot_cc(&g_opts, &g_state);
+    rc |= edacs_expect(g_cc_tune_count == 1 && g_last_cc_freq == 856012500L, "standard-site-id-user-list-trunked",
+                       "state", "end of call returns to the learned control channel");
+
+    /* The same during an I/Q replay whose capture recorded a retune: the control channel is the centre being decoded,
+       not the capture's opening one. */
+    edacs_setup_state_fixture(0);
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "site.csv");
+    g_state.lcn_freq_count = 13;
+    g_state.p25_cc_freq = 0;
+    g_state.trunk_cc_freq = 0;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 856012500U;
+    g_opts.iq_replay_center_freq = 857012500U;
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(13, 1, 0x13, 0), 0);
+    rc |= edacs_expect(g_state.trunk_cc_freq == 857012500L && g_state.trunk_lcn_freq[12] == 0,
+                       "standard-site-id-user-list-replay", "state", "control channel is the replay's tuned centre");
+
+    /* A rigctl peer and no radio input: the control channel's frequency is a query on the decoder thread, asked once
+       for that control channel, not at every site message on the same carrier. */
+    edacs_setup_state_fixture(0);
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "site.csv");
+    g_state.lcn_freq_count = 13;
+    g_state.p25_cc_freq = 0;
+    g_state.trunk_cc_freq = 0;
+    g_opts.use_rigctl = 1;
+    g_rigctl_current_freq = 855262500L;
+    for (int message = 0; message < 3; message++) {
+        edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(12, 1, 0x12, 0), 0);
+    }
+    rc |= edacs_expect(g_state.trunk_cc_freq == 855262500L && g_state.trunk_lcn_freq[11] == 0,
+                       "standard-site-id-user-list-rigctl", "state", "control channel learned from the rigctl peer");
+    rc |= edacs_expect(g_rigctl_freq_queries == 1, "standard-site-id-user-list-rigctl", "state",
+                       "one frequency query for the control channel");
+
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_all_call_msg1(9, 1, 1010),
                               edacs_standard_all_call_msg2(1010));
     rc |= edacs_expect_recent_only(9, DSD_CALL_KIND_VOICE, 0U, 1010U,
                                    EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL, "standard-all-call");
 
+    return rc;
+}
+
+/* Issue #672: the control-channel LCN capture fills a 0 Hz row of the map in place with the tuned frequency. That keeps
+   the list's identity (lcn_list_rev) and moves its content revision (lcn_avoid_rev) only when the row is avoided, so an
+   avoid list that shows the row refreshes and no other does. */
+static int
+edacs_run_lcn_capture_stamp_cases(void) {
+    int rc = 0;
+    for (int avoided = 0; avoided < 2; avoided++) {
+        const char* name = avoided ? "lcn-capture-avoided-row" : "lcn-capture-unavoided-row";
+        edacs_setup_state_fixture(0);
+        g_opts.audio_in_type = AUDIO_IN_RTL;
+        g_opts.rtlsdr_center_freq = 856012500U;
+        if (avoided) {
+            rc |= edacs_expect(dsd_state_trunk_lcn_avoid_set(&g_state, 12U, 1) == 0, name, "state", "avoided row 13");
+        }
+        const uint64_t list_rev = g_state.lcn_list_rev;
+        const uint64_t avoid_rev = g_state.lcn_avoid_rev;
+        edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(13, 1, 0x13, 0), 0);
+        rc |= edacs_expect(g_state.trunk_lcn_freq[12] == 856012500L, name, "state", "captured the 0 Hz row");
+        rc |= edacs_expect(g_state.lcn_list_rev == list_rev, name, "state", "kept the list identity");
+        rc |= edacs_expect((g_state.lcn_avoid_rev != avoid_rev) == (avoided != 0), name, "state",
+                           "moved the content revision only for an avoided row");
+        dsd_state_trunk_lcn_free(&g_state);
+    }
     return rc;
 }
 
@@ -3371,6 +3466,7 @@ main(void) {
     rc |= edacs_run_eot_wav_rotation_case();
     rc |= edacs_run_retune_after_eot_case(&cases[3]);
     rc |= edacs_run_standard_state_cases();
+    rc |= edacs_run_lcn_capture_stamp_cases();
     rc |= edacs_run_extended_state_cases();
     rc |= edacs_run_radio_policy_cases();
     rc |= edacs_run_helper_contract_cases();

@@ -299,7 +299,7 @@ p25_sm_seed_cc_at(dsd_state* state, long freq) {
     state->trunk_cc_freq = freq;
     p25_sm_seed_cc_modulation_from_current_sync(state);
     if (state->trunk_lcn_freq[0] == 0) {
-        state->trunk_lcn_freq[0] = freq;
+        (void)dsd_state_trunk_lcn_freq_write(state, 0, freq);
     }
 }
 
@@ -311,7 +311,7 @@ p25_sm_seed_cc_from_known_trunk_alias_if_unknown(dsd_state* state) {
     state->p25_cc_freq = state->trunk_cc_freq;
     p25_sm_seed_cc_modulation_from_current_sync(state);
     if (state->trunk_lcn_freq[0] == 0) {
-        state->trunk_lcn_freq[0] = state->trunk_cc_freq;
+        (void)dsd_state_trunk_lcn_freq_write(state, 0, state->trunk_cc_freq);
     }
 }
 

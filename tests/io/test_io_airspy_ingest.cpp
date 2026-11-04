@@ -5,11 +5,16 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/rate_plan.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <initializer_list>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "rtl_stream_test_support.h"
+
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+#include <xmmintrin.h>
+#endif
 
 #define CHECK(condition)                                                                                               \
     do {                                                                                                               \
@@ -18,6 +23,48 @@
             std::abort();                                                                                              \
         }                                                                                                              \
     } while (0)
+
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+/* The FTZ/DAZ bits in force inside the callback's own work, or ~0U before it ran. Only an MXCSR target has them. */
+static unsigned int g_work_ftz_daz = ~0U;
+
+static void
+note_work_mode(void) {
+    g_work_ftz_daz = _mm_getcsr() & DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS;
+}
+#endif
+
+/* libairspy calls back on its own thread, in its own mode (issue #672 B12): the callback runs dsd-neo's work in the
+   run's mode and hands the library its MXCSR back exactly. Here the "library thread" holds FTZ/DAZ off (or on), the
+   run's mode is the other one. */
+static void
+check_fp_mode_scope(const float* samples, dsd_fp_mode mode, unsigned int library_bits, unsigned int want_inside) {
+#if DSD_RUNTIME_FP_MODE_HAVE_MXCSR
+    const unsigned int original = _mm_getcsr();
+    _mm_setcsr((original & ~DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS) | library_bits);
+    const unsigned int library_csr = _mm_getcsr();
+    dsd_runtime_fp_mode_publish(mode);
+    rtl_device_test_set_airspy_work_probe(note_work_mode);
+    g_work_ftz_daz = ~0U;
+    float output[8] = {};
+    size_t count = 8;
+    uint64_t drops = 0;
+    rtl_device_test_airspy_request request{samples, 4, 16, 0, 0, 0, 0, nullptr, 0U, nullptr};
+    const int rc = rtl_device_test_airspy_ingest(&request, output, &count, &drops);
+    const unsigned int after = _mm_getcsr();
+    rtl_device_test_set_airspy_work_probe(nullptr);
+    dsd_runtime_fp_mode_publish(DSD_FP_MODE_INHERIT);
+    _mm_setcsr(original);
+    CHECK(rc == 0 && count == 8);
+    CHECK(g_work_ftz_daz == want_inside);
+    CHECK(after == library_csr);
+#else
+    (void)samples;
+    (void)mode;
+    (void)library_bits;
+    (void)want_inside;
+#endif
+}
 
 /* Issue #806: an Airspy's own rates on the live rate chain. The half-band output (78,125 Hz from 2.5 or 10 MS/s at
    48 kHz, 93,750 Hz from 3 or 6 MS/s) steps to exactly the DSP bandwidth, so FSK at 4800 sym/s is a whole 10 samples a
@@ -122,5 +169,9 @@ main() {
         CHECK(actual == 48000 && enabled == 1);
     }
     expect_live_plans();
+    check_fp_mode_scope(samples, DSD_FP_MODE_ON, 0U, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS);
+    check_fp_mode_scope(samples, DSD_FP_MODE_OFF, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS, 0U);
+    check_fp_mode_scope(samples, DSD_FP_MODE_INHERIT, DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS,
+                        DSD_RUNTIME_FP_MODE_FTZ_DAZ_BITS);
     return 0;
 }

@@ -11,7 +11,6 @@
  */
 
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -25,20 +24,21 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
-/* The published snapshots dsd_app_rr_apply_block_reason() reads: src/app_control/ui_opts_snapshot.c is not compiled
-   here, so these stand in, file-static (a full dsd_opts or dsd_state on the stack is ~41 KB and more). */
+/* The published snapshot pair a frontend hands dsd_app_rr_apply_block_reason(): src/app_control/ui_opts_snapshot.c is
+   not compiled here, and the pre-check acquires nothing itself, so these stand in, file-static (a full dsd_opts or
+   dsd_state on the stack is ~41 KB and more). */
 static dsd_opts g_snap_opts;
 static dsd_state g_snap_state;
 static int g_opts_published = 0;
 static int g_state_published = 0;
 
-const dsd_opts*
-dsd_app_get_latest_opts_snapshot(void) {
+static const dsd_opts*
+published_opts(void) {
     return g_opts_published ? &g_snap_opts : NULL;
 }
 
-const dsd_state*
-dsd_app_get_latest_snapshot(void) {
+static const dsd_state*
+published_state(void) {
     return g_state_published ? &g_snap_state : NULL;
 }
 
@@ -271,8 +271,9 @@ test_next_start(void) {
     f.has_chan = 0;
     opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
     opts.next_start.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+    DSD_SNPRINTF(opts.next_start.trunk_scan_lists[0].path, sizeof opts.next_start.trunk_scan_lists[0].path, "%s",
                  "targets.csv");
+    opts.next_start.trunk_scan_list_count = 1;
     f.trunking = 1;
     rc |=
         expect_int("trunked, no map passes", rr_apply_next_start_refusal(&opts, &state, &f, NULL, why, sizeof why), 0);
@@ -306,19 +307,24 @@ test_block_reason(void) {
 
     g_opts_published = 0;
     g_state_published = 0;
-    rc |= expect_int("nothing published passes", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 0);
+    rc |= expect_int("nothing published passes",
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 0);
     rc |= expect_str("nothing published: no reason", why, "");
-    rc |= expect_int("null payload passes", dsd_app_rr_apply_block_reason(NULL, 1, 0, why, sizeof why), 0);
+    rc |=
+        expect_int("null payload passes",
+                   dsd_app_rr_apply_block_reason(published_opts(), published_state(), NULL, 1, 0, why, sizeof why), 0);
 
     initOpts(&g_snap_opts);
     initState(&g_snap_state);
     g_opts_published = 1;
     set_input(&g_snap_opts, AUDIO_IN_RTL, "rtl");
     g_snap_opts.rtl_dsp_bw_khz = 48;
-    rc |= expect_int("rtl at 48 kHz blocked", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 1);
+    rc |= expect_int("rtl at 48 kHz blocked",
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 1);
     rc |= expect_str("rtl at 48 kHz reason", why, k_tetra_rtl_bw);
     g_snap_opts.rtl_dsp_bw_khz = 72;
-    rc |= expect_int("rtl at 72 kHz passes", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 0);
+    rc |= expect_int("rtl at 72 kHz passes",
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 0);
 
     /* Issue #806: a SoapySDR or Airspy device runs at its DSP bandwidth, so the frontend judges it by that bandwidth as
        the decoder thread does (a SoapySDR device passed to the decoder with no measured rate, and every Airspy was
@@ -329,33 +335,41 @@ test_block_reason(void) {
         set_input(&g_snap_opts, AUDIO_IN_RTL, dev);
         g_snap_opts.rtl_dsp_bw_khz = 48;
         DSD_SNPRINTF(tag, sizeof tag, "%s at 48 kHz blocked", dev);
-        rc |= expect_int(tag, dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 1);
+        rc |= expect_int(
+            tag, dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 1);
         rc |= expect_str(tag, why, k_tetra_rtl_bw);
         g_snap_opts.rtl_dsp_bw_khz = 72;
         DSD_SNPRINTF(tag, sizeof tag, "%s at 72 kHz passes", dev);
-        rc |= expect_int(tag, dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 0);
+        rc |= expect_int(
+            tag, dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 0);
     }
     set_input(&g_snap_opts, AUDIO_IN_PULSE, "pulse");
-    rc |= expect_int("pulse blocked", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 1);
+    rc |= expect_int("pulse blocked",
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 1);
     rc |= expect_str("pulse reason", why, "TETRA needs an I/Q radio input or a symbol capture");
 
     /* The next-start rule needs the state snapshot as well, and takes the plan's outputs before any file exists. */
     p.decode_mode = (int32_t)DSDCFG_MODE_P25P1;
     g_snap_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
     g_snap_opts.next_start.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_targets_csv, sizeof g_snap_opts.next_start.trunk_scan_targets_csv,
-                 "%s", "targets.csv");
+    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_lists[0].path,
+                 sizeof g_snap_opts.next_start.trunk_scan_lists[0].path, "%s", "targets.csv");
+    g_snap_opts.next_start.trunk_scan_list_count = 1;
     rc |= expect_int("no state snapshot: the rule is not asked",
-                     dsd_app_rr_apply_block_reason(&p, 1, 1, why, sizeof why), 0);
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 1, why, sizeof why), 0);
     g_state_published = 1;
-    rc |= expect_int("prospective map blocked", dsd_app_rr_apply_block_reason(&p, 1, 1, why, sizeof why), 1);
+    rc |= expect_int("prospective map blocked",
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 1, why, sizeof why), 1);
     rc |=
         expect_str("the rule without its advice", why, "trunking.chan_csv cannot be combined with trunk_scan.enabled");
-    rc |= expect_int("no map passes", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 0);
-    rc |= expect_int("null why", dsd_app_rr_apply_block_reason(&p, 1, 1, NULL, 0U), 1);
+    rc |= expect_int("no map passes",
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 0);
+    rc |= expect_int("null why", dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 1, NULL, 0U),
+                     1);
 
     g_snap_opts.trunk_scan_enabled = 1;
-    rc |= expect_int("running trunk scan blocked", dsd_app_rr_apply_block_reason(&p, 1, 0, why, sizeof why), 1);
+    rc |= expect_int("running trunk scan blocked",
+                     dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 0, why, sizeof why), 1);
     rc |= expect_str("running trunk scan reason", why, "stop the trunk scan first; it keeps its own channel maps");
     freeState(&g_snap_state);
     g_opts_published = 0;
@@ -371,35 +385,44 @@ test_files_block_reason(void) {
     char why[DSD_APP_RR_VERDICT_WHY_MAX];
     g_opts_published = 0;
     g_state_published = 0;
-    rc |=
-        expect_int("files: nothing published passes", dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why), 0);
+    rc |= expect_int("files: nothing published passes",
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), "/x chan.csv", why, sizeof why),
+                     0);
 
     initOpts(&g_snap_opts);
     initState(&g_snap_state);
     g_opts_published = 1;
     set_input(&g_snap_opts, AUDIO_IN_PULSE, "pulse");
-    rc |= expect_int("files: no decode mode is checked", dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why),
+    rc |= expect_int("files: no decode mode is checked",
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), "/x chan.csv", why, sizeof why),
                      0);
     rc |= expect_str("files: no reason", why, "");
 
     g_snap_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
     g_snap_opts.next_start.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_targets_csv, sizeof g_snap_opts.next_start.trunk_scan_targets_csv,
-                 "%s", "targets.csv");
-    rc |= expect_int("files: no state snapshot, no rule", dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why),
+    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_lists[0].path,
+                 sizeof g_snap_opts.next_start.trunk_scan_lists[0].path, "%s", "targets.csv");
+    g_snap_opts.next_start.trunk_scan_list_count = 1;
+    rc |= expect_int("files: no state snapshot, no rule",
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), "/x chan.csv", why, sizeof why),
                      0);
     g_state_published = 1;
     rc |= expect_int("files: a map beside the next start",
-                     dsd_app_rr_files_block_reason("/x chan.csv", why, sizeof why), 1);
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), "/x chan.csv", why, sizeof why),
+                     1);
     rc |= expect_str("files: the rule without its advice", why,
                      "trunking.chan_csv cannot be combined with trunk_scan.enabled");
-    rc |= expect_int("files: a group list alone passes", dsd_app_rr_files_block_reason(NULL, why, sizeof why), 0);
-    rc |= expect_int("files: an empty map path passes", dsd_app_rr_files_block_reason("", why, sizeof why), 0);
+    rc |= expect_int("files: a group list alone passes",
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), NULL, why, sizeof why), 0);
+    rc |= expect_int("files: an empty map path passes",
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), "", why, sizeof why), 0);
 
     g_snap_opts.trunk_scan_enabled = 1;
-    rc |= expect_int("files: a running trunk scan", dsd_app_rr_files_block_reason(NULL, why, sizeof why), 1);
+    rc |= expect_int("files: a running trunk scan",
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), NULL, why, sizeof why), 1);
     rc |= expect_str("files: trunk scan reason", why, "stop the trunk scan first; it keeps its own channel maps");
-    rc |= expect_int("files: null why", dsd_app_rr_files_block_reason(NULL, NULL, 0U), 1);
+    rc |= expect_int("files: null why",
+                     dsd_app_rr_files_block_reason(published_opts(), published_state(), NULL, NULL, 0U), 1);
     freeState(&g_snap_state);
     g_opts_published = 0;
     g_state_published = 0;

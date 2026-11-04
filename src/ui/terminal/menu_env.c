@@ -9,14 +9,13 @@
  */
 
 #include "menu_env.h"
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/log.h>
 #include <float.h> // IWYU pragma: keep
 #include <limits.h>
-#include <stddef.h>
-#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 
 // IWYU pragma: no_include <__float_float.h>
@@ -78,8 +77,10 @@ env_set_double(const char* name, double v) {
     }
 }
 
+/* The re-parse publishes an immutable config (safe on this thread); the decoder applies its options fields to the
+   options it owns when the command reaches it, so the menu never writes them. */
 void
-env_reparse_runtime_cfg(dsd_opts* opts) {
+env_reparse_runtime_cfg(void) {
     dsd_neo_config_init();
-    dsd_apply_runtime_config_to_opts(dsd_neo_get_config(), opts, NULL);
+    (void)dsd_app_command_action(DSD_APP_CMD_RUNTIME_CONFIG_APPLY);
 }

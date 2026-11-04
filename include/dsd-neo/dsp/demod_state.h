@@ -166,22 +166,7 @@ struct demod_state {
     void (*mode_demod)(struct demod_state*);
     float* post_polydecim_taps; /* normalized taps length K */
     float* post_polydecim_hist; /* circular history length K */
-    dsd_thread_t mt_threads[2];
-
-    struct {
-        void (*run)(void*);
-        void* arg;
-    } mt_tasks[2];
-
-    struct {
-        struct demod_state* s;
-        int id;
-    } mt_args[2];
-
-    dsd_mutex_t mt_lock;
     dsd_mutex_t ready_m;
-    dsd_cond_t mt_cv;
-    dsd_cond_t mt_done_cv;
     dsd_cond_t ready;
 
     /* Scalars and small arrays */
@@ -395,15 +380,6 @@ struct demod_state {
     /* The Gardner's look-ahead and training search on a TETRA uplink session (dsd_demod_tetra_uplink_timing_runs());
        starts over with the TED (ted_state_t::ul_lookahead_live). */
     dsd_tetra_ul_timing tetra_ul_timing;
-
-    /* Minimal 2-thread worker pool bookkeeping */
-    int mt_enabled;
-    int mt_ready;
-    int mt_should_exit;
-    int mt_epoch;
-    int mt_completed_in_epoch;
-    int mt_posted_count;
-    int mt_worker_id[2];
 
     /* CQPSK (H-DQPSK) path enable for P25 LSM/TDMA */
     int cqpsk_enable;

@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -121,6 +122,17 @@ void dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list);
 
 int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_target_list* out, char* err,
                                     size_t err_sz);
+
+/**
+ * @brief Whether target lists loaded one by one can run in one session (issue #697).
+ *
+ * No target id repeats across the lists (each list's own rules stay its parser's), and their union fits
+ * dsd_trunk_scan_max_targets(). The error names the files from @p names[i] (list i's file) and both rows.
+ *
+ * @return 0 when they can; -1 otherwise.
+ */
+int dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
+                                      char* err, size_t err_sz);
 
 /** Shared lexical splitter for target import/relocation. Modifies line in place. */
 int dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count);
@@ -229,17 +241,55 @@ int dsd_engine_trunk_scan_receive_expired(const dsd_opts* opts, const dsd_state*
  * target back; advance moves to the next eligible target now and retreat to the previous one
  * (issue #666). Avoid and every automatic rotation walk forward; only the hold toggle changes the hold.
  *
- * Returns the codes documented beside the op enum; DSD_TRUNK_SCAN_CONTROL_PAUSED for every op
- * while the scan is paused (issue #671). Avoid, advance and retreat return 0 when the active
+ * Returns the codes documented beside the op enum; DSD_TRUNK_SCAN_CONTROL_PAUSED for every op but
+ * clear while the scan is paused (issue #671; clear only edits flags, issue #672). Avoid answers
+ * DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED, doing nothing, when the active target is avoided already (the
+ * receiver fell back onto it). Avoid, advance and retreat return 0 when the active
  * target changed and 1 when it did not: no other target was eligible (all avoided or cooling
  * down after a failed retune), no switch could be prepared (its key sets did not allocate), or
  * every alternate's retune failed and the receiver fell back onto the original. The caller cannot
  * tell these apart, so its message names only the outcome. Advance and retreat answer
  * DSD_TRUNK_SCAN_CONTROL_REFUSED on a single-target list and avoid when it would leave no
  * usable target; DSD_TRUNK_SCAN_CONTROL_BUSY when the P25 tick guard is held.
+ * A control that succeeds rebuilds the published avoid list when it changed an avoid
+ * (dsd_state::trunk_scan_avoids, under a new trunk_scan_avoid_rev), and publishes the timing only with the P25 tick
+ * guard held: when it is held elsewhere the next tick publishes it. A paused scan's timing stays cleared.
  * Decoder thread only: avoid, advance and retreat retune.
  */
 int dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op);
+/**
+ * @brief Put one avoided target back into the rotation (issue #672): the runtime hook
+ * dsd_trunk_scan_hook_unavoid() and its return codes.
+ *
+ * @p session and @p target_id name the target (the published dsd_state::trunk_scan_session and the target's id);
+ * DSD_TRUNK_SCAN_CONTROL_STALE when the session is another scan's (or 0) or has no such target,
+ * DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED when it is not avoided, DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE with no coordinator.
+ * On DSD_TRUNK_SCAN_CONTROL_OK only the flag changed: no retune, and the hold, every retry cooldown and the dwell stay;
+ * the visit cap restarts only when the target is the first eligible alternate again, as clear's does. The avoid list
+ * and the target are republished, and the timing as a control publishes it. Allowed while paused. Decoder thread only.
+ * On OK and NOT_AVOIDED, @p name (may be NULL) receives the target's 1-based list position and label column.
+ */
+int dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uint32_t session,
+                                         const char* target_id, dsd_trunk_scan_target_name* name);
+/**
+ * @brief Switch a target list on or off for the session (issue #697): the coordinator's side of the runtime
+ * `list_set` hook (dsd_trunk_scan_hook_list_set(), whose rules and results it implements).
+ *
+ * A list switched off keeps its targets, snapshots, avoids and edits; the rotation passes them over until it is on
+ * again. Every candidate walk and count reads one predicate, in the rotation = list on and not avoided. Decoder
+ * thread; takes the P25 SM tick guard (try-enter) itself.
+ */
+int dsd_engine_trunk_scan_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
+                                   uint32_t request);
+/**
+ * @brief Whether the target on air owes a departure that is due now (issue #697): it is out of the rotation (its list
+ * is off, or it is the avoided fallback) and another target can take the receiver, or could when it was last asked.
+ *
+ * Joins the frame loop's yield (scan_visit_should_yield) beside visit expiry and receive rejection, so a continuously
+ * keyed DMR carrier unwinds at a burst boundary and the next coordinator tick departs after protocol cleanup. Reads
+ * two coordinator fields and the decode clock, never the target list, since it runs every frame. 0 while paused.
+ */
+int dsd_engine_trunk_scan_departure_due(const dsd_opts* opts, const dsd_state* state);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 /**

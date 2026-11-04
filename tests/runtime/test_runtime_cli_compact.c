@@ -157,6 +157,36 @@ test_src_csv_long_opts_are_removed(void) {
     return 0;
 }
 
+/* Issue #697: both list options, in both spellings, leave getopt nothing; "-fi" after them stays. */
+static int
+test_trunk_scan_list_long_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan";
+    char arg2[] = "a.csv";
+    char arg3[] = "--trunk-scan-off";
+    char arg4[] = "b.csv";
+    char arg5[] = "--trunk-scan=c.csv";
+    char arg6[] = "--trunk-scan-off=d.csv";
+    char arg7[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, NULL};
+
+    int new_argc = dsd_cli_compact_args(8, argv);
+    if (new_argc != 2) {
+        DSD_FPRINTF(stderr, "expected new_argc=2, got %d\n", new_argc);
+        return 1;
+    }
+    if (argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "expected argv[1] to be \"-fi\", got \"%s\"\n", argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    if (dsd_cli_long_option_arity("--trunk-scan-off") != DSD_CLI_LONG_NEXT
+        || dsd_cli_long_option_arity("--trunk-scan-off=d.csv") != DSD_CLI_LONG_ALONE) {
+        DSD_FPRINTF(stderr, "--trunk-scan-off arity is not the parser's\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_p25_bandplan_long_opts_are_removed(void) {
     char arg0[] = "dsd-neo";
@@ -782,6 +812,7 @@ main(void) {
     rc |= test_iq_missing_value_forms_are_removed_safely();
     rc |= test_src_csv_long_opts_are_removed();
     rc |= test_p25_bandplan_long_opts_are_removed();
+    rc |= test_trunk_scan_list_long_opts_are_removed();
     rc |= test_scan_voice_long_opts_are_removed();
     rc |= test_scan_max_visit_long_opts_are_removed();
     rc |= test_am_bandwidth_long_opts_are_removed();

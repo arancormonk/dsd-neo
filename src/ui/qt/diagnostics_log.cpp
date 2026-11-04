@@ -1046,6 +1046,8 @@ DiagnosticsLog::Segments::Segments(const char* currentName, const char* previous
                                    const char* what)
     : current(currentName), previous(previousName), limit(segmentLimit), label(what) {}
 
+DiagnosticsLog::Segments::~Segments() = default;
+
 DiagnosticsLog::DiagnosticsLog(const QString& directory) : DiagnosticsLog(directory, TestOptions{}) {}
 
 DiagnosticsLog::DiagnosticsLog(const QString& directory, TestOptions options)

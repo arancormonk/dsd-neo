@@ -389,7 +389,8 @@ swap_state(const rig& r) {
 
 void
 wait_reader_running(const rig& r) {
-    for (int i = 0; i < 2000 && (swap_state(r).reader_running == 0); i++) {
+    const uint64_t give_up_ms = dsd_realtime_mono_ms() + 2000U;
+    while (swap_state(r).reader_running == 0 && dsd_realtime_mono_ms() < give_up_ms) {
         dsd_sleep_ms(1);
     }
     assert(swap_state(r).reader_running);
@@ -836,7 +837,8 @@ hold_gain_write(void* ctx, int op) {
         return;
     }
     g_held.inside.store(1);
-    for (int i = 0; i < 2000 && (g_held.release.load() == 0); i++) {
+    const uint64_t give_up_ms = dsd_realtime_mono_ms() + 2000U;
+    while (g_held.release.load() == 0 && dsd_realtime_mono_ms() < give_up_ms) {
         dsd_sleep_ms(1);
     }
 }
@@ -896,7 +898,8 @@ test_setter_before_retire_is_replayed(void) {
     r.dongle->on_op = hold_gain_write;
     dsd_thread_t setter;
     start_thread(&setter, held_setter_thread, &g_held);
-    for (int i = 0; i < 2000 && (g_held.inside.load() == 0); i++) {
+    const uint64_t give_up_ms = dsd_realtime_mono_ms() + 2000U;
+    while (g_held.inside.load() == 0 && dsd_realtime_mono_ms() < give_up_ms) {
         dsd_sleep_ms(1);
     }
     assert(g_held.inside.load());

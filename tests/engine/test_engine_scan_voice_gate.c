@@ -143,6 +143,13 @@ dsd_engine_channel_scan_waiting(const dsd_state* state) {
     return g_scan_waiting;
 }
 
+/* From engine/channel_scan.c, which this fixture does not link: with no RTL front end no row's width is refused, so the
+   rows a step can land on are the usable ones of a list of the user's. */
+int
+dsd_engine_channel_scan_can_rotate(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_state_trunk_lcn_user_list_present(opts, state) && dsd_state_trunk_lcn_usable_count(state) >= 2;
+}
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -170,8 +177,9 @@ fixture_init(gate_fixture* fix) {
     g_opts.scan_voice_qualify_ms = 1000;
     g_opts.scan_voice_hold_ms = 2000;
     g_state.lcn_freq_roll = 3;
-    /* Three real rows, so dsd_state_trunk_lcn_usable_count() sees somewhere to go and the
+    /* Three real rows of an imported list, so dsd_engine_channel_scan_can_rotate() sees somewhere to go and the
      * per-visit cap is free to fire; the cases that need a dead end shrink the list. */
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "scan.csv");
     g_state.lcn_freq_count = 3;
     for (int row = 0; row < 3; row++) {
         *dsd_state_trunk_lcn_slot(&g_state, row) = 150000000 + (12500 * (long)row);
@@ -937,6 +945,32 @@ test_y_timing_hangtime_without_anchor(void) {
     CHECK("zero hangtime reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_HANGTIME);
     CHECK("zero hangtime waits for the next second", fix.state->scan_timing.deadline_m == 101.0);
     CHECK("zero hangtime span", fix.state->scan_timing.span_ms == 1000U);
+    fixture_free(&fix);
+}
+
+/* Issue #697: -Y with no channel map of the user's (the rows are channels a site announced) stays on its frequency,
+ * so the publication names that and counts nothing down: neither the voice gate's qualify window, nor the hangtime,
+ * nor the per-visit cap. */
+static void
+test_y_timing_without_a_channel_map(void) {
+    gate_fixture fix;
+    if (fixture_init(&fix) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+        g_failures++;
+        return;
+    }
+    fix.opts->chan_in_file[0] = '\0';
+    fix.opts->scan_max_visit_ms = 2000;
+    fix.opts->trunk_hangtime = 2.0f;
+    fix.state->last_cc_sync_time = (time_t)1000;
+    dsd_scan_voice_gate_note_retune(fix.state, 100.0);
+    dsd_scan_voice_gate_tick(fix.opts, fix.state, 1, 100.0);
+    dsd_engine_scan_visit_tick(fix.opts, fix.state, 100.25);
+    dsd_engine_scan_y_timing_tick(fix.opts, fix.state, 100.25, 1000.25);
+    CHECK("no map reason", fix.state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_NO_LIST);
+    CHECK("no map has no window", fix.state->scan_timing.started_m < 0.0 && fix.state->scan_timing.deadline_m < 0.0
+                                      && fix.state->scan_timing.span_ms == 0U);
+    CHECK("no map runs no visit cap", fix.state->scan_timing.visit_deadline_m < 0.0);
     fixture_free(&fix);
 }
 
@@ -1795,6 +1829,7 @@ main(void) {
     test_y_timing_silent_under_trunk_scan();
     test_y_timing_legacy_hangtime_window();
     test_y_timing_hangtime_without_anchor();
+    test_y_timing_without_a_channel_map();
     test_y_timing_manual_hold_pauses_the_timer();
     test_y_timing_qualify_window();
     test_y_timing_voice_and_tail_share_the_hold_window();

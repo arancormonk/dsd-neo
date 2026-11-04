@@ -157,6 +157,42 @@ test_utf8_encoding_needs_room_for_terminator(void) {
     assert(dsd_utf8_encode_scalar(0x41U, NULL, sizeof out) == 0U);
 }
 
+/* Well-formed per RFC 3629, at each sequence length's edges; every other byte pattern is refused. */
+static void
+test_utf8_validation(void) {
+    assert(dsd_utf8_is_valid(""));
+    assert(dsd_utf8_is_valid("plain \x01\x7F"));
+    assert(dsd_utf8_is_valid("\xC2\x80\xDF\xBF"));                     /* U+0080, U+07FF */
+    assert(dsd_utf8_is_valid("\xE0\xA0\x80\xED\x9F\xBF\xEF\xBF\xBF")); /* U+0800, U+D7FF, U+FFFF */
+    assert(dsd_utf8_is_valid("\xF0\x90\x80\x80\xF4\x8F\xBF\xBF"));     /* U+10000, U+10FFFF */
+    assert(!dsd_utf8_is_valid(NULL));
+    assert(!dsd_utf8_is_valid("caf\xE9"));  /* Latin-1 */
+    assert(!dsd_utf8_is_valid("\x80"));     /* a lone continuation byte */
+    assert(!dsd_utf8_is_valid("\xC0\xAF")); /* overlong, two bytes */
+    assert(!dsd_utf8_is_valid("\xC1\xBF"));
+    assert(!dsd_utf8_is_valid("\xE0\x9F\xBF"));     /* overlong, three bytes */
+    assert(!dsd_utf8_is_valid("\xED\xA0\x80"));     /* a surrogate */
+    assert(!dsd_utf8_is_valid("\xF0\x8F\xBF\xBF")); /* overlong, four bytes */
+    assert(!dsd_utf8_is_valid("\xF4\x90\x80\x80")); /* above U+10FFFF */
+    assert(!dsd_utf8_is_valid("\xF5\x80\x80\x80"));
+    assert(!dsd_utf8_is_valid("\xE2\x82")); /* cut short by the terminator */
+    assert(!dsd_utf8_is_valid("\xF0\x9F\x93"));
+    assert(!dsd_utf8_is_valid("\xE2\x82\x41")); /* a non-continuation byte inside */
+}
+
+/* The Windows user-file opener (path_policy.c) opens a path through the wide calls when it is well-formed UTF-8, as the
+   app writes a list's file named in any script, and through the ANSI calls otherwise, as a command line in the ANSI
+   code page gives it. */
+static void
+test_utf8_validation_of_paths(void) {
+    assert(dsd_utf8_is_valid("C:\\data\\scan_lists\\u-1\\Pol\xC3\xAD"
+                             "cia.csv"));
+    assert(dsd_utf8_is_valid("scan_lists/u-1/\xD7\xA9\xD7\x9E\xD7\xA8.csv")); /* Hebrew */
+    assert(dsd_utf8_is_valid("C:\\lists\\plain.csv"));
+    assert(!dsd_utf8_is_valid("C:\\lists\\Pol\xED"
+                              "cia.csv")); /* the same name in code page 1252 */
+}
+
 int
 main(void) {
     test_bmp_units_pass_through();
@@ -169,6 +205,8 @@ main(void) {
     test_utf8_encoding_of_nul();
     test_invalid_scalars_encode_as_replacement();
     test_utf8_encoding_needs_room_for_terminator();
+    test_utf8_validation();
+    test_utf8_validation_of_paths();
     DSD_FPRINTF(stderr, "CORE_UTF16: PASS\n");
     return 0;
 }

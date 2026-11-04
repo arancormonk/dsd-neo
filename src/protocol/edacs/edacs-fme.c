@@ -1389,35 +1389,49 @@ edacs_print_unknown_command(const dsd_opts* opts, unsigned long long int msg_1, 
     edacs_print_optional_payload_if_needed(opts, msg_1, msg_2);
 }
 
-static void
-edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
-    if (lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] != 0) {
-        return;
+/* The frequency the receiver is on: the tuned one, as the received identity reads it (dsd_opts_tuned_freq_hz(), an I/Q
+   replay's recorded retunes included), else the rigctl peer's, which is a query on the decoder thread; 0 with
+   neither. */
+static long int
+edacs_heard_frequency(const dsd_opts* opts) {
+    const uint32_t tuned_hz = dsd_opts_tuned_freq_hz(opts);
+    if (tuned_hz != 0U) {
+        return (long int)tuned_hz;
     }
-
-    if (opts->use_rigctl == 1) {
-        long int lcnfreq = dsd_rigctl_query_hook_get_current_freq_hz(opts);
-        if (lcnfreq != 0) {
-            state->trunk_lcn_freq[lcn - 1] = lcnfreq;
-        }
-    }
-
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        long int lcnfreq = (long int)opts->rtlsdr_center_freq;
-        if (lcnfreq != 0) {
-            state->trunk_lcn_freq[lcn - 1] = lcnfreq;
-        }
-    }
+    return (opts->use_rigctl == 1) ? dsd_rigctl_query_hook_get_current_freq_hz(opts) : 0L;
 }
 
 static void
-edacs_update_trunk_cc_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
-    if ((opts->trunk_enable != 1) || lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] == 0) {
+edacs_capture_current_lcn_frequency(const dsd_opts* opts, dsd_state* state, int lcn) {
+    /* An imported list is positional: its 0 is a row skipped or parked on purpose, which the site never fills. */
+    if (lcn <= 0 || lcn > 25 || state->trunk_lcn_freq[lcn - 1] != 0
+        || dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return;
     }
+    (void)dsd_state_trunk_lcn_freq_write(state, lcn - 1, edacs_heard_frequency(opts));
+}
 
-    state->p25_cc_freq = state->trunk_lcn_freq[lcn - 1];
-    state->trunk_cc_freq = state->p25_cc_freq;
+/* The control channel's frequency for the returns to it. @p prev_lcn is the CC LCN before this message named @p lcn. */
+static void
+edacs_update_trunk_cc_frequency(const dsd_opts* opts, dsd_state* state, int lcn, int prev_lcn) {
+    if ((opts->trunk_enable != 1) || lcn <= 0 || lcn > 25) {
+        return;
+    }
+    long int cc = state->trunk_lcn_freq[lcn - 1];
+    if (cc == 0) {
+        /* A control channel an imported list holds at 0 is still the one heard, though the list keeps its 0
+           (edacs_capture_current_lcn_frequency()). Learned once per control channel when only a rigctl query can
+           tell: the same LCN's next messages keep it, so they do no I/O on this thread. */
+        if (lcn == prev_lcn && state->trunk_cc_freq != 0 && dsd_opts_tuned_freq_hz(opts) == 0U) {
+            return;
+        }
+        cc = edacs_heard_frequency(opts);
+    }
+    if (cc == 0) {
+        return;
+    }
+    state->p25_cc_freq = cc;
+    state->trunk_cc_freq = cc;
 }
 
 static void
@@ -1559,6 +1573,7 @@ edacs_handle_extended_mt2_system_info(const dsd_opts* opts, dsd_state* state, un
         }
         dsd_rxid_note_edacs_cc_lcn(state, (uint16_t)lcn);
         dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_EDACS, dsd_opts_tuned_freq_hz(opts));
+        const int prev_cc_lcn = state->edacs_cc_lcn;
         state->edacs_cc_lcn = lcn;
         edacs_update_lcn_count(state, lcn);
         DSD_FPRINTF(stderr, " :: System ID [%04X] CC LCN [%02d]%s", system, state->edacs_cc_lcn,
@@ -1569,7 +1584,7 @@ edacs_handle_extended_mt2_system_info(const dsd_opts* opts, dsd_state* state, un
         }
 
         edacs_capture_current_lcn_frequency(opts, state, state->edacs_cc_lcn);
-        edacs_update_trunk_cc_frequency(opts, state, state->edacs_cc_lcn);
+        edacs_update_trunk_cc_frequency(opts, state, state->edacs_cc_lcn, prev_cc_lcn);
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
@@ -2415,9 +2430,10 @@ edacs_handle_standard_mt_d_site_id(const dsd_opts* opts, dsd_state* state, unsig
     if (is_auxiliary == 0) {
         dsd_rxid_note_edacs_cc_lcn(state, (uint16_t)cc_lcn);
         dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_EDACS, dsd_opts_tuned_freq_hz(opts));
+        const int prev_cc_lcn = state->edacs_cc_lcn;
         state->edacs_cc_lcn = cc_lcn;
         edacs_capture_current_lcn_frequency(opts, state, cc_lcn);
-        edacs_update_trunk_cc_frequency(opts, state, cc_lcn);
+        edacs_update_trunk_cc_frequency(opts, state, cc_lcn, prev_cc_lcn);
     }
 }
 

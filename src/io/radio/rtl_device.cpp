@@ -39,6 +39,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rt_sched.h>
@@ -486,6 +487,9 @@ struct rtl_device {
     /* Set while a control or setup transaction holds soapy_lock (never a read): the progress monitor does not count
      * that time as silence, since the reader cannot read meanwhile. */
     std::atomic<int> soapy_control_hold{0};
+    /* Control transactions waiting to take soapy_lock (soapy_control_lock()): the reader lets them in before its next
+     * read. */
+    std::atomic<int> soapy_controls_waiting{0};
     /* TCP stats (optional) */
     uint64_t tcp_bytes_total = 0U;
     uint64_t tcp_bytes_window = 0U;
@@ -3182,6 +3186,7 @@ replay_report_failure(const struct rtl_device* s, int rc) {
 
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 replay_thread_fn(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("iq_replay");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     if (!s) {
         DSD_THREAD_RETURN;
@@ -3556,6 +3561,17 @@ rtl_usb_test_fake_async(void) {
                || g_test_usb_reader_stream.load(std::memory_order_acquire));
 }
 
+/* Poll every millisecond while @p waiting holds, for @p limit_ms of real time at most. The limit is on the clock, not a
+ * count of sleeps, which a loaded runner (or Windows' timer tick) stretches. */
+template <typename Waiting>
+static void
+rtl_test_wait_while(Waiting waiting, uint32_t limit_ms) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + limit_ms;
+    while (waiting() && dsd_realtime_mono_ms() < deadline_ms) {
+        dsd_sleep_ms(1);
+    }
+}
+
 /* At @p point, the reader a test holds there waits until a stop's first cancel attempt; bounded, so a stop that never
  * cancels fails the test rather than hanging it. */
 static void
@@ -3565,10 +3581,7 @@ rtl_usb_test_hold_reader(int point) {
         return;
     }
     g_test_usb_reader_held.store(1, std::memory_order_release);
-    for (int waited_ms = 0; waited_ms < 2000 && g_test_usb_reader_cancels.load(std::memory_order_acquire) == 0;
-         ++waited_ms) {
-        dsd_sleep_ms(1);
-    }
+    rtl_test_wait_while([] { return g_test_usb_reader_cancels.load(std::memory_order_acquire) == 0; }, 2000U);
 }
 #endif
 
@@ -3608,18 +3621,13 @@ rtl_usb_read_async(struct rtl_device* s) {
             /* Stream until a cancel reaches it; 5 s at most. */
             g_test_usb_reader_streamed.store(1, std::memory_order_release);
             g_test_usb_reader_streaming.store(1, std::memory_order_release);
-            for (int waited_ms = 0; waited_ms < 5000 && !g_test_usb_reader_cancelled.load(std::memory_order_acquire);
-                 ++waited_ms) {
-                dsd_sleep_ms(1);
-            }
+            rtl_test_wait_while([] { return g_test_usb_reader_cancelled.load(std::memory_order_acquire) == 0; }, 5000U);
             g_test_usb_reader_streaming.store(0, std::memory_order_release);
             return 0;
         }
         if (g_test_usb_reader_wait_stop.load(std::memory_order_acquire)) {
             /* Bounded, so a stop that never reaches the reader fails the test rather than hanging it. */
-            for (int waited_ms = 0; waited_ms < 5000 && s->run.load(std::memory_order_acquire); ++waited_ms) {
-                dsd_sleep_ms(1);
-            }
+            rtl_test_wait_while([s] { return s->run.load(std::memory_order_acquire) != 0; }, 5000U);
         }
         return g_test_usb_reader_rc.load(std::memory_order_acquire);
     }
@@ -3819,6 +3827,7 @@ rtl_usb_reader_finished(struct rtl_device* s, int rc, uint32_t incarnation) {
  */
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 dongle_thread_fn(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("rtl_usb");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
     /* No other reader starts before this one is joined, so the value is this reader's. */
@@ -4400,13 +4409,23 @@ soapy_control_hold_mark(struct rtl_device* dev, int held) {
     dev->soapy_control_hold.store(held, std::memory_order_relaxed);
 }
 
+/* Take soapy_lock for a control transaction, on any thread but the reader's: 0 once it is held. The waiting count
+ * makes the reader let it in before its next read (soapy_reader_let_controls_in()). */
+static int
+soapy_control_lock(struct rtl_device* dev) {
+    dev->soapy_controls_waiting.fetch_add(1, std::memory_order_acq_rel);
+    const int rc = dsd_mutex_lock(&dev->soapy_lock);
+    dev->soapy_controls_waiting.fetch_sub(1, std::memory_order_acq_rel);
+    return rc;
+}
+
 template <typename Fn>
 static int
 soapy_call_locked(struct rtl_device* dev, const char* op, Fn&& fn) {
     if (!dev || !dev->soapy_lock_inited) {
         return -1;
     }
-    if (dsd_mutex_lock(&dev->soapy_lock) != 0) {
+    if (soapy_control_lock(dev) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for %s.\n", op);
         return -1;
     }
@@ -5081,12 +5100,31 @@ soapy_prepare_read_buffer(const struct rtl_device* dev, std::vector<std::complex
     return -1;
 }
 
+/* Before the reader's next read, wait while a control transaction waits for soapy_lock, until it took it or the device
+ * stops. The reader takes the lock again the moment a read returns, and a mutex goes to whichever thread runs first, so
+ * on a busy CPU a control (a retune) could otherwise wait behind read after read, for seconds. A yield is enough while
+ * the control is only being scheduled; one that waits behind another control holding the lock is waited for in
+ * sleeps, not spun on. */
+static void
+soapy_reader_let_controls_in(const struct rtl_device* dev) {
+    for (unsigned int tries = 0U; dev->soapy_controls_waiting.load(std::memory_order_acquire) > 0
+                                  && dev->run.load(std::memory_order_acquire) != 0;
+         ++tries) {
+        if (tries < 8U) {
+            dsd_thread_yield();
+        } else {
+            dsd_sleep_ms(1);
+        }
+    }
+}
+
 static int
 soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elems, int* receiver_failure) {
     *receiver_failure = 0;
     if (!dev || !buffs) {
         return INT_MIN;
     }
+    soapy_reader_let_controls_in(dev);
     if (dsd_mutex_lock(&dev->soapy_lock) != 0) {
         DSD_FPRINTF(stderr, "SoapySDR: failed to lock mutex for readStream.\n");
         return INT_MIN;
@@ -5314,6 +5352,7 @@ soapy_thread_fn(void* arg) {
     (void)arg;
     DSD_THREAD_RETURN;
 #else
+    dsd_runtime_fp_mode_apply_thread("soapy");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     maybe_set_thread_realtime_and_affinity("DONGLE");
 
@@ -5376,10 +5415,22 @@ soapy_progress_monitor(void* arg) {
     DSD_THREAD_RETURN;
 }
 
-/* libairspy's single consumer owns sample ingestion; the monitor only observes
- * streaming health. Never stop/join the driver from its receive callback. */
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+static void (*g_test_airspy_work_probe)(void) = nullptr;
+
+extern "C" void
+rtl_device_test_set_airspy_work_probe(void (*probe)(void)) {
+    g_test_airspy_work_probe = probe;
+}
+#endif
+
 static void
-airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropped) {
+airspy_receive_samples(void* context, const float* samples, size_t pairs, uint64_t dropped) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (g_test_airspy_work_probe) {
+        g_test_airspy_work_probe();
+    }
+#endif
     auto* dev = static_cast<rtl_device*>(context);
     if (!dev->run.load(std::memory_order_acquire)) {
         return;
@@ -5414,6 +5465,18 @@ airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropp
     rtl_submit_capture_bytes(dev, samples, pairs * 2U * sizeof(float));
     rtl_publish_cf32_input_level_source(samples, pairs * 2U, DSD_INPUT_LEVEL_SOURCE_AIRSPY_CF32);
     (void)soapy_write_cf32_to_ring(dev, samples, pairs, 0, 0);
+}
+
+/* libairspy's single consumer owns sample ingestion; the monitor only observes
+ * streaming health. Never stop/join the driver from its receive callback.
+ * The consumer is libairspy's own thread, which converts and filters the samples in its own floating-point mode before
+ * this runs: the run's mode covers dsd-neo's work here only, and the library's is back before the callback returns. */
+static void
+airspy_receive(void* context, const float* samples, size_t pairs, uint64_t dropped) {
+    dsd_fp_mode_scope fp_mode;
+    dsd_runtime_fp_mode_scope_enter(&fp_mode);
+    airspy_receive_samples(context, samples, pairs, dropped);
+    dsd_runtime_fp_mode_scope_leave(&fp_mode);
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -7204,6 +7267,7 @@ rtl_tcp_reader_process_chunk(struct rtl_device* s, struct rtl_tcp_loop_state* st
  * too many receive timeouts in a row, the throughput watchdog) is reconnected here (rtl_tcp_reconnect()). */
 static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
 tcp_thread_fn(void* arg) {
+    dsd_runtime_fp_mode_apply_thread("rtl_tcp");
     struct rtl_device* s = static_cast<rtl_device*>(arg);
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     maybe_set_thread_realtime_and_affinity("DONGLE");
@@ -11988,10 +12052,7 @@ static int
 rtl_device_test_usb_reader_end(struct rtl_device** dev, const rtl_device_test_usb_reader_request* request, int hold) {
     if (hold != RTL_TEST_USB_HOLD_NONE) {
         /* Stop only once the reader is held where the test asked. */
-        for (int waited_ms = 0; waited_ms < 2000 && !g_test_usb_reader_held.load(std::memory_order_acquire);
-             ++waited_ms) {
-            dsd_sleep_ms(1);
-        }
+        rtl_test_wait_while([] { return g_test_usb_reader_held.load(std::memory_order_acquire) == 0; }, 2000U);
     }
     if (request->stop_after_ms > 0) {
         dsd_sleep_ms((unsigned int)request->stop_after_ms);
@@ -12304,6 +12365,16 @@ rtl_device_test_soapy_control_hold(struct rtl_device* dev, unsigned int ms) {
 #endif
 }
 
+extern "C" int
+rtl_device_test_soapy_controls_waiting(const struct rtl_device* dev) {
+#ifdef USE_SOAPYSDR
+    return dev != nullptr ? dev->soapy_controls_waiting.load(std::memory_order_acquire) : 0;
+#else
+    (void)dev;
+    return 0;
+#endif
+}
+
 extern "C" void
 rtl_device_test_soapy_internal_read_failure(int on) {
 #ifdef USE_SOAPYSDR
@@ -12335,7 +12406,7 @@ rtl_device_test_soapy_state_get(struct rtl_device* dev, rtl_device_test_soapy_st
     out->reader_exited = dev->reader_exited.load(std::memory_order_acquire);
     out->monitor_started = dev->progress_monitor_started;
 #ifdef USE_SOAPYSDR
-    if (dev->soapy_lock_inited && dsd_mutex_lock(&dev->soapy_lock) == 0) {
+    if (dev->soapy_lock_inited != 0 && soapy_control_lock(dev) == 0) {
         out->stream_open = dev->soapy_stream ? 1 : 0;
         (void)dsd_mutex_unlock(&dev->soapy_lock);
     }

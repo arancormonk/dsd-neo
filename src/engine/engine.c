@@ -88,6 +88,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
@@ -1428,7 +1429,7 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
     const dsd_trunk_tune_result result = no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq, &pending_id);
     if (result == DSD_TRUNK_TUNE_RESULT_TIMEOUT) {
         dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_UNTYPED_STEP, pending_id, (uint32_t)freq, prior_hz,
-                                            row, state->lcn_scan_session, state->trunk_chan_map_seq);
+                                            row, state->lcn_scan_session, state->lcn_list_rev);
         return DSD_UNTYPED_STEP_PENDING;
     }
     if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
@@ -1597,7 +1598,7 @@ static int
 untyped_settled_row_is_current(const dsd_opts* opts, const dsd_state* state, const dsd_manual_tune_settled* settled) {
     return dsd_channel_scan_owns_tuner(opts, state) && opts->trunk_scan_enabled != 1
            && !dsd_channel_modes_present(state) && settled->scan_session == state->lcn_scan_session
-           && settled->map_seq == state->trunk_chan_map_seq && settled->row >= 0 && settled->row < state->lcn_freq_count
+           && settled->list_rev == state->lcn_list_rev && settled->row >= 0 && settled->row < state->lcn_freq_count
            && *dsd_state_trunk_lcn_slot_const(state, settled->row) == (long int)settled->requested_hz;
 }
 
@@ -1664,7 +1665,10 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
 static int
 no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int* install_row) {
     *install_row = -1;
-    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
+    /* Channels learned over the air (a DMR site's broadcasts) are no list to scan: a -Y session without one of the
+       user's stays where it is until one is imported. */
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !dsd_state_trunk_lcn_user_list_present(opts, state)
+        || !no_carrier_scanner_step_is_due(opts, state, now)) {
         return 0;
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
@@ -4378,15 +4382,10 @@ dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
     dsd_state_rebase_decode_timestamps(opts, state);
 }
 
-int
-dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
-    if (!opts || !state) {
-        return -1;
-    }
-
+static int
+engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     dsd_input_failure_clear();
     reset_device_io_caches();
-    dsd_bootstrap_enable_ftz_daz_if_enabled();
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);
     InitAllFecFunction();
@@ -4459,5 +4458,19 @@ ENGINE_OUT:
         || (failure.kind == DSD_INPUT_FAILURE_FILE && opts->iq_replay_requested)) {
         rc = 1;
     }
+    return rc;
+}
+
+int
+dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
+    if (!opts || !state) {
+        return -1;
+    }
+    /* The run's floating-point mode on this (decoder) thread for the run, and the host thread's own mode back when it
+       returns: a host that runs one session after another on this thread starts each from its own mode. */
+    dsd_fp_mode_scope host_fp_mode;
+    dsd_bootstrap_apply_fp_mode(&host_fp_mode);
+    const int rc = engine_run_session(opts, state, hooks);
+    dsd_runtime_fp_mode_scope_leave(&host_fp_mode);
     return rc;
 }

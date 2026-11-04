@@ -19,6 +19,7 @@ Item {
             serviceNamesSheet.visible = false;
             squelchSheet.visible = false;
             passbandSheet.visible = false;
+            scanAvoidSheet.visible = false;
             historyDetail.visible = false;
             otherSlotMenu.visible = false;
             receiverSheet.visible = false;
@@ -28,6 +29,9 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum
     property string scanTargetName: ""
+    // Issue #697: the name the session gives the list of the target on air;
+    // Main sets it only while the scan has more than one list.
+    property string scanListName: ""
     property bool sitesAvailable: false
     signal openSites
     signal openSessionMenu
@@ -45,7 +49,16 @@ Item {
     // should agree with the history rows it sits above. A map without a name (a
     // saved system removed while it plays reads back as an empty map) falls back
     // the same way rather than binding undefined to the header.
-    property string systemName: system && system.name ? system.name : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel : qsTr("Listening")
+    readonly property string sessionName: system && system.name ? system.name : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel : qsTr("Listening")
+    // Issue #697: how many other lists a scan session runs beside its own;
+    // Main sets it. The title then says so: "Security + 2 lists".
+    property int otherListCount: 0
+    function withOtherLists(name) {
+        if (screen.otherListCount <= 0)
+            return name;
+        return screen.otherListCount === 1 ? qsTr("%1 + 1 list").arg(name) : qsTr("%1 + %2 lists").arg(name).arg(screen.otherListCount);
+    }
+    property string systemName: withOtherLists(sessionName)
 
     // Which slot the hero shows: the earliest active call keeps the headline, then a
     // recently ended one; exact start ties and ended calls prefer the lower slot.
@@ -189,6 +202,23 @@ Item {
                 return text;
         }
         return state;
+    }
+    // The running scan's line: "SCANNING · 3/14 · HOLD · Dispatch". With more
+    // than one list (issue #697) the place counts only the targets of the lists
+    // that are on, "-" while the target on air's own list is off and the scan
+    // is about to leave it, and the list it comes from closes the line.
+    function scanningText() {
+        var lists = metrics.scanListCount > 1;
+        var count = lists ? metrics.scanRotationCount : metrics.scanTargetCount;
+        if (count <= 0)
+            return "";
+        var place = !lists ? metrics.scanTargetOrdinal : metrics.scanRotationOrdinal > 0 ? metrics.scanRotationOrdinal : "-";
+        var out = qsTr("SCANNING · %1/%2").arg(place).arg(count) + (metrics.scanHold ? qsTr(" · HOLD") : "");
+        if (screen.scanTargetName.length > 0)
+            out += " · " + screen.scanTargetName;
+        if (lists && screen.scanListName.length > 0)
+            out += " · " + screen.scanListName;
+        return out;
     }
     FontMetrics {
         id: scanHeaderMetrics
@@ -486,11 +516,26 @@ Item {
                 anchors.top: parent.top
                 spacing: 3
 
+                // A long list name gives way before "+ 2 lists" does: the count
+                // is what tells this session from a scan of the one list.
+                TextMetrics {
+                    id: titleNameMetrics
+                    font: monitorTitle.font
+                    text: screen.sessionName
+                    elide: Text.ElideRight
+                    elideWidth: Math.max(0, monitorTitle.width - titleSuffixMetrics.advanceWidth)
+                }
+                TextMetrics {
+                    id: titleSuffixMetrics
+                    font: monitorTitle.font
+                    text: screen.withOtherLists("")
+                }
                 ReadableText {
+                    id: monitorTitle
                     heading: true
                     width: parent.width
                     objectName: "monitorHeaderTitle"
-                    text: screen.systemName
+                    text: screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.systemName
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(20)
                     font.weight: Font.DemiBold
@@ -506,7 +551,7 @@ Item {
                     width: parent.width
                     objectName: "scanTargetHeader"
                     step: screen.scanPaused ? "paused" : metrics.scanRotationActive ? ["scan", metrics.scanHold].join("|") : text
-                    text: screen.scanPaused ? screen.pausedScanText(width) : metrics.scanTargetCount > 0 ? qsTr("SCANNING · %1/%2").arg(metrics.scanTargetOrdinal).arg(metrics.scanTargetCount) + (metrics.scanHold ? qsTr(" · HOLD") : "") + (screen.scanTargetName.length > 0 ? " · " + screen.scanTargetName : "") : screen.system ? Util.monitorMeta(screen.system) : ""
+                    text: screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : "")
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -2321,20 +2366,29 @@ Item {
             }
 
             // Why the scan stopped moving (#380): channels or targets the operator
-            // avoided for the session, with the way to put them back. Hidden at zero
-            // and outside any rotation, so an idle session never carries a 0. The
-            // [avoided] marker is the trunk-scan fallback: every alternate failed to
-            // retune and the receiver stayed on a target that was avoided.
-            ReadingRow {
+            // avoided for the session, with the list of them and the way to put
+            // them back. Shown while there is something to show or clear (issue
+            // #672): avoids a stopped -Y left behind, which the -T control-channel
+            // hunts still skip, and a paused scan's, but not a 0 while a rotation
+            // runs with none. A count the list cannot vouch for reads "?". The
+            // [avoided] marker is the trunk-scan fallback: every alternate failed
+            // to retune and the receiver stayed on a target that was avoided. A
+            // Flow, as the squelch row is, so the buttons move under the reading
+            // at large text.
+            ReadingFlow {
+                id: scanAvoidRow
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "scanAvoidRow"
                 speechStep: screen.speechStep
 
+                width: parent.width
                 spacing: 8
-                visible: metrics.scanRotationActive && metrics.scanAvoidCount > 0
+                visible: metrics.scanAvoidsManageable === true
+                    && (metrics.scanAvoidCount > 0 || metrics.scanAvoidsTotalKnown !== true)
 
                 Text {
-                    anchors.verticalCenter: parent.verticalCenter
+                    height: scanAvoidShowButton.height
+                    verticalAlignment: Text.AlignVCenter
                     text: metrics.scanTargetAvoided ? qsTr("SCAN AVOIDS [avoided]") : qsTr("SCAN AVOIDS")
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
@@ -2344,19 +2398,32 @@ Item {
                 Text {
                     objectName: "scanAvoidValue"
 
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: metrics.scanAvoidCount.toString()
+                    height: scanAvoidShowButton.height
+                    verticalAlignment: Text.AlignVCenter
+                    text: metrics.scanAvoidsTotalKnown === true ? metrics.scanAvoidCount.toString() : "?"
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     color: Theme.cyan
                 }
 
                 OutlineButton {
+                    id: scanAvoidShowButton
+                    objectName: "scanAvoidShowButton"
+
+                    text: qsTr("Show")
+                    accessibleName: qsTr("Show avoided scan channels")
+                    enabled: decoderHost.running
+                    onClicked: scanAvoidSheet.open()
+                }
+
+                // The default touch height, and the width of its label at any
+                // text scale, so it neither falls under 48 px nor breaks "Clear"
+                // in two. Named for what it clears, like the scan buttons.
+                OutlineButton {
                     objectName: "scanAvoidClearButton"
 
-                    width: 72
-                    implicitHeight: 28
                     text: qsTr("Clear")
+                    accessibleName: qsTr("Clear scan avoids")
                     enabled: decoderHost.running
                     onClicked: commands.clearScanAvoids()
                 }
@@ -2472,6 +2539,12 @@ Item {
     // #621: the passband a rigctl peer is asked for on audio input, over the monitor like the squelch editor.
     PassbandSheet {
         id: passbandSheet
+        z: 10
+    }
+
+    // #672: the avoided channels with Put back, over the monitor like the squelch editor.
+    ScanAvoidSheet {
+        id: scanAvoidSheet
         z: 10
     }
 

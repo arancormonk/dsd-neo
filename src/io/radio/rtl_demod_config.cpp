@@ -30,7 +30,6 @@
 #include <dsd-neo/runtime/ring.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/tetra_rate.h>
-#include <dsd-neo/runtime/worker_pool.h>
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>
@@ -430,9 +429,6 @@ demod_init_mode(struct demod_state* s, DemodMode mode, const DemodInitParams* p,
     demod_init_cqpsk_defaults(s);
     demod_apply_mode_defaults(s, mode, p, rtl_dsp_bw_hz);
 
-    /* Initialize minimal worker pool (env-gated via DSD_NEO_MT). */
-    demod_mt_init(s);
-
     /* Generic IQ balance defaults (image suppression); mode-aware guards in DSP pipeline.
        Start disabled so the UI/DSP menu fully controls this DSP block. */
     s->iqbal_enable = 0;
@@ -605,7 +601,7 @@ demod_finalize_runtime_profile(struct demod_state* demod, const dsd_opts* opts) 
  * @brief Initialize the demodulator for the requested mode and attach output ring.
  *
  * Chooses RO2/digital/analog initialization based on @p opts flags, seeds mode
- * defaults, primes the worker pool, and wires up the output ring target.
+ * defaults and wires up the output ring target.
  * Returns immediately when inputs are NULL.
  *
  * @param demod         Demodulator state to initialize.
@@ -1061,7 +1057,7 @@ rtl_demod_warn_symbol_timing(const struct demod_state* demod) {
 /**
  * @brief Release resources allocated by demod_init_mode/config helpers.
  *
- * Tears down resampler/filter buffers, worker pools, and any dynamically
+ * Tears down resampler/filter buffers, the ready primitives, and any dynamically
  * allocated state within the demodulator instance. Safe on partially
  * initialized structures.
  *
@@ -1074,7 +1070,6 @@ rtl_demod_cleanup(struct demod_state* demod) {
     }
     dsd_cond_destroy(&demod->ready);
     dsd_mutex_destroy(&demod->ready_m);
-    demod_mt_destroy(demod);
     dsd_fsk_modem_release(&demod->fsk_modem_state);
     dsd_live_iq_step_disable(&demod->live_iq_step);
     dsd_squelch_step_model_release(&demod->squelch_step_model);

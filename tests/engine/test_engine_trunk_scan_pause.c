@@ -219,7 +219,8 @@ setup(void) {
                                  "tiii,dmr-trunk,451000000,channels.csv,250,1200,,\n")) {
         return 1;
     }
-    DSD_SNPRINTF(g_opts.trunk_scan_targets_csv, sizeof(g_opts.trunk_scan_targets_csv), "%s", g_targets);
+    DSD_SNPRINTF(g_opts.trunk_scan_lists[0].path, sizeof g_opts.trunk_scan_lists[0].path, "%s", g_targets);
+    g_opts.trunk_scan_list_count = 1;
     trunk_scan_test_set_now(0.0);
     char error[256] = {0};
     if (dsd_engine_trunk_scan_init(&g_opts, &g_state, error, sizeof(error)) != 0) {
@@ -977,6 +978,192 @@ pause_and_resume_wait_for_the_guard(void) {
     return rc;
 }
 
+/* ---- Controls and put backs beside the watchdog (issue #672, B5) ---------------------------------------------- */
+
+/* The P25 machine changing under the guard beside the decoder thread: the watchdog's tick, and a followed call and its
+   release at a hangtime's end on the parked P25 target, which write the machine's state and the tuned flag the scan's
+   timing report reads. The counter is relaxed, so waiting on it orders nothing: only the guard may. */
+static struct {
+    atomic_int run;
+    atomic_int releases;
+} g_releaser;
+
+static DSD_THREAD_RETURN_TYPE
+watchdog_releaser(void* arg) {
+    (void)arg;
+    while (atomic_load_explicit(&g_releaser.run, memory_order_relaxed)) {
+        p25_sm_try_tick(&g_opts, &g_state);
+        if (p25_sm_tick_guard_try_enter()) {
+            p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_trunk_scan_hook_p25_ctx();
+            if (ctx) {
+                g_state.p25_last_cc_msg_time_m = dsd_decode_now_mono_s();
+                p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, k_p25_vc_hz, 1234, 42, 0);
+                p25_sm_event(ctx, &g_opts, &g_state, &grant);
+                p25_sm_release(ctx, &g_opts, &g_state, "watchdog-hangtime");
+                (void)atomic_fetch_add_explicit(&g_releaser.releases, 1, memory_order_relaxed);
+            }
+            p25_sm_tick_guard_leave();
+        }
+        dsd_sleep_ms(1U);
+    }
+    DSD_THREAD_RETURN;
+}
+
+/* Waits (bounded) for one more release, so each control meets the watchdog's writes. */
+static void
+releaser_ran(void) {
+    const int before = atomic_load_explicit(&g_releaser.releases, memory_order_relaxed);
+    for (int i = 0; i < 500 && atomic_load_explicit(&g_releaser.releases, memory_order_relaxed) == before; ++i) {
+        dsd_sleep_ms(1U);
+    }
+}
+
+/* A control that takes the guard meets it held now and then: the decoder thread tries again, as a frontend would. */
+static int
+control_through(int op) {
+    int rc = DSD_TRUNK_SCAN_CONTROL_BUSY;
+    for (int i = 0; i < 2000 && rc == DSD_TRUNK_SCAN_CONTROL_BUSY; ++i) {
+        rc = dsd_trunk_scan_hook_control(&g_opts, &g_state, op);
+        if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
+            dsd_thread_yield();
+        }
+    }
+    return rc;
+}
+
+/* Every control and the put back on the decoder thread while the watchdog ticks and releases beside them: the hold,
+   clear and put back take no guard for their flags, and none of them builds the timing report outside the guard
+   (TSan sees a race on the P25 machine otherwise). The next tick publishes what a busy guard put off. */
+static int
+controls_beside_the_watchdog(void) {
+    if (setup()) {
+        cleanup();
+        return 1;
+    }
+    const uint32_t session = g_state.trunk_scan_session;
+    /* The P25 system's voice channel and identity, as a followed grant needs them. */
+    g_state.p2_wacn = 0xBEE00;
+    g_state.p2_sysid = 0x1A2;
+    g_state.p2_cc = 0x293;
+    dsd_state_set_trunk_chan_freq(&g_state, 0x1234, k_p25_vc_hz);
+    dsd_trunk_recovery_note_protocol(&g_state, DSD_TRUNK_RECOVERY_P25);
+    atomic_store(&g_releaser.run, 1);
+    atomic_store(&g_releaser.releases, 0);
+    dsd_thread_t releaser;
+    int rc = expect(dsd_thread_create(&releaser, watchdog_releaser, NULL) == 0, "watchdog releaser started");
+    if (rc) {
+        cleanup();
+        return rc;
+    }
+    for (int i = 0; i < 20; ++i) {
+        rc |= expect(control_through(DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0, "advance to the DMR system");
+        rc |= expect(control_through(DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE) == 0, "avoid it, back onto P25");
+        rc |= expect(strcmp(g_state.trunk_scan_active_id, "p25") == 0 && g_state.trunk_scan_avoid_count == 1U,
+                     "on P25 with the DMR system avoided");
+        releaser_ran();
+        rc |= expect(dsd_trunk_scan_hook_unavoid(&g_opts, &g_state, session, "tiii", NULL) == DSD_TRUNK_SCAN_CONTROL_OK,
+                     "put the DMR system back");
+        releaser_ran();
+        rc |= expect(control_through(DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 0, "hold off");
+        releaser_ran();
+        rc |= expect(control_through(DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 1, "hold on");
+        releaser_ran();
+        rc |= expect(control_through(DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR) == 0, "clear with nothing avoided");
+        releaser_ran();
+    }
+    atomic_store(&g_releaser.run, 0);
+    dsd_thread_join(releaser);
+    rc |= expect(atomic_load(&g_releaser.releases) >= 20, "the watchdog released beside the controls");
+    rc |= expect(!p25_sm_tick_guard_held_by_caller() && p25_sm_tick_guard_try_enter(), "no control kept the guard");
+    p25_sm_tick_guard_leave();
+    g_state.scan_timing.reason = (uint8_t)DSD_SCAN_STAY_NONE;
+    dsd_engine_trunk_scan_tick(&g_opts, &g_state);
+    rc |= expect(g_state.scan_timing.reason != (uint8_t)DSD_SCAN_STAY_NONE, "the next tick publishes the timing");
+    rc |= expect_running_on("after the controls", "p25");
+    cleanup();
+    return rc;
+}
+
+/* ---- Target lists (issue #697) --------------------------------------------------------------------------------- */
+
+/* setup()'s session with its two targets in two lists: the P25 system in list 1, the DMR one in list 2. */
+static int
+setup_two_lists(char* second, size_t second_size) {
+    if (setup()) {
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    if (dsd_test_path_join(second, second_size, g_dir, "dmr.csv") != 0
+        || write_file(g_targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n"
+                                 "p25,p25-trunk,851000000,,250,1200,,hexkeys.csv\n")
+        || write_file(second, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                              "tiii,dmr-trunk,451000000,channels.csv,250,1200,\n")) {
+        return 1;
+    }
+    DSD_SNPRINTF(g_opts.trunk_scan_lists[1].path, sizeof g_opts.trunk_scan_lists[1].path, "%s", second);
+    g_opts.trunk_scan_list_count = 2;
+    trunk_scan_test_set_now(0.0);
+    char error[512] = {0};
+    if (dsd_engine_trunk_scan_init(&g_opts, &g_state, error, sizeof(error)) != 0) {
+        DSD_FPRINTF(stderr, "two-list scan init: %s\n", error);
+        return 1;
+    }
+    return expect(dsd_engine_trunk_scan_control(&g_opts, &g_state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 1,
+                  "hold enabled")
+           | expect(g_frequency == k_p25_cc_hz && g_state.trunk_scan_list_count == 2U, "the scan parked on list 1");
+}
+
+/* A list toggle takes the real P25 SM tick guard the way the controls do: while a watchdog tick holds it, the toggle
+   answers BUSY and changes nothing; once it is let go, the same toggle runs, the P25 system's list goes off and the
+   receiver leaves it for the DMR system at once, as `L` would. A paused scan refuses any toggle, and a resume puts the
+   receiver back on the target it paused at, whose list is on. */
+static int
+list_toggle_takes_the_guard(void) {
+    char second[DSD_TEST_PATH_MAX] = {0};
+    if (setup_two_lists(second, sizeof second)) {
+        (void)remove(second);
+        cleanup();
+        return 1;
+    }
+    dsd_mutex_init(&g_holder.mutex);
+    dsd_cond_init(&g_holder.condition);
+    const uint32_t session = g_state.trunk_scan_session;
+    int rc = expect(session != 0U, "the scan publishes its session");
+    dsd_thread_t holder;
+    if (!start_guard_holder(&holder, dsd_app_command_test_policy_guard_waits())) {
+        rc |= expect(0, "guard holder for the toggle");
+    } else {
+        const int busy = dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 1, 0, 1U);
+        const uint32_t seq = g_state.trunk_scan_lists_seq;
+        atomic_store(&g_holder.done, 1);
+        dsd_thread_join(holder);
+        rc |= expect(busy == DSD_TRUNK_SCAN_LIST_SET_BUSY && g_state.trunk_scan_lists[0].enabled == 1U
+                         && g_frequency == k_p25_cc_hz && !g_holder.stalled,
+                     "a toggle while the watchdog holds the guard is busy and changes nothing");
+        rc |= expect(seq == g_state.trunk_scan_lists_seq, "a busy toggle moves no list");
+    }
+    rc |= expect(dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 1, 0, 2U) == DSD_TRUNK_SCAN_LIST_SET_OK,
+                 "the toggle once the guard is free");
+    rc |= expect_running_on("list 1 off", "tiii");
+    rc |= expect(g_frequency == k_dmr_cc_hz && g_state.trunk_scan_active_list == 2U && g_state.trunk_scan_hold == 1U,
+                 "the receiver left for list 2, the hold kept");
+    rc |= expect(dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 1, 1, 3U) == DSD_TRUNK_SCAN_LIST_SET_OK,
+                 "list 1 back on");
+    rc |= expect(run_action(DSD_APP_CMD_SCANNER_TOGGLE) == 1 && toast_is("Trunk scan paused"), "y pauses");
+    rc |= expect_paused("paused with two lists");
+    rc |= expect(g_state.trunk_scan_session == session, "the session stays published while paused");
+    rc |= expect(dsd_trunk_scan_hook_list_set(&g_opts, &g_state, session, 2, 0, 4U) == DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                     && g_state.trunk_scan_lists[1].enabled == 1U,
+                 "a paused scan refuses a toggle");
+    rc |= expect(run_action(DSD_APP_CMD_SCAN_RESUME) == 1 && toast_is("Trunk scan resumed"), "SCAN_RESUME resumes");
+    rc |= expect_running_on("resumed on the target it paused at", "tiii");
+    dsd_cond_destroy(&g_holder.condition);
+    dsd_mutex_destroy(&g_holder.mutex);
+    (void)remove(second);
+    cleanup();
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -994,5 +1181,7 @@ main(void) {
     rc |= resume_failures_stay_paused();
     rc |= watchdog_beside_pause_and_resume();
     rc |= pause_and_resume_wait_for_the_guard();
+    rc |= controls_beside_the_watchdog();
+    rc |= list_toggle_takes_the_guard();
     return rc;
 }

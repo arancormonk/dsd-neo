@@ -95,8 +95,8 @@ __stdcall
 #endif
 raise_exit_flag_in_grace(void* arg) {
     auto* raiser = static_cast<exit_raiser*>(arg);
-    for (int waited_ms = 0; waited_ms < 5000 && rtl_device_test_verdicts_in_grace() == raiser->in_grace_before;
-         ++waited_ms) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + 5000U;
+    while (rtl_device_test_verdicts_in_grace() == raiser->in_grace_before && dsd_realtime_mono_ms() < deadline_ms) {
         dsd_sleep_ms(1);
     }
     raiser->raised_ms.store(dsd_realtime_mono_ms(), std::memory_order_release);

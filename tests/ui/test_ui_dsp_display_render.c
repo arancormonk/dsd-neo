@@ -69,6 +69,7 @@ test_printw(const char* fmt, ...) {
 
 #include "../../src/ui/terminal/ncurses_dsp_display.c"
 #include "../../src/ui/terminal/ui_row.c"
+#include "../../src/ui/terminal/ui_text.c"
 
 #undef printw
 #undef getmaxyx
@@ -80,7 +81,11 @@ static int g_view_dynamic;
 static int g_view_gate_open;
 
 int
-dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) {
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) {
+    (void)opts;
+    (void)state;
+    (void)snr_fallbacks;
     *out = g_metrics;
     return 0;
 }

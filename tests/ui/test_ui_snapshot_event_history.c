@@ -228,6 +228,329 @@ test_publish_puts_off_while_a_tick_holds_the_guard(dsd_state* state) {
     assert(dsd_app_get_latest_snapshot()->trunk_cc_freq == 853000000L);
 }
 
+/* Issue #672: a decoder state as initState() leaves its avoid identity -- a fresh instance, whole stores -- without
+   the rest of initState(), which this target does not link. */
+static dsd_state*
+new_session_state(void) {
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    assert(st != NULL);
+    st->state_instance = dsd_state_rev_next();
+    st->lcn_list_rev = dsd_state_rev_next();
+    st->lcn_avoid_rev = dsd_state_rev_next();
+    st->trunk_scan_avoids_ok = 1U;
+    st->scan_avoids_complete = 1U;
+    return st;
+}
+
+static void
+free_session_state(dsd_state* st) {
+    dsd_state_ext_free_all(st);
+    dsd_state_trunk_lcn_free(st);
+    dsd_state_trunk_scan_avoids_free(st);
+    free(st);
+}
+
+static long int
+row_freq(int row) {
+    return 851000000L + (12500L * row);
+}
+
+/* Rows 0..rows-1 carry row_freq(); the tail grows as needed. */
+static void
+seed_scan_rows(dsd_state* st, int rows) {
+    assert(dsd_state_trunk_lcn_reserve(st, (size_t)rows) == 0);
+    for (int row = 0; row < rows; row++) {
+        *dsd_state_trunk_lcn_slot(st, row) = row_freq(row);
+    }
+    st->lcn_freq_count = rows;
+}
+
+static long int
+snap_row_freq(const dsd_state* snap, int row) {
+    return row < DSD_TRUNK_LCN_EMBEDDED ? snap->trunk_lcn_freq[row]
+                                        : snap->trunk_lcn_freq_ext[row - DSD_TRUNK_LCN_EMBEDDED];
+}
+
+/* A row count that outgrows any tail either snapshot has grown so far (both double from the same start, and the
+   consumer's is never more than one doubling behind the published one), so copying it must allocate. */
+static int
+rows_past_snapshot_tail(const dsd_state* snap) {
+    return DSD_TRUNK_LCN_EMBEDDED + (int)(2U * snap->trunk_lcn_freq_ext_capacity) + 1;
+}
+
+/* The whole list as the live state has it: every row, the avoided rows (one past the embedded slots) and the name. */
+static void
+assert_scan_list_whole(const dsd_state* snap, const dsd_state* live, int far_row) {
+    assert(snap->scan_avoids_complete == 1U);
+    assert(snap->lcn_freq_count == live->lcn_freq_count);
+    assert(snap->trunk_lcn_freq_ext != live->trunk_lcn_freq_ext);
+    assert(snap_row_freq(snap, DSD_TRUNK_LCN_EMBEDDED) == row_freq(DSD_TRUNK_LCN_EMBEDDED));
+    assert(snap_row_freq(snap, live->lcn_freq_count - 1) == row_freq(live->lcn_freq_count - 1));
+    assert(dsd_state_trunk_lcn_avoid_get(snap, 3U) == 1);
+    assert(dsd_state_trunk_lcn_avoid_get(snap, (size_t)far_row) == 1);
+    assert(strcmp(dsd_state_trunk_lcn_name_get(snap, (size_t)far_row), "Far row") == 0);
+    assert(snap->lcn_avoid_total == 2U && snap->lcn_avoid_rev == live->lcn_avoid_rev);
+}
+
+/* What a copy cut short at the embedded slots leaves: the first rows only, and scan_avoids_complete down, so the avoid
+   count (still the decoder's, 2) is never read against flags the snapshot does not hold. */
+static void
+assert_scan_list_cut_short(const dsd_state* snap, int far_row) {
+    assert(snap->scan_avoids_complete == 0U);
+    assert(snap->lcn_freq_count == DSD_TRUNK_LCN_EMBEDDED);
+    assert(dsd_state_trunk_lcn_avoid_get(snap, 3U) == 1);
+    assert(dsd_state_trunk_lcn_avoid_get(snap, (size_t)far_row) == 0);
+    assert(snap->lcn_avoid_total == 2U);
+}
+
+/* Issue #672 B2: an LCN list past the 26 embedded rows reaches the frontends whole, and a reserve failure at either
+   hop marks the snapshot incomplete until a later copy at unchanged revisions succeeds. */
+static void
+test_scan_list_completeness_across_hops(void) {
+    dsd_state* st = new_session_state();
+    seed_scan_rows(st, 40);
+    int far_row = 35;
+    assert(dsd_state_trunk_lcn_avoid_set(st, 3U, 1) == 0);
+    assert(dsd_state_trunk_lcn_avoid_set(st, (size_t)far_row, 1) == 0);
+    assert(dsd_state_trunk_lcn_name_set(st, (size_t)far_row, "Far row") == 0);
+    dsd_app_telemetry_publish_snapshot(st);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert_scan_list_whole(snap, st, far_row);
+
+    /* Hop 1 (decoder -> published) fails to grow its tail: the published copy is cut short, and the consumer copy of
+       it says so even though its own copy allocated nothing it lacked. */
+    int rows = rows_past_snapshot_tail(snap);
+    seed_scan_rows(st, rows);
+    far_row = rows - 1;
+    assert(dsd_state_trunk_lcn_avoid_set(st, 35U, 0) == 0);
+    assert(dsd_state_trunk_lcn_avoid_set(st, (size_t)far_row, 1) == 0);
+    assert(dsd_state_trunk_lcn_name_set(st, (size_t)far_row, "Far row") == 0);
+    const uint64_t list_rev = st->lcn_list_rev;
+    const uint64_t avoid_rev = st->lcn_avoid_rev;
+    dsd_state_trunk_lcn_test_alloc_fail_after(0);
+    dsd_app_telemetry_publish_snapshot(st);
+    dsd_state_trunk_lcn_test_alloc_fail_after(-1);
+    snap = dsd_app_get_latest_snapshot();
+    assert_scan_list_cut_short(snap, far_row);
+    /* Re-reading with nothing new published copies the same short source again: still incomplete. */
+    snap = dsd_app_get_latest_snapshot();
+    assert_scan_list_cut_short(snap, far_row);
+
+    /* The next publication, at the same revisions, copies whole at both hops. */
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert(st->lcn_list_rev == list_rev && st->lcn_avoid_rev == avoid_rev);
+    assert_scan_list_whole(snap, st, far_row);
+
+    /* Hop 2 (published -> consumer) fails to grow its tail: incomplete, and the next read retries without waiting for
+       a new publication. */
+    rows = rows_past_snapshot_tail(snap);
+    seed_scan_rows(st, rows);
+    assert(dsd_state_trunk_lcn_avoid_set(st, (size_t)far_row, 0) == 0);
+    far_row = rows - 1;
+    assert(dsd_state_trunk_lcn_avoid_set(st, (size_t)far_row, 1) == 0);
+    assert(dsd_state_trunk_lcn_name_set(st, (size_t)far_row, "Far row") == 0);
+    dsd_app_telemetry_publish_snapshot(st);
+    dsd_state_trunk_lcn_test_alloc_fail_after(0);
+    snap = dsd_app_get_latest_snapshot();
+    dsd_state_trunk_lcn_test_alloc_fail_after(-1);
+    assert_scan_list_cut_short(snap, far_row);
+    snap = dsd_app_get_latest_snapshot();
+    assert_scan_list_whole(snap, st, far_row);
+    free_session_state(st);
+}
+
+static void
+fill_trunk_scan_entries(dsd_trunk_scan_avoid_entry* entries, size_t count, const char* label) {
+    DSD_MEMSET(entries, 0, count * sizeof(entries[0]));
+    for (size_t i = 0; i < count; i++) {
+        entries[i].ordinal = (uint32_t)(i + 1U);
+        entries[i].frequency_hz = 851000000U + (12500U * (uint64_t)i);
+        DSD_SNPRINTF(entries[i].id, sizeof entries[i].id, "target-%zu", i);
+        DSD_SNPRINTF(entries[i].label, sizeof entries[i].label, "%s", label);
+    }
+}
+
+/* Publish a new trunk-scan avoid list the way the coordinator does: the entries, then a new revision. Sized past what
+   the snapshots hold, so copying it must allocate. */
+static size_t
+publish_trunk_scan_list(dsd_state* st, const dsd_state* snap, const char* label) {
+    const size_t held = snap != NULL ? snap->trunk_scan_avoid_capacity : 0U;
+    assert(held <= 4096U);
+    const size_t count = (2U * held) + 1U;
+    dsd_trunk_scan_avoid_entry* entries = (dsd_trunk_scan_avoid_entry*)calloc(count, sizeof(*entries));
+    assert(entries != NULL);
+    fill_trunk_scan_entries(entries, count, label);
+    assert(dsd_state_trunk_scan_avoids_set(st, entries, count) == 0);
+    st->trunk_scan_avoid_rev = dsd_state_rev_next();
+    free(entries);
+    return count;
+}
+
+static void
+assert_trunk_scan_list(const dsd_state* snap, const dsd_state* live, size_t count, const char* label) {
+    assert(snap->scan_avoids_complete == 1U);
+    assert(snap->trunk_scan_avoid_count == count);
+    assert(snap->trunk_scan_avoids != NULL && snap->trunk_scan_avoids != live->trunk_scan_avoids);
+    assert(snap->trunk_scan_avoid_rev == live->trunk_scan_avoid_rev);
+    assert(snap->trunk_scan_avoids[count - 1U].ordinal == (uint32_t)count);
+    assert(strcmp(snap->trunk_scan_avoids[0].label, label) == 0);
+    assert(strcmp(snap->trunk_scan_avoids[count - 1U].label, label) == 0);
+}
+
+/* Issue #672 §3.2: the published trunk-scan avoid list is deep-copied at both hops and copied again only when its
+   (instance, revision) moved -- or while the copy held is not whole (spec S1: a hop-1 failure, a hop-2 copy of the
+   incomplete source, hop 1 recovering at the same revision, then hop 2 copying again). */
+static void
+test_trunk_scan_avoids_gated_copy(void) {
+    dsd_state* st = new_session_state();
+    size_t count = publish_trunk_scan_list(st, NULL, "North");
+    dsd_app_telemetry_publish_snapshot(st);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert_trunk_scan_list(snap, st, count, "North");
+
+    /* A change the coordinator has not stamped is not copied: the gate keys on the revision alone. */
+    DSD_SNPRINTF(st->trunk_scan_avoids[0].label, sizeof st->trunk_scan_avoids[0].label, "%s", "unstamped");
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert(strcmp(snap->trunk_scan_avoids[0].label, "North") == 0);
+    st->trunk_scan_avoid_rev = dsd_state_rev_next();
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert(strcmp(snap->trunk_scan_avoids[0].label, "unstamped") == 0);
+
+    /* S1. Hop 1 cannot grow its copy: the published list is empty and not whole, and hop 2 copies that. */
+    count = publish_trunk_scan_list(st, snap, "South");
+    const uint64_t rev = st->trunk_scan_avoid_rev;
+    dsd_state_trunk_lcn_test_alloc_fail_after(0);
+    dsd_app_telemetry_publish_snapshot(st);
+    dsd_state_trunk_lcn_test_alloc_fail_after(-1);
+    snap = dsd_app_get_latest_snapshot();
+    assert(snap->scan_avoids_complete == 0U && snap->trunk_scan_avoid_count == 0U);
+    assert(snap->trunk_scan_avoid_rev == rev);
+    /* Hop 1 recovers at the same revision; hop 2, holding that revision but not whole, copies again. */
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert(st->trunk_scan_avoid_rev == rev);
+    assert_trunk_scan_list(snap, st, count, "South");
+
+    /* Hop 2 cannot grow its copy: incomplete, then the next read copies again at the same revision with no new
+       publication. */
+    count = publish_trunk_scan_list(st, snap, "East");
+    dsd_app_telemetry_publish_snapshot(st);
+    dsd_state_trunk_lcn_test_alloc_fail_after(0);
+    snap = dsd_app_get_latest_snapshot();
+    dsd_state_trunk_lcn_test_alloc_fail_after(-1);
+    assert(snap->scan_avoids_complete == 0U && snap->trunk_scan_avoid_count == 0U);
+    snap = dsd_app_get_latest_snapshot();
+    assert_trunk_scan_list(snap, st, count, "East");
+
+    /* A restarted decoder (new instance) starts its own revisions over, so an equal revision is not the same list. */
+    dsd_state* next = new_session_state();
+    dsd_trunk_scan_avoid_entry entry;
+    fill_trunk_scan_entries(&entry, 1U, "Restarted");
+    assert(dsd_state_trunk_scan_avoids_set(next, &entry, 1U) == 0);
+    next->trunk_scan_avoid_rev = st->trunk_scan_avoid_rev;
+    dsd_app_telemetry_publish_snapshot(next);
+    snap = dsd_app_get_latest_snapshot();
+    assert_trunk_scan_list(snap, next, 1U, "Restarted");
+    free_session_state(next);
+    free_session_state(st);
+}
+
+static void
+assert_chan_map_holds(const dsd_state* snap, uint16_t channel, long int freq) {
+    assert(snap->trunk_chan_map_used_count == 1U);
+    assert(snap->trunk_chan_map_used[0] == channel);
+    assert(snap->trunk_chan_map[channel] == freq);
+}
+
+/* Issue #672 B3: initState() restarts trunk_chan_map_seq, so two sessions can publish different maps at the same
+   sequence and count. The copy keys on the state instance too, at both hops -- including a consumer that missed the
+   new session's earlier publications and so compares only against the old session's map. */
+static void
+test_chan_map_gate_keys_on_the_session(void) {
+    dsd_state* first = new_session_state();
+    dsd_state_set_trunk_chan_freq(first, 0x10U, 851000000L);
+    dsd_app_telemetry_publish_snapshot(first);
+    assert_chan_map_holds(dsd_app_get_latest_snapshot(), 0x10U, 851000000L);
+
+    dsd_state* second = new_session_state();
+    dsd_state_set_trunk_chan_freq(second, 0x20U, 852000000L);
+    assert(second->trunk_chan_map_seq == first->trunk_chan_map_seq
+           && second->trunk_chan_map_used_count == first->trunk_chan_map_used_count);
+    dsd_app_telemetry_publish_snapshot(second);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert_chan_map_holds(snap, 0x20U, 852000000L);
+    assert(snap->trunk_chan_map[0x10] == 0);
+
+    /* The consumer holds the second session's map at sequence 2; a third session publishes sequence 1 (missed) and
+       then sequence 2, so the published copy moved twice but the consumer sees the same sequence and count. */
+    dsd_state_set_trunk_chan_freq(second, 0x20U, 852500000L);
+    dsd_app_telemetry_publish_snapshot(second);
+    assert_chan_map_holds(dsd_app_get_latest_snapshot(), 0x20U, 852500000L);
+    dsd_state* third = new_session_state();
+    dsd_state_set_trunk_chan_freq(third, 0x30U, 853000000L);
+    dsd_app_telemetry_publish_snapshot(third);
+    dsd_state_set_trunk_chan_freq(third, 0x30U, 853500000L);
+    dsd_app_telemetry_publish_snapshot(third);
+    assert(third->trunk_chan_map_seq == second->trunk_chan_map_seq);
+    snap = dsd_app_get_latest_snapshot();
+    assert_chan_map_holds(snap, 0x30U, 853500000L);
+    assert(snap->trunk_chan_map[0x20] == 0);
+    free_session_state(third);
+    free_session_state(second);
+    free_session_state(first);
+}
+
+/* Issue #672 F1: a restarted decoder's ring can be allocated at the freed ring's address and reach the revision the
+   published copy holds. The ring's identity (Event_History_I::instance, drawn per initState()) keys the copy too, or
+   both hops keep the previous session's rows. */
+static void
+test_history_copy_keys_on_the_ring_instance(void) {
+    dsd_state* st = new_session_state();
+    Event_History_I* ring = (Event_History_I*)calloc(2U, sizeof(*ring));
+    assert(ring != NULL);
+    ring[0].instance = UINT64_C(0x1111);
+    ring[1].instance = UINT64_C(0x1111);
+    ring[0].Event_History_Items[1].source_id = 501U;
+    ring[1].Event_History_Items[1].source_id = 502U;
+    mark_history(&ring[0]);
+    mark_history(&ring[1]);
+    st->event_history_s = ring;
+    dsd_app_telemetry_publish_snapshot(st);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert_slot_tail(snap, 501U, 502U);
+    assert(snap->event_history_s[0].instance == UINT64_C(0x1111));
+
+    /* The restart: the same address, a new ring identity, other rows, and the revisions the old ring had. */
+    const uint64_t revisions[2] = {ring[0].revision, ring[1].revision};
+    DSD_MEMSET(ring, 0, 2U * sizeof(*ring));
+    ring[0].instance = UINT64_C(0x2222);
+    ring[1].instance = UINT64_C(0x2222);
+    ring[0].Event_History_Items[1].source_id = 601U;
+    ring[1].Event_History_Items[1].source_id = 602U;
+    ring[0].revision = revisions[0];
+    ring[1].revision = revisions[1];
+    st->state_instance = dsd_state_rev_next();
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert_slot_tail(snap, 601U, 602U);
+    assert(snap->event_history_s[0].instance == UINT64_C(0x2222)
+           && snap->event_history_s[1].instance == UINT64_C(0x2222));
+    assert_history_copy_counts(1U, 1U, 1U, 1U);
+
+    /* Same ring, same revisions: nothing is copied again. */
+    dsd_app_snapshot_test_reset_event_history_copy_counts();
+    dsd_app_telemetry_publish_snapshot(st);
+    assert_slot_tail(dsd_app_get_latest_snapshot(), 601U, 602U);
+    assert_history_copy_counts(0U, 0U, 0U, 0U);
+    st->event_history_s = NULL;
+    free(ring);
+    free_session_state(st);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -592,6 +915,10 @@ main(void) {
 
     test_publish_holds_the_tick_guard(state);
     test_publish_puts_off_while_a_tick_holds_the_guard(state);
+    test_scan_list_completeness_across_hops();
+    test_trunk_scan_avoids_gated_copy();
+    test_chan_map_gate_keys_on_the_session();
+    test_history_copy_keys_on_the_ring_instance();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

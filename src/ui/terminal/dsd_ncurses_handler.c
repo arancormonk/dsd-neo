@@ -135,7 +135,7 @@ ncurses_try_post_simple_cmd(int c) {
 }
 
 static int DSD_ATTR_USED
-ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
+ncurses_handle_escape_or_history(const dsd_opts* opts, const dsd_state* state, int c) {
     (void)opts;
     (void)state;
     if (c == DSD_KEY_ESC) {
@@ -151,7 +151,9 @@ ncurses_handle_escape_or_history(dsd_opts* opts, dsd_state* state, int c) {
 }
 
 static int DSD_ATTR_USED
-ncurses_handle_delta_keys(int c) {
+ncurses_handle_delta_keys(const dsd_opts* opts, const dsd_state* state, int c) {
+    (void)opts;
+    (void)state;
     switch (c) {
         case DSD_KEY_GAIN_PLUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, +1); return 1;
         case DSD_KEY_GAIN_MINUS: (void)dsd_app_command_set_i32(DSD_APP_CMD_GAIN_DELTA, -1); return 1;
@@ -164,13 +166,13 @@ ncurses_handle_delta_keys(int c) {
 #ifdef USE_RADIO
         case DSD_KEY_SPEC_DEC: {
             dsd_frontend_metrics metrics;
-            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
             (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, -(metrics.spectrum_size / 2));
             return 1;
         }
         case DSD_KEY_SPEC_INC: {
             dsd_frontend_metrics metrics;
-            (void)dsd_app_frontend_get_metrics(&metrics);
+            (void)dsd_app_frontend_get_metrics_for_snapshot(opts, state, &metrics, 0U);
             (void)dsd_app_command_set_i32(DSD_APP_CMD_SPEC_SIZE_DELTA, +metrics.spectrum_size);
             return 1;
         }
@@ -214,7 +216,7 @@ ncurses_key_opens_tune(int c) {
    snapshots whether this input can be tuned, and says why not where it cannot. Not gated on the M17 encoder, which
    only takes plain Enter. */
 static int
-ncurses_handle_tune_key(dsd_opts* opts, dsd_state* state, int c) {
+ncurses_handle_tune_key(const dsd_opts* opts, const dsd_state* state, int c) {
     if (!ncurses_key_opens_tune(c)) {
         return 0;
     }
@@ -222,8 +224,19 @@ ncurses_handle_tune_key(dsd_opts* opts, dsd_state* state, int c) {
     return 1;
 }
 
+/* '#' opens the Scan lists modal alone over the main screen (issue #697); act_scan_lists() decides from the published
+   snapshots whether the trunk scan has lists to switch, and says why not where it has none. */
+static int
+ncurses_handle_scan_lists_key(const dsd_opts* opts, const dsd_state* state, int c) {
+    if (c != DSD_KEY_SCAN_LISTS) {
+        return 0;
+    }
+    ui_menu_open_modal_async(opts, state, act_scan_lists);
+    return 1;
+}
+
 static int DSD_ATTR_USED
-ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c) {
+ncurses_handle_encoder_and_lockout_keys(const dsd_opts* opts, const dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
         (void)dsd_app_command_action(opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT);
         return 1;
@@ -243,9 +256,14 @@ ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c)
 }
 
 uint8_t
-dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
+dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c) {
 
+    /* Nothing published yet (runtime start publishes before the UI thread exists, so practically never): no key reads
+       the decoder's live structs instead, and Quit still quits. */
     if (!opts || !state) {
+        if (c == DSD_KEY_QUIT) {
+            (void)dsd_app_command_action(DSD_APP_CMD_QUIT);
+        }
         return 1;
     }
 
@@ -263,10 +281,13 @@ dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c) {
     if (ncurses_handle_tg_hold_keys(opts, state, c)) {
         return 1;
     }
-    if (ncurses_handle_delta_keys(c)) {
+    if (ncurses_handle_delta_keys(opts, state, c)) {
         return 1;
     }
     if (ncurses_handle_tune_key(opts, state, c)) {
+        return 1;
+    }
+    if (ncurses_handle_scan_lists_key(opts, state, c)) {
         return 1;
     }
     if (ncurses_handle_encoder_and_lockout_keys(opts, state, c)) {

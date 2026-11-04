@@ -52,9 +52,11 @@ target_sources(
         recording_store.cpp
         site_groups.cpp # WP-D4
         saved_systems_model.cpp
+        scan_avoid_list_model.cpp
         scan_lists_model.cpp
         scan_list_targets.cpp
         scan_list_starter.cpp
+        scan_list_toggle_model.cpp
         spectrum_model.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
@@ -148,6 +150,9 @@ qt_add_resources(
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PassbandSheet.qml
+        qml/ScanAvoidSheet.qml
+        qml/ScanListsSheet.qml
+        qml/ScanTogetherSheet.qml
         qml/PlayCircle.qml
         qml/PlexSwitch.qml
         qml/PlexFlickable.qml

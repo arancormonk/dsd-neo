@@ -34,6 +34,8 @@
  * include" note that stood here while the header only declared the lifecycle
  * no longer applies. */
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 
@@ -81,6 +83,11 @@ typedef struct {
     int (*apply)(void* user, const dsd_app_rr_apply_payload* payload);
     int (*post_import_path)(void* user, int cmd_id, const char* path);
     int (*account_changed)(void* user, const dsd_app_rr_account_payload* account);
+    /* The session's published pair as the current frame holds it (NULL before the first publication): the session
+       gate and the in-use file check read it. Never the decoder's live structs, and never a fresh acquire, which
+       would refresh the frame's pair in place (issue #672, B9). */
+    const dsd_opts* (*session_opts)(void* user);
+    const dsd_state* (*session_state)(void* user);
 } RrWizardHooks;
 
 typedef struct RrWizardCore RrWizardCore;
@@ -311,9 +318,13 @@ int rr_wizard_core_begin_refresh(RrWizardCore* w, const char* csv_path);
  * or the user is told it worked and is then contradicted by a decoder-thread
  * toast. It asks dsd_app_rr_apply_block_reason() - the receiver verdict for the
  * plan's decode mode, a running trunk scan, and a trunk scan waiting for the
- * next start - over the published snapshots only; the live dsd_opts belongs to
- * the decoder thread. Core-free, so a presenter can call it before it has one.
+ * next start - over the published pair it is handed only; the live dsd_opts
+ * belongs to the decoder thread. Core-free, so a presenter can call it before
+ * it has one.
  *
+ * @param osnap     The frame's published options; NULL (nothing published yet)
+ *                  is no evidence against the import.
+ * @param snap      The frame's published state; NULL skips the next-start rule.
  * @param plan      The plan the apply would carry; a plan still awaiting its
  *                  selection is checked for its decode mode and tuner owner.
  * @param has_group 1 when the apply loads a group list. The wizard passes what
@@ -324,23 +335,27 @@ int rr_wizard_core_begin_refresh(RrWizardCore* w, const char* csv_path);
  * @param out_sz    Destination size.
  * @return 1 and fills @p out when blocked, 0 otherwise.
  */
-int rr_wizard_core_apply_block_reason(const dsd_rr_import_plan* plan, int has_group, int has_chan, char* out,
-                                      size_t out_sz);
+int rr_wizard_core_apply_block_reason(const dsd_opts* osnap, const dsd_state* snap, const dsd_rr_import_plan* plan,
+                                      int has_group, int has_chan, char* out, size_t out_sz);
 
 /**
  * @brief Why this session refuses loading an import's files alone, if it does.
  *
  * The Imported Systems browser's "Load these files" leaves the decode mode and
  * the tuner owner alone, so only the checks that loading the files meets on the
- * decoder thread apply (dsd_app_rr_files_block_reason()).
+ * decoder thread apply (dsd_app_rr_files_block_reason()), over the published
+ * pair it is handed.
  *
+ * @param osnap     The frame's published options; NULL passes.
+ * @param snap      The frame's published state; NULL skips the next-start rule.
  * @param chan_path The channel map it loads, or NULL when there is none.
  * @param out       Destination for the reason, as a sentence; written only when
  *                  blocked.
  * @param out_sz    Destination size.
  * @return 1 and fills @p out when blocked, 0 otherwise.
  */
-int rr_wizard_core_files_block_reason(const char* chan_path, char* out, size_t out_sz);
+int rr_wizard_core_files_block_reason(const dsd_opts* osnap, const dsd_state* snap, const char* chan_path, char* out,
+                                      size_t out_sz);
 
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Install a mock transport, and suppress the dsd_rr_available() gate. */

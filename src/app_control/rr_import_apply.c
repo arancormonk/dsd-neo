@@ -3,11 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/* Pure plan -> apply-payload mapping, and the frontends' pre-check of an import over the published snapshots. No live
-   session state, no I/O, no threads of its own. */
+/* Pure plan -> apply-payload mapping, and the frontends' pre-check of an import over the published snapshot pair they
+   hand it. No live session state, no I/O, no threads of its own. */
 
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
@@ -106,25 +105,23 @@ dsd_app_rr_fill_apply_payload(const dsd_rr_import_plan* plan, const char* chan_p
 }
 
 int
-dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, int has_chan, char* why,
-                              size_t why_size) {
+dsd_app_rr_apply_block_reason(const dsd_opts* opts, const dsd_state* state, const dsd_app_rr_apply_payload* p,
+                              int has_group, int has_chan, char* why, size_t why_size) {
     if (why && why_size > 0U) {
         why[0] = '\0';
     }
-    const dsd_opts* osnap = p ? dsd_app_get_latest_opts_snapshot() : NULL;
-    if (osnap == NULL) {
+    if (p == NULL || opts == NULL) {
         return 0; /* nothing published yet: no evidence against the import */
     }
     /* No measured rate here: the frontend metric lags the committed rate, and the stream belongs to the decoder
        thread. Every live radio's rate is its committed DSP bandwidth (an Airspy or SoapySDR device's capture rate is
        stepped to it, issue #806). */
     dsd_app_rr_receiver_facts facts;
-    rr_apply_receiver_facts_fill(osnap, p, has_group, has_chan, &facts);
+    rr_apply_receiver_facts_fill(opts, p, has_group, has_chan, &facts);
     if (dsd_app_rr_receiver_verdict(&facts, why, why_size) != 0) {
         return 1;
     }
-    const dsd_state* snap = dsd_app_get_latest_snapshot();
-    if (snap != NULL && rr_apply_next_start_refusal(osnap, snap, &facts, p->chan_path, why, why_size) != 0) {
+    if (state != NULL && rr_apply_next_start_refusal(opts, state, &facts, p->chan_path, why, why_size) != 0) {
         /* The rule without its advice, as the decoder's refusal names it. */
         if (why && why_size > 0U) {
             why[strcspn(why, ";")] = '\0';
@@ -135,12 +132,12 @@ dsd_app_rr_apply_block_reason(const dsd_app_rr_apply_payload* p, int has_group, 
 }
 
 int
-dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size) {
+dsd_app_rr_files_block_reason(const dsd_opts* opts, const dsd_state* state, const char* chan_path, char* why,
+                              size_t why_size) {
     if (why && why_size > 0U) {
         why[0] = '\0';
     }
-    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
-    if (osnap == NULL) {
+    if (opts == NULL) {
         return 0;
     }
     /* The verdict with no decode mode asks only what refuses any import: a running trunk scan. */
@@ -148,16 +145,15 @@ dsd_app_rr_files_block_reason(const char* chan_path, char* why, size_t why_size)
     DSD_MEMSET(&keep_mode, 0, sizeof keep_mode);
     keep_mode.decode_mode = (int32_t)DSDCFG_MODE_UNSET;
     dsd_app_rr_receiver_facts facts;
-    rr_apply_receiver_facts_fill(osnap, &keep_mode, 0, 0, &facts);
+    rr_apply_receiver_facts_fill(opts, &keep_mode, 0, 0, &facts);
     if (dsd_app_rr_receiver_verdict(&facts, why, why_size) != 0) {
         return 1;
     }
-    const dsd_state* snap = dsd_app_get_latest_snapshot();
-    if (chan_path == NULL || chan_path[0] == '\0' || snap == NULL) {
+    if (chan_path == NULL || chan_path[0] == '\0' || state == NULL) {
         return 0;
     }
     /* Loading a channel map on its own, as svc_import_channel_map() asks the next-start rule: only the map changes. */
-    if (app_check_next_start(osnap, snap, app_next_start_load_channel_map, chan_path, why, why_size) != 0) {
+    if (app_check_next_start(opts, state, app_next_start_load_channel_map, chan_path, why, why_size) != 0) {
         if (why && why_size > 0U) {
             why[strcspn(why, ";")] = '\0';
         }

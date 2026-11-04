@@ -5,8 +5,9 @@
 
 /*
  * The trunk-scan control hook: app_control drives hold / avoid / clear / advance / retreat on the
- * engine-owned coordinator through this slot, so the thunk has to say "unavailable" when
- * nothing is installed and pass the op through untouched when something is.
+ * engine-owned coordinator through this slot, and puts one avoided target back through its own
+ * (issue #672), so each thunk has to say "unavailable" when nothing is installed and pass its
+ * arguments through untouched when something is.
  */
 
 #include <assert.h>
@@ -36,6 +37,57 @@ _Static_assert(DSD_TRUNK_SCAN_CONTROL_PAUSED != DSD_TRUNK_SCAN_CONTROL_UNAVAILAB
                    && DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE != DSD_TRUNK_SCAN_CONTROL_REFUSED
                    && DSD_TRUNK_SCAN_CONTROL_BUSY != DSD_TRUNK_SCAN_CONTROL_REFUSED,
                "trunk scan control failure codes must be distinct");
+/* The put back's and the already-avoided answers (issue #672) are failures of their own, apart from every other code;
+   the put back's success is 0. */
+_Static_assert(DSD_TRUNK_SCAN_CONTROL_STALE < 0 && DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED < 0
+                   && DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED < 0 && DSD_TRUNK_SCAN_CONTROL_OK == 0,
+               "the put back's failures must be negative and its success 0");
+_Static_assert(DSD_TRUNK_SCAN_CONTROL_STALE != DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED
+                   && DSD_TRUNK_SCAN_CONTROL_STALE != DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED
+                   && DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED != DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED
+                   && DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED < DSD_TRUNK_SCAN_CONTROL_PAUSED
+                   && DSD_TRUNK_SCAN_CONTROL_NOT_AVOIDED < DSD_TRUNK_SCAN_CONTROL_PAUSED
+                   && DSD_TRUNK_SCAN_CONTROL_STALE < DSD_TRUNK_SCAN_CONTROL_PAUSED,
+               "the put back's and the already-avoided codes must not alias the older failures");
+
+/* The list toggle's codes (issue #697) are distinct, with success at or above zero, so a caller can switch on them. */
+_Static_assert(DSD_TRUNK_SCAN_LIST_SET_OK == 0 && DSD_TRUNK_SCAN_LIST_SET_UNCHANGED > 0
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST < 0 && DSD_TRUNK_SCAN_LIST_SET_BUSY < 0
+                   && DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE < 0 && DSD_TRUNK_SCAN_LIST_SET_PAUSED < 0
+                   && DSD_TRUNK_SCAN_LIST_SET_STALE < 0,
+               "list toggle results: success at or above zero, failures below");
+_Static_assert(DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_BUSY
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                   && DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST != DSD_TRUNK_SCAN_LIST_SET_STALE
+                   && DSD_TRUNK_SCAN_LIST_SET_BUSY != DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE
+                   && DSD_TRUNK_SCAN_LIST_SET_BUSY != DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                   && DSD_TRUNK_SCAN_LIST_SET_BUSY != DSD_TRUNK_SCAN_LIST_SET_STALE
+                   && DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE != DSD_TRUNK_SCAN_LIST_SET_PAUSED
+                   && DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE != DSD_TRUNK_SCAN_LIST_SET_STALE
+                   && DSD_TRUNK_SCAN_LIST_SET_PAUSED != DSD_TRUNK_SCAN_LIST_SET_STALE,
+               "list toggle failure codes must be distinct");
+_Static_assert(DSD_TRUNK_SCAN_LIST_ALL < 1, "every list is no list number");
+
+static int g_list_set_calls = 0;
+static const dsd_opts* g_list_set_opts = NULL;
+static const dsd_state* g_list_set_state = NULL;
+static uint32_t g_list_set_session = 0U;
+static int g_list_set_list = 0;
+static int g_list_set_enabled = -1;
+static uint32_t g_list_set_request = 0U;
+
+static int
+fake_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request) {
+    g_list_set_calls++;
+    g_list_set_opts = opts;
+    g_list_set_state = state;
+    g_list_set_session = session;
+    g_list_set_list = list;
+    g_list_set_enabled = enabled;
+    g_list_set_request = request;
+    return list == DSD_TRUNK_SCAN_LIST_ALL ? DSD_TRUNK_SCAN_LIST_SET_UNCHANGED : DSD_TRUNK_SCAN_LIST_SET_OK;
+}
 
 static int g_control_calls = 0;
 static int g_last_op = -1;
@@ -50,6 +102,25 @@ fake_control(dsd_opts* opts, dsd_state* state, int op) {
     g_last_opts = opts;
     g_last_state = state;
     return g_control_result;
+}
+
+static int g_unavoid_calls = 0;
+static uint32_t g_unavoid_session = 0U;
+static const char* g_unavoid_target = NULL;
+static int g_unavoid_result = 0;
+
+static dsd_trunk_scan_target_name* g_unavoid_name;
+
+static int
+fake_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
+             dsd_trunk_scan_target_name* name) {
+    g_unavoid_calls++;
+    g_unavoid_name = name;
+    g_last_opts = opts;
+    g_last_state = state;
+    g_unavoid_session = session;
+    g_unavoid_target = target_id;
+    return g_unavoid_result;
 }
 
 static int g_activity_calls;
@@ -227,14 +298,28 @@ main(void) {
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 0);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, "a", NULL) == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    assert(g_unavoid_calls == 0);
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 0);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 0, 11U) == DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE);
+    assert(g_list_set_calls == 0);
 
     /* Installed: every op reaches the implementation with its arguments and result intact. */
     dsd_trunk_scan_hooks hooks = {0};
     hooks.control = fake_control;
     hooks.p25_conventional_activity = fake_p25_activity;
+    hooks.list_set = fake_list_set;
     dsd_trunk_scan_hooks_set(&hooks);
+
+    /* Issue #697: the list toggle reaches the implementation with its session, list, state and request intact. */
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 0, 11U) == DSD_TRUNK_SCAN_LIST_SET_OK);
+    assert(g_list_set_calls == 1 && g_list_set_session == 9U && g_list_set_list == 2 && g_list_set_enabled == 0
+           && g_list_set_request == 11U);
+    assert(g_list_set_opts == &opts && g_list_set_state == &state);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, DSD_TRUNK_SCAN_LIST_ALL, 1, 12U)
+           == DSD_TRUNK_SCAN_LIST_SET_UNCHANGED);
+    assert(g_list_set_calls == 2 && g_list_set_list == DSD_TRUNK_SCAN_LIST_ALL && g_list_set_enabled == 1);
 
     g_control_result = 1;
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) == 1);
@@ -264,6 +349,29 @@ main(void) {
     assert(g_last_op == DSD_TRUNK_SCAN_CONTROL_RETREAT);
     assert(g_control_calls == 5);
 
+    /* The control slot alone answers the put back unavailable; installed, the put back reaches its own slot with the
+       identity and result intact (issue #672). */
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, "a", NULL) == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    hooks.unavoid = fake_unavoid;
+    dsd_trunk_scan_hooks_set(&hooks);
+    static const char k_target[] = "north";
+    g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_STALE;
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 0xFFFFFFFFU, k_target, NULL) == DSD_TRUNK_SCAN_CONTROL_STALE);
+    assert(g_unavoid_calls == 1 && g_unavoid_session == 0xFFFFFFFFU && g_unavoid_target == k_target);
+    assert(g_last_opts == &opts && g_last_state == &state);
+    g_unavoid_result = DSD_TRUNK_SCAN_CONTROL_OK;
+    dsd_trunk_scan_target_name name;
+    DSD_MEMSET(&name, 0x5A, sizeof name);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, k_target, &name) == DSD_TRUNK_SCAN_CONTROL_OK);
+    assert(g_unavoid_calls == 2 && g_unavoid_session == 7U);
+    /* The name reaches the implementation, zeroed first, so one that fills nothing leaves no garbage behind. */
+    assert(g_unavoid_name == &name && name.ordinal == 0U && name.label[0] == '\0');
+    assert(g_control_calls == 5);
+    /* The put back and the list toggle (issue #697) each reach their own slot only. */
+    assert(g_list_set_calls == 2);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 7U, 1, 1, 14U) == DSD_TRUNK_SCAN_LIST_SET_OK);
+    assert(g_list_set_calls == 3 && g_list_set_session == 7U && g_list_set_list == 1 && g_unavoid_calls == 2);
+
     /* Uninstalling (NULL clears every slot) restores the unavailable answer. */
     dsd_trunk_scan_hooks_set(NULL);
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE)
@@ -271,8 +379,13 @@ main(void) {
     assert(dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT)
            == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
     assert(g_control_calls == 5);
+    DSD_MEMSET(&name, 0x5A, sizeof name);
+    assert(dsd_trunk_scan_hook_unavoid(&opts, &state, 7U, k_target, &name) == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    assert(g_unavoid_calls == 2 && name.ordinal == 0U && name.label[0] == '\0');
     dsd_trunk_scan_hook_p25_conventional_activity(&opts, &state, DSD_SYNC_P25P1_POS, 0, 1001U, 2002U, 1, 1, 0);
     assert(g_activity_calls == 1);
+    assert(dsd_trunk_scan_hook_list_set(&opts, &state, 9U, 2, 1, 13U) == DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE);
+    assert(g_list_set_calls == 3);
     test_recovery_ownership();
     test_presumptive_startup_owner();
     return 0;
