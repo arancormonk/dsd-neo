@@ -267,11 +267,13 @@ Generated (do not edit/commit):
     the same traffic is not ended and judged again every second; `no_carrier_step_scanner_mode_if_needed()` still lets
     `lcn_scan_hold` keep it (muted); the trunk-scan tick advances a REJECTED analog target
     (`trunk_scan_service_tone_rejection()`, under `p25_sm_tick_guard`) unless the operator holds it, and only when
-    another target is there to take it (`trunk_scan_rejection_has_alternate()`: not avoided, not cooling down, and not
-    an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the published
-    DSP rate, `trunk_scan_target_width_skipped()`; a target on the frequency on air counts, since the list's
-    `scan_has_duplicate_type_freq()` makes it one of another type, which runs no tone check); with none it spends the
-    tick with the target muted in place and its idle dwell disarmed, since that rotation could only switch back to it.
+    another target is there to take it (`trunk_scan_tone_rejection_has_alternate()`: in the rotation, not cooling down,
+    and not an analog target whose width, of the demodulator its type runs, AM or NFM, the front end refuses at the
+    published DSP rate, `trunk_scan_target_width_skipped()`; a target of another type on the frequency on air counts,
+    since it runs no tone check, but a copy of the same type from another list (issue #697) does not, here or in the
+    advance's destination walk; the digital receive rejection's `trunk_scan_rejection_has_alternate()` keeps such a
+    copy, whose own filters may admit the traffic); with none it spends the tick with the target muted in place and its
+    idle dwell disarmed, since that rotation could only switch back to it.
     Its analog stay reason reads `TONE_PENDING` the same way, ahead of the activity hold and with no window, and
     `trunk_scan_service_hold()` holds the target for it without disarming the idle dwell (every other reason to stay
     disarms it), and arms a disarmed one at the check's first tick with no activity or operator hold on, as a quiet
@@ -286,6 +288,23 @@ Generated (do not edit/commit):
     row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
     included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
     to run.
+  - -Y rotates only a list of the user's (issue #697): channels a site announces while none is loaded (DMR C_BCAST,
+    `dmr_cspdu_pf0_c_bcast_track_freq()`, which appends only while `dsd_state_trunk_lcn_user_list_present()` is false,
+    at start or after Clear channel map) never make -Y step or end a reception. Without a user list
+    `no_carrier_step_scanner_mode_if_needed()` (`engine.c`) admits no timed step, `dsd_scan_voice_gate_owns_step()` is
+    false, and `dsd_engine_channel_scan_has_other_row()` finds nowhere to go, so neither the receive-filter yield nor
+    the tone-rejection step fires. The per-visit cap re-arms (`scan_visit_rearms()`) unless
+    `dsd_engine_channel_scan_can_rotate()` (`channel_scan.c`) finds a user list with two rows a step can land on
+    (`channel_scan_row_reachable()`: a frequency, not avoided, and not an analog row skipped at every visit for its
+    width at the published DSP rate), the -Y side of the trunk-scan candidate filter: a busy row beside rows that are
+    all width-skipped keeps its call, and a row whose width fits again, or a list imported later, starts a fresh limit.
+    The walk stops at the second reachable row and runs only while the cap is on. The `b` avoid counts the same rows
+    (`dsd_engine_channel_scan_reachable_rows()`) when it refuses to avoid the last one, and with no user list it avoids
+    nothing ("No channel map: nothing to avoid"). With no user list the -Y timing tick publishes `DSD_SCAN_STAY_NO_LIST`
+    ("No channel map") with no window, so no frontend counts down to a step that never comes. `-T` hunts are unchanged.
+    Tests: `ENGINE_NO_CARRIER_RESET` (C_BCAST through `dmr_cspdu()` included), `ENGINE_DMR_CC_RECOVERY` (the frame-sync
+    yield hook), `APP_COMMAND_QUEUE` (after Clear channel map; the avoid), `ENGINE_SCAN_VOICE_GATE`,
+    `APP_CONTROL_SCAN_TIMING_VIEW`, `UI_NCURSES_PRINTER_HELPERS`.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
   - Installs runtime hook tables used by DSP/frame-sync code
@@ -328,7 +347,76 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`,
   `dsd_trunk_scan_load_targets_csv()`, `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the
   target count is bounded by a memory budget divided by the per-target snapshot size, so the cap tracks the struct
-  instead of being a constant that goes stale.
+  instead of being a constant that goes stale. `dsd_trunk_scan_check_target_lists()` holds lists loaded one by one to
+  the rules across them (issue #697): a target id is unique across lists (the error names both files and rows) and the
+  union fits the budget.
+- Configured lists (issue #697): `<dsd-neo/core/trunk_scan_lists.h>` defines `dsd_trunk_scan_list_spec {path,
+  start_off}` and `DSD_TRUNK_SCAN_MAX_LISTS` (8). `dsd_opts::trunk_scan_lists`/`trunk_scan_list_count`, its
+  `next_start` copy and `dsdneoUserConfig` hold the same array by list number; `dsd_trunk_scan_lists_check()` and
+  `_describe_fault()` are the start rules (list 1 named, no gap, every `lists_off` number a list, one list on) the CLI
+  (`cli_validate_trunk_scan_runtime_args()`), the engine init and, through the composed-config rule table, the config
+  validation share. The CLI adds a list per `--trunk-scan`/`--trunk-scan-off` (`cli_add_trunk_scan_list()`; the first
+  replaces inherited lists whole). The INI loader keeps per-key presence (`trunk_scan_lists_named`,
+  `trunk_scan_lists_off_is_set`) so an include or profile overrides key by key, and per file or profile
+  (`trunk_scan_lists_layer_named`) so an empty `targets_csv_N` clears only what earlier files left (a same-file
+  contradiction stays for the gap rule); a save ends its lists with an empty key (`targets_csv = ""` with none) and
+  always writes `lists_off`; `dsd_user_config_compose_trunk_scan_lists()` puts what a config names over a base spec
+  (apply, queue overlay, next-start defer), an empty key removing the base's later lists with their off states.
+- Lists in the coordinator (issue #697): init loads every configured list in order (`trunk_scan_load_lists()`: each
+  through the one parser, every parser error prefixed with its file unless it names it, then
+  `dsd_trunk_scan_check_target_lists()`) into one target vector (list order, then row order) that never moves, so
+  snapshots, avoids and session edits survive any toggle and nothing is built at runtime. Each target carries its
+  `list`; `coord->lists[]` holds each list's name (file name without folder and extension,
+  `DSD_TRUNK_SCAN_LIST_NAME_SIZE` 32), `enabled`, `first` and `count`. One predicate, `trunk_scan_target_in_rotation()`
+  (list on and not avoided), feeds every candidate walk and count: `trunk_scan_alternate_is_candidate()` (the advance,
+  RETREAT, the visit cap's somewhere-else-to-go question `trunk_scan_visit_alternate_is_eligible()`, the rejection
+  alternates, the resume walk), `trunk_scan_enabled_count()` (the "n of m" readout's m, avoided targets included),
+  and `trunk_scan_usable_count()` (in the rotation and not width-skipped, cooling or not: avoid's and a toggle's
+  last-usable refusals, the toggle's naming the list it would switch off rather than switching it). The visit cap's
+  question, which the frame loop asks at every burst boundary of a held carrier, and the usable count walk list by list
+  (`trunk_scan_next_list_on()`): a list's targets sit together, so a list that is off is passed in one step. The
+  `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's fallback onto the original
+  ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once (`trunk_scan_walk`), and a due retry
+  with an alternate eligible asks again a cooldown later (`retry_recheck_m`), not each tick. The startup park takes the
+  first target in the rotation the DSP rate can filter (`trunk_scan_start_target()`). What the session must be ready for
+  counts every loaded target, a list that is off included: the configured-width and tone predicates, the width rechecks
+  and scan-start warnings; peer IDEN sharing and the band-plan export read every snapshot.
+- List toggle (issue #697): `dsd_engine_trunk_scan_list_set()` behind the runtime `list_set` hook slot. It refuses a
+  paused scan (PAUSED), another session or a list number it does not have (STALE, `session` compared with
+  `coord->session`, which frontends read as the published `trunk_scan_session`, the session a put back names too, kept
+  while paused), a no-op (UNCHANGED), a switch that would leave no usable target (REFUSED_LAST, every list off
+  included), then takes a try of the P25 SM tick guard (BUSY). `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list
+  that comes on and gives the visit on air its first eligible alternate restarts its cap
+  (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). The switch publishes the scan
+  timing before it leaves the guard, as the controls do: the timing reads the parked target's P25 machine, which the
+  watchdog changes under that guard (`ENGINE_TRUNK_SCAN_LIST_RACE` runs a switch beside such writes, for tsan-debug).
+  Toggles are session-only; the configured start states in `dsd_opts::trunk_scan_lists` never change.
+- Departure obligation (issue #697): while the target on air is out of the rotation (its list off and the
+  departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()` ahead
+  of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
+  (`trunk_scan_control_advance_locked()`: releasing only when `!tune_pending && visit_since_m >= 0`, so the call commits
+  under its own target and the hold carries over), and an attempt that did not move waits for the soonest cooldown of
+  what it tried (a switch that cannot be prepared cools its target down as a failed retune does, in every advance and
+  resume walk), or a cooldown when nothing cooled. Nothing is stored about the reasons: they are read again each time,
+  so a list switched back on, every list on, the avoids cleared or the target put back (issue #672) end it, and it
+  stays while either reason holds: a put back never switches a list on. #672's "already avoided" answer comes first,
+  so `b` on the avoided fallback changes nothing and the departure runs on its own once an alternate is eligible.
+  `depart_due_m`/`depart_yield` say when it is next due and whether the frame loop may yield for it then:
+  `dsd_engine_trunk_scan_departure_due()` (two fields and the decode clock, no walk) joins the frame-sync yield
+  predicate, so a continuous DMR carrier unwinds at a burst boundary and the tick departs after protocol cleanup; with
+  no alternate coming (none cooling) the tick re-checks a cooldown later and the loop is not asked to yield. A pause
+  keeps it; a resume from a target out of the rotation walks the candidates after it (`trunk_scan_resume_park()`) and on
+  total failure stays paused with the manual-session rollback; with none eligible it resumes in place and the obligation
+  runs later.
+- List publication (issue #697): `trunk_scan_list_count`, `trunk_scan_lists[8]` (`dsd_trunk_scan_list_publication`:
+  name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused), `trunk_scan_active_list_off` (beside
+  `trunk_scan_active_avoided`, each its own reason), `trunk_scan_rotation_ordinal`/`_count` (the position among the
+  lists on, 0 while the target's list is off) and `trunk_scan_lists_seq` (process-unique, moves at start and at each
+  toggle), all inside the UI snapshot range (`ui_snapshot.c` static assert), written at start, hops, commands and
+  pause, kept while paused, cleared at detach and by `initState()`. The identity ordinal `trunk_scan_active_ordinal`
+  stays the union position. Tests: `ENGINE_TRUNK_SCAN` (`test_lists_*`), `ENGINE_TRUNK_SCAN_PAUSE`
+  (`list_toggle_takes_the_guard`), `ENGINE_DMR_CC_RECOVERY` (`list_departure_yields_a_continuous_dmr_carrier`),
+  `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Lifecycle: `dsd_engine_trunk_scan_init()`, `dsd_engine_trunk_scan_tick()`, `dsd_engine_trunk_scan_shutdown()`, all
   driven from `src/engine/engine.c`. The coordinator hangs off `dsd_state` as the `DSD_STATE_EXT_ENGINE_TRUNK_SCAN`
   state extension; init installs the runtime hook table below and shutdown clears it, so a build that never starts a
@@ -357,10 +445,12 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   no scan). Shutdown puts back only the configured gain and the trunking flags: the scope leave restores the configured
   modulation, which a modulation change made during the scan recaptured; an init that fails after attaching puts back
   the scan-start modulation as well (`trunk_scan_detach()`). A runtime config apply leaves a running coordinator's
-  target-list path, idle dwell and activity hold as they were and reports restart-required
+  target lists, idle dwell and activity hold as they were and reports restart-required
   (`cfg_restore_lifecycle_owned()` in app_control), as it does in every session for the frontend, the trunk-scan flag,
   the channel map (imported at startup only) and an Airspy input over a non-radio one. The applied values wait for the
-  next start in `dsd_opts::next_start` (`dsd_opts_next_start`, `cfg_defer_path()`/`cfg_defer_int()`): the session runs
+  next start in `dsd_opts::next_start` (`dsd_opts_next_start`, `cfg_defer_path()`/`cfg_defer_int()`, and
+  `cfg_defer_trunk_scan_lists()`, which defers the whole list spec as one, built over the spec already waiting so a
+  config naming only `lists_off` keeps waiting paths): the session runs
   the old ones, every save writes the new ones (`snapshot_next_start_config()`), a config naming the running value again
   drops one, and a channel-map import or clear drops the map's; an Airspy chosen over audio input waits in
   `audio_in_dev`, which a save writes. Before anything is staged, the save the apply would leave is held to startup's
@@ -423,29 +513,30 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
   `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
   under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a
-  clear that cleared something, a put back. A hop, advance, retreat, hold, pause, resume (refused or not) or target
-  edit changes no flag and stamps nothing; the frontends rebuild only when the revision moves. A list that cannot
-  allocate is published empty with `trunk_scan_avoids_ok` 0 (never stale entries) and `avoids_publish_retry` set; the
-  tick services that flag before its paused return, rebuilding the list alone, and a retry that fails again stamps
-  nothing. `trunk_scan_session` (`coord->session`, published with the configured state, so kept while paused unlike
-  `scan_row_session`) is a put back identity's other half. The detach (`trunk_scan_clear_published_target()`) frees
-  the list, zeroes the session and stamps the revision. `dsd_engine_trunk_scan_unavoid_target()` (the `unavoid` hook)
-  finds the target by `(session, id)` (`trunk_scan_edit_find()`; STALE when absent or session 0, NOT_AVOIDED when
-  clear), clears its flag only -- no retune, hold, retry-cooldown or dwell change -- restarts the visit cap only when
-  it makes the first eligible alternate (clear's rule, `trunk_scan_restart_visit_for_new_alternate()`; the parked
-  fallback is no alternate, so putting it back only drops its avoided mark), then republishes the list, the target and
-  the timing. A paused scan takes the put back and the clear (flag edits; its timing stays cleared) and refuses every
-  other control. Avoid on an active target already avoided (the parked fallback) answers
-  `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` before anything runs (B4): no release, walk, tune, flag, revision or clock.
-  Timing after a control (B5): the report reads the parked target's P25 machine, which the watchdog changes under the
-  P25 SM tick guard, so `trunk_scan_control_publish_timing()` builds it only under `p25_sm_tick_guard_try_enter()`,
-  never nested (the flag-only controls and the put back hold no guard; avoid, advance and retreat leave theirs first);
-  when the guard is held the control publishes nothing and the next tick publishes it as every tick does, and
-  `trunk_scan_publish_timing()` leaves a paused scan's timing cleared whoever calls it. Tests: `ENGINE_TRUNK_SCAN` (put
-  back, stale and unknown identities, the parked fallback with and without a visit cap, cooldowns and the dwell kept,
-  the cap's 0 -> 1 rule, paused put back and clear, rebuild sites, allocation failure retried while paused, the busy
-  guard), `ENGINE_TRUNK_SCAN_PAUSE` (controls and put backs beside a thread changing the P25 machine under the real
-  guard; run under `tsan-debug`), `RUNTIME_TRUNK_SCAN_HOOKS`.
+  clear that cleared something, a put back. A hop, advance, retreat, hold, pause, resume (refused or not) or target edit
+  changes no flag and stamps nothing; the frontends rebuild only when the revision moves. A list that cannot allocate is
+  published empty with `trunk_scan_avoids_ok` 0 (never stale entries) and `avoids_publish_retry` set; the tick services
+  that flag before its paused return, rebuilding the list alone, and a retry that fails again stamps nothing.
+  `trunk_scan_session` (`coord->session`, published with the configured state, so kept while paused unlike
+  `scan_row_session`) is a put back identity's other half. The detach (`trunk_scan_clear_published_target()`) frees the
+  list, zeroes the session and stamps the revision. `dsd_engine_trunk_scan_unavoid_target()` (the `unavoid` hook) finds
+  the target by `(session, id)` (`trunk_scan_edit_find()`; STALE when absent or session 0, NOT_AVOIDED when clear),
+  clears its flag only -- no retune, hold, retry-cooldown or dwell change -- restarts the visit cap only when it makes
+  the first eligible alternate (clear's rule, `trunk_scan_restart_visit_for_new_alternate()`; the parked fallback is no
+  alternate, so putting it back only drops its avoided mark, and with it the departure it owed while its list is on,
+  issue #697), arms the departure the target on air may still owe, as clear does (a target put back can be its first
+  alternate), then republishes the list, the target and the timing. A paused scan takes the put back and the clear (flag
+  edits; its timing stays cleared) and refuses every other control. Avoid on an active target already avoided (the
+  parked fallback) answers `DSD_TRUNK_SCAN_CONTROL_ALREADY_AVOIDED` before anything runs (B4): no release, walk, tune,
+  flag, revision or clock. Timing after a control (B5): the report reads the parked target's P25 machine, which the
+  watchdog changes under the P25 SM tick guard, so `trunk_scan_control_publish_timing()` builds it only under
+  `p25_sm_tick_guard_try_enter()`, never nested (the flag-only controls and the put back hold no guard; avoid, advance
+  and retreat leave theirs first); when the guard is held the control publishes nothing and the next tick publishes it
+  as every tick does, and `trunk_scan_publish_timing()` leaves a paused scan's timing cleared whoever calls it. Tests:
+  `ENGINE_TRUNK_SCAN` (put back, stale and unknown identities, the parked fallback with and without a visit cap,
+  cooldowns and the dwell kept, the cap's 0 -> 1 rule, paused put back and clear, rebuild sites, allocation failure
+  retried while paused, the busy guard), `ENGINE_TRUNK_SCAN_PAUSE` (controls and put backs beside a thread changing the
+  P25 machine under the real guard; run under `tsan-debug`), `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
   reached from protocol code through the runtime hooks.
@@ -643,10 +734,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   skipped-row count `dsd_engine_scan_skipped` / `dsd_engine_scan_note_skipped_rows()` are private to the engine,
   `src/engine/scan_analog_internal.h`), and scan start logs what an analog row owes the operator on two schedules. An
   open squelch, which lets noise hold the row until the visit cap or the operator moves on,
-  `dsd_engine_scan_warn_analog_squelch()`, is said once per map (-Y) or list (trunk scan). A row's own width on audio
-  input without a rigctl peer (with one, the peer takes it as its passband), or a width the front end refuses,
-  `dsd_engine_scan_warn_analog_width()`, is said once per map or list and DSP rate, and so is an `am` row on audio input
-  without a rigctl peer, which nothing demodulates as AM and which is skipped at every visit. The front
+  `dsd_engine_scan_warn_analog_squelch()`, is said once per list: the `-Y` list's `lcn_list_rev` (issue #697: a
+  channel learned over the air moves only `trunk_chan_map_seq`, so it names no row again and reposts no `Skipped at
+  every visit` toast), or the trunk-scan list. A row's own width on audio input without a rigctl peer (with one, the
+  peer takes it as its passband), or a width the front end refuses, `dsd_engine_scan_warn_analog_width()`, is said
+  once per list and DSP rate, and so is an `am` row on audio input without a rigctl peer, which nothing demodulates as
+  AM and which is skipped at every visit. The front
   end refuses a width the DSP rate (`dsd_engine_scan_dsp_rate_hz()`, the rate the RTL stream holds analog requests to,
   `rtl_stream_get_request_rate_hz()`) cannot filter, worded with the fix the input allows as the stream start's refusal
   is (`dsd_analog_width_check_at()`: an RTL DSP bandwidth, a wider DSP bandwidth or a narrower width on a SoapySDR or
@@ -1160,7 +1253,12 @@ suite runs under this compiler.
   label) sits in the uncopied heap gap beside the LCN stores; `initState()`, `freeState()` and the coordinator's detach
   release it (the LCN umbrella `dsd_state_trunk_lcn_free()` leaves it alone, so a live list only changes with a new
   `trunk_scan_avoid_rev` or `state_instance`), a failed `_set()` leaves it empty, and `trunk_scan_avoids_ok` (1 from
-  `initState()`) says whether the coordinator's last rebuild allocated. Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
+  `initState()`) says whether the coordinator's last rebuild allocated. The `-Y` scan keys every row identity on
+  `lcn_list_rev` (issue #697), never on `trunk_chan_map_seq`, which also moves at every channel learned over the air:
+  a typed row staged, landed or on air (`channel_scan.c`: the staged row's landing and late refusal, the row on air,
+  the once-per-list row checks) and an untyped step's pending tune (`engine.c`). Each row identity also carries the
+  row's frequency (`channel_scan_row_still_listed()`, the untyped settle's `requested_hz`), so an in-place write, which
+  keeps the list revision, makes the row another channel. Tests: `CORE_STATE_TRUNK_LCN_AVOID`,
   `CORE_INIT_STATE`, `P25_USER_LIST_SEED`, `EDACS_GRANT_TUNE_MATRIX`. Test builds (`DSD_NEO_TEST_HOOKS`) fail the
   reserve helpers through `dsd_state_trunk_lcn_test_alloc_fail_after()`.
 - Invariant (snapshot completeness, issue #672; `src/app_control/ui_snapshot.c`): each scan-list deep copy (LCN tail,
@@ -2541,7 +2639,14 @@ suite runs under this compiler.
     1), never dropped: the options that used to drop it say `<option> requires a value` (issue #756,
     `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`, the
     numeric rdio options, `-z`, `-V`, `-s`) clamp while it is still the parsed `long` and only then narrow
-    (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping
+    (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping.
+    A path option whose value does not fit its buffer is refused before it is used (`cli_path_fits()`: "<option> path is
+    too long", exit code 1), never cut short to another file's name: `--trunk-scan`, `-C`, `-G`, `-k`/`-K`, `-w`, `-6`,
+    `-c`, `-J`, `-L`, `-Q`'s file name, `--frame-log`, `--wav-journal` and `--p25-sm-log`, and `-i`/`-o`, which also
+    take device specs, as "<option> value is too long" (`cli_value_fits()`); options that resolve a file first
+    (`--src-csv`, `--p25-bandplan`, `--iq-replay`'s metadata) or hold a folder (`-d`, `-7`) check their own. A second
+    `-C` is refused (issue #697): two maps would merge, the second one's channel numbers and EDACS LCN slots shadowing
+    the first's, while only the last path is saved (`RUNTIME_CLI_PARSE`).
   - UTF-8 output (`include/dsd-neo/runtime/unicode.h`): on Windows the first `dsd_unicode_init_locale()` switches the
     console's code pages to UTF-8 and registers `dsd_unicode_restore_console()` with `atexit()`, so the shell gets its
     own code pages back when dsd-neo exits
@@ -3059,6 +3164,13 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
   context, or NULL when trunk scan is not installed or is paused (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
+  - One candidate filter, `trunk_scan_alternate_is_candidate()` (in the rotation, i.e. its list on and not avoided, not
+    cooling down from a failed retune, not an analog target `trunk_scan_target_width_skipped()` refuses at the published
+    DSP rate), serves the advance walk, the per-visit cap's somewhere-to-go test
+    (`trunk_scan_visit_alternate_is_eligible()`) and the tone-rejection alternate, so neither the cap nor a rejection
+    releases the target on air toward a target the walk passes over. With no such alternate, a failed park is retried in
+    place after its cooldown (`trunk_scan_retry_active_if_due()`), as a single or held target's is; the walk names the
+    widths a changed rate leaves unfit, since it no longer retunes them.
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
   its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only
@@ -3075,10 +3187,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
   active target, clear avoids, advance now, retreat now); answers "unavailable" when trunk scan is not installed and
   "paused" while it is paused (`src/app_control/app_command_queue.c`)
-  - Retreat (issue #666) is the advance walked backward: one signed-step walk with the same filter (avoided and cooling
-    targets skipped), the original last in both directions, so the fallback and rollback are shared. Avoid and every
-    automatic rotation walk forward; only the hold toggle changes the hold, so a held scan stays held on the target
-    a step or avoid lands on.
+  - Retreat (issue #666) is the advance walked backward: one signed-step walk with the same filter (avoided, cooling and
+    width-skipped targets skipped), the original last in both directions, so the fallback and rollback are shared.
+    Avoid and every automatic rotation walk forward; only the hold toggle changes the hold, so a held scan stays held on
+    the target a step or avoid lands on.
   - Avoid, advance and retreat answer 0 when the active target changed and 1 when it did not (nothing eligible, no
     switch prepared, or every alternate failed and the receiver fell back). App-control cannot tell these apart, so a
     stayed advance or retreat toasts the outcome only ("Staying on target #<ordinal> <label>", the id without a label);
@@ -3090,6 +3202,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   when trunk scan is not installed (a NULL slot); also while paused. On OK and `_NOT_AVOIDED` it fills the caller's
   `dsd_trunk_scan_target_name` (the target's 1-based list position and label column) for the toast; the wrapper zeroes
   it first. Its own slot beside `control`, so `APP_COMMAND_QUEUE` fakes it as it fakes `control`.
+- `dsd_trunk_scan_hook_list_set()` (issue #697) — switch one target list (1-based) on or off for the session, or
+  every list on (`DSD_TRUNK_SCAN_LIST_ALL`), named by the scan session; its own result codes
+  (`dsd_trunk_scan_list_set_result`: OK, UNCHANGED, REFUSED_LAST, BUSY, UNAVAILABLE, PAUSED, STALE). The coordinator
+  takes the tick guard itself (try, BUSY), like `control`; decoder thread only. See Single-Tuner Trunk Scan.
 - `dsd_trunk_scan_owns_tuner()` (static inline in `<dsd-neo/runtime/tuner_owner.h>`, issue #671) — the running
   predicate: `trunk_scan_enabled` and not `dsd_state::trunk_scan_paused`. The engine's tuning-owner and boundary
   decisions, the frame-sync yields and decoder-tick wait, the startup and NXDN hunts' trunk-scan exclusions, rigctl
@@ -3195,25 +3311,26 @@ manual tune's does. A tune that landed runs the `SCAN_STEP` carrier boundary (in
 drain and any control-channel return), then installs the row: the cursor past it, its keys, the analog reset, fresh scan
 clocks. An RTL timeout notes an `UNTYPED_STEP` record carrying the row, the scan session (`dsd_state::lcn_scan_session`,
 moved by every `dsd_engine_channel_scan_leave()`: a stop, a list replacement, a trunk-scan start; and by every pause and
-resume) and `trunk_chan_map_seq`; until the completion the cursor, the keys and the deadline stay. The synced-frames
-loop checks before every frame for a completion the poll will act on (`dsd_engine_manual_tune_settled_ready()`, one
-atomic load while nothing is noted: a step's landing, an RR import's landing, announced drop or stream stop, or any
-noted tune's late failure) and ends the reception when it has come, so at most the frame in flight decodes under the row
-left, and a carrier that keeps sync (a control channel) never goes on decoding under an entry's frequency the receiver
-did not reach. The outer pass's poll then commits the row (boundary, then install), but only while the scan is still
-that one: `-Y` on (or a resume pending, below), no modes, the same session and map, the row still on the frequency
-tuned. Otherwise nothing commits and only the frequency stands; a landing still moved the receiver, so the `SCAN_STEP`
-boundary runs for the move (a pause in place forgot only the carrier it left). A late failure abandons the row as a
-failure inside the wait does: the cursor moves past the row the front end refused (issue #666), the scan's windows
-reopen, no toast; a drop leaves the cursor and the windows as they are. A failure after the rigctl leg moved still runs
-the outgoing boundary and resets the received tone, moves the cursor past the row and keeps the deadline.
-`dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary inside, for a caller outside the no-carrier
-pass. The legacy legs skip a frequency they last sent; a manual tune moves the receiver without them, so
-`dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every tune `request_manual_tune()`'s
-direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an entry, a timed-out row's landing and
-late failure, a landing in the middle of a reception, a landing after a rigctl move, under a hold, after a stop, a list
-replacement or a pause in place, a failure's centre, an entry's late failure on a carrier that keeps sync, an empty or
-all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
+resume) and the list (`lcn_list_rev`, issue #697: a channel learned over the air while the tune is pending moves only
+`trunk_chan_map_seq`, so it no longer discards the landing); until the completion the cursor, the keys and the deadline
+stay. The synced-frames loop checks before every frame for a completion the poll will act on
+(`dsd_engine_manual_tune_settled_ready()`, one atomic load while nothing is noted: a step's landing, an RR import's
+landing, announced drop or stream stop, or any noted tune's late failure) and ends the reception when it has come, so at
+most the frame in flight decodes under the row left, and a carrier that keeps sync (a control channel) never goes on
+decoding under an entry's frequency the receiver did not reach. The outer pass's poll then commits the row (boundary,
+then install), but only while the scan is still that one: `-Y` on (or a resume pending, below), no modes, the same
+session and list, the row still on the frequency tuned. Otherwise nothing commits and only the frequency stands; a
+landing still moved the receiver, so the `SCAN_STEP` boundary runs for the move (a pause in place forgot only the
+carrier it left). A late failure abandons the row as a failure inside the wait does: the cursor moves past the row the
+front end refused (issue #666), the scan's windows reopen, no toast; a drop leaves the cursor and the windows as they
+are. A failure after the rigctl leg moved still runs the outgoing boundary and resets the received tone, moves the
+cursor past the row and keeps the deadline. `dsd_engine_scan_untyped_enter_row()` runs the same pieces with the boundary
+inside, for a caller outside the no-carrier pass. The legacy legs skip a frequency they last sent; a manual tune moves
+the receiver without them, so `dsd_engine_legacy_tune_caches_forget()` runs at the `TUNE` carrier boundary and at every
+tune `request_manual_tune()`'s direct leg accepts. Tests: `ENGINE_NO_CARRIER_RESET` (a step back to a row after an
+entry, a timed-out row's landing and late failure, a landing in the middle of a reception, a landing after a rigctl
+move, under a hold, after a stop, a list replacement or a pause in place, a failure's centre, an entry's late failure on
+a carrier that keeps sync, an empty or all-avoided list, the find and enter pieces), `APP_COMMAND_QUEUE`.
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;
 app-control's `svc_pause_channel_scan()`, `svc_resume_channel_scan()`). Paused, `scanner_mode` is 0, so every reader of
@@ -3470,8 +3587,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     lists it) and still be avoided, then only its flag clears (`dsd_state_trunk_lcn_avoid_set()`, which stamps
     `lcn_avoid_rev`); the drain's visit tick gives the visit cap as for clear. Put back never tunes, so a paused scan,
     a stopped `-Y` list, `-T` and an I/Q replay take it; Signal search refuses it with every receiver command. Put
-    back and `SCAN_AVOID_CLEAR` are flag edits on the deferred list (`k_deferred_commands`), so neither ends a DMR
-    repeater loop (`dmrBS()`) and its call; `SCAN_AVOID` is not, since it steps off the channel on air.
+    back and `SCAN_AVOID_CLEAR` are flag edits that wait for a DMR repeater loop (`dmrBS()`) to end, so neither ends
+    its call (`command_scan_flag_edit_needs_frame_loop()`), unless this scan's target on air owes a departure the edit
+    can start or cancel (issue #697, `scan_departure_owed()`: its list is off or it is the avoided fallback); then a
+    trunk-scan put back of this session and a clear take the frame loop. `SCAN_AVOID` always takes it, since it steps
+    off the channel on air.
     `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
     the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
@@ -3484,13 +3604,63 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `trunk_scan_active_*` fields for avoid and from the `dsd_trunk_scan_target_name` the unavoid hook fills for put
     back (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`,
     `API_COMMAND_PAYLOADS`.
+  - Scan list toggle (issue #697): `SCAN_LIST_SET` (222, `dsd_app_scan_list_set_payload {session, request, list,
+    enabled}`, typed submit `dsd_app_command_scan_list_set()`; min-size rule; not coalescible) switches one trunk-scan
+    target list on or off, or every list on (`DSD_APP_SCAN_LIST_ALL`), with set semantics. Like the scan controls it
+    is not in `command_updates_scan_mode()`, not apply-guarded (`dsd_trunk_scan_hook_list_set()` takes its own try of
+    the P25 SM tick guard and answers `BUSY` while a watchdog tick holds it), and refused under Signal search. It is
+    judged by its payload for `dmrBS()`'s frame-loop question (`command_scan_list_set_deferred()`, beside `DSP_OP` and
+    `AIRSPY_SET`): switching off the list that holds the target on air moves the tuner (it leaves at once), and
+    so does any switch of this scan while its target on air owes a departure (`scan_departure_owed()`: its list is
+    off or it is the avoided fallback), since the switch starts or cancels it; only those return a held repeater
+    carrier to the frame loop at a burst boundary. Waiting would lose the race: the synced-frames loop ticks the
+    coordinator before it drains, so a cooldown ending under the carrier would depart before a list switched back on
+    could keep the target, and a list switched on that gives the departure its alternate would wait for the call. Any
+    other switch, "all lists on" included, is a flag edit that waits for the carrier to end, like put back and clear,
+    so it never ends a DMR repeater call on a target that stays. The answer reads the asking decoder's own
+    `trunk_scan_session`, `trunk_scan_active_list`, `trunk_scan_active_list_off` and `trunk_scan_active_avoided`,
+    which the coordinator writes on the decoder thread at every hop, switch and pause (a paused scan names no list on
+    air and owes no departure), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
+    that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the frame loop, since telling
+    that apart walks the targets; so does a payload of the wrong size, or any toggle with no state to judge by. A
+    payload of the right size that the drain refuses (session 0, a list the scan does not have) is judged by its fields
+    like any other, so it waits unless it names this scan while a departure is owed. A waiting toggle stays queued, so
+    it still gets its one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or
+    discarded first. `apply_cmd_scan_list_set()` checks what a raw submission can carry (`session != 0`, list 1..8 or
+    all, enabled 0/1; else an invalid payload), calls the hook, and composes the frontend-neutral toast from its code
+    alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`,
+    `... is off already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the
+    other scan controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue
+    took gets a retained result `{sequence, request, session, list, enabled, code, lists_seq}`
+    (`src/app_control/scan_list_results.c`): `lists_seq` is the decoder's `trunk_scan_lists_seq` once the drain handled
+    the request, and for one dropped before a drain reached it the value the last drain left
+    (`dsd_app_scan_list_note_lists_seq()`); the coordinator's `dsd_trunk_scan_list_set_result` passes through as
+    `dsd_app_scan_list_set_code`, and app-control adds `INVALID` (envelope or payload), `SEARCH` (`apply_cmd()` records
+    it) and `DROPPED` (evicted by a later command or discarded at a session stop). A full queue refuses a toggle at
+    submit instead of evicting the oldest, so a refused request is never pending and gets no result. Request ids come
+    from the process-wide `dsd_app_scan_list_request_next()` (never 0), so the terminal, Qt and the API never take each
+    other's results. The result is authoritative for the outcome and the toast; the snapshot's `trunk_scan_lists_seq` is
+    for the lists shown, and the result can come first (its publication precedes the drain's snapshot, which a watchdog
+    tick can also put off), so a frontend clears a pending row on its result, shows what the switch asked for while the
+    snapshot's `trunk_scan_lists_seq` is behind the result's `lists_seq`, and drops a refusal's note once the snapshot
+    moves past it. The code is the coordinator's even where the command's status is not: a rigctl passband follow-up
+    refused after a switch marks the command FAILED (and the recording view's outcome with it) while the code stays OK.
+    The handler hands its code back through an out-parameter along `apply_cmd()`, never a shared static. Toggles are
+    session-only: the coordinator's lists survive a config apply, running or paused, and a save writes the configured
+    start states, never a live switch. Tests: `APP_COMMAND_QUEUE`.
   - Bootstrap retains only positional playback filenames in argv storage, preserving argument indexes with empty
     placeholders. State snapshots exclude argv ownership; teardown securely erases retained strings.
-  - Retained results: talkgroup export and decryption completions are kept as the latest result
-    (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`) and in a history of the last
-    `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
-    `dsd_app_decryption_results_since()`), for a consumer that must see every completion (the control API, which
-    reports a `result_gap` when more completed than the history held)
+  - Retained results: talkgroup export, decryption and scan list toggle completions are kept as the latest result
+    (`dsd_app_tg_export_result_get()`, `dsd_app_decryption_result_get()`, `dsd_app_scan_list_result_get()`) and in a
+    history of the last `DSD_APP_RESULT_HISTORY` (64) by sequence number (`dsd_app_tg_export_results_since()`,
+    `dsd_app_decryption_results_since()`, `dsd_app_scan_list_results_since()`), for a consumer that must see every
+    completion (the control API, which reports a `result_gap` when more completed than the history held).
+    `dsd_app_scan_list_session_results_since()` leaves out the results of an earlier decoder run: the command session's
+    open (`dsd_app_command_session_set_open()`, after it dropped what the last session left queued) notes the newest
+    sequence as a floor (`dsd_app_scan_list_note_session_open()`), so a reader that outlives the decoder (the API's
+    `get scan_list_results`) never serves a previous run's answer; a stop's `DROPPED` results stay readable until then.
+    A cursor at or past the newest sequence reads nothing (it is checked before it is moved on, so `UINT64_MAX` cannot
+    wrap to the start of the history).
   - Telemetry observers (`telemetry_observers.c`): the multi-consumer alternative to the snapshot accessors; see
     "Telemetry Hooks" for the contract
   - History tap (`history_tap.c`, `include/dsd-neo/app_control/history_tap.h`, issue #708): a second reader of the
@@ -4091,6 +4261,34 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `(session, target_id)`. A target id is valid UTF-8 (`dsd_trunk_scan_load_targets_csv()` refuses any other, through
   `dsd_utf8_is_valid()`), so the Qt key, the QML entry and the API's JSON carry it byte for byte. Tests: `APP_CONTROL_SCAN_AVOID_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW[_CXX]`,
   `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/scan_list_view.h` and `src/app_control/scan_list_view.c` (issue #697) give the
+  trunk-scan target lists every frontend and the API show and switch. `dsd_app_scan_list_view_get()` reads only the
+  coordinator's published fields (`trunk_scan_lists[]`, `trunk_scan_list_count` clamped to 8, `trunk_scan_active_list`,
+  `trunk_scan_active_list_off`, `trunk_scan_lists_seq`, `trunk_scan_session`) and the scan state view, from a snapshot
+  pair or the decoder's structs, with no lock and no walk of the targets, and only while `--trunk-scan` is configured:
+  per list `{number, name, enabled, targets, has_active}`, `list_count`, `lists_on`, `targets_on` (the `n of m` m),
+  `active_list`, `running`/`paused` and `toggleable` (running, not paused, 2+ lists). A frontend acts when `lists_seq`
+  or `session` moves. Tests: `APP_CONTROL_SCAN_LIST_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`,
+  `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  `include/dsd-neo/app_control/scan_list_rows.h` and `src/app_control/scan_list_rows.c` (issue #697) are the one rule
+  for what a switcher row shows between a switch and the snapshot that shows it, shared by the terminal's Scan lists
+  modal and Qt's `ScanListToggleModel`; each keeps its own wording, drawing and requests. A row
+  (`dsd_app_scan_list_row`, zeroed = idle) waits on its request (`dsd_app_scan_list_row_sent()`, or `_not_sent()` for a
+  submit the queue refused, which keeps `NOT_SENT` as its note); `dsd_app_scan_list_rows_answer()` matches a retained
+  result to its row, keeps the code as the note and, for OK, holds the state asked for (every list row, for the "every
+  list on" row kept at `list_count`); `dsd_app_scan_list_row_on()` reads that hold while the view's `lists_seq` is
+  behind the result's, then the view; `dsd_app_scan_list_rows_expire()`, once per frame after the frame's results,
+  retires a hold the view caught up with, a note once the view's `lists_seq` moves past the later of the result's and
+  the view's at the switch (`dsd_app_scan_list_seq_after()`, wrap-aware), and a `PAUSED` note on a resume that follows a
+  pause the frontend saw (`seen_paused`). A pause and resume that both fall between two frames are never seen, so that
+  note stays until the row is switched again, the lists change or the frontend drops its rows (a decided limit). No note
+  has a timeout. Both frontends read results through `dsd_app_scan_list_rows_read()` with a reader of the
+  `dsd_app_scan_list_results_since()` shape and a `dsd_app_scan_list_reader` they keep between reads (the cursor and a
+  lost mark): it reads every retained page up to the newest, each result answering its row and moving the cursor.
+  Results that do not follow on from the cursor (64 or more went by unread) mark the reader and every row then
+  waiting (`may_be_lost`); the mark stays across reads that cannot reach the newest while results keep coming, and
+  the first read that drains ends the wait of each marked row still waiting, the row showing the view with no note.
+  Tests: `APP_CONTROL_SCAN_LIST_ROWS`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS[_CXX]`.
   `include/dsd-neo/app_control/config_files.h` and `src/app_control/config_files.c` (issue #672, B11/B18) are the user
   config file's reads and writes the terminal's Config menu asks for (with `import_files` below, so the terminal's menu
   callbacks and actions do no file I/O):
@@ -4350,7 +4548,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the update at once, and a publish from a new state instance (a restarted decoder) drops it and runs the update at
     that publish (one flag test per publish without clients, one instance compare with them), so `get` answers `null`
     rather than the previous run's or previous client's record. The `status` record carries what the stateful commands
-    must quote back: the talkgroup policy version, the decryption context and the scan row view. RF metrics follow the
+    must quote back: the talkgroup policy version, the decryption context and the scan row view. Its `scan` object
+    (issue #697) adds, from the scan state view, the scan list view and the published position fields only:
+    `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), the trunk scan's "n of m" `ordinal` (null while
+    the target on air is outside the lists switched on) and `count` (`trunk_scan_rotation_ordinal`/`_count`), and
+    `session`, `lists_seq`, `list` (the list on air, or null) and `lists[]` that `scan_list_set` and its results quote;
+    the avoid count stays in `status.scan_avoids`. RF metrics follow the
     shared validity rules (app-control behavior note above). Scan avoids (issue #672): on each 250 ms tick the feed
     reads the scan avoid view's constant-cost summary and, only when its key (`dsd_app_scan_avoid_summary_same_key()`)
     moved since the last successful collection, collects the raw entries (`dsd_app_scan_avoid_raw_collect()`, no
@@ -4366,7 +4569,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
     stores. Values that do not fit their field are refused, never wrapped or cut; 64-bit values convert from
     the JSON literal or a decimal/hex string, never through a double; secret payloads are wiped; `config_apply`
-    starts from `dsd_user_config_init()` like the INI loader
+    starts from `dsd_user_config_init()` like the INI loader. `scan_list_set` (issue #697) takes its request id from
+    `dsd_app_scan_list_request_next()` (a client's `request` is refused, since its own ids would collide with the
+    terminal's and Qt's) and echoes it as `request`; a full queue refuses it as `queue_full` (no result follows), told
+    apart from a closed session's `rejected` by reading the session after the submit, so a session opening in between
+    can label a closed-session refusal `queue_full` (a decided limit: nothing was submitted either way). Its results are
+    pulled, not pushed: `get {"what":"scan_list_results","after","limit"}` in `api_server.c` copies up to 64 from
+    `dsd_app_scan_list_session_results_since()` and formats them on the session thread outside every lock, each code by
+    a stable name
   - `json.c` is built with IEEE semantics so its non-finite checks survive fast-math; request lines, parsed strings
     and every buffer are wiped before their storage is released, since requests carry keys and tokens
 - Threading: commands run on session threads (the queue is multi-producer); telemetry is encoded on the decode thread;
@@ -9192,7 +9402,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     no state pointer; the receive editor copies its policy as it opens). The RadioReference panel keeps the frame's
     pair it was last handed (`rr_panel_open_*()`, `rr_panel_tick()`) and gives it to the wizard through
     `RrWizardHooks.session_opts` / `session_state`; the session gate (`rr_wizard_core_apply_block_reason()`,
-    `rr_wizard_core_files_block_reason()`) takes that pair and hands it on to app-control. Before the
+    `rr_wizard_core_files_block_reason()`) takes that pair and hands it on to app-control. The Scan lists modal copies
+    the scan list view from the pair at each tick (see Scan lists below). Before the
     first publication (runtime start publishes before the UI thread exists, so practically never) the frame's state is
     NULL: only Quit is handled, neither the menu nor the `=` overlay opens, nothing is drawn, and the frame's options
     are a UI-owned copy of the start-time fields `ui_start()` took (frontend kind, input type, wheel setting, the `-Z`
@@ -9221,8 +9432,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     then value prompt), `CsvPickerCtx` (chooser, then the "Enter a path..." prompt), and the Imported Systems browser's
     `RrBrowseCtx` through its system, action and delete-confirmation levels, the avoided channel chooser's
     `ScanAvoidPickCtx`; RadioReference's wizard context (`g_rr_panel`) stays borrowed. Items and the title are drawn
-    through `ui_text`: sanitized, measured in cells and cut between code points with the row model's marker, the window
-    sized from widths measured once per start; a paged title keeps its `(a-b/n)` range whole. `ui_thread_main()` calls
+    through `ui_text` (`ui_text_draw_fit()` in `ui_text_draw.{h,c}`, shared with the Scan lists modal): sanitized,
+    measured in cells and cut between code points with the row model's marker, the window sized from widths measured
+    once per start; a paged title keeps its `(a-b/n)` range whole. `ui_thread_main()` calls
     `rr_panel_shutdown()` (it closes a chooser borrowing the wizard's strings before freeing them), then
     `ui_overlays_shutdown()` (`menu_core.c`: help, prompt and chooser - a few passes, since a cancel can open another -
     then every menu frame, and the overlay's bookkeeping reset), then closes curses. Tests: `UI_CHOOSER_NAVIGATION`
@@ -9244,8 +9456,43 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `| Scan Mode: OFF Avoids: N` while a stopped `-Y` list's avoids are left. Clear outside a running scan hides all
     three rows; the menu tick closes an open submenu left with no selectable row back to its parent
     (`ui_menu_pop_emptied_frames()`, `menu_core.c`). Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_TREE_AUDIT`
-    (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 14), `UI_NCURSES_PRINTER_HELPERS`,
+    (+ `_NO_RADIO`: the submenu's rows, order and handlers, Trunking at 12), `UI_NCURSES_PRINTER_HELPERS`,
     `UI_MENU_NAVIGATION` (an emptied submenu).
+  - Scan lists (issue #697): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
+    `#` = `DSD_KEY_SCAN_LISTS`, `lbl_scan_lists()` `[2 of 3 on]`, offered by `scan_lists_offered()`, the scan list
+    view's `toggleable`: a running trunk scan with 2+ lists) and the `#` key (`ui_menu_open_modal_async()` with
+    `act_scan_lists()`) open the modal in `scan_list_modal.{h,c}`, which `menu_core.c` drives like the RadioReference
+    panel (keys, `scan_list_modal_tick()` with the frame's pair, render, close with the overlay); `act_scan_lists()`
+    opens one line of help where the pair has no trunk scan with 2+ lists (`#` still opens it on a paused one, where
+    Enter submits nothing: the modal puts the PAUSED note on the row itself and the toast through `ui_statusf()`, since
+    a submit would wait out a held DMR carrier only to be refused; the footer swaps Enter for
+    `Esc/Left: close, then y resumes the scan`). The modal owns
+    all it draws: a copy of `dsd_app_scan_list_view` taken from the frame's pair each tick, never the decoder's
+    structs, and per row the request it waits on. Enter submits `dsd_app_command_scan_list_set()` with the session it
+    opened on and `dsd_app_scan_list_request_next()`; a rejected submit (full queue) shows `Not sent; try again` and
+    the terminal's own toast in the modal's toast row at once. The row reads `Switching off…` until
+    `dsd_app_scan_list_results_since()` (read from the latest sequence at open) returns its request; the result decides
+    the outcome and the note beside the list (the decoder's whole toast stays on the main screen's toast line). By
+    app-control's row rule (`scan_list_rows.h`, which Qt's Scan lists sheet runs too), a switched row shows the state it
+    asked for while the view's `lists_seq` is behind the result's `lists_seq` (the result can beat the snapshot), then
+    the view's, also when the snapshot already holds a later switch at the answer. A note goes once the view's
+    `lists_seq` moves past the later of the result's and the view's at Enter (a request dropped before a drain reached
+    it carries the last drain's lists, which can be older; a submit not sent keys on the view's), and a paused refusal
+    goes on a resume the modal saw follow the pause (the frame an answer lands in can predate the pause): neither is
+    true any more. A "try again" note has no timeout and survives Enter on another row. A waiting row ignores Enter;
+    rows wait independently. Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
+    closes on Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The
+    Trunk Scan row (`ui_render_trunk_scan_status()`) reads the "n of m" position from
+    `trunk_scan_rotation_ordinal/_count` (`(-/m)` while the list on air is off) and, with 2+ lists, shows `[list off]`
+    in the room `[avoided]` takes (11 cells then; `[avoided]` when both hold, so 80 columns keep room for the list's
+    name) and adds `List: <name>` after the target (cut at a whole field: the count, then the list, then the id); the
+    paused trunk row adds `Lists: n/m on`.
+    The rigctl rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
+    `UI_SCAN_LIST_MODAL` (pending, answers, refusals and when their notes go, the paused footer, repeat Enter,
+    out-of-order answers, All lists on, full queue, Esc, session change, results from before it opened, a snapshot
+    already past the answer), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION` (routing and the modal-only
+    overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its key, the rigctl rows in Input),
+    `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -9261,14 +9508,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     the scan. `=` (and, under PDCurses, `SHF_PADENTER` and Enter with `PDC_get_key_modifiers() &
     PDC_KEY_MODIFIER_SHIFT`, guarded on those names, not on `DSD_USE_PDCURSES`) opens `act_freq_key()` through
     `ui_menu_open_modal_async()`: the overlay with an empty frame and `g_modal_only` set, which `menu_core.c` closes
-    once no prompt, help, chooser or RadioReference panel is left (in the opener's own call, after the modal routing of
-    each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the frame's published
-    options (the menu's context), as the row's predicate does, and opens the prompt or one line of help with the
-    reason (an I/Q replay; no connected rigctl peer). The `y` row
-    (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y
-    resumes)`, `| Trunk Scan: PAUSED (y resumes)`, with the avoid count) read `dsd_app_scan_state_view_get()`; hold
-    and avoid (`scan_rotation_active()`) and Next and Previous channel under a trunk scan (`trunk_enabled()`) need the
-    scan running (the avoids list and Clear do not: see Scan avoids above). Tests: `UI_MENU_ACTIONS`,
+    once no prompt, help, chooser, RadioReference panel or Scan lists modal is left (in the opener's own call, after the
+    modal routing of each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the
+    frame's published options (the menu's context), as the row's predicate does, and opens the prompt or one line of
+    help with the reason (an I/Q replay; no connected rigctl peer). The `y` row (`lbl_scan()`) and the main screen's
+    paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y resumes)`, `| Trunk Scan: PAUSED (y resumes)`,
+    with the avoid count and, with 2+ trunk-scan lists, `Lists: n/m on`) read `dsd_app_scan_state_view_get()`; hold and
+    avoid (`scan_rotation_active()`) and Next and Previous channel under a trunk scan (`trunk_enabled()`) need the scan
+    running (the avoids list and Clear do not: see Scan avoids above). Tests: `UI_MENU_ACTIONS`,
     `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT`
     (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
@@ -10724,8 +10971,11 @@ Qt Quick frontend (`src/ui/qt`):
     `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
     old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names (never
     one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
-    the files the app generates under `decryption/` (`<uid>/<uuid>.(hex|dec|map).csv`) and `scan_lists/` (`<uid>.csv`);
-    anything else there is kept, with the directories it is in. Only those are deleted. An incoming file whose
+    the files the app generates under `decryption/` (`<uid>/<uuid>.(hex|dec|map).csv`) and `scan_lists/`
+    (`<uid>/<name>.csv`, issue #697, and the older `<uid>.csv`; the rule is the layout, so any CSV in a uid-shaped
+    folder there counts, whether or not a list still has that uid); anything else there is kept, with the directories it
+    is in. Only those are deleted, and an applied restore forgets the scan session's companion lists (issue #697,
+    `AppPrefs::forgetScanCompanions()`). An incoming file whose
     destination holds anything else takes a free name (`name (n).ext`, a bundle `<id>-<n>`, a blocked directory `dir
     (n)`) and the stores' references follow. File contents are never rewritten, so a bundle whose row keeps its file
     outside it (a plain channel map beside its bundle names companions `bundles/<id>/…`) never moves: when an entry the
@@ -11006,7 +11256,7 @@ External dependencies (resolved via CMake):
   Slot 5 holds the saved global group context and suspend/resume ownership. Clearing metadata restores it first;
   moving metadata unwinds both source and destination scopes before transferring the row definitions.
 - `dsd_scan_key_change_prepare()` allocates the incoming key copy and any needed baseline before a conventional tune;
-  commit consumes the change without allocation. Engine checks the map generation and key epoch before committing,
+  commit consumes the change without allocation. Engine checks the list revision and key epoch before committing,
   restaging the tune (and re-preparing against the current globals) when the keyring changed in the window. Both
   coordinators reserve every scope and key allocation before saving the outgoing snapshot, so a failed preparation
   leaves the receiver and snapshot untouched. Conventional retries keep the frame gate closed until a row commits,
@@ -11032,8 +11282,10 @@ External dependencies (resolved via CMake):
   row option accepted on trunked types as well, and its `scan_max_visit_ms` travels in the same row-option block,
   outside `dsd_scan_settings_equal()`, so a row cap never restages a tune.
 - Long DMR base-station decode loops consult the runtime frame hook `scan_visit_should_yield` at burst boundaries.
-  It maintains the owning scanner's visit clock and reports expiry without tuning. The decoder finishes its cleanup
-  and releases the SM guard before the engine advances, so cleanup cannot overwrite the next target's state.
+  It maintains the owning scanner's visit clock and reports expiry without tuning; under trunk scan it also reports a
+  receive rejection and a departure the target on air owes (`dsd_engine_trunk_scan_departure_due()`, issue #697). The
+  decoder finishes its cleanup and releases the SM guard before the engine advances, so cleanup cannot overwrite the
+  next target's state.
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
 - `DSD_SCAN_OPT_SQUELCH` (`--squelch-db`, issue #521) is the one row option with hardware behind it. The parser
@@ -12086,10 +12338,84 @@ pace. How the harness works and how to add a case: `docs/testing.md` "Accessibil
 through `json_store` (`scan_lists.json`). `scan_list_targets.{h,cpp}` is a pure
 QtCore generator with no filesystem or engine dependency. `scan_list_starter`
 checks imported paths, atomically writes the private CSV, validates through
-`app_control/trunk_scan_validate.h`, and delegates argv assembly to
+`app_control/trunk_scan_validate.h` (`dsd_app_trunk_scan_validate_target_lists()` is the several-file form, errors
+named by display name; issue #697), and delegates argv assembly to
 `session_args.cpp`. `Main.qml` shares the existing USB permission gate and extends
 the single `sessionInitialized` recency handler. `metrics_model` copies target
 identity from the tick's held snapshot; no extra snapshot reader is introduced.
+
+Several lists in one session (issue #697):
+
+- Files and names: a list's CSV is `scan_lists/<uid>/<name>.csv` (`scan_list_csv_path()`, `scan_list_csv_stem()`: the
+  list's name made safe for a file name, with no `$` or leading `~` for the engine's `dsd_config_expand_path()` to read
+  and a `_` after a Windows device name (`COM`/`LPT` with a superscript 1 to 3 included) before the first dot, cut to
+  the engine's 31 bytes, `list N` when nothing is left; a manual list's saved CSV is validated again at its final path
+  through the engine's opener), so the engine's list name (the file name without folder and extension) is the list's own
+  on every surface: toasts, logs, the API. A list over an imported target CSV gets a copy there at a start
+  (`ScanListStarter::listCopyOf()`:
+  `copy_targets_for_list()` rewrites every companion the targets name with `dsd_app_scan_csv_rewrite()`, relative to the
+  copy's folder, then `dsd_app_trunk_scan_validate_bundle()` checks the copy); the imported file is never written. A
+  copy that cannot be made, does not check out, or is not at its path once the folder is cleaned (on Windows, a copy
+  written under another name) leaves the list on the imported file, named after it, with a
+  `NOTICE: Scan list "<name>" runs from its imported file ...` log line; the starter never names a missing file
+  (`UI_QT_SCAN_LIST_ROUNDTRIP` removes the copy through `scan_list_set_copy_written_hook_for_test()`).
+  `remove_other_list_csvs()` drops the list's older files there. On Windows the copy's writer
+  (`dsd_fopen_private_temp_for_replace()`, `dsd_replace_file_with_temp()`, `dsd_remove_file()`) and the engine's reader
+  (`dsd_path_fopen_user_read_file()`) take a UTF-8 path through the wide calls (`dsd_win32_utf8_path_to_wide()`), so a
+  list named in any script keeps its name.
+- Who can join: `session_args_scan_join_conflict()` (`session_args.cpp`; QML asks `ScanListStarter::joinConflict()`)
+  compares the primary list with another after the app defaults and path resolution and names the first setting that
+  differs, in this order (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
+  `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different default dwell`,
+  `Different default hold`, `Different fallback talkgroups`, `Different source aliases`; empty when it can join). The
+  radio source is the source type and device (Airspy serial, rtl_tcp/TCP host and port, UDP port, file path); bandwidth
+  is compared as the radio runs it and only on RTL and Airspy sources; gain, PPM and bias tee only on RTL sources (a
+  setting the source's argv leaves out, `append_input_args()`, is no setting); Airspy values are read with the engine's
+  aliases (`scan_join_airspy_value()`); dwell and hold 0 are the engine's defaults
+  (`SessionArgsScan{Dwell,Hold}DefaultMs`, pinned against `DSD_TRUNK_SCAN_*_DEFAULT_MS` in the test).
+- Start: `ScanListStarter::startLists()` takes at most `maxLists()` (`DSD_TRUNK_SCAN_MAX_LISTS`), runs each list's own
+  checks (`prepare(list, false)`, a refusal naming the list) and the join rule against the first
+  (`“Louder” can't scan with “Security”: different gain.`), writes every list's CSV, then checks them together with
+  `dsd_app_trunk_scan_validate_target_lists()` (ids unique across lists, the union cap, errors by display name). One
+  recording session (the first list's) and one argv (`session_args_scan_build_lists()`: the first list's receiver and
+  session options, one `--trunk-scan` per list in order) go to one `host->start()`; nothing starts unless all of it
+  passes. A single list is `start()`, unchanged. Every list starts on: the app has no start-off state.
+- Home: a ready card's More menu offers `Scan with other lists…` while another ready list exists (`HomeScreen.qml`
+  `canScanWithOthers()`), opening `ScanTogetherSheet.qml`: one `ToggleRow` per other ready list in Home order, off,
+  disabled with its conflict (or `A scan runs 8 lists at most` once full); the button reads `Start N lists`, disabled
+  with none chosen. `playScanLists(row, companionUids)` reaches `Main.qml` `startScanBundle()`. `ScanListCard` and the
+  sheet count through `ScanListsModel::entryCount()` (a CSV list's accepted rows) with whole singular and plural strings
+  (`1 entry`).
+- Session identity: the bundle is the primary's uid plus the companions' uids in list order. `startWithMap()` carries
+  them (`attemptedSource.companions` for Retry, `pendingStartCompanions` across a USB permission wait); a host that
+  accepts the start writes `prefs.acceptedStartCompanions` beside `acceptedStartKind/Uid`, never pruned, since a
+  recreated Activity names the running session's lists from it by position (`adoptReattachedSession()`, `scanListsAt()`:
+  a removed list keeps its place as `{}`); `sessionInitialized` writes `lastStartedCompanions`, which auto-start replays
+  (`UiController::autoStartRequested(kind, uid, companions)`, from `qt_ui.cpp`) and `pruneScanCompanions()` trims of
+  removed lists. A start resolves the uids as the lists are saved then (`scanListsByUid()`): a removed companion is left
+  out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
+  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`.
+- In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
+  (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
+  every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the
+  scan list view over the held pair: `scanListCount`, `scanActiveList`, `scanActiveListOff`,
+  `scanRotationOrdinal`/`scanRotationCount` (the "n/m" position) and `scanListModel`, a `ScanListToggleModel` (rows from
+  the view, a switch sent with `dsd_app_command_scan_list_set()` and a request from `dsd_app_scan_list_request_next()`,
+  results from `dsd_app_scan_list_results_since()`, the row state by app-control's `scan_list_rows.h`; the wording, Qt's
+  own sentences, is the model's). Session options offers `Scan lists` while the scan session has 2+ lists, paused too
+  (`ScanListsSheet.qml`: one `ToggleRow` per list with its targets and `On air`, `Switching off…` while pending, a
+  refusal in the row's new `note` line in `Theme.alert` and announced; rows disabled while paused,
+  `Resume the scan to change lists.`). The Monitor header reads `SCANNING · n/m · HOLD · <target> · <list>` with the
+  rotation's place (`-` while the list on air is off) and the title `<list> + N lists` (the count kept whole when the
+  name is elided).
+
+Tests: `UI_QT_SESSION_ARGS` (join rule, argv), `UI_QT_CONTROLLER` (starter, refused start on an id clash, auto-start,
+uid repair), `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkImportedListsNamedApart`: two imported bundles started together through
+the real coordinator), `UI_QT_METRICS_MODEL` (readings and the toggle model), `UI_QT_BACKUP_APPLY` (the companions
+forgotten, the `<uid>/<name>.csv` layout), `UI_QT_PERSISTENCE` (the companions' keys), and the QML suites
+`tst_scan_lists.qml`, `tst_home_scan_lists.qml`, `tst_monitor_scan_target.qml` (`UI_QT_QML_CALL_LISTS`) and
+`tst_main_session_tools.qml` (`UI_QT_QML_SESSION_TOOLS`: the bundle through accepted and initialized start, permission
+waits, retry, reattachment and removals).
 
 Frequency entries take the protocols `p25`, `dmr`, `nxdn48`, `nxdn`, and the analog `nfm` and `am` (issue #526), which
 map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way (exactly `-fA`
@@ -12218,8 +12544,10 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   ordinary release would return to (a Cap+ rest channel a voice LC named). `runtime/control_pump.h`
   `dsd_runtime_controls_need_frame_loop()` (installed from `dsd_app_commands_need_frame_loop()`: any queued command but
   those on `k_deferred_commands` (display, audio, keys and decryption, recording, front-end slider tweaks, the runtime
-  config re-parse), with `DSP_OP` and `AIRSPY_SET` judged by their payload) lets `dmrBS()`, which holds the decoder for
-  a whole repeater carrier, return to the frame loop at a burst boundary; other commands wait for the carrier to end.
+  config re-parse), with `DSP_OP`, `AIRSPY_SET`, `SCAN_LIST_SET`, `SCAN_AVOID_REMOVE` and `SCAN_AVOID_CLEAR` judged
+  by their payload, the last three against the decoder state `dmrBS()` passes in) lets `dmrBS()`, which holds the
+  decoder for a whole repeater carrier, return to the frame loop at a burst boundary; other commands wait for the
+  carrier to end.
   EDACS analog voice (`edacs_analog_call()`) keeps every command until its call ends: leaving the loop early ends the
   call, which cannot be re-entered before the next grant. SIGHUP shuts down as SIGINT does unless inherited as ignored,
   and the runtime config's snapshot comparison includes `no_signal_handlers_*`.

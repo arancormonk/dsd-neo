@@ -50,6 +50,12 @@ Item {
         anchors.fill: parent
         source: uiDir + "/ScanAvoidSheet.qml"
     }
+    // Issue #697: the session's Scan lists sheet, on the real toggle model the fixture feeds.
+    Loader {
+        id: scanListsLoader
+        anchors.fill: parent
+        source: uiDir + "/ScanListsSheet.qml"
+    }
     Component {
         id: spyComponent
         SignalSpy {
@@ -273,6 +279,41 @@ Item {
             sheet.visible = false;
             tryCompare(list, "count", 0);
             testContext.setScanAvoids([]);
+        }
+
+        // Issue #697: closed, the Scan lists sheet builds no rows while the lists change; open, each switch is named
+        // for its list and says its size, and Done is a swipe stop.
+        function test_scan_lists_sheet_rows() {
+            var sheet = scanListsLoader.item;
+            verify(sheet !== null);
+            var rows = findChild(sheet, "scanListsRows");
+            var repeater = repeaters(rows, [])[0];
+            verify(repeater !== undefined, "the rows' Repeater is missing");
+            var frame = function (seq, onAir) {
+                return {session: 7, seq: seq, lists: [{name: "security", targets: 12, onAir: onAir === 1},
+                    {name: "hospital", targets: 1, onAir: onAir === 2}, {name: "parks", targets: 3, onAir: onAir === 3}]};
+            };
+            testContext.setHostRunning(true);
+            testContext.startAccessibilityCount();
+            for (var i = 0; i < changes; ++i)
+                testContext.setScanLists(frame(i + 1, i % 3 + 1));
+            compare(repeater.count, 0, "the closed sheet made list rows");
+            compare(showHide(sheet), 0, churn());
+            testContext.stopAccessibilityCount();
+            sheet.open();
+            tryCompare(repeater, "count", 3);
+            waitForRendering(sheet);
+            var hospital = findChild(sheet, "scanListsRow_2");
+            var node = testContext.accessibleNode(hospital);
+            verify(node.inTree && node.focusable, "a list's switch is a swipe stop");
+            compare(node.name, "hospital");
+            var done = testContext.accessibleNode(findChild(sheet, "scanListsDone"));
+            verify(done.inTree && done.focusable);
+            compare(done.name, "Done");
+            sheet.visible = false;
+            tryCompare(repeater, "count", 0);
+            testContext.resetScanLists();
+            testContext.setHostRunning(false);
         }
 
         function test_closed_site_sheet_leaves_its_fields_unbuilt() {

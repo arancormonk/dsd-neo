@@ -123,6 +123,17 @@ void dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list);
 int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_target_list* out, char* err,
                                     size_t err_sz);
 
+/**
+ * @brief Whether target lists loaded one by one can run in one session (issue #697).
+ *
+ * No target id repeats across the lists (each list's own rules stay its parser's), and their union fits
+ * dsd_trunk_scan_max_targets(). The error names the files from @p names[i] (list i's file) and both rows.
+ *
+ * @return 0 when they can; -1 otherwise.
+ */
+int dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
+                                      char* err, size_t err_sz);
+
 /** Shared lexical splitter for target import/relocation. Modifies line in place. */
 int dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count);
 
@@ -260,6 +271,25 @@ int dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op);
  */
 int dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state, uint32_t session,
                                          const char* target_id, dsd_trunk_scan_target_name* name);
+/**
+ * @brief Switch a target list on or off for the session (issue #697): the coordinator's side of the runtime
+ * `list_set` hook (dsd_trunk_scan_hook_list_set(), whose rules and results it implements).
+ *
+ * A list switched off keeps its targets, snapshots, avoids and edits; the rotation passes them over until it is on
+ * again. Every candidate walk and count reads one predicate, in the rotation = list on and not avoided. Decoder
+ * thread; takes the P25 SM tick guard (try-enter) itself.
+ */
+int dsd_engine_trunk_scan_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
+                                   uint32_t request);
+/**
+ * @brief Whether the target on air owes a departure that is due now (issue #697): it is out of the rotation (its list
+ * is off, or it is the avoided fallback) and another target can take the receiver, or could when it was last asked.
+ *
+ * Joins the frame loop's yield (scan_visit_should_yield) beside visit expiry and receive rejection, so a continuously
+ * keyed DMR carrier unwinds at a burst boundary and the next coordinator tick departs after protocol cleanup. Reads
+ * two coordinator fields and the decode clock, never the target list, since it runs every frame. 0 while paused.
+ */
+int dsd_engine_trunk_scan_departure_due(const dsd_opts* opts, const dsd_state* state);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 /**

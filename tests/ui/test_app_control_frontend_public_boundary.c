@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_timing_view.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
@@ -84,6 +85,16 @@ main(void) {
     (void)&dsd_app_config_save;
     (void)&dsd_app_config_default_missing;
     (void)&dsd_app_command_scan_avoid_remove;
+    (void)sizeof(dsd_app_scan_list_view);
+    (void)sizeof(dsd_app_scan_list_entry);
+    (void)sizeof(dsd_app_scan_list_set_payload);
+    (void)sizeof(dsd_app_scan_list_result);
+    (void)&dsd_app_scan_list_view_get;
+    (void)&dsd_app_command_scan_list_set;
+    (void)&dsd_app_scan_list_request_next;
+    (void)&dsd_app_scan_list_result_get;
+    (void)&dsd_app_scan_list_results_since;
+    (void)&dsd_app_scan_list_session_results_since;
     (void)sizeof(dsd_app_squelch_view);
     (void)&dsd_app_squelch_view_get;
     (void)&dsd_app_squelch_view_format;

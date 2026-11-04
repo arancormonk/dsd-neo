@@ -19,6 +19,8 @@
 
 #include <QByteArray>
 #include <QChar>
+#include <QDir>
+#include <QFileInfo>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
@@ -28,7 +30,9 @@
 #include <Qt>
 #include <QtGlobal>
 
+#include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/freq_parse.h>
@@ -506,9 +510,13 @@ validateScanTuner(const QVariantMap& list) {
     return {};
 }
 
+/* One --trunk-scan per list (issue #697): the list numbers the engine gives them are their order here. */
 static void
-appendScanOptions(QStringList& args, const QVariantMap& list, const QString& csvPath, const SessionArgPrefs& prefs) {
-    args << QStringLiteral("--trunk-scan") << csvPath;
+appendScanOptions(QStringList& args, const QVariantMap& list, const QStringList& csvPaths,
+                  const SessionArgPrefs& prefs) {
+    for (const auto& csvPath : csvPaths) {
+        args << QStringLiteral("--trunk-scan") << csvPath;
+    }
     for (const auto& field : {"groupCsvPath", "srcCsvPath"}) {
         if (!list.value(field).toString().isEmpty()) {
             args << (QString(field) == "groupCsvPath" ? QStringLiteral("-G") : QStringLiteral("--src-csv"))
@@ -540,30 +548,38 @@ appendScanOptions(QStringList& args, const QVariantMap& list, const QString& csv
 QStringList
 session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, const QString& csvPath,
                         const SessionArgPrefs& prefs, QString* error) {
-    if (error) {
-        error->clear();
-    }
+    return session_args_scan_build_lists(list, firstFreqMhz, QStringList{csvPath}, prefs, error);
+}
+
+/* Why a scan session over @p csvPaths cannot be built from @p list and @p prefs, or empty: the extra options, the
+   call recording they would take over, the endpoint and the tuner fields, and 1 to DSD_TRUNK_SCAN_MAX_LISTS lists. */
+static QString
+scanBuildRefusal(const QVariantMap& list, const QStringList& csvPaths, const SessionArgPrefs& prefs) {
     if (!session_args_scan_extra_safe(prefs.extraArgs)) {
-        if (error) {
-            *error = session_args_error_text(SessionArgsError::UnsafeOption);
-        }
-        return {};
+        return session_args_error_text(SessionArgsError::UnsafeOption);
     }
     const SessionArgsError recordingError =
         session_args_recording_extra_error(prefs.extraArgs, prefs.recordCalls, prefs.recordingUnavailable);
     if (recordingError != SessionArgsError::None) {
-        if (error) {
-            *error = session_args_error_text(recordingError);
-        }
-        return {};
+        return session_args_error_text(recordingError);
     }
-    QString validation = validateScanEndpoint(list);
-    if (validation.isEmpty()) {
-        validation = validateScanTuner(list);
+    if (csvPaths.isEmpty() || csvPaths.size() > DSD_TRUNK_SCAN_MAX_LISTS) {
+        return QStringLiteral("Scan from 1 to %1 lists at once.").arg(DSD_TRUNK_SCAN_MAX_LISTS);
     }
-    if (!validation.isEmpty()) {
+    const QString validation = validateScanEndpoint(list);
+    return validation.isEmpty() ? validateScanTuner(list) : validation;
+}
+
+QStringList
+session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqMhz, const QStringList& csvPaths,
+                              const SessionArgPrefs& prefs, QString* error) {
+    if (error) {
+        error->clear();
+    }
+    QString refusal = scanBuildRefusal(list, csvPaths, prefs);
+    if (!refusal.isEmpty()) {
         if (error) {
-            *error = std::move(validation);
+            *error = std::move(refusal);
         }
         return {};
     }
@@ -588,7 +604,7 @@ session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, co
         }
         return {};
     }
-    appendScanOptions(args, list, csvPath, prefs);
+    appendScanOptions(args, list, csvPaths, prefs);
     return args;
 }
 
@@ -875,6 +891,159 @@ session_args_effective_bandwidth_khz(const QString& decodeFlag, const QString& s
     }
     /* The engine reads the spec's bandwidth field this way: a value it does not run is the 48 kHz default. */
     return is_rtl_source(sourceType) ? dsd_analog_rtl_dsp_bw_or_default(requested) : requested;
+}
+
+namespace {
+
+/* The receiver a scan list runs on, as its argv names it: the source, then the device the source opens (an Airspy by
+   its serial, rtl_tcp and TCP audio by host and port, UDP audio by its port, a file by its path). A host is matched
+   without case or the blanks the argv trims. */
+QString
+scan_join_radio(const QVariantMap& list) {
+    const QString source = list.value(QStringLiteral("sourceType")).toString();
+    const QString host = list.value(QStringLiteral("host")).toString().trimmed().toLower();
+    const QString port = QString::number(stored_int_or(list.value(QStringLiteral("port")), 0));
+    if (source == QLatin1String("airspy")) {
+        return source + QLatin1Char('|')
+               + list.value(QStringLiteral("airspy")).toMap().value(QStringLiteral("serial")).toString().toUpper();
+    }
+    if (source == QLatin1String("rtltcp") || source == QLatin1String("tcp")) {
+        return source + QLatin1Char('|') + host + QLatin1Char(':') + port;
+    }
+    if (source == QLatin1String("udp")) {
+        return source + QLatin1Char('|') + port;
+    }
+    return source == QLatin1String("file")
+               ? source + QLatin1Char('|') + list.value(QStringLiteral("filePath")).toString()
+               : source;
+}
+
+/* An Airspy setting as the engine takes it (dsd_airspy_config_set()): the gain mode by name in any case, a sample
+   rate of "auto" as 0, a switch written true/on/yes or false/off/no (any case) or as a number as 0 or 1, a number as a
+   number; anything else as written, for the engine to refuse. */
+QString
+scan_join_airspy_value(const QString& key, const QVariant& value) {
+    QString text = value.toString().trimmed().toLower();
+    if (key == QLatin1String("gain_mode")) {
+        return text;
+    }
+    if (key == QLatin1String("sample_rate") && text == QLatin1String("auto")) {
+        return QStringLiteral("0");
+    }
+    const bool isSwitch =
+        key == QLatin1String("lna_agc") || key == QLatin1String("mixer_agc") || key == QLatin1String("bias_tee");
+    if (isSwitch && (text == QLatin1String("true") || text == QLatin1String("on") || text == QLatin1String("yes"))) {
+        return QStringLiteral("1");
+    }
+    if (isSwitch && (text == QLatin1String("false") || text == QLatin1String("off") || text == QLatin1String("no"))) {
+        return QStringLiteral("0");
+    }
+    bool ok = false;
+    const qlonglong number = text.toLongLong(&ok);
+    return ok ? QString::number(number) : value.toString();
+}
+
+/* Every Airspy setting the session runs with but the serial (the device, which the radio source compares), as
+   "key=value" in key order: the engine's default for each one the argv leaves out (dsd_airspy_config_defaults()),
+   so a key left unset and the same key set to its default are one setting; nothing for any other source. */
+QStringList
+scan_join_airspy(const QVariantMap& list) {
+    QStringList settings;
+    if (list.value(QStringLiteral("sourceType")).toString() != QLatin1String("airspy")) {
+        return settings;
+    }
+    dsd_airspy_config d;
+    dsd_airspy_config_defaults(&d);
+    const char* modes[] = {"sensitivity", "linearity", "manual"};
+    QVariantMap effective{{QStringLiteral("sample_rate"), d.sample_rate},
+                          {QStringLiteral("gain_mode"), QString::fromLatin1(modes[d.gain_mode])},
+                          {QStringLiteral("sensitivity_gain"), d.sensitivity_gain},
+                          {QStringLiteral("linearity_gain"), d.linearity_gain},
+                          {QStringLiteral("lna_gain"), d.lna_gain},
+                          {QStringLiteral("mixer_gain"), d.mixer_gain},
+                          {QStringLiteral("vga_gain"), d.vga_gain},
+                          {QStringLiteral("lna_agc"), d.lna_agc},
+                          {QStringLiteral("mixer_agc"), d.mixer_agc},
+                          {QStringLiteral("bias_tee"), d.bias_tee}};
+    const QVariantMap native = list.value(QStringLiteral("airspy")).toMap();
+    for (auto it = native.cbegin(); it != native.cend(); ++it) {
+        if (it.key() != QLatin1String("serial")) {
+            effective.insert(it.key(), it.value());
+        }
+    }
+    for (auto it = effective.cbegin(); it != effective.cend(); ++it) {
+        settings << it.key() + QLatin1Char('=') + scan_join_airspy_value(it.key(), it.value());
+    }
+    return settings;
+}
+
+/* A side file as the session opens it: resolved against the working folder and cleaned, so "a/../b.csv" and "b.csv"
+   are one file; empty for none. */
+QString
+scan_join_path(const QVariantMap& list, const char* field) {
+    const QString path = list.value(QLatin1String(field)).toString();
+    return path.isEmpty() ? QString() : QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+}
+
+/* A list's own dwell or hold, or the engine's default for 0 or less (what the argv leaves out). */
+int
+scan_join_ms(const QVariantMap& list, const char* field, int engineDefault) {
+    const int ms = stored_int_or(list.value(QLatin1String(field)), 0);
+    return ms > 0 ? ms : engineDefault;
+}
+
+/* The PPM correction the tuner spec carries, as a number where it parses ("+5" and "5" are one), else as written. */
+QVariant
+scan_join_ppm(const QVariantMap& list, const SessionArgPrefs& prefs) {
+    const QString ppm = normalized_ppm(list, prefs);
+    bool ok = false;
+    const int value = ppm.toInt(&ok);
+    return ok ? QVariant(value) : QVariant(ppm);
+}
+
+/* Each session setting a list takes into its argv, after the app-wide defaults, in the order a conflict is named. A
+   setting the list's source leaves out of its argv (append_input_args()) is no setting: gain, PPM and bias tee go
+   only into an RTL spec, the bandwidth only into an RTL or Airspy one, so an Airspy list's stored RTL gain, or a
+   network or file list's bandwidth, never keeps it out. */
+QList<QPair<QString, QVariant>>
+scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs) {
+    const QString source = list.value(QStringLiteral("sourceType")).toString();
+    const int gain = stored_int_or(list.value(QStringLiteral("gainDb")), -1);
+    const bool rtl = is_rtl_source(source);
+    const bool tuned = rtl || source == QLatin1String("airspy");
+    return {
+        {QStringLiteral("Different radio source"), scan_join_radio(list)},
+        {QStringLiteral("Different gain"), rtl ? QVariant(gain >= 0 ? gain : prefs.gainDb) : QVariant()},
+        {QStringLiteral("Different PPM correction"), rtl ? scan_join_ppm(list, prefs) : QVariant()},
+        {QStringLiteral("Different bandwidth"),
+         tuned ? QVariant(session_args_effective_bandwidth_khz(
+                     QString(), source, stored_int_or(list.value(QStringLiteral("bandwidthKhz")), -1),
+                     prefs.bandwidthKhz))
+               : QVariant()},
+        {QStringLiteral("Different bias tee"),
+         rtl && bias_tee_effective(list.value(QStringLiteral("biasTee"), -1), prefs.biasTee)},
+        {QStringLiteral("Different Airspy settings"), scan_join_airspy(list)},
+        {QStringLiteral("Different voice-only setting"), list.value(QStringLiteral("voiceOnly")).toBool()},
+        {QStringLiteral("Different default dwell"),
+         scan_join_ms(list, "defaultDwellMs", SessionArgsScanDwellDefaultMs)},
+        {QStringLiteral("Different default hold"), scan_join_ms(list, "defaultHoldMs", SessionArgsScanHoldDefaultMs)},
+        {QStringLiteral("Different fallback talkgroups"), scan_join_path(list, "groupCsvPath")},
+        {QStringLiteral("Different source aliases"), scan_join_path(list, "srcCsvPath")},
+    };
+}
+
+} // namespace
+
+QString
+session_args_scan_join_conflict(const QVariantMap& primary, const QVariantMap& other, const SessionArgPrefs& prefs) {
+    const auto mine = scan_join_settings(primary, prefs);
+    const auto theirs = scan_join_settings(other, prefs);
+    for (qsizetype i = 0; i < mine.size(); ++i) {
+        if (mine.at(i).second != theirs.at(i).second) {
+            return mine.at(i).first;
+        }
+    }
+    return {};
 }
 
 bool

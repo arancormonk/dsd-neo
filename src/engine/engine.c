@@ -1421,7 +1421,7 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
     const dsd_trunk_tune_result result = no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq, &pending_id);
     if (result == DSD_TRUNK_TUNE_RESULT_TIMEOUT) {
         dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_UNTYPED_STEP, pending_id, (uint32_t)freq, prior_hz,
-                                            row, state->lcn_scan_session, state->trunk_chan_map_seq);
+                                            row, state->lcn_scan_session, state->lcn_list_rev);
         return DSD_UNTYPED_STEP_PENDING;
     }
     if (result == DSD_TRUNK_TUNE_RESULT_DEFERRED) {
@@ -1590,7 +1590,7 @@ static int
 untyped_settled_row_is_current(const dsd_opts* opts, const dsd_state* state, const dsd_manual_tune_settled* settled) {
     return dsd_channel_scan_owns_tuner(opts, state) && opts->trunk_scan_enabled != 1
            && !dsd_channel_modes_present(state) && settled->scan_session == state->lcn_scan_session
-           && settled->map_seq == state->trunk_chan_map_seq && settled->row >= 0 && settled->row < state->lcn_freq_count
+           && settled->list_rev == state->lcn_list_rev && settled->row >= 0 && settled->row < state->lcn_freq_count
            && *dsd_state_trunk_lcn_slot_const(state, settled->row) == (long int)settled->requested_hz;
 }
 
@@ -1657,7 +1657,10 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
 static int
 no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t now, int* install_row) {
     *install_row = -1;
-    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
+    /* Channels learned over the air (a DMR site's broadcasts) are no list to scan: a -Y session without one of the
+       user's stays where it is until one is imported. */
+    if (opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || !dsd_state_trunk_lcn_user_list_present(opts, state)
+        || !no_carrier_scanner_step_is_due(opts, state, now)) {
         return 0;
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:

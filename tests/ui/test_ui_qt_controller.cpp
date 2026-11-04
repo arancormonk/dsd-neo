@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QAbstractListModel>
+#include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -9,11 +10,8 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
-#include <QList>
 #include <QMap>
 #include <QMetaMethod>
-#include <QMetaObject>
-#include <QMetaProperty>
 #include <QMetaType>
 #include <QObject>
 #include <QQmlComponent>
@@ -25,10 +23,10 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
-#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <Qt>
+#include <QtGlobal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -69,6 +67,7 @@ extern "C" {
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
 #include "../test_support/qt_test_paths.h"
+#include "app_prefs.h"
 #include "auto_start_attachment.h"
 #include "call_history_model.h"
 #include "command_bridge.h"
@@ -79,7 +78,10 @@ extern "C" {
 #include "metrics_model.h"
 #include "p25_network_model.h"
 #include "qml_gc_policy.h"
+#include "saved_systems_model.h"
 #include "scan_avoid_list_model.h"
+#include "scan_list_starter.h"
+#include "scan_lists_model.h"
 #include "session_args.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
@@ -705,6 +707,202 @@ test_auto_start_requests() {
     controller.requestAutoStart(true, true, "saved", "target", usb, "usb");
     controller.setProperty("autoStartBlocked", false);
     check(requests == 2); // Suppressed requests do not retry when the gate opens.
+}
+
+// Issue #697: a scan session's other lists ride with an auto-start, in their order; any other kind carries none.
+static void
+test_auto_start_carries_the_scan_bundle() {
+    Host host;
+    host.phase = Host::Idle;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    controller.setProperty("autoStartBlocked", false);
+    QStringList requested;
+    QObject::connect(&controller, &dsd_qt::UiController::autoStartRequested,
+                     [&](const QString& kind, const QString& uid, const QStringList& companions) {
+                         requested << kind + ":" + uid + ":" + companions.join(',');
+                     });
+    const QVariantMap target{{"uid", "security"}, {"sourceType", "usb"}};
+    controller.requestAutoStart(true, true, "scan", "security", target, "usb", {"hospital", "parks"});
+    controller.requestAutoStart(true, true, "scan", "security", target, "usb");
+    controller.requestAutoStart(true, true, "saved", "security", target, "usb", {"hospital"});
+    check(requested == (QStringList{"scan:security:hospital,parks", "scan:security:", "saved:security:"}));
+    // A start a gate refuses carries nothing.
+    requested.clear();
+    controller.requestAutoStart(false, true, "scan", "security", target, "usb", {"hospital"});
+    check(requested.isEmpty());
+}
+
+// Issue #697: the bundle's preferences are device-local, and a load that re-mints a list UID (a duplicate or missing
+// one, as a hand-edited or restored store can hold) is what drops them: the UIDs they name may be other lists now.
+static void
+test_scan_bundle_prefs_and_uid_repair() {
+    {
+        dsd_qt::AppPrefs prefs;
+        prefs.setAcceptedStartCompanions({"b", "c"});
+        prefs.setLastStartedCompanions({"b"});
+        check(prefs.acceptedStartCompanions() == QStringList({"b", "c"})
+              && prefs.lastStartedCompanions() == QStringList{"b"});
+        prefs.setLastStartedCompanions({});
+        check(prefs.lastStartedCompanions().isEmpty());
+        prefs.setLastStartedCompanions({"b"});
+    }
+    for (const auto& spec : dsd_qt::AppPrefs::keyTable()) {
+        if (QString::fromLatin1(spec.name).endsWith(QStringLiteral("Companions"))) {
+            check(!spec.portable);
+        }
+    }
+    check(!dsd_qt::AppPrefs::portableKeys().contains(QStringLiteral("listen/acceptedStartCompanions")));
+    // A clean store loads as it was.
+    QJsonArray rows{QJsonObject{{"uid", "a"}, {"name", "A"}}, QJsonObject{{"uid", "b"}, {"name", "B"}}};
+    check(dsd_qt::json_store_save_array(QStringLiteral("scan_lists.json"), rows));
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(lists.count() == 2 && !lists.uidsRepaired());
+    }
+    {
+        const dsd_qt::AppPrefs prefs;
+        check(prefs.acceptedStartCompanions() == QStringList({"b", "c"})
+              && prefs.lastStartedCompanions() == QStringList{"b"});
+    }
+    // A UID collision (a restored or hand-edited store): the second "a" is given a new UID, and the load forgets the
+    // remembered companions, which may now name another list.
+    rows.append(QJsonObject{{"uid", "a"}, {"name", "A copy"}});
+    check(dsd_qt::json_store_save_array(QStringLiteral("scan_lists.json"), rows));
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(lists.count() == 3 && lists.uidsRepaired() && lists.get(2).value("uid").toString() != "a");
+    }
+    {
+        const dsd_qt::AppPrefs prefs;
+        check(prefs.acceptedStartCompanions().isEmpty() && prefs.lastStartedCompanions().isEmpty());
+    }
+    // And one with none.
+    {
+        dsd_qt::AppPrefs prefs;
+        prefs.setAcceptedStartCompanions({"b"});
+    }
+    check(dsd_qt::json_store_save_array(QStringLiteral("scan_lists.json"), QJsonArray{QJsonObject{{"name", "N"}}}));
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(lists.uidsRepaired());
+    }
+    {
+        const dsd_qt::AppPrefs prefs;
+        check(prefs.acceptedStartCompanions().isEmpty());
+    }
+    check(dsd_qt::json_store_save_array(QStringLiteral("scan_lists.json"), QJsonArray{}));
+    // What Home and the Scan with other lists sheet count: the entries, or the rows a CSV list's import accepted.
+    const dsd_qt::ScanListsModel lists;
+    check(lists.entryCount({{"targetSource", "entries"}, {"entries", QVariantList{QVariantMap{}, QVariantMap{}}}})
+          == 2);
+    const QVariantMap csv{{"targetSource", "csv"}, {"targetsCsvPath", "/imports/targets.csv"}};
+    check(lists.entryCount(csv) == 0);
+    dsd_qt::ScanListsModel looked;
+    looked.setAcceptedRowsLookup([](const QString& path) { return path == "/imports/targets.csv" ? 12 : -1; });
+    check(looked.entryCount(csv) == 12);
+    check(looked.entryCount({{"targetSource", "csv"}, {"targetsCsvPath", "/gone.csv"}}) == 0);
+}
+
+namespace {
+// A host that keeps the argv of each start it is asked for.
+class StartHost : public Host {
+  public:
+    QList<QStringList> starts;
+
+    bool
+    start(const QStringList& args) override {
+        starts << args;
+        return true;
+    }
+};
+
+QVariantMap
+manual_list(dsd_qt::ScanListsModel& lists, const QString& name, const QString& entryUid, const QString& freq,
+            const QVariantMap& overrides = {}) {
+    QVariantMap list{{"name", name},
+                     {"sourceType", "rtltcp"},
+                     {"host", "127.0.0.1"},
+                     {"port", 1234},
+                     {"entries", QVariantList{QVariantMap{{"uid", entryUid},
+                                                          {"kind", "freq"},
+                                                          {"name", name + " channel"},
+                                                          {"protocol", "p25"},
+                                                          {"freqMhz", freq},
+                                                          {"enabled", true}}}}};
+    for (auto it = overrides.cbegin(); it != overrides.cend(); ++it) {
+        list.insert(it.key(), it.value());
+    }
+    check(lists.add(list));
+    return lists.get(lists.count() - 1);
+}
+} // namespace
+
+// Issue #697: several lists start as one session, the first list's receiver with one --trunk-scan each, in order;
+// a list that cannot join, or two lists that share a target id, start nothing at all.
+static void
+test_scan_lists_start_together() {
+    dsd_qt::AppPrefs prefs;
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    while (lists.count() > 0) {
+        lists.remove(0);
+    }
+    dsd_qt::ScanListStarter starter(&prefs, &systems);
+    StartHost host;
+    host.phase = Host::Idle;
+    const QVariantMap security = manual_list(lists, "Security", "gate-a", "851.0125");
+    const QVariantMap hospital = manual_list(lists, "Hospital", "er-desk", "852.0125");
+    const QVariantMap parks = manual_list(lists, "Parks", "ranger", "853.0125");
+    const QVariantMap result = starter.startLists({security, hospital, parks}, &host);
+    check(result.value("ok").toBool() && result.value("started").toBool());
+    check(result.value("targetCount").toInt() == 3 && !result.contains("args"));
+    check(host.starts.size() == 1);
+    const QStringList args = host.starts.value(0);
+    const auto csv = [](const QVariantMap& list) {
+        return dsd_qt::scan_list_csv_path(list.value("uid").toString(), list.value("name").toString(), 1);
+    };
+    const qsizetype first = args.indexOf(QStringLiteral("--trunk-scan"));
+    check(first > 0 && args.count(QStringLiteral("--trunk-scan")) == 3
+          && args.mid(first, 6)
+                 == QStringList(
+                     {"--trunk-scan", csv(security), "--trunk-scan", csv(hospital), "--trunk-scan", csv(parks)}));
+    check(args.count(QStringLiteral("-i")) == 1
+          && args.contains(QStringLiteral("rtltcp:127.0.0.1:1234:851.0125M:30:0:48:0:2")));
+    // One list is start(): a single --trunk-scan.
+    check(starter.startLists({hospital}, &host).value("started").toBool() && host.starts.size() == 2
+          && host.starts.value(1).count(QStringLiteral("--trunk-scan")) == 1);
+
+    // A list on another receiver setting cannot join; nothing starts.
+    const QVariantMap louder = manual_list(lists, "Louder", "siren", "854.0125", {{"gainDb", 40}});
+    check(starter.joinConflict(security, louder) == QStringLiteral("Different gain"));
+    check(starter.joinConflict(security, hospital).isEmpty());
+    QVariantMap refused = starter.startLists({security, louder}, &host);
+    check(!refused.value("ok").toBool() && !refused.value("started").toBool() && host.starts.size() == 2);
+    check(refused.value("error").toString() == QStringLiteral("“Louder” can't scan with “Security”: different gain."));
+
+    // Two lists holding the same target id: refused by the check across lists, nothing starts.
+    const QVariantMap twin = manual_list(lists, "Twin", "gate-a", "855.0125");
+    refused = starter.startLists({security, twin}, &host);
+    check(!refused.value("ok").toBool() && !refused.value("started").toBool() && host.starts.size() == 2);
+    check(refused.value("error").toString().startsWith(QStringLiteral("Scan lists rejected: "))
+          && refused.value("error").toString().contains(QStringLiteral("gate-a")));
+    // A draft among them: refused by name.
+    QVariantMap draft = twin;
+    draft.insert("isDraft", true);
+    draft.insert("name", "Draft");
+    refused = starter.startLists({security, draft}, &host);
+    check(!refused.value("started").toBool() && host.starts.size() == 2
+          && refused.value("error").toString().startsWith(QStringLiteral("“Draft”: ")));
+    // Nine lists are more than a session takes.
+    QVariantList nine;
+    for (int i = 0; i < 9; ++i) {
+        nine << security;
+    }
+    refused = starter.startLists(nine, &host);
+    check(!refused.value("started").toBool() && host.starts.size() == 2);
+    while (lists.count() > 0) {
+        lists.remove(0);
+    }
 }
 
 // #647 D3a: an Airspy target resumes like an RTL-SDR one, but only when the receiver that just attached is of the
@@ -1395,6 +1593,9 @@ main(int argc, char** argv) {
     test_bridge_row_tokens();
     test_auto_start_requests();
     test_auto_start_follows_the_attached_kind();
+    test_auto_start_carries_the_scan_bundle();
+    test_scan_bundle_prefs_and_uid_repair();
+    test_scan_lists_start_together();
     test_attachment_kind();
     test_initial_usb_record();
     test_usb_request_record();

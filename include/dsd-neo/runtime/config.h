@@ -17,6 +17,7 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/platform.h>
 
 /* Include schema types first (before extern "C" for C++ compat) */
@@ -32,6 +33,7 @@ extern "C" {
 
 /* Forward-declare decoder state for user-config helpers */
 #include <dsd-neo/core/state_fwd.h>
+#include <stdint.h>
 #include <stdio.h>
 
 /*
@@ -632,7 +634,19 @@ typedef struct dsdneoUserConfig {
     /* [trunk_scan] */
     int has_trunk_scan;
     int trunk_scan_enabled;
-    char trunk_scan_targets_csv[1024];
+    /* targets_csv, targets_csv_2 .. targets_csv_8 and lists_off (issue #697), kept by list number: count is
+       dsd_trunk_scan_lists_span(), so a gap or a lists_off entry past the last list stays for the start rules to
+       refuse. A key a file or profile names replaces what an earlier one left; one it omits inherits. An empty
+       targets_csv_N clears list N and every later one an earlier file or profile left (path and off state), an empty
+       lists_off every off state. */
+    dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    int trunk_scan_list_count;
+    uint32_t trunk_scan_lists_named; /* bit N-1: the targets_csv key of list N was named, empty or not */
+    int trunk_scan_lists_off_is_set;
+    /* The loader's: what the file or profile being read names itself (the same bits, lists_off), so an empty
+       targets_csv_N clears only what earlier ones left and a contradiction inside one stays for the gap rule. */
+    uint32_t trunk_scan_lists_layer_named;
+    int trunk_scan_lists_off_layer_set;
     int trunk_scan_idle_dwell_ms;
     int trunk_scan_activity_hold_ms;
 
@@ -957,6 +971,22 @@ int dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char*
  * @return 0 if no errors; non-zero if errors present.
  */
 int dsd_user_config_validate(const char* path, dsdcfg_diagnostics_t* diags);
+
+/**
+ * @brief Whether @p cfg names any trunk-scan list key (targets_csv, targets_csv_N or lists_off; issue #697).
+ */
+int dsd_user_config_names_trunk_scan_lists(const dsdneoUserConfig* cfg);
+
+/**
+ * @brief Put the trunk-scan lists @p cfg names over @p lists, as applying it does (issue #697).
+ *
+ * Key by key, as includes and profiles compose: each list path the config names (its targets_csv key, or a path
+ * filled in) replaces that list's, an empty one clearing that list and every later one, off states included, unless
+ * the config names lists_off; its start states replace every start state when it names lists_off (or marks a list
+ * off). What it omits stays, so a config naming lists_off alone keeps the paths it is put over. Slots past @p count
+ * are cleared first; @p count becomes the span (dsd_trunk_scan_lists_span()).
+ */
+void dsd_user_config_compose_trunk_scan_lists(const dsdneoUserConfig* cfg, dsd_trunk_scan_list_spec* lists, int* count);
 
 /**
  * @brief Whether a composed config passes the trunk-scan rules startup refuses to start without (issue #671).

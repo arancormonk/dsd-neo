@@ -235,6 +235,94 @@ test_folder_options_refuse_paths_that_do_not_fit(void) {
     return rc;
 }
 
+/* Issue #697: a path option whose value does not fit its buffer is refused ("path is too long"), as --src-csv is,
+   before anything is opened, imported or created; never cut to the name of some other file. */
+typedef struct {
+    const char* option; /* the option as typed; one ending in '=' carries the path in the same word */
+    size_t capacity;    /* the buffer the path is copied into, NUL included */
+    const char* noun;   /* what the refusal calls it: "path", or "value" for an option that also takes a device spec */
+} cli_path_option_case;
+
+static int
+expect_path_option_refused(const cli_path_option_case* c) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    const size_t option_len = strlen(c->option);
+    /* A path one byte too long, under a folder that does not exist, so a cut copy would be created if taken. */
+    char* word = (char*)malloc(option_len + c->capacity + 1U);
+    if (!opts || !state || !word) {
+        free(opts);
+        free(state);
+        free(word);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    DSD_MEMCPY(word, c->option, option_len);
+    char* path = word + option_len;
+    DSD_MEMSET(path, 'a', c->capacity);
+    DSD_MEMCPY(path, "dsdneo_no_such_dir/", 19U);
+    path[c->capacity] = '\0';
+
+    char arg0[] = "dsd-neo";
+    char arg1[32];
+    DSD_SNPRINTF(arg1, sizeof arg1, "%s", c->option);
+    const int joined = c->option[option_len - 1U] == '=';
+    char* argv_joined[] = {arg0, word, NULL};
+    char* argv_split[] = {arg0, arg1, path, NULL};
+    int argc_effective = 0;
+    int exit_rc = 0;
+    char err[512];
+    const int parsed =
+        joined ? parse_args_capture_stderr(2, argv_joined, opts, state, &argc_effective, &exit_rc, err, sizeof err)
+               : parse_args_capture_stderr(3, argv_split, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "%.*s %s is too long", (int)(joined ? option_len - 1U : option_len), c->option,
+                 c->noun);
+    int rc = 0;
+    if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, want) == NULL) {
+        DSD_FPRINTF(stderr, "%s with a %zu-byte path: rc=%d exit=%d, wanted \"%s\"\n%s\n", c->option, c->capacity,
+                    parsed, exit_rc, want, err);
+        rc = 1;
+    }
+    free(word);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+static int
+test_path_options_refuse_paths_that_do_not_fit(void) {
+    const dsd_opts* o = NULL;
+    const cli_path_option_case cases[] = {
+        {"--trunk-scan", sizeof o->trunk_scan_lists[0].path, "path"},
+        {"--trunk-scan=", sizeof o->trunk_scan_lists[0].path, "path"},
+        {"--trunk-scan-off", sizeof o->trunk_scan_lists[0].path, "path"},
+        {"--trunk-scan-off=", sizeof o->trunk_scan_lists[0].path, "path"},
+        {"-C", sizeof o->chan_in_file, "path"},
+        {"-G", sizeof o->group_in_file, "path"},
+        {"-k", sizeof o->key_in_file, "path"},
+        {"-K", sizeof o->key_in_file, "path"},
+        {"-w", sizeof o->wav_out_file, "path"},
+        {"-6", sizeof o->wav_out_file_raw, "path"},
+        {"-c", sizeof o->symbol_out_file, "path"},
+        {"-J", sizeof o->event_out_file, "path"},
+        {"-L", sizeof o->lrrp_out_file, "path"},
+        {"-Q", 1024U, "path"}, /* the file name -Q puts under ./DSP */
+        {"-i", sizeof o->audio_in_dev, "value"},
+        {"-o", sizeof o->audio_out_dev, "value"},
+        {"--frame-log", sizeof o->frame_log_file, "path"},
+        {"--wav-journal", sizeof o->wav_journal_file, "path"},
+        {"--p25-sm-log", sizeof o->p25_sm_log_file, "path"},
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= expect_path_option_refused(&cases[i]);
+    }
+    return rc;
+}
+
 static int
 test_invalid_option_returns_error_and_does_not_exit(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -2765,9 +2853,9 @@ test_bootstrap_profile_preserves_trunking_with_ncurses_cli(void) {
         DSD_FPRINTF(stderr, "expected profiled trunking to stay enabled, got trunk_enable=%d\n", opts->trunk_enable);
         test_rc = 1;
     }
-    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0) {
+    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_lists[0].path, "targets.csv") != 0) {
         DSD_FPRINTF(stderr, "expected profiled trunk scan to stay enabled, got enabled=%d targets=%s\n",
-                    opts->trunk_scan_enabled, opts->trunk_scan_targets_csv);
+                    opts->trunk_scan_enabled, opts->trunk_scan_lists[0].path);
         test_rc = 1;
     }
     if (opts->frontend_kind != DSD_FRONTEND_TERMINAL) {
@@ -2837,9 +2925,9 @@ test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options(void) {
         DSD_FPRINTF(stderr, "expected UI-only CLI options to continue, got rc=%d exit_rc=%d\n", rc, exit_rc);
         test_rc = 1;
     }
-    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0) {
+    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_lists[0].path, "targets.csv") != 0) {
         DSD_FPRINTF(stderr, "expected inherited trunk scan to stay enabled, got enabled=%d targets=%s\n",
-                    opts->trunk_scan_enabled, opts->trunk_scan_targets_csv);
+                    opts->trunk_scan_enabled, opts->trunk_scan_lists[0].path);
         test_rc = 1;
     }
     if (opts->frontend_kind != DSD_FRONTEND_TERMINAL) {
@@ -2925,6 +3013,113 @@ test_bootstrap_inherited_trunk_scan_ignores_api_token_text(void) {
     free(opts);
     free(state);
     return test_rc;
+}
+
+/* Issue #697: a second -C is refused. The maps would merge, the second one's channel numbers and EDACS LCN slots
+   shadowing the first's, while only the last path is saved; a session reads one map. */
+static int
+test_repeated_channel_map_is_refused(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char first[1024];
+    char second[1024];
+    if (test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n1,851012500\n", first, sizeof first) != 0
+        || test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n3,852012500\n", second, sizeof second)
+               != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp channel CSVs\n");
+        (void)remove(first);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-C";
+    char arg3[] = "-C";
+    char* argv[] = {arg0, arg1, first, arg3, second, NULL};
+    int argc_effective = 0;
+    int exit_rc = 0;
+    char err[1024];
+    const int parsed = parse_args_capture_stderr(5, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+    int rc = 0;
+    if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, "-C can be given only once") == NULL) {
+        DSD_FPRINTF(stderr, "two -C maps: rc=%d exit=%d\n%s\n", parsed, exit_rc, err);
+        rc = 1;
+    }
+    if (strcmp(opts->chan_in_file, first) != 0 || state->trunk_chan_map[3] != 0) {
+        DSD_FPRINTF(stderr, "the second -C was taken: file=%s channel 3=%ld\n", opts->chan_in_file,
+                    state->trunk_chan_map[3]);
+        rc = 1;
+    }
+    (void)remove(first);
+    (void)remove(second);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
+}
+
+/* Issue #697: only a second -C on the command line is refused. A config that names a channel map ([trunking] chan_csv)
+   and one CLI -C is one map: the CLI's, as before. */
+static int
+test_config_channel_map_and_one_cli_channel_map_are_accepted(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    char config_map[1024];
+    char cli_map[1024];
+    char ini[1200];
+    char cfg_path[1024];
+    int made = test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n1,851012500\n", config_map,
+                                                  sizeof config_map)
+               == 0;
+    made = made
+           && test_create_temp_csv_with_contents("ChannelNumber(dec),frequency(Hz)\n3,852012500\n", cli_map,
+                                                 sizeof cli_map)
+                  == 0;
+    DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nchan_csv = \"%s\"\n", config_map);
+    made = made && test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) == 0;
+    int rc = 0;
+    if (!made) {
+        DSD_FPRINTF(stderr, "failed to create the config and channel CSVs\n");
+        rc = 1;
+    } else {
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--config";
+        char arg3[] = "-C";
+        char* argv[] = {arg0, arg1, cfg_path, arg3, cli_map, NULL};
+        int argc_effective = 0;
+        int exit_rc = -1;
+        const int boot = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0 || strcmp(opts->chan_in_file, cli_map) != 0
+            || state->trunk_chan_map[3] != 852012500) {
+            DSD_FPRINTF(stderr, "config chan_csv + one -C: rc=%d exit=%d file=%s channel 3=%ld\n", boot, exit_rc,
+                        opts->chan_in_file, state->trunk_chan_map[3]);
+            rc = 1;
+        }
+    }
+    (void)remove(config_map);
+    (void)remove(cli_map);
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return rc;
 }
 
 static int
@@ -3283,10 +3478,10 @@ test_bootstrap_inherited_trunk_scan_preserves_timing_overrides(void) {
                     exit_rc);
         test_rc = 1;
     }
-    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0
+    if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_lists[0].path, "targets.csv") != 0
         || opts->trunk_scan_idle_dwell_ms != 500 || opts->trunk_scan_activity_hold_ms != 800) {
         DSD_FPRINTF(stderr, "expected trunk scan timing override, got enabled=%d targets=%s dwell=%d hold=%d\n",
-                    opts->trunk_scan_enabled, opts->trunk_scan_targets_csv, opts->trunk_scan_idle_dwell_ms,
+                    opts->trunk_scan_enabled, opts->trunk_scan_lists[0].path, opts->trunk_scan_idle_dwell_ms,
                     opts->trunk_scan_activity_hold_ms);
         test_rc = 1;
     }
@@ -8732,10 +8927,10 @@ test_trunk_scan_long_options_parse(void) {
 
     int test_rc = 0;
     if (rc != DSD_PARSE_CONTINUE || opts->trunk_scan_enabled != 1
-        || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0 || opts->trunk_scan_idle_dwell_ms != 500
+        || strcmp(opts->trunk_scan_lists[0].path, "targets.csv") != 0 || opts->trunk_scan_idle_dwell_ms != 500
         || opts->trunk_scan_activity_hold_ms != 800) {
         DSD_FPRINTF(stderr, "trunk scan long option parse mismatch rc=%d enabled=%d targets=%s dwell=%d hold=%d\n", rc,
-                    opts->trunk_scan_enabled, opts->trunk_scan_targets_csv, opts->trunk_scan_idle_dwell_ms,
+                    opts->trunk_scan_enabled, opts->trunk_scan_lists[0].path, opts->trunk_scan_idle_dwell_ms,
                     opts->trunk_scan_activity_hold_ms);
         test_rc = 1;
     }
@@ -8903,6 +9098,224 @@ test_trunk_scan_rejects_global_channel_map(void) {
     return test_rc;
 }
 
+/* Issue #697: parse @p argc words after "dsd-neo" over @p opts (initOpts() first, then @p inherit), stderr kept. */
+static int
+parse_trunk_scan_lists(int argc, char** words, void (*inherit)(dsd_opts*), dsd_opts** out_opts, int* exit_rc, char* err,
+                       size_t err_size) {
+    *out_opts = NULL;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    char arg0[] = "dsd-neo";
+    char* argv[16] = {arg0};
+    if (!opts || !state || argc >= 15) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+    for (int i = 0; i < argc; i++) {
+        argv[i + 1] = words[i];
+    }
+    initOpts(opts);
+    initState(state);
+    if (inherit != NULL) {
+        inherit(opts);
+    }
+    int argc_effective = 0;
+    *exit_rc = 0;
+    const int rc = parse_args_capture_stderr(argc + 1, argv, opts, state, &argc_effective, exit_rc, err, err_size);
+    freeState(state);
+    free(state);
+    *out_opts = opts;
+    return rc;
+}
+
+static int
+expect_trunk_scan_lists(const char* what, const dsd_opts* opts, const char* const* paths, const int* off, int count) {
+    int bad = opts->trunk_scan_enabled != 1 || opts->trunk_scan_list_count != count;
+    for (int i = 0; !bad && i < count; i++) {
+        bad = strcmp(opts->trunk_scan_lists[i].path, paths[i]) != 0 || opts->trunk_scan_lists[i].start_off != off[i];
+    }
+    if (bad) {
+        DSD_FPRINTF(stderr, "%s: enabled=%d count=%d first=%s\n", what, opts->trunk_scan_enabled,
+                    opts->trunk_scan_list_count, opts->trunk_scan_lists[0].path);
+    }
+    return bad;
+}
+
+static void
+inherit_two_lists(dsd_opts* opts) {
+    opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "inherited-1.csv");
+    DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", "inherited-2.csv");
+    opts->trunk_scan_lists[1].start_off = 1U;
+    opts->trunk_scan_list_count = 2;
+}
+
+static void
+inherit_gapped_lists(dsd_opts* opts) {
+    opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "a.csv");
+    DSD_SNPRINTF(opts->trunk_scan_lists[2].path, sizeof opts->trunk_scan_lists[2].path, "%s", "c.csv");
+    opts->trunk_scan_list_count = 3;
+}
+
+static void
+inherit_every_list_off(dsd_opts* opts) {
+    opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "a.csv");
+    opts->trunk_scan_lists[0].start_off = 1U;
+    opts->trunk_scan_list_count = 1;
+}
+
+/* Issue #697: every --trunk-scan and --trunk-scan-off adds a list, in command-line order; a second
+   --trunk-scan used to replace the first. The command line's lists replace the config's as a whole. */
+static int
+test_trunk_scan_lists_accumulate_in_order(void) {
+    int rc = 0;
+    char a1[] = "--trunk-scan", a2[] = "a.csv", a3[] = "--trunk-scan=b.csv", a4[] = "--trunk-scan-off";
+    char a5[] = "c.csv", a6[] = "--trunk-scan-off=d.csv";
+    char* words[] = {a1, a2, a3, a4, a5, a6};
+    dsd_opts* opts = NULL;
+    int exit_rc = 0;
+    char err[1024];
+    int parsed = parse_trunk_scan_lists(6, words, NULL, &opts, &exit_rc, err, sizeof err);
+    static const char* const four[] = {"a.csv", "b.csv", "c.csv", "d.csv"};
+    static const int four_off[] = {0, 0, 1, 1};
+    if (parsed != DSD_PARSE_CONTINUE
+        || (opts && expect_trunk_scan_lists("four lists in order", opts, four, four_off, 4))) {
+        DSD_FPRINTF(stderr, "four lists: rc=%d %s\n", parsed, err);
+        rc = 1;
+    }
+    free(opts);
+    opts = NULL;
+
+    char b1[] = "--trunk-scan-off", b2[] = "z.csv", b3[] = "--trunk-scan", b4[] = "a.csv";
+    char* replace[] = {b1, b2, b3, b4};
+    parsed = parse_trunk_scan_lists(4, replace, inherit_two_lists, &opts, &exit_rc, err, sizeof err);
+    static const char* const two[] = {"z.csv", "a.csv"};
+    static const int two_off[] = {1, 0};
+    if (parsed != DSD_PARSE_CONTINUE
+        || (opts && expect_trunk_scan_lists("CLI replaces config lists", opts, two, two_off, 2))) {
+        DSD_FPRINTF(stderr, "replace inherited: rc=%d %s\n", parsed, err);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+static int
+expect_trunk_scan_lists_refused(const char* what, int argc, char** words, void (*inherit)(dsd_opts*),
+                                const char* want) {
+    dsd_opts* opts = NULL;
+    int exit_rc = 0;
+    char err[2048];
+    const int parsed = parse_trunk_scan_lists(argc, words, inherit, &opts, &exit_rc, err, sizeof err);
+    free(opts);
+    if (parsed != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, want) == NULL) {
+        DSD_FPRINTF(stderr, "%s: rc=%d exit=%d, wanted \"%s\"\n%s\n", what, parsed, exit_rc, want, err);
+        return 1;
+    }
+    return 0;
+}
+
+/* A ninth list, the same path twice, an empty path, a missing value and a start with every list off are refused; so
+   are a gap and an all-off set a config handed down. */
+static int
+test_trunk_scan_lists_refusals(void) {
+    int rc = 0;
+    char* nine_joined[9];
+    char joined_words[9][32];
+    for (int i = 0; i < 9; i++) {
+        DSD_SNPRINTF(joined_words[i], sizeof joined_words[i], "--trunk-scan=list%d.csv", i + 1);
+        nine_joined[i] = joined_words[i];
+    }
+    rc |= expect_trunk_scan_lists_refused("ninth list", 9, nine_joined, NULL, "at most 8 trunk-scan lists");
+
+    char d1[] = "--trunk-scan", d2[] = "a.csv", d3[] = "--trunk-scan-off=a.csv";
+    char* twice[] = {d1, d2, d3};
+    rc |= expect_trunk_scan_lists_refused("same path twice", 3, twice, NULL,
+                                          "--trunk-scan-off: a.csv is trunk-scan list 1 already");
+
+    char o1[] = "--trunk-scan-off", o2[] = "a.csv", o3[] = "--trunk-scan-off=b.csv";
+    char* all_off[] = {o1, o2, o3};
+    rc |= expect_trunk_scan_lists_refused("every list off", 3, all_off, NULL, "every trunk-scan list starts off");
+
+    char e1[] = "--trunk-scan-off=";
+    char* empty[] = {e1};
+    rc |= expect_trunk_scan_lists_refused("empty path", 1, empty, NULL, "--trunk-scan-off requires a target CSV path");
+
+    char m1[] = "--trunk-scan", m2[] = "a.csv", m3[] = "--trunk-scan-off";
+    char* missing[] = {m1, m2, m3};
+    rc |= expect_trunk_scan_lists_refused("missing value", 3, missing, NULL,
+                                          "--trunk-scan-off requires a target CSV path");
+
+    rc |= expect_trunk_scan_lists_refused("inherited gap", 0, NULL, inherit_gapped_lists,
+                                          "trunk-scan list 2 has no target CSV");
+    rc |= expect_trunk_scan_lists_refused("inherited all off", 0, NULL, inherit_every_list_off,
+                                          "every trunk-scan list starts off");
+    return rc;
+}
+
+/* Issue #697: a config's lists reach the session through the bootstrap; --trunk-scan-off, like --trunk-scan, takes
+   the inherited scan off before the command line's lists replace them. */
+static int
+bootstrap_trunk_scan_lists(int argc, char** argv, dsd_opts* opts, int* exit_rc) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!state) {
+        return -1;
+    }
+    initOpts(opts);
+    initState(state);
+    int argc_effective = 0;
+    *exit_rc = -1;
+    const int rc = dsd_runtime_bootstrap(argc, argv, opts, state, &argc_effective, exit_rc);
+    freeState(state);
+    free(state);
+    return rc;
+}
+
+static int
+test_bootstrap_trunk_scan_lists_from_config_and_cli(void) {
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    static const char* ini = "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"a.csv\"\n"
+                             "targets_csv_2 = \"x.csv\"\n"
+                             "lists_off = 2\n";
+    char cfg_path[1024];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    if (!opts || test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    char arg0[] = "dsd-neo", arg1[] = "--config", arg2[1024];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    char* config_only[] = {arg0, arg1, arg2, NULL};
+    int exit_rc = 0;
+    int boot = bootstrap_trunk_scan_lists(3, config_only, opts, &exit_rc);
+    static const char* const inherited[] = {"a.csv", "x.csv"};
+    static const int inherited_off[] = {0, 1};
+    if (boot != DSD_BOOTSTRAP_CONTINUE || expect_trunk_scan_lists("config lists", opts, inherited, inherited_off, 2)) {
+        DSD_FPRINTF(stderr, "config lists: rc=%d exit=%d\n", boot, exit_rc);
+        rc = 1;
+    }
+
+    char arg3[] = "--trunk-scan-off", arg4[] = "b.csv", arg5[] = "--trunk-scan=c.csv";
+    char* with_cli[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+    boot = bootstrap_trunk_scan_lists(6, with_cli, opts, &exit_rc);
+    static const char* const cli[] = {"b.csv", "c.csv"};
+    static const int cli_off[] = {1, 0};
+    if (boot != DSD_BOOTSTRAP_CONTINUE || expect_trunk_scan_lists("CLI lists over config", opts, cli, cli_off, 2)) {
+        DSD_FPRINTF(stderr, "CLI lists over config: rc=%d exit=%d\n", boot, exit_rc);
+        rc = 1;
+    }
+    (void)remove(cfg_path);
+    free(opts);
+    return rc;
+}
+
 static int
 test_trunk_scan_cli_clears_inherited_channel_map(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -8926,7 +9339,7 @@ test_trunk_scan_cli_clears_inherited_channel_map(void) {
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     int test_rc = (rc == DSD_PARSE_CONTINUE && opts->trunk_scan_enabled == 1
-                   && strcmp(opts->trunk_scan_targets_csv, "targets.csv") == 0 && opts->chan_in_file[0] == '\0')
+                   && strcmp(opts->trunk_scan_lists[0].path, "targets.csv") == 0 && opts->chan_in_file[0] == '\0')
                       ? 0
                       : 1;
     if (test_rc) {
@@ -8957,9 +9370,11 @@ test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations(void) {
         opts->trunk_scan_enabled = 1;
         if (scenario == 0) {
             opts->scanner_mode = 1;
-            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", "targets.csv");
+            DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "targets.csv");
+            opts->trunk_scan_list_count = 1;
         } else if (scenario == 1) {
-            DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", "targets.csv");
+            DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "targets.csv");
+            opts->trunk_scan_list_count = 1;
             DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "global_channels.csv");
         }
 
@@ -9383,10 +9798,11 @@ test_trunk_scan_cli_clears_inherited_p25_bandplan(void) {
     int argc_effective = 0;
     int exit_rc = -1;
     int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
-    int test_rc = (rc == DSD_PARSE_CONTINUE && opts->trunk_scan_enabled == 1
-                   && strcmp(opts->trunk_scan_targets_csv, "targets.csv") == 0 && opts->p25_bandplan_in_file[0] == '\0')
-                      ? 0
-                      : 1;
+    int test_rc =
+        (rc == DSD_PARSE_CONTINUE && opts->trunk_scan_enabled == 1
+         && strcmp(opts->trunk_scan_lists[0].path, "targets.csv") == 0 && opts->p25_bandplan_in_file[0] == '\0')
+            ? 0
+            : 1;
     if (test_rc) {
         DSD_FPRINTF(stderr, "expected explicit trunk scan to clear inherited band plan, rc=%d enabled=%d plan=%s\n", rc,
                     opts->trunk_scan_enabled, opts->p25_bandplan_in_file);
@@ -9411,7 +9827,8 @@ test_trunk_scan_inherited_state_rejects_inherited_p25_bandplan(void) {
 
     /* Both came from the config file: no CLI --trunk-scan to disown the plan, so it is an error. */
     opts->trunk_scan_enabled = 1;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "targets.csv");
+    opts->trunk_scan_list_count = 1;
     DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", "inherited_plan.csv");
 
     char arg0[] = "dsd-neo";
@@ -10020,12 +10437,12 @@ test_bootstrap_inherited_trunk_scan_preserves_max_visit_override(void) {
                         equals ? "equals" : "space", rc, exit_rc);
             test_rc = 1;
         }
-        if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_targets_csv, "targets.csv") != 0
+        if (opts->trunk_scan_enabled != 1 || strcmp(opts->trunk_scan_lists[0].path, "targets.csv") != 0
             || opts->scan_max_visit_ms != 20000) {
             DSD_FPRINTF(stderr,
                         "%s form: expected inherited trunk scan with cap 20000, got enabled=%d targets=%s "
                         "max_visit=%d\n",
-                        equals ? "equals" : "space", opts->trunk_scan_enabled, opts->trunk_scan_targets_csv,
+                        equals ? "equals" : "space", opts->trunk_scan_enabled, opts->trunk_scan_lists[0].path,
                         opts->scan_max_visit_ms);
             test_rc = 1;
         }
@@ -11551,6 +11968,9 @@ main(void) {
     rc |= test_help_returns_one_shot_and_does_not_exit();
     rc |= test_invalid_option_returns_error_and_does_not_exit();
     rc |= test_folder_options_refuse_paths_that_do_not_fit();
+    rc |= test_path_options_refuse_paths_that_do_not_fit();
+    rc |= test_repeated_channel_map_is_refused();
+    rc |= test_config_channel_map_and_one_cli_channel_map_are_accepted();
     rc |= test_unknown_option_returns_error_and_does_not_exit();
     rc |= test_frontend_terminal_option_sets_terminal_kind();
     rc |= test_tetra_network_options();
@@ -11644,6 +12064,9 @@ main(void) {
     rc |= test_trunk_scan_conflicts_with_scanner_mode();
     rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_trunk_scan_cli_clears_inherited_channel_map();
+    rc |= test_trunk_scan_lists_accumulate_in_order();
+    rc |= test_trunk_scan_lists_refusals();
+    rc |= test_bootstrap_trunk_scan_lists_from_config_and_cli();
     rc |= test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations();
     rc |= test_src_csv_long_option_parse();
     rc |= test_src_csv_missing_file_returns_error();

@@ -147,7 +147,8 @@ setup(void) {
                                  "inh,nxdn48-trunk,454000000,,250,250,\n")) {
         return 1;
     }
-    DSD_SNPRINTF(g_opts.trunk_scan_targets_csv, sizeof(g_opts.trunk_scan_targets_csv), "%s", g_targets);
+    DSD_SNPRINTF(g_opts.trunk_scan_lists[0].path, sizeof g_opts.trunk_scan_lists[0].path, "%s", g_targets);
+    g_opts.trunk_scan_list_count = 1;
     return 0;
 }
 

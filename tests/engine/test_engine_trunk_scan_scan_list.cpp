@@ -117,7 +117,9 @@ keyMuteRotation(bool unmuteP25) {
     opts->unmute_encrypted_p25 = unmuteP25;
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
+                 path.toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -192,8 +194,9 @@ p25CandidateRotation(int configured) {
     opts->p25_prefer_candidates = static_cast<uint8_t>(configured);
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
                  file.fileName().toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -215,6 +218,126 @@ p25CandidateRotation(int configured) {
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
     check(opts->p25_prefer_candidates == configured);
+    dsd_trunk_tuning_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
+    freeState(state);
+    delete state;
+    delete opts;
+}
+
+// Issue #697: two lists generated as the app generates them, started together the way the app starts them: the argv
+// of session_args_scan_build_lists() parses into two lists in their order, and the real coordinator runs both,
+// numbering and naming them by file, rotating over the union with each target's own keys and talkgroups, and
+// leaving list 2 out of the rotation once it is switched off.
+static QString
+writeGenerated(const QTemporaryDir& dir, const QString& file, const QVariantList& systems, const QStringList& uids) {
+    QVariantList entries;
+    for (const auto& uid : uids) {
+        entries << QVariantMap{{"uid", uid}, {"kind", "system"}, {"systemUid", uid}, {"enabled", true}};
+    }
+    const auto generated = dsd_qt::scan_list_targets({{"sourceType", "usb"}, {"entries", entries}}, systems);
+    check(generated.ok && generated.targetCount == uids.size());
+    QFile out(dir.filePath(file));
+    check(out.open(QIODevice::WriteOnly));
+    check(out.write(generated.csv) == generated.csv.size());
+    out.close();
+    return out.fileName();
+}
+
+static void
+twoGeneratedLists() {
+    QTemporaryDir dir;
+    const QString groups = dir.filePath("groups.csv");
+    QFile groupFile(groups);
+    check(groupFile.open(QIODevice::WriteOnly));
+    groupFile.write("id,mode,name\n123,B,Hospital\n");
+    groupFile.close();
+    const QVariantList systems{
+        QVariantMap{{"uid", "gate-a"}, {"decodeFlag", "-fs"}, {"trunking", true}, {"freqMhz", "461"}},
+        QVariantMap{{"uid", "gate-b"}, {"decodeFlag", "-fs"}, {"trunking", true}, {"freqMhz", "462"}},
+        QVariantMap{{"uid", "er-desk"},
+                    {"decodeFlag", "-fs"},
+                    {"trunking", true},
+                    {"freqMhz", "463"},
+                    {"groupCsvPath", groups},
+                    {"encKeyType", "basic"},
+                    {"encKeyValue", "7"},
+                    {"encForceKey", 1}}};
+    const QString security = writeGenerated(dir, "security.csv", systems, {"gate-a", "gate-b"});
+    const QString hospital = writeGenerated(dir, "hospital.csv", systems, {"er-desk"});
+
+    QString error;
+    const QStringList args = dsd_qt::session_args_scan_build_lists({{"sourceType", "usb"}}, "461", {security, hospital},
+                                                                   dsd_qt::SessionArgPrefs(), &error);
+    check(error.isEmpty() && args.count("--trunk-scan") == 2);
+    auto* parsed = new dsd_opts{};
+    auto* parsedState = new dsd_state{};
+    initOpts(parsed);
+    initState(parsedState);
+    QList<QByteArray> storage{QByteArray("scan-lists-test")};
+    for (const auto& arg : args) {
+        storage << arg.toUtf8();
+    }
+    QList<char*> argv;
+    for (auto& arg : storage) {
+        argv << arg.data();
+    }
+    int effective = 0, exitCode = 0;
+    check(dsd_parse_args(static_cast<int>(argv.size()), argv.data(), parsed, parsedState, &effective, &exitCode) == 0);
+    check(parsed->trunk_scan_enabled == 1 && parsed->trunk_scan_list_count == 2);
+    check(QString::fromUtf8(parsed->trunk_scan_lists[0].path) == security
+          && QString::fromUtf8(parsed->trunk_scan_lists[1].path) == hospital);
+    check(parsed->trunk_scan_lists[0].start_off == 0 && parsed->trunk_scan_lists[1].start_off == 0);
+
+    auto* opts = new dsd_opts{};
+    auto* state = new dsd_state{};
+    initOpts(opts);
+    initState(state);
+    opts->trunk_scan_enabled = 1;
+    opts->use_rigctl = 1;
+    opts->trunk_scan_list_count = parsed->trunk_scan_list_count;
+    for (int i = 0; i < 2; ++i) {
+        opts->trunk_scan_lists[i] = parsed->trunk_scan_lists[i];
+    }
+    freeState(parsedState);
+    delete parsedState;
+    delete parsed;
+    dsd_trunk_tuning_hooks hooks{};
+    hooks.tune_to_freq_request = tune;
+    hooks.tune_to_cc_request = tune;
+    dsd_trunk_tuning_hooks_set(hooks);
+    char initError[256]{};
+    const bool initialized = dsd_engine_trunk_scan_init(opts, state, initError, sizeof initError) == 0;
+    check(initialized);
+    if (initialized) {
+        check(dsd_engine_trunk_scan_target_count(state) == 3);
+        check(state->trunk_scan_list_count == 2 && !std::strcmp(state->trunk_scan_lists[0].name, "security")
+              && !std::strcmp(state->trunk_scan_lists[1].name, "hospital"));
+        check(state->trunk_scan_lists[0].targets == 2 && state->trunk_scan_lists[1].targets == 1);
+        // The union in list order: gate-a, gate-b, then er-desk with its own key and talkgroups.
+        check(!std::strcmp(state->trunk_scan_active_id, "gate-a") && state->trunk_scan_active_list == 1);
+        check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        check(!std::strcmp(state->trunk_scan_active_id, "gate-b"));
+        check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        check(!std::strcmp(state->trunk_scan_active_id, "er-desk") && state->trunk_scan_active_list == 2);
+        policy(state, "Hospital", "B");
+        check(state->K == 7);
+        check(state->trunk_scan_rotation_ordinal == 3 && state->trunk_scan_rotation_count == 3);
+        // Hospital off: the receiver leaves it, and the rotation stays in security.
+        check(dsd_engine_trunk_scan_list_set(opts, state, state->trunk_scan_session, 2, 0, 1)
+              == DSD_TRUNK_SCAN_LIST_SET_OK);
+        check(state->trunk_scan_lists[1].enabled == 0 && state->trunk_scan_rotation_count == 2);
+        for (int i = 0; i < 4; ++i) {
+            check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+            check(state->trunk_scan_active_list == 1 && std::strcmp(state->trunk_scan_active_id, "er-desk") != 0);
+        }
+        // And the last list on cannot go.
+        check(dsd_engine_trunk_scan_list_set(opts, state, state->trunk_scan_session, 1, 0, 2)
+              == DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+    } else {
+        std::fprintf(stderr, "Initialization: %s\n", initError);
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
     dsd_trunk_tuning_hooks_set({});
     dsd_trunk_scan_hooks_set(nullptr);
     freeState(state);
@@ -450,8 +573,9 @@ mixedAnalogRotation() {
     dsd_tg_policy_entry baseline{};
     check(dsd_tg_policy_make_exact_entry(123, "A", "Global", DSD_TG_POLICY_SOURCE_IMPORTED, &baseline) == 0);
     check(dsd_tg_policy_append_exact(state, &baseline) == 0);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
                  file.fileName().toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -586,7 +710,9 @@ main(int argc, char** argv) {
     dsd_tg_policy_entry baseline{};
     check(dsd_tg_policy_make_exact_entry(123, "A", "Global", DSD_TG_POLICY_SOURCE_IMPORTED, &baseline) == 0);
     check(dsd_tg_policy_append_exact(state, &baseline) == 0);
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
+                 path.toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -625,6 +751,7 @@ main(int argc, char** argv) {
     p25CandidateRotation(1);
     keyMuteRotation(false);
     keyMuteRotation(true);
+    twoGeneratedLists();
 #if !DSD_PLATFORM_WIN_NATIVE
     mixedAnalogRotation();
 #endif

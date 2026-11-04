@@ -9,6 +9,7 @@
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <math.h>
@@ -22,12 +23,17 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static int
-test_init_opts_clears_trunk_scan_targets_csv(void) {
+test_init_opts_clears_trunk_scan_lists(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0xA5, sizeof(opts));
     initOpts(&opts);
-    if (opts.trunk_scan_targets_csv[0] != '\0') {
-        DSD_FPRINTF(stderr, "initOpts did not clear trunk_scan_targets_csv\n");
+    /* Issue #697: every list slot, its start state and the count, not only list 1. */
+    int lists_set = opts.trunk_scan_list_count != 0;
+    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        lists_set |= opts.trunk_scan_lists[i].path[0] != '\0' || opts.trunk_scan_lists[i].start_off != 0U;
+    }
+    if (lists_set) {
+        DSD_FPRINTF(stderr, "initOpts did not clear the trunk-scan lists\n");
         return 20;
     }
     if (opts.show_keys != 0U) {
@@ -360,7 +366,7 @@ main(void) {
     if (ring_rc != 0) {
         return ring_rc;
     }
-    int init_opts_rc = test_init_opts_clears_trunk_scan_targets_csv();
+    int init_opts_rc = test_init_opts_clears_trunk_scan_lists();
     if (init_opts_rc != 0) {
         return init_opts_rc;
     }

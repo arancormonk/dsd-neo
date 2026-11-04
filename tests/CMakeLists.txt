@@ -614,6 +614,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/dmr_key_map.h
   C
 )
+# The trunk-scan list spec opts, the next start and the user config share (issue #697).
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_trunk_scan_lists
+  HEADERS_PUBLIC_CORE_TRUNK_SCAN_LISTS
+  dsd-neo/core/trunk_scan_lists.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_trunk_scan_lists_cxx
+  HEADERS_PUBLIC_CORE_TRUNK_SCAN_LISTS_CXX
+  dsd-neo/core/trunk_scan_lists.h
+  CXX
+)
 # The analog sinks' converter (issue #633).
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_rate_converter
@@ -1141,6 +1154,31 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_scan_avoid_view_cxx
   HEADERS_PUBLIC_APP_CONTROL_SCAN_AVOID_VIEW_CXX
   dsd-neo/app_control/scan_avoid_view.h
+  CXX
+)
+# Issue #697: the trunk-scan target lists every frontend shows and switches.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_view
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW
+  dsd-neo/app_control/scan_list_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW_CXX
+  dsd-neo/app_control/scan_list_view.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_rows
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS
+  dsd-neo/app_control/scan_list_rows.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_scan_list_rows_cxx
+  HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_ROWS_CXX
+  dsd-neo/app_control/scan_list_rows.h
   CXX
 )
 # Issue #672: the config file reads and writes a frontend asks for.
@@ -2814,6 +2852,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
@@ -2855,6 +2894,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/rx_tone_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
@@ -2985,6 +3025,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
         ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
     )
@@ -3009,6 +3050,35 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${CURSES_LIBRARIES}
     )
     add_test(NAME UI_RR_PANEL_KEYS COMMAND dsd-neo_test_ui_rr_panel_keys)
+
+    # The Scan lists modal (issue #697) on a published pair through the real scan list view; the command submit,
+    # request ids, retained results and the toast are stubbed in the test.
+    add_executable(
+        dsd-neo_test_ui_scan_list_modal
+        ui/test_ui_scan_list_modal.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/scan_list_modal.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_scan_list_modal
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_scan_list_modal
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_scan_list_modal
+        PRIVATE dsd-neo_runtime ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_SCAN_LIST_MODAL COMMAND dsd-neo_test_ui_scan_list_modal)
 
     # The library folds what app-control's imports listing hands it (issue #672); the listing is compiled in, and
     # dsd-neo_core + dsd-neo_proto_dmr resolve its replace-checked validation (dsd_csv_validate_*).
@@ -3045,6 +3115,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/csv_picker.c
         ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -3360,6 +3431,37 @@ add_test(
     COMMAND dsd-neo_test_app_control_scan_avoid_view
 )
 
+# Issue #697: the trunk-scan target lists every frontend shows and switches.
+add_executable(
+    dsd-neo_test_app_control_scan_list_view
+    ui/test_app_control_scan_list_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_list_view
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_LIST_VIEW
+    COMMAND dsd-neo_test_app_control_scan_list_view
+)
+
+# Issue #697: the switcher row rule the terminal modal and the Qt/Android sheet share.
+add_executable(
+    dsd-neo_test_app_control_scan_list_rows
+    ui/test_app_control_scan_list_rows.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
+)
+target_link_libraries(
+    dsd-neo_test_app_control_scan_list_rows
+    PRIVATE dsd-neo_core dsd-neo_runtime
+)
+add_test(
+    NAME APP_CONTROL_SCAN_LIST_ROWS
+    COMMAND dsd-neo_test_app_control_scan_list_rows
+)
+
 # Issue #672: the config file reads and writes the terminal menu asks app-control for, on real files.
 add_executable(
     dsd-neo_test_app_control_config_files
@@ -3530,6 +3632,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_timing_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/squelch_view.c
@@ -4171,6 +4274,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_chooser_navigation
         ui/test_ui_chooser_navigation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4197,6 +4301,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_cursor
         ui/test_ui_prompt_cursor.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4220,6 +4325,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_validation
         ui/test_ui_prompt_validation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4256,6 +4362,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_prompt_secret
         ui/test_ui_prompt_secret.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text_draw.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
@@ -4608,12 +4715,15 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
@@ -5116,6 +5226,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
             # Issue #672: the Monitor's avoid sheet lists the real list model, which a case fills by key.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
             # The home screen, the imports library, the wizard's CSV pickers and
             # the explore setup all read these context properties; without them
             # they raised ReferenceError and rendered nothing, so a case could
@@ -7383,6 +7494,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_no_carrier_reset
         PRIVATE
             "-Wl,--start-group"
+            dsd-neo_app_control
             dsd-neo_engine
             "-Wl,--end-group"
             "-Wl,--wrap=rtl_stream_clear_pending_retune_profile"
@@ -8276,6 +8388,23 @@ target_link_libraries(
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
 
 add_executable(
+    dsd-neo_test_runtime_config_trunk_scan_lists
+    runtime/test_runtime_config_trunk_scan_lists.cpp
+)
+target_include_directories(
+    dsd-neo_test_runtime_config_trunk_scan_lists
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_config_trunk_scan_lists
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME RUNTIME_CONFIG_TRUNK_SCAN_LISTS
+    COMMAND dsd-neo_test_runtime_config_trunk_scan_lists
+)
+
+add_executable(
     dsd-neo_test_runtime_rr_provenance
     runtime/test_runtime_rr_provenance.c
 )
@@ -8664,6 +8793,35 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(
         NAME ENGINE_RXID_WATCHDOG_RACE
         COMMAND dsd-neo_test_engine_rxid_watchdog_race
+    )
+    # Issue #697: a trunk-scan list switch on the decoder thread beside the P25
+    # watchdog's writes under the tick guard; run it under tsan-debug too.
+    add_executable(
+        dsd-neo_test_engine_trunk_scan_list_race
+        engine/test_engine_trunk_scan_list_race.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_trunk_scan_list_race
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_trunk_scan_list_race
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_TRUNK_SCAN_LIST_RACE
+        COMMAND dsd-neo_test_engine_trunk_scan_list_race
     )
 endif()
 
@@ -20756,11 +20914,14 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
+        # Issue #697: several lists started as one session, through the real starter.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -21511,7 +21672,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_scan_list_roundtrip
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(
         dsd-neo_test_ui_qt_scan_list_roundtrip

@@ -48,7 +48,7 @@ dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks) { // NOLINT(misc-use-internal
 }
 
 static dsd_controls_pending_fn g_controls_pending;
-static dsd_controls_pending_fn g_controls_need_frame_loop;
+static dsd_controls_need_frame_loop_fn g_controls_need_frame_loop;
 static dsd_controls_pending_fn g_publish_pending;
 static int g_snapshot_pending;
 static int g_opts_snapshot_pending;
@@ -85,7 +85,7 @@ dsd_runtime_set_controls_pending(dsd_controls_pending_fn fn) { // NOLINT(misc-us
 }
 
 void
-dsd_runtime_set_controls_need_frame_loop(dsd_controls_pending_fn fn) { // NOLINT(misc-use-internal-linkage)
+dsd_runtime_set_controls_need_frame_loop(dsd_controls_need_frame_loop_fn fn) { // NOLINT(misc-use-internal-linkage)
     g_controls_need_frame_loop = fn;
 }
 
@@ -134,7 +134,8 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-intern
 }
 
 int
-dsd_app_commands_need_frame_loop(void) { // NOLINT(misc-use-internal-linkage)
+dsd_app_commands_need_frame_loop(const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
     return 0;
 }
 

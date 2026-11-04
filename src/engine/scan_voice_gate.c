@@ -292,8 +292,11 @@ dsd_scan_voice_gate_tick(const dsd_opts* opts, dsd_state* state, int synced, dou
 
 int
 dsd_scan_voice_gate_owns_step(const dsd_opts* opts, const dsd_state* state) {
+    /* Channels learned over the air are no list to step through, so with no list of the user's the gate never ends
+       a reception it could only leave for one of them. */
     return scan_voice_gate_enabled(opts) && state
-           && (state->scan_voice_gate_voice_m >= 0.0 || state->scan_voice_gate_sync_m >= 0.0);
+           && (state->scan_voice_gate_voice_m >= 0.0 || state->scan_voice_gate_sync_m >= 0.0)
+           && dsd_state_trunk_lcn_user_list_present(opts, state);
 }
 
 int
@@ -348,14 +351,16 @@ scan_visit_suspended(const dsd_state* state) {
  * tick re-arms it and the deadline hides it, which is the one question both have to ask the same
  * way (requirement 5, and the shape trunk_scan.c already uses).
  *
- * Either the visit is suspended, or there is nowhere to go: a rotation with fewer than two usable
- * rows would only hop back onto the row it is already on and interrupt its audio. Freezing the
- * anchor instead of re-arming would let it age for as long as that lasts, and then fire the
- * instant the operator clears an avoid or a placeholder gets a frequency.
+ * Either the visit is suspended, or there is nowhere to go (dsd_engine_channel_scan_can_rotate()):
+ * a rotation with fewer than two rows a step can land on would only hop back onto the row it is
+ * already on and interrupt its audio. A row skipped at every visit for its width is not one, nor
+ * is a channel learned over the air while no list of the user's is loaded. Freezing the anchor
+ * instead of re-arming would let it age for as long as that lasts, and then fire the instant the
+ * operator clears an avoid, a placeholder gets a frequency or a skipped row's width fits again.
  */
 static int
-scan_visit_rearms(const dsd_state* state) {
-    return scan_visit_suspended(state) || dsd_state_trunk_lcn_usable_count(state) < 2;
+scan_visit_rearms(const dsd_opts* opts, const dsd_state* state) {
+    return scan_visit_suspended(state) || !dsd_engine_channel_scan_can_rotate(opts, state);
 }
 
 void
@@ -391,7 +396,7 @@ dsd_engine_scan_visit_tick(const dsd_opts* opts, dsd_state* state, double now_m)
     if (state->scan_visit_since_m < 0.0) {
         state->scan_visit_since_m = now_m;
     }
-    const int rearm = scan_visit_rearms(state);
+    const int rearm = scan_visit_rearms(opts, state);
     if (rearm || state->scan_visit_rearm_pending) {
         /* Remember the suspension across input stalls: time since the last suspended tick
          * cannot consume the fresh interval owed when a hold or an avoid stops applying. */
@@ -424,7 +429,7 @@ dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* state) {
          * re-arm -- the commit stamps its own anchor, so there is nothing to slide. */
         return -1.0;
     }
-    if (scan_visit_rearms(state)) {
+    if (scan_visit_rearms(opts, state)) {
         return -1.0;
     }
     return state->scan_visit_since_m + ((double)opts->scan_max_visit_ms / 1000.0);
@@ -555,6 +560,10 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
     scan_y_timing_seed(opts, &report);
     if (dsd_engine_channel_scan_waiting(state)) {
         report.reason = (uint8_t)DSD_SCAN_STAY_RETUNE_PENDING;
+    } else if (!dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        /* No channel map of the user's (issue #697): nothing steps, so nothing counts down; a channel learned over the
+           air is no row to step to. */
+        report.reason = (uint8_t)DSD_SCAN_STAY_NO_LIST;
     } else if (state->lcn_scan_hold) {
         /* The rotation is parked by the operator: the window is paused, not expired.
          * dsd_scan_voice_gate_should_step() returns 0 here and the no-carrier step

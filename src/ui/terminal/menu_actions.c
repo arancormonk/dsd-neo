@@ -53,6 +53,7 @@
 #include "menu_labels.h"
 #include "menu_prompts.h"
 #include "rr_panel.h"
+#include "scan_list_modal.h"
 
 // ---- Main menu actions ----
 
@@ -1833,7 +1834,7 @@ act_set_freq(void* v) {
 
 /* Kept by pointer while help is open. */
 static const char k_freq_key_needs_rigctl[] =
-    "Nothing to tune: this input needs a connected rigctl peer (key 9, or Trunking > Rigctl).";
+    "Nothing to tune: this input needs a connected rigctl peer (key 9, or Input > Rigctl).";
 static const char k_freq_key_replay[] = "An I/Q replay cannot retune: it plays the tuning it recorded.";
 
 /* '=' decides on the frame's published options, as the row's predicate does. Where the row would be hidden the reason
@@ -2256,6 +2257,21 @@ act_scan_avoid_list(void* v) {
     }
     ui_chooser_start_owned(ctx->title, ctx->items, (int)ctx->list.count, 0, chooser_done_scan_avoid, ctx,
                            scan_avoid_pick_ctx_dispose);
+}
+
+/* Kept by pointer while help is open. */
+static const char k_scan_lists_none[] =
+    "Nothing to switch: scan lists need a trunk scan with two or more lists (one --trunk-scan or --trunk-scan-off per "
+    "list).";
+
+/* Scan lists... and the `#` key (issue #697): the lists of the trunk scan, running or paused, on the frame's pair. Where
+   there are none to switch, one line of help says why, as `=` does where nothing can be tuned. */
+void
+act_scan_lists(void* v) {
+    const UiCtx* c = ui_ctx_from_action(v);
+    if (!c || !scan_list_modal_open(c->opts, c->state)) {
+        ui_help_open(k_scan_lists_none);
+    }
 }
 
 void

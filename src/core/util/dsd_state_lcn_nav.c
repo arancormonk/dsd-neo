@@ -30,8 +30,7 @@ lcn_nav_row_freq(const dsd_state* state, int row, long int* freq) {
 }
 
 /* A record describes the list while its row is in it and still holds the frequency it held when recorded: an edit, a
- * removal or a shorter list makes it none, with no map generation to compare (the protocols move trunk_chan_map_seq
- * whenever they learn a channel). */
+ * removal or a shorter list makes it none, by frequency alone (no list revision, dsd_state::lcn_list_rev, is kept). */
 static int
 lcn_nav_row_valid(const dsd_state* state, int row, long int recorded_freq) {
     long int freq = 0;

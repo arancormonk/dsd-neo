@@ -266,6 +266,23 @@ int dsd_path_canonical(const char* path, char* out, size_t out_size);
 int64_t dsd_path_free_bytes(const char* path);
 
 /**
+ * @brief Remove the file at @p path: remove() on POSIX; on Windows the wide call when @p path is well-formed UTF-8 (the
+ * app's own files, named in any script), else the ANSI one.
+ * @return 0, or -1 with errno set.
+ */
+int dsd_remove_file(const char* path);
+
+#if DSD_PLATFORM_WIN_NATIVE
+#include <wchar.h>
+/**
+ * @brief @p path as UTF-16 for the wide Windows file calls when it is well-formed UTF-8, as the app's own paths are in
+ * any script; NULL when it is not (a path in the ANSI code page, as a command line gives it) or memory runs out. The
+ * caller frees it. Windows only: every file call that takes a path the app wrote decides wide or ANSI by it.
+ */
+wchar_t* dsd_win32_utf8_path_to_wide(const char* path);
+#endif
+
+/**
  * @brief Resolve a user-supplied local file name to an existing file in the current directory.
  *
  * The requested name must be a bare file name: no path separators, absolute

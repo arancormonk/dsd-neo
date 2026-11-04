@@ -231,6 +231,16 @@ _Static_assert(
 _Static_assert(offsetof(dsd_state, trunk_scan_paused) >= offsetof(dsd_state, trunk_scan_active_id)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_paused) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
                "trunk_scan_paused must ride the vertex_ks_count..ui_msg range");
+/* The trunk-scan lists (issue #697): the inline table, the list on air and the rotation counts every frontend's list
+ * readout and toggle rows read. */
+_Static_assert(offsetof(dsd_state, trunk_scan_list_count) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_lists) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
+                   && offsetof(dsd_state, trunk_scan_active_list) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && offsetof(dsd_state, trunk_scan_active_list_off) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && offsetof(dsd_state, trunk_scan_rotation_ordinal) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && offsetof(dsd_state, trunk_scan_rotation_count) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_lists_seq) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
+               "the trunk-scan list publication must ride the vertex_ks_count..ui_msg range");
 /* Voice-gated scan memory and the per-visit cap bookkeeping beside it ride the same range so the
  * status line sees the phase and the Scan Timing row sees the cap. */
 _Static_assert(offsetof(dsd_state, scan_voice_gate_arrive_m) >= offsetof(dsd_state, vertex_ks_count)

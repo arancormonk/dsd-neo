@@ -22,6 +22,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/udp_comp_ports.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -1158,13 +1159,45 @@ render_radioreference_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "\n");
 }
 
+/* List 1 is targets_csv, list N targets_csv_N (issue #697); lists_off names the lists that start off. Each path is a
+   line of its own, so every line stays far below the loader's line buffer. A save ends its lists with an empty key
+   (targets_csv itself when it has none) and always writes lists_off, so loading it over a session with more lists,
+   or other off states, gives the saved set exactly. */
+static void
+render_trunk_scan_lists(FILE* out, const dsdneoUserConfig* cfg) {
+    char off[3 * DSD_TRUNK_SCAN_MAX_LISTS + 1] = "";
+    size_t used = 0U;
+    const int count =
+        cfg->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? cfg->trunk_scan_list_count : DSD_TRUNK_SCAN_MAX_LISTS;
+    for (int i = 0; i < count; i++) {
+        const dsd_trunk_scan_list_spec* list = &cfg->trunk_scan_lists[i];
+        if (list->path[0] != '\0' && i == 0) {
+            DSD_FPRINTF(out, "targets_csv = \"%s\"\n", list->path);
+        } else if (list->path[0] != '\0') {
+            DSD_FPRINTF(out, "targets_csv_%d = \"%s\"\n", i + 1, list->path);
+        }
+        if (list->start_off != 0U && used < sizeof off) {
+            const int n = DSD_SNPRINTF(off + used, sizeof off - used, "%s%d", used ? ", " : "", i + 1);
+            used += n > 0 ? (size_t)n : 0U;
+        }
+    }
+    if (count <= 0) {
+        DSD_FPRINTF(out, "targets_csv = \"\"\n");
+    } else if (count < DSD_TRUNK_SCAN_MAX_LISTS) {
+        DSD_FPRINTF(out, "targets_csv_%d = \"\"\n", count + 1);
+    }
+    if (used > 0U) {
+        DSD_FPRINTF(out, "lists_off = %s\n", off);
+    } else {
+        DSD_FPRINTF(out, "lists_off = \"\"\n");
+    }
+}
+
 static void
 render_trunk_scan_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "[trunk_scan]\n");
     DSD_FPRINTF(out, "enabled = %s\n", ini_bool(cfg->trunk_scan_enabled));
-    if (cfg->trunk_scan_targets_csv[0]) {
-        DSD_FPRINTF(out, "targets_csv = \"%s\"\n", cfg->trunk_scan_targets_csv);
-    }
+    render_trunk_scan_lists(out, cfg);
     DSD_FPRINTF(out, "idle_dwell_ms = %d\n", cfg->trunk_scan_idle_dwell_ms);
     DSD_FPRINTF(out, "activity_hold_ms = %d\n", cfg->trunk_scan_activity_hold_ms);
     DSD_FPRINTF(out, "\n");
@@ -1751,17 +1784,64 @@ apply_radioreference_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* Whether a config names list @p i's path: a key it read, or, built field by field (a test's), a path it fills in. */
+static int
+user_config_names_list_path(const dsdneoUserConfig* cfg, int i) {
+    return (cfg->trunk_scan_lists_named & (1U << i)) != 0U || cfg->trunk_scan_lists[i].path[0] != '\0';
+}
+
+static int
+user_config_names_lists_off(const dsdneoUserConfig* cfg) {
+    int named = cfg->trunk_scan_lists_off_is_set != 0;
+    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        named |= cfg->trunk_scan_lists[i].start_off != 0U;
+    }
+    return named;
+}
+
+int
+dsd_user_config_names_trunk_scan_lists(const dsdneoUserConfig* cfg) {
+    if (cfg == nullptr) {
+        return 0;
+    }
+    int named = user_config_names_lists_off(cfg);
+    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        named |= user_config_names_list_path(cfg, i);
+    }
+    return named;
+}
+
+void
+dsd_user_config_compose_trunk_scan_lists(const dsdneoUserConfig* cfg, dsd_trunk_scan_list_spec* lists, int* count) {
+    if (cfg == nullptr || lists == nullptr || count == nullptr) {
+        return;
+    }
+    const int off_named = user_config_names_lists_off(cfg);
+    int cleared = 0; /* an empty targets_csv_N clears list N and every later one, the base's included */
+    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        if (i >= *count) {
+            DSD_MEMSET(&lists[i], 0, sizeof lists[i]); /* what lies past the base's lists is none of its own */
+        }
+        if (cleared || user_config_names_list_path(cfg, i)) {
+            DSD_SNPRINTF(lists[i].path, sizeof lists[i].path, "%s", cfg->trunk_scan_lists[i].path);
+            cleared |= cfg->trunk_scan_lists[i].path[0] == '\0';
+        }
+        if (off_named) {
+            lists[i].start_off = cfg->trunk_scan_lists[i].start_off != 0U ? 1U : 0U;
+        } else if (cleared) {
+            lists[i].start_off = 0U; /* a list the empty key removes goes with its off state, as in the loader */
+        }
+    }
+    *count = dsd_trunk_scan_lists_span(lists);
+}
+
 static void
 apply_trunk_scan_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts || !cfg->has_trunk_scan) {
         return;
     }
     opts->trunk_scan_enabled = cfg->trunk_scan_enabled ? 1 : 0;
-    if (cfg->trunk_scan_targets_csv[0]) {
-        DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s",
-                     cfg->trunk_scan_targets_csv);
-        opts->trunk_scan_targets_csv[sizeof opts->trunk_scan_targets_csv - 1] = '\0';
-    }
+    dsd_user_config_compose_trunk_scan_lists(cfg, opts->trunk_scan_lists, &opts->trunk_scan_list_count);
     opts->trunk_scan_idle_dwell_ms = cfg->trunk_scan_idle_dwell_ms;
     opts->trunk_scan_activity_hold_ms = cfg->trunk_scan_activity_hold_ms;
 }
@@ -2173,12 +2253,24 @@ snapshot_radioreference_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rr_app_key[sizeof cfg->rr_app_key - 1] = '\0';
 }
 
+/* A snapshot names every list key, as a save writes them all. */
+static void
+snapshot_trunk_scan_lists(const dsd_trunk_scan_list_spec* lists, int count, dsdneoUserConfig* cfg) {
+    DSD_MEMSET(cfg->trunk_scan_lists, 0, sizeof cfg->trunk_scan_lists);
+    for (int i = 0; i < count && i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        cfg->trunk_scan_lists[i] = lists[i];
+    }
+    cfg->trunk_scan_list_count = dsd_trunk_scan_lists_span(cfg->trunk_scan_lists);
+    cfg->trunk_scan_lists_named = (1U << DSD_TRUNK_SCAN_MAX_LISTS) - 1U;
+    cfg->trunk_scan_lists_off_is_set = 1;
+}
+
 static void
 snapshot_trunk_scan_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_trunk_scan = 1;
     cfg->trunk_scan_enabled = opts->trunk_scan_enabled ? 1 : 0;
-    DSD_SNPRINTF(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, "%s", opts->trunk_scan_targets_csv);
-    cfg->trunk_scan_targets_csv[sizeof cfg->trunk_scan_targets_csv - 1] = '\0';
+    /* The configured lists and start states, never a list switched on or off in the session (issue #697). */
+    snapshot_trunk_scan_lists(opts->trunk_scan_lists, opts->trunk_scan_list_count, cfg);
     cfg->trunk_scan_idle_dwell_ms = opts->trunk_scan_idle_dwell_ms;
     cfg->trunk_scan_activity_hold_ms = opts->trunk_scan_activity_hold_ms;
 }
@@ -2276,8 +2368,7 @@ snapshot_next_start_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
         cfg->trunk_scan_enabled = (next->trunk_scan_enabled != 0) ? 1 : 0;
     }
     if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_TARGETS) != 0U) {
-        DSD_SNPRINTF(cfg->trunk_scan_targets_csv, sizeof cfg->trunk_scan_targets_csv, "%s",
-                     next->trunk_scan_targets_csv);
+        snapshot_trunk_scan_lists(next->trunk_scan_lists, next->trunk_scan_list_count, cfg);
     }
     if ((next->pending & DSD_NEXT_START_TRUNK_SCAN_IDLE_DWELL) != 0U) {
         cfg->trunk_scan_idle_dwell_ms = next->trunk_scan_idle_dwell_ms;

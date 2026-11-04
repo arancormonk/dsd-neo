@@ -26,6 +26,7 @@
 #include <dsd-neo/app_control/p25_network.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/scan_state_view.h>
 #include <dsd-neo/app_control/site_identity_view.h>
@@ -928,12 +929,57 @@ encode_scan_avoids(dsd_json_writer* w) {
     (void)dsd_json_obj_end(w);
 }
 
+/* The --trunk-scan target lists (issue #697), from the scan list view: the session and the list sequence a
+   scan_list_set and its result quote, the list of the target on air (null when none is), and each list in list order.
+   With no trunk scan: session 0, list null, no lists. */
+static void
+encode_scan_lists(dsd_json_writer* w, const dsd_app_scan_list_view* view) {
+    (void)dsd_json_kv_u64(w, "session", view->session);
+    (void)dsd_json_kv_u64(w, "lists_seq", view->lists_seq);
+    (void)(view->active_list != 0U ? dsd_json_kv_u64(w, "list", view->active_list) : dsd_json_kv_null(w, "list"));
+    (void)dsd_json_key(w, "lists");
+    (void)dsd_json_arr_begin(w);
+    for (uint8_t i = 0; i < view->list_count; i++) {
+        const dsd_app_scan_list_entry* e = &view->lists[i];
+        (void)dsd_json_obj_begin(w);
+        (void)dsd_json_kv_u64(w, "number", e->number);
+        (void)dsd_json_kv_strn(w, "name", e->name, sizeof e->name);
+        /* 0/1, as scan_list_set takes it. */
+        (void)dsd_json_kv_i64(w, "enabled", e->enabled);
+        (void)dsd_json_kv_u64(w, "targets", e->targets);
+        (void)dsd_json_kv_bool(w, "has_active", e->has_active);
+        (void)dsd_json_obj_end(w);
+    }
+    (void)dsd_json_arr_end(w);
+}
+
+/* The operator's hold on the row or target on air (scan_hold_toggle), and the trunk scan's position as every frontend
+   shows it (issue #697): the target on air's place among the targets of the lists switched on (null while its list
+   is off, or none is on air) and their count, avoided targets included. */
+static void
+encode_scan_position(dsd_json_writer* w, const dsd_app_scan_state_view* scan, const dsd_state* state) {
+    const int trunk = scan->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK;
+    uint8_t hold = 0U;
+    if (trunk) {
+        hold = state->trunk_scan_hold;
+    } else if (scan->kind == (uint8_t)DSD_APP_SCAN_KIND_CHANNEL) {
+        hold = state->lcn_scan_hold;
+    }
+    (void)dsd_json_kv_bool(w, "hold", hold != 0U);
+    const unsigned int ordinal = trunk ? state->trunk_scan_rotation_ordinal : 0U;
+    (void)(ordinal != 0U ? dsd_json_kv_u64(w, "ordinal", ordinal) : dsd_json_kv_null(w, "ordinal"));
+    (void)dsd_json_kv_u64(w, "count", trunk ? state->trunk_scan_rotation_count : 0U);
+}
+
 /* Which scan the session has and whether it runs or the operator paused it (issue #671), as every frontend shows it:
-   "scan_resume" resumes a paused one. Null until the decoder has published its options. */
+   "scan_resume" resumes a paused one; then its hold and position, and its target lists. Null until the decoder has
+   published its options. */
 static void
 encode_scan(dsd_json_writer* w, const dsd_state* state) {
     dsd_app_scan_state_view scan;
-    if (g_live_opts == NULL || dsd_app_scan_state_view_get(g_live_opts, state, &scan) != 0) {
+    dsd_app_scan_list_view lists;
+    if (g_live_opts == NULL || dsd_app_scan_state_view_get(g_live_opts, state, &scan) != 0
+        || dsd_app_scan_list_view_get(g_live_opts, state, &lists) != 0) {
         (void)dsd_json_kv_null(w, "scan");
         return;
     }
@@ -942,6 +988,8 @@ encode_scan(dsd_json_writer* w, const dsd_state* state) {
     (void)dsd_json_kv_str(w, "kind", dsd_app_scan_kind_name(scan.kind));
     (void)dsd_json_kv_str(w, "state", dsd_app_scan_state_name(&scan));
     (void)dsd_json_kv_u64(w, "targets", scan.target_count);
+    encode_scan_position(w, &scan, state);
+    encode_scan_lists(w, &lists);
     (void)dsd_json_obj_end(w);
 }
 

@@ -25,8 +25,8 @@
  * Fills the six characters at @p suffix (inside @p path) with [a-z0-9] (Windows names ignore case) and opens with
  * @p flags plus _O_CREAT | _O_EXCL, owner read/write, drawing a new name while the drawn one is taken.
  *
- * @return The descriptor, or -1 with errno from _open() (EEXIST once every attempt found its name taken).
+ * @return The descriptor, or -1 with errno from _wopen() or _open() (EEXIST once every attempt found its name taken).
  */
-int dsd_win32_temp_open(char* path, char* suffix, int flags);
+int dsd_win32_temp_open(const char* path, char* suffix, int flags);
 
 #endif /* DSD_NEO_SRC_PLATFORM_WIN32_TEMP_NAME_INTERNAL_H */

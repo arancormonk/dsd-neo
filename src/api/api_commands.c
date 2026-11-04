@@ -25,6 +25,7 @@
 #include <dsd-neo/core/id_pattern.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/config.h>
 
@@ -38,7 +39,7 @@
 #include "json.h"
 
 /* Status codes the submitters return besides the queue's own (dsd_app_command_submit_status). */
-enum { API_INVALID_PARAMS = -2, API_NO_MEMORY = -3 };
+enum { API_INVALID_PARAMS = -2, API_NO_MEMORY = -3, API_QUEUE_FULL = -4 };
 
 typedef struct api_command_desc api_command_desc;
 
@@ -598,6 +599,51 @@ submit_scan_avoid_remove(const api_command_desc* d, const dsd_json_node* params,
     return dsd_app_command_submit(DSD_APP_CMD_SCAN_AVOID_REMOVE, &p, sizeof p);
 }
 
+/* scan_list_set (issue #697): list 1..8 or "all", enabled 0 or 1, session 1..UINT32_MAX (refused above rather than
+   narrowed). The request id always comes from app-control's counter, which the terminal and Qt draw from too, and the
+   reply echoes it; a client's own id would collide with theirs, so a "request" param is refused rather than ignored. */
+static int
+scan_list_set_params(const dsd_json_node* params, dsd_app_scan_list_set_payload* p) {
+    const dsd_json_node* list = dsd_json_obj_get(params, "list");
+    const char* all = dsd_json_as_str_bounded(list, sizeof "all");
+    int64_t number = 0;
+    if (all != NULL) {
+        if (strcmp(all, "all") != 0) {
+            return -1;
+        }
+        p->list = DSD_APP_SCAN_LIST_ALL;
+    } else if (param_i64(params, "list", 1, DSD_TRUNK_SCAN_MAX_LISTS, &number) == 0) {
+        p->list = (int16_t)number;
+    } else {
+        return -1;
+    }
+    int64_t enabled = 0;
+    if (param_i64(params, "enabled", 0, 1, &enabled) != 0 || param_u32(params, "session", &p->session) != 0
+        || p->session == 0U || dsd_json_obj_get(params, "request") != NULL) {
+        return -1;
+    }
+    p->enabled = (uint8_t)enabled;
+    return 0;
+}
+
+static int
+submit_scan_list_set(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
+    (void)d;
+    dsd_app_scan_list_set_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    if (scan_list_set_params(params, &p)) {
+        return API_INVALID_PARAMS;
+    }
+    p.request = dsd_app_scan_list_request_next();
+    *request_id = p.request;
+    const int rc = dsd_app_command_scan_list_set(&p);
+    /* The queue refuses a toggle it has no room for instead of evicting an older command (so a refused one is never
+       pending and gets no result), and refuses everything while no decoder session is open. Which of the two it was is
+       read after the submit, so a session opening in between can label a closed-session refusal queue_full; the label
+       is harmless, since nothing was submitted either way. */
+    return (rc == DSD_APP_COMMAND_SUBMIT_REJECTED && dsd_app_command_session_generation() != 0U) ? API_QUEUE_FULL : rc;
+}
+
 static int
 submit_airspy(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)d;
@@ -972,6 +1018,7 @@ static const api_command_desc k_commands[] = {
     API_ACTION("scan_avoid_clear", DSD_APP_CMD_SCAN_AVOID_CLEAR),
     API_KIND("scan_avoid_remove", DSD_APP_CMD_SCAN_AVOID_REMOVE, submit_scan_avoid_remove,
              "{kind:lcn|trunk_scan,instance,list_rev,row,frequency_hz,session,target_id}"),
+    API_KIND("scan_list_set", DSD_APP_CMD_SCAN_LIST_SET, submit_scan_list_set, "{list:1..8|all,enabled:0|1,session}"),
     API_ACTION("scan_resume", DSD_APP_CMD_SCAN_RESUME),
 
     API_ACTION("quit", DSD_APP_CMD_QUIT),
@@ -1155,6 +1202,20 @@ dsd_api_command_count_total(void) {
     return API_COMMAND_COUNT;
 }
 
+/* The id an admitted request's later answer carries: a decryption_apply result's tagged 64-bit request_id, as a decimal
+   string; a scan_list_set result's request, the number get {"what":"scan_list_results"} lists it under. */
+static void
+response_request(dsd_json_writer* w, const api_command_desc* desc, uint64_t request_id) {
+    if (request_id == 0U) {
+        return;
+    }
+    if (desc->cmd_id == DSD_APP_CMD_SCAN_LIST_SET) {
+        (void)dsd_json_kv_u64(w, "request", request_id);
+    } else {
+        (void)dsd_json_kv_u64_str(w, "request_id", request_id);
+    }
+}
+
 int
 dsd_api_command_execute(const dsd_json_node* request, dsd_json_buf* out) {
     const dsd_json_node* id = dsd_json_obj_get(request, "id");
@@ -1175,11 +1236,11 @@ dsd_api_command_execute(const dsd_json_node* request, dsd_json_buf* out) {
     (void)dsd_json_kv_str(&w, "cmd", desc->name);
     if (ok) {
         (void)dsd_json_kv_str(&w, "status", (rc == DSD_APP_COMMAND_SUBMIT_COALESCED) ? "coalesced" : "queued");
-        if (request_id != 0U) {
-            (void)dsd_json_kv_u64_str(&w, "request_id", request_id);
-        }
+        response_request(&w, desc, request_id);
     } else if (rc == API_INVALID_PARAMS) {
         dsd_api_response_error(&w, "invalid_params", "missing, out-of-range or over-long parameters");
+    } else if (rc == API_QUEUE_FULL) {
+        dsd_api_response_error(&w, "queue_full", "the command queue is full; nothing was submitted, try again");
     } else if (rc == API_NO_MEMORY) {
         dsd_api_response_error(&w, "internal_error", "out of memory");
     } else {

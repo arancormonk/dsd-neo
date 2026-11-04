@@ -12,6 +12,9 @@ Item {
 
     property string title: ""
     property string subtitle: ""
+    // Why the last change did not take, under the helper line in the alert
+    // colour; empty for none (issue #697: a refused scan-list switch).
+    property string note: ""
     property bool checked: false
     property bool showDivider: false
     signal toggled(bool checked)
@@ -21,7 +24,7 @@ Item {
     activeFocusOnTab: Navigation.allows(row) && enabled
     Accessible.role: Accessible.Switch
     Accessible.name: title
-    Accessible.description: subtitle
+    Accessible.description: note.length > 0 ? subtitle + "\n" + note : subtitle
     Accessible.checkable: true
     Accessible.checked: checked
     readonly property bool navigationAllowed: Navigation.allows(row)
@@ -71,6 +74,17 @@ Item {
             // question answerable, and 62px holds the two 12px lines a wrapped
             // one needs. Eliding instead truncates the longer helpers on a
             // narrow screen, which is where they matter most.
+            wrapMode: Text.Wrap
+        }
+
+        Text {
+            width: parent.width
+            visible: text.length > 0
+            Accessible.ignored: true
+            text: row.note
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(12)
+            color: Theme.alert
             wrapMode: Text.Wrap
         }
     }

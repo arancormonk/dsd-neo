@@ -30,6 +30,7 @@
 #include "menu_internal.h"
 #include "ui_keys.h"
 #include "ui_text.h"
+#include "ui_text_draw.h"
 
 typedef struct {
     int active;
@@ -1738,25 +1739,11 @@ ui_chooser_clamp_selection(void) {
     ui_chooser_keep_selection_visible();
 }
 
-/*
- * Draw text at (y, x) in at most @p budget cells (issue #672, B7): sanitized, measured and cut between code points by
- * the status row's text model (ui_text.h), with its marker when anything was cut, so a long name never splits a UTF-8
- * character and never loses its end without saying so. What reaches curses is the byte span of the cut.
- */
+/* Draw text at (y, x) in at most @p budget cells (issue #672, B7), cut by the status row's text model under the
+   chooser's output decision (ui_text_draw_fit()). */
 static void
 ui_chooser_draw_text(WINDOW* win, int y, int x, const char* text, int budget) {
-    char shown[UI_CHOOSER_TEXT_MAX];
-    const char* src = text ? text : "";
-    const size_t len = ui_text_sanitize(g_chooser.unicode, src, strnlen(src, sizeof shown), shown, sizeof shown);
-    const char* marker = NULL;
-    const size_t cut = ui_text_fit(g_chooser.unicode, shown, len, budget, &marker);
-    wmove(win, y, x);
-    if (cut > 0U) {
-        waddnstr(win, shown, (int)cut);
-    }
-    if (marker) {
-        waddstr(win, marker);
-    }
+    ui_text_draw_fit(win, y, x, g_chooser.unicode, text, budget);
 }
 
 static void

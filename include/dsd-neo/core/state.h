@@ -32,6 +32,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/core/trunk_scan_lists.h>
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -51,6 +52,13 @@ typedef struct dsd_trunk_scan_avoid_entry {
     char id[DSD_CHANNEL_LABEL_SIZE];
     char label[DSD_CHANNEL_LABEL_SIZE];
 } dsd_trunk_scan_avoid_entry;
+
+/* One --trunk-scan target list as the coordinator publishes it (issue #697, dsd_state::trunk_scan_lists). */
+typedef struct {
+    char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE]; /**< File name without folder and extension; "" past the last list */
+    uint8_t enabled;                          /**< 1 = switched on: its targets are in the rotation */
+    uint16_t targets;                         /**< Targets the list holds */
+} dsd_trunk_scan_list_publication;
 
 /* Exact sync-word hits a frame sync join rule looks back over (src/dsp/dsd_frame_sync.c). A rule that joins on hits a
  * frame apart has to remember every hit of the frames it looks back over, not only the latest: before a lock the
@@ -777,6 +785,7 @@ typedef enum {
     DSD_SCAN_STAY_HANGTIME = 9,       /**< -Y legacy rule: waiting out -t since the last sync */
     DSD_SCAN_STAY_CARRIER = 10,       /**< analog row: its carrier is open (issue #526) */
     DSD_SCAN_STAY_TONE_PENDING = 11,  /**< analog row: carrier open, the tone policy still checking (issue #527) */
+    DSD_SCAN_STAY_NO_LIST = 12,       /**< -Y with no channel map of the user's: nothing to step to (issue #697) */
 } dsd_scan_stay_reason;
 
 /** Live scan timing for the frontends' Scan Timing row (issue #508). Plain inline
@@ -2555,6 +2564,23 @@ struct dsd_state {
      * overrides while it is parked and shutdown puts back; a save writes it. Written by the coordinator beside the
      * configured gain. Valid while trunk_scan_target_count > 0. */
     uint8_t trunk_scan_configured_trunk_enable; /**< 1 = trunking configured on */
+    /* The --trunk-scan target lists (issue #697), written by the coordinator at its start, at each list switched on
+     * or off and at each hop, and cleared when it detaches. trunk_scan_lists[i] is list i + 1 (its name, whether it
+     * is on, and its target count); trunk_scan_lists_seq moves at every start and change of them and never repeats a
+     * value in the process. trunk_scan_active_list: the list (1-based) of the target on air, 0 when none is (paused
+     * included); trunk_scan_active_list_off: that target's list is off, so the receiver stays there only until another
+     * target can take it, as it stays on an avoided one (trunk_scan_active_avoided; either can hold, or both).
+     * trunk_scan_rotation_count: the targets of the lists that are on, avoided ones included;
+     * trunk_scan_rotation_ordinal: the target on air's 1-based position among them, 0 while its list is off or none is
+     * on air. The identity ordinal (trunk_scan_active_ordinal, the position among every loaded target) does not move
+     * when a list does. */
+    uint8_t trunk_scan_list_count;
+    uint8_t trunk_scan_active_list;
+    uint8_t trunk_scan_active_list_off;
+    uint16_t trunk_scan_rotation_ordinal;
+    uint16_t trunk_scan_rotation_count;
+    uint32_t trunk_scan_lists_seq;
+    dsd_trunk_scan_list_publication trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
     /* The scan row on air, for the "this channel" editors (issue #518): the scanner that owns it (dsd_scan_row_scanner,
      * 0 = none), the scan session (a new one for every trunk-scan coordinator and -Y scan, so an edit opened on one never
      * lands on the next), the row (a --trunk-scan target's index, a -Y channel map row), the session-edit fields

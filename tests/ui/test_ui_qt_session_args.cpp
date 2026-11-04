@@ -13,7 +13,9 @@
 #include <QByteArrayView>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDir>
 #include <QJsonDocument>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaProperty>
@@ -35,6 +37,7 @@
 #include "recording_sessions.h"
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include "dsd-neo/core/safe_api.h"
 #include "saved_systems_model.h"
@@ -1696,6 +1699,218 @@ test_grouped_hex_keys() {
                       >= 0);
 }
 
+/* Issue #697: one session over several lists is the first list's receiver and options with one --trunk-scan per
+   list, in order, and nothing else of the others; the extra options still may not add a list of their own. */
+static void
+test_scan_lists_argv(void) {
+    QVariantMap list{
+        {"sourceType", "rtltcp"}, {"host", "10.0.2.2"},      {"port", 1234}, {"gainDb", 20}, {"voiceOnly", true},
+        {"defaultDwellMs", 2500}, {"groupCsvPath", "/g.csv"}};
+    SessionArgPrefs prefs;
+    prefs.extraArgs = QStringLiteral("-N");
+    QString error;
+    const QStringList one = dsd_qt::session_args_scan_build(list, "851.375", "/a.csv", prefs, &error);
+    expect("one list builds", error.isEmpty() && !one.isEmpty());
+    expect("one list is the same argv through the list builder",
+           dsd_qt::session_args_scan_build_lists(list, "851.375", {"/a.csv"}, prefs, &error) == one);
+    expect("one list names one --trunk-scan", one.count(QStringLiteral("--trunk-scan")) == 1);
+    const QStringList three =
+        dsd_qt::session_args_scan_build_lists(list, "851.375", {"/a.csv", "/b.csv", "/c.csv"}, prefs, &error);
+    expect("three lists build", error.isEmpty() && !three.isEmpty());
+    expect("three lists name three --trunk-scan", three.count(QStringLiteral("--trunk-scan")) == 3);
+    const qsizetype first = three.indexOf(QStringLiteral("--trunk-scan"));
+    expect("the lists follow one another, in order",
+           first > 0
+               && three.mid(first, 6)
+                      == QStringList({"--trunk-scan", "/a.csv", "--trunk-scan", "/b.csv", "--trunk-scan", "/c.csv"}));
+    QStringList withoutLists = three;
+    withoutLists.remove(first + 2, 4);
+    expect("everything else is the first list's argv", withoutLists == one);
+    expect("the receiver and options appear once", three.count(QStringLiteral("-i")) == 1
+                                                       && three.count(QStringLiteral("-G")) == 1
+                                                       && three.count(QStringLiteral("--trunk-scan-dwell-ms")) == 1
+                                                       && three.count(QStringLiteral("--scan-voice-only")) == 1);
+    expect("the extra options come last", three.constLast() == QStringLiteral("-N"));
+    QStringList nine;
+    for (int i = 0; i < 9; ++i) {
+        nine << QStringLiteral("/%1.csv").arg(i);
+    }
+    expect("nine lists are refused",
+           dsd_qt::session_args_scan_build_lists(list, "851.375", nine, prefs, &error).isEmpty()
+               && error == QStringLiteral("Scan from 1 to 8 lists at once."));
+    expect("no list is refused",
+           dsd_qt::session_args_scan_build_lists(list, "851.375", {}, prefs, &error).isEmpty() && !error.isEmpty());
+    for (const char* extra :
+         {"--trunk-scan /x.csv", "--trunk-scan=/x.csv", "--trunk-scan-off /x.csv", "--trunk-scan-off=/x.csv"}) {
+        prefs.extraArgs = QString::fromUtf8(extra);
+        expect(extra,
+               dsd_qt::session_args_scan_build_lists(list, "851.375", {"/a.csv", "/b.csv"}, prefs, &error).isEmpty()
+                   && error == dsd_qt::session_args_error_text(SessionArgsError::UnsafeOption));
+    }
+}
+
+/* Issue #697: which list can join a session, after the app-wide defaults and path resolution, and the first
+   setting that keeps one out, in order. */
+static void
+test_scan_join_conflict(void) {
+    using dsd_qt::session_args_scan_join_conflict;
+    expect("the engine's dwell and hold defaults",
+           dsd_qt::SessionArgsScanDwellDefaultMs == DSD_TRUNK_SCAN_IDLE_DWELL_DEFAULT_MS
+               && dsd_qt::SessionArgsScanHoldDefaultMs == DSD_TRUNK_SCAN_ACTIVITY_HOLD_DEFAULT_MS);
+    SessionArgPrefs prefs;
+    prefs.gainDb = 30;
+    prefs.ppm = 2;
+    prefs.bandwidthKhz = 24;
+    prefs.biasTee = false;
+    const QVariantMap base{{"sourceType", "usb"}, {"gainDb", -1},       {"ppm", ""},           {"bandwidthKhz", -1},
+                           {"biasTee", -1},       {"voiceOnly", false}, {"defaultDwellMs", 0}, {"defaultHoldMs", 0},
+                           {"groupCsvPath", ""},  {"srcCsvPath", ""}};
+    expect("a list joins itself", session_args_scan_join_conflict(base, base, prefs).isEmpty());
+    const auto with = [&base](const QVariantMap& changes) {
+        QVariantMap list = base;
+        for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+            list.insert(it.key(), it.value());
+        }
+        return list;
+    };
+    const auto conflict = [&](const QVariantMap& a, const QVariantMap& b) {
+        return session_args_scan_join_conflict(a, b, prefs);
+    };
+    /* Defaults against the same value written out: one setting. */
+    expect("default gain vs the same explicit gain", conflict(base, with({{"gainDb", 30}})).isEmpty());
+    expect("default PPM vs the same explicit PPM, with a sign", conflict(base, with({{"ppm", "+2"}})).isEmpty());
+    expect("default bandwidth vs the same explicit bandwidth", conflict(base, with({{"bandwidthKhz", 24}})).isEmpty());
+    expect("a bandwidth the radio runs at the same rate",
+           conflict(with({{"bandwidthKhz", 36}}), with({{"bandwidthKhz", 48}})).isEmpty());
+    expect("default bias tee vs explicit off", conflict(base, with({{"biasTee", 0}})).isEmpty());
+    expect("default dwell vs the engine's", conflict(base, with({{"defaultDwellMs", 3000}})).isEmpty());
+    expect("default hold vs the engine's", conflict(base, with({{"defaultHoldMs", 1200}})).isEmpty());
+
+    /* Every setting, each alone. */
+    const struct {
+        QVariantMap a;
+        QVariantMap b;
+        const char* want;
+    } cases[] = {
+        {base, with({{"sourceType", "rtltcp"}, {"host", "h"}, {"port", 1234}}), "Different radio source"},
+        {with({{"sourceType", "rtltcp"}, {"host", "a"}, {"port", 1234}}),
+         with({{"sourceType", "rtltcp"}, {"host", "b"}, {"port", 1234}}), "Different radio source"},
+        {with({{"sourceType", "rtltcp"}, {"host", "a"}, {"port", 1234}}),
+         with({{"sourceType", "rtltcp"}, {"host", "a"}, {"port", 1235}}), "Different radio source"},
+        {with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}}}}),
+         with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "B2"}}}}), "Different radio source"},
+        {base, with({{"gainDb", 31}}), "Different gain"},
+        {base, with({{"gainDb", 0}}), "Different gain"},
+        {base, with({{"ppm", "3"}}), "Different PPM correction"},
+        {base, with({{"bandwidthKhz", 48}}), "Different bandwidth"},
+        {base, with({{"biasTee", 1}}), "Different bias tee"},
+        {with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}, {"lna_gain", 5}}}}),
+         with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}, {"lna_gain", 6}}}}),
+         "Different Airspy settings"},
+        {with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}}}}),
+         with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}, {"bias_tee", 1}}}}),
+         "Different Airspy settings"},
+        {base, with({{"voiceOnly", true}}), "Different voice-only setting"},
+        {base, with({{"defaultDwellMs", 2000}}), "Different default dwell"},
+        {base, with({{"defaultHoldMs", 900}}), "Different default hold"},
+        {base, with({{"groupCsvPath", "/lists/groups.csv"}}), "Different fallback talkgroups"},
+        {with({{"groupCsvPath", "/lists/a.csv"}}), with({{"groupCsvPath", "/lists/b.csv"}}),
+         "Different fallback talkgroups"},
+        {base, with({{"srcCsvPath", "/lists/aliases.csv"}}), "Different source aliases"},
+    };
+
+    for (const auto& c : cases) {
+        const QString got = conflict(c.a, c.b);
+        if (got != QLatin1String(c.want)) {
+            DSD_FPRINTF(stderr, "join: got '%s' want '%s'\n", got.toUtf8().constData(), c.want);
+        }
+        expect(c.want, got == QLatin1String(c.want));
+    }
+    /* A setting the source leaves out of its argv keeps no list out: an Airspy spec carries no RTL gain or PPM, and a
+       network or file source no gain, PPM or bandwidth. The same settings still differ between two RTL lists. */
+    const QVariantMap airspyList{{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}}}};
+    const auto withIn = [&with](const QVariantMap& source, const QVariantMap& changes) {
+        QVariantMap list = with(source);
+        for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+            list.insert(it.key(), it.value());
+        }
+        return list;
+    };
+    expect(
+        "two Airspy lists with different stored RTL gain and PPM join",
+        conflict(withIn(airspyList, {{"gainDb", 10}, {"ppm", "4"}}), withIn(airspyList, {{"gainDb", 40}, {"ppm", ""}}))
+            .isEmpty());
+    expect("two Airspy lists with different bandwidths do not",
+           conflict(withIn(airspyList, {{"bandwidthKhz", 24}}), withIn(airspyList, {{"bandwidthKhz", 96}}))
+               == QStringLiteral("Different bandwidth"));
+    const QVariantMap udpList{{"sourceType", "udp"}, {"port", 7355}};
+    expect("two UDP lists with different stored gain, PPM and bandwidth join",
+           conflict(withIn(udpList, {{"gainDb", 10}, {"ppm", "4"}, {"bandwidthKhz", 24}}),
+                    withIn(udpList, {{"gainDb", 40}, {"ppm", "-3"}, {"bandwidthKhz", 48}}))
+               .isEmpty());
+    expect("two RTL lists with different gain do not",
+           conflict(with({{"gainDb", 10}}), with({{"gainDb", 40}})) == QStringLiteral("Different gain"));
+    expect("two rtl_tcp lists with different PPM do not",
+           conflict(with({{"sourceType", "rtltcp"}, {"host", "h"}, {"port", 1}, {"ppm", "1"}}),
+                    with({{"sourceType", "rtltcp"}, {"host", "h"}, {"port", 1}, {"ppm", "5"}}))
+               == QStringLiteral("Different PPM correction"));
+    /* Airspy settings after the engine's defaults: unset and set to the default are one; a switch as true or 1. */
+    const auto airspy = [&with](const QVariantMap& native) {
+        QVariantMap settings{{"serial", "A1"}};
+        for (auto it = native.cbegin(); it != native.cend(); ++it) {
+            settings.insert(it.key(), it.value());
+        }
+        return with({{"sourceType", "airspy"}, {"airspy", settings}});
+    };
+    expect("an unset Airspy setting is its default", conflict(airspy({}), airspy({{"lna_gain", 1},
+                                                                                  {"mixer_gain", 5},
+                                                                                  {"gain_mode", "sensitivity"},
+                                                                                  {"sensitivity_gain", 10},
+                                                                                  {"lna_agc", false},
+                                                                                  {"bias_tee", 0},
+                                                                                  {"sample_rate", 0}}))
+                                                         .isEmpty());
+    expect("a switch is one setting however it is written",
+           conflict(airspy({{"lna_agc", true}}), airspy({{"lna_agc", "1"}})).isEmpty());
+    expect("a gain mode is one setting in any case",
+           conflict(airspy({{"gain_mode", "Linearity"}}), airspy({{"gain_mode", "linearity"}})).isEmpty());
+    expect("a sample rate of auto is the default rate",
+           conflict(airspy({{"sample_rate", "auto"}}), airspy({})).isEmpty()
+               && conflict(airspy({{"sample_rate", "Auto"}}), airspy({{"sample_rate", 0}})).isEmpty());
+    expect("an auto rate is not a set rate",
+           conflict(airspy({{"sample_rate", "auto"}}), airspy({{"sample_rate", 3000000}}))
+               == QStringLiteral("Different Airspy settings"));
+    expect("a switch in the engine's words",
+           conflict(airspy({{"bias_tee", "off"}}), airspy({})).isEmpty()
+               && conflict(airspy({{"bias_tee", "No"}}), airspy({{"bias_tee", false}})).isEmpty()
+               && conflict(airspy({{"lna_agc", "on"}}), airspy({{"lna_agc", 1}})).isEmpty()
+               && conflict(airspy({{"mixer_agc", "YES"}}), airspy({{"mixer_agc", true}})).isEmpty());
+    expect("a value other than the default differs",
+           conflict(airspy({}), airspy({{"vga_gain", 6}})) == QStringLiteral("Different Airspy settings"));
+    expect("a switch away from its default differs",
+           conflict(airspy({}), airspy({{"mixer_agc", true}})) == QStringLiteral("Different Airspy settings"));
+    /* Resolution: a host's case and blanks, an Airspy serial's case, a relative path and one with "..". */
+    expect("a host is matched as the argv sends it",
+           conflict(with({{"sourceType", "rtltcp"}, {"host", " Radio.lan "}, {"port", 1234}}),
+                    with({{"sourceType", "rtltcp"}, {"host", "radio.lan"}, {"port", "1234"}}))
+               .isEmpty());
+    expect("an Airspy serial without case",
+           conflict(with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "a1"}}}}),
+                    with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}}}}))
+               .isEmpty());
+    const QString cwd = QDir::currentPath();
+    expect(
+        "a relative path and its absolute form are one file",
+        conflict(with({{"srcCsvPath", "aliases.csv"}}), with({{"srcCsvPath", cwd + "/sub/../aliases.csv"}})).isEmpty());
+    /* The first that differs is named, in the documented order. */
+    expect("the first difference wins",
+           conflict(base, with({{"gainDb", 31}, {"voiceOnly", true}, {"srcCsvPath", "/x"}}))
+               == QStringLiteral("Different gain"));
+    /* An app default changes what an unset field means for both lists alike. */
+    prefs.gainDb = 31;
+    expect("an unset gain follows the app default", conflict(base, with({{"gainDb", 31}})).isEmpty());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1742,6 +1957,8 @@ main(int argc, char** argv) {
     test_explore_system();
     test_radio_settings_args();
     test_grouped_hex_keys();
+    test_scan_lists_argv();
+    test_scan_join_conflict();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

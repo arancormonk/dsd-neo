@@ -272,8 +272,9 @@ test_next_start(void) {
     f.has_chan = 0;
     opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
     opts.next_start.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(opts.next_start.trunk_scan_targets_csv, sizeof opts.next_start.trunk_scan_targets_csv, "%s",
+    DSD_SNPRINTF(opts.next_start.trunk_scan_lists[0].path, sizeof opts.next_start.trunk_scan_lists[0].path, "%s",
                  "targets.csv");
+    opts.next_start.trunk_scan_list_count = 1;
     f.trunking = 1;
     rc |=
         expect_int("trunked, no map passes", rr_apply_next_start_refusal(&opts, &state, &f, NULL, why, sizeof why), 0);
@@ -343,8 +344,9 @@ test_block_reason(void) {
     p.decode_mode = (int32_t)DSDCFG_MODE_P25P1;
     g_snap_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
     g_snap_opts.next_start.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_targets_csv, sizeof g_snap_opts.next_start.trunk_scan_targets_csv,
-                 "%s", "targets.csv");
+    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_lists[0].path,
+                 sizeof g_snap_opts.next_start.trunk_scan_lists[0].path, "%s", "targets.csv");
+    g_snap_opts.next_start.trunk_scan_list_count = 1;
     rc |= expect_int("no state snapshot: the rule is not asked",
                      dsd_app_rr_apply_block_reason(published_opts(), published_state(), &p, 1, 1, why, sizeof why), 0);
     g_state_published = 1;
@@ -390,8 +392,9 @@ test_files_block_reason(void) {
 
     g_snap_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
     g_snap_opts.next_start.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_targets_csv, sizeof g_snap_opts.next_start.trunk_scan_targets_csv,
-                 "%s", "targets.csv");
+    DSD_SNPRINTF(g_snap_opts.next_start.trunk_scan_lists[0].path,
+                 sizeof g_snap_opts.next_start.trunk_scan_lists[0].path, "%s", "targets.csv");
+    g_snap_opts.next_start.trunk_scan_list_count = 1;
     rc |= expect_int("files: no state snapshot, no rule",
                      dsd_app_rr_files_block_reason(published_opts(), published_state(), "/x chan.csv", why, sizeof why),
                      0);

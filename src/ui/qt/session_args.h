@@ -75,6 +75,32 @@ bool session_args_extra_safe(const QString& tokens);
 bool session_args_scan_extra_safe(const QString& tokens);
 QStringList session_args_scan_build(const QVariantMap& list, const QString& firstFreqMhz, const QString& csvPath,
                                     const SessionArgPrefs& prefs, QString* error);
+/**
+ * @brief The argv that scans several lists in one session (issue #697): @p list's receiver and session options, one
+ * --trunk-scan per path of @p csvPaths in their order (1 to DSD_TRUNK_SCAN_MAX_LISTS; list N is the Nth path), then
+ * the app's options. session_args_scan_build() is this with one path.
+ */
+QStringList session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqMhz,
+                                          const QStringList& csvPaths, const SessionArgPrefs& prefs, QString* error);
+
+/** @brief The engine's default trunk-scan dwell and activity hold, in ms: what a list's 0 runs at. */
+constexpr int SessionArgsScanDwellDefaultMs = 3000;
+constexpr int SessionArgsScanHoldDefaultMs = 1200;
+
+/**
+ * @brief Why scan list @p other cannot join a session started from @p primary, or empty when it can (issue #697).
+ *
+ * The session runs one receiver and one set of scan options, @p primary's, so every setting a list puts into its
+ * argv has to come out the same for both once the app-wide defaults in @p prefs fill what a list leaves unset and side
+ * files are resolved to absolute paths: radio source (source type and device: Airspy serial, host and port), gain,
+ * PPM correction, DSP bandwidth (as the radio runs it), bias tee, every other Airspy setting, voice only, default dwell
+ * and hold (0 runs the engine's default), fallback talkgroups and source aliases. The first that differs, in that
+ * order, is named: "Different radio source", "Different gain", "Different PPM correction", "Different bandwidth",
+ * "Different bias tee", "Different Airspy settings", "Different voice-only setting", "Different default dwell",
+ * "Different default hold", "Different fallback talkgroups" or "Different source aliases".
+ */
+QString session_args_scan_join_conflict(const QVariantMap& primary, const QVariantMap& other,
+                                        const SessionArgPrefs& prefs);
 
 enum class SessionArgsError {
     None,

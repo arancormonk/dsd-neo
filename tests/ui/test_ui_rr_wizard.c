@@ -2344,8 +2344,9 @@ static int
 publish_next_start_trunk_scan(void) {
     g_stub_opts.next_start.pending = DSD_NEXT_START_TRUNK_SCAN | DSD_NEXT_START_TRUNK_SCAN_TARGETS;
     g_stub_opts.next_start.trunk_scan_enabled = 1;
-    (void)DSD_SNPRINTF(g_stub_opts.next_start.trunk_scan_targets_csv,
-                       sizeof(g_stub_opts.next_start.trunk_scan_targets_csv), "%s", "targets.csv");
+    (void)DSD_SNPRINTF(g_stub_opts.next_start.trunk_scan_lists[0].path,
+                       sizeof(g_stub_opts.next_start.trunk_scan_lists[0].path), "%s", "targets.csv");
+    g_stub_opts.next_start.trunk_scan_list_count = 1;
     /* Zeroed, like the options: the rule reads no state the session would have set. */
     g_stub_state = (dsd_state*)calloc(1U, sizeof(*g_stub_state));
     if (g_stub_state == NULL) {

@@ -25,7 +25,7 @@ typedef struct {
     uint32_t requested_hz;
     int row;
     uint32_t scan_session;
-    uint64_t map_seq;
+    uint64_t list_rev;
 } dsd_manual_tune_settled;
 
 /* The record the last dsd_engine_manual_tune_poll() that returned DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or

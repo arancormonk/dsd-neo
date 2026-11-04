@@ -1625,7 +1625,9 @@ test_example_targets() {
     opts->rigctl_sockfd = DSD_INVALID_SOCKET;
     opts->rtl_dsp_bw_khz = 48;
     opts->scan_max_visit_ms = 40000;
-    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", path.toUtf8().constData());
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s",
+                 path.toUtf8().constData());
+    opts->trunk_scan_list_count = 1;
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = acceptTune;
     hooks.tune_to_cc_request = acceptTune;

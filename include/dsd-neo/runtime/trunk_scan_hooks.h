@@ -73,6 +73,24 @@ typedef struct {
     char label[64]; /**< dsd_trunk_scan_target::label, NUL-terminated */
 } dsd_trunk_scan_target_name;
 
+/**
+ * @brief What switching a trunk-scan target list on or off did (dsd_trunk_scan_hook_list_set(), issue #697).
+ *
+ * Its own codes, apart from the control ops' above: a list toggle names a session and a list, so it can be stale.
+ */
+typedef enum {
+    DSD_TRUNK_SCAN_LIST_SET_OK = 0,            /**< The list is switched as asked */
+    DSD_TRUNK_SCAN_LIST_SET_UNCHANGED = 1,     /**< It already was (every list, for DSD_TRUNK_SCAN_LIST_ALL) */
+    DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST = -1, /**< Switching it off would leave nothing to scan */
+    DSD_TRUNK_SCAN_LIST_SET_BUSY = -2,         /**< The coordinator's tick guard is held; try again */
+    DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE = -3,  /**< Trunk scan is not installed */
+    DSD_TRUNK_SCAN_LIST_SET_PAUSED = -4,       /**< The scan is paused (issue #671): resume it first */
+    DSD_TRUNK_SCAN_LIST_SET_STALE = -5,        /**< The session is not this scan's, or it has no such list */
+} dsd_trunk_scan_list_set_result;
+
+/** The list dsd_trunk_scan_hook_list_set() takes for "every list": switched on, all of them at once. */
+enum { DSD_TRUNK_SCAN_LIST_ALL = -1 };
+
 typedef struct {
     void* (*p25_ctx)(void);
     void* (*dmr_ctx)(void);
@@ -88,6 +106,7 @@ typedef struct {
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
     int (*unavoid)(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
                    dsd_trunk_scan_target_name* name);
+    int (*list_set)(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request);
     int (*decryption_apply)(dsd_opts* opts, dsd_state* state, const char* target_id, uint64_t generation,
                             uint32_t fields, const dsd_key_set* keys, const dsd_dmr_key_map* map, int force);
 } dsd_trunk_scan_hooks;
@@ -209,6 +228,25 @@ int dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op);
  */
 int dsd_trunk_scan_hook_unavoid(const dsd_opts* opts, dsd_state* state, uint32_t session, const char* target_id,
                                 dsd_trunk_scan_target_name* name);
+
+/**
+ * @brief Switch trunk-scan target list @p list (1-based, CLI/INI order) on or off for the session (issue #697), or
+ * every list on (DSD_TRUNK_SCAN_LIST_ALL with @p enabled 1).
+ *
+ * @p session names the scan as the frontend saw it (dsd_state::trunk_scan_session, the session a put back names too,
+ * kept while paused): a request made of one scan never lands on the next. Switching off the list that holds the
+ * target on air leaves that target at once, as `b` and `L` do (its call ends and commits under its own name, its
+ * carrier is handed back, the hold carries over); when no other target can take the receiver yet, the scan leaves as
+ * soon as one can. A switch that would leave no target to scan is refused, and so is any while the scan is paused.
+ * Nothing is written to a list file or a config. @p request is the caller's id for the request, which the caller
+ * matches the result to; the switch is the same whoever asks.
+ *
+ * Returns a dsd_trunk_scan_list_set_result; DSD_TRUNK_SCAN_LIST_SET_UNAVAILABLE when trunk scan is not installed.
+ * Decoder thread only, like dsd_trunk_scan_hook_control(): it may retune. It takes the P25 SM tick guard (try-enter,
+ * BUSY when held) itself, so the caller must not hold it.
+ */
+int dsd_trunk_scan_hook_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
+                                 uint32_t request);
 
 #ifdef __cplusplus
 }

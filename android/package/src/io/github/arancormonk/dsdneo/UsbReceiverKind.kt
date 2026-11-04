@@ -82,12 +82,12 @@ internal object UsbReceiverKind {
         "--auto-ppm-snr", "--frontend", "--profile", "--p25-vc-grace", "--p25-min-follow-dwell",
         "--p25-grant-voice-timeout", "--p25-mac-hold", "--p25-cc-grace", "--p25-force-release-extra",
         "--p25-force-release-margin", "--p25-p1-err-hold-pct", "--p25-p1-err-hold-sec", "--trunk-scan",
-        "--trunk-scan-dwell-ms", "--trunk-scan-activity-hold-ms", "--scan-voice-qualify-ms", "--scan-voice-hold-ms",
-        "--scan-max-visit-ms", "--nfm-bandwidth-hz", "--am-bandwidth-hz", "--squelch", "--tone-allow", "--slot-allow",
-        "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block", "--nac-allow", "--nac-block",
-        "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name", "--tone-block", "--calc-lcn",
-        "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn", "--analog-record-max-gap-ms",
-        "--analog-record-preroll-ms",
+        "--trunk-scan-off", "--trunk-scan-dwell-ms", "--trunk-scan-activity-hold-ms", "--scan-voice-qualify-ms",
+        "--scan-voice-hold-ms", "--scan-max-visit-ms", "--nfm-bandwidth-hz", "--am-bandwidth-hz", "--squelch",
+        "--tone-allow", "--slot-allow", "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block",
+        "--nac-allow", "--nac-block", "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name",
+        "--tone-block", "--calc-lcn", "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn",
+        "--analog-record-max-gap-ms", "--analog-record-preroll-ms",
     )
 
     /** Long options that take the next argument, whatever it starts with. `k_skip_exact_next_nonnull`. */
@@ -117,12 +117,12 @@ internal object UsbReceiverKind {
         "--iq-replay-rate=", "--iq-info=", "--tetra-net=", "--tetra-key=", "--dmr-baofeng-pc5=", "--dmr-csi-ee72=",
         "--dmr-vertex-ks-csv=", "--dmr-tg-key-csv=", "--p25-bandplan=", "--src-csv=", "--p25-bandplan-export=",
         "--dmr-force-algid=", "--m17-signature-public-key=", "--m17-scrambler-key=", "--m17-aes-key=",
-        "--key-profile-ref=", "--config=", "--trunk-scan=", "--trunk-scan-dwell-ms=", "--trunk-scan-activity-hold-ms=",
-        "--scan-voice-qualify-ms=", "--scan-voice-hold-ms=", "--scan-max-visit-ms=", "--nfm-bandwidth-hz=",
-        "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=", "--dcc-allow=",
-        "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=", "--dcc-name=",
-        "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=", "--analog-record-max-gap-ms=",
-        "--analog-record-preroll-ms=",
+        "--key-profile-ref=", "--config=", "--trunk-scan=", "--trunk-scan-off=", "--trunk-scan-dwell-ms=",
+        "--trunk-scan-activity-hold-ms=", "--scan-voice-qualify-ms=", "--scan-voice-hold-ms=", "--scan-max-visit-ms=",
+        "--nfm-bandwidth-hz=", "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=",
+        "--dcc-allow=", "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=",
+        "--dcc-name=", "--ran-name=", "--nac-name=", "--tone-name=", "--tone-block=", "--frontend=",
+        "--analog-record-max-gap-ms=", "--analog-record-preroll-ms=",
     )
 
     /**

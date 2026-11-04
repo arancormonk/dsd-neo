@@ -302,6 +302,16 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
              "and must fit the DSP bandwidth; on audio input with a rigctl peer (-U) it is the AM passband the peer is "
              "asked for.",
      .on_select = act_set_am_bw},
+    /* The rigctl peer is a receiver like the inputs above: beside the passband rows it is asked for (issue #697). */
+    {.id = "input.rigctl",
+     .label_fn = lbl_rigctl,
+     .help = "Tune an external radio through a rigctl server.",
+     .hotkey = "9",
+     .on_select = io_rigctl_config},
+    {.id = "input.setmod",
+     .label = "Rigctl setmod bandwidth...",
+     .help = "Bandwidth in Hz passed with rigctl setmod.",
+     .on_select = act_setmod_bw},
     {.id = "input.warn",
      .label_fn = lbl_input_warn,
      .help = "Warn in the footer when the input level falls below this many dBFS.",
@@ -717,6 +727,15 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .help = "Avoid the channel on air, list the avoided ones, put them back.",
      .submenu = TRUNK_AVOID_ITEMS,
      .submenu_len = NC_LEN(TRUNK_AVOID_ITEMS)},
+    /* Issue #697: the --trunk-scan target lists, switched on or off for the session. */
+    {.id = "trunk.scan_lists",
+     .label_fn = lbl_scan_lists,
+     .help = "Switch the trunk scan's target lists on or off for this session; the rotation scans the lists that are "
+             "on. Switching off the list on air moves to another list at once. Not saved: the next start uses the "
+             "lists as configured.",
+     .hotkey = "#",
+     .is_enabled = scan_lists_offered,
+     .on_select = act_scan_lists},
     {.id = "trunk.sep1", .kind = NC_ITEM_SEPARATOR},
     {.id = "trunk.follow",
      .label = "Follow",
@@ -733,16 +752,6 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .help = "Control-channel hunting, retune, Phase 2 parameters, timers.",
      .submenu = TRUNK_P25_ITEMS,
      .submenu_len = NC_LEN(TRUNK_P25_ITEMS)},
-    {.id = "trunk.sep2", .kind = NC_ITEM_SEPARATOR},
-    {.id = "trunk.rigctl",
-     .label_fn = lbl_rigctl,
-     .help = "Tune an external radio through a rigctl server.",
-     .hotkey = "9",
-     .on_select = io_rigctl_config},
-    {.id = "trunk.setmod",
-     .label = "Rigctl setmod bandwidth...",
-     .help = "Bandwidth in Hz passed with rigctl setmod.",
-     .on_select = act_setmod_bw},
 };
 const size_t TRUNK_MENU_ITEMS_LEN = NC_LEN(TRUNK_MENU_ITEMS);
 

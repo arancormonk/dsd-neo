@@ -224,6 +224,17 @@ ncurses_handle_tune_key(const dsd_opts* opts, const dsd_state* state, int c) {
     return 1;
 }
 
+/* '#' opens the Scan lists modal alone over the main screen (issue #697); act_scan_lists() decides from the published
+   snapshots whether the trunk scan has lists to switch, and says why not where it has none. */
+static int
+ncurses_handle_scan_lists_key(const dsd_opts* opts, const dsd_state* state, int c) {
+    if (c != DSD_KEY_SCAN_LISTS) {
+        return 0;
+    }
+    ui_menu_open_modal_async(opts, state, act_scan_lists);
+    return 1;
+}
+
 static int DSD_ATTR_USED
 ncurses_handle_encoder_and_lockout_keys(const dsd_opts* opts, const dsd_state* state, int c) {
     if (c == DSD_KEY_EH_TOGGLE) {
@@ -274,6 +285,9 @@ dsd_terminal_handle_input(const dsd_opts* opts, const dsd_state* state, int c) {
         return 1;
     }
     if (ncurses_handle_tune_key(opts, state, c)) {
+        return 1;
+    }
+    if (ncurses_handle_scan_lists_key(opts, state, c)) {
         return 1;
     }
     if (ncurses_handle_encoder_and_lockout_keys(opts, state, c)) {

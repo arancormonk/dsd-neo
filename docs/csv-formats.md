@@ -175,7 +175,12 @@ Notes:
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
   so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
-  holds that LCN's place. Frequencies learned from site broadcasts (with no list imported) are capped at 26.
+  holds that LCN's place, also when an EDACS site names that LCN as its control channel (the frequency it is heard on
+  is recorded there only with no list imported). Under `-T` that control channel is still learned from the frequency
+  it is heard on, so the returns to it work while the list keeps its 0; on audio input with a rigctl peer that
+  frequency is asked of the peer when the site first names the LCN or names another one, so a retune made on the peer
+  itself to another site whose control channel has the same LCN keeps the frequency learned before. Frequencies
+  learned from site broadcasts (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
 
 Example:
 
@@ -540,6 +545,9 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes
 ```
 
 - Optional columns are allowed after `notes`; recognized optional columns are matched by header name.
+- A UTF-8 byte order mark before the header (a spreadsheet's "CSV UTF-8" export) is accepted.
+- The header and each data row are read up to 4096 bytes, including the line ending (and any byte order mark) and the
+  terminating NUL; a longer line, the header included, rejects the file (`row N is too long`).
 - Every data row must contain the first seven fields, even when optional values are empty. Missing trailing optional
   fields are treated as empty.
 - Blank data rows are skipped.

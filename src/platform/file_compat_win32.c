@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/platform/file_compat.h>
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -16,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <wchar.h>
 #include <windows.h>
 
 #include "win32_temp_name_internal.h"
@@ -119,24 +121,53 @@ dsd_free_space_errno(DWORD err) {
     }
 }
 
+wchar_t*
+dsd_win32_utf8_path_to_wide(const char* path) {
+    if (!dsd_utf8_is_valid(path)) {
+        return NULL;
+    }
+    const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (wide_len <= 0) {
+        return NULL;
+    }
+    wchar_t* wide = (wchar_t*)calloc((size_t)wide_len, sizeof(wchar_t));
+    if (!wide) {
+        return NULL;
+    }
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) <= 0) {
+        free(wide);
+        return NULL;
+    }
+    return wide;
+}
+
+int
+dsd_remove_file(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    if (wide) {
+        const int rc = _wremove(wide);
+        const int saved_errno = errno;
+        free(wide);
+        if (rc == 0 || saved_errno != ENOENT) {
+            errno = saved_errno;
+            return rc;
+        }
+    }
+    return remove(path);
+}
+
 int64_t
 dsd_path_free_bytes(const char* path) {
     if (!path || path[0] == '\0') {
         errno = EINVAL;
         return -1;
     }
-    const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-    if (wide_len <= 0) {
-        errno = EINVAL;
-        return -1;
-    }
-    wchar_t* wide = (wchar_t*)calloc((size_t)wide_len, sizeof(wchar_t));
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
     if (!wide) {
-        errno = ENOMEM;
-        return -1;
-    }
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, wide_len) <= 0) {
-        free(wide);
         errno = EINVAL;
         return -1;
     }
@@ -439,7 +470,7 @@ dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path, size_
     if (!fp) {
         int saved_errno = errno ? errno : EINVAL;
         _close(fd);
-        (void)remove(tmp_path);
+        (void)dsd_remove_file(tmp_path);
         errno = saved_errno;
         return NULL;
     }
@@ -457,7 +488,22 @@ dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
         errno = EINVAL;
         return -1;
     }
-    if (!MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+    /* Both names in UTF-8 (the app's own files, in any script) move through the wide call; a name in the ANSI code
+       page, or one the wide call does not find, through the ANSI one, as before. */
+    wchar_t* wide_tmp = dsd_win32_utf8_path_to_wide(tmp_path);
+    wchar_t* wide_final = wide_tmp ? dsd_win32_utf8_path_to_wide(final_path) : NULL;
+    BOOL moved = FALSE;
+    DWORD err = ERROR_FILE_NOT_FOUND;
+    if (wide_tmp && wide_final) {
+        moved = MoveFileExW(wide_tmp, wide_final, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+        err = moved ? ERROR_SUCCESS : GetLastError();
+    }
+    free(wide_tmp);
+    free(wide_final);
+    if (!moved && (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)) {
+        moved = MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+    }
+    if (!moved) {
         errno = EACCES;
         return -1;
     }

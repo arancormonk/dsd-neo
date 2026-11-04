@@ -1124,7 +1124,8 @@ yield_after_one_second(const dsd_opts* opts, dsd_state* state) {
 static size_t g_frame_loop_command_at = SIZE_MAX;
 
 int
-dsd_runtime_controls_need_frame_loop(void) {
+dsd_runtime_controls_need_frame_loop(const dsd_state* state) {
+    (void)state;
     return g_dibit_index >= g_frame_loop_command_at;
 }
 

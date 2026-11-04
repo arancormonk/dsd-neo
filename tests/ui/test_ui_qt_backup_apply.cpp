@@ -155,13 +155,13 @@ relative(const QString& path) {
 bool
 generated(const QString& name) {
     static const QRegularExpression pattern(QStringLiteral(
-        "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+\\.csv$"));
+        "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+(/[^/]+)?\\.csv$"));
     return pattern.match(name).hasMatch();
 }
 
 /** Files under decryption/ and scan_lists/ the app never generates, which every apply keeps byte-identical. */
 const char* const kUnknownBesideGenerated[] = {
-    "scan_lists/notes.txt", "scan_lists/sub/list.csv",      "scan_lists/Not a list.csv",
+    "scan_lists/notes.txt", "scan_lists/sub dir/list.csv",  "scan_lists/Not a list.csv",
     "decryption/stray.wav", "decryption/managed/notes.txt", "decryption/managed/0123abcd-not-a-uuid.hex.csv",
 };
 
@@ -626,6 +626,10 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
     }
     add_not_owned_row(old);
     expect("generated scan list file", write_file(at("scan_lists/old.csv"), "id,type\n"));
+    // Issue #697: a list's CSV under its own folder, named after the list.
+    expect("generated scan list file in its folder", write_file(at("scan_lists/old-uid/Old list.csv"), "id,type\n"));
+    // The rule is the app's layout: any CSV in a uid-shaped folder of scan_lists/ is generated, a list behind it or not.
+    expect("a CSV in a uid-shaped folder", write_file(at("scan_lists/sub/list.csv"), "id,type\n"));
     // Beside what the app generates there, files it never does: someone else's, so every apply keeps them.
     for (const char* name : kUnknownBesideGenerated) {
         expect(QStringLiteral("unknown file %1").arg(QLatin1String(name)),
@@ -1185,8 +1189,11 @@ check_applied_content(const Backup& b, const Old& old) {
     expect("what the app never generated there is kept, with its directories",
            read_file(at("scan_lists/notes.txt")) == "not generated: scan_lists/notes.txt\n"
                && read_file(at("decryption/managed/notes.txt")) == "not generated: decryption/managed/notes.txt\n"
-               && QFileInfo(at("scan_lists/sub")).isDir());
+               && QFileInfo(at("scan_lists/sub dir")).isDir());
     expect("a directory that held only generated files goes", !QFileInfo::exists(at("decryption/old-only")));
+    expect("a CSV in a uid-shaped scan_lists/ folder counts as generated and goes",
+           !QFileInfo::exists(at("scan_lists/sub/list.csv")) && !QFileInfo::exists(at("scan_lists/sub"))
+               && !QFileInfo::exists(at("scan_lists/old-uid")));
     expect("the newer bundle revision is gone", !QFileInfo::exists(old.newRevision));
     expect("the old-only library file is gone", !QFileInfo::exists(old.extraLibrary));
     expect("a non-owned bundle keeps everything but its row's file",
@@ -1256,9 +1263,20 @@ check_models_load(TestHost& host, const Backup& b, const Old& old) {
 Tree
 test_clean_apply(TestHost& host, const Backup& b, const Old& old) {
     prepare(b, old);
+    {
+        // Issue #697: a scan session's other lists, by UIDs the restored lists may give to other lists or none.
+        dsd_qt::AppPrefs prefs;
+        prefs.setAcceptedStartCompanions({"hospital-uid", "parks-uid"});
+        prefs.setLastStartedCompanions({"hospital-uid"});
+    }
     Faults seen;
     const ApplyResult result = apply(&seen);
     expect("a clean apply applies", result.outcome == ApplyOutcome::Applied && result.reason.isEmpty());
+    {
+        const dsd_qt::AppPrefs prefs;
+        expect("a restore forgets the scan session's other lists",
+               prefs.acceptedStartCompanions().isEmpty() && prefs.lastStartedCompanions().isEmpty());
+    }
     expect("the result carries the summary",
            result.summary.value("systems").toInt() == 2 && result.summary.value("libraryFiles").toInt() == 7);
     for (const char* step : {"journal.begin", "journal.files", "journal.prefs", "journal.manifest", "journal.complete",
@@ -1380,12 +1398,23 @@ test_io_failures_roll_back(const Backup& b, const Old& old) {
                                               {"forward.stores", 4}, {"forward.avoids", 1}, {"forward.prefs", 1}};
     for (const auto& failure : failures) {
         prepare(b, old);
+        {
+            dsd_qt::AppPrefs prefs;
+            prefs.setAcceptedStartCompanions({"hospital-uid"});
+        }
         Faults faults;
         faults.ioStep = failure.first;
         faults.ioCall = failure.second;
         const ApplyResult result = apply(&faults);
         const QString what = QStringLiteral("I/O failure at %1 #%2").arg(failure.first).arg(failure.second);
         expect(what + ": Failed", result.outcome == ApplyOutcome::Failed && result.reason == "Nothing was changed");
+        {
+            // Issue #697: rolled back, the old lists stay, and so does the scan session that names them.
+            dsd_qt::AppPrefs prefs;
+            expect(what + ": the scan session's other lists are kept",
+                   prefs.acceptedStartCompanions() == QStringList{"hospital-uid"});
+            prefs.setAcceptedStartCompanions({});
+        }
         check_failed_state(qUtf8Printable(what), old);
         expect(what + ": no free name left behind",
                !QFileInfo::exists(old.groupsDest) && !QFileInfo::exists(old.srcDest));
