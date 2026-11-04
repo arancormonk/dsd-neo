@@ -1930,6 +1930,17 @@ test_target_label_names_the_channel(void) {
                     state.trunk_scan_active_label);
         test_rc = 1;
     }
+    /* Issue #644 (L1): a paused scan names no target, its label included; the resume publishes it again. */
+    if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0
+        || state.trunk_scan_active_label[0] != '\0') {
+        DSD_FPRINTF(stderr, "paused scan published label '%s'\n", state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_resume_locked(&opts, &state) != 0
+        || strcmp(state.trunk_scan_active_label, "County DMR, east") != 0) {
+        DSD_FPRINTF(stderr, "resumed scan published label '%s'\n", state.trunk_scan_active_label);
+        test_rc = 1;
+    }
 
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
@@ -15594,21 +15605,23 @@ static int
 expect_paused_publication(const dsd_state* state, const char* stage, unsigned count, int gain, unsigned trunk_enable,
                           unsigned hold) {
     if (state->trunk_scan_paused != 1U || state->operator_tuned != 1U || dsd_engine_trunk_scan_paused(state) != 1
-        || state->trunk_scan_active_id[0] != '\0' || state->trunk_scan_active_ordinal != 0U
-        || state->trunk_scan_target_count != count || state->trunk_scan_configured_gain != gain
-        || state->trunk_scan_configured_trunk_enable != trunk_enable || state->trunk_scan_hold != hold
-        || state->trunk_scan_gain_override != 0U || state->trunk_scan_active_avoided != 0U
-        || state->scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_NONE || state->scan_row_session != 0U
-        || state->scan_row_index != -1 || state->scan_timing.reason != (uint8_t)DSD_SCAN_STAY_NONE) {
+        || state->trunk_scan_active_id[0] != '\0' || state->trunk_scan_active_label[0] != '\0'
+        || state->trunk_scan_active_ordinal != 0U || state->trunk_scan_target_count != count
+        || state->trunk_scan_configured_gain != gain || state->trunk_scan_configured_trunk_enable != trunk_enable
+        || state->trunk_scan_hold != hold || state->trunk_scan_gain_override != 0U
+        || state->trunk_scan_active_avoided != 0U || state->scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_NONE
+        || state->scan_row_session != 0U || state->scan_row_index != -1
+        || state->scan_timing.reason != (uint8_t)DSD_SCAN_STAY_NONE) {
         DSD_FPRINTF(stderr,
-                    "paused publication after %s: paused=%u operator=%u id='%s' ordinal=%u count=%u gain=%d trunk=%u "
-                    "hold=%u override=%u row=%u/%u/%d timing=%u\n",
+                    "paused publication after %s: paused=%u operator=%u id='%s' label='%s' ordinal=%u count=%u gain=%d "
+                    "trunk=%u hold=%u override=%u row=%u/%u/%d timing=%u\n",
                     stage, (unsigned)state->trunk_scan_paused, (unsigned)state->operator_tuned,
-                    state->trunk_scan_active_id, (unsigned)state->trunk_scan_active_ordinal,
-                    (unsigned)state->trunk_scan_target_count, (int)state->trunk_scan_configured_gain,
-                    (unsigned)state->trunk_scan_configured_trunk_enable, (unsigned)state->trunk_scan_hold,
-                    (unsigned)state->trunk_scan_gain_override, (unsigned)state->scan_row_scanner,
-                    (unsigned)state->scan_row_session, (int)state->scan_row_index, (unsigned)state->scan_timing.reason);
+                    state->trunk_scan_active_id, state->trunk_scan_active_label,
+                    (unsigned)state->trunk_scan_active_ordinal, (unsigned)state->trunk_scan_target_count,
+                    (int)state->trunk_scan_configured_gain, (unsigned)state->trunk_scan_configured_trunk_enable,
+                    (unsigned)state->trunk_scan_hold, (unsigned)state->trunk_scan_gain_override,
+                    (unsigned)state->scan_row_scanner, (unsigned)state->scan_row_session, (int)state->scan_row_index,
+                    (unsigned)state->scan_timing.reason);
         return 1;
     }
     return 0;
@@ -16180,6 +16193,43 @@ test_refused_resume_stays_paused(void) {
         DSD_FPRINTF(stderr, "refused: the next resume did not park a with its keys and edit\n");
         test_rc = 1;
     }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+/* Issue #644 (B-6): a trunked target parks on the control channel it learned, not its CSV seed, so a resume refused
+   there names the frequency it tried: the toast said the seed's. */
+static int
+test_refused_resume_names_the_frequency_tried(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(k_pause_keyed_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
+                              target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    /* Target a (seed 851 MHz) learned its control channel at 852.5 MHz while parked; the pause saves it. */
+    state.p25_cc_freq = 852500000L;
+    state.trunk_cc_freq = 852500000L;
+    int test_rc = expect_control_rc("learned cc: pause",
+                                    dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    state.ui_msg[0] = '\0';
+    g_counting_tune_to_cc_failures_remaining = 1;
+    g_counting_tune_to_cc_freq = 0L;
+    trunk_scan_test_set_now(3.0);
+    test_rc |= expect_control_rc("learned cc: resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), -3);
+    if (g_counting_tune_to_cc_freq != 852500000L) {
+        DSD_FPRINTF(stderr, "learned cc: the resume tuned %ld Hz, want the learned 852500000\n",
+                    g_counting_tune_to_cc_freq);
+        test_rc = 1;
+    }
+    test_rc |= expect_text("learned cc: toast", state.ui_msg, "Scan stays paused: tune to 852.500000 MHz failed");
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, keys_path);
@@ -18996,6 +19046,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_paused_scan_holds_nothing_for_manual_traffic);
     rc |= run_with_default_tune_hook(test_resume_ends_manual_calls_and_waits_for_its_park);
     rc |= run_with_default_tune_hook(test_refused_resume_stays_paused);
+    rc |= run_with_default_tune_hook(test_refused_resume_names_the_frequency_tried);
     rc |= run_with_default_tune_hook(test_resume_preparation_failure_stays_paused);
     rc |= run_with_default_tune_hook(test_shutdown_after_a_pause_saves_no_manual_state);
     /* Issue #672: the avoid list and put back */

@@ -486,11 +486,11 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   hold) and `coord->active` as the resume target. Its order is the contract: requests in flight captured (the DMR
   release forgets its own), the forced advance's release (`trunk_scan_release_active_carrier()`: a Phase 2 superframe
   delivered, calls ended under the target's name, keys and policy), the requests disowned (never completed), the
-  target saved idle, the paused publication (`trunk_scan_publish_paused()`: `dsd_state::trunk_scan_paused`, no target
-  or row named, the configured gain, autogain and trunking, counts and hold kept), an empty state over the target's
-  (`coord->empty_snapshot`, never the rollback's `scratch_snapshot`) before the scope leave puts the configured timing
-  back, then the scope leave, the configured gain, trunking off and the configured keys, policy and maps
-  (`trunk_scan_leave_target_opts()`, never the scan-start modulation, B7). An in-place pause then forgets the
+  target saved idle, the paused publication (`trunk_scan_publish_paused()`: `dsd_state::trunk_scan_paused`, no target or
+  row named (its label too, issue #644), the configured gain, autogain and trunking, counts and hold kept), an empty
+  state over the target's (`coord->empty_snapshot`, never the rollback's `scratch_snapshot`) before the scope leave puts
+  the configured timing back, then the scope leave, the configured gain, trunking off and the configured keys, policy
+  and maps (`trunk_scan_leave_target_opts()`, never the scan-start modulation, B7). An in-place pause then forgets the
   carrier's decoding (`dsd_engine_scan_forget_carrier()`, the helper the -Y pause and a target switch share); a pause
   for a tune leaves that to the caller's TUNE boundary. While paused every coordinator entry point is dark: no tick,
   yield, timing, conventional hold or class answer; the P25/DMR context and channel-map hooks NULL; controls answer
@@ -503,18 +503,20 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   that cannot park (`trunk_scan_resume_rollback()`) is paused again first, internally and as published, then drops what
   it began: a preparation failure its scopes; a refused retune the target's state (the manual session's and its received
   identity back first), options, keys, policy and maps, with the scope leave's front-end request last; the status line
-  says why. Everything outside the coordinator that acts for the scan's ownership of the receiver reads the running
-  predicate `dsd_trunk_scan_owns_tuner()` (runtime hooks below); what a retained scan forbids (global maps, input
-  switch, Signal search, -Y) keeps reading `trunk_scan_enabled`. A trunk scan has no runtime stop, so a paused one, with
-  its targets, snapshots, avoids, hold and live per-target edits, lasts until shutdown. The commands that pause or
-  resume it (the frequency entry's trunk-scan branch, `y`, `SCAN_RESUME`, `TUNER_RELEASE`) hold the guard for the whole
-  step: one that meets a watchdog tick or a frame dispatch waits for it and never applies in part. Tests:
-  `ENGINE_TRUNK_SCAN` (the coordinator with its collaborators stubbed: teardown order, in-place forget, requests in
-  flight, every gated consumer, refused and unprepared resumes, shutdown after a pause), `ENGINE_TRUNK_SCAN_PAUSE` (the
-  real P25 and DMR machines, carrier boundary, tuning ledger and non-re-entrant guard, driven by the app-control
-  services and commands: a pause over a Phase 2 call, a pause over a P25 park or DMR tune in flight and its late answer,
-  a resume that supersedes one, both resume failures, a watchdog thread reading the hooks beside a pause and a resume,
-  each command waiting out a held guard), `APP_COMMAND_QUEUE`.
+  says why, naming the frequency the park asked for (`coord->park_tried_hz`, which `trunk_scan_resume_switch()` records
+  from `trunk_scan_retune_freq()`: a trunked target's learned control channel ahead of its CSV seed; the seed when the
+  preparation failed before any tune; issue #644 B-6). Everything outside the coordinator that acts for the scan's
+  ownership of the receiver reads the running predicate `dsd_trunk_scan_owns_tuner()` (runtime hooks below); what a
+  retained scan forbids (global maps, input switch, Signal search, -Y) keeps reading `trunk_scan_enabled`. A trunk scan
+  has no runtime stop, so a paused one, with its targets, snapshots, avoids, hold and live per-target edits, lasts until
+  shutdown. The commands that pause or resume it (the frequency entry's trunk-scan branch, `y`, `SCAN_RESUME`,
+  `TUNER_RELEASE`) hold the guard for the whole step: one that meets a watchdog tick or a frame dispatch waits for it
+  and never applies in part. Tests: `ENGINE_TRUNK_SCAN` (the coordinator with its collaborators stubbed: teardown order,
+  in-place forget, requests in flight, every gated consumer, refused and unprepared resumes, shutdown after a pause),
+  `ENGINE_TRUNK_SCAN_PAUSE` (the real P25 and DMR machines, carrier boundary, tuning ledger and non-re-entrant guard,
+  driven by the app-control services and commands: a pause over a Phase 2 call, a pause over a P25 park or DMR tune in
+  flight and its late answer, a resume that supersedes one, both resume failures, a watchdog thread reading the hooks
+  beside a pause and a resume, each command waiting out a held guard), `APP_COMMAND_QUEUE`.
 - Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
   `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
   under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a

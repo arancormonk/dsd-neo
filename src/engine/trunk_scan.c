@@ -369,6 +369,10 @@ typedef struct {
        so a continuous carrier is not unwound for a departure with nowhere to go. */
     double depart_due_m;
     int depart_yield;
+    /* The frequency a resume's last park asked the tuner for (trunk_scan_retune_freq(): a trunked target's learned
+       control channel ahead of its CSV seed), 0 when its preparation failed before any tune: a resume that fails names
+       it (issue #644 B-6). */
+    long int park_tried_hz;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -2489,13 +2493,15 @@ trunk_scan_publish_configured(dsd_state* state, const dsd_trunk_scan_coord* coor
     state->trunk_scan_session = coord->session;
 }
 
-/* A paused scan (issue #671) names no target: no id, ordinal or scan row (the "this channel" editors see none), no
-   timing, and no target gain over the configured one. What it keeps for a resume and a save stays published. */
+/* A paused scan (issue #671) names no target: no id, label (issue #644), ordinal or scan row (the "this channel"
+   editors see none), no timing, and no target gain over the configured one. What it keeps for a resume and a save
+   stays published. */
 static void
 trunk_scan_publish_paused(dsd_state* state, const dsd_trunk_scan_coord* coord) {
     trunk_scan_publish_configured(state, coord);
     state->trunk_scan_paused = 1U;
     state->trunk_scan_active_id[0] = '\0';
+    state->trunk_scan_active_label[0] = '\0';
     state->trunk_scan_active_ordinal = 0U;
     state->trunk_scan_active_avoided = 0U;
     state->trunk_scan_active_list = 0U;
@@ -5705,6 +5711,17 @@ trunk_scan_resume_rollback(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coor
     return monitor_request;
 }
 
+/* One park of a resume (trunk_scan_switch_to() as a revisit), noting the frequency it asked the tuner for
+   (coord->park_tried_hz, issue #644 B-6): past its preparation the switch restored the target's state and tuned from
+   it, so trunk_scan_retune_freq() reads the same frequency now, whatever the retune's outcome. */
+static int
+trunk_scan_resume_switch(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next) {
+    const int rc = trunk_scan_switch_to(opts, state, coord, next, 0);
+    coord->park_tried_hz =
+        rc == TRUNK_SCAN_PREPARE_FAILED ? 0 : trunk_scan_retune_freq(state, &coord->targets[next].target);
+    return rc;
+}
+
 /*
  * A resume's park (issue #671): the target the scan paused at, as a revisit. One the pause left out of the rotation
  * (issue #697: its list was switched off, or it is the avoided fallback) resumes on the targets after it the advance
@@ -5720,9 +5737,10 @@ trunk_scan_resume_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
                        size_t* installed) {
     const size_t original = coord->active;
     const double now_m = trunk_scan_now_m();
+    coord->park_tried_hz = 0;
     if (!trunk_scan_active_out_of_rotation(coord)
         || !trunk_scan_visit_alternate_is_eligible(opts, state, coord, now_m)) {
-        const int rc = trunk_scan_switch_to(opts, state, coord, original, 0);
+        const int rc = trunk_scan_resume_switch(opts, state, coord, original);
         *installed = rc != TRUNK_SCAN_PREPARE_FAILED ? original : coord->count;
         if (trunk_scan_active_out_of_rotation(coord)) {
             /* Out of the rotation with nowhere to go yet: it owes the departure once somewhere is. */
@@ -5738,7 +5756,7 @@ trunk_scan_resume_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
             continue;
         }
         *tried = next;
-        rc = trunk_scan_switch_to(opts, state, coord, next, 0);
+        rc = trunk_scan_resume_switch(opts, state, coord, next);
         if (rc == 0) {
             return 0;
         }
@@ -5748,6 +5766,13 @@ trunk_scan_resume_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     }
     coord->active = original;
     return rc;
+}
+
+/* The frequency a failed resume names: the one its last park asked for, a trunked target's learned control channel
+   included; the CSV seed of target @p tried when its preparation failed before any tune. */
+static long int
+trunk_scan_resume_tried_hz(const dsd_trunk_scan_coord* coord, size_t tried) {
+    return coord->park_tried_hz > 0 ? coord->park_tried_hz : (long int)coord->targets[tried].target.frequency_hz;
 }
 
 int
@@ -5793,7 +5818,7 @@ dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_tru
         out->restart_gain = !prepare_failed && trunk_scan_target_gain(&coord->targets[installed], &target_gain_db)
                             && target_gain_db != coord->configured_rtl_gain_value;
     }
-    dsd_engine_scan_toast_resume_failed(state, (long)coord->targets[tried].target.frequency_hz,
+    dsd_engine_scan_toast_resume_failed(state, trunk_scan_resume_tried_hz(coord, tried),
                                         prepare_failed ? DSD_SCAN_RESUME_FAILED_SETUP : DSD_SCAN_RESUME_FAILED_TUNE);
     return prepare_failed ? -2 : -3;
 }
