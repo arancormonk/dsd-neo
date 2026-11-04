@@ -16200,40 +16200,52 @@ test_refused_resume_stays_paused(void) {
 }
 
 /* Issue #644 (B-6): a trunked target parks on the control channel it learned, not its CSV seed, so a resume refused
-   there names the frequency it tried: the toast said the seed's. */
+   there names the frequency it tried: the toast said the seed's. P25 keeps the learned channel in p25_cc_freq, DMR in
+   trunk_cc_freq (trunk_scan_retune_freq()'s two branches); @p body's first target is the trunked one, seeded at
+   851 MHz. */
 static int
-test_refused_resume_names_the_frequency_tried(void) {
+refused_resume_names_the_frequency_tried_case(const char* body, int p25, const char* what) {
     char dir[DSD_TEST_PATH_MAX];
     char keys_path[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     static dsd_opts opts;
     static dsd_state state;
-    if (pause_keyed_scan_init(k_pause_keyed_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
-                              target_path, sizeof target_path)
+    if (pause_keyed_scan_init(body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path, target_path,
+                              sizeof target_path)
         != 0) {
         cleanup_paths(dir, target_path, keys_path);
         return 1;
     }
-    /* Target a (seed 851 MHz) learned its control channel at 852.5 MHz while parked; the pause saves it. */
-    state.p25_cc_freq = 852500000L;
+    /* The target learned its control channel at 852.5 MHz while parked; the pause saves it. */
+    if (p25) {
+        state.p25_cc_freq = 852500000L;
+    }
     state.trunk_cc_freq = 852500000L;
-    int test_rc = expect_control_rc("learned cc: pause",
-                                    dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    int test_rc =
+        expect_control_rc(what, dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
     state.ui_msg[0] = '\0';
     g_counting_tune_to_cc_failures_remaining = 1;
     g_counting_tune_to_cc_freq = 0L;
     trunk_scan_test_set_now(3.0);
-    test_rc |= expect_control_rc("learned cc: resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), -3);
+    test_rc |= expect_control_rc(what, dsd_engine_trunk_scan_resume_locked(&opts, &state), -3);
     if (g_counting_tune_to_cc_freq != 852500000L) {
-        DSD_FPRINTF(stderr, "learned cc: the resume tuned %ld Hz, want the learned 852500000\n",
+        DSD_FPRINTF(stderr, "%s: the resume tuned %ld Hz, want the learned 852500000\n", what,
                     g_counting_tune_to_cc_freq);
         test_rc = 1;
     }
-    test_rc |= expect_text("learned cc: toast", state.ui_msg, "Scan stays paused: tune to 852.500000 MHz failed");
+    test_rc |= expect_text(what, state.ui_msg, "Scan stays paused: tune to 852.500000 MHz failed");
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, keys_path);
     return test_rc;
+}
+
+static int
+test_refused_resume_names_the_frequency_tried(void) {
+    static const char k_dmr_body[] = "a,dmr-trunk,851000000,,250,,keyed,hexkeys.csv\n"
+                                     "b,dmr-conventional,461000000,,250,,plain,\n";
+    return refused_resume_names_the_frequency_tried_case(k_pause_keyed_body, 1, "learned p25 cc")
+           | refused_resume_names_the_frequency_tried_case(k_dmr_body, 0, "learned dmr cc");
 }
 
 /* F1: a resume whose preparation fails (no memory for the target's keys) drops the scopes it began and stays paused,
