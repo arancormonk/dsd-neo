@@ -84,10 +84,20 @@ int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place
  * scan's walk rules (dsd_engine_channel_scan_walk_row()), so the row heard, a hold kept across the stop and the
  * receiver agree. A walk the scan cannot take as its own (a typed list's, whose rows land with settings the walk never
  * tuned; one to a row rewritten or a list replaced since) refuses the start, with the reason on the status line, and
- * nothing changes. Under the P25 SM tick guard the guarded scanner commands hold. Decoder thread.
+ * nothing changes. An ordinary hold kept across the stop stays only while the receiver's centre (the RTL front end's
+ * cached centre, else the frequency last sent to a rigctl peer) is the frequency of the row it holds, or the start took
+ * a walk as its own; otherwise the scan starts unheld and its next timed step tunes a row. Under the P25 SM tick guard
+ * the guarded scanner commands hold. Decoder thread.
  *
  * @return 0 when the scan started, -1 when it was refused. */
 int dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);
+
+/** A config turns a stopped -Y scanner on over a list of the user's own (issue #644), before scanner_mode is set: a walk
+ * off the scan still pending becomes the scan's own (dsd_engine_manual_tune_adopt_walk()), as at
+ * dsd_engine_channel_scan_start(), and the ordinary hold kept across the stop is kept by the same rule. A walk it cannot
+ * take (a typed list's, a row rewritten since), which a config cannot refuse, lets that hold go: the scan runs unheld
+ * and its next timed step tunes a row of its own. Decoder thread, under the P25 SM tick guard. */
+void dsd_engine_channel_scan_config_start(const dsd_opts* opts, dsd_state* state);
 
 /** dsd_engine_channel_scan_resume() results. */
 enum {

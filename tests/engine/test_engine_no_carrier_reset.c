@@ -8293,6 +8293,7 @@ enum {
     YSTART_WALK_ON_A_TYPED_LIST,
     YSTART_WALK_ROW_REWRITTEN,
     YSTART_WALK_LANDS_UNDER_A_CONFIG,
+    YSTART_TYPED_WALK_UNDER_A_CONFIG,
     YSTART_WALK_CASES
 };
 
@@ -8302,13 +8303,16 @@ enum {
    still on BRAVO, held. Either way the receiver, the row heard and the hold agree. A walk the scan cannot take over (a
    typed list, whose rows land with settings a walk never tuned, or a row rewritten since) refuses the start, which
    changes nothing: the walk settles as one off the scan, and a start after it runs. A config that turns the scanner on
-   takes the walk over as `y` does. */
+   takes the walk over as `y` does; one it cannot take (a typed list's) lets the ordinary hold kept across the stop go,
+   so the running scan is unheld and its next timed step tunes a row of its own. */
 static int
 y_start_over_a_pending_walk_case(int c) {
-    static const char* const k_what[] = {
-        "y start over a pending walk that lands", "y start over a pending walk that fails",
-        "y start over a pending walk on a typed list", "y start over a pending walk to a row rewritten",
-        "config turning the scanner on over a pending walk"};
+    static const char* const k_what[] = {"y start over a pending walk that lands",
+                                         "y start over a pending walk that fails",
+                                         "y start over a pending walk on a typed list",
+                                         "y start over a pending walk to a row rewritten",
+                                         "config turning the scanner on over a pending walk",
+                                         "config turning the scanner on over a pending walk on a typed list"};
     const char* what = k_what[c];
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -8329,7 +8333,7 @@ y_start_over_a_pending_walk_case(int c) {
     rc |= expect_case(what, "y stops the scan",
                       press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0);
     rc |= expect_case(what, "the hold stays", state->lcn_scan_hold == 1U);
-    if (c == YSTART_WALK_ON_A_TYPED_LIST) {
+    if (c == YSTART_WALK_ON_A_TYPED_LIST || c == YSTART_TYPED_WALK_UNDER_A_CONFIG) {
         for (size_t row = 0; row < 3U; row++) {
             rc |= expect_case(what, "the row is typed", dsd_channel_mode_set(state, row, DSD_SCAN_MODE_NFM) == 0);
         }
@@ -8341,7 +8345,7 @@ y_start_over_a_pending_walk_case(int c) {
     }
     const int tunes = g_rtl_tune_calls;
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
-    if (c == YSTART_WALK_LANDS_UNDER_A_CONFIG) {
+    if (c == YSTART_WALK_LANDS_UNDER_A_CONFIG || c == YSTART_TYPED_WALK_UNDER_A_CONFIG) {
         static dsdneoUserConfig cfg;
         DSD_MEMSET(&cfg, 0, sizeof cfg);
         cfg.has_trunking = 1;
@@ -8362,6 +8366,19 @@ y_start_over_a_pending_walk_case(int c) {
         (void)poll_until_landed(opts, state);
         rc |= expect_case(what, "a start after the walk runs",
                           press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1);
+        teardown_walk_list(opts, state);
+        return rc;
+    }
+    if (c == YSTART_TYPED_WALK_UNDER_A_CONFIG) {
+        rc |= expect_case(what, "the scan runs unheld, the walk still off the scan",
+                          opts->scanner_mode == 1 && state->lcn_scan_hold == 0U
+                              && dsd_engine_manual_tune_operator_walk_noted());
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        (void)poll_until_landed(opts, state);
+        const int before_step = g_rtl_tune_calls;
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+        rc |= expect_case(what, "the next timed step tunes a row", g_rtl_tune_calls > before_step);
         teardown_walk_list(opts, state);
         return rc;
     }
@@ -8389,12 +8406,63 @@ y_start_over_a_pending_walk_case(int c) {
     return rc;
 }
 
+/* Issue #644: `y` stops a running untyped list held on BRAVO, the receiver on BRAVO. With @p tuned_away a frequency
+   typed by hand that is no row moves the receiver off it: the start after it lets the ordinary hold kept across the
+   stop go, since it would hold a row the receiver is not on, and the scan's next timed step tunes a row. Without it
+   the receiver is still on BRAVO, and the start keeps the hold there. */
+static int
+y_start_keeps_a_hold_only_where_the_receiver_is_case(int tuned_away) {
+    const char* what = tuned_away ? "y start with a hold, the receiver tuned away" : "y start with a hold, on its row";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1750012500L + (long int)tuned_away * 5000000L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_last_applied_hz = bravo_hz;
+    int rc = expect_case(what, "Next lands on BRAVO",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1
+                             && opts->rtlsdr_center_freq == bravo_hz);
+    state->lcn_scan_hold = 1U;
+    rc |= expect_case(what, "y stops the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0);
+    if (tuned_away) {
+        const uint32_t elsewhere = (uint32_t)(base_hz + 3500000L);
+        g_rtl_last_applied_hz = elsewhere;
+        rc |= expect_case(what, "a frequency is typed",
+                          dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, elsewhere) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                              && dsd_app_drain_cmds(opts, state) == 1 && opts->rtlsdr_center_freq == elsewhere);
+    }
+    rc |= expect_case(what, "y starts the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1);
+    if (!tuned_away) {
+        rc |= expect_case(what, "the hold stays on BRAVO",
+                          state->lcn_scan_hold == 1U && dsd_state_lcn_heard_row(state) == 1);
+        teardown_walk_list(opts, state);
+        return rc;
+    }
+    rc |= expect_case(what, "the scan starts unheld", state->lcn_scan_hold == 0U);
+    const int tunes = g_rtl_tune_calls;
+    state->last_cc_sync_time = time(NULL) - 60;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the next timed step tunes a row", g_rtl_tune_calls > tunes);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_y_start_adopts_a_pending_walk(void) {
     int rc = 0;
     for (int c = 0; c < YSTART_WALK_CASES; c++) {
         rc |= y_start_over_a_pending_walk_case(c);
     }
+    rc |= y_start_keeps_a_hold_only_where_the_receiver_is_case(1)
+          | y_start_keeps_a_hold_only_where_the_receiver_is_case(0);
     return rc;
 }
 

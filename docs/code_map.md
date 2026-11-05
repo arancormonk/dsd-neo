@@ -3660,9 +3660,10 @@ exit autosave sees the pause and writes `scanner = true` (`snapshot_trunking_con
 lcn_scan_paused`, D7; a stopped scan writes false). A config apply settles a paused scan last (`cfg_settle_scan_owner()`
 in app_control): without `[trunking]` the pause stays, trunking on or the scanner off stop it, the scanner on resumes
 it, and a config whose input did not start keeps it; one that turns a stopped scanner on takes a walk off the scan
-still pending as the scan's own, as `y` does (`dsd_engine_manual_tune_adopt_walk()`, issue #644). Another `chan_csv`
-only waits for a restart, as in every session.
-Covered by `APP_COMMAND_QUEUE` (`test_config_settles_a_paused_list`, `test_config_resumes_a_paused_list`,
+still pending as the scan's own, as `y` does (`dsd_engine_channel_scan_config_start()`, issue #644), keeps a hold kept
+across the stop by the start's rule, and lets it go over a walk it cannot take (a typed list's), which a config cannot
+refuse, so the running scan's next timed step tunes a row. Another `chan_csv` only waits for a restart, as in every
+session. Covered by `APP_COMMAND_QUEUE` (`test_config_settles_a_paused_list`, `test_config_resumes_a_paused_list`,
 `test_config_channel_map_waits_for_a_restart`, `test_config_failed_reopen_keeps_a_paused_list`), `RUNTIME_CONFIG_USER`,
 and `ENGINE_CLEANUP_AUDIO` (the exit autosave right after a pause, and after a pause and a stop). Tests:
 `ENGINE_CHANNEL_SCAN` (what a pause keeps and drops, in place, untyped, no row, a row every visit skips, a refused,
@@ -3755,17 +3756,18 @@ the dwell, visit and voice-gate windows as `Y` off does; an ordinary hold is lef
 Previous and `b` keep an entry hold, mark and all, on the row they land; a pause takes both
 (`dsd_engine_channel_scan_pause()`, the untyped resume failure); the leave takes an entry hold with the scan
 (`channel_scan_release()`, so a stop, `t`, an input switch, a RadioReference import, a map reload, a config that turns
-`-Y` off, a trunk-scan start and the shutdown leave), while an ordinary hold outlives a stop as before; the map adopt
-and clear clear the mark beside the hold (`menu_services.c`); a config apply that keeps the scan keeps both; neither is
-ever saved. Tests: `ENGINE_CHANNEL_SCAN` (typed: landing, hold only, a forgotten landing tuned again, refusals that keep
-the row on air, a restaged landing, pending landing, late failure and cancels by Next, `Y` and a pause, over a row in
-flight for each outcome, a go-to over an entry hold and over an ordinary hold, lifecycle, resume-at and resume-at over
-a pending resume), `ENGINE_NO_CARRIER_RESET` (untyped through the real walk and step: each outcome, partial movement,
-hold only and refusals that keep it, a go-to over a pending go-to, over an entry hold and over an ordinary hold, an
-avoided channel refused, a Next with nowhere to land cancelling a pending entry, a pause cancel, resume-at and
-resume-at over a pending resume both ways), `APP_COMMAND_QUEUE` (`Y` over an entry hold, a config apply that keeps or
-stops the scan), `UI_MENU_SERVICES` (map adopt and clear), `RUNTIME_CONFIG_USER` (never saved, the -Y and the
-trunk-scan hold and mark alike).
+`-Y` off, a trunk-scan start and the shutdown leave), while an ordinary hold outlives a stop as before, and a start
+keeps it only where the receiver is (`channel_scan_start_settles_hold()`, below); the map adopt and clear clear the mark
+beside the hold (`menu_services.c`); a config apply that keeps the scan keeps both; neither is ever saved. Tests:
+`ENGINE_CHANNEL_SCAN` (typed: landing, hold only, a forgotten landing tuned again, refusals that keep the row on air, a
+restaged landing, pending landing, late failure and cancels by Next, `Y` and a pause, over a row in flight for each
+outcome, a go-to over an entry hold and over an ordinary hold, lifecycle, resume-at and resume-at over a pending
+resume), `ENGINE_NO_CARRIER_RESET` (untyped through the real walk and step: each outcome, partial movement, hold only
+and refusals that keep it, a go-to over a pending go-to, over an entry hold and over an ordinary hold, an avoided
+channel refused, a Next with nowhere to land cancelling a pending entry, a pause cancel, resume-at and resume-at over a
+pending resume both ways), `APP_COMMAND_QUEUE` (`Y` over an entry hold, a config apply that keeps or stops the scan),
+`UI_MENU_SERVICES` (map adopt and clear), `RUNTIME_CONFIG_USER` (never saved, the -Y and the trunk-scan hold and mark
+alike).
 
 ### Channel Scan Pause Hook (Engine → Runtime ← App-Control)
 
@@ -3993,7 +3995,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the scan's own walk (`dsd_engine_manual_tune_adopt_walk()`), with no tune of the start's: its landing commits its
     row and its late failure passes it as the scan's walk does, so the row heard, a hold kept across the stop and the
     receiver agree. A walk the scan cannot take (a typed list's, a row rewritten or a list replaced since) refuses the
-    start (`Scanner not started: channel change still pending; retry`), and nothing changes; `SCAN_RESUME` resumes
+    start (`Scanner not started: channel change still pending; retry`), and nothing changes. An ordinary hold kept
+    across the stop stays only where the receiver is (`channel_scan_start_settles_hold()`): the receiver's centre (the
+    RTL cached centre, else the frequency last sent to a rigctl peer; none known keeps it) on the held row's frequency,
+    or a walk the start took as its own; otherwise (a manual tune since the stop) the scan starts unheld and its next
+    timed step tunes a row; `SCAN_RESUME` resumes
     only a paused scan (`Not paused: the scan is running`, `Not scanning: no paused scan to resume`), and a second one
     while a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are refused under a trunk-scan coordinator
     (`Trunk scan: each target sets its own trunking`): clearing trunking there stranded a target in a followed call

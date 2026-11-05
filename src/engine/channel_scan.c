@@ -1660,6 +1660,47 @@ channel_scan_toast_resume(dsd_state* state, const char* text) {
     state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
 }
 
+/* The receiver's centre as the decoder knows it: the RTL front end's cached centre, else the frequency last sent to a
+   rigctl peer; 0 with neither (audio input, which no scan moves). */
+static uint32_t
+channel_scan_receiver_hz(const dsd_opts* opts) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return opts->rtlsdr_center_freq;
+    }
+    return opts->use_rigctl == 1 ? opts->rigctl_sent_freq_hz : 0U;
+}
+
+/* A start's ordinary hold kept across the stop (issue #644): it holds the row heard, so it stays only while the
+   receiver is there. A walk the start took as its own is the receiver's next row and keeps it (@p adopted); one it
+   could not take (@p walk_left) moves the receiver where the hold would not follow, and a centre on another frequency
+   (a manual tune since the stop) is not the row's: either lets the hold go, so the running scan's next timed step tunes
+   a row of its own. An entry hold never outlives a stop; an unknown centre keeps the hold. */
+static void
+channel_scan_start_settles_hold(const dsd_opts* opts, dsd_state* state, int adopted, int walk_left) {
+    if (!state->lcn_scan_hold || state->lcn_scan_entry_hold || adopted) {
+        return;
+    }
+    if (!walk_left) {
+        const uint32_t hz = channel_scan_receiver_hz(opts);
+        const int row = channel_scan_on_air_row(state);
+        if (hz == 0U
+            || (row >= 0 && row < state->lcn_freq_count && *dsd_state_trunk_lcn_slot_const(state, row) == (long)hz)) {
+            return;
+        }
+    }
+    state->lcn_scan_hold = 0U;
+}
+
+void
+dsd_engine_channel_scan_config_start(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        return;
+    }
+    const int walk = dsd_engine_manual_tune_operator_walk_noted();
+    const int adopted = walk && dsd_engine_manual_tune_adopt_walk(state);
+    channel_scan_start_settles_hold(opts, state, adopted, walk && !adopted);
+}
+
 int
 dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
     /* A paused scan resumes instead (dsd_engine_channel_scan_resume()): a start would publish it running beside its
@@ -1675,11 +1716,14 @@ dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
        chose (issue #644): the scan takes it over as its own walk, with no tune of its own, so its landing commits its
        row and its failure passes it as the scan's walk does. One the scan cannot take (a typed list's, a row rewritten
        since) refuses the start, which changes nothing: the walk settles off the scan, and a start after it runs. */
-    if (users_list && dsd_engine_manual_tune_operator_walk_noted() && !dsd_engine_manual_tune_adopt_walk(state)) {
+    const int walk = users_list && dsd_engine_manual_tune_operator_walk_noted();
+    const int adopted = walk && dsd_engine_manual_tune_adopt_walk(state);
+    if (walk && !adopted) {
         channel_scan_toast_resume(state, "Scanner not started: channel change still pending; retry");
         return -1;
     }
     if (users_list) {
+        channel_scan_start_settles_hold(opts, state, adopted, 0);
         /* The calls heard so far end under what they began with (no row, the operator's tuner after a manual tune):
            only then does the tuner become the scan's, so what is heard next is the scan's, as a resume's landing
            does. */
