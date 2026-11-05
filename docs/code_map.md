@@ -3708,9 +3708,10 @@ site must do the same. Today these are the typed step past its pending check,
 entry (`dsd_engine_channel_scan_entry_supersede()` atop `apply_manual_lcn_cycle_untyped_dir_locked()`), so one with
 nowhere to land still does. The release (a pause, a stop) also cancels it. So does `Y`:
 `apply_manual_scan_hold_toggle()` calls `dsd_engine_channel_scan_entry_cancel()` before it toggles, so an entry hold
-loses its mark and the toggle releases it. The failure or drop of the intent's own tune cancels it too. A failure keeps it in the owner's `entry_failed`
-record (`dsd_engine_scan_entry_intent_fail_request()` in `dsd_engine_channel_scan_pending()`,
-`channel_scan_tune_outcome()` and `untyped_settle_walk()`; `dsd_engine_scan_entry_intent_fail()` for a resume-at in
+loses its mark and the toggle releases it. The failure or drop of the intent's own tune cancels it too. A failure keeps
+it in the owner's `entry_failed` record (`dsd_engine_scan_entry_intent_fail_request()` in
+`dsd_engine_channel_scan_pending()`, `channel_scan_tune_outcome()` and `untyped_settle_walk()`;
+`dsd_engine_scan_entry_intent_fail()` for a resume-at in
 `dsd_engine_channel_scan_resume_failed()`, though not an interrupted one), which app-control takes once
 (`dsd_engine_scan_entry_take_failure()`, `<dsd-neo/engine/scan_entry.h>`) to name the row in a toast; the record
 carries the name as the failure found it (a row's label, else `row N`; a target's label, else its id). A drop
@@ -4010,8 +4011,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     least 1 s; `dsd_engine_channel_scan_departure_note()`), so a refused or pending step is retried at that cadence,
     never on every frame, and with nowhere to go (every other row avoided or width-skipped) the carrier is never cut:
     the due check that finds nowhere to go moves `lcn_avoid_depart_m` on the same way, so the row count runs once a
-    cadence, and a row put back is left for at the next one. The hold stays, and keeps the row the step lands on; a row put back first is held where it is. One predicate says
-    what the hold keeps, `dsd_engine_channel_scan_hold_keeps_row()` (held and the row on air not avoided), read by
+    cadence, and a row put back is left for at the next one. The hold stays, and keeps the row the step lands on; a row
+    put back first is held where it is. One predicate says what the hold keeps,
+    `dsd_engine_channel_scan_hold_keeps_row()` (held and the row on air not avoided), read by
     every rule the hold suspends: the timed step (with the tone-rejection step it gates), the receive-policy leave and
     its two frame-loop yields, the voice gate's step, the per-visit cap (`scan_visit_suspended()`) and the timing
     view's `MANUAL_HOLD`. On a row not avoided the hold suspends all of them, as before; on an avoided row it suspends
