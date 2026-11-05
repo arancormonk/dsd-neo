@@ -26,8 +26,9 @@ class ScanListsModel;
  * Each match is a map: `name` (as the scan header names it), `frequencyHz` (the saved row's own frequency, not the one
  * tuned), `systemUid` (the saved system's uid, a scan-list entry's uid, or the list's uid for a target CSV row), and
  * what it is (issue #644):
- * - `source`: "system" (a saved system's own frequency), "scanEntry" (a scan list's entry), "scanTarget" (a row of a
- *   list's imported target CSV) or "channelMap" (a row of a saved system's or a trunked target's channel map);
+ * - `source`: "system" (a saved system's own frequency), "scanEntry" (a scan list's entry, a saved system's entry at
+ *   that system's frequency included), "scanTarget" (a row of a list's imported target CSV) or "channelMap" (a row of a
+ *   saved system's or a trunked target's channel map);
  * - `listUid`: the scan list a scanEntry, a scanTarget or a target's channelMap row belongs to, else empty;
  * - `targetId`: the id the list's session names the row by (the entry's uid, the CSV row's `id`), else empty;
  * - `selectable`: whether the match can be started with its own settings: a saved system, or a scan list's row that
@@ -73,6 +74,9 @@ class KnownFrequencyIndex : public QObject {
     ScanListsModel* m_lists;
     /* @p s's own frequency, as @p identity says what it is, then its channel map. */
     void add(const QVariantMap& s, const QString& label, const QVariantMap& identity);
+    /* Scan list @p listUid's @p entry, named under @p listName: a frequency entry, or a saved system's entry at that
+       system's frequency; selectable when the list is @p startable and the entry enabled. */
+    void addListEntry(const QVariantMap& entry, const QString& listName, const QString& listUid, bool startable);
     /* The rows of @p path: a list's target CSV when @p identity's source is "scanTarget", else a channel map. A
        target's own channel map is read one level deep. */
     void addCsv(const QString& path, const QVariantMap& s, const QString& label, double width,

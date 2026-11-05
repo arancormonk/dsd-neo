@@ -10057,7 +10057,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   tuned channel through `tunedNames()`, at the width the receiver filters
   (`MetricsModel::channelBandwidthHz`, 12.5 kHz when the input publishes none); `tunedMatches()` is the same lookup
   with each match's identity (issue #644): `source` (`system`, a saved system's own frequency; `scanEntry`, a scan
-  list's entry; `scanTarget`, a row of a list's target CSV; `channelMap`, a row of a saved system's or a trunked
+  list's entry, a saved system's entry included at that system's frequency, width and decode-flag protocol, its id
+  the entry's uid as the list's session names it, the system's channel map indexed once under the system
+  (`addListEntry()`); `scanTarget`, a row of a list's target CSV; `channelMap`, a row of a saved system's or a trunked
   target's channel map), `listUid`, `targetId` (the entry's uid or the CSV row's `id`, the id the list's session names
   the target by), `frequencyHz` (the row's own frequency) and `selectable` (a saved system, an enabled entry of a list
   that is no draft, a CSV row with an id; a channel map's row only names the channel), and `protocolLabel` (the scan
@@ -11189,15 +11191,15 @@ Qt Quick frontend (`src/ui/qt`):
     session active), `listenActions` lists what the tuned channel (`metrics.centerFreqHz` at `channelBandwidthHz`) can
     be started as with its own settings, from `KnownFrequencyIndex::tunedMatches()`'s `selectable` matches: each
     scan-list row whose list still exists (`key: "scan"`, its text the row's name, read out as "Listen to <name> with
-    its settings"), then each saved system once ("Start “Name”", as Signal search offers it; an avoided one disabled
-    with the reason). Two of one kind that would read the same say their `protocolLabel` (`listenLabels()`: "Gate
-    (P25)", "Gate (DMR)"). A scan-list session the operator paused or released (`sessionScanList` while exploring,
-    from before the decoder reports the tune) keeps its lists: a row of one of `sessionLists` is `key: "tune"`, one per
-    frequency, which `listenWith()` sends as
-    `CommandBridge::tuneHz()` at the row's own frequency (`RTL_SET_FREQ`: the engine resumes the scan at that row and
-    holds it, the session, its companions and avoids kept), and rows of other lists and saved systems, which would
-    restart the session, are not offered. The Monitor shows the row names and one `OutlineButton` in its live strip
-    (`monitorListen`, a part of `stripHeight`), the Spectrum one more button in its tuning controls
+    its settings"; a list's saved-system entry is one, beside that system's own "Start"), then each saved system once
+    ("Start “Name”", as Signal search offers it; an avoided one disabled with the reason). Two of one kind that would
+    read the same say their `protocolLabel` (`listenLabels()`: "Gate (P25)", "Gate (DMR)"). A scan-list session the
+    operator paused or released (`sessionScanList` while exploring, from before the decoder reports the tune) keeps its
+    lists: a row of one of `sessionLists` (a saved-system entry included) is `key: "tune"`, one per frequency, which
+    `listenWith()` sends as `CommandBridge::tuneHz()` at the row's own frequency (`RTL_SET_FREQ`: the engine resumes the
+    scan at that row and holds it, the session, its companions and avoids kept), and rows of other lists and saved
+    systems, which would restart the session, are not offered. The Monitor shows the row names and one `OutlineButton`
+    in its live strip (`monitorListen`, a part of `stripHeight`), the Spectrum one more button in its tuning controls
     (`spectrumListenWithSettings`); both read `Util.listenText()`/`listenAccessibleName()`: "Start “Name”" for a saved
     system alone, else "Listen with its settings". `requestListen()` runs the one action, or opens `listenMenu` (an
     `ActionMenu`, whose rows take an `accessibleName`) over a snapshot of several. `listenWith()` stops the session as a

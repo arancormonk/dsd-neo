@@ -1126,6 +1126,83 @@ Item {
             }
         }
 
+        // A scan list's entry for a saved system is a target of that list too: on the system's channel, Explore
+        // offers to listen with the list held on that entry, beside starting the saved system itself.
+        function test_listen_offers_a_list_held_on_its_saved_system_entry() {
+            savedSystems.add({name: "County", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                freqMhz: "852.0125", decodeFlag: "-fs"});
+            var county = savedSystems.get(savedSystems.count - 1).uid;
+            scanLists.add({name: "Weekend", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "system", systemUid: county, enabled: true}]});
+            var weekend = scanLists.get(scanLists.count - 1);
+            try {
+                exploreOn("852.012500");
+                var button = listenButton();
+                tryVerify(function () { return button.visible; });
+                compare(button.Accessible.name, "Listen with its settings: 2 to choose from");
+                button.activate();
+                var menu = findChild(app, "listenMenu");
+                tryVerify(function () { return menu.visible; });
+                compare(menu.actions.map(function (a) { return a.text; }).join("|"),
+                        "Weekend / County|Start “County”");
+                compare(findChild(menu, "actionMenuAction0").Accessible.name,
+                        "Listen to Weekend / County with its settings");
+                findChild(menu, "actionMenuAction0").activate();
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(prefs.acceptedStartKind, "scan");
+                compare(prefs.acceptedStartUid, weekend.uid);
+                compare(heldTarget(testContext.lastStartArgs()), weekend.entries[0].uid);
+            } finally {
+                endExplore();
+                testContext.setLifecyclePhase(2);
+                removeScanLists([weekend.uid]);
+                var row = savedSystems.rowForUid(county);
+                if (row >= 0)
+                    savedSystems.remove(row);
+            }
+        }
+
+        // A paused scan-list session reaches its own list's saved-system entry in place, as it reaches any of its own
+        // rows: the entry's tune at the system's frequency, with no stop and no restart.
+        function test_a_paused_scan_list_reaches_its_saved_system_entry_in_place() {
+            savedSystems.add({name: "County", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                freqMhz: "852.0125", decodeFlag: "-fs"});
+            var county = savedSystems.get(savedSystems.count - 1).uid;
+            scanLists.add({name: "Weekend", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Gate", protocol: "p25", freqMhz: "851.0125", enabled: true},
+                          {kind: "system", systemUid: county, enabled: true}]});
+            var weekend = scanLists.get(scanLists.count - 1);
+            try {
+                testContext.setLifecyclePhase(0);
+                app.startScanBundle(scanLists.rowForUid(weekend.uid), []);
+                testContext.setLifecyclePhase(2);
+                testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
+                                        scanRotationActive: false, scanPaused: true, scanResumable: true,
+                                        tunerControlled: false, centerFreqHz: 852014000, channelBandwidthHz: 12500});
+                tryVerify(function () { return app.operatorHolds && app.exploring; });
+                var button = listenButton();
+                tryVerify(function () { return button.visible; });
+                compare(button.text, "Listen with its settings");
+                compare(button.Accessible.name, "Listen to Weekend / County with its settings");
+                testContext.resetCommands();
+                var stops = decoderHost.stopCalls();
+                button.activate();
+                compare(testContext.tuneHzCalls(), 1);
+                compare(testContext.lastTuneHz(), 852012500);
+                compare(decoderHost.stopCalls(), stops);
+                verify(!app.pendingRestart, "the paused session was set to restart");
+            } finally {
+                endExplore();
+                testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
+                                        tunerControlled: false});
+                testContext.setLifecyclePhase(2);
+                removeScanLists([weekend.uid]);
+                var row = savedSystems.rowForUid(county);
+                if (row >= 0)
+                    savedSystems.remove(row);
+            }
+        }
+
         // A scan-list session the operator paused keeps its lists: a row of one of them is reached in place by the
         // entry's tune at the row's own frequency (the scan resumes there and holds it), with no stop and no restart;
         // a row of a list the session does not scan, or a saved system, would end the session and is not offered.

@@ -325,6 +325,32 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
 }
 
 void
+KnownFrequencyIndex::addListEntry(const QVariantMap& entry, const QString& listName, const QString& listUid,
+                                  bool startable) {
+    // A disabled entry is no target of the list's session.
+    const QString uid = entry.value(QStringLiteral("uid")).toString();
+    const bool selectable = startable && entry.value(QStringLiteral("enabled"), true).toBool() && !uid.isEmpty();
+    QVariantMap s = entry;
+    QString protocol = entry.value(QStringLiteral("protocol")).toString();
+    if (entry.value(QStringLiteral("kind")).toString() == QStringLiteral("system")) {
+        /* An entry for a saved system is a target of the list too, the entry's uid its id: the system's frequency,
+           width and protocol (its decode flag). The system's channel map is indexed once, under the system. */
+        s = m_systems ? m_systems->getByUid(entry.value(QStringLiteral("systemUid")).toString()) : QVariantMap();
+        if (s.isEmpty()) {
+            return;
+        }
+        s.remove(QStringLiteral("chanCsvPath"));
+        s.insert(QStringLiteral("uid"), uid);
+        protocol = scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString());
+    }
+    add(s,
+        listName + QStringLiteral(" / ")
+            + scan_entry_name(s.value(QStringLiteral("name")).toString(), protocol,
+                              s.value(QStringLiteral("freqMhz")).toString()),
+        withProtocol(matchIdentity(QStringLiteral("scanEntry"), listUid, uid, selectable), protocol));
+}
+
+void
 KnownFrequencyIndex::rebuild() {
     m_entries.clear();
     if (m_systems) {
@@ -347,20 +373,7 @@ KnownFrequencyIndex::rebuild() {
             const bool startable = !list.value(QStringLiteral("isDraft")).toBool();
             const QString listUid = list.value(QStringLiteral("uid")).toString();
             for (const QVariant& value : list.value(QStringLiteral("entries")).toList()) {
-                auto s = value.toMap();
-                if (s.value(QStringLiteral("kind")).toString() != QStringLiteral("system")) {
-                    // A disabled entry is no target of the list's session.
-                    const QString uid = s.value(QStringLiteral("uid")).toString();
-                    const bool enabled = s.value(QStringLiteral("enabled"), true).toBool();
-                    add(s,
-                        name + QStringLiteral(" / ")
-                            + scan_entry_name(s.value(QStringLiteral("name")).toString(),
-                                              s.value(QStringLiteral("protocol")).toString(),
-                                              s.value(QStringLiteral("freqMhz")).toString()),
-                        withProtocol(matchIdentity(QStringLiteral("scanEntry"), listUid, uid,
-                                                   startable && enabled && !uid.isEmpty()),
-                                     s.value(QStringLiteral("protocol")).toString()));
-                }
+                addListEntry(value.toMap(), name, listUid, startable);
             }
             addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500,
                    matchIdentity(QStringLiteral("scanTarget"), listUid, QString(), startable));

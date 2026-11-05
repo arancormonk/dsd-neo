@@ -2115,13 +2115,15 @@ Monitor (above Recent calls) and Spectrum (beside **Save**) offer to listen to i
 its own settings. For a scan-list entry the button reads **Listen with its settings**:
 it stops Explore and starts that scan list held on the entry, which **Hold** shows once
 the radio has landed there; tap **Hold** to let the scan go on. For a saved system it
-reads **Start “Name”** and starts that system, as Signal search does. With several on
-the frequency, the button opens a list of them. The hold is for that one start:
-**Retry** and later starts of the list scan it as usual. A frequency that is only in a
-channel map, a turned-off entry or a draft list offers nothing. While a scan list you
-paused (or left with **Explore from here**) is on screen, the button offers only that
-session's own entries, and takes you back in place: the scan resumes on the entry and
-holds it, with its other lists kept. Other lists and saved systems are not offered
+reads **Start “Name”** and starts that system, as Signal search does. A saved system
+added to a scan list is also that list's entry, so its frequency offers both: the list
+held on it, and the system on its own. With several on the frequency, the button opens
+a list of them. The hold is for that one start: **Retry** and later starts of the list
+scan it as usual. A frequency that is only in a channel map, a turned-off entry or a
+draft list offers nothing. While a scan list you paused (or left with **Explore from
+here**) is on screen, the button offers only that session's own entries, saved systems
+added to its lists included, and takes you back in place: the scan resumes on the entry
+and holds it, with its other lists kept. Other lists and saved systems are not offered
 there, since starting one would end that session.
 
 While a scan runs, Monitor's scan row under the call offers **Hold** (stay on this
