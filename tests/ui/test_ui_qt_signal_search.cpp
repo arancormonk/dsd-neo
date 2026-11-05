@@ -468,6 +468,71 @@ testKnownFrequencyEngineIds(const QString& dir) {
     assert(session.at(1).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / pump"));
 }
 
+/* Issue #644: Qt reads a target CSV and a channel map as the engine's loaders do, so a session's own targets and the
+   saved index hold what the session runs. A target CSV: its header is row 1, a blank row is skipped, and nothing is a
+   comment, so a `#desk` row is a target (the in-place Listen reaches it); a header off row 1, or a row longer than the
+   engine's 4095 characters, makes the engine refuse the file, so nothing of it is a target. A channel map: column 0 is
+   the channel key (a row whose key the engine cannot read, `#7`, is no channel), column 1 the frequency, and only
+   columns from the third take their names from the header. */
+static void
+testKnownFrequencyEngineGrammar(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString targets = QDir(dir).filePath(QStringLiteral("grammar-targets.csv"));
+    writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                       "#desk,dmr-conventional,452000000,,,,,Desk\n"
+                       "\n"
+                       "   \n"
+                       "yard,dmr-conventional,452100000,,,,,Yard\n");
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Grammar")},
+                      {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                      {QStringLiteral("targetsCsvPath"), targets}}));
+    const QString grammar = lists.get(lists.count() - 1).value(QStringLiteral("uid")).toString();
+    const QString late = QDir(dir).filePath(QStringLiteral("grammar-late-header.csv"));
+    writeFile(late, "\nid,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                    "late,dmr-conventional,453000000,,,,,Late\n");
+    const QString wide = QDir(dir).filePath(QStringLiteral("grammar-long-row.csv"));
+    {
+        QByteArray text = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                          "wide,dmr-conventional,453100000,,,,";
+        text.append(QByteArray(5000, 'n'));
+        text.append("\nnarrow,dmr-conventional,453200000,,,,\n");
+        writeFile(wide, text.constData());
+    }
+    for (const QString& refused : {late, wide}) {
+        assert(lists.add({{QStringLiteral("name"), QStringLiteral("Refused")},
+                          {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                          {QStringLiteral("targetsCsvPath"), refused}}));
+    }
+    const QString channels = QDir(dir).filePath(QStringLiteral("grammar-channels.csv"));
+    writeFile(channels, "chan,freq,name\n#7,454000000,Hash\n7,454100000,#Seven\n0x10,454200000,Hex\n");
+    assert(systems.add({{QStringLiteral("name"), QStringLiteral("Metro")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("454.9000")},
+                        {QStringLiteral("trunking"), true},
+                        {QStringLiteral("chanCsvPath"), channels}}));
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    assertIdentity(matchNamed(index.tunedMatches(452000000, 12500), QStringLiteral("Grammar / Desk")), "scanTarget",
+                   grammar, QStringLiteral("#desk"), 452000000, true);
+    assertIdentity(matchNamed(index.tunedMatches(452100000, 12500), QStringLiteral("Grammar / Yard")), "scanTarget",
+                   grammar, QStringLiteral("yard"), 452100000, true);
+    const QVariantList session =
+        index.sessionTargets({QVariantMap{{"uid", grammar}, {"name", QStringLiteral("Grammar")}, {"path", targets}}});
+    assert(session.size() == 2);
+    assert(session.at(0).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("#desk"));
+    assert(session.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("yard"));
+    for (qint64 hz : {453000000LL, 453100000LL, 453200000LL}) {
+        assert(index.tunedMatches(hz, 12500).isEmpty());
+    }
+    assert(
+        index
+            .sessionTargets({QVariantMap{{"uid", QStringLiteral("x")}, {"name", QStringLiteral("x")}, {"path", late}},
+                             QVariantMap{{"uid", QStringLiteral("y")}, {"name", QStringLiteral("y")}, {"path", wide}}})
+            .isEmpty());
+    assert(index.tunedMatches(454000000, 12500).isEmpty());
+    matchNamed(index.tunedMatches(454100000, 12500), QStringLiteral("Metro / #Seven"));
+    matchNamed(index.tunedMatches(454200000, 12500), QStringLiteral("Metro / Hex"));
+}
+
 /* Issue #644: every match says what it is, so a frontend can start it with its own settings. A saved system's own
    frequency and a scan list's row (an entry by its uid, a target CSV row by its id) can be started; a channel map's row
    (a saved system's, or a trunked target's), a disabled entry, a draft list's entry and a target row with no id only
@@ -517,8 +582,10 @@ testKnownFrequencyIdentity(const QString& dir) {
                .value(QStringLiteral("systemUid"))
                .toString()
            == county);
-    assertIdentity(matchNamed(index.tunedMatches(481000000, 12500), QStringLiteral("County / 1")), "channelMap",
-                   QString(), QString(), 481000000, false);
+    /* The map's header names no name column from its third on (column 0 is the channel key, as the engine reads it),
+       so its row is named after the system alone. */
+    assertIdentity(matchNamed(index.tunedMatches(481000000, 12500), QStringLiteral("County")), "channelMap", QString(),
+                   QString(), 481000000, false);
     // A row of the channel: the entry's own frequency is reported, not the one tuned.
     assertIdentity(matchNamed(index.tunedMatches(482002000, 12500), QStringLiteral("Hospital / ER desk")), "scanEntry",
                    hospital, QStringLiteral("er-desk"), 482000000, true);
@@ -533,8 +600,8 @@ testKnownFrequencyIdentity(const QString& dir) {
     // The trunked target's channel map, and the saved system's, both name 481 MHz; neither is a row of its own.
     const auto mapped = index.tunedMatches(481000000, 12500);
     assert(mapped.size() == 2);
-    assertIdentity(matchNamed(mapped, QStringLiteral("Imported / trunk / 1")), "channelMap", imported, QString(),
-                   481000000, false);
+    assertIdentity(matchNamed(mapped, QStringLiteral("Imported / trunk")), "channelMap", imported, QString(), 481000000,
+                   false);
     assertIdentity(matchNamed(index.tunedMatches(486000000, 12500), QStringLiteral("Imported / Unnamed")), "scanTarget",
                    imported, QString(), 486000000, false);
     // Two targets on one frequency under one label are two rows, each its own id; the name line says the name once.
@@ -1093,6 +1160,7 @@ main(int argc, char** argv) {
     testStoredMarginBelowMinimum(&index);
     testKnownFrequencyIdentity(temp.path());
     testKnownFrequencyEngineIds(temp.path());
+    testKnownFrequencyEngineGrammar(temp.path());
     return 0;
 }
 

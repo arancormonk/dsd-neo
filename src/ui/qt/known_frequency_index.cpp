@@ -15,9 +15,11 @@
 #include <QSet>
 #include <QStringList>
 #include <QTextStream>
+#include <QVector>
 #include <Qt>
 #include <algorithm>
 #include <cmath>
+#include <dsd-neo/core/csv_validate.h>
 #include <stdint.h>
 #include <utility>
 #include "known_frequency_index.h"
@@ -154,30 +156,6 @@ struct CsvColumns {
     int frequency = 1, name = -1, mode = -1, options = -1, channels = -1, label = -1, id = -1;
 };
 
-static CsvColumns
-csvColumns(const QStringList& fields) {
-    CsvColumns columns;
-    for (int i = 0; i < fields.size(); ++i) {
-        const QString name = fields[i].toLower();
-        if (name == QStringLiteral("frequency") || name == QStringLiteral("freq") || name == QStringLiteral("freq_hz")
-            || name == QStringLiteral("frequency_hz")) {
-            columns.frequency = i;
-        } else if (name == QStringLiteral("name") || name == QStringLiteral("id")) {
-            columns.name = i;
-            columns.id = name == QStringLiteral("id") ? i : columns.id;
-        } else if (name == QStringLiteral("mode") || name == QStringLiteral("type")) {
-            columns.mode = i;
-        } else if (name == QStringLiteral("options") || name == QStringLiteral("relevant_cli_switches")) {
-            columns.options = i;
-        } else if (name == QStringLiteral("chan_csv")) {
-            columns.channels = i;
-        } else if (name == QStringLiteral("label")) {
-            columns.label = i;
-        }
-    }
-    return columns;
-}
-
 /* A row's own name: a target CSV's `label`, which names the target as its calls are named (issue #782), else its name
    or id column. */
 static QString
@@ -224,6 +202,194 @@ engineTargetId(const QString& line, int column) {
         }
     }
     return {};
+}
+
+/* Which of the engine's loaders a CSV is read as (issue #644): a trunk-scan target list (dsd_trunk_scan_load_targets_csv(),
+   trunk_scan.c) or a channel map (chan_import_stats(), dsd_import.c). */
+enum class EngineCsvGrammar { Targets, ChannelMap };
+
+/* The target loader's row buffer (line[4096]: a longer row refuses the file), and the channel map reader's (1 MiB, the
+   newline and terminator included). */
+constexpr qsizetype kEngineTargetRowMax = 4095;
+constexpr qsizetype kEngineChannelRowMax = 1048574;
+
+struct EngineCsvRow {
+    QString line;
+    QStringList fields;
+    qint64 hz = 0;
+};
+
+struct EngineCsv {
+    CsvColumns columns;
+    QVector<EngineCsvRow> rows;
+};
+
+/* Every cell of @p line as the engine's target loader splits and unquotes it (engineTargetId()). */
+QStringList
+engineCells(const QString& line) {
+    QStringList cells;
+    qsizetype start = 0;
+    bool quoted = false;
+    for (qsizetype i = 0; i <= line.size(); ++i) {
+        const bool end = i == line.size();
+        if (!end && line[i] == QLatin1Char('"')) {
+            quoted = !quoted;
+        } else if (end || (line[i] == QLatin1Char(',') && !quoted)) {
+            cells.append(engineUnquote(line.mid(start, i - start)));
+            start = i + 1;
+        }
+    }
+    return cells;
+}
+
+/* C isspace() over @p text's ends, as scan_trim() and trim_ws() trim. */
+QString
+engineTrim(QString text) {
+    const auto blank = [](QChar ch) {
+        return ch == QLatin1Char(' ') || (ch >= QLatin1Char('\t') && ch <= QLatin1Char('\r'));
+    };
+    while (!text.isEmpty() && blank(text.front())) {
+        text.remove(0, 1);
+    }
+    while (!text.isEmpty() && blank(text.back())) {
+        text.chop(1);
+    }
+    return text;
+}
+
+/* @p cell as a decimal frequency in [@p min_hz, @p max_hz], digits only once trimmed (scan_parse_u32_decimal(),
+   parse_dec_long_strict()); 0 for anything else. */
+qint64
+engineHz(const QString& cell, qint64 min_hz, qint64 max_hz) {
+    const QString digits = engineTrim(cell);
+    if (digits.isEmpty()) {
+        return 0;
+    }
+    if (std::any_of(digits.cbegin(), digits.cend(),
+                    [](QChar ch) { return ch < QLatin1Char('0') || ch > QLatin1Char('9'); })) {
+        return 0;
+    }
+    bool ok = false;
+    const qint64 hz = digits.toLongLong(&ok, 10);
+    return ok && hz >= min_hz && hz <= max_hz ? hz : 0;
+}
+
+/* The target loader's header, row 1 (scan_read_target_csv_header()): its first seven cells, unquoted, are exactly
+   id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes, and later cells are named columns, compared without
+   ASCII case. False when the engine refuses it. */
+bool
+engineTargetHeader(const QString& line, CsvColumns* columns) {
+    static const char* const required[] = {"id",   "type", "frequency_hz", "chan_csv", "dwell_ms", "activity_hold_ms",
+                                           "notes"};
+    const QStringList names = engineCells(line);
+    if (names.size() < 7) {
+        return false;
+    }
+    for (int i = 0; i < 7; ++i) {
+        if (names[i] != QLatin1String(required[i])) {
+            return false;
+        }
+    }
+    *columns = CsvColumns{};
+    columns->id = columns->name = 0;
+    columns->mode = 1;
+    columns->frequency = 2;
+    columns->channels = 3;
+    for (int i = 7; i < names.size(); ++i) {
+        const QString name = names[i].toLower();
+        if (name == QLatin1String("options")) {
+            columns->options = i;
+        } else if (name == QLatin1String("label")) {
+            columns->label = i;
+        }
+    }
+    return true;
+}
+
+/* The channel map reader's header, row 1 (chan_parse_header()): column 0 is the channel key and column 1 the frequency
+   whatever they are called; from the third on, name, mode and options (relevant_CLI_switches) are found by name,
+   without ASCII case. */
+CsvColumns
+engineChannelHeader(const QString& line) {
+    CsvColumns columns;
+    columns.frequency = 1;
+    const QStringList cells = line.split(QLatin1Char(','));
+    for (int i = 2; i < cells.size(); ++i) {
+        const QString name = engineTrim(cells[i]).toLower();
+        if (name == QLatin1String("name") && columns.name < 0) {
+            columns.name = i;
+        } else if (name == QLatin1String("mode")) {
+            columns.mode = i;
+        } else if (name == QLatin1String("options") || name == QLatin1String("relevant_cli_switches")) {
+            columns.options = i;
+        }
+    }
+    return columns;
+}
+
+/* One data row of @p grammar into @p out, or false when the engine refuses the whole file for it. A row the engine
+   loads no frequency for is left out. */
+bool
+engineCsvRow(EngineCsvGrammar grammar, const QString& raw, EngineCsv* out) {
+    if (grammar == EngineCsvGrammar::Targets) {
+        if (raw.size() > kEngineTargetRowMax) {
+            return false;
+        }
+        const QString line = engineTrim(raw);
+        if (line.isEmpty()) {
+            return true;
+        }
+        const QStringList fields = csvFields(line);
+        const qint64 hz = engineHz(engineTargetId(line, out->columns.frequency), 1, UINT32_MAX);
+        if (hz) {
+            out->rows.append({line, fields, hz});
+        }
+        return true;
+    }
+    if (raw.toUtf8().size() > kEngineChannelRowMax) {
+        return false;
+    }
+    if (engineTrim(raw).isEmpty()) {
+        return true;
+    }
+    QStringList fields = raw.split(QLatin1Char(','));
+    std::transform(fields.begin(), fields.end(), fields.begin(), engineTrim);
+    const qint64 hz = engineHz(fields.value(1), 100000, 2147483647LL);
+    if (hz && dsd_csv_channel_has_slot(fields.value(0).toUtf8().constData())) {
+        out->rows.append({raw, fields, hz});
+    }
+    return true;
+}
+
+/* The rows of the CSV at @p path as the engine's @p grammar loader reads them (issue #644): its header is row 1 and
+   nothing is a comment (a `#` row is data), a blank row is skipped, and the caps and refusals are the engine's: a file
+   it refuses (a bad target header, a row past its buffer) gives no rows. False when the file cannot be read or is
+   refused. */
+bool
+readEngineCsv(const QString& path, EngineCsvGrammar grammar, EngineCsv* out) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
+    }
+    QTextStream text(&f);
+    if (text.atEnd()) {
+        return false;
+    }
+    const QString header = text.readLine(kEngineChannelRowMax + 1);
+    if (grammar == EngineCsvGrammar::Targets) {
+        if (header.size() > kEngineTargetRowMax || !engineTargetHeader(header, &out->columns)) {
+            return false;
+        }
+    } else {
+        out->columns = engineChannelHeader(header);
+    }
+    while (!text.atEnd()) {
+        if (!engineCsvRow(grammar, text.readLine(kEngineChannelRowMax + 1), out)) {
+            out->rows.clear();
+            return false;
+        }
+    }
+    return true;
 }
 
 /* A row's identity: a target CSV's row is the target its `id` names (@p line's id cell as the engine reads it),
@@ -319,8 +485,9 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
     if (path.isEmpty()) {
         return;
     }
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    const bool targets = identity.value(QStringLiteral("source")).toString() == QLatin1String("scanTarget");
+    EngineCsv csv;
+    if (!readEngineCsv(path, targets ? EngineCsvGrammar::Targets : EngineCsvGrammar::ChannelMap, &csv)) {
         return;
     }
     const QString directory = QFileInfo(path).absolutePath();
@@ -330,34 +497,22 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
     if (!m_files.files().contains(path)) {
         m_files.addPath(path);
     }
-    QTextStream text(&f);
-    CsvColumns columns;
-    bool first = true;
-    int rows = 0;
-    while (!text.atEnd() && ++rows <= 100000 && m_entries.size() < 200000) {
-        QString line = text.readLine(1048576).trimmed();
-        if (line.startsWith(QLatin1Char('#')) || line.isEmpty()) {
-            continue;
+    const CsvColumns& columns = csv.columns;
+    for (const EngineCsvRow& row : csv.rows) {
+        if (m_entries.size() >= 200000) {
+            break;
         }
-        const auto fields = csvFields(line);
-        if (first) {
-            columns = csvColumns(fields);
-            first = false;
-        }
-        qint64 hz = parseFrequency(fields.value(columns.frequency), false);
-        if (!hz) {
-            continue;
-        }
+        const QStringList& fields = row.fields;
         QString name = label;
         const QString channel = rowName(fields, columns);
         if (!channel.isEmpty()) {
             name += QStringLiteral(" / ") + channel;
         }
         const double rowWidth = knownWidth(fields.value(columns.mode), fields.value(columns.options), width);
-        m_entries.append(
-            {hz, rowWidth,
-             matchValue(name, hz, s.value(QStringLiteral("uid")), rowIdentity(line, fields, columns, identity))});
-        if (depth == 0 && !fields.value(columns.channels).isEmpty()) {
+        m_entries.append({row.hz, rowWidth,
+                          matchValue(name, row.hz, s.value(QStringLiteral("uid")),
+                                     rowIdentity(row.line, fields, columns, identity))});
+        if (depth == 0 && targets && !fields.value(columns.channels).isEmpty()) {
             addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, rowWidth, channelMapIdentity(identity),
                    depth + 1);
         }
@@ -391,42 +546,29 @@ KnownFrequencyIndex::addListEntry(const QVariantMap& entry, const QString& listN
 }
 
 namespace {
-/* The target rows of the session CSV at @p path, list @p number (@p listUid, named @p listName), appended to @p out. */
+/* The target rows of the session CSV at @p path, list @p number (@p listUid, named @p listName), appended to @p out: as
+   the engine loaded them (readEngineCsv()), so every target the session runs, and none it refused. */
 void
 appendSessionTargets(const QString& path, int number, const QString& listUid, const QString& listName,
                      QVariantList* out) {
-    QFile f(path);
-    if (path.isEmpty() || !f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    EngineCsv csv;
+    if (path.isEmpty() || !readEngineCsv(path, EngineCsvGrammar::Targets, &csv)) {
         return;
     }
-    QTextStream text(&f);
-    CsvColumns columns;
-    bool first = true;
-    int rows = 0;
-    while (!text.atEnd() && ++rows <= 100000) {
-        const QString line = text.readLine(1048576).trimmed();
-        if (line.startsWith(QLatin1Char('#')) || line.isEmpty()) {
+    const CsvColumns& columns = csv.columns;
+    for (const EngineCsvRow& row : csv.rows) {
+        const QString id = engineTargetId(row.line, columns.id);
+        if (id.isEmpty()) {
             continue;
         }
-        const auto fields = csvFields(line);
-        if (first) {
-            columns = csvColumns(fields);
-            first = false;
-            continue;
-        }
-        const qint64 hz = parseFrequency(fields.value(columns.frequency), false);
-        const QString id = engineTargetId(line, columns.id);
-        if (!hz || id.isEmpty()) {
-            continue;
-        }
-        const QString mode = fields.value(columns.mode);
+        const QString mode = row.fields.value(columns.mode);
         out->append(QVariantMap{
             {QStringLiteral("listNumber"), number},
             {QStringLiteral("listUid"), listUid},
             {QStringLiteral("targetId"), id},
-            {QStringLiteral("frequencyHz"), hz},
-            {QStringLiteral("width"), knownWidth(mode, fields.value(columns.options), 12500)},
-            {QStringLiteral("name"), listName + QStringLiteral(" / ") + rowName(fields, columns)},
+            {QStringLiteral("frequencyHz"), row.hz},
+            {QStringLiteral("width"), knownWidth(mode, row.fields.value(columns.options), 12500)},
+            {QStringLiteral("name"), listName + QStringLiteral(" / ") + rowName(row.fields, columns)},
             {QStringLiteral("protocolLabel"),
              scan_entry_protocol_label(mode.section(QLatin1Char('-'), 0, 0).toLower())},
         });

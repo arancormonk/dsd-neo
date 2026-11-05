@@ -10103,7 +10103,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `tst_main_session_tools.qml`, `tst_signal_search_handoff.qml`).
   `KnownFrequencyIndex` caches saved frequencies and referenced CSVs, rebuilding on model
   or file changes; Signal search, Spectrum and Live Exploring look up labels without
-  reading files during rendering. Exact matches win, nearest matches use half the smaller
+  reading files during rendering. It reads each CSV with the grammar of the engine loader
+  that reads the same file (`readEngineCsv()`, issue #644): a target list as
+  `dsd_trunk_scan_load_targets_csv()` (the exact seven-column header on row 1, fixed id,
+  type, frequency and chan_csv columns, label and options by name, a 4095-character row
+  limit that refuses the file, quoted cells), a channel map as `chan_import_stats()`
+  (header row 1, column 0 the channel key, `dsd_csv_channel_has_slot()`, column 1 the
+  frequency, names from the third column on, plain commas, the 1 MiB row limit). In both
+  a blank row is skipped and nothing is a comment, so a `#desk` target is one; a file
+  the engine refuses gives no rows, and a session's own targets
+  (`KnownFrequencyIndex::sessionTargets()`) are read the same way.
+  Exact matches win, nearest matches use half the smaller
   applicable channel width/spacing, and ties remain ambiguous. A channel-map row that names
   no mode or bandwidth of its own takes the width/spacing of the saved system or target row
   that references the map, so an NXDN48 system's plain `Channel,Frequency` map keeps its
