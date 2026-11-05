@@ -1705,6 +1705,24 @@ test_snapshot_never_saves_a_scan_hold(void) {
         DSD_FPRINTF(stderr, "FAIL: an entry-held -Y scan saves differently from an unheld one\n");
         return 1;
     }
+    /* The trunk scan's hold and entry mark neither: the config save, the exit autosave and the shutdown a hangup runs
+       all write this snapshot. */
+    reset_opts_and_state(opts, state);
+    opts.trunk_scan_enabled = 1;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, unheld, sizeof unheld) != 0) {
+        return 1;
+    }
+    state.trunk_scan_hold = 1U;
+    state.trunk_scan_entry_hold = 1U;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, held, sizeof held) != 0) {
+        return 1;
+    }
+    if (strcmp(unheld, held) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an entry-held trunk scan saves differently from an unheld one\n");
+        return 1;
+    }
     return 0;
 }
 

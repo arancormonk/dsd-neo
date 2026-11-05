@@ -260,10 +260,12 @@ typedef struct {
  * The hold (dsd_state::trunk_scan_hold) and its entry mark (dsd_state::trunk_scan_entry_hold) are set on the park's
  * confirmed completion only: at once (HOLDING), or when the park in flight (PENDING) lands in this scan session while
  * the entry is still the one in force; a P25 control channel the target's state machine recovered counts as that
- * landing. Every other park cancels it (an advance, `L`, `J`, an avoid, a departure, a retry in place, a resume, a
- * later go-to that gets past its preparation), and so do `Y`, a pause and the park's own failure, which leaves the scan
- * running unheld on its normal failure path. Running or paused, the caller holds the P25 SM tick guard, and nothing
- * here takes it. Decoder thread.
+ * landing. Every other park cancels it (an advance, a departure, a retry in place, a resume, a later go-to that gets
+ * past its preparation), and so do `L`, `J` and an avoid whether or not they move, `Y`, a pause and the park's own
+ * failure. A go-to from a target an entry holds takes that hold and its mark once it gets past its preparation, so a
+ * park that fails late leaves the scan running unheld on its normal failure path; an ordinary hold carries over, as
+ * `L` carries it. Running or paused, the caller holds the P25 SM tick guard, and nothing here takes it. Decoder
+ * thread.
  *
  * @p report (may be NULL) is filled on every return.
  */

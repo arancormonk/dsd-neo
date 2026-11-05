@@ -76,6 +76,7 @@ static int g_cc_tunes;
 static int g_vc_tunes;
 static uint64_t g_request;
 static dsd_trunk_tune_result g_result;
+static int g_cc_refusals; /* the next park or control-channel tunes the backend refuses, whatever g_result says */
 static int g_entry_tunes;
 static int g_entry_result;
 
@@ -102,6 +103,10 @@ cc_tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_i
     (void)sps;
     ++g_cc_tunes;
     g_request = request_id;
+    if (g_cc_refusals > 0) {
+        --g_cc_refusals;
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     if (dsd_trunk_tune_result_is_ok(g_result)) {
         g_frequency = freq;
         opts->rtlsdr_center_freq = (uint32_t)freq;
@@ -196,6 +201,7 @@ setup(void) {
     g_opts.trunk_scan_enabled = 1;
     g_opts.trunk_tune_group_calls = 1;
     g_cc_tunes = g_vc_tunes = g_entry_tunes = 0;
+    g_cc_refusals = 0;
     g_request = 0U;
     g_frequency = 0;
     g_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -877,6 +883,16 @@ watchdog_beside_a_goto(void) {
         rc |= expect(goto_under_the_guard(0) == DSD_SCAN_GOTO_HOLDING && g_state.trunk_scan_entry_hold == 1U
                          && g_frequency == k_p25_cc_hz,
                      "a go-to of the P25 system parks and holds it");
+        rc |= watchdog_read_it(0);
+        /* The DMR system's park is refused: the switch rolls back and the P25 system is parked again, unheld. */
+        g_cc_refusals = 1;
+        rc |= expect(goto_under_the_guard(1) == DSD_SCAN_GOTO_REFUSED && g_cc_refusals == 0
+                         && g_state.trunk_scan_hold == 0U && g_frequency == k_p25_cc_hz,
+                     "a refused go-to rolls back onto the P25 system");
+        rc |= watchdog_read_it(0);
+        rc |= expect_running_on("a refused go-to's recovery", "p25");
+        rc |= expect(goto_under_the_guard(0) == DSD_SCAN_GOTO_HOLDING && g_state.trunk_scan_entry_hold == 1U,
+                     "the P25 system is held again");
         rc |= watchdog_read_it(0);
         rc |= expect(run_action(DSD_APP_CMD_TUNER_RELEASE) == 1 && toast_is("Automatic tuning paused"),
                      "a release pauses");

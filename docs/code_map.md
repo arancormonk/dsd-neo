@@ -574,12 +574,17 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - Entry intent: the shared `dsd_engine_scan_entry_intent` (`scan_landing.h`), here naming the target (`by` = target),
   the coordinator's session and the park's request (`dsd_engine_scan_entry_intent_set_target()`), set once the park is
   in flight. Every park cancels it once past its preparation (`trunk_scan_park_begins()`, beside the landing forget), so
-  only the go-to's own park can land it; `Y`, a pause, the detach and a release cancel it too, and the park's failure
-  drops it by request. The landing (`trunk_scan_resolve_pending_retune()`: a completed park, or a P25 replacement tune
-  found complete) holds the target, `coord->hold_active` with `coord->entry_hold` (`trunk_scan_entry_hold_now()`), when
-  the intent's target, session and request match (`dsd_engine_scan_entry_landed_target()`); when the coordinator adopts
-  the P25 machine's recovery request, the intent follows it (`dsd_engine_scan_entry_intent_rebind()`). A late failure
-  takes the normal failure path, unheld unless a hold carried over from the target left.
+  only the go-to's own park can land it; `L`, `J` and an avoid cancel it at their control entry
+  (`trunk_scan_control_advance_locked()`, which the go-to does not use) whether or not they move, so one that tries
+  nothing (every alternate cooling down, or none prepared) leaves no park to hold the target later; `Y`, a pause, the
+  detach and a release cancel it too, and the park's failure drops it by request. The landing
+  (`trunk_scan_resolve_pending_retune()`: a completed park, or a P25 replacement tune found complete) holds the target,
+  `coord->hold_active` with `coord->entry_hold` (`trunk_scan_entry_hold_now()`), when the intent's target, session and
+  request match (`dsd_engine_scan_entry_landed_target()`); when the coordinator adopts the P25 machine's recovery
+  request, the intent follows it (`dsd_engine_scan_entry_intent_rebind()`). A go-to replaces an entry hold:
+  `trunk_scan_goto_running()` takes the hold and its mark before it moves, and puts them back only when the move got no
+  further than its preparation, so a mark never sits on a target whose park is not confirmed and a late failure takes
+  the normal failure path unheld. An ordinary hold carries over, as `L` carries it.
   `dsd_engine_trunk_scan_entry_pending()` says an entry still waits. `coord->entry_hold` is published as
   `trunk_scan_entry_hold` beside `trunk_scan_hold` (`trunk_scan_publish_configured()`, cleared at the detach). `L`, `J`,
   an avoid's step and a departure carry it with the hold; `Y` (`trunk_scan_control_hold_toggle()`) drops the mark and
@@ -587,11 +592,13 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `dsd_engine_trunk_scan_entry_release_locked()` (`y` and SCAN_RESUME on an entry hold) releases it as `Y` off does,
   with a fresh dwell and visit cap, and leaves an ordinary hold alone. Neither is ever saved. Tests: `ENGINE_TRUNK_SCAN`
   (conventional, analog and trunked targets with a learned control channel; on air; pending landing, late failure, and
-  cancels by `L`, `Y`, a pause, a release and a later go-to; P25 recovery found complete and adopted; refused and
-  deferred with recovery, and a refused recovery; a preparation failure over an earlier entry and over a hold; refusals
-  out of the rotation and for width; one target; a copy in another list; paused landing, pending, refusal, failed
-  preparation and late failure; the entry hold's lifecycle), `ENGINE_TRUNK_SCAN_PAUSE` (`watchdog_beside_a_goto`: go-tos
-  of a running and a paused scan and the release under the real guard beside the watchdog; run under `tsan-debug`).
+  cancels by `L`, `Y`, a pause, a release and a later go-to; a go-to over an entry hold and over an ordinary hold that
+  fails late; `L`, `J` and `b` that move nothing; an earlier entry retired by a refused go-to; P25 recovery found
+  complete and adopted; refused and deferred with recovery, and a refused recovery; a preparation failure over an
+  earlier entry and over a hold; refusals out of the rotation and for width; one target; a copy in another list; paused
+  landing, pending, refusal, deferral, failed preparation and late failure; the entry hold's lifecycle),
+  `ENGINE_TRUNK_SCAN_PAUSE` (`watchdog_beside_a_goto`: go-tos of a running and a paused scan and the release under the
+  real guard beside the watchdog; run under `tsan-debug`).
 - Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
   `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
   under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a
@@ -3667,7 +3674,10 @@ and an avoid's step), the untyped timed step, `dsd_engine_channel_scan_walk_row(
 it. The failure or drop of the intent's own tune cancels it too (`dsd_engine_scan_entry_intent_drop_request()` in
 `dsd_engine_channel_scan_pending()`, `channel_scan_tune_outcome()` and `untyped_settle_walk()`). A late landing of a
 cancelled or replaced entry therefore holds nothing; a restage of the intent's own row keeps it.
-`dsd_engine_channel_scan_entry_pending()` says an entry still waits.
+`dsd_engine_channel_scan_entry_pending()` says an entry still waits. A go-to replaces an entry hold: once its tune is
+taken or a backend moved, the hold and its mark go (`dsd_engine_scan_entry_hold_replaced()`, in
+`channel_scan_goto_typed()` and `untyped_goto_running()`), so only its own row's confirmed landing sets them again and
+a late failure leaves the scan unheld; a go-to that moved nothing leaves them, and an ordinary hold carries over.
 `dsd_engine_channel_scan_entry_release()` (`y`, SCAN_RESUME on an entry hold) takes the hold and its mark and restarts
 the dwell, visit and voice-gate windows as `Y` off does; an ordinary hold is left to `y`'s old meaning. Lifecycle: Next,
 Previous and `b` keep an entry hold, mark and all, on the row they land; a pause takes both
@@ -3677,11 +3687,12 @@ Previous and `b` keep an entry hold, mark and all, on the row they land; a pause
 and clear clear the mark beside the hold (`menu_services.c`); a config apply that keeps the scan keeps both; neither is
 ever saved. Tests: `ENGINE_CHANNEL_SCAN` (typed: landing, hold only, a forgotten landing tuned again, refusals that keep
 the row on air, a restaged landing, pending landing, late failure and cancels by Next, `Y` and a pause, over a row in
-flight for each outcome, lifecycle, resume-at and resume-at over a pending resume), `ENGINE_NO_CARRIER_RESET` (untyped
-through the real walk and step: each outcome, partial movement, hold only and refusals that keep it, a go-to over a
-pending go-to, a pause cancel, resume-at and resume-at over a pending resume both ways), `APP_COMMAND_QUEUE` (`Y` over
-an entry hold, a config apply that keeps or stops the scan), `UI_MENU_SERVICES` (map adopt and clear),
-`RUNTIME_CONFIG_USER` (never saved).
+flight for each outcome, a go-to over an entry hold and over an ordinary hold, lifecycle, resume-at and resume-at over
+a pending resume), `ENGINE_NO_CARRIER_RESET` (untyped through the real walk and step: each outcome, partial movement,
+hold only and refusals that keep it, a go-to over a pending go-to, over an entry hold and over an ordinary hold, a pause
+cancel, resume-at and resume-at over a pending resume both ways), `APP_COMMAND_QUEUE` (`Y` over an entry hold, a config
+apply that keeps or stops the scan), `UI_MENU_SERVICES` (map adopt and clear), `RUNTIME_CONFIG_USER` (never saved,
+the -Y and the trunk-scan hold and mark alike).
 
 ### Channel Scan Pause Hook (Engine → Runtime ← App-Control)
 

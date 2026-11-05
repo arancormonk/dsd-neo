@@ -2056,8 +2056,9 @@ channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired)
     }
     channel_scan_staging_clear(&staging);
     /* The receiver left the row landed, or will: it is no longer known to be on air (issue #667 D9). The entry is this
-       attempt's, replacing any earlier one. */
+       attempt's, replacing any earlier one, and an entry hold on the row left goes with it. */
     dsd_engine_scan_landing_forget(state);
+    dsd_engine_scan_entry_hold_replaced(state);
     dsd_engine_scan_entry_intent_set(state, row, scan->attempt);
     dsd_state_lcn_back_retry_clear(state);
     if (channel_scan_tune_outcome(opts, state, scan, result) > 0) {

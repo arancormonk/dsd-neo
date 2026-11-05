@@ -125,8 +125,10 @@ int dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state);
  * The hold (lcn_scan_hold) and its entry mark (lcn_scan_entry_hold) are set on the row's confirmed landing only: at
  * once (HOLDING), or when the tune outstanding (PENDING) lands while the entry is still the one in force. Another
  * step, Next, Previous or an avoid's step, `Y` (dsd_engine_channel_scan_entry_cancel()), a later go-to that is taken, a
- * pause and a stop cancel it, and so does that tune's failure. The row lands as a step's does, so the scan continues
- * from it. Under the P25 SM tick guard the scanner commands hold. Decoder thread. */
+ * pause and a stop cancel it, and so does that tune's failure. A go-to from a row an entry holds takes that hold and
+ * its mark once its tune is taken or a backend moved, so a tune that fails late leaves the scan unheld; one that moved
+ * nothing leaves them, and an ordinary hold carries over, as Next carries it. The row lands as a step's does, so the
+ * scan continues from it. Under the P25 SM tick guard the scanner commands hold. Decoder thread. */
 dsd_scan_goto_result dsd_engine_channel_scan_goto_row(dsd_opts* opts, dsd_state* state, int row);
 
 /** Resume the paused -Y scan at @p row and hold it there (issue #644 D1), as dsd_engine_channel_scan_resume() resumes

@@ -9260,9 +9260,52 @@ test_untyped_goto_cancelled_by_a_pause(void) {
     return rc;
 }
 
+/* Issue #644: a go-to replaces an entry hold. From a row an entry holds (@p entry 1), the walk's tune taken takes the
+   hold and its mark, so a tune that fails late leaves the scan unheld; an ordinary hold (@p entry 0) carries over and
+   stays through the late failure, as Next's does. */
+static int
+untyped_goto_replaces_a_hold_case(int entry) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = entry ? "untyped go-to over an entry hold" : "untyped go-to over an ordinary hold";
+    if (setup_walk_list(opts, state, 1, 1640012500L + (long int)entry * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = 0;
+    if (entry) {
+        rc |= expect_case(what, "row 1 is held",
+                          dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING);
+        rc |= expect_untyped_entry_held(what, state, 1);
+    } else {
+        state->lcn_scan_hold = 1U;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_case(what, "row 2's go-to is pending",
+                      dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const uint8_t held = entry ? 0U : 1U;
+    rc |= expect_case(what, "no mark while the tune is pending",
+                      state->lcn_scan_hold == held && state->lcn_scan_entry_hold == 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |=
+        expect_case(what, "the failure is taken", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    rc |= expect_case(what, "the late failure leaves the hold as the go-to left it",
+                      state->lcn_scan_hold == held && state->lcn_scan_entry_hold == 0U
+                          && !dsd_engine_channel_scan_entry_pending(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_goto_over_a_pending_goto(void) {
     int rc = test_untyped_goto_cancelled_by_a_pause();
+    rc |= untyped_goto_replaces_a_hold_case(1) | untyped_goto_replaces_a_hold_case(0);
     for (int c = 0; c < UAGAIN_CASES; c++) {
         rc |= untyped_goto_over_a_pending_goto_case(c);
     }

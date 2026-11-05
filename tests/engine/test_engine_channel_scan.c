@@ -4181,6 +4181,54 @@ test_typed_goto_pending_outcomes(void) {
     }
 }
 
+/* Issue #644: a go-to replaces an entry hold. From a row an entry holds, the hold and its mark go once the go-to's tune
+   is taken or a backend moved, and only the new row's confirmed landing sets them again, so a tune that fails late, or
+   one refused after a backend moved, leaves the scan unheld. A go-to whose preparation fails, or whose tune is refused
+   before anything moved, leaves the hold and mark as they were. An ordinary hold carries over, as Next carries it. */
+static void
+test_typed_goto_replaces_an_entry_hold(void) {
+    for (int ordinary = 0; ordinary < 2; ordinary++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_goto_fixture(opts, state);
+        if (ordinary) {
+            state->lcn_scan_hold = 1U;
+        } else {
+            assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_HOLDING && typed_entry_held_on(state, 1));
+            tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+            assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED && typed_entry_held_on(state, 1));
+            tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+            dsd_key_set_test_alloc_fail_after(0);
+            assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_SETUP_FAILED);
+            dsd_key_set_test_alloc_fail_after(-1);
+            assert(typed_entry_held_on(state, 1));
+        }
+        const uint8_t held = ordinary ? 1U : 0U;
+        tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_PENDING);
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        assert(state->lcn_scan_hold == held && state->lcn_scan_entry_hold == 0U);
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+        assert(state->lcn_scan_hold == held && state->lcn_scan_entry_hold == 0U);
+        assert(!dsd_engine_channel_scan_entry_pending(state));
+        typed_walk_fixture_free(opts, state);
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_HOLDING && typed_entry_held_on(state, 1));
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    g_tune_moved = 1;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED);
+    g_tune_moved = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+    typed_walk_fixture_free(opts, state);
+}
+
 enum {
     OVER_PREP_FAILS = 0,
     OVER_REFUSED_UNMOVED,
@@ -4487,6 +4535,7 @@ main(void) {
     test_typed_goto_refused_keeps_the_row_on_air();
     test_typed_goto_restaged_landing_holds();
     test_typed_goto_pending_outcomes();
+    test_typed_goto_replaces_an_entry_hold();
     test_typed_goto_over_a_row_in_flight();
     test_typed_entry_hold_lifecycle();
     test_typed_resume_at();

@@ -1735,8 +1735,9 @@ untyped_goto_running(dsd_opts* opts, dsd_state* state, int row) {
         /* Nothing moved: the scan, the entry before this one and the row confirmed on air stand. */
         return deferred ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
     }
-    /* The receiver left the row landed, or will (issue #667 D9). */
+    /* The receiver left the row landed, or will (issue #667 D9), and an entry hold on it goes with it (issue #644). */
     dsd_engine_scan_landing_forget(state);
+    dsd_engine_scan_entry_hold_replaced(state);
     if (result == DSD_UNTYPED_STEP_PENDING) {
         dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_pending_id());
         return DSD_SCAN_GOTO_PENDING;

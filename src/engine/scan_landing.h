@@ -238,6 +238,17 @@ dsd_engine_scan_entry_hold_now(dsd_state* state) {
     state->lcn_scan_entry_hold = 1U;
 }
 
+/** A -Y go-to's tune is taken, or a backend moved: the entry hold it replaces goes, hold and mark, and only its own
+ * row's confirmed landing sets them again, so a mark never stays on a row whose landing is not confirmed. An ordinary
+ * hold carries over, as a step carries it. */
+static inline void
+dsd_engine_scan_entry_hold_replaced(dsd_state* state) {
+    if (state && state->lcn_scan_entry_hold) {
+        state->lcn_scan_hold = 0U;
+        state->lcn_scan_entry_hold = 0U;
+    }
+}
+
 /** -Y row @p row landed and committed from the tune @p request (0: one no entry waits on): an entry waiting on that
  * tune of that row holds the scan there (lcn_scan_hold), marked an entry hold (lcn_scan_entry_hold). The landing spends
  * the intent whichever row and tune it is. */

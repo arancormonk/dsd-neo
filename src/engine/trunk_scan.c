@@ -4776,10 +4776,13 @@ trunk_scan_operator_move_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan
     return coord->active != original ? 0 : 1;
 }
 
-/* Advance (@p step 1) or retreat (@p step -1) under the same guard the tick takes. Returns 0 when the receiver moved,
- * 1 when it stayed. */
+/* Advance (@p step 1) or retreat (@p step -1) under the same guard the tick takes: `L`, `J`, an avoid's step and a
+ * departure. They act on the scan, so an entry still waiting on a park is cancelled whether or not they move: one that
+ * tries nothing (every alternate cooling down, or none prepared) must not leave that park to set a hold when it lands
+ * (issue #644). Returns 0 when the receiver moved, 1 when it stayed. */
 static int
 trunk_scan_control_advance_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int step) {
+    dsd_engine_scan_entry_intent_cancel(state);
     return trunk_scan_operator_move_locked(opts, state, coord, step, coord->count);
 }
 
@@ -5939,8 +5942,13 @@ trunk_scan_resume_from(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
         out->restart_gain = !prepare_failed && trunk_scan_target_gain(&coord->targets[installed], &target_gain_db)
                             && target_gain_db != coord->configured_rtl_gain_value;
     }
-    dsd_engine_scan_toast_resume_failed(state, trunk_scan_resume_tried_hz(coord, tried),
-                                        prepare_failed ? DSD_SCAN_RESUME_FAILED_SETUP : DSD_SCAN_RESUME_FAILED_TUNE);
+    int why = DSD_SCAN_RESUME_FAILED_TUNE;
+    if (prepare_failed) {
+        why = DSD_SCAN_RESUME_FAILED_SETUP;
+    } else if (coord->park_tried_deferred) {
+        why = DSD_SCAN_RESUME_FAILED_DEFERRED;
+    }
+    dsd_engine_scan_toast_resume_failed(state, trunk_scan_resume_tried_hz(coord, tried), why);
     return prepare_failed ? -2 : -3;
 }
 
@@ -6045,6 +6053,33 @@ trunk_scan_goto_park_hz(const dsd_state* state, const dsd_trunk_scan_coord* coor
                                                     : (long int)target->frequency_hz;
 }
 
+/* A running scan's go-to of @p target: the hold only when it is on air; otherwise the wait on its park in flight, or
+   the operator's move to it, one target long. Either way the go-to replaces an entry hold: the hold and its mark go,
+   and only the target's confirmed park sets them again, so a park that fails late leaves the scan unheld. A move that
+   got no further than its preparation moved nothing, and puts them back. An ordinary hold carries over, as `L` carries
+   it. */
+static dsd_scan_goto_result
+trunk_scan_goto_running(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t target) {
+    if (dsd_engine_trunk_scan_target_confirmed(state, (int)target)) {
+        return trunk_scan_goto_outcome(state, coord, target);
+    }
+    const int entry_held = coord->hold_active && coord->entry_hold;
+    if (entry_held) {
+        coord->hold_active = 0;
+        coord->entry_hold = 0;
+    }
+    if (!(coord->active == target && coord->targets[target].tune_pending)) {
+        (void)trunk_scan_operator_move_locked(opts, state, coord, 1, target);
+    }
+    const dsd_scan_goto_result result = trunk_scan_goto_outcome(state, coord, target);
+    if (entry_held && result == DSD_SCAN_GOTO_SETUP_FAILED) {
+        coord->hold_active = 1;
+        coord->entry_hold = 1;
+    }
+    trunk_scan_publish_active_target(state, coord);
+    return result;
+}
+
 dsd_scan_goto_result
 dsd_engine_trunk_scan_goto_locked(dsd_opts* opts, dsd_state* state, int index, dsd_trunk_scan_goto_report* report) {
     dsd_trunk_scan_goto_report scratch;
@@ -6063,23 +6098,20 @@ dsd_engine_trunk_scan_goto_locked(dsd_opts* opts, dsd_state* state, int index, d
     }
     coord->park_tried_hz = 0;
     coord->park_tried_deferred = 0;
+    dsd_scan_goto_result result;
     if (coord->paused) {
         dsd_trunk_scan_leave_report leave;
         DSD_MEMSET(&leave, 0, sizeof leave);
         (void)trunk_scan_resume_from(opts, state, coord, target, &leave);
         out->monitor_request = leave.monitor_request;
         out->restart_gain = leave.restart_gain;
-    } else if (!dsd_engine_trunk_scan_target_confirmed(state, index)
-               && !(coord->active == target && rt->tune_pending)) {
-        /* Not on air, nor its park in flight: the operator's move to it, one target long. */
-        (void)trunk_scan_operator_move_locked(opts, state, coord, 1, target);
-    }
-    out->park_hz = trunk_scan_goto_park_hz(state, coord, target);
-    const dsd_scan_goto_result result = trunk_scan_goto_outcome(state, coord, target);
-    if (!coord->paused) {
+        result = trunk_scan_goto_outcome(state, coord, target);
+    } else {
+        result = trunk_scan_goto_running(opts, state, coord, target);
         /* The caller holds the tick guard the timing report reads the parked P25 machine under. */
         trunk_scan_publish_timing(opts, state, coord, trunk_scan_now_m());
     }
+    out->park_hz = trunk_scan_goto_park_hz(state, coord, target);
     return result;
 }
 
