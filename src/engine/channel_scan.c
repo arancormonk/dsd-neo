@@ -144,8 +144,10 @@ typedef struct {
        pending tune's target), and the row's frequency once a tune of it lands. Where a stream stopped under an
        attempt reopens (dsd_engine_channel_scan_stream_stopping()). */
     uint32_t rollback_hz;
-    /* A resume's attempt that a stream stop retired: the next service ends the resume as interrupted. */
+    /* A resume's attempt that a stream stop retired (interrupted_attempt): the next service ends the resume as
+       interrupted, unless another attempt replaced that one first (a resume-at), which the resume then waits on. */
     int resume_interrupted;
+    uint64_t interrupted_attempt;
 } channel_scan;
 
 static void
@@ -488,13 +490,17 @@ channel_scan_resume_row_failed(dsd_opts* opts, dsd_state* state, const channel_s
 }
 
 /* A stream stop retired a resume's attempt (dsd_engine_channel_scan_stream_stopping(), issue #644): the resume never
-   lands, and the scan stays paused where the receiver reopened. Returns 1 when it did. */
+   lands, and the scan stays paused where the receiver reopened. Returns 1 when it did. An attempt that replaced the
+   retired one since (a resume-at's) is the resume's now: the mark goes, and that attempt is serviced as any. */
 static int
 channel_scan_end_interrupted_resume(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     if (!scan->resume_interrupted) {
         return 0;
     }
     scan->resume_interrupted = 0;
+    if (scan->attempt != scan->interrupted_attempt || scan->request || scan->retry) {
+        return 0;
+    }
     if (state->lcn_scan_resume_pending) {
         channel_scan_resume_row_failed(opts, state, scan, DSD_SCAN_RESUME_INTERRUPTED);
     }
@@ -1743,6 +1749,7 @@ dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, dsd_state* state) {
     scan->retry = 0;
     if (state->lcn_scan_resume_pending) {
         scan->resume_interrupted = 1;
+        scan->interrupted_attempt = scan->attempt;
         return;
     }
     dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, DSD_SCAN_GOTO_REFUSED, NULL);

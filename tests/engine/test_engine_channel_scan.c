@@ -4271,6 +4271,47 @@ typed_stream_stop_after_a_completion_case(int resume) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #644: a paused list's resume of row 1 pending when the stream stops, which ends that resume as interrupted at
+   the next service; West (row 3) typed before that service resumes at West instead. West's landing resumes the scan
+   and holds West, and nothing calls West's resume interrupted. With @p refused, West's tune is refused with nothing
+   moved: the resume of row 1 stands, and the service ends it as interrupted. */
+static void
+typed_resume_at_over_an_interrupted_resume_case(int refused) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    opts->rtlsdr_center_freq = 870012500U; /* the operator's manual frequency */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[1];
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[1]; /* the timeout cached the row's frequency */
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    assert(opts->rtlsdr_center_freq == 870012500U && state->lcn_scan_resume_pending == 1U);
+    expected_tune_hz = k_walk_hz[3];
+    tune_result = refused ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_resume_at(opts, state, 3)
+           == (refused ? DSD_SCAN_GOTO_REFUSED : DSD_SCAN_GOTO_PENDING));
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    state->ui_msg[0] = '\0';
+    if (!refused) {
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    }
+    for (int i = 0; i < 3; i++) {
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    }
+    if (refused) {
+        assert(state->lcn_scan_paused == 1U && state->lcn_scan_resume_pending == 0U && opts->scanner_mode == 0);
+        assert(strcmp(state->ui_msg, "Scan stays paused: the resume to 152.000000 MHz was interrupted") == 0);
+    } else {
+        assert(state->lcn_scan_paused == 0U && state->lcn_scan_resume_pending == 0U && opts->scanner_mode == 1);
+        assert(typed_entry_held_on(state, 3) && strstr(state->ui_msg, "interrupted") == NULL);
+    }
+    assert(entry_failure_taken(state, -1, DSD_SCAN_GOTO_REFUSED));
+    typed_walk_fixture_free(opts, state);
+}
+
 /* Issue #644: a row whose tune landed and then restages (a keyring change while it was outstanding): the receiver is
    confirmed on it, so a stream stop while the restage is pending changes nothing, and the restage lands the row. */
 static void
@@ -4795,6 +4836,8 @@ main(void) {
     test_typed_goto_waits_on_the_tune_in_flight();
     test_typed_goto_joins_the_pending_timed_step();
     test_typed_goto_never_joins_a_dead_attempt();
+    typed_resume_at_over_an_interrupted_resume_case(0);
+    typed_resume_at_over_an_interrupted_resume_case(1);
     test_typed_stream_stop_puts_the_centre_back();
     test_typed_stream_stop_after_a_replacement();
     typed_stream_stop_after_a_completion_case(0);

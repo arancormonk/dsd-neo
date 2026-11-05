@@ -3531,7 +3531,10 @@ outstanding, across go-tos that replace and restages, and moves it to a row's fr
 restage, confirmed there, changes nothing). The untyped records' completions are dropped with the session, unconsumed;
 the typed attempt is retired with the revert (`dsd_trunk_tuning_request_disown()`), so a completion published before the
 stop commits nothing: a running scan's row ends unlanded with its entry's failure kept, a resume ends interrupted at the
-next service. A centre something else set since stays, and an entry's or an import's reopens on its target, which the
+next service. That mark names the attempt it retired (`channel_scan::interrupted_attempt`): a resume-at that replaced
+the attempt before that service is the resume's now, and its landing resumes and holds its row, with nothing called
+interrupted; a replacement refused with nothing moved leaves the retired attempt, which then ends interrupted. A
+centre something else set since stays, and an entry's or an import's reopens on its target, which the
 operator asked for. A trunk scan needs none: its coordinator names the target whose park is pending
 (`trunk_scan_switch_to()` publishes it before the retune), which the reopened stream opens on; the poll reads the
 completion before the session, so a stop's failure is never toasted. A dropped record is reported once
