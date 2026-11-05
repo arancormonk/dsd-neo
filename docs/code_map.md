@@ -3989,7 +3989,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     65,535); the trunk-scan toasts read `trunk_scan_avoided_count`, the coordinator's own count, exact even when its
     list failed to allocate. Toasts name an entry as the avoided channel list does: a `-Y` row as `row N (<MHz>, ...)`
     (`frequency unknown` for a placeholder), since two rows can share a frequency, and a target as `#<ordinal> <label>`
-    (`trunk_scan_toast_name()`; the id when it has no label, since Android's ids are entry UIDs), from the published
+    (`svc_trunk_scan_toast_name()`; the id when it has no label, since Android's ids are entry UIDs), from the published
     `trunk_scan_active_*` fields for avoid and from the `dsd_trunk_scan_target_name` the unavoid hook fills for put back
     (also on `NOT_AVOIDED`). Tests: `APP_COMMAND_QUEUE`, `APP_CONTROL_SCAN_AVOID_VIEW`, `API_COMMANDS`,
     `API_COMMAND_PAYLOADS`.
