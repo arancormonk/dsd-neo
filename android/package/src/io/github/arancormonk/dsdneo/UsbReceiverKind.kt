@@ -82,8 +82,7 @@ internal object UsbReceiverKind {
         "--auto-ppm-snr", "--frontend", "--profile", "--p25-vc-grace", "--p25-min-follow-dwell",
         "--p25-grant-voice-timeout", "--p25-mac-hold", "--p25-cc-grace", "--p25-force-release-extra",
         "--p25-force-release-margin", "--p25-p1-err-hold-pct", "--p25-p1-err-hold-sec", "--trunk-scan",
-        "--trunk-scan-off", "--trunk-scan-hold", "--trunk-scan-dwell-ms", "--trunk-scan-activity-hold-ms",
-        "--scan-voice-qualify-ms",
+        "--trunk-scan-off", "--trunk-scan-dwell-ms", "--trunk-scan-activity-hold-ms", "--scan-voice-qualify-ms",
         "--scan-voice-hold-ms", "--scan-max-visit-ms", "--nfm-bandwidth-hz", "--am-bandwidth-hz", "--squelch",
         "--tone-allow", "--slot-allow", "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block",
         "--nac-allow", "--nac-block", "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name",
@@ -97,9 +96,9 @@ internal object UsbReceiverKind {
         "--iq-replay-rate", "--iq-info",
     )
 
-    /** Long options whose value is free text, taken whatever it starts with: an API token may begin with '-'. `k_free_value_options`. */
+    /** Long options whose value is free text, taken whatever it starts with: an API token or a target id may begin with '-'. `k_free_value_options`. */
     private val LONG_FREE_VALUE: Set<String> = setOf(
-        "--api-token", "--api-token-file",
+        "--api-token", "--api-token-file", "--trunk-scan-hold",
     )
 
     /** Long options that take the next argument only when it does not start with '-'. `k_skip_exact_next_nonopt`. */

@@ -496,17 +496,33 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
     return 0;
 }
 
+/* A hold names a target of the trunk scan's lists, which the command line or a config must give: say why none runs.
+   An option of this command line turned off the scan a config enabled, the config's lists are off, or there are no
+   lists. */
+static void
+cli_refuse_trunk_scan_hold_without_scan(const dsd_opts* opts, int* out_exit_rc) {
+    if (opts->trunk_scan_off_by_cli) {
+        LOG_ERROR("--trunk-scan-hold needs a trunk scan: an option on this command line (such as -T, -Y or -i) turned "
+                  "off the config's trunk scan; drop it, or give --trunk-scan <targets.csv>\n");
+    } else if (opts->trunk_scan_list_count > 0) {
+        LOG_ERROR(
+            "--trunk-scan-hold needs a trunk scan: the config's [trunk_scan] lists are off (enabled = false); set "
+            "enabled = true, or give --trunk-scan <targets.csv>\n");
+    } else {
+        LOG_ERROR("--trunk-scan-hold needs a trunk scan: give --trunk-scan <targets.csv>, or a config with "
+                  "[trunk_scan] lists\n");
+    }
+    cli_set_exit_rc(out_exit_rc, 1);
+}
+
 static int
 cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, int chan_csv_cli_seen,
                                      int p25_bandplan_cli_seen, int config_one_shot_cli_seen, int* out_exit_rc) {
     if (!opts || config_one_shot_cli_seen) {
         return DSD_PARSE_CONTINUE;
     }
-    /* A hold names a target of the trunk scan's lists, which the command line or a config must give. */
     if (opts->trunk_scan_hold_id[0] != '\0' && !opts->trunk_scan_enabled) {
-        LOG_ERROR("--trunk-scan-hold needs a trunk scan: give --trunk-scan <targets.csv>, or a config with "
-                  "[trunk_scan] lists\n");
-        cli_set_exit_rc(out_exit_rc, 1);
+        cli_refuse_trunk_scan_hold_without_scan(opts, out_exit_rc);
         return DSD_PARSE_ERROR;
     }
     if (!opts->trunk_scan_enabled) {

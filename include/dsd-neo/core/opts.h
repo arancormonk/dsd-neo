@@ -516,6 +516,9 @@ struct dsd_opts {
        typed by hand holds it; "" for none. The scan's start takes it, once. No INI key, never saved. Sized as a
        target id (dsd_trunk_scan_target::id). */
     char trunk_scan_hold_id[64];
+    /* 1 when an option of this command line turned off the trunk scan a config enabled (the bootstrap's gating), so a
+       refusal can name that cause. Runtime only, never saved. */
+    int trunk_scan_off_by_cli;
     char src_in_file[1024];              // Source ID alias CSV
     char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
     char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown

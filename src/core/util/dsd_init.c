@@ -407,6 +407,8 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->trunk_scan_enabled = 0;
     DSD_MEMSET(opts->trunk_scan_lists, 0, sizeof opts->trunk_scan_lists);
     opts->trunk_scan_list_count = 0;
+    opts->trunk_scan_hold_id[0] = '\0';
+    opts->trunk_scan_off_by_cli = 0;
     opts->trunk_scan_idle_dwell_ms = 3000;
     opts->trunk_scan_activity_hold_ms = 1200;
     opts->scan_voice_only = 0;
