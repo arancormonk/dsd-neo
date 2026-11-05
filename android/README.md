@@ -2126,7 +2126,9 @@ saved systems added to its lists included: as the session started them (an edit 
 saved since takes effect at the next start), on a list that is switched on, and not
 avoided. It takes you back in place: the scan resumes on the entry and holds it, with
 its other lists kept. Other lists and saved systems are not offered there, since
-starting one would end that session.
+starting one would end that session. The button does not check whether your radio can
+take the entry's channel width. If it can't, tapping it pauses the scan on that
+frequency instead, and the message says the entry's width does not fit.
 
 While a scan runs, Monitor's scan row under the call offers **Hold** (stay on this
 channel), **Avoid** (skip it for the session), **Prev** and **Next**. **Prev** steps

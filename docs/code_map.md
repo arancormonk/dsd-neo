@@ -11215,11 +11215,15 @@ Qt Quick frontend (`src/ui/qt`):
     wrote, `ScanListStarter::sessionCsvPath()`, the one file in the list's folder, else the imported file it ran from; a
     list saved since changes neither, the saved index being for Explore), less those on a list shown off
     (`ScanListToggleModel::listSwitchedOff()`, the #697 publication) or avoided (`ScanAvoidListModel::avoidsTarget()`,
-    the #672 publication). The Monitor shows the row names and one `OutlineButton` in its live strip (`monitorListen`, a
-    part of `stripHeight`), the Spectrum one more button in its tuning controls (`spectrumListenWithSettings`); both
-    read `Util.listenText()`/`listenAccessibleName()`: "Start “Name”" for a saved system alone, else "Listen with its
-    settings". `requestListen()` runs the one action, or opens `listenMenu` (an `ActionMenu`, whose rows take an
-    `accessibleName`) over a snapshot of several. `listenWith()` stops the session as a site restart does and leaves
+    the #672 publication). A documented limit: the frontend does not check a target's effective width, which the
+    engine's match does (D5), so a target whose width the input cannot take is still offered, and its entry is then a
+    plain tune that pauses the scan with the reason (`; <name>'s width does not fit`). The Monitor shows the row names
+    and one `OutlineButton` in its live strip (`monitorListen`, a part of `stripHeight`), the Spectrum one more button
+    in its tuning controls (`spectrumListenWithSettings`); both read `Util.listenText()`/`listenAccessibleName()`:
+    "Start “Name”" for a saved system alone, else "Listen with its settings". `requestListen()` runs the one action, or
+    opens `listenMenu` (an `ActionMenu`, whose rows take an `accessibleName`) over a snapshot of several, or of a lone
+    action that cannot run (an avoided saved system), whose row shows it disabled with its reason; the buttons'
+    `listenAccessibleName()` says that reason too. `listenWith()` stops the session as a site restart does and leaves
     `pendingRestart` `{kind: "scan", uid, holdTarget}` (or `{uid}` for a saved system) for `finishPendingRestart()`, so
     the hold rides only that request: a Back or another start drops it, a USB permission wait carries it to the grant
     (`pendingStartHold`), and a refused or failed start's Retry starts the list unheld. The decoder parks the target
