@@ -213,7 +213,9 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         }
         /* The calls heard so far end as they began, the operator's or trunking's, then the tuner is the scan's (issue
            #644 B-4). */
-        dsd_engine_channel_scan_start(opts, state);
+        if (dsd_engine_channel_scan_start(opts, state) != 0) {
+            return TRUNK_ACTION_REFUSED;
+        }
         opts->trunk_enable = 0;
         return TRUNK_ACTION_DONE;
     }

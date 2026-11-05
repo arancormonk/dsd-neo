@@ -24,7 +24,6 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
-#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -1652,33 +1651,32 @@ dsd_engine_channel_scan_end_running_calls(dsd_opts* opts, dsd_state* state) {
     return 1;
 }
 
-/* The row a start tunes after taking the tuner over from a walk still pending: the row heard, else the cursor's. */
-static int
-channel_scan_start_takeover_row(const dsd_state* state) {
-    const int heard = dsd_state_lcn_heard_row(state);
-    if (heard >= 0 && heard < state->lcn_freq_count) {
-        return heard;
-    }
-    return (state->lcn_freq_roll < 0 || state->lcn_freq_roll >= state->lcn_freq_count) ? 0 : state->lcn_freq_roll;
+/* Why a start or a resume did nothing, or a resume left the scan paused, on the status line every frontend shows, for
+   as long as a tune's failure stays there. */
+static void
+channel_scan_toast_resume(dsd_state* state, const char* text) {
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
+    state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
 }
 
-void
+int
 dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
     /* A paused scan resumes instead (dsd_engine_channel_scan_resume()): a start would publish it running beside its
        pause. */
     if (!opts || !state || state->lcn_scan_paused || state->lcn_scan_resume_pending) {
-        return;
+        return -1;
     }
     /* With no list of the user's own the scan never moves (channels learned over the air are no list): the receiver
        stays the operator's, so its calls go on and it stays the operator's tuner, as a stop over such a session ends
        nothing (channel_scan_untyped_runs()). */
     const int users_list = dsd_state_trunk_lcn_user_list_present(opts, state);
     /* A walk off the scan still waiting on its tune would land once the scan owns the tuner, on a row the scan never
-       chose (issue #644): the start takes the tuner over first, so the walk's landing decides nothing, and the scan's
-       own tune below decides, as any newer tune does. */
-    const int takes_over_walk = users_list && state->lcn_freq_count > 0 && dsd_engine_manual_tune_operator_walk_noted();
-    if (takes_over_walk) {
-        dsd_engine_manual_tune_supersede(state);
+       chose (issue #644): the scan takes it over as its own walk, with no tune of its own, so its landing commits its
+       row and its failure passes it as the scan's walk does. One the scan cannot take (a typed list's, a row rewritten
+       since) refuses the start, which changes nothing: the walk settles off the scan, and a start after it runs. */
+    if (users_list && dsd_engine_manual_tune_operator_walk_noted() && !dsd_engine_manual_tune_adopt_walk(state)) {
+        channel_scan_toast_resume(state, "Scanner not started: channel change still pending; retry");
+        return -1;
     }
     if (users_list) {
         /* The calls heard so far end under what they began with (no row, the operator's tuner after a manual tune):
@@ -1688,18 +1686,7 @@ dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
         state->operator_tuned = 0U;
     }
     opts->scanner_mode = 1;
-    if (!takes_over_walk) {
-        return;
-    }
-    /* The row it holds (the row heard), tuned again: its landing commits it, so the row heard, a hold and the receiver
-       agree. */
-    const int row = channel_scan_start_takeover_row(state);
-    if (dsd_channel_modes_present(state)) {
-        (void)channel_scan_begin_step(state, 1);
-        (void)channel_scan_start_row(opts, state, row);
-    } else {
-        (void)dsd_engine_scan_untyped_enter_row(opts, state, row, (double)dsd_decode_time());
-    }
+    return 0;
 }
 
 void
@@ -1711,14 +1698,6 @@ dsd_engine_channel_scan_resume_landed(dsd_opts* opts, dsd_state* state) {
     state->lcn_scan_paused = 0U;
     state->lcn_scan_resume_pending = 0U;
     state->operator_tuned = 0U;
-}
-
-/* Why a resume left the scan paused, or did nothing, on the status line every frontend shows, for as long as a tune's
-   failure stays there. */
-static void
-channel_scan_toast_resume(dsd_state* state, const char* text) {
-    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
-    state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
 }
 
 void

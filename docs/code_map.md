@@ -3977,20 +3977,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the user's own it only sets `scanner_mode`, ending no call and leaving `operator_tuned` as it is until the scan
     first lands a row, since the scan never moves the receiver), which ends the calls heard so far under what they began
     with and then gives the tuner to the scan (`scanner_mode` 1, `operator_tuned` 0; issue #644 B-4), before trunking
-    goes off. A walk off the scan still waiting on its tune (`dsd_engine_manual_tune_operator_walk_noted()`) is taken
-    over first (`dsd_engine_manual_tune_supersede()`, so its landing decides nothing), and once the scan owns the
-    tuner it tunes its row heard (else the cursor's) again (`channel_scan_start_takeover_row()`), whose landing
-    commits it, so the row heard, a hold kept across the stop and the receiver agree; `SCAN_RESUME` resumes only
-    a paused scan (`Not paused: the scan is running`, `Not scanning: no paused scan to resume`), and a second one while
-    a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are refused under a trunk-scan coordinator (`Trunk
-    scan: each target sets its own trunking`): clearing trunking there stranded a target in a followed call (B5). Over a
-    paused `-Y` scan, trunking on stops it as it stops a running one, and trunking off leaves the pause. Hold, avoid and
-    Next and Previous channel on a paused scan answer `Scan paused: resume it first` (a failed command that changes
-    nothing: the avoids stay, and a paused trunk scan keeps its hold, while a `-Y` pause already dropped the hold),
-    while `MANUAL_TUNE`, clear avoids and put back (flag edits, issue #672) are allowed. A paused `-Y` scan ends at an
-    input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a RadioReference
-    adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before. `y`,
-    `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
+    goes off. A walk off the scan still waiting on its tune (`dsd_engine_manual_tune_operator_walk_noted()`) becomes
+    the scan's own walk (`dsd_engine_manual_tune_adopt_walk()`), with no tune of the start's: its landing commits its
+    row and its late failure passes it as the scan's walk does, so the row heard, a hold kept across the stop and the
+    receiver agree. A walk the scan cannot take (a typed list's, a row rewritten or a list replaced since) refuses the
+    start (`Scanner not started: channel change still pending; retry`), and nothing changes; `SCAN_RESUME` resumes
+    only a paused scan (`Not paused: the scan is running`, `Not scanning: no paused scan to resume`), and a second one
+    while a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are refused under a trunk-scan coordinator
+    (`Trunk scan: each target sets its own trunking`): clearing trunking there stranded a target in a followed call
+    (B5). Over a paused `-Y` scan, trunking on stops it as it stops a running one, and trunking off leaves the pause.
+    Hold, avoid and Next and Previous channel on a paused scan answer `Scan paused: resume it first` (a failed command
+    that changes nothing: the avoids stay, and a paused trunk scan keeps its hold, while a `-Y` pause already dropped
+    the hold), while `MANUAL_TUNE`, clear avoids and put back (flag edits, issue #672) are allowed. A paused `-Y` scan
+    ends at an input switch that ran (`ui_input_switch_ends_paused_scan()`), a channel-map import or clear and a
+    RadioReference adoption, and survives a refused or rolled-back one; under a trunk scan those are refused as before.
+    `y`, `SCAN_RESUME` and `TUNER_RELEASE` are apply-guarded, so a busy guard makes them wait, never apply in part.
     `operator_tuned` is cleared by a resume, by `y` starting `-Y` over a list of the user's own, by every row a running
     `-Y` scan lands (`untyped_install_row()`, `channel_scan_commit()`: after the boundary has ended the operator's
     calls, so a scan started with no map, or turned on over a manual tune by a config or an RR import, takes the tuner

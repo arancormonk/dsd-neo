@@ -60,6 +60,14 @@ uint64_t dsd_engine_manual_tune_pending_id(void);
    waits). Atomic loads; any thread (the P25 watchdog's tick included). */
 int dsd_engine_manual_tune_operator_walk_noted(void);
 
+/* The -Y scan starting over a Next or Previous walk off the scan still awaiting its tune takes that walk as its own
+   (issue #644): the record turns into a walk the scan owns, in the current scan session, so its landing commits its row
+   as the scan's walk does, and its late failure or drop follows that walk's rules; the walk no longer holds the tuner
+   against the state machines. Only a walk on @p state's current list (dsd_state::lcn_list_rev) whose row still holds
+   the frequency walked to, and only with no modes (a typed row lands with settings a walk never tuned). Returns 1 when
+   taken, 0 otherwise (nothing changes). Decoder thread. */
+int dsd_engine_manual_tune_adopt_walk(const dsd_state* state);
+
 /* The settling of a walk whose completion a poll took (its row, its handoffs) is done: the walk no longer owns the
    tuner. Decoder thread, after dsd_engine_manual_tune_poll() returned for it. */
 void dsd_engine_manual_tune_walk_settled(void);

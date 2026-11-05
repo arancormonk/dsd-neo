@@ -15,6 +15,7 @@
  * no longer counts. An untyped -Y step's record that a newer tune displaces keeps its drop for the poll as well.
  */
 
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -429,6 +430,20 @@ int
 dsd_engine_manual_tune_operator_walk_noted(void) {
     return (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && atomic_load(&g_record_walk_off_scan) != 0)
            || atomic_load(&g_walk_settling) != 0;
+}
+
+int
+dsd_engine_manual_tune_adopt_walk(const dsd_state* state) {
+    if (!state || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE
+        || g_record.scan_owned || dsd_channel_modes_present(state) || g_record.list_rev != state->lcn_list_rev
+        || g_record.row < 0 || g_record.row >= state->lcn_freq_count
+        || *dsd_state_trunk_lcn_slot_const(state, g_record.row) != (long int)g_record.requested_hz) {
+        return 0;
+    }
+    g_record.scan_owned = 1;
+    g_record.scan_session = state->lcn_scan_session;
+    atomic_store(&g_record_walk_off_scan, 0);
+    return 1;
 }
 
 void

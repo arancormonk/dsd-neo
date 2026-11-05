@@ -111,9 +111,10 @@ dsd_engine_manual_tune_operator_walk_noted(void) {
     return 0;
 }
 
-void
-dsd_engine_manual_tune_supersede(dsd_state* state) {
+int
+dsd_engine_manual_tune_adopt_walk(const dsd_state* state) {
     (void)state;
+    return 0;
 }
 
 /* The typed-frequency match (scan_entry.c, issue #644) built in: no manual tune is ever noted here, and no trunk scan

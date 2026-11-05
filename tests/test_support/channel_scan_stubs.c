@@ -35,10 +35,11 @@ dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state) {
 
 /* Nor calls to end at a -Y start: the start's ownership flags only. ENGINE_CHANNEL_SCAN and ENGINE_NO_CARRIER_RESET
    drive the engine's, which ends the calls first (issue #644 B-4). */
-void
+int
 dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
     opts->scanner_mode = 1;
     state->operator_tuned = 0U;
+    return 0;
 }
 
 /* Nor a -Y scan to pause or resume (issue #671): ENGINE_CHANNEL_SCAN and ENGINE_NO_CARRIER_RESET drive the engine's. */

@@ -79,8 +79,15 @@ int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place
  * the scan never moves the receiver: only scanner_mode is set, no call ends and operator_tuned stays as it is until
  * the scan first lands a row (every landing clears it, after the boundary has ended the operator's calls). A
  * paused scan, or one whose resume is pending, is refused (nothing changes): it resumes through
- * dsd_engine_channel_scan_resume(). Under the P25 SM tick guard the guarded scanner commands hold. Decoder thread. */
-void dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);
+ * dsd_engine_channel_scan_resume(). A Next or Previous walk off the scan still waiting on its tune (issue #644) becomes
+ * the scan's own walk, with no tune of the start's: its landing commits its row, and its failure or drop follows the
+ * scan's walk rules (dsd_engine_channel_scan_walk_row()), so the row heard, a hold kept across the stop and the
+ * receiver agree. A walk the scan cannot take as its own (a typed list's, whose rows land with settings the walk never
+ * tuned; one to a row rewritten or a list replaced since) refuses the start, with the reason on the status line, and
+ * nothing changes. Under the P25 SM tick guard the guarded scanner commands hold. Decoder thread.
+ *
+ * @return 0 when the scan started, -1 when it was refused. */
+int dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);
 
 /** dsd_engine_channel_scan_resume() results. */
 enum {
