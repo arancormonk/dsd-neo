@@ -505,6 +505,32 @@ test_snapshot_and_next_start() {
     CHECK(text.find("lists_off = 1\n") != std::string::npos);
 }
 
+/* Issue #644: --trunk-scan-hold is a one-shot start option with no key: a save (and an exit autosave, which writes the
+   same snapshot) never writes it, and a config never sets it. */
+void
+test_hold_is_never_saved() {
+    auto opts = std::make_unique<dsd_opts>();
+    const auto state = std::make_unique<dsd_state>();
+    opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", "/a.csv");
+    opts->trunk_scan_list_count = 1;
+    DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", "held-target-id");
+
+    const auto snap = std::make_unique<dsdneoUserConfig>();
+    dsd_snapshot_opts_to_user_config(opts.get(), state.get(), snap.get());
+    const std::string text = render(*snap);
+    CHECK(!text.empty());
+    CHECK(text.find("held-target-id") == std::string::npos);
+    CHECK(text.find("trunk_scan_hold") == std::string::npos);
+    CHECK(text.find("hold_id") == std::string::npos);
+
+    const auto cfg = std::make_unique<dsdneoUserConfig>();
+    CHECK(load_ini(text, nullptr, cfg.get()) == 0);
+    auto fresh = std::make_unique<dsd_opts>();
+    dsd_apply_user_config_to_opts(cfg.get(), fresh.get(), state.get());
+    CHECK(fresh->trunk_scan_hold_id[0] == '\0');
+}
+
 /* --validate-config reports the list keys: a bad lists_off and a path that cannot fit at their line, the start rules
    on the composed file. */
 void
@@ -623,6 +649,7 @@ main(void) {
     test_path_expansion_overflow_is_refused();
     test_apply_composes_over_the_session();
     test_snapshot_and_next_start();
+    test_hold_is_never_saved();
     test_validation_reports_list_keys();
     test_unknown_list_keys_are_ignored();
     test_validator_and_loader_agree_on_path_length();

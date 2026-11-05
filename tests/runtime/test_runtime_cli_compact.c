@@ -187,6 +187,31 @@ test_trunk_scan_list_long_opts_are_removed(void) {
     return 0;
 }
 
+/* Issue #644: --trunk-scan-hold, in both spellings, leaves getopt nothing, a target id that reads like an option
+   included; "-fi" after it stays. */
+static int
+test_trunk_scan_hold_long_opt_is_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan-hold";
+    char arg2[] = "-county";
+    char arg3[] = "--trunk-scan-hold=fire";
+    char arg4[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int new_argc = dsd_cli_compact_args(5, argv);
+    if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "--trunk-scan-hold: new_argc=%d argv[1]=\"%s\", want 2 and \"-fi\"\n", new_argc,
+                    argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    if (dsd_cli_long_option_arity("--trunk-scan-hold") != DSD_CLI_LONG_NEXT
+        || dsd_cli_long_option_arity("--trunk-scan-hold=fire") != DSD_CLI_LONG_ALONE) {
+        DSD_FPRINTF(stderr, "--trunk-scan-hold arity is not the parser's\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_p25_bandplan_long_opts_are_removed(void) {
     char arg0[] = "dsd-neo";
@@ -813,6 +838,7 @@ main(void) {
     rc |= test_src_csv_long_opts_are_removed();
     rc |= test_p25_bandplan_long_opts_are_removed();
     rc |= test_trunk_scan_list_long_opts_are_removed();
+    rc |= test_trunk_scan_hold_long_opt_is_removed();
     rc |= test_scan_voice_long_opts_are_removed();
     rc |= test_scan_max_visit_long_opts_are_removed();
     rc |= test_am_bandwidth_long_opts_are_removed();

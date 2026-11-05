@@ -19831,6 +19831,176 @@ test_goto_refused_retires_an_earlier_entry(void) {
     return test_rc;
 }
 
+/* ---- --trunk-scan-hold (issue #644): a trunk scan that starts parked on one target, held there ---------------- */
+
+static const char* const k_hold_names[] = {"county", "state"};
+static const char* const k_hold_bodies[] = {
+    "a,dmr-trunk,451000000,,250,,\n"
+    "b,dmr-conventional,452000000,,250,,\n",
+    "c,dmr-trunk,453000000,,250,,\n"
+    "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 20000\n",
+};
+
+/* Start a scan over the two lists above (targets a, b | c, fire; list 2 off where @p second_off) with
+   --trunk-scan-hold @p id. Returns the init's answer, -2 when the files could not be written. */
+static int
+hold_scan_start(scan_list_files* files, int second_off, const char* id, dsd_opts* opts, dsd_state* state, char* err,
+                size_t err_sz) {
+    if (scan_list_files_write(files, k_squelch_targets_header, k_hold_names, k_hold_bodies, 2) != 0) {
+        scan_list_files_remove(files);
+        return -2;
+    }
+    reset_scan_opts_state(opts, state);
+    const int off[] = {0, second_off};
+    scan_list_files_to_opts(files, off, opts);
+    DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", id);
+    err[0] = '\0';
+    trunk_scan_test_set_now(0.0);
+    return dsd_engine_trunk_scan_init(opts, state, err, err_sz);
+}
+
+/* Whether the start kept the failure of its hold's park, target @p index named @p label coming to @p result, for
+   app-control to name once; @p index -1 for none kept. Takes it either way. */
+static int
+expect_hold_failure(dsd_state* state, const char* stage, int index, const char* label, dsd_scan_goto_result result) {
+    dsd_scan_entry_failure_t failed;
+    DSD_MEMSET(&failed, 0, sizeof failed);
+    const int took = dsd_engine_scan_entry_take_failure(state, &failed);
+    const int ok = index < 0 ? !took
+                             : took && failed.scanner == DSD_SCAN_ENTRY_TRUNK && failed.row == index
+                                   && failed.result == result && strcmp(failed.label, label) == 0
+                                   && !dsd_engine_scan_entry_take_failure(state, NULL);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "hold start %s: failure kept %d (target %d \"%s\" result %d), want target %d \"%s\"\n",
+                    stage, took, took ? failed.row : -1, took ? failed.label : "", took ? (int)failed.result : -1,
+                    index, index < 0 ? "" : label);
+        return 1;
+    }
+    return 0;
+}
+
+/* An id no target has, one whose list starts off and one whose width the DSP rate cannot filter refuse the start,
+   naming the id and why; nothing is left attached. */
+static int
+test_hold_start_refusals(void) {
+    static const struct {
+        const char* id;
+        int second_off;
+        int rate_hz;
+        const char* want;
+    } cases[] = {
+        {"zz", 0, 0, "--trunk-scan-hold: no target in the trunk-scan lists has the id \"zz\""},
+        {"c", 1, 0, "--trunk-scan-hold: target \"c\" is in a list that is off (list 2, state); start that list on"},
+        {
+            "fire",
+            0,
+            16000,
+            "--trunk-scan-hold: target \"fire\"'s width does not fit (NFM 20 kHz does not fit the 16 kHz DSP rate)",
+        },
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        scan_list_files files;
+        char err[256];
+        g_scan_dsp_rate_hz = cases[i].rate_hz;
+        const int rc = hold_scan_start(&files, cases[i].second_off, cases[i].id, &opts, &state, err, sizeof err);
+        if (rc != -1 || strcmp(err, cases[i].want) != 0 || dsd_engine_trunk_scan_active_index(&state) != (size_t)-1
+            || state.trunk_scan_hold != 0U || state.trunk_scan_entry_hold != 0U) {
+            DSD_FPRINTF(stderr, "hold start refusal %zu: rc=%d err=\"%s\", want \"%s\" and nothing attached\n", i, rc,
+                        err, cases[i].want);
+            test_rc = 1;
+        }
+        g_scan_dsp_rate_hz = 0;
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
+/* The scan starts on the target named, in any list, held and marked an entry hold once its park landed (at once
+   here), as a typed frequency's go-to holds it; the id is taken, once. */
+static int
+test_hold_start_parks_and_holds(void) {
+    static const struct {
+        const char* id;
+        size_t index;
+    } cases[] = {{"c", 2U}, {"b", 1U}};
+
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        scan_list_files files;
+        char err[256];
+        const int rc = hold_scan_start(&files, 0, cases[i].id, &opts, &state, err, sizeof err);
+        test_rc |= expect_goto("hold start: init", rc == 0);
+        test_rc |= expect_goto_entry(&state, cases[i].id, cases[i].index, 1U, 1U);
+        test_rc |=
+            expect_goto("hold start: on air, nothing waits, the id taken",
+                        dsd_engine_trunk_scan_target_confirmed(&state, (int)cases[i].index)
+                            && dsd_engine_trunk_scan_entry_pending(&state) == 0 && opts.trunk_scan_hold_id[0] == '\0');
+        test_rc |= expect_hold_failure(&state, cases[i].id, -1, "", DSD_SCAN_GOTO_REFUSED);
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
+/* A park still in flight: the hold comes with its landing, not before; a park that fails late leaves the scan
+   running unheld on its normal failure path (on to the next target), its failure kept for its toast, once. */
+static int
+hold_start_pending_case(int fails, const char* what) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char err[256];
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const int rc = hold_scan_start(&files, 0, "c", &opts, &state, err, sizeof err);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    int test_rc = expect_goto(what, rc == 0 && park != 0U);
+    test_rc |= expect_goto_entry(&state, what, 2U, 0U, 0U);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 1);
+    dsd_trunk_tuning_request_publish(park, fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 0.1);
+    test_rc |= expect_goto_entry(&state, what, fails ? 3U : 2U, fails ? 0U : 1U, fails ? 0U : 1U);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    test_rc |= expect_hold_failure(&state, what, fails ? 2 : -1, "c", DSD_SCAN_GOTO_REFUSED);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+static int
+test_hold_start_pending_outcomes(void) {
+    return hold_start_pending_case(0, "pending, lands") | hold_start_pending_case(1, "pending, fails late");
+}
+
+/* A park refused or deferred at the start: the scan runs on unheld, on to the next target as any failed start park
+   goes, and the failure is kept for its toast, once. */
+static int
+test_hold_start_refused_park_runs_on_unheld(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (int deferred = 0; deferred < 2; deferred++) {
+        const char* what = deferred ? "deferred park" : "refused park";
+        scan_list_files files;
+        char err[256];
+        g_counting_tune_to_cc_failures_remaining = deferred ? 0 : 1;
+        g_counting_tune_to_cc_deferrals_remaining = deferred ? 1 : 0;
+        const int rc = hold_scan_start(&files, 0, "c", &opts, &state, err, sizeof err);
+        test_rc |= expect_goto(what, rc == 0 && opts.trunk_scan_hold_id[0] == '\0');
+        test_rc |= expect_goto_entry(&state, what, 3U, 0U, 0U);
+        test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+        test_rc |= expect_hold_failure(&state, what, 2, "c", deferred ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED);
+        g_counting_tune_to_cc_failures_remaining = 0;
+        g_counting_tune_to_cc_deferrals_remaining = 0;
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -20117,6 +20287,10 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_replaces_an_entry_hold);
     rc |= run_with_default_tune_hook(test_operator_moves_cancel_a_pending_entry);
     rc |= run_with_default_tune_hook(test_goto_refused_retires_an_earlier_entry);
+    rc |= run_with_default_tune_hook(test_hold_start_refusals);
+    rc |= run_with_default_tune_hook(test_hold_start_parks_and_holds);
+    rc |= run_with_default_tune_hook(test_hold_start_pending_outcomes);
+    rc |= run_with_default_tune_hook(test_hold_start_refused_park_runs_on_unheld);
     return rc;
 }
 

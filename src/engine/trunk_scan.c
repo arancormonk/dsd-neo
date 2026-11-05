@@ -5622,6 +5622,112 @@ trunk_scan_log_lists(const dsd_trunk_scan_coord* coord) {
     }
 }
 
+static dsd_scan_entry_reason trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state,
+                                                     const dsd_trunk_scan_coord* coord,
+                                                     const dsd_trunk_scan_target_runtime* rt, int rate_hz);
+static dsd_scan_goto_result trunk_scan_goto_outcome(dsd_state* state, dsd_trunk_scan_coord* coord, size_t index);
+
+/* Why --trunk-scan-hold cannot start on target @p rt (issue #644), in @p err: the reason a typed frequency's toast
+   gives, with what it is about, the list off or the width the DSP rate cannot filter. */
+static void
+trunk_scan_hold_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                        const dsd_trunk_scan_target_runtime* rt, dsd_scan_entry_reason reason, int rate_hz, char* err,
+                        size_t err_sz) {
+    const char* id = rt->target.id;
+    if (reason == DSD_SCAN_ENTRY_AVOIDED) {
+        scan_set_error(err, err_sz, "--trunk-scan-hold: target \"%s\" is avoided", id);
+        return;
+    }
+    if (reason == DSD_SCAN_ENTRY_LIST_OFF) {
+        scan_set_error(err, err_sz,
+                       "--trunk-scan-hold: target \"%s\" is in a list that is off (list %d, %s); start "
+                       "that list on",
+                       id, (int)rt->list + 1, coord->lists[rt->list].name);
+        return;
+    }
+    char brief[DSD_ANALOG_ERROR_TEXT_MAX];
+    dsd_scan_option_values scratch;
+    (void)dsd_engine_scan_analog_width_skipped(opts, state, trunk_scan_target_values(rt, &scratch),
+                                               dsd_scan_mode_analog_kind(trunk_scan_target_mode(rt->target.type)),
+                                               rate_hz, brief, sizeof brief);
+    scan_set_error(err, err_sz, "--trunk-scan-hold: target \"%s\"'s width does not fit (%s)", id, brief);
+}
+
+/* The target --trunk-scan-hold starts the scan on (issue #644), into @p out: the one whose id it names, which the
+   rotation takes (trunk_scan_entry_reason(), the rule a typed frequency's pick follows). Ids are unique across the
+   lists, so the id names one target. Refused, the error naming the id and why, for an id no target has, a target in a
+   list that starts off, one avoided, and one whose width does not fit. */
+static int
+trunk_scan_hold_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, size_t* out,
+                       char* err, size_t err_sz) {
+    size_t index = 0U;
+    while (index < coord->count && strcmp(coord->targets[index].target.id, opts->trunk_scan_hold_id) != 0) {
+        index++;
+    }
+    if (index >= coord->count) {
+        scan_set_error(err, err_sz, "--trunk-scan-hold: no target in the trunk-scan lists has the id \"%s\"",
+                       opts->trunk_scan_hold_id);
+        return -1;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[index];
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const dsd_scan_entry_reason reason = trunk_scan_entry_reason(opts, state, coord, rt, rate_hz);
+    if (reason != DSD_SCAN_ENTRY_OK) {
+        trunk_scan_hold_refusal(opts, state, coord, rt, reason, rate_hz, err, err_sz);
+        return -1;
+    }
+    *out = index;
+    return 0;
+}
+
+/* The start park of the --trunk-scan-hold target @p index came to what a go-to's would (trunk_scan_goto_outcome()):
+   on air, the entry hold now; in flight, the entry waits on that park, whose landing holds it and whose failure is
+   kept; refused or deferred, the failure is kept for app-control to name once, and the scan runs on unheld. */
+static void
+trunk_scan_hold_started(dsd_state* state, dsd_trunk_scan_coord* coord, size_t index) {
+    const dsd_scan_goto_result result = trunk_scan_goto_outcome(state, coord, index);
+    if (result == DSD_SCAN_GOTO_HOLDING || result == DSD_SCAN_GOTO_PENDING) {
+        LOG_INFO("NOTICE: Trunk scan starts held on target '%s' (--trunk-scan-hold)\n",
+                 coord->targets[index].target.id);
+        return;
+    }
+    const dsd_trunk_scan_target* target = &coord->targets[index].target;
+    const dsd_engine_scan_entry_intent intent = {
+        .active = 1U,
+        .by = (uint8_t)DSD_ENGINE_SCAN_LANDING_TARGET,
+        .row = (int)index,
+        .session = coord->session,
+    };
+    dsd_engine_scan_entry_note_failure(state, &intent, result, target->label[0] != '\0' ? target->label : target->id);
+}
+
+/* The target this start parks first, into @p out: the one --trunk-scan-hold names (refused as
+   trunk_scan_hold_target() says), else trunk_scan_start_target()'s. The start takes the option, whatever comes of
+   its park. */
+static int
+trunk_scan_pick_start(dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, size_t* out, char* err,
+                      size_t err_sz) {
+    *out = trunk_scan_start_target(opts, state, coord);
+    const int rc =
+        opts->trunk_scan_hold_id[0] != '\0' ? trunk_scan_hold_target(opts, state, coord, out, err, err_sz) : 0;
+    opts->trunk_scan_hold_id[0] = '\0';
+    return rc;
+}
+
+/* The start's park of target @p start; a held start's (@p hold) is noted and read as a go-to's
+   (trunk_scan_hold_started()) once past its preparation. Returns trunk_scan_switch_to()'s answer. */
+static int
+trunk_scan_start_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t start, int hold) {
+    if (!hold) {
+        return trunk_scan_switch_to(opts, state, coord, start, 0);
+    }
+    const int rc = trunk_scan_park_noting(opts, state, coord, start, 0);
+    if (rc != TRUNK_SCAN_PREPARE_FAILED) {
+        trunk_scan_hold_started(state, coord, start);
+    }
+    return rc;
+}
+
 int
 dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz) {
     if (!opts || !state || !opts->trunk_scan_enabled) {
@@ -5657,6 +5763,12 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         trunk_scan_init_release(opts, state, coord, &list);
         return -1;
     }
+    const int hold = opts->trunk_scan_hold_id[0] != '\0';
+    size_t start = 0U;
+    if (trunk_scan_pick_start(opts, state, coord, &start, err, err_sz) != 0) {
+        trunk_scan_init_release(opts, state, coord, &list);
+        return -1;
+    }
 
     if (dsd_engine_scan_own(state, 0, coord, trunk_scan_free) != 0) {
         trunk_scan_init_release(opts, state, coord, &list);
@@ -5667,7 +5779,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     trunk_scan_install_runtime_hooks(coord);
     /* The session's list starts empty, under a revision of its own. */
     trunk_scan_publish_avoids(state, coord);
-    const int switch_rc = trunk_scan_switch_to(opts, state, coord, trunk_scan_start_target(opts, state, coord), 0);
+    const int switch_rc = trunk_scan_start_park(opts, state, coord, start, hold);
     if (switch_rc == TRUNK_SCAN_PREPARE_FAILED) {
         trunk_scan_detach(opts, state, coord, 1);
         scan_set_error(err, err_sz, "unable to prepare initial trunk scan key/policy scope");

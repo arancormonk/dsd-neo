@@ -512,6 +512,10 @@ struct dsd_opts {
     /* --trunk-scan/--trunk-scan-off or [trunk_scan] targets_csv(_N) and lists_off, in list order (issue #697). */
     dsd_trunk_scan_list_spec trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
     int trunk_scan_list_count;
+    /* --trunk-scan-hold (issue #644): the id of the target the trunk scan starts parked on and holds, as a frequency
+       typed by hand holds it; "" for none. The scan's start takes it, once. No INI key, never saved. Sized as a
+       target id (dsd_trunk_scan_target::id). */
+    char trunk_scan_hold_id[64];
     char src_in_file[1024];              // Source ID alias CSV
     char p25_bandplan_in_file[1024];     // --p25-bandplan / [trunking] p25_bandplan_csv
     char p25_bandplan_export_file[1024]; // --p25-bandplan-export: written once at clean shutdown
