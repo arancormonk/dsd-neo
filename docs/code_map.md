@@ -3676,7 +3676,9 @@ row's identity, prepared settings, keys and request exchanged with the scan's, t
 securely zeroed), `channel_scan_tune_staged()` and `channel_scan_tune_outcome()`; `channel_scan_start_row()` runs them
 in a row, so a failed preparation now leaves the row staged before as it was there too. The go-to swaps its row in for
 the tune and swaps back when the tune is refused or deferred before any backend moved (`dsd_engine_scan_tune_moved()`
-0), leaving the earlier entry and the row confirmed on air as they were (the receiver never left it); once the tune is
+0), leaving the earlier entry and the row confirmed on air as they were (the receiver never left it) and handing the
+refused request to `dsd_trunk_tuning_request_disown()`, so a rigctl leg's refusal on an RTL input, which leaves it
+gated as if the leg might have moved, keeps no frame gate closed over the row still on air; once the tune is
 taken, or a leg moved, the landing is forgotten, the row staged before is retired (its request handed to
 `dsd_trunk_tuning_request_disown()`), the entry is set for this attempt and the answer is a forward step's (a refusal
 ends the calls and passes the row). An untyped row goes through `dsd_engine_scan_untyped_goto_row()` (`engine.c`,

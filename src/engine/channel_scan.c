@@ -2085,8 +2085,13 @@ channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired)
     const dsd_trunk_tune_result result = channel_scan_tune_staged(opts, state, scan, &next);
     const int taken = result == DSD_TRUNK_TUNE_RESULT_OK || result == DSD_TRUNK_TUNE_RESULT_PENDING;
     if (!taken && !dsd_engine_scan_tune_moved()) {
-        /* Nothing moved: the row staged before, its tune, an earlier entry and the row confirmed on air stand. */
+        /* Nothing moved: the row staged before, its tune, an earlier entry and the row confirmed on air stand. The
+           refused request has nothing staged for it any more, so it keeps no frame gate closed (a rigctl leg's
+           refusal on an RTL input leaves it gated, as if the leg might have moved). */
         channel_scan_staging_swap(scan, &staging);
+        if (staging.request != 0U) {
+            dsd_trunk_tuning_request_disown(staging.request);
+        }
         channel_scan_staging_clear(&staging);
         return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
     }

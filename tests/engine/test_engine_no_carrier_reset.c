@@ -8788,6 +8788,50 @@ typed_departure_case(void) {
     return rc;
 }
 
+/* Issue #644: a held typed list on a rigctl peer and an RTL input, a go-to whose rigctl leg refuses before anything
+   moved: the row on air, its hold and its frames stand; the refused tune keeps no frame gate closed. */
+static int
+test_typed_goto_refused_by_rigctl_keeps_the_frames(void) {
+    const char* what = "typed go-to refused by the rigctl leg";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 3;
+    int rc = 0;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = 1300012500L + (long int)row * 1000000L;
+        rc |= expect_case(what, "typed row", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "row 0 lands", dsd_engine_channel_scan_row_confirmed(state, 0));
+    state->lcn_scan_hold = 1U;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 0;
+    g_rtl_tune_calls = 0;
+    rc |= expect_case(what, "the go-to is refused",
+                      dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_REFUSED);
+    rc |= expect_case(what, "nothing tuned, row 0 still on air and held",
+                      g_rtl_tune_calls == 0 && dsd_engine_channel_scan_row_confirmed(state, 0)
+                          && state->lcn_scan_hold == 1U);
+    rc |= expect_case(what, "no tune gates the frames", dsd_trunk_tuning_pending_request() == 0U);
+    rc |= expect_case(what, "row 0's carrier decodes", carrier_frames(opts, state, 20) == 21);
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_avoided_row_departs_under_a_carrier(void) {
     return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
@@ -11247,6 +11291,7 @@ main(void) {
     rc |= test_config_stopping_the_scan_ends_its_calls_under_the_old_groups();
     rc |= test_held_scan_steps_off_an_avoided_row();
     rc |= test_avoided_row_departs_under_a_carrier();
+    rc |= test_typed_goto_refused_by_rigctl_keeps_the_frames();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();
