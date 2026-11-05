@@ -3907,11 +3907,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     use it too): `Holding: <name>`, `(n of N)` for duplicates (eligible rows only), `, trunked: following its control
     channel <MHz> MHz`;
     `Going to <name>: waiting for the tune` (`Resuming scan at <name>: ...` over a paused `-Y` list, `to its control
-    channel <MHz> MHz` for a trunked target); `Failed: tune to <name>`, `Deferred; retry: tune to <name>`, `Failed:
-    <name> could not be set up`, each with `; scan stays paused` while paused; `Scan continues`; the reasons `; <name>
-    is avoided`, `; <name> is in a list that is off`, `; <name>'s width does not fit` (with `that row` or `that
-    target` for a name that will not fit). Each fits `ui_msg`: optional parts drop whole, the count first, then a
-    trunked target's frequency, and the name (`#65535 ` and 63 bytes at most) is never cut. A
+    channel <MHz> MHz` for a trunked target); `Failed: tune to <name>`, `Deferred; retry: tune to <name>` (` (<MHz>
+    MHz)` after the name for a trunked target: the frequency its tune tried, the go-to's `park_hz`), `Failed: <name>
+    could not be set up`, each with `; scan stays paused` while paused; `Scan continues`; the reasons `; <name> is
+    avoided`, `; <name> is in a list that is off`, `; <name>'s width does not fit` (with `that row` or `that target`
+    for a name that will not fit). Each fits `ui_msg`: optional parts drop whole, the count first, then a trunked
+    target's frequency, and the name (`#65535 ` and 63 bytes at most) is never cut. A
     HOLDING whose own call left a text (`engine_toasted`) keeps that text. A failure the engine kept inside the call is
     taken and dropped there. A PENDING go-to is remembered (match, park frequency, the text it left) in the state's own
     slot, `DSD_STATE_EXT_APP_SCAN_ENTRY`; `svc_scan_entry_settle()`, at the top of every `dsd_app_drain_cmds()`, takes

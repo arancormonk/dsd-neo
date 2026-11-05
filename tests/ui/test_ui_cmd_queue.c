@@ -18378,7 +18378,8 @@ test_trunk_scan_pause_reopens_for_the_configured_gain(void) {
                      g_config_rtl_creates == 1 && g_config_rtl_create_gain == 22 && state.rtl_ctx != NULL, 1);
 
     /* Issue #644: an entry on "own" resumes at it through the go-to's service; its retune refused, the scan stays
-       paused and the stream reopens on the configured gain, as at a refused resume. */
+       paused (the toast names the trunked target's tried frequency) and the stream reopens on the configured gain, as
+       at a refused resume. */
     g_config_rtl_creates = 0;
     g_config_rtl_create_gain = -1;
     g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
@@ -18387,7 +18388,7 @@ test_trunk_scan_pause_reopens_for_the_configured_gain(void) {
     state.ui_msg[0] = '\0';
     rc |= expect_int("gain go-to drained", dsd_app_drain_cmds(&opts, &state), 1);
     g_cc_tune_result = cc_result;
-    rc |= expect_str("gain go-to toast", state.ui_msg, "Failed: tune to #1 own; scan stays paused");
+    rc |= expect_str("gain go-to toast", state.ui_msg, "Failed: tune to #1 own (851.000000 MHz); scan stays paused");
     rc |= expect_int("gain go-to: still paused, configured gain",
                      state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
     rc |= expect_int("gain go-to: the stream reopened on the configured gain",
@@ -27736,9 +27737,29 @@ test_scan_entry_toasts_fit_the_status_line(void) {
                              "an unlabeled target");
     rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 0L,
                              "Failed: tune to #3 5f3c9a2e-7b1d-4e8a-9c0f-1a2b3c4d5e6f", "an unlabeled target refused");
+    /* A trunked target's failed tune names the frequency it tried (its control channel, not the one typed); a set-up
+       failure tried none, and a conventional row's frequency is the one typed. */
+    m = entry_match(DSD_SCAN_ENTRY_TRUNK, 2, "County", 1U, 2U, 1);
+    state.trunk_scan_paused = 1U;
+    rc |=
+        expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 851012500L,
+                           "Failed: tune to #3 County (851.012500 MHz); scan stays paused", "trunked refused, paused");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 851012500L,
+                             "Deferred; retry: tune to #3 County (851.012500 MHz); scan stays paused",
+                             "trunked deferred, paused");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_SETUP_FAILED, 851012500L,
+                             "Failed: #3 County could not be set up; scan stays paused", "trunked not set up");
+    state.trunk_scan_paused = 0U;
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 851012500L,
+                             "Failed: tune to #3 County (851.012500 MHz)", "trunked refused");
+    m.trunked = 0;
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 851012500L, "Failed: tune to #3 County",
+                             "conventional target refused");
     m = entry_match(DSD_SCAN_ENTRY_CHANNEL, 2, "fire-dispatch", 1U, 1U, 0);
     rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_HOLDING, 0L, "Holding: fire-dispatch", "holding, one row");
     rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 0L, "Failed: tune to fire-dispatch", "refused");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 851012500L, "Failed: tune to fire-dispatch",
+                             "refused, a -Y row's frequency is the one typed");
     rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 0L, "Deferred; retry: tune to fire-dispatch",
                              "deferred");
     rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_SETUP_FAILED, 0L, "Failed: fire-dispatch could not be set up",
@@ -27764,9 +27785,16 @@ test_scan_entry_toasts_fit_the_status_line(void) {
     m = entry_match(DSD_SCAN_ENTRY_TRUNK, 65534, longest, 65535U, 65535U, 1);
     state.trunk_scan_paused = 1U;
     DSD_SNPRINTF(want, sizeof want, "Failed: #65535 %s could not be set up; scan stays paused", longest);
-    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_SETUP_FAILED, 0L, want, "failure at the limit");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_SETUP_FAILED, 2147483647L, want, "failure at the limit");
     DSD_SNPRINTF(want, sizeof want, "Deferred; retry: tune to #65535 %s; scan stays paused", longest);
-    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 0L, want, "deferred at the limit");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 2147483647L, want, "deferred at the limit");
+    m = entry_match(DSD_SCAN_ENTRY_TRUNK, 0, longest, 2U, 2U, 1);
+    m.label[62] = '\0'; /* "#1 " and 62 bytes: the tried frequency just fits; one byte more and it goes, whole */
+    DSD_SNPRINTF(want, sizeof want, "Deferred; retry: tune to #1 %s (2147.483647 MHz); scan stays paused", m.label);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 2147483647L, want, "tried frequency fits");
+    m = entry_match(DSD_SCAN_ENTRY_TRUNK, 0, longest, 2U, 2U, 1);
+    DSD_SNPRINTF(want, sizeof want, "Deferred; retry: tune to #1 %s; scan stays paused", m.label);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 2147483647L, want, "tried frequency dropped");
     state.trunk_scan_paused = 0U;
     state.lcn_scan_paused = 0U;
 

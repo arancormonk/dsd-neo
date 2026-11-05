@@ -839,7 +839,9 @@ field, and the decoder refuses the rest when it applies the command.
     `entry_hold` true once it lands. A go-to refused, deferred or not set up at
     once fails the command, and `status.message` says `Failed: tune to <name>`,
     `Deferred; retry: tune to <name>` or `Failed: <name> could not be set up`,
-    each ending `; scan stays paused` while the scan is paused. A row that is
+    each ending `; scan stays paused` while the scan is paused. A trunked
+    target's failed tune also names the frequency it tried, its control
+    channel: `Failed: tune to #3 County (851.012500 MHz)`. A row that is
     avoided, whose list is off, or whose width the input cannot run is not
     taken: the entry is a plain one, below, and its message ends with the reason
     (`; fire-dispatch is avoided`, `; #3 County Fire is in a list that is off`,

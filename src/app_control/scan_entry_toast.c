@@ -11,7 +11,8 @@
  * A -Y row is named by its label, else "row N"; a trunk-scan target as every target toast names it, "#<n> <label>",
  * its id in place of a label it lacks (svc_trunk_scan_toast_name()). Every text fits dsd_state::ui_msg. The name is
  * never cut: a part that would not fit is dropped whole, the "(1 of 2)" count first, then a trunked target's
- * control-channel frequency.
+ * control-channel frequency. A failure names no count; for a trunked target it names the frequency the tune tried, the
+ * part dropped first.
  */
 
 #include <dsd-neo/core/opts.h>
@@ -83,67 +84,80 @@ entry_toast_set(dsd_state* state, int seconds, const char* text) {
     state->ui_msg_expire = dsd_realtime_time() + seconds;
 }
 
-/* "<lead><name>[ (n of N)]<body>[<extra>]" into @p out: the name and the mandatory parts whole, and of the optional
-   ones only what fits, the count dropped before the extra. */
+/* @p m's "(1 of 2)" among the rows on its frequency, "" with one. */
+static const char*
+entry_count_text(const dsd_scan_entry_match_t* m, char* out, size_t size) {
+    out[0] = '\0';
+    if (m->count > 1U) {
+        DSD_SNPRINTF(out, size, " (%u of %u)", m->ordinal, m->count);
+    }
+    return out;
+}
+
+/* "<lead><name>[<after>]<body>[<extra>]" into @p out: the name and the mandatory parts whole, and of the optional
+   ones only what fits, the part after the name dropped before the extra. */
 static void
-entry_compose(char* out, size_t size, const char* lead, const dsd_scan_entry_match_t* m, const char* body,
-              const char* extra) {
+entry_compose(char* out, size_t size, const char* lead, const dsd_scan_entry_match_t* m, const char* after,
+              const char* body, const char* extra) {
     char name[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
     (void)entry_name(m, name, sizeof name);
-    char count[32] = "";
-    if (m->count > 1U) {
-        DSD_SNPRINTF(count, sizeof count, " (%u of %u)", m->ordinal, m->count);
-    }
-    const char* counts[] = {count, "", count, ""};
+    const char* afters[] = {after, "", after, ""};
     const char* extras[] = {extra, extra, "", ""};
-    for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
-        const int n = DSD_SNPRINTF(out, size, "%s%s%s%s%s", lead, name, counts[i], body, extras[i]);
+    for (size_t i = 0; i < sizeof afters / sizeof afters[0]; i++) {
+        const int n = DSD_SNPRINTF(out, size, "%s%s%s%s%s", lead, name, afters[i], body, extras[i]);
         if (n >= 0 && (size_t)n < size) {
             return;
         }
     }
 }
 
-/* A trunked target's control channel the hold parks or follows, for @p phrase ("..., trunked: following its control
-   channel 851.012500 MHz"); "" for a conventional row, or with no frequency known. */
+/* A trunked target's control channel the hold parks or follows, between @p phrase and @p close ("..., trunked:
+   following its control channel 851.012500 MHz"); "" for a conventional row, or with no frequency known. */
 static const char*
-entry_park_text(const dsd_scan_entry_match_t* m, long park_hz, const char* phrase, char* out, size_t size) {
+entry_park_text(const dsd_scan_entry_match_t* m, long park_hz, const char* phrase, const char* close, char* out,
+                size_t size) {
     out[0] = '\0';
     if (!m->trunked || park_hz <= 0 || (unsigned long)park_hz > UINT32_MAX) {
         return out;
     }
     char mhz[16];
     (void)dsd_freq_hz_mhz_text((uint32_t)park_hz, mhz, sizeof mhz);
-    DSD_SNPRINTF(out, size, "%s%s MHz", phrase, mhz);
+    DSD_SNPRINTF(out, size, "%s%s MHz%s", phrase, mhz, close);
     return out;
 }
 
 static void
 entry_holding_text(char* out, size_t size, const dsd_scan_entry_match_t* m, long park_hz) {
+    char count[32];
     char park[64];
-    entry_compose(out, size, "Holding: ", m, "",
-                  entry_park_text(m, park_hz, ", trunked: following its control channel ", park, sizeof park));
+    entry_compose(out, size, "Holding: ", m, entry_count_text(m, count, sizeof count), "",
+                  entry_park_text(m, park_hz, ", trunked: following its control channel ", "", park, sizeof park));
 }
 
 static void
 entry_waiting_text(char* out, size_t size, const dsd_scan_entry_match_t* m, long park_hz, int resuming) {
+    char count[32];
     char park[64];
-    entry_compose(out, size, resuming ? "Resuming scan at " : "Going to ", m, ": waiting for the tune",
-                  entry_park_text(m, park_hz, " to its control channel ", park, sizeof park));
+    entry_compose(out, size, resuming ? "Resuming scan at " : "Going to ", m, entry_count_text(m, count, sizeof count),
+                  ": waiting for the tune",
+                  entry_park_text(m, park_hz, " to its control channel ", "", park, sizeof park));
 }
 
-/* "Failed: tune to fire-dispatch; scan stays paused", for a go-to that came to @p result. */
+/* "Failed: tune to fire-dispatch; scan stays paused", for a go-to that came to @p result. A failure names the row alone,
+   but a trunked target's tune names the frequency it tried (@p park_hz, its control channel ahead of the one typed):
+   "Failed: tune to #3 County (851.012500 MHz); scan stays paused". */
 static void
-entry_failure_text(char* out, size_t size, const dsd_scan_entry_match_t* m, dsd_scan_goto_result result, int paused) {
+entry_failure_text(char* out, size_t size, const dsd_scan_entry_match_t* m, dsd_scan_goto_result result, int paused,
+                   long park_hz) {
     const char* tail = paused ? "; scan stays paused" : "";
-    dsd_scan_entry_match_t named = *m;
-    named.count = 0U; /* a failure names the row alone */
+    char tried[64];
+    (void)entry_park_text(m, park_hz, " (", ")", tried, sizeof tried);
     switch (result) {
-        case DSD_SCAN_GOTO_DEFERRED: entry_compose(out, size, "Deferred; retry: tune to ", &named, tail, ""); break;
+        case DSD_SCAN_GOTO_DEFERRED: entry_compose(out, size, "Deferred; retry: tune to ", m, tried, tail, ""); break;
         case DSD_SCAN_GOTO_SETUP_FAILED:
-            entry_compose(out, size, "Failed: ", &named, " could not be set up", tail);
+            entry_compose(out, size, "Failed: ", m, "", " could not be set up", tail);
             break;
-        default: entry_compose(out, size, "Failed: tune to ", &named, tail, ""); break;
+        default: entry_compose(out, size, "Failed: tune to ", m, tried, tail, ""); break;
     }
 }
 
@@ -190,7 +204,7 @@ svc_scan_entry_toast_outcome(dsd_state* state, const dsd_scan_entry_match_t* mat
             entry_remember(state, match, park_hz, text);
             break;
         default:
-            entry_failure_text(text, sizeof text, match, result, entry_scan_paused(state, match->scanner));
+            entry_failure_text(text, sizeof text, match, result, entry_scan_paused(state, match->scanner), park_hz);
             entry_toast_set(state, 4, text);
             return;
     }
@@ -220,7 +234,7 @@ entry_failure_toast(dsd_state* state, const dsd_scan_entry_failure_t* failed) {
     named.row = failed->row;
     DSD_SNPRINTF(named.label, sizeof named.label, "%s", failed->label);
     char text[sizeof state->ui_msg];
-    entry_failure_text(text, sizeof text, &named, failed->result, entry_scan_paused(state, failed->scanner));
+    entry_failure_text(text, sizeof text, &named, failed->result, entry_scan_paused(state, failed->scanner), 0L);
     entry_toast_set(state, 4, text);
 }
 
