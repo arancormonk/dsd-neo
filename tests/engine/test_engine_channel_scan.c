@@ -3990,8 +3990,9 @@ typed_entry_held_on(const dsd_state* state, int row) {
            && !dsd_engine_channel_scan_entry_pending(state);
 }
 
-/* Whether the scan kept a failure of an entry to -Y row @p row coming to @p result, for app-control to name once
-   (dsd_engine_scan_entry_take_failure()); @p row -1 for none kept. Takes it either way. */
+/* Whether the scan kept a failure of an entry to -Y row @p row coming to @p result, named as the row is (its label,
+   else "row N"), for app-control to name once (dsd_engine_scan_entry_take_failure()); @p row -1 for none kept. Takes it
+   either way. */
 static int
 entry_failure_taken(dsd_state* state, int row, dsd_scan_goto_result result) {
     dsd_scan_entry_failure_t failed;
@@ -4000,8 +4001,14 @@ entry_failure_taken(dsd_state* state, int row, dsd_scan_goto_result result) {
     if (row < 0) {
         return !took;
     }
+    const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)row);
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "%s", name && name[0] ? name : "");
+    if (!want[0]) {
+        DSD_SNPRINTF(want, sizeof want, "row %d", row + 1);
+    }
     return took && failed.scanner == DSD_SCAN_ENTRY_CHANNEL && failed.row == row && failed.result == result
-           && !dsd_engine_scan_entry_take_failure(state, NULL);
+           && strcmp(failed.label, want) == 0 && !dsd_engine_scan_entry_take_failure(state, NULL);
 }
 
 /* Issue #644 D1: a frequency typed by hand that is a row of a running typed list sends the scan to that row (a step

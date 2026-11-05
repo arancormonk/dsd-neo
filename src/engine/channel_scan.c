@@ -523,7 +523,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     }
     /* An entry waiting on the tune holds nothing: it never landed, and its failure is kept for its toast (issue
        #644). */
-    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result));
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result), NULL);
     scan->request = 0;
     return 0;
 }
@@ -1289,7 +1289,7 @@ channel_scan_tune_outcome(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
         result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
     channel_scan_end_calls(opts, state);
     channel_scan_row_refused(state, scan, result);
-    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result));
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result), NULL);
     scan->request = 0;
     return -1;
 }

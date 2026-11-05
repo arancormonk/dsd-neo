@@ -120,6 +120,7 @@ dsd_engine_scan_entry_take_failure(dsd_state* state, dsd_scan_entry_failure_t* o
         out->scanner = failed.by == DSD_ENGINE_SCAN_LANDING_TARGET ? DSD_SCAN_ENTRY_TRUNK : DSD_SCAN_ENTRY_CHANNEL;
         out->row = failed.row;
         out->result = (dsd_scan_goto_result)failed.result;
+        DSD_SNPRINTF(out->label, sizeof out->label, "%s", failed.label);
     }
     return 1;
 }

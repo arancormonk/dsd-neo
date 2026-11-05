@@ -1827,7 +1827,7 @@ untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_sett
         if (polled == DSD_MANUAL_TUNE_DROPPED) {
             dsd_engine_scan_entry_intent_drop_request(state, settled->id);
         } else {
-            dsd_engine_scan_entry_intent_fail_request(state, settled->id, DSD_SCAN_GOTO_REFUSED);
+            dsd_engine_scan_entry_intent_fail_request(state, settled->id, DSD_SCAN_GOTO_REFUSED, NULL);
         }
     }
     if (polled == DSD_MANUAL_TUNE_DROPPED) {

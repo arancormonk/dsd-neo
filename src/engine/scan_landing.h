@@ -45,6 +45,7 @@
 #define DSD_NEO_ENGINE_SCAN_LANDING_H
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -227,27 +228,40 @@ dsd_engine_scan_entry_intent_drop_request(dsd_state* state, uint64_t request) {
     }
 }
 
-/** The entry @p intent failed, coming to @p result (DSD_SCAN_GOTO_REFUSED, _DEFERRED or _SETUP_FAILED): kept for
- * app-control to name the row once (dsd_engine_scan_entry_take_failure()). A newer failure replaces one not taken. */
+/** The entry @p intent failed, coming to @p result (DSD_SCAN_GOTO_REFUSED, _DEFERRED or _SETUP_FAILED): kept, with
+ * the name of what it went to, for app-control to name once (dsd_engine_scan_entry_take_failure()), whether or not a
+ * toast began it. @p label names a trunk-scan target (its label, else its id); a -Y row is named here, as the match
+ * names it (its label, else "row N"). A newer failure replaces one not taken. */
 static inline void
 dsd_engine_scan_entry_note_failure(dsd_state* state, const dsd_engine_scan_entry_intent* intent,
-                                   dsd_scan_goto_result result) {
+                                   dsd_scan_goto_result result, const char* label) {
     dsd_engine_scan_owner* owner = state && intent ? dsd_engine_scan_owner_ensure(state) : NULL;
-    if (owner) {
-        const dsd_engine_scan_entry_failure failed = {
-            .set = 1U, .by = intent->by, .result = (uint8_t)result, .row = intent->row};
-        owner->entry_failed = failed;
+    if (!owner) {
+        return;
     }
+    dsd_engine_scan_entry_failure failed = {.set = 1U, .by = intent->by, .result = (uint8_t)result, .row = intent->row};
+    const char* row_name = intent->by == DSD_ENGINE_SCAN_LANDING_ROW && intent->row >= 0
+                               ? dsd_state_trunk_lcn_name_get(state, (size_t)intent->row)
+                               : NULL;
+    if (label && label[0] != '\0') {
+        DSD_SNPRINTF(failed.label, sizeof failed.label, "%s", label);
+    } else if (row_name && row_name[0] != '\0') {
+        DSD_SNPRINTF(failed.label, sizeof failed.label, "%s", row_name);
+    } else if (intent->by == DSD_ENGINE_SCAN_LANDING_ROW) {
+        DSD_SNPRINTF(failed.label, sizeof failed.label, "row %d", intent->row + 1);
+    }
+    owner->entry_failed = failed;
 }
 
-/** The tune @p request failed after the go-to that began it returned (@p result as above): an entry waiting on it is
- * cancelled, and its failure kept. A tune dropped because something else took the tuner is no failure: that one
- * cancels with dsd_engine_scan_entry_intent_drop_request(). */
+/** The tune @p request failed after the go-to that began it returned (@p result and @p label as above, @p label NULL
+ * for a -Y row): an entry waiting on it is cancelled, and its failure kept. A tune dropped because something else took
+ * the tuner is no failure: that one cancels with dsd_engine_scan_entry_intent_drop_request(). */
 static inline void
-dsd_engine_scan_entry_intent_fail_request(dsd_state* state, uint64_t request, dsd_scan_goto_result result) {
+dsd_engine_scan_entry_intent_fail_request(dsd_state* state, uint64_t request, dsd_scan_goto_result result,
+                                          const char* label) {
     const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
     if (state && intent.active && request != 0U && intent.request == request) {
-        dsd_engine_scan_entry_note_failure(state, &intent, result);
+        dsd_engine_scan_entry_note_failure(state, &intent, result, label);
         dsd_engine_scan_entry_intent_cancel(state);
     }
 }
@@ -258,7 +272,7 @@ static inline void
 dsd_engine_scan_entry_intent_fail(dsd_state* state, dsd_scan_goto_result result) {
     const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
     if (state && intent.active) {
-        dsd_engine_scan_entry_note_failure(state, &intent, result);
+        dsd_engine_scan_entry_note_failure(state, &intent, result, NULL);
         dsd_engine_scan_entry_intent_cancel(state);
     }
 }

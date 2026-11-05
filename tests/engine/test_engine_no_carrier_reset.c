@@ -8911,7 +8911,7 @@ untyped_goto_case(int c) {
             rc |= expect_case(what, "the entry's failure is kept, once",
                               dsd_engine_scan_entry_take_failure(state, &failed) == 1
                                   && failed.scanner == DSD_SCAN_ENTRY_CHANNEL && failed.row == 2
-                                  && failed.result == DSD_SCAN_GOTO_REFUSED
+                                  && failed.result == DSD_SCAN_GOTO_REFUSED && strcmp(failed.label, "row 3") == 0
                                   && dsd_engine_scan_entry_take_failure(state, NULL) == 0);
         } else {
             const int row = c == UGOTO_NEXT_CANCELS ? 0 : 2;

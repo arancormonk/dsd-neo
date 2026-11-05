@@ -65,6 +65,8 @@ typedef struct {
     dsd_scan_entry_scanner scanner; /**< CHANNEL or TRUNK */
     int row;                        /**< the -Y row or trunk-scan target gone to (0-based) */
     dsd_scan_goto_result result;    /**< REFUSED, DEFERRED or SETUP_FAILED */
+    char label[64];                 /**< its name when it failed, as the match names it: a -Y row's label, else
+                                         "row N"; a target's label, else its id */
 } dsd_scan_entry_failure_t;
 
 /**
@@ -73,8 +75,9 @@ typedef struct {
  * The scan records one where it drops an entry for its own tune's failure: a -Y row's tune or restage refused or
  * deferred, an untyped walk's tune that failed, a -Y resume-at that stays paused (refused, deferred or not set up; an
  * interrupted one, which a stream reopen ends, is no failure), and a trunk-scan park that failed. A cancel records
- * none: `Y`, `L`, `J`, `b`, another entry, a pause, a stop, or another tune taking the tuner. A newer failure replaces
- * one not taken. A failure inside the go-to's own call is recorded too; that call's caller, which names the outcome
+ * none: `Y`, `L`, `J`, `b`, another entry, a pause, a stop, or another tune taking the tuner. The record names what
+ * the entry went to as it stood when it failed, so an entry no toast began is named too. A newer failure replaces one
+ * not taken. A failure inside the go-to's own call is recorded too; that call's caller, which names the outcome
  * it returned, takes and drops it. Decoder thread.
  *
  * @return 1 with @p out (may be NULL) filled when one was kept, else 0; none is kept after either way.

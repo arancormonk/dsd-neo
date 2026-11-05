@@ -19022,11 +19022,11 @@ expect_goto_failure(dsd_state* state, const char* stage, int index) {
     const int took = dsd_engine_scan_entry_take_failure(state, &failed);
     const int ok = index < 0 ? !took
                              : took && failed.scanner == DSD_SCAN_ENTRY_TRUNK && failed.row == index
-                                   && failed.result == DSD_SCAN_GOTO_REFUSED
+                                   && failed.result == DSD_SCAN_GOTO_REFUSED && strcmp(failed.label, "b") == 0
                                    && !dsd_engine_scan_entry_take_failure(state, NULL);
     if (!ok) {
-        DSD_FPRINTF(stderr, "go-to %s: failure kept %d (target %d), want target %d\n", stage, took,
-                    took ? failed.row : -1, index);
+        DSD_FPRINTF(stderr, "go-to %s: failure kept %d (target %d \"%s\"), want target %d \"b\"\n", stage, took,
+                    took ? failed.row : -1, took ? failed.label : "", index);
         return 1;
     }
     return 0;

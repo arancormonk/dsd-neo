@@ -41,6 +41,7 @@ typedef struct {
     uint8_t by;     /**< the scan it failed in (DSD_ENGINE_SCAN_LANDING_ROW or _TARGET) */
     uint8_t result; /**< the dsd_scan_goto_result it came to: REFUSED, DEFERRED or SETUP_FAILED */
     int row;        /**< the -Y row or trunk-scan target gone to */
+    char label[64]; /**< its name when it failed: a -Y row's label, else "row N"; a target's label, else its id */
 } dsd_engine_scan_entry_failure;
 
 typedef struct {
