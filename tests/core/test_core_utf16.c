@@ -193,6 +193,57 @@ test_utf8_validation_of_paths(void) {
                               "cia.csv")); /* the same name in code page 1252 */
 }
 
+/* Encode @p count units, expecting @p want (NULL: a refusal). */
+static void
+expect_utf16_to_utf8(const uint16_t* units, size_t count, const char* want) {
+    char out[64];
+    DSD_MEMSET(out, 'x', sizeof out);
+    const size_t n = dsd_utf16_to_utf8(units, count, out, sizeof out);
+    if (want == NULL) {
+        assert(n == DSD_UTF16_TO_UTF8_FAILED && out[0] == '\0');
+        return;
+    }
+    if (n != strlen(want) || strcmp(out, want) != 0) {
+        DSD_FPRINTF(stderr, "utf16 to utf8: got %zu \"%s\", want %zu \"%s\"\n", n, out, strlen(want), want);
+    }
+    assert(n == strlen(want) && strcmp(out, want) == 0);
+}
+
+/* A Java string's UTF-16 encodes as standard UTF-8 (issue #644: a target id typed on Android, read through JNI): ASCII,
+   2- and 3-byte BMP values, a supplementary character as one 4-byte sequence (never the two 3-byte surrogates modified
+   UTF-8 writes), unpaired halves as U+FFFD, and an embedded U+0000 refused rather than ending the text early. */
+static void
+test_utf16_to_utf8_encodes_standard_utf8(void) {
+    static const uint16_t ascii[] = {'f', 'i', 'r', 'e'};
+    expect_utf16_to_utf8(ascii, 4, "fire");
+    expect_utf16_to_utf8(ascii, 0, "");
+    static const uint16_t bmp[] = {'P', 'o', 'l', 0x00EDU, 'c', 'i', 'a', ' ', 0x20ACU};
+    expect_utf16_to_utf8(bmp, 9,
+                         "Pol\xC3\xAD"
+                         "cia \xE2\x82\xAC");
+    static const uint16_t engine[] = {0xD83DU, 0xDE92U, '-', '1'}; /* U+1F692 FIRE ENGINE */
+    expect_utf16_to_utf8(engine, 4, "\xF0\x9F\x9A\x92-1");
+    static const uint16_t lone_high[] = {'a', 0xD83DU, 'b'};
+    expect_utf16_to_utf8(lone_high, 3,
+                         "a\xEF\xBF\xBD"
+                         "b");
+    static const uint16_t high_at_end[] = {'a', 0xD83DU};
+    expect_utf16_to_utf8(high_at_end, 2, "a\xEF\xBF\xBD");
+    static const uint16_t lone_low[] = {0xDE92U, 'z'};
+    expect_utf16_to_utf8(lone_low, 2, "\xEF\xBF\xBDz");
+    static const uint16_t nul[] = {'-', 'Y', 0x0000U, 'x'};
+    expect_utf16_to_utf8(nul, 4, NULL);
+    /* The bound is exact: 3 bytes a unit and the terminator. */
+    char exact[7];
+    assert(dsd_utf16_to_utf8(ascii, 1, exact, 4) == 1U && strcmp(exact, "f") == 0);
+    assert(dsd_utf16_to_utf8(engine, 2, exact, sizeof exact) == 4U && strcmp(exact, "\xF0\x9F\x9A\x92") == 0);
+    assert(dsd_utf16_to_utf8(lone_low, 2, exact, sizeof exact) == 4U && strcmp(exact, "\xEF\xBF\xBDz") == 0);
+    /* Too small an output is refused, never cut. */
+    char small[4];
+    assert(dsd_utf16_to_utf8(engine, 4, small, sizeof small) == DSD_UTF16_TO_UTF8_FAILED && small[0] == '\0');
+    assert(dsd_utf16_to_utf8(NULL, 1, small, sizeof small) == DSD_UTF16_TO_UTF8_FAILED);
+}
+
 int
 main(void) {
     test_bmp_units_pass_through();
@@ -207,6 +258,7 @@ main(void) {
     test_utf8_encoding_needs_room_for_terminator();
     test_utf8_validation();
     test_utf8_validation_of_paths();
+    test_utf16_to_utf8_encodes_standard_utf8();
     DSD_FPRINTF(stderr, "CORE_UTF16: PASS\n");
     return 0;
 }

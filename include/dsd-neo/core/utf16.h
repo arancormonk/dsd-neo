@@ -172,6 +172,57 @@ dsd_utf8_encode_scalar(uint32_t scalar, char* out, size_t out_size) {
     return n;
 }
 
+/** @brief dsd_utf16_to_utf8()'s answer when it encoded nothing. */
+#define DSD_UTF16_TO_UTF8_FAILED ((size_t)-1)
+
+/**
+ * @brief Encode @p count UTF-16 code units (a Java string's, say) as standard NUL-terminated UTF-8 in @p out.
+ *
+ * Surrogate pairs combine into one 4-byte sequence and an unpaired half becomes U+FFFD (dsd_utf16_decoder_push()), so
+ * the bytes are what a UTF-8 file holds for the same text, never the modified UTF-8 that encodes each surrogate apart
+ * and U+0000 as C0 80. A U+0000 unit is refused: the text would end there for every C reader, which would quietly read
+ * another, shorter string. Each unit takes at most 3 bytes, so @p out needs 3 * @p count + 1 bytes.
+ *
+ * @return The UTF-8 length, excluding the terminator; DSD_UTF16_TO_UTF8_FAILED for a U+0000 unit, too small an @p out
+ *         or a NULL argument, with @p out (when usable) holding an empty string.
+ */
+static inline size_t
+dsd_utf16_to_utf8(const uint16_t* units, size_t count, char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return DSD_UTF16_TO_UTF8_FAILED;
+    }
+    out[0] = '\0';
+    if ((units == NULL && count != 0U) || count > (out_size - 1U) / 3U) {
+        return DSD_UTF16_TO_UTF8_FAILED;
+    }
+    dsd_utf16_decoder dec;
+    dsd_utf16_decoder_reset(&dec);
+    size_t used = 0;
+    for (size_t i = 0; i <= count; i++) {
+        uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+        size_t n;
+        if (i == count) {
+            n = dsd_utf16_decoder_finish(&dec, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        } else if (units[i] == 0U) {
+            out[0] = '\0';
+            return DSD_UTF16_TO_UTF8_FAILED;
+        } else {
+            n = dsd_utf16_decoder_push(&dec, units[i], scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        }
+        for (size_t k = 0; k < n; k++) {
+            char bytes[DSD_UTF8_MAX_BYTES + 1];
+            (void)dsd_utf8_encode_scalar(scalars[k], bytes, sizeof bytes);
+            /* Within the bound checked above (3 bytes a unit, a pair's 4 for its 2 units), so never cut; no scalar here
+               is U+0000, so the sequence ends at its terminator. */
+            for (size_t b = 0; b < sizeof bytes && bytes[b] != '\0' && used + 1U < out_size; b++) {
+                out[used++] = bytes[b];
+            }
+        }
+    }
+    out[used] = '\0';
+    return used;
+}
+
 /**
  * @brief The UTF-8 sequence a lead byte starts: its length (1 for ASCII), or 0 when @p c cannot lead one.
  *

@@ -1893,7 +1893,12 @@ suite runs under this compiler.
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
-  Windows CRT turns that failed conversion into an unbounded write of the stack. Semgrep blocks `%lc`/`%ls`
+  Windows CRT turns that failed conversion into an unbounded write of the stack. Semgrep blocks `%lc`/`%ls`.
+  A whole UTF-16 string (a Java string the Android JNI bridge hands over, `jstring_to_utf8()` in
+  `android/dsdneo_jni.cpp`: every CLI argument, host override and wire string) encodes as standard UTF-8 through
+  `dsd_utf16_to_utf8()`, never JNI's modified UTF-8, which writes a supplementary character as two 3-byte surrogates
+  and so no longer matches a UTF-8 file's text (issue #644, a `--trunk-scan-hold` id); an unpaired half becomes U+FFFD,
+  and an embedded U+0000 refuses the conversion rather than cutting the text short. Tests: `CORE_UTF16`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the

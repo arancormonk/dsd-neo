@@ -21,11 +21,13 @@
 #include <atomic>
 #include <cerrno>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <android/log.h>
 #include <pthread.h>
@@ -37,6 +39,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/runtime/bootstrap.h>
@@ -193,11 +196,17 @@ clear_pending_exception(JNIEnv* env) {
 }
 
 /**
- * @brief Converts a Java string to UTF-8.
+ * @brief Converts a Java string to standard UTF-8.
  *
- * @param ok Set to false when the conversion failed. A failure otherwise looks
- *           exactly like a legitimately empty string, and silently substituting one
- *           for the other turns an allocation failure into a bogus CLI argument.
+ * Read as its UTF-16 code units and encoded here (dsd_utf16_to_utf8(), <dsd-neo/core/utf16.h>), never through
+ * GetStringUTFChars(), whose modified UTF-8 writes a supplementary character as two 3-byte surrogates and U+0000 as
+ * C0 80: a target id, a file path or a name outside the BMP would not match what a UTF-8 file holds (issue #644). An
+ * unpaired surrogate becomes U+FFFD, as everywhere else the project decodes UTF-16.
+ *
+ * @param ok Set to false when the conversion failed: no memory, a JNI exception, or an embedded U+0000, which would
+ *           otherwise end the text early and quietly hand on another, shorter string. A failure otherwise looks
+ *           exactly like a legitimately empty string, and silently substituting one for the other turns an
+ *           allocation failure into a bogus CLI argument.
  * @return The converted text, or an empty string on failure.
  */
 std::string
@@ -208,16 +217,31 @@ jstring_to_utf8(JNIEnv* env, jstring value, bool* ok) {
     if (env == nullptr || value == nullptr) {
         return std::string();
     }
-    const char* chars = env->GetStringUTFChars(value, nullptr);
-    if (chars == nullptr) {
+    const auto failed = [env, ok]() {
         clear_pending_exception(env);
         if (ok != nullptr) {
             *ok = false;
         }
         return std::string();
+    };
+    const jsize length = env->GetStringLength(value);
+    if (clear_pending_exception(env) || length < 0) {
+        return failed();
     }
-    std::string out(chars);
-    env->ReleaseStringUTFChars(value, chars);
+    std::vector<uint16_t> units(static_cast<size_t>(length));
+    static_assert(sizeof(jchar) == sizeof(uint16_t), "jchar is a UTF-16 code unit");
+    if (length > 0) {
+        env->GetStringRegion(value, 0, length, reinterpret_cast<jchar*>(units.data()));
+        if (clear_pending_exception(env)) {
+            return failed();
+        }
+    }
+    std::string out(units.size() * 3U + 1U, '\0');
+    const size_t used = dsd_utf16_to_utf8(units.data(), units.size(), &out[0], out.size());
+    if (used == DSD_UTF16_TO_UTF8_FAILED) {
+        return failed();
+    }
+    out.resize(used);
     return out;
 }
 
