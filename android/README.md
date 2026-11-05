@@ -2112,7 +2112,9 @@ radio has landed there; tap **Hold** to let the scan go on. For a saved system i
 **Start “Name”** and starts that system, as Signal search does. With several on the
 frequency, the button opens a list of them. The hold is for that one start: **Retry** and
 later starts of the list scan it as usual. A frequency that is only in a channel map, a
-turned-off entry or a draft list offers nothing.
+turned-off entry or a draft list offers nothing. While a scan list you paused is on
+screen, the button only offers that session's own entries, and takes you back in place:
+the scan resumes on the entry and holds it, with its other lists kept.
 
 While a scan runs, Monitor's scan row under the call offers **Hold** (stay on this
 channel), **Avoid** (skip it for the session), **Prev** and **Next**. **Prev** steps

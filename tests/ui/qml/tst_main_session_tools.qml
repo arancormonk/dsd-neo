@@ -1126,6 +1126,83 @@ Item {
             }
         }
 
+        // A scan-list session the operator paused keeps its lists: a row of one of them is reached in place by the
+        // entry's tune at the row's own frequency (the scan resumes there and holds it), with no stop and no restart;
+        // a row of a list the session does not scan, or a saved system, would end the session and is not offered.
+        function test_a_paused_scan_list_reaches_its_own_rows_in_place() {
+            var security = addScanList("Security", "Gate", "851.0125");
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var parks = addScanList("Parks", "Ranger", "853.0125");
+            savedSystems.add({name: "County", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                freqMhz: "853.0125"});
+            var county = savedSystems.get(savedSystems.count - 1).uid;
+            try {
+                testContext.setLifecyclePhase(0);
+                app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid]);
+                testContext.setLifecyclePhase(2);
+                // Paused by a tap onto the companion list's row.
+                testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
+                                        scanRotationActive: false, scanPaused: true, scanResumable: true,
+                                        tunerControlled: false, centerFreqHz: 852014000, channelBandwidthHz: 12500});
+                tryVerify(function () { return app.operatorHolds && app.exploring; });
+                var button = listenButton();
+                tryVerify(function () { return button.visible; });
+                compare(button.text, "Listen with its settings");
+                compare(button.Accessible.name, "Listen to Hospital / ER desk with its settings");
+                testContext.resetCommands();
+                var stops = decoderHost.stopCalls();
+                button.activate();
+                compare(testContext.tuneHzCalls(), 1);
+                compare(testContext.lastTuneHz(), 852012500);
+                compare(decoderHost.stopCalls(), stops);
+                verify(!app.pendingRestart, "the paused session was set to restart");
+                compare(app.sessionStartCompanions.join(), hospital.uid);
+                // A list the session does not scan, and a saved system, on the channel: nothing to offer.
+                testContext.setMetric("centerFreqHz", 853012500);
+                tryVerify(function () { return !button.visible; });
+                compare(app.listenActions.length, 0);
+            } finally {
+                endExplore();
+                testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
+                                        tunerControlled: false});
+                testContext.setLifecyclePhase(2);
+                removeScanLists([security.uid, hospital.uid, parks.uid]);
+                var row = savedSystems.rowForUid(county);
+                if (row >= 0)
+                    savedSystems.remove(row);
+            }
+        }
+
+        // Two rows of one name on the channel (one list's entries for two protocols) say their protocols in the
+        // menu and to a screen reader, so they never read the same; a name of its own stays plain.
+        function test_listen_names_two_rows_of_one_name_by_protocol() {
+            scanLists.add({name: "Hospital", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Gate", protocol: "p25", freqMhz: "852.0125", enabled: true},
+                          {kind: "freq", name: "Gate", protocol: "dmr", freqMhz: "852.0125", enabled: true},
+                          {kind: "freq", name: "Lobby", protocol: "nxdn48", freqMhz: "852.0125", enabled: true}]});
+            var hospital = scanLists.get(scanLists.count - 1);
+            try {
+                exploreOn("852.012500");
+                var button = listenButton();
+                tryVerify(function () { return button.visible; });
+                compare(findChild(findChild(app, "monitorScreen"), "monitorListenNames").text,
+                        "Hospital / Gate / Hospital / Lobby");
+                button.activate();
+                var menu = findChild(app, "listenMenu");
+                tryVerify(function () { return menu.visible; });
+                compare(menu.actions.map(function (a) { return a.text; }).join("|"),
+                        "Hospital / Gate (P25)|Hospital / Gate (DMR)|Hospital / Lobby");
+                compare(findChild(menu, "actionMenuAction1").Accessible.name,
+                        "Listen to Hospital / Gate (DMR) with its settings");
+                compare(findChild(menu, "actionMenuAction2").Accessible.name,
+                        "Listen to Hospital / Lobby with its settings");
+            } finally {
+                endExplore();
+                testContext.setLifecyclePhase(2);
+                removeScanLists([hospital.uid]);
+            }
+        }
+
         // The held start on air: while its park is still tuning the scan runs unheld, and the Hold button and the
         // header say so; once the park lands the hold is the entry's, shown held, and the ordinary Hold toggle
         // releases it.

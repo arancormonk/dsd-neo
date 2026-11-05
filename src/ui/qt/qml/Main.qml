@@ -241,7 +241,10 @@ Window {
     // with its own settings: each scan-list row on it (its list, held on that
     // row), then each saved system on it, once each. Offered while the session
     // is the operator's to tune; a channel map's row, a disabled entry or a
-    // draft list's starts nothing, and is not offered.
+    // draft list's starts nothing, and is not offered. A scan-list session the
+    // operator paused keeps its lists: a row of one of them is reached in
+    // place (the entry's tune, which resumes the scan there and holds it), and
+    // nothing that would restart the session is offered.
     readonly property var listenActions: mainRoot.exploring && decoderHost.sessionActive
         ? mainRoot.listenActionsAt(metrics.centerFreqHz, metrics.channelBandwidthHz) : []
     function listenActionsAt(hz, width) {
@@ -249,39 +252,70 @@ Window {
             return [];
         // Read so the actions follow a list or system edited meanwhile.
         var revision = knownFrequencies.revision;
+        var paused = mainRoot.operatorHolds && mainRoot.sessionScanList;
+        var own = mainRoot.sessionLists.map(function (list) {
+            return list.uid;
+        });
         var rows = [], systems = [], seen = {};
         for (var match of knownFrequencies.tunedMatches(hz, width)) {
             if (!match.selectable)
                 continue;
-            if (match.source !== "system") {
+            if (match.source === "system") {
+                var system = savedSystems.getByUid(String(match.systemUid || ""));
+                if (!paused && system && system.uid && !seen[system.uid]) {
+                    seen[system.uid] = true;
+                    var avoided = qsTr("Avoided; remove the avoid in its site list to start it");
+                    systems.push({key: "saved", uid: system.uid, name: match.name, protocolLabel: match.protocolLabel,
+                        enabled: !system.avoidSite, description: system.avoidSite ? avoided : ""});
+                }
+            } else if (paused) {
+                // One tune per frequency: the scan picks among its own rows on it.
+                if (own.indexOf(match.listUid) >= 0 && !seen[match.frequencyHz]) {
+                    seen[match.frequencyHz] = true;
+                    rows.push({key: "tune", hz: match.frequencyHz, name: match.name,
+                        protocolLabel: match.protocolLabel});
+                }
+            } else {
                 var list = scanLists.getByUid(match.listUid);
                 if (list && list.uid)
                     rows.push({key: "scan", listUid: match.listUid, targetId: match.targetId, name: match.name,
-                        text: match.name, accessibleName: qsTr("Listen to %1 with its settings").arg(match.name)});
-                continue;
+                        protocolLabel: match.protocolLabel});
             }
-            var uid = String(match.systemUid || "");
-            var system = savedSystems.getByUid(uid);
-            if (seen[uid] || !system || !system.uid)
-                continue;
-            seen[uid] = true;
-            var start = qsTr("Start “%1”").arg(match.name);
-            systems.push({key: "saved", uid: uid, name: match.name, text: start, accessibleName: start,
-                enabled: !system.avoidSite,
-                description: system.avoidSite ? qsTr("Avoided; remove the avoid in its site list to start it") : ""});
         }
-        return rows.concat(systems);
+        return mainRoot.listenLabels(rows.concat(systems));
+    }
+    // Each action's text and spoken name. Two of one kind that would read the
+    // same say their protocols: "Gate (NXDN96)", "Gate (NXDN48)".
+    function listenLabels(actions) {
+        var counts = {};
+        for (var action of actions)
+            counts[action.key + "/" + action.name] = (counts[action.key + "/" + action.name] || 0) + 1;
+        return actions.map(function (action) {
+            var shown = counts[action.key + "/" + action.name] > 1 && action.protocolLabel
+                ? qsTr("%1 (%2)").arg(action.name).arg(action.protocolLabel) : action.name;
+            var start = qsTr("Start “%1”").arg(shown);
+            return Object.assign(action, {
+                text: action.key === "saved" ? start : shown,
+                accessibleName: action.key === "saved" ? start : qsTr("Listen to %1 with its settings").arg(shown)
+            });
+        });
     }
     /**
      * Listen to @a action, one of listenActions, with its own settings: a
      * scan-list row starts its list held on that row, for that start only
      * (startWithMap() options.holdTarget); a saved system starts as itself.
      * The session on now stops first, as a site restart does, and the start
-     * runs once the decoder is idle.
+     * runs once the decoder is idle. A row of a paused scan-list session's own
+     * lists is the entry's tune instead (RTL_SET_FREQ at the row's frequency):
+     * the scan resumes there and holds it, and the session stays.
      */
     function listenWith(action) {
         if (!action || action.enabled === false)
             return;
+        if (action.key === "tune") {
+            commands.tuneHz(action.hz);
+            return;
+        }
         cancelPendingRestart();
         pendingStart = null;
         pendingStartRow = -1;
