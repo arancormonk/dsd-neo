@@ -9584,6 +9584,66 @@ test_untyped_goto_joins_the_pending_timed_step(void) {
     return rc;
 }
 
+/* Issue #644: an entry joined to the timed step's tune still pending, and the dwell still expired: the next no-carrier
+   pass waits for that tune, as it waits for a walk of the scan's, rather than stepping again (which would cancel the
+   entry, and here would be deferred). The step's landing holds the row; its late failure fails the entry, unheld, and
+   the rotation goes on. */
+static int
+untyped_rotation_waits_for_a_joined_step_case(int fails) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = fails ? "rotation over an entry joined to a timed step that fails"
+                             : "rotation over an entry joined to a timed step that lands";
+    if (setup_walk_list(opts, state, 1, 1725012500L + (long int)fails * 5000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time = time(NULL) - 60;
+    noCarrier(opts, state);
+    const int row = dsd_engine_manual_tune_pending_step_row(state);
+    int rc = expect_case(what, "the timed step's tune is pending", row >= 0);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    rc |= expect_case(what, "the go-to waits on the step's tune",
+                      row >= 0 && dsd_engine_channel_scan_goto_row(opts, state, row) == DSD_SCAN_GOTO_PENDING);
+    const int tunes = g_rtl_tune_calls;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the rotation tunes nothing", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the entry still waits on the step's tune",
+                      dsd_engine_channel_scan_entry_pending(state)
+                          && dsd_engine_manual_tune_pending_step_row(state) == row && state->lcn_scan_hold == 0U);
+    if (fails) {
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+        for (int i = 0; i < 4; i++) {
+            (void)dsd_engine_scan_untyped_poll(opts, state);
+        }
+        rc |= expect_untyped_unheld(what, state);
+        dsd_scan_entry_failure_t failed;
+        rc |= expect_case(what, "the entry's failure is kept",
+                          dsd_engine_scan_entry_take_failure(state, &failed) == 1 && failed.row == row);
+        noCarrier(opts, state);
+        rc |= expect_case(what, "the rotation goes on", g_rtl_tune_calls > tunes);
+    } else {
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the step lands", poll_until_landed(opts, state));
+        rc |= expect_untyped_entry_held(what, state, row);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_untyped_rotation_waits_for_a_joined_step(void) {
+    return untyped_rotation_waits_for_a_joined_step_case(0) | untyped_rotation_waits_for_a_joined_step_case(1);
+}
+
 static int
 test_untyped_resume_at(void) {
     int rc = 0;
@@ -9595,6 +9655,7 @@ test_untyped_resume_at(void) {
     }
     rc |= test_untyped_resume_at_joins_the_pending_resume_of_its_row();
     rc |= test_untyped_goto_joins_the_pending_timed_step();
+    rc |= test_untyped_rotation_waits_for_a_joined_step();
     return rc;
 }
 

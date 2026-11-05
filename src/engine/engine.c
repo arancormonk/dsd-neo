@@ -119,6 +119,7 @@
 #include "engine_test_support.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
 #include "scan_step_untyped.h"
 
 struct CODEC2;
@@ -1919,14 +1920,24 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
     return polled;
 }
 
-/* Whether a Next or Previous walk the -Y scan owns still waits on its tune (issue #644): the rotation waits for its
-   outcome, which commits the row or applies the walk's own refusal rules, so the timed step never supersedes it (a
-   Previous would turn into a forward step). The landing restarts the clocks; a late failure or a drop leaves them, so
-   the rotation goes on at its own time. */
+/* Whether a tune of the -Y scan's that the rotation waits for still waits on its outcome (issue #644): a Next or
+   Previous walk the scan owns, which commits the row or applies the walk's own refusal rules, so the timed step never
+   supersedes it (a Previous would turn into a forward step); or the timed step's own tune that an entry joined, so a
+   step taken again (the dwell is still expired) never cancels the entry. The landing restarts the clocks; a late
+   failure or a drop leaves them, so the rotation goes on at its own time. */
 static int
-no_carrier_scan_walk_pending(const dsd_state* state) {
+no_carrier_scan_tune_awaited(const dsd_state* state) {
     int scan_walk = 0;
-    return dsd_engine_manual_tune_pending_row(state, &scan_walk) >= 0 && scan_walk;
+    const int row = dsd_engine_manual_tune_pending_row(state, &scan_walk);
+    if (row < 0) {
+        return 0;
+    }
+    if (scan_walk) {
+        return 1;
+    }
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    return dsd_engine_manual_tune_pending_step_row(state) == row && dsd_engine_scan_entry_intent_is(state, row)
+           && intent.request != 0U && intent.request == dsd_engine_manual_tune_pending_id();
 }
 
 int
@@ -1959,12 +1970,12 @@ dsd_engine_channel_scan_departure_note(const dsd_opts* opts, dsd_state* state, d
 
 /* Whether the timed -Y step stays where it is this pass, though due: the operator hold keeps the row on air, unless the
    operator avoided it (dsd_engine_channel_scan_hold_keeps_row(), issue #644: the hold then keeps the row the step lands
-   on), or a walk the scan owns still waits on its tune. A step off an avoided row paces the next departure, and none
-   is taken before it (dsd_state::lcn_avoid_depart_m): with no carrier the dwell stays expired, so a refused step would
-   otherwise be retried on every pass. */
+   on), or a walk the scan owns, or the step's own tune an entry joined, still waits on its tune. A step off an avoided
+   row paces the next departure, and none is taken before it (dsd_state::lcn_avoid_depart_m): with no carrier the dwell
+   stays expired, so a refused step would otherwise be retried on every pass. */
 static int
 no_carrier_step_stays(const dsd_opts* opts, dsd_state* state) {
-    if (dsd_engine_channel_scan_hold_keeps_row(state) || no_carrier_scan_walk_pending(state)) {
+    if (dsd_engine_channel_scan_hold_keeps_row(state) || no_carrier_scan_tune_awaited(state)) {
         return 1;
     }
     if (dsd_engine_channel_scan_on_avoided_row(state)) {

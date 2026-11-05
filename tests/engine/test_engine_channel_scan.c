@@ -4152,6 +4152,9 @@ test_typed_goto_joins_the_pending_timed_step(void) {
     assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
     assert(tunes == tunes_before && request == step && dsd_engine_channel_scan_entry_pending(state));
+    /* The rotation's next pass while the step is still pending only services it: no second step cancels the entry. */
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(tunes == tunes_before && request == step && dsd_engine_channel_scan_entry_pending(state));
     dsd_trunk_tuning_request_publish(step, DSD_TRUNK_TUNE_RESULT_OK);
     assert(dsd_engine_channel_scan_pending(opts, state) == 0);
     assert(typed_entry_held_on(state, 1));
