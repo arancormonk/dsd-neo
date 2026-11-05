@@ -4134,6 +4134,29 @@ test_typed_goto_waits_on_the_tune_in_flight(void) {
     }
 }
 
+/* Issue #644: the typed list's own timed step to East still pending, then East typed: the entry waits on the step's
+   attempt, with no second tune (here a second one would be deferred), and the step's landing holds East. */
+static void
+test_typed_goto_joins_the_pending_timed_step(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[1];
+    assert(dsd_engine_channel_scan_step(opts, state) == 0 && dsd_engine_channel_scan_waiting(state));
+    const int tunes_before = tunes;
+    const uint64_t step = request;
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(tunes == tunes_before && request == step && dsd_engine_channel_scan_entry_pending(state));
+    dsd_trunk_tuning_request_publish(step, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(typed_entry_held_on(state, 1));
+    typed_walk_fixture_free(opts, state);
+}
+
 /* Issue #644: rows a go-to never takes, and scans it never acts on: nothing changes, nothing is tuned. */
 static void
 test_typed_goto_refuses_what_it_cannot_reach(void) {
@@ -4631,6 +4654,7 @@ main(void) {
     test_typed_goto_restaged_landing_holds();
     test_typed_goto_pending_outcomes();
     test_typed_goto_waits_on_the_tune_in_flight();
+    test_typed_goto_joins_the_pending_timed_step();
     test_typed_goto_replaces_an_entry_hold();
     test_typed_goto_over_a_row_in_flight();
     test_typed_entry_hold_lifecycle();

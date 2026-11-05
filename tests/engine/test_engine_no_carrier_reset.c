@@ -9486,6 +9486,43 @@ test_untyped_resume_at_joins_the_pending_resume_of_its_row(void) {
     return rc;
 }
 
+/* Issue #644: a running untyped list whose timed step's tune to a row is still pending, then that row typed: the entry
+   waits on the step's tune, with no second one (here a second one would be deferred), and the step's landing holds the
+   row. */
+static int
+test_untyped_goto_joins_the_pending_timed_step(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped go-to of the pending timed step's row";
+    if (setup_walk_list(opts, state, 1, 1720012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time = time(NULL) - 60;
+    noCarrier(opts, state);
+    const int row = dsd_engine_manual_tune_pending_step_row(state);
+    int rc = expect_case(what, "the timed step's tune is pending", row >= 0);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the go-to waits on the step's tune",
+                      row >= 0 && dsd_engine_channel_scan_goto_row(opts, state, row) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "no second tune", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the entry waits",
+                      dsd_engine_channel_scan_entry_pending(state) && state->lcn_scan_hold == 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the step lands", poll_until_landed(opts, state));
+    rc |= expect_untyped_entry_held(what, state, row);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_resume_at(void) {
     int rc = 0;
@@ -9496,6 +9533,7 @@ test_untyped_resume_at(void) {
         rc |= untyped_resume_at_over_pending_case(c);
     }
     rc |= test_untyped_resume_at_joins_the_pending_resume_of_its_row();
+    rc |= test_untyped_goto_joins_the_pending_timed_step();
     return rc;
 }
 

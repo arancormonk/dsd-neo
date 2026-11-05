@@ -1733,7 +1733,9 @@ untyped_goto_over_a_pending_resume(dsd_opts* opts, dsd_state* state, int row) {
 static dsd_scan_goto_result
 untyped_goto_running(dsd_opts* opts, dsd_state* state, int row) {
     int scan_walk = 0;
-    if (dsd_engine_manual_tune_pending_row(state, &scan_walk) == row && scan_walk) {
+    const int pending_row = dsd_engine_manual_tune_pending_row(state, &scan_walk);
+    /* The scan's own tune of the row, a walk's or the timed step's, still in flight: the entry waits on it. */
+    if (pending_row == row && (scan_walk || dsd_engine_manual_tune_pending_step_row(state) == row)) {
         dsd_engine_scan_entry_hold_replaced(state);
         dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_pending_id());
         return DSD_SCAN_GOTO_PENDING;
@@ -1902,13 +1904,18 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
                                               polled == DSD_MANUAL_TUNE_DROPPED ? DSD_SCAN_RESUME_INTERRUPTED
                                                                                 : DSD_SCAN_RESUME_FAILED_TUNE);
     } else if (polled == DSD_MANUAL_TUNE_FAILED) {
-        /* The front end refused the row late: the cursor moves past it, as at a refusal in the step (issue #666). */
+        /* The front end refused the row late: the cursor moves past it, as at a refusal in the step (issue #666), and
+           an entry waiting on the step's tune failed with it (issue #644). */
         state->lcn_freq_roll = settled.row + 1;
         dsd_state_lcn_on_air_note_refused(state);
         no_carrier_rearm_abandoned_scan(opts, state, now);
+        dsd_engine_scan_entry_intent_fail_request(state, settled.id, DSD_SCAN_GOTO_REFUSED, NULL);
+    } else {
+        /* A step dropped while the scan runs (a newer tune, a stream reopen) failed nothing: what replaced it decides
+           the receiver, and the scan's windows stay as they are, as they did before a drop was reported. An entry
+           waiting on it holds nothing. */
+        dsd_engine_scan_entry_intent_drop_request(state, settled.id);
     }
-    /* A step dropped while the scan runs (a newer tune, a stream reopen) failed nothing: what replaced it decides the
-       receiver, and the scan's windows stay as they are, as they did before a drop was reported. */
     return polled;
 }
 
