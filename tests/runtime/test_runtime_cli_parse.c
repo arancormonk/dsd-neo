@@ -9508,16 +9508,20 @@ test_bootstrap_trunk_scan_hold(void) {
         int count;
         const char* want;
     } refusals[] = {
-        {on_ini,
-         {"-T", "--trunk-scan-hold=fire"},
-         2,
-         "--trunk-scan-hold needs a trunk scan: an option on this command line (such as -T, -Y or -i) turned off the "
-         "config's trunk scan; drop it, or give --trunk-scan <targets.csv>"},
-        {off_ini,
-         {"--trunk-scan-hold=fire", NULL},
-         1,
-         "--trunk-scan-hold needs a trunk scan: the config's [trunk_scan] lists are off (enabled = false); set "
-         "enabled = true, or give --trunk-scan <targets.csv>"},
+        {
+            on_ini,
+            {"-T", "--trunk-scan-hold=fire"},
+            2,
+            "--trunk-scan-hold needs a trunk scan: an option on this command line (such as -T, -Y or -i) "
+            "turned off the config's trunk scan; drop it, or give --trunk-scan <targets.csv>",
+        },
+        {
+            off_ini,
+            {"--trunk-scan-hold=fire", NULL},
+            1,
+            "--trunk-scan-hold needs a trunk scan: the config's [trunk_scan] lists are off (enabled = false); set "
+            "enabled = true, or give --trunk-scan <targets.csv>",
+        },
     };
 
     for (size_t i = 0; i < sizeof refusals / sizeof refusals[0]; i++) {
