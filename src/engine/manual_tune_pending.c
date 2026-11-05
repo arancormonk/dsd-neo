@@ -32,6 +32,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include "manual_tune_pending.h"
+#include "scan_landing.h"
 
 typedef struct {
     uint64_t id;
@@ -488,6 +489,31 @@ dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state) {
     }
     if (back_hz != 0U) {
         opts->rtlsdr_center_freq = back_hz;
+    }
+}
+
+void
+dsd_engine_manual_tune_session_reset(dsd_state* state) {
+    /* The record and everything beside it are process-wide, as the controller is, but a session's: a tune an earlier
+       session left noted, whose completion it never took, must not own this session's tuner or report a drop here. */
+    atomic_store(&g_record_pending, MANUAL_TUNE_NONE_NOTED);
+    DSD_MEMSET(&g_record, 0, sizeof g_record);
+    DSD_MEMSET(&g_displaced, 0, sizeof g_displaced);
+    g_displaced_unreported = 0;
+    DSD_MEMSET(&g_settled, 0, sizeof g_settled);
+    atomic_store(&g_record_walk_off_scan, 0);
+    atomic_store(&g_walk_settling, 0);
+    atomic_store(&g_walk_yields, 0);
+    atomic_store(&g_rr_owner_took_over, 0);
+    g_rr_failure_text[0] = '\0';
+    g_rr_landed_text[0] = '\0';
+    g_rr_own_toast[0] = '\0';
+    for (int i = 0; i < MANUAL_TUNE_COMPLETION_SLOTS; i++) {
+        dsd_atomic_u64_store_release(&g_completions[i], 0U);
+    }
+    if (state) {
+        dsd_engine_scan_entry_intent_cancel(state);
+        (void)dsd_engine_scan_entry_failure_take(state, NULL);
     }
 }
 

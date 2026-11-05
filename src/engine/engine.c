@@ -4746,6 +4746,9 @@ static int
 engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     dsd_input_failure_clear();
     reset_device_io_caches();
+    /* A manual tune an earlier session in this process left noted is not this one's (issue #644): it must not own the
+       tuner, defer the trunk scan's first park or report a drop here. */
+    dsd_engine_manual_tune_session_reset(state);
     init_rrc_filter_memory();
     dsd_symbol_matched_filter_reset(state);
     InitAllFecFunction();

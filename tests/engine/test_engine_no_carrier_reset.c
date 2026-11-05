@@ -8576,6 +8576,68 @@ reopen_over_a_replaced_tune_case(int resume) {
     return rc;
 }
 
+/* Issue #644: a Next or Previous walk off any scan still waiting on its tune when its session ends, and a new session
+   in the same process: the session's start forgets that walk, reporting nothing, so it neither owns the tuner nor
+   defers the new session's first tune: a trunk scan started held on a trunked target (--trunk-scan-hold) parks it and
+   holds it. */
+static int
+test_session_start_forgets_a_pending_walk(void) {
+    const char* what = "a session started after one that left a walk pending";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "held-trunk-scan-");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_case(what, "the targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "fire,nfm-conventional,154430000,,250,250,,\n"
+                        "county,p25-trunk,851012500,,250,,,\n");
+        (void)fclose(fp);
+    }
+    /* The earlier session's walk, its tune never polled. */
+    dsd_engine_manual_tune_note_lcn_cycle(state, RTL_STREAM_TUNE_ID_MANUAL_BIT | 0x6441U, 943112500U, 942612500U, 1, 1,
+                                          0);
+    rc |= expect_case(what, "the walk owns the tuner", dsd_engine_manual_tune_operator_walk_noted());
+    dsd_engine_manual_tune_session_reset(state);
+    rc |= expect_case(what, "the new session's start forgets it",
+                      !dsd_engine_manual_tune_operator_walk_noted() && !dsd_engine_manual_tune_noted()
+                          && dsd_engine_manual_tune_poll(opts, state) == DSD_MANUAL_TUNE_NONE);
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", "county");
+    char err[256] = {0};
+    rc |=
+        expect_case(what, "the held trunk scan starts", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    rc |= expect_case(what, "the trunked target is parked and held",
+                      g_rtl_tune_freq == 851012500U && dsd_engine_trunk_scan_target_confirmed(state, 1)
+                          && state->trunk_scan_hold == 1U && state->trunk_scan_entry_hold == 1U
+                          && opts->trunk_scan_hold_id[0] == '\0');
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    state->rtl_ctx = NULL;
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_y_start_adopts_a_pending_walk(void) {
     int rc = 0;
@@ -12039,6 +12101,7 @@ main(void) {
     rc |= test_y_stop_ends_the_untyped_scans_calls();
     rc |= test_y_start_gives_the_tuner_to_the_scan();
     rc |= test_y_start_adopts_a_pending_walk();
+    rc |= test_session_start_forgets_a_pending_walk();
     rc |= test_running_list_left_by_a_config_or_a_map_clear();
     rc |= test_first_row_landing_takes_the_tuner();
     rc |= test_refused_config_leaves_the_scan_alone();

@@ -138,6 +138,15 @@ void dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* sta
 void dsd_engine_manual_tune_walk_yields(int yields);
 
 /**
+ * @brief A decoder session begins (issue #644): every manual tune still noted from an earlier session in this process
+ * goes, unreported, with what it carried: the record and a displaced step's drop, a walk's ownership of the tuner, a
+ * settling still owed, the control-channel tune's yield, the import's texts and the completions kept. An entry waiting
+ * on such a tune in @p state (may be NULL) is cancelled, and a failure kept for its toast dropped. Before the session's
+ * first tune (the trunk scan's start included), on the decoder thread.
+ */
+void dsd_engine_manual_tune_session_reset(dsd_state* state);
+
+/**
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
  * dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_RR_IMPORT, with what its outcome is to say.
  *

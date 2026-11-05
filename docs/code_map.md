@@ -3532,11 +3532,14 @@ operator asked for. A trunk scan needs none: its coordinator names the target wh
 completion before the session, so a stop's failure is never toasted. A dropped record is reported once
 (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so its owner settles
 what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver, and the older drop
-goes unreported. The record is process-wide, as the controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING`
-(the real controller stood in for, with late failure, late success, a newer entry, coalescing, a failure inside a
-coalesced wait, a stop, a supersede's drop report, what ends a synced reception, and an RR import's outcomes),
-`APP_CONTROL_RR_APPLY` (the import's tune outcomes), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
-`ENGINE_SIGNAL_SEARCH`.
+goes unreported. The record is process-wide, as the controller and its callback are. Every session's start clears it,
+unreported, with what it carried (a walk's tuner ownership and settling, the control-channel yield, the import's texts,
+the completions kept, an entry waiting on it: `dsd_engine_manual_tune_session_reset()` in `engine_run_session()`), so a
+tune an earlier session in the process left noted never owns the next session's tuner or defers its first park. Tests:
+`ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer entry,
+coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, what ends a synced reception, and an
+RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes), `IO_RIGCTL_CONTROL`,
+`ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
 
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
 engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It finds the
