@@ -5682,16 +5682,23 @@ trunk_scan_hold_target(const dsd_opts* opts, const dsd_state* state, const dsd_t
 
 /* The start park of the --trunk-scan-hold target @p index came to what a go-to's would (trunk_scan_goto_outcome()):
    on air, the entry hold now; in flight, the entry waits on that park, whose landing holds it and whose failure is
-   kept; refused or deferred, the failure is kept for app-control to name once, and the scan runs on unheld. */
+   kept; refused or deferred, the failure is kept for app-control to name once, and the scan runs on unheld. The start
+   logs which, once. */
 static void
 trunk_scan_hold_started(dsd_state* state, dsd_trunk_scan_coord* coord, size_t index) {
     const dsd_scan_goto_result result = trunk_scan_goto_outcome(state, coord, index);
-    if (result == DSD_SCAN_GOTO_HOLDING || result == DSD_SCAN_GOTO_PENDING) {
-        LOG_INFO("NOTICE: Trunk scan starts held on target '%s' (--trunk-scan-hold)\n",
-                 coord->targets[index].target.id);
+    const dsd_trunk_scan_target* target = &coord->targets[index].target;
+    if (result == DSD_SCAN_GOTO_HOLDING) {
+        LOG_INFO("NOTICE: Trunk scan starts held on target '%s' (--trunk-scan-hold)\n", target->id);
         return;
     }
-    const dsd_trunk_scan_target* target = &coord->targets[index].target;
+    if (result == DSD_SCAN_GOTO_PENDING) {
+        LOG_INFO("NOTICE: Trunk scan starts on target '%s' (--trunk-scan-hold); it holds there once the tune lands\n",
+                 target->id);
+        return;
+    }
+    LOG_WARN("WARNING: --trunk-scan-hold: the tune to target '%s' was %s; the scan runs on unheld\n", target->id,
+             result == DSD_SCAN_GOTO_DEFERRED ? "deferred" : "refused");
     const dsd_engine_scan_entry_intent intent = {
         .active = 1U,
         .by = (uint8_t)DSD_ENGINE_SCAN_LANDING_TARGET,
