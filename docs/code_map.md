@@ -415,7 +415,8 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's fallback onto the original
   ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once (`trunk_scan_walk`), and a due retry
   with an alternate eligible asks again a cooldown later (`retry_recheck_m`), not each tick. The startup park takes the
-  first target in the rotation the DSP rate can filter (`trunk_scan_start_target()`). What the session must be ready for
+  first target in the rotation the DSP rate can filter (`trunk_scan_start_target()`), unless `--trunk-scan-hold` names
+  one (go-to and entry hold, below). What the session must be ready for
   counts every loaded target, a list that is off included: the configured-width and tone predicates, the width rechecks
   and scan-start warnings; peer IDEN sharing and the band-plan export read every snapshot.
 - List toggle (issue #697): `dsd_engine_trunk_scan_list_set()` behind the runtime `list_set` hook slot. It refuses a
@@ -601,6 +602,21 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   landing, pending, refusal, deferral, failed preparation and late failure; the entry hold's lifecycle),
   `ENGINE_TRUNK_SCAN_PAUSE` (`watchdog_beside_a_goto`: go-tos of a running and a paused scan and the release under the
   real guard beside the watchdog; run under `tsan-debug`).
+- Start hold (issue #644 D7): `--trunk-scan-hold <target-id>` (`dsd_opts::trunk_scan_hold_id`, one target id long; no
+  INI key, never in `dsd_snapshot_opts_to_user_config()`) starts the scan parked on that target, entry-held, through
+  the go-to's own intent. The CLI (`cli_set_trunk_scan_hold()`) stores the id and refuses an empty or over-long one;
+  `cli_validate_trunk_scan_runtime_args()` refuses it without a trunk scan (`-Y` included). Init takes the id once,
+  whatever comes of the start: after the targets are built, `trunk_scan_hold_target()` finds the target (ids are unique
+  across lists, so there is no several-rows choice) and refuses the start, naming the id, for an unknown id or a
+  target the rotation would not take (`trunk_scan_entry_reason()`, the typed frequency's rule: avoided, which a fresh
+  session never is, list off, width that does not fit, with the width brief); `trunk_scan_hold_refusal()` words it.
+  The start park then runs through `trunk_scan_park_noting()` and `trunk_scan_hold_started()` reads it as a go-to's
+  (`trunk_scan_goto_outcome()`): on air, the entry hold at once; in flight, the intent waits on that park and its
+  landing or failure goes as any go-to's; refused or deferred at once, the failure is kept
+  (`dsd_engine_scan_entry_note_failure()`) for app-control's settle to name once, and the start's own failed-park
+  advance runs the scan on unheld. The Qt/Android frontend passes it on the command line it builds. Tests:
+  `ENGINE_TRUNK_SCAN` (`hold_start_*`: refusals, holds in either list, pending landing and late failure, refused and
+  deferred start parks), `RUNTIME_CLI_PARSE`, `RUNTIME_CLI_COMPACT`, `RUNTIME_CONFIG_TRUNK_SCAN_LISTS` (never saved).
 - Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
   `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
   under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a

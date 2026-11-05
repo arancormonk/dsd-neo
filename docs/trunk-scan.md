@@ -146,6 +146,17 @@ dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan ~/radio/security.csv --trunk
   --trunk-scan-off ~/radio/municipality.csv -G ~/radio/group.csv --frontend terminal
 ```
 
+To start on one target and stay there, give its `id` with `--trunk-scan-hold`. The scan parks that target first and
+holds it, as typing its frequency does, once the park lands; `y` continues the scan from it. An id no target has, a
+target in a list that starts off and one whose width does not fit the input refuse the start; a park that fails leaves
+the scan running unheld, named once on the status line. The option is never saved. Details:
+[cli.md](cli.md#trunking--scanning).
+
+```sh
+dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan ~/radio/trunk_scan_targets.csv --trunk-scan-hold county-p25 \
+  --frontend terminal
+```
+
 Optional timing controls:
 
 ```sh

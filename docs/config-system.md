@@ -933,6 +933,8 @@ Config/CLI interaction:
   autosave then records the scan as off, as it records the input that run used (the effective settings are written
   back on exit). UI-only flags such as `--frontend terminal` and trunk-scan timing overrides keep the inherited scan
   enabled. A `--trunk-scan` or `--trunk-scan-off` on the command line replaces the config's lists as a whole.
+- `--trunk-scan-hold <target-id>` (start held on one target) has no key: it is a one-shot start option, and no save
+  or exit autosave writes it.
 - Explicit profile runs preserve the profile's trunk scan settings and disable autosave for that process, like other
   profile-based runs.
 
