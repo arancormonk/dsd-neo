@@ -4161,6 +4161,30 @@ test_typed_goto_joins_the_pending_timed_step(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #644: a stream about to stop while a typed row's tune is pending, its timeout having cached the row's frequency
+   as the centre: the centre goes back to the one in force before the attempt's first tune, where the receiver was, so
+   the reopened stream opens where the scan's row on air is. A centre something else set since is left alone. */
+static void
+test_typed_stream_stop_puts_the_centre_back(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    const uint32_t before_hz = 850012500U;
+    opts->rtlsdr_center_freq = before_hz;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[1];
+    assert(dsd_engine_channel_scan_step(opts, state) == 0 && dsd_engine_channel_scan_waiting(state));
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[1]; /* the timeout cached the row's frequency */
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    assert(opts->rtlsdr_center_freq == before_hz);
+    opts->rtlsdr_center_freq = 862012500U; /* a centre set since stays */
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    assert(opts->rtlsdr_center_freq == 862012500U);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    typed_walk_fixture_free(opts, state);
+}
+
 /* Issue #644: rows a go-to never takes, and scans it never acts on: nothing changes, nothing is tuned. */
 static void
 test_typed_goto_refuses_what_it_cannot_reach(void) {
@@ -4659,6 +4683,7 @@ main(void) {
     test_typed_goto_pending_outcomes();
     test_typed_goto_waits_on_the_tune_in_flight();
     test_typed_goto_joins_the_pending_timed_step();
+    test_typed_stream_stop_puts_the_centre_back();
     test_typed_goto_replaces_an_entry_hold();
     test_typed_goto_over_a_row_in_flight();
     test_typed_entry_hold_lifecycle();

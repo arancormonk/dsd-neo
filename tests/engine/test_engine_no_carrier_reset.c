@@ -8455,6 +8455,75 @@ y_start_keeps_a_hold_only_where_the_receiver_is_case(int tuned_away) {
     return rc;
 }
 
+/* The radio stream stops and reopens, as a restart does (svc_rtl_restart()): the scans are told first, then the stop
+   moves the stream session and fails the request it had queued; the poll then takes the drop. */
+static void
+reopen_the_stream(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+}
+
+/* Issue #644: a stream stop or reopen while a scan tune is pending drops the tune, and the stream reopens on the cached
+   centre, which the tune's timeout set to its target. Held by `Y` while the timed step's tune is pending (@p adopted 0),
+   or by a hold kept across a `y` stop over a walk the start took as its own (1), the scan names the row heard: the
+   centre goes back to it before the stop, so the receiver, the row heard and the hold agree after the reopen, with no
+   tune made. */
+static int
+reopen_over_a_pending_scan_tune_case(int adopted) {
+    const char* what = adopted ? "a reopen over an adopted walk" : "a reopen over a held pending timed step";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1760012500L + (long int)adopted * 5000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = 0;
+    if (adopted) {
+        g_rtl_last_applied_hz = (uint32_t)(base_hz + 1000000L);
+        rc |= expect_case(what, "Next lands on BRAVO",
+                          press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1);
+        state->lcn_scan_hold = 1U;
+        rc |= expect_case(what, "y stops the scan",
+                          press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0);
+        rc |= expect_case(what, "Next off the scan to CHARLIE waits on its tune",
+                          press_walk_into_a_timeout(opts, state, 1) == 1);
+        rc |= expect_case(what, "y starts the scan over it",
+                          press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1
+                              && !dsd_engine_manual_tune_operator_walk_noted());
+    } else {
+        g_rtl_timeout_outstanding = 1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+        g_rtl_timeout_outstanding = 0;
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        rc |=
+            expect_case(what, "the timed step's tune is pending", dsd_engine_manual_tune_pending_step_row(state) == 1);
+        rc |= expect_case(what, "Y holds the scan",
+                          press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    }
+    const int heard = dsd_state_lcn_heard_row(state);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream(opts, state);
+    rc |= expect_case(what, "the tune is dropped", !dsd_engine_manual_tune_noted() && g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the receiver, the row heard and the hold agree",
+                      heard >= 0 && dsd_state_lcn_heard_row(state) == heard
+                          && opts->rtlsdr_center_freq == (uint32_t)state->trunk_lcn_freq[heard]
+                          && state->lcn_scan_hold == 1U);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
 static int
 test_y_start_adopts_a_pending_walk(void) {
     int rc = 0;
@@ -8463,6 +8532,7 @@ test_y_start_adopts_a_pending_walk(void) {
     }
     rc |= y_start_keeps_a_hold_only_where_the_receiver_is_case(1)
           | y_start_keeps_a_hold_only_where_the_receiver_is_case(0);
+    rc |= reopen_over_a_pending_scan_tune_case(0) | reopen_over_a_pending_scan_tune_case(1);
     return rc;
 }
 

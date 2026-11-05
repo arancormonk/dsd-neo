@@ -1915,6 +1915,10 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
 static void
 svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) {
     if (state->rtl_ctx) {
+        /* A scan's tune still pending would have the next stream open on its target, which nothing names: the centre
+           goes back to where the receiver was confirmed (issue #644). */
+        dsd_engine_manual_tune_stream_stopping(opts, state);
+        dsd_engine_channel_scan_stream_stopping(opts, state);
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;

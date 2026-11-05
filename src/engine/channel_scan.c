@@ -137,8 +137,10 @@ typedef struct {
        row, going back it stays and the row is the one the next Previous retries (channel_scan_row_refused()). */
     int step_dir;
     /* The tune the staged row belongs to: the request its first tune began, which a restage of that row keeps (an
-       entry waiting on the row names it, issue #644). */
+       entry waiting on the row names it, issue #644), and the receiver's centre before that first tune, where a stream
+       stopped while it is pending reopens (dsd_engine_channel_scan_stream_stopping()). */
     uint64_t attempt;
+    uint32_t attempt_prior_hz;
 } channel_scan;
 
 static void
@@ -1159,6 +1161,7 @@ typedef struct {
     int retry;
     int step_dir;
     uint64_t attempt;
+    uint32_t attempt_prior_hz;
 } channel_scan_staging;
 
 /* Exchange what @p staging holds with what @p scan has staged, the keys moved, not copied. */
@@ -1183,6 +1186,7 @@ channel_scan_staging_swap(channel_scan* scan, channel_scan_staging* staging) {
     held.retry = scan->retry;
     held.step_dir = scan->step_dir;
     held.attempt = scan->attempt;
+    held.attempt_prior_hz = scan->attempt_prior_hz;
     scan->row = staging->row;
     scan->mode = staging->mode;
     scan->list_rev = staging->list_rev;
@@ -1201,6 +1205,7 @@ channel_scan_staging_swap(channel_scan* scan, channel_scan_staging* staging) {
     scan->retry = staging->retry;
     scan->step_dir = staging->step_dir;
     scan->attempt = staging->attempt;
+    scan->attempt_prior_hz = staging->attempt_prior_hz;
     DSD_MEMCPY(staging, &held, sizeof(*staging));
     DSD_SECURE_ZERO(&held, sizeof(held));
 }
@@ -1250,6 +1255,7 @@ channel_scan_prepare_row(dsd_opts* opts, dsd_state* state, channel_scan* scan, i
    commit checks it against. */
 static dsd_trunk_tune_result
 channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, const dsd_scan_settings* next) {
+    const uint32_t prior_hz = opts->rtlsdr_center_freq;
     dsd_scan_settings before;
     dsd_scan_settings_capture(opts, state, &before);
     dsd_scan_settings_restore(next, opts, state);
@@ -1263,6 +1269,7 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
        attempt's (issue #644). */
     if (scan->attempt == 0U) {
         scan->attempt = scan->request;
+        scan->attempt_prior_hz = prior_hz;
     }
     dsd_engine_scan_entry_intent_bind(state, scan->row, scan->attempt);
     return result;
@@ -1535,6 +1542,7 @@ channel_scan_drop_row(channel_scan* scan) {
     scan->step_dir = 0;
     /* And the attempt it was: a resume's row is a new one (issue #644). */
     scan->attempt = 0U;
+    scan->attempt_prior_hz = 0U;
 }
 
 void
@@ -1689,6 +1697,16 @@ channel_scan_start_settles_hold(const dsd_opts* opts, dsd_state* state, int adop
         }
     }
     state->lcn_scan_hold = 0U;
+}
+
+void
+dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, const dsd_state* state) {
+    const channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    if (!opts || !scan || (!scan->request && !scan->retry) || scan->attempt_prior_hz == 0U || scan->row_freq <= 0
+        || opts->rtlsdr_center_freq != (uint32_t)scan->row_freq) {
+        return;
+    }
+    opts->rtlsdr_center_freq = scan->attempt_prior_hz;
 }
 
 void

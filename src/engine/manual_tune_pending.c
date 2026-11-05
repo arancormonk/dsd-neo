@@ -447,6 +447,36 @@ dsd_engine_manual_tune_walk_yields(int yields) {
     atomic_store(&g_walk_yields, yields ? 1 : 0);
 }
 
+/* The frequency of the row heard on @p state's list, 0 for none. */
+static uint32_t
+manual_tune_heard_row_hz(const dsd_state* state) {
+    const int heard = dsd_state_lcn_heard_row(state);
+    if (heard < 0 || heard >= state->lcn_freq_count) {
+        return 0U;
+    }
+    const long int freq = *dsd_state_trunk_lcn_slot_const(state, heard);
+    return freq > 0 && (unsigned long)freq <= UINT32_MAX ? (uint32_t)freq : 0U;
+}
+
+void
+dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED
+        || (g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE && g_record.kind != DSD_MANUAL_TUNE_UNTYPED_STEP)
+        || g_record.requested_hz == 0U || opts->rtlsdr_center_freq != g_record.requested_hz) {
+        return;
+    }
+    uint32_t back_hz = g_record.prior_applied_hz;
+    const int scans_own = opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1
+                          && (g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP || g_record.scan_owned)
+                          && dsd_engine_manual_tune_pending_row(state, NULL) >= 0;
+    if (scans_own && manual_tune_heard_row_hz(state) != 0U) {
+        back_hz = manual_tune_heard_row_hz(state);
+    }
+    if (back_hz != 0U) {
+        opts->rtlsdr_center_freq = back_hz;
+    }
+}
+
 int
 dsd_engine_manual_tune_adopt_walk(const dsd_state* state) {
     if (!state || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE

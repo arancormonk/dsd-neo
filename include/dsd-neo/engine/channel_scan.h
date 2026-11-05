@@ -92,6 +92,13 @@ int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place
  * @return 0 when the scan started, -1 when it was refused. */
 int dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);
 
+/** The radio stream is about to stop (issue #644): a typed row's tune still pending, whose timeout cached its row's
+ * frequency as the centre, would have the next stream open there, where no row the scan names is. While the cached
+ * centre is still that frequency (nothing set another since), it goes back to the centre in force before the attempt's
+ * first tune, the receiver's confirmed one; the attempt itself then fails with the stop as before. Nothing else
+ * changes. Decoder thread, before the stream stops. */
+void dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, const dsd_state* state);
+
 /** A config turns a stopped -Y scanner on over a list of the user's own (issue #644), before scanner_mode is set: a walk
  * off the scan still pending becomes the scan's own (dsd_engine_manual_tune_adopt_walk()), as at
  * dsd_engine_channel_scan_start(), and the ordinary hold kept across the stop is kept by the same rule. A walk it cannot

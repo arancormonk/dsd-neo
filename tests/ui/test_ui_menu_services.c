@@ -667,11 +667,30 @@ note_rtl_lifecycle_call(void) {
     }
 }
 
+/* Issue #644: the scans' pending tunes asked to put the centre back before a stream stops; the stop count each saw. */
+static int g_scan_stream_stopping_calls = 0;
+static int g_scan_stream_stopping_before_stop = 0;
+
+void
+dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_scan_stream_stopping_calls++;
+}
+
+void
+dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_scan_stream_stopping_calls++;
+}
+
 int
 rtl_stream_stop(RtlSdrContext* ctx) {
     (void)ctx;
     note_rtl_lifecycle_call();
     g_rtl_stop_calls++;
+    g_scan_stream_stopping_before_stop = g_scan_stream_stopping_calls;
     return 0;
 }
 
@@ -1448,6 +1467,11 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     rc |= expect_int("started stream", svc_rtl_restart(&opts, &state), 0);
     rc |= expect_int("a start notes its source", g_stream_source_notes, 1);
     rc |= expect_int("under the restart's guard", g_stream_source_guarded, 1);
+    /* Issue #644: a restart of a running stream asks the scans' pending tunes to put the centre back before it stops. */
+    g_scan_stream_stopping_calls = 0;
+    g_scan_stream_stopping_before_stop = -1;
+    rc |= expect_int("restarted stream", svc_rtl_restart(&opts, &state), 0);
+    rc |= expect_int("the scans are told before the stop", g_scan_stream_stopping_before_stop, 2);
     state.rtl_ctx = NULL;
     reset_rtl_restart_stubs();
     return rc;
