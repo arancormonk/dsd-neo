@@ -8292,6 +8292,7 @@ enum {
     YSTART_WALK_FAILS_LATE,
     YSTART_WALK_ON_A_TYPED_LIST,
     YSTART_WALK_ROW_REWRITTEN,
+    YSTART_WALK_LANDS_UNDER_A_CONFIG,
     YSTART_WALK_CASES
 };
 
@@ -8300,12 +8301,14 @@ enum {
    CHARLIE as a walk of the scan's does, the hold carried there, and its late failure passes CHARLIE, the receiver
    still on BRAVO, held. Either way the receiver, the row heard and the hold agree. A walk the scan cannot take over (a
    typed list, whose rows land with settings a walk never tuned, or a row rewritten since) refuses the start, which
-   changes nothing: the walk settles as one off the scan, and a start after it runs. */
+   changes nothing: the walk settles as one off the scan, and a start after it runs. A config that turns the scanner on
+   takes the walk over as `y` does. */
 static int
 y_start_over_a_pending_walk_case(int c) {
     static const char* const k_what[] = {
         "y start over a pending walk that lands", "y start over a pending walk that fails",
-        "y start over a pending walk on a typed list", "y start over a pending walk to a row rewritten"};
+        "y start over a pending walk on a typed list", "y start over a pending walk to a row rewritten",
+        "config turning the scanner on over a pending walk"};
     const char* what = k_what[c];
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -8338,7 +8341,16 @@ y_start_over_a_pending_walk_case(int c) {
     }
     const int tunes = g_rtl_tune_calls;
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
-    (void)press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE);
+    if (c == YSTART_WALK_LANDS_UNDER_A_CONFIG) {
+        static dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        cfg.trunk_scanner = 1;
+        rc |= expect_case(what, "the config is applied",
+                          dsd_app_command_apply_config(&cfg) > 0 && dsd_app_drain_cmds(opts, state) == 1);
+    } else {
+        (void)press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE);
+    }
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     rc |= expect_case(what, "the start tunes nothing", g_rtl_tune_calls == tunes);
     if (c == YSTART_WALK_ON_A_TYPED_LIST || c == YSTART_WALK_ROW_REWRITTEN) {
@@ -8356,7 +8368,7 @@ y_start_over_a_pending_walk_case(int c) {
     rc |= expect_case(what, "the scan runs, the walk its own",
                       opts->scanner_mode == 1 && dsd_engine_manual_tune_noted()
                           && !dsd_engine_manual_tune_operator_walk_noted());
-    if (c == YSTART_WALK_LANDS) {
+    if (c == YSTART_WALK_LANDS || c == YSTART_WALK_LANDS_UNDER_A_CONFIG) {
         land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
         rc |= expect_case(what, "the walk lands", poll_until_landed(opts, state));
         rc |= expect_case(what, "the receiver, the row heard and the hold agree on CHARLIE",

@@ -9415,6 +9415,12 @@ cfg_settle_scan_owner(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
         (void)svc_leave_channel_scan(opts, state);
         dsd_scan_keys_leave(state);
     }
+    if (owner->scanner_mode == 1 && opts->scanner_mode != 1) {
+        /* The scanner turned on over a walk off the scan still waiting on its tune takes it as its own, as `y` does
+           (issue #644): its landing commits its row, so the row heard, a hold kept across the stop and the receiver
+           agree. */
+        (void)dsd_engine_manual_tune_adopt_walk(state);
+    }
     opts->trunk_enable = owner->trunk_enable;
     opts->scanner_mode = owner->scanner_mode;
 }

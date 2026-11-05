@@ -98,6 +98,21 @@ void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32
 int dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk);
 
 /**
+ * @brief The -Y scan starting over a Next or Previous walk off the scan still awaiting its tune takes that walk as its
+ * own (issue #644).
+ *
+ * The record turns into a walk the scan owns, in the current scan session, so its landing commits its row as the scan's
+ * walk does, and its late failure or drop follows that walk's rules; the walk no longer holds the tuner against the
+ * state machines (dsd_engine_manual_tune_operator_walk_noted() reads 0). Only a walk on @p state's current list
+ * (dsd_state::lcn_list_rev) whose row still holds the frequency walked to, and only on a list with no modes (a typed
+ * row lands with settings a walk never tuned). A `y` start (dsd_engine_channel_scan_start()) and a config that turns
+ * the scanner on take it this way.
+ *
+ * @return 1 when taken, 0 otherwise (nothing changes). Decoder thread.
+ */
+int dsd_engine_manual_tune_adopt_walk(const dsd_state* state);
+
+/**
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
  * dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_RR_IMPORT, with what its outcome is to say.
  *

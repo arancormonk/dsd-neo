@@ -3652,7 +3652,9 @@ clears the flags after the engine's leave, which reads them; the engine's shutdo
 exit autosave sees the pause and writes `scanner = true` (`snapshot_trunking_config()`: `scanner_mode ||
 lcn_scan_paused`, D7; a stopped scan writes false). A config apply settles a paused scan last (`cfg_settle_scan_owner()`
 in app_control): without `[trunking]` the pause stays, trunking on or the scanner off stop it, the scanner on resumes
-it, and a config whose input did not start keeps it. Another `chan_csv` only waits for a restart, as in every session.
+it, and a config whose input did not start keeps it; one that turns a stopped scanner on takes a walk off the scan
+still pending as the scan's own, as `y` does (`dsd_engine_manual_tune_adopt_walk()`, issue #644). Another `chan_csv`
+only waits for a restart, as in every session.
 Covered by `APP_COMMAND_QUEUE` (`test_config_settles_a_paused_list`, `test_config_resumes_a_paused_list`,
 `test_config_channel_map_waits_for_a_restart`, `test_config_failed_reopen_keeps_a_paused_list`), `RUNTIME_CONFIG_USER`,
 and `ENGINE_CLEANUP_AUDIO` (the exit autosave right after a pause, and after a pause and a stop). Tests:
