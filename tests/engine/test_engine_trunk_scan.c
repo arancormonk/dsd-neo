@@ -19881,6 +19881,52 @@ test_goto_refused_retires_an_earlier_entry(void) {
     return test_rc;
 }
 
+/* A go-to refused while an earlier go-to's park is still in flight (issue #644): the coordinator, the label it publishes
+   and the receiver agree on the target that park goes to, whatever comes next. With @p failures 1 the walk's recovery
+   park onto it is taken at once; with 2 that recovery is refused too, and the park still in flight is the one that
+   puts the receiver there. Its late answer then changes nothing that is named. */
+static int
+goto_refused_over_a_pending_park_case(int failures, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const uint64_t pending_park = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_parked_freq = 0;
+    g_counting_tune_to_cc_failures_remaining = failures;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 2, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_entry(&state, what, 1U, 0U, 0U);
+    test_rc |= expect_published_target(&state, what, "b", 2U, 3U);
+    /* The last tune asked is the recovery onto b, taken (1) or refused (2: the park still in flight lands b). */
+    test_rc |= expect_goto(what, g_counting_tune_to_cc_freq == 452000000L
+                                     && g_counting_tune_to_cc_parked_freq == (failures < 2 ? 452000000L : 0L));
+    dsd_trunk_tuning_request_publish(pending_park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, "the park in flight lands", 1U, 0U, 0U);
+    test_rc |= expect_published_target(&state, "the park in flight lands", "b", 2U, 3U);
+    /* The landing confirms b: the recovery's (1) or the park in flight's (2), which the coordinator still awaited. */
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_target_confirmed(&state, 1));
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_goto_refused_over_a_pending_park(void) {
+    return goto_refused_over_a_pending_park_case(1, "refused over a pending park, recovered")
+           | goto_refused_over_a_pending_park_case(2, "refused over a pending park, recovery refused");
+}
+
 /* ---- --trunk-scan-hold (issue #644): a trunk scan that starts parked on one target, held there ---------------- */
 
 static const char* const k_hold_names[] = {"county", "state"};
@@ -20413,6 +20459,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_replaces_an_entry_hold);
     rc |= run_with_default_tune_hook(test_operator_moves_cancel_a_pending_entry);
     rc |= run_with_default_tune_hook(test_goto_refused_retires_an_earlier_entry);
+    rc |= run_with_default_tune_hook(test_goto_refused_over_a_pending_park);
     rc |= run_with_default_tune_hook(test_hold_start_refusals);
     rc |= run_with_default_tune_hook(test_hold_start_parks_and_holds);
     rc |= run_with_default_tune_hook(test_hold_start_pending_outcomes);
