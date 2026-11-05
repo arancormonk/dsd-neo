@@ -10076,25 +10076,21 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   list's entry, a saved system's entry included at that system's frequency, width and decode-flag protocol, its id
   the entry's uid as the list's session names it, the system's channel map indexed once under the system
   (`addListEntry()`); `scanTarget`, a row of a list's target CSV; `channelMap`, a row of a saved system's or a trunked
-  target's channel map), `listUid`, `targetId` (the entry's uid or the CSV row's `id`, the id the list's session names
-  the target by), `frequencyHz` (the row's own frequency) and `selectable` (a saved system, an enabled entry of a list
-  that is no draft, a CSV row with an id; a channel map's row only names the channel), and `protocolLabel` (the scan
-  list editor's protocol name, from an entry's protocol, a target's type or a saved system's decode flag). Rows of
-  one list on one frequency under one name stay apart by id; `tunedNames()` and Signal search's `knownNames` say each
-  name once (`matchNames()`, `UI_QT_SIGNAL_SEARCH`
-  `testKnownFrequencyIdentity()`). Saving uses an immutable
-  hit snapshot, including its original source settings and unresolved identity.
-  `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system
-  fields, each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm`
-  text and explicit `biasTee` (0 or 1, never the follow-the-app -1). The detection's tuner
-  gain (`gain` dB, `gainAuto`) becomes the whole-dB `gainDb` a saved session starts with,
-  the `-i` spec's gain field, where 0 is the tuner's AGC: AGC stays 0, and a manual gain
-  rounds to the nearest whole dB from 1 to 49, so a manual 0–1.4 dB detection stays manual
-  at 1 dB instead of becoming AGC. An Airspy's `gainDb` is -1, its gains being in its map.
-  The start path has no tenth-dB or manual-0 gain; the tuner runs its nearest step.
-  `WizardScreen.openForFound()` copies them into the draft only for a detection; the
-  Spectrum's save passes none and keeps the app defaults its session ran on
-  (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
+  target's channel map), `listUid`, `targetId` (the entry's uid or the CSV row's `id` as the engine reads it, blanks
+  inside its quotes kept (`engineTargetId()`), the id the list's session names the target by), `frequencyHz` (the row's
+  own frequency) and `selectable` (a saved system, an enabled entry of a list that is no draft, a CSV row with an id; a
+  channel map's row only names the channel), and `protocolLabel` (the scan list editor's protocol name, from an entry's
+  protocol, a target's type or a saved system's decode flag). Rows of one list on one frequency under one name stay
+  apart by id; `tunedNames()` and Signal search's `knownNames` say each name once (`matchNames()`, `UI_QT_SIGNAL_SEARCH`
+  `testKnownFrequencyIdentity()`). Saving uses an immutable hit snapshot, including its original source settings and
+  unresolved identity. `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system fields,
+  each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm` text and explicit `biasTee` (0 or 1,
+  never the follow-the-app -1). The detection's tuner gain (`gain` dB, `gainAuto`) becomes the whole-dB `gainDb` a saved
+  session starts with, the `-i` spec's gain field, where 0 is the tuner's AGC: AGC stays 0, and a manual gain rounds to
+  the nearest whole dB from 1 to 49, so a manual 0–1.4 dB detection stays manual at 1 dB instead of becoming AGC. An
+  Airspy's `gainDb` is -1, its gains being in its map. The start path has no tenth-dB or manual-0 gain; the tuner runs
+  its nearest step. `WizardScreen.openForFound()` copies them into the draft only for a detection; the Spectrum's save
+  passes none and keeps the app defaults its session ran on (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
 
 - Path: `src/ui`
 - Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`

@@ -438,6 +438,36 @@ assertIdentity(const QVariantMap& match, const char* source, const QString& list
     assert(match.value(QStringLiteral("selectable")).toBool() == selectable);
 }
 
+/* Issue #644: a target CSV row's id is what the engine loads, so a held start or an in-place go-to names a target the
+   session has: the cell trimmed, then one pair of surrounding quotes taken off, which keeps the blanks inside them
+   (" fire " is the id " fire "). The name shown is the trimmed text. The saved index and a session's own targets read
+   it alike. */
+static void
+testKnownFrequencyEngineIds(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString targets = QDir(dir).filePath(QStringLiteral("engine-id-targets.csv"));
+    writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                       "\" fire \",nfm-conventional,487000000,,,,,Fire\n"
+                       "  \" pump\"  ,dmr-conventional,488000000,,,,,\n");
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Spaced")},
+                      {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                      {QStringLiteral("targetsCsvPath"), targets}}));
+    const QString spaced = lists.get(lists.count() - 1).value(QStringLiteral("uid")).toString();
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    assertIdentity(matchNamed(index.tunedMatches(487000000, 12500), QStringLiteral("Spaced / Fire")), "scanTarget",
+                   spaced, QStringLiteral(" fire "), 487000000, true);
+    assertIdentity(matchNamed(index.tunedMatches(488000000, 12500), QStringLiteral("Spaced / pump")), "scanTarget",
+                   spaced, QStringLiteral(" pump"), 488000000, true);
+    const QVariantList session =
+        index.sessionTargets({QVariantMap{{"uid", spaced}, {"name", QStringLiteral("Spaced")}, {"path", targets}}});
+    assert(session.size() == 2);
+    assert(session.at(0).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral(" fire "));
+    assert(session.at(0).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / Fire"));
+    assert(session.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral(" pump"));
+    assert(session.at(1).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / pump"));
+}
+
 /* Issue #644: every match says what it is, so a frontend can start it with its own settings. A saved system's own
    frequency and a scan list's row (an entry by its uid, a target CSV row by its id) can be started; a channel map's row
    (a saved system's, or a trunked target's), a disabled entry, a draft list's entry and a target row with no id only
@@ -1062,6 +1092,7 @@ main(int argc, char** argv) {
     testRestartAfterPausedStop(&index);
     testStoredMarginBelowMinimum(&index);
     testKnownFrequencyIdentity(temp.path());
+    testKnownFrequencyEngineIds(temp.path());
     return 0;
 }
 

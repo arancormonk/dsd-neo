@@ -186,15 +186,55 @@ rowName(const QStringList& fields, const CsvColumns& columns) {
     return labelled.isEmpty() ? fields.value(columns.name) : labelled;
 }
 
-/* A row's identity: a target CSV's row is the target its `id` names, startable when it has one and the file's list
-   can start; a channel map's row is what the file's identity says. */
+/* Cell @p cell as the engine's scan_unquote() reads it: trimmed of blanks (C isspace()), then one pair of surrounding
+   quotes taken off, so the blanks inside them stay. */
+QString
+engineUnquote(QString cell) {
+    const auto blank = [](QChar ch) {
+        return ch == QLatin1Char(' ') || (ch >= QLatin1Char('\t') && ch <= QLatin1Char('\r'));
+    };
+    while (!cell.isEmpty() && blank(cell.front())) {
+        cell.remove(0, 1);
+    }
+    while (!cell.isEmpty() && blank(cell.back())) {
+        cell.chop(1);
+    }
+    if (cell.size() >= 2 && cell.front() == QLatin1Char('"') && cell.back() == QLatin1Char('"')) {
+        cell = cell.mid(1, cell.size() - 2);
+    }
+    return cell;
+}
+
+/* Cell @p column of @p line as the engine reads a target's id (trunk_scan.c: the line split at commas outside quotes,
+   then engineUnquote()): the id the session names the target by. Empty for no such column or cell. */
+QString
+engineTargetId(const QString& line, int column) {
+    int at = 0;
+    qsizetype start = 0;
+    bool quoted = false;
+    for (qsizetype i = 0; column >= 0 && i <= line.size(); ++i) {
+        const bool end = i == line.size();
+        if (!end && line[i] == QLatin1Char('"')) {
+            quoted = !quoted;
+        } else if (end || (line[i] == QLatin1Char(',') && !quoted)) {
+            if (at++ == column) {
+                return engineUnquote(line.mid(start, i - start));
+            }
+            start = i + 1;
+        }
+    }
+    return {};
+}
+
+/* A row's identity: a target CSV's row is the target its `id` names (@p line's id cell as the engine reads it),
+   startable when it has one and the file's list can start; a channel map's row is what the file's identity says. */
 QVariantMap
-rowIdentity(const QStringList& fields, const CsvColumns& columns, const QVariantMap& identity) {
+rowIdentity(const QString& line, const QStringList& fields, const CsvColumns& columns, const QVariantMap& identity) {
     if (identity.value(QStringLiteral("source")).toString() != QLatin1String("scanTarget")) {
         return identity;
     }
     QVariantMap row = identity;
-    const QString id = fields.value(columns.id);
+    const QString id = engineTargetId(line, columns.id);
     row.insert(QStringLiteral("targetId"), id);
     row.insert(QStringLiteral("selectable"), identity.value(QStringLiteral("selectable")).toBool() && !id.isEmpty());
     // A target's type is its protocol and its kind: "nxdn48-conventional".
@@ -316,7 +356,7 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
         const double rowWidth = knownWidth(fields.value(columns.mode), fields.value(columns.options), width);
         m_entries.append(
             {hz, rowWidth,
-             matchValue(name, hz, s.value(QStringLiteral("uid")), rowIdentity(fields, columns, identity))});
+             matchValue(name, hz, s.value(QStringLiteral("uid")), rowIdentity(line, fields, columns, identity))});
         if (depth == 0 && !fields.value(columns.channels).isEmpty()) {
             addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, rowWidth, channelMapIdentity(identity),
                    depth + 1);
@@ -375,7 +415,7 @@ appendSessionTargets(const QString& path, int number, const QString& listUid, co
             continue;
         }
         const qint64 hz = parseFrequency(fields.value(columns.frequency), false);
-        const QString id = fields.value(columns.id);
+        const QString id = engineTargetId(line, columns.id);
         if (!hz || id.isEmpty()) {
             continue;
         }
