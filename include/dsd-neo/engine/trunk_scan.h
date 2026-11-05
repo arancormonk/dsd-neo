@@ -276,7 +276,7 @@ dsd_scan_goto_result dsd_engine_trunk_scan_goto_locked(dsd_opts* opts, dsd_state
  * cancelled too. Nothing else without an entry hold: an ordinary hold stays. The caller holds the P25 SM tick guard.
  * Decoder thread.
  */
-void dsd_engine_trunk_scan_entry_release_locked(dsd_opts* opts, dsd_state* state);
+void dsd_engine_trunk_scan_entry_release_locked(const dsd_opts* opts, dsd_state* state);
 
 /** @brief Whether an entry waits on its target's park (a go-to that answered PENDING): the park is still in flight in
  * this scan session and nothing has cancelled the entry. 0 without a coordinator. Decoder thread. */

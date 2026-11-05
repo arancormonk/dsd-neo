@@ -6084,7 +6084,7 @@ dsd_engine_trunk_scan_goto_locked(dsd_opts* opts, dsd_state* state, int index, d
 }
 
 void
-dsd_engine_trunk_scan_entry_release_locked(dsd_opts* opts, dsd_state* state) {
+dsd_engine_trunk_scan_entry_release_locked(const dsd_opts* opts, dsd_state* state) {
     dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
     if (!coord || coord->active >= coord->count) {
         return;
