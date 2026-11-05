@@ -278,10 +278,10 @@ Window {
         return mainRoot.listenLabels(rows.concat(systems));
     }
     // The targets the scan-list session scans, as it started them: read once,
-    // when its start is accepted (or a recreated Activity takes the session
-    // up), from the target files that start wrote, so a list edited, saved or
-    // deleted since changes nothing here (the session still runs what it
-    // started with).
+    // when its start is accepted, from the target files that start wrote, and
+    // kept with the accepted start (prefs.acceptedStartTargets) for a recreated
+    // Activity, so a list edited, saved or deleted since changes nothing here
+    // (the session still runs what it started with).
     property var sessionTargets: []
     function captureSessionTargets() {
         mainRoot.sessionTargets = mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
@@ -957,7 +957,8 @@ Window {
             var list = scanLists.getByUid(mainRoot.sessionStartUid);
             if (list && list.uid)
                 mainRoot.sessionSystem = list;
-            mainRoot.captureSessionTargets();
+            // As its start was accepted: its lists may have been deleted since, their target files with them.
+            mainRoot.sessionTargets = prefs.acceptedStartTargets;
         } else if (mainRoot.sessionStartKind === "explore") {
             mainRoot.exploring = true;
             // Where it got to before the recreation is not known here.
@@ -1419,6 +1420,7 @@ Window {
         prefs.acceptedStartUid = mainRoot.sessionStartUid;
         mainRoot.forgetOperatorHold();
         mainRoot.captureSessionTargets();
+        prefs.acceptedStartTargets = mainRoot.sessionTargets;
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
         mainRoot.awaitingSessionInitialized = true;
         mainRoot.sessionReachedRunning = decoderHost.sessionState === 2;

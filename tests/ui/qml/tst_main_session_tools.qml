@@ -1366,6 +1366,40 @@ Item {
             }
         }
 
+        // A recreated Activity takes the running session's own targets up as its start was accepted, not from the saved
+        // lists' files: lists deleted while the session runs (their generated target files with them) still leave
+        // their rows reached in place once the session is paused.
+        function test_a_reattached_scan_list_keeps_its_targets_when_its_lists_are_deleted() {
+            var security = addScanList("Security", "Gate", "851.0125");
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            try {
+                testContext.setLifecyclePhase(0);
+                app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid]);
+                testContext.setLifecyclePhase(2);
+                removeScanLists([hospital.uid, security.uid]);
+                reattach();
+                compare(app.sessionStartKind, "scan");
+                testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
+                                        scanRotationActive: false, scanPaused: true, scanResumable: true,
+                                        tunerControlled: false, centerFreqHz: 851012500, channelBandwidthHz: 12500});
+                tryVerify(function () { return app.operatorHolds && app.exploring; });
+                compare(app.listenActions.length, 1, "the session's own row");
+                compare(app.listenActions[0].key, "tune");
+                compare(app.listenActions[0].hz, 851012500);
+                compare(app.listenActions[0].name, "Security / Gate");
+                testContext.setMetric("centerFreqHz", 852012500);
+                compare(app.listenActions.length, 1, "the companion's row");
+                compare(app.listenActions[0].name, "Hospital / ER desk");
+            } finally {
+                endPausedBundle([security.uid, hospital.uid]);
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                prefs.acceptedStartCompanions = [];
+            }
+        }
+
         // A paused scan-list session reaches its rows as it started them: a row saved on another frequency since is
         // still reached where the session runs it, under the name it started with, and not at the frequency saved.
         function test_a_paused_scan_list_reaches_rows_as_its_session_started_them() {

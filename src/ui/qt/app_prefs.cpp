@@ -6,6 +6,8 @@
 #include "app_prefs.h"
 
 #include <QChar>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
@@ -97,6 +99,10 @@ enum Key {
     // (list UIDs a restore can re-mint), and removed by a restore.
     kAcceptedStartCompanions,
     kLastStartedCompanions,
+    // Issue #644: the targets the accepted scan session runs, as its start wrote them (JSON), so a recreated Activity
+    // takes them up from here rather than from the saved lists' files, which a list deleted mid-session takes away.
+    // Device-local with the rest of the accepted start.
+    kAcceptedStartTargets,
     kKeyCount
 };
 
@@ -145,6 +151,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"recording/analogPrerollMs", true},
     {"listen/acceptedStartCompanions", false},
     {"listen/lastStartedCompanions", false},
+    {"listen/acceptedStartTargets", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -915,6 +922,30 @@ AppPrefs::setLastStartedCompanions(const QStringList& value) {
         m_settings.setValue(key_name(kLastStartedCompanions), value);
     }
     Q_EMIT lastStartedCompanionsChanged();
+}
+
+QVariantList
+AppPrefs::acceptedStartTargets() const {
+    const QJsonDocument stored =
+        QJsonDocument::fromJson(m_settings.value(key_name(kAcceptedStartTargets)).toString().toUtf8());
+    return stored.isArray() ? stored.array().toVariantList() : QVariantList();
+}
+
+void
+AppPrefs::setAcceptedStartTargets(const QVariantList& value) {
+    const QString text =
+        value.isEmpty()
+            ? QString()
+            : QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(value)).toJson(QJsonDocument::Compact));
+    if (m_settings.value(key_name(kAcceptedStartTargets)).toString() == text) {
+        return;
+    }
+    if (text.isEmpty()) {
+        m_settings.remove(key_name(kAcceptedStartTargets));
+    } else {
+        m_settings.setValue(key_name(kAcceptedStartTargets), text);
+    }
+    Q_EMIT acceptedStartChanged();
 }
 
 bool

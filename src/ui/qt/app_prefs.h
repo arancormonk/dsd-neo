@@ -46,6 +46,11 @@ class AppPrefs : public QObject {
                    acceptedStartChanged)
     Q_PROPERTY(QStringList lastStartedCompanions READ lastStartedCompanions WRITE setLastStartedCompanions NOTIFY
                    lastStartedCompanionsChanged)
+    /* Issue #644: the targets the accepted scan session runs (the list of maps KnownFrequencyIndex::sessionTargets()
+     * gives), written when its start is accepted, empty for every other start: a recreated Activity takes them up from
+     * here, since a list deleted while its session runs takes its generated target files with it. Device-local. */
+    Q_PROPERTY(QVariantList acceptedStartTargets READ acceptedStartTargets WRITE setAcceptedStartTargets NOTIFY
+                   acceptedStartChanged)
     Q_PROPERTY(double lastLat READ lastLat NOTIFY locationChanged)
     Q_PROPERTY(double lastLon READ lastLon NOTIFY locationChanged)
     Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
@@ -163,6 +168,8 @@ class AppPrefs : public QObject {
     void setAcceptedStartCompanions(const QStringList& value);
     QStringList lastStartedCompanions() const;
     void setLastStartedCompanions(const QStringList& value);
+    QVariantList acceptedStartTargets() const;
+    void setAcceptedStartTargets(const QVariantList& value);
     double lastLat() const;
     void setLastLat(double value);
     double lastLon() const;

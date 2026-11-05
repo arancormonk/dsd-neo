@@ -1143,6 +1143,11 @@ test_prefs_key_table(void) {
         {"acceptedStartCompanions", QStringList{QStringLiteral("uid-3"), QStringLiteral("uid-4")},
          "listen/acceptedStartCompanions"},
         {"lastStartedCompanions", QStringList{QStringLiteral("uid-3")}, "listen/lastStartedCompanions"},
+        // Issue #644: the accepted scan session's targets.
+        {"acceptedStartTargets",
+         QVariantList{QVariantMap{{QStringLiteral("targetId"), QStringLiteral("t1")},
+                                  {QStringLiteral("frequencyHz"), 851012500}}},
+         "listen/acceptedStartTargets"},
     };
     QStringList covered;
     int writable = 0;
@@ -1223,6 +1228,7 @@ test_prefs_key_table(void) {
     const QStringList wantLocal = {
         QStringLiteral("listen/acceptedStartCompanions"),
         QStringLiteral("listen/acceptedStartKind"),
+        QStringLiteral("listen/acceptedStartTargets"),
         QStringLiteral("listen/acceptedStartUid"),
         QStringLiteral("listen/lastStartedCompanions"),
         QStringLiteral("location/lastAccuracyM"),
