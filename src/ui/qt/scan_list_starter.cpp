@@ -410,11 +410,19 @@ ScanListStarter::retainProfiles(const QVariantMap& list) const {
 }
 
 QVariantMap
-ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths) const {
+ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths,
+                               const QString& holdTargetId) const {
     const QVariantMap list = lists.value(0).toMap();
     bool recording = false;
     auto result = prepareForStart(list, host, &recording, companionPaths);
-    const auto args = result.take("args").toStringList();
+    auto args = result.take("args").toStringList();
+    if (result.value("ok").toBool() && !holdTargetId.isEmpty()) {
+        args = session_args_with_scan_hold(args, holdTargetId);
+        if (args.isEmpty()) {
+            result.insert("ok", false);
+            result.insert("error", QStringLiteral("This scan list cannot start held on that channel."));
+        }
+    }
     if (result.value("ok").toBool() && host) {
         host->noteStartAttempt(list.value("sourceType").toString());
     }
@@ -562,9 +570,9 @@ ScanListStarter::materializeLists(const QVariantList& lists, QStringList* paths,
 }
 
 QVariantMap
-ScanListStarter::startLists(const QVariantList& lists, DecoderHost* host) const {
+ScanListStarter::startLists(const QVariantList& lists, DecoderHost* host, const QString& holdTargetId) const {
     if (lists.size() <= 1) {
-        return start(lists.value(0).toMap(), host);
+        return startPrepared({lists.value(0).toMap()}, host, {}, holdTargetId);
     }
     QStringList warnings;
     QString error = checkLists(lists, &warnings);
@@ -576,7 +584,7 @@ ScanListStarter::startLists(const QVariantList& lists, DecoderHost* host) const 
     if (!error.isEmpty()) {
         return listsRefusal(error);
     }
-    auto result = startPrepared(lists, host, paths.mid(1));
+    auto result = startPrepared(lists, host, paths.mid(1), holdTargetId);
     result.insert("warnings", warnings);
     result.insert("targetCount", total);
     return result;

@@ -52,9 +52,12 @@ class ScanListStarter : public QObject {
      * options, one --trunk-scan per list in that order (list 1 is the first), one call recording session, the first
      * list's. Nothing starts unless every list passes its own checks, joins the first (joinConflict()), builds, and the
      * lists together pass the engine's checks across them (no target id twice). One list is start().
+     * @p holdTargetId, when not empty, starts the scan held on that target of the first list (issue #644,
+     * session_args_with_scan_hold()), for this start only: nothing here keeps it.
      * @return start()'s map; "error" names the list it is about.
      */
-    Q_INVOKABLE QVariantMap startLists(const QVariantList& lists, DecoderHost* host) const;
+    Q_INVOKABLE QVariantMap startLists(const QVariantList& lists, DecoderHost* host,
+                                       const QString& holdTargetId = QString()) const;
     /** @brief Why @p other cannot scan in one session with @p primary, or empty; see session_args_scan_join_conflict(). */
     Q_INVOKABLE QString joinConflict(const QVariantMap& primary, const QVariantMap& other) const;
     static int maxLists();
@@ -94,8 +97,10 @@ class ScanListStarter : public QObject {
        folder's session begun). */
     QVariantMap prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording,
                                 const QStringList& companionPaths) const;
-    /* Start the first of @p lists with @p companionPaths, the others' CSVs, built already. */
-    QVariantMap startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths) const;
+    /* Start the first of @p lists with @p companionPaths, the others' CSVs, built already; held on @p holdTargetId
+       when it is not empty. */
+    QVariantMap startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths,
+                              const QString& holdTargetId = QString()) const;
     /* Hold the decryption profiles @p list's entries use for the session. */
     void retainProfiles(const QVariantMap& list) const;
     /* startLists()' checks before anything is written: each list's own, then whether it joins the first. Their

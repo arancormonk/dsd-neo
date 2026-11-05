@@ -82,6 +82,16 @@ QStringList session_args_scan_build(const QVariantMap& list, const QString& firs
  */
 QStringList session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqMhz,
                                           const QStringList& csvPaths, const SessionArgPrefs& prefs, QString* error);
+/**
+ * @brief @p args, a scan session's argv, starting held on target @p targetId (issue #644): `--trunk-scan-hold
+ * <targetId>` after the last list's `--trunk-scan`, ahead of the extra options (a "--" among them would make it an
+ * operand). Empty when @p args scans no list or the decoder cannot keep the id: empty, a control character, or more
+ * bytes than dsd_opts::trunk_scan_hold_id holds.
+ *
+ * The only way a frontend start carries the option: the extra-option gates refuse it, since extra options are saved
+ * and the hold is for one start.
+ */
+QStringList session_args_with_scan_hold(const QStringList& args, const QString& targetId);
 
 /** @brief The engine's default trunk-scan dwell and activity hold, in ms: what a list's 0 runs at. */
 constexpr int SessionArgsScanDwellDefaultMs = 3000;

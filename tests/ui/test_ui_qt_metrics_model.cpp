@@ -3260,6 +3260,12 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("-Y is a rotation", model.scanRotationActive());
     expect("-Y hold reads the scan-list flag", model.scanHold());
+    expect("an ordinary -Y hold is no entry hold", !model.scanEntryHold());
+    /* Issue #644: a hold a frequency entry set is the same hold, marked; the Hold button shows it held. */
+    state.lcn_scan_entry_hold = 1;
+    model.refresh(&opts, &state);
+    expect("-Y entry hold reads the scan-list mark", model.scanHold() && model.scanEntryHold());
+    state.lcn_scan_entry_hold = 0;
     expect("-Y avoids are the avoided rows", model.scanAvoidCount() == 3);
     expect("-Y never parks on an avoided row", !model.scanTargetAvoided());
     opts.scanner_mode = 0;
@@ -3276,6 +3282,17 @@ main(int argc, char** argv) {
     state.trunk_scan_hold = 1;
     model.refresh(&opts, &state);
     expect("trunk scan hold on", model.scanHold());
+    expect("an ordinary trunk scan hold is no entry hold", !model.scanEntryHold());
+    state.trunk_scan_entry_hold = 1;
+    model.refresh(&opts, &state);
+    expect("trunk scan entry hold reads the coordinator's mark", model.scanHold() && model.scanEntryHold());
+    /* The mark never stands alone: a hold released reads as no entry hold, as the API's entry_hold does. */
+    state.trunk_scan_hold = 0;
+    model.refresh(&opts, &state);
+    expect("an entry mark without its hold is no entry hold", !model.scanHold() && !model.scanEntryHold());
+    state.trunk_scan_hold = 1;
+    state.trunk_scan_entry_hold = 0;
+    model.refresh(&opts, &state);
     expect("scan target identity", model.scanTargetId() == QStringLiteral("dispatch") && model.scanTargetOrdinal() == 2
                                        && model.scanTargetCount() == 3);
     expect("an unlabelled target has no label", model.scanTargetLabel().isEmpty());

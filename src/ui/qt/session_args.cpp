@@ -418,9 +418,12 @@ validate_key_args(const QVariantMap& system, const QString& keyType, const QStri
 bool
 session_args_extra_safe(const QString& tokens) {
     const auto split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    /* A start hold (issue #644) is for one start, which session_args_with_scan_hold() gives it; extra options are
+       saved, and would hold every start after it. */
     return std::none_of(split.cbegin(), split.cend(), [](const QString& token) {
         return short_option_grouped(token) || token == QLatin1String("--show-keys")
-               || token.startsWith(QLatin1String("--show-keys="));
+               || token.startsWith(QLatin1String("--show-keys="))
+               || long_option_is(token, QLatin1String("--trunk-scan-hold"));
     });
 }
 
@@ -610,6 +613,22 @@ session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqM
     }
     appendScanOptions(args, list, csvPaths, prefs);
     return args;
+}
+
+QStringList
+session_args_with_scan_hold(const QStringList& args, const QString& targetId) {
+    const QByteArray id = targetId.toUtf8();
+    const bool control =
+        std::any_of(targetId.cbegin(), targetId.cend(), [](QChar ch) { return ch.category() == QChar::Other_Control; });
+    const qsizetype list = args.lastIndexOf(QStringLiteral("--trunk-scan"));
+    if (id.isEmpty() || id.size() >= static_cast<qsizetype>(sizeof(dsd_opts::trunk_scan_hold_id)) || control || list < 0
+        || list + 1 >= args.size()) {
+        return {};
+    }
+    QStringList held = args;
+    held.insert(list + 2, targetId);
+    held.insert(list + 2, QStringLiteral("--trunk-scan-hold"));
+    return held;
 }
 
 bool

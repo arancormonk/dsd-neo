@@ -1999,6 +1999,63 @@ test_scan_join_conflict(void) {
     expect("an unset gain follows the app default", conflict(base, with({{"gainDb", 31}})).isEmpty());
 }
 
+/* Issue #644: a scan list starts held on one of its rows only through session_args_with_scan_hold(), which the
+   frontend calls once for the start that asked for it. The option never comes from extra arguments, which are saved
+   with a system or the app and would hold every start after it. */
+static void
+test_scan_hold_option(void) {
+    for (const auto& token : {QStringLiteral("--trunk-scan-hold er-desk"), QStringLiteral("--trunk-scan-hold=er-desk"),
+                              QStringLiteral("-F --trunk-scan-hold")}) {
+        expect("the shared gate refuses a start hold in extra options", !dsd_qt::session_args_extra_safe(token));
+        expect("the scan gate refuses it too", !dsd_qt::session_args_scan_extra_safe(token));
+        auto sys = usb_system();
+        sys["extraArgs"] = token;
+        SessionArgsError error = SessionArgsError::None;
+        expect("a saved system's extra start hold refuses argv",
+               session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::UnsafeOption);
+        sys.remove("extraArgs");
+        SessionArgPrefs prefs;
+        prefs.extraArgs = token;
+        expect("the app's extra start hold refuses argv",
+               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::UnsafeOption);
+        QString why;
+        expect("a scan list's session refuses it",
+               dsd_qt::session_args_scan_build(usb_system(), QStringLiteral("851.012500"), QStringLiteral("/t/a.csv"),
+                                               prefs, &why)
+                       .isEmpty()
+                   && why == dsd_qt::session_args_error_text(SessionArgsError::UnsafeOption));
+    }
+    expect("an option that only begins alike is not refused",
+           dsd_qt::session_args_extra_safe(QStringLiteral("--trunk-scan-holdover")));
+
+    SessionArgPrefs prefs;
+    prefs.extraArgs = QStringLiteral("-F -- operand");
+    QString why;
+    const QStringList args =
+        dsd_qt::session_args_scan_build_lists(usb_system(), QStringLiteral("851.012500"),
+                                              {QStringLiteral("/t/a.csv"), QStringLiteral("/t/b.csv")}, prefs, &why);
+    expect("the scan argv builds", !args.isEmpty() && why.isEmpty());
+    const QStringList held = dsd_qt::session_args_with_scan_hold(args, QStringLiteral("er-desk"));
+    const qsizetype at = held.indexOf(QStringLiteral("--trunk-scan-hold"));
+    expect("the hold follows the last list, before the extra options and their \"--\"",
+           at == args.lastIndexOf(QStringLiteral("--trunk-scan")) + 2 && held.value(at + 1) == QStringLiteral("er-desk")
+               && at < held.indexOf(QStringLiteral("--")) && held.size() == args.size() + 2);
+    expect("the hold's id is passed as it is, even one spelled like an option",
+           dsd_qt::session_args_with_scan_hold(args, QStringLiteral("--print-config")).contains("--print-config"));
+    const QString longest(63, QLatin1Char('a'));
+    expect("an id of the most bytes the decoder keeps is held",
+           !dsd_qt::session_args_with_scan_hold(args, longest).isEmpty());
+    for (const QString& bad : {QString(), longest + QLatin1Char('a'), QStringLiteral("er\ndesk"),
+                               QString::fromUtf8("\xc3\xa9") + QString(62, QLatin1Char('a'))}) {
+        expect("an id the decoder cannot take refuses the argv",
+               dsd_qt::session_args_with_scan_hold(args, bad).isEmpty());
+    }
+    expect("an argv with no scan list refuses a hold",
+           dsd_qt::session_args_with_scan_hold(session_args_build(usb_system(), SessionArgPrefs(), nullptr),
+                                               QStringLiteral("er-desk"))
+               .isEmpty());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -2009,6 +2066,7 @@ main(int argc, char** argv) {
     test_retained_key_validation_boundary();
     test_keys();
     test_extra_short_options();
+    test_scan_hold_option();
     for (const auto& token : {QStringLiteral("--show-keys"), QStringLiteral("--show-keys=1")}) {
         expect("shared scan token gate refuses key display", !dsd_qt::session_args_extra_safe(token));
         auto sys = usb_system();

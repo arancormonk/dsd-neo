@@ -568,6 +568,8 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
      * the engine loop, so an affordance gated only on the other two offers a tune the scan then undoes. */
     next.tuner_controlled = next.trunking_enabled || next.scanner_mode || running;
     next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
+    /* Issue #644: the view's mark of a hold a frequency entry set, read with the hold it marks, as the API reads it. */
+    next.scan_entry_hold = next.scan_hold && scan.entry_hold != 0U;
     next.scan_target_avoided = trunk_scan && running && snapshot->trunk_scan_active_avoided != 0;
 }
 

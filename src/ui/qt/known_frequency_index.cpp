@@ -88,8 +88,35 @@ KnownFrequencyIndex::KnownFrequencyIndex(SavedSystemsModel* systems, ScanListsMo
     rebuild();
 }
 
+namespace {
+/* What a match is (issue #644): the fields KnownFrequencyIndex's class comment lists beside its name. */
+QVariantMap
+matchIdentity(const QString& source, const QString& listUid, const QString& targetId, bool selectable) {
+    return {{QStringLiteral("source"), source},
+            {QStringLiteral("listUid"), listUid},
+            {QStringLiteral("targetId"), targetId},
+            {QStringLiteral("selectable"), selectable}};
+}
+
+QVariantMap
+matchValue(const QString& name, qint64 hz, const QVariant& systemUid, const QVariantMap& identity) {
+    QVariantMap value = identity;
+    value.insert(QStringLiteral("name"), name);
+    value.insert(QStringLiteral("frequencyHz"), hz);
+    value.insert(QStringLiteral("systemUid"), systemUid);
+    return value;
+}
+
+/* A channel map's row under @p identity's list, if any: it names the channel and starts nothing. */
+QVariantMap
+channelMapIdentity(const QVariantMap& identity) {
+    return matchIdentity(QStringLiteral("channelMap"), identity.value(QStringLiteral("listUid")).toString(), QString(),
+                         false);
+}
+} // namespace
+
 void
-KnownFrequencyIndex::add(const QVariantMap& s, const QString& label) {
+KnownFrequencyIndex::add(const QVariantMap& s, const QString& label, const QVariantMap& identity) {
     /* A saved system's mode is its decode flag, as the session builder and the rest of the app read it
        (decode_flag_names_am() in session_args.cpp); a decoder chosen only through its extra arguments is not read. A
        scan-list entry names its protocol. */
@@ -107,19 +134,15 @@ KnownFrequencyIndex::add(const QVariantMap& s, const QString& label) {
     }
     qint64 hz = parseFrequency(s.value(QStringLiteral("freqMhz")).toString(), true);
     if (hz) {
-        m_entries.append({hz,
-                          width,
-                          {{QStringLiteral("name"), label},
-                           {QStringLiteral("frequencyHz"), hz},
-                           {QStringLiteral("systemUid"), s.value(QStringLiteral("uid"))}}});
+        m_entries.append({hz, width, matchValue(label, hz, s.value(QStringLiteral("uid")), identity)});
     }
     /* The system's channel map lists its channels: a row that names no mode or bandwidth of its own has its width. */
-    addCsv(s.value(QStringLiteral("chanCsvPath")).toString(), s, label, width);
+    addCsv(s.value(QStringLiteral("chanCsvPath")).toString(), s, label, width, channelMapIdentity(identity));
 }
 
 namespace {
 struct CsvColumns {
-    int frequency = 1, name = -1, mode = -1, options = -1, channels = -1, label = -1;
+    int frequency = 1, name = -1, mode = -1, options = -1, channels = -1, label = -1, id = -1;
 };
 
 static CsvColumns
@@ -132,6 +155,7 @@ csvColumns(const QStringList& fields) {
             columns.frequency = i;
         } else if (name == QStringLiteral("name") || name == QStringLiteral("id")) {
             columns.name = i;
+            columns.id = name == QStringLiteral("id") ? i : columns.id;
         } else if (name == QStringLiteral("mode") || name == QStringLiteral("type")) {
             columns.mode = i;
         } else if (name == QStringLiteral("options") || name == QStringLiteral("relevant_cli_switches")) {
@@ -151,6 +175,20 @@ static QString
 rowName(const QStringList& fields, const CsvColumns& columns) {
     const QString labelled = fields.value(columns.label);
     return labelled.isEmpty() ? fields.value(columns.name) : labelled;
+}
+
+/* A row's identity: a target CSV's row is the target its `id` names, startable when it has one and the file's list
+   can start; a channel map's row is what the file's identity says. */
+QVariantMap
+rowIdentity(const QStringList& fields, const CsvColumns& columns, const QVariantMap& identity) {
+    if (identity.value(QStringLiteral("source")).toString() != QLatin1String("scanTarget")) {
+        return identity;
+    }
+    QVariantMap row = identity;
+    const QString id = fields.value(columns.id);
+    row.insert(QStringLiteral("targetId"), id);
+    row.insert(QStringLiteral("selectable"), identity.value(QStringLiteral("selectable")).toBool() && !id.isEmpty());
+    return row;
 }
 } // namespace
 
@@ -224,7 +262,8 @@ knownWidth(const QString& mode, const QString& options, double inherited) {
 }
 
 void
-KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QString& label, double width, int depth) {
+KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QString& label, double width,
+                            const QVariantMap& identity, int depth) {
     if (path.isEmpty()) {
         return;
     }
@@ -263,13 +302,12 @@ KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QSt
             name += QStringLiteral(" / ") + channel;
         }
         const double rowWidth = knownWidth(fields.value(columns.mode), fields.value(columns.options), width);
-        m_entries.append({hz,
-                          rowWidth,
-                          {{QStringLiteral("name"), name},
-                           {QStringLiteral("frequencyHz"), hz},
-                           {QStringLiteral("systemUid"), s.value(QStringLiteral("uid"))}}});
+        m_entries.append(
+            {hz, rowWidth,
+             matchValue(name, hz, s.value(QStringLiteral("uid")), rowIdentity(fields, columns, identity))});
         if (depth == 0 && !fields.value(columns.channels).isEmpty()) {
-            addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, rowWidth, depth + 1);
+            addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, rowWidth, channelMapIdentity(identity),
+                   depth + 1);
         }
     }
 }
@@ -281,25 +319,37 @@ KnownFrequencyIndex::rebuild() {
         for (int i = 0; i < m_systems->count(); ++i) {
             auto s = m_systems->get(i);
             // Issue #782: an unnamed system by its protocol and frequency, as the scan list and its targets name it.
-            add(s, scan_entry_name(s.value(QStringLiteral("name")).toString(),
-                                   scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
-                                   s.value(QStringLiteral("freqMhz")).toString()));
+            add(s,
+                scan_entry_name(s.value(QStringLiteral("name")).toString(),
+                                scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
+                                s.value(QStringLiteral("freqMhz")).toString()),
+                matchIdentity(QStringLiteral("system"), QString(), QString(), true));
         }
     }
     if (m_lists) {
         for (int i = 0; i < m_lists->count(); ++i) {
             auto list = m_lists->get(i);
             QString name = list.value(QStringLiteral("name")).toString();
+            // A draft list cannot start, so none of its rows can be started with its settings.
+            const bool startable = !list.value(QStringLiteral("isDraft")).toBool();
+            const QString listUid = list.value(QStringLiteral("uid")).toString();
             for (const QVariant& value : list.value(QStringLiteral("entries")).toList()) {
                 auto s = value.toMap();
                 if (s.value(QStringLiteral("kind")).toString() != QStringLiteral("system")) {
-                    add(s, name + QStringLiteral(" / ")
-                               + scan_entry_name(s.value(QStringLiteral("name")).toString(),
-                                                 s.value(QStringLiteral("protocol")).toString(),
-                                                 s.value(QStringLiteral("freqMhz")).toString()));
+                    // A disabled entry is no target of the list's session.
+                    const QString uid = s.value(QStringLiteral("uid")).toString();
+                    const bool enabled = s.value(QStringLiteral("enabled"), true).toBool();
+                    add(s,
+                        name + QStringLiteral(" / ")
+                            + scan_entry_name(s.value(QStringLiteral("name")).toString(),
+                                              s.value(QStringLiteral("protocol")).toString(),
+                                              s.value(QStringLiteral("freqMhz")).toString()),
+                        matchIdentity(QStringLiteral("scanEntry"), listUid, uid,
+                                      startable && enabled && !uid.isEmpty()));
                 }
             }
-            addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500);
+            addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500,
+                   matchIdentity(QStringLiteral("scanTarget"), listUid, QString(), startable));
         }
     }
     std::sort(m_entries.begin(), m_entries.end(), [](const Entry& a, const Entry& b) { return a.hz < b.hz; });
@@ -330,8 +380,11 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
             nearest = distance;
         }
         if (std::abs(distance - nearest) < 0.5) {
+            // Two rows of one list on one frequency under one name are two targets, each its own id.
             QString key = entry.value.value(QStringLiteral("systemUid")).toString() + QLatin1Char('/')
-                          + entry.value.value(QStringLiteral("name")).toString() + QString::number(entry.hz);
+                          + entry.value.value(QStringLiteral("name")).toString() + QString::number(entry.hz)
+                          + QLatin1Char('/') + entry.value.value(QStringLiteral("source")).toString() + QLatin1Char('/')
+                          + entry.value.value(QStringLiteral("targetId")).toString();
             if (!seen.contains(key)) {
                 result.append(entry.value);
                 seen.insert(key);
@@ -341,12 +394,19 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
     return result;
 }
 
+QVariantList
+KnownFrequencyIndex::tunedMatches(double frequency, double channelWidth) const {
+    return lookup(frequency, std::isfinite(channelWidth) && channelWidth > 0 ? channelWidth : 12500);
+}
+
 QStringList
 KnownFrequencyIndex::tunedNames(double frequency, double channelWidth) const {
     QStringList names;
-    for (const QVariant& match :
-         lookup(frequency, std::isfinite(channelWidth) && channelWidth > 0 ? channelWidth : 12500)) {
-        names.append(match.toMap().value(QStringLiteral("name")).toString());
+    for (const QVariant& match : tunedMatches(frequency, channelWidth)) {
+        const QString name = match.toMap().value(QStringLiteral("name")).toString();
+        if (!names.contains(name)) {
+            names.append(name);
+        }
     }
     return names;
 }
