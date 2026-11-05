@@ -3695,28 +3695,30 @@ retired (its request handed to `dsd_trunk_tuning_request_disown()`), the entry i
 a forward step's (a refusal ends the calls and passes the row). An untyped row goes through
 `dsd_engine_scan_untyped_goto_row()` (`engine.c`, private in `scan_step_untyped.h`): the walk's tune, both legs, a
 timed-out RTL leg noted as a walk the scan owns, with the same "nothing moved, nothing changes" rule (the landing kept
-too; an RTL refusal still lets go of a tune noted before it, as Next's does) and Next's refusal after a leg moved. A
-resume-at is today's resume on the row given (`channel_scan_resume_on()`, which the plain resume now calls too), so its
-failures leave the scan paused with the toast and the pause hook's undo. Over a resume still pending whose own tune is
-for the row already (typed: `channel_scan_row_in_flight()`; untyped: the step tune
-`dsd_engine_manual_tune_pending_step_row()` names) it sets the intent on that tune and answers `PENDING` with no second
-tune, so the resume's landing holds the row; a trunk scan's resume clears `paused` as its park begins, so its go-to
-takes the running scan's park-in-flight join. Otherwise, over a typed resume still pending it is the staged go-to under
-the resume's ownership (a refusal after a backend moved then runs the resume's own failure, cursor back); over an
-untyped one it is the untyped go-to's (`untyped_goto_over_a_pending_resume()`): it tunes the row as the resume's step
-does and decides by the answer first, so a refusal or deferral before any leg moved keeps that resume (an RTL refusal
-lets go of its tune, whose drop then ends it); a landing runs the scan, held; a pending tune moves the scan session and
-rebinds the tune just noted to it (`dsd_engine_manual_tune_rebind_session()`), so the displaced earlier record reads
-stale and cannot undo it; a leg that moved leaves the scan paused. The hold is set only on the row's confirmed landing.
-An entry intent rides the go-to: `dsd_engine_scan_entry_intent`, held in `dsd_engine_scan_owner::entry` (helpers in
-`scan_landing.h`), names its scan (`by`, so a trunk-scan intent never reads as a -Y one; the trunk scan's go-to is under
-the coordinator above), the row, `lcn_scan_session`, `lcn_list_rev` and the request of its tune. For a typed row the
-request is the row's attempt (`channel_scan::attempt`, its first request, which a restage keeps); an intent set before
-its tune binds to it in `channel_scan_tune_staged()`. For an untyped row it is the row's noted manual tune
-(`dsd_engine_manual_tune_pending_id()`, bound in `untyped_enter_tuned_row()`); the settled record carries its `id`. A
-landing within the go-to's own call holds the row directly. Otherwise `dsd_engine_scan_entry_landed()` runs at both -Y
-landings (`channel_scan_commit()`, `untyped_install_row()`). It sets `lcn_scan_hold` and `lcn_scan_entry_hold` when the
-row, session, list and request are the intent's, and spends the intent at every landing.
+too; an RTL refusal with nothing moved keeps the scan's own row tune still noted, a step's or a walk's, which the
+controller may still land, `untyped_refusal_keeps_scan_tune()`, as Next's refusal does; once it lands, the cached centre
+is its target again) and Next's refusal after a leg moved. A resume-at is today's resume on the row given
+(`channel_scan_resume_on()`, which the plain resume now calls too), so its failures leave the scan paused with the toast
+and the pause hook's undo. Over a resume still pending whose own tune is for the row already (typed:
+`channel_scan_row_in_flight()`; untyped: the step tune `dsd_engine_manual_tune_pending_step_row()` names) it sets the
+intent on that tune and answers `PENDING` with no second tune, so the resume's landing holds the row; a trunk scan's
+resume clears `paused` as its park begins, so its go-to takes the running scan's park-in-flight join. Otherwise, over a
+typed resume still pending it is the staged go-to under the resume's ownership (a refusal after a backend moved then
+runs the resume's own failure, cursor back); over an untyped one it is the untyped go-to's
+(`untyped_goto_over_a_pending_resume()`): it tunes the row as the resume's step does and decides by the answer first, so
+a refusal or deferral before any leg moved keeps that resume and its tune; a landing runs the scan, held; a pending tune
+moves the scan session and rebinds the tune just noted to it (`dsd_engine_manual_tune_rebind_session()`), so the
+displaced earlier record reads stale and cannot undo it; a leg that moved leaves the scan paused. The hold is set only
+on the row's confirmed landing. An entry intent rides the go-to: `dsd_engine_scan_entry_intent`, held in
+`dsd_engine_scan_owner::entry` (helpers in `scan_landing.h`), names its scan (`by`, so a trunk-scan intent never reads
+as a -Y one; the trunk scan's go-to is under the coordinator above), the row, `lcn_scan_session`, `lcn_list_rev` and the
+request of its tune. For a typed row the request is the row's attempt (`channel_scan::attempt`, its first request, which
+a restage keeps); an intent set before its tune binds to it in `channel_scan_tune_staged()`. For an untyped row it is
+the row's noted manual tune (`dsd_engine_manual_tune_pending_id()`, bound in `untyped_enter_tuned_row()`); the settled
+record carries its `id`. A landing within the go-to's own call holds the row directly. Otherwise
+`dsd_engine_scan_entry_landed()` runs at both -Y landings (`channel_scan_commit()`, `untyped_install_row()`). It sets
+`lcn_scan_hold` and `lcn_scan_entry_hold` when the row, session, list and request are the intent's, and spends the
+intent at every landing.
 
 Beside the request check, every other tune of the scan cancels the intent before it starts, and a new tune-start
 site must do the same. Today these are the typed step past its pending check,

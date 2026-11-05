@@ -1384,6 +1384,18 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long in
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
+/* Whether a row tune of the -Y scan's that the RTL leg refused, with no other leg having moved the receiver (@p moved
+   0), keeps the scan's own row tune still awaited (issue #644): its step's (a timed step's or a resume's) or a walk it
+   owns, on its current list and session. Such a refusal decides nothing about where the receiver goes, so it does not
+   let go of that tune: the controller may still land it, or already did, and its outcome commits or passes its row as
+   usual. A refusal after a leg moved, and any other tune noted (an entry's, an import's), are let go as before. */
+static int
+untyped_refusal_keeps_scan_tune(const dsd_state* state, int moved) {
+    int scan_walk = 0;
+    return !moved && dsd_engine_manual_tune_pending_row(state, &scan_walk) >= 0
+           && (scan_walk || dsd_engine_manual_tune_pending_step_row(state) >= 0);
+}
+
 #ifdef USE_RADIO
 /* The legacy RTL leg: the untyped -Y step and the direct control-channel return. It tunes as a manual tune does
  * (io_control_set_rtl_freq_tagged()), so the cached centre follows the outcome: the centre applied, a timed-out target,
@@ -1391,7 +1403,8 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, const dsd_state* state, long in
  * when the caller follows it (the step notes it); otherwise any tune that reached the controller supersedes a noted
  * manual tune, since it now decides where the receiver goes (issue #671). */
 static dsd_trunk_tune_result
-no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uint64_t* out_pending_id) {
+no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uint64_t* out_pending_id,
+                              int refusal_keeps_scan_tune) {
     if (out_pending_id) {
         *out_pending_id = 0U;
     }
@@ -1409,9 +1422,10 @@ no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uin
     }
     if (tune_result == RTL_STREAM_TUNE_TIMEOUT && out_pending_id) {
         *out_pending_id = pending_id;
-    } else {
+    } else if (tune_result != RTL_STREAM_TUNE_FAILED || !refusal_keeps_scan_tune) {
         /* A scan step's or a control-channel return's: its owner's own, which continues a RadioReference import that
-           turned it on (issue #803). */
+           turned it on (issue #803). A step's refusal with nothing moved (@p refusal_keeps_scan_tune) leaves the scan's
+           own row tune still awaited to land or fail (untyped_refusal_keeps_scan_tune()). */
         dsd_engine_manual_tune_owner_takes_over();
         dsd_engine_manual_tune_supersede(state);
     }
@@ -1435,7 +1449,8 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
 #ifdef USE_RADIO
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
-    const dsd_trunk_tune_result result = no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq, &pending_id);
+    const dsd_trunk_tune_result result = no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq, &pending_id,
+                                                                       untyped_refusal_keeps_scan_tune(state, moved));
     if (result == DSD_TRUNK_TUNE_RESULT_TIMEOUT) {
         dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_UNTYPED_STEP, pending_id, (uint32_t)freq, prior_hz,
                                             row, state->lcn_scan_session, state->lcn_list_rev);
@@ -1453,9 +1468,10 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
 
 /* The RTL leg of a Next or Previous walk the -Y scan owns (issue #644): the operator's own tune, so it reaches the
  * front end whatever the legacy leg last sent. Any answer but a deferral leaves the legacy caches vouching for nothing,
- * as the step's leg treats them, and decides where the receiver goes, so it supersedes a noted manual tune; one that
- * timed out is noted as the walk's (DSD_MANUAL_TUNE_LCN_CYCLE), with its row and direction @p dir. Results as
- * untyped_tune_row_rtl()'s. Without RTL support io_control refuses every tune. */
+ * as the step's leg treats them, and one the controller took decides where the receiver goes, so it supersedes a noted
+ * manual tune; a refusal supersedes it unless it keeps the scan's own row tune still awaited
+ * (untyped_refusal_keeps_scan_tune()). One that timed out is noted as the walk's (DSD_MANUAL_TUNE_LCN_CYCLE), with its
+ * row and direction @p dir. Results as untyped_tune_row_rtl()'s. Without RTL support io_control refuses every tune. */
 static int
 walk_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t hz, int moved) {
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
@@ -1464,7 +1480,10 @@ walk_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t h
     if (result == RTL_STREAM_TUNE_DEFERRED) {
         return DSD_UNTYPED_STEP_DEFERRED;
     }
-    dsd_engine_manual_tune_supersede(state);
+    if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT
+        || !untyped_refusal_keeps_scan_tune(state, moved)) {
+        dsd_engine_manual_tune_supersede(state);
+    }
     dsd_engine_legacy_tune_caches_forget();
     if (result == RTL_STREAM_TUNE_TIMEOUT) {
         dsd_engine_manual_tune_note_lcn_cycle(state, pending_id, hz, prior_hz, row, dir, 1);
@@ -2436,7 +2455,7 @@ no_carrier_apply_direct_cc_return(dsd_opts* opts, dsd_state* state, long cc, int
             return 0;
         }
 #ifdef USE_RADIO
-        if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)cc, NULL) != DSD_TRUNK_TUNE_RESULT_OK) {
+        if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)cc, NULL, 0) != DSD_TRUNK_TUNE_RESULT_OK) {
             return 0;
         }
         state->dmr_rest_channel = -1;

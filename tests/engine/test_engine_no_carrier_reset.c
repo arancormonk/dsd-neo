@@ -9447,9 +9447,9 @@ untyped_resume_at_over_pending_scripted(dsd_opts* opts, dsd_state* state, int c)
 
 /* Issue #644: a resume-at over a resume still pending (row 1's). Pending, it replaces that
    resume: the earlier tune's displaced record changes nothing, and the go-to's own landing runs the scan, held. Refused
-   or deferred before any leg moved (an RTL deferral, rigctl refusing first), the earlier resume stands and lands, with
-   no hold. An RTL refusal lets go of the earlier tune, whose drop then leaves the scan paused; one after rigctl moved
-   leaves it paused at once. */
+   or deferred before any leg moved (an RTL deferral, rigctl refusing first, an RTL refusal), the earlier resume stands
+   and lands, with no hold: an RTL refusal decides nothing about where the receiver goes, so it keeps the earlier
+   resume's tune, which the controller still lands. One after rigctl moved leaves it paused at once. */
 static int
 untyped_resume_at_over_pending_case(int c) {
     dsd_opts* opts = NULL;
@@ -9478,7 +9478,7 @@ untyped_resume_at_over_pending_case(int c) {
                          dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
                              && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L));
     rc |= expect_case(what, "the go-to's result", untyped_resume_at_over_pending_scripted(opts, state, c) == k_want[c]);
-    if (c == UOVER_DEFERRED || c == UOVER_RIGCTL_REFUSED) {
+    if (c == UOVER_DEFERRED || c == UOVER_RIGCTL_REFUSED || c == UOVER_RTL_REFUSED) {
         rc |= expect_case(what, "the earlier resume stands", state->lcn_scan_resume_pending == 1U);
         land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
         rc |= expect_case(what, "and lands", poll_until_landed(opts, state));
@@ -9492,10 +9492,7 @@ untyped_resume_at_over_pending_case(int c) {
         rc |= expect_case(what, "the scan runs", opts->scanner_mode == 1 && state->lcn_scan_paused == 0U);
         rc |= expect_untyped_entry_held(what, state, 2);
     } else {
-        rc |=
-            expect_case(what, "the earlier resume goes",
-                        c == UOVER_RIGCTL_MOVED ? state->lcn_scan_resume_pending == 0U
-                                                : dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_DROPPED);
+        rc |= expect_case(what, "the earlier resume goes", state->lcn_scan_resume_pending == 0U);
         rc |= expect_case(what, "the scan stays paused",
                           opts->scanner_mode == 0 && state->lcn_scan_paused == 1U
                               && state->lcn_scan_resume_pending == 0U);
@@ -9668,9 +9665,9 @@ enum {
 };
 
 /* Issue #644: on a running untyped list, a go-to to row 1 is pending, then a go-to to row 2.
-   Pending, row 2's entry replaces row 1's, and its landing holds row 2. Deferred before any leg moved, row 1's entry
-   and tune stand, and row 1 lands held. Refused at the RTL leg with nothing moved, that refusal let go of row 1's
-   tune, so row 1 ends unheld and row 2 is not passed. Refused after rigctl moved, row 1 is retired and row 2 passed. */
+   Pending, row 2's entry replaces row 1's, and its landing holds row 2. Deferred, or refused at the RTL leg, before any
+   leg moved, row 1's entry and tune stand (a refusal decides nothing about where the receiver goes), and row 1 lands
+   held. Refused after rigctl moved, row 1 is retired and row 2 passed. */
 static int
 untyped_goto_over_a_pending_goto_case(int c) {
     dsd_opts* opts = NULL;
@@ -9717,16 +9714,14 @@ untyped_goto_over_a_pending_goto_case(int c) {
     opts->use_rigctl = 0;
     land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
     const int landed = poll_until_landed(opts, state);
-    if (c == UAGAIN_PENDING || c == UAGAIN_DEFERRED) {
+    if (c == UAGAIN_PENDING || c == UAGAIN_DEFERRED || c == UAGAIN_RTL_REFUSED) {
         const int row = c == UAGAIN_PENDING ? 2 : 1;
         rc |= expect_case(what, "a landing is taken", landed);
         rc |= expect_untyped_entry_held(what, state, row);
     } else {
         rc |= expect_case(what, "no landing is taken", !landed);
-        rc |= expect_case(what, "row 2 is passed only after rigctl moved",
-                          state->lcn_freq_roll == (c == UAGAIN_RIGCTL_MOVED ? 3 : 1));
-        rc |= expect_case(what, "a boundary only after rigctl moved",
-                          (state->carrier_seq != carrier_seq) == (c == UAGAIN_RIGCTL_MOVED));
+        rc |= expect_case(what, "row 2 is passed after rigctl moved", state->lcn_freq_roll == 3);
+        rc |= expect_case(what, "a boundary after rigctl moved", state->carrier_seq != carrier_seq);
         rc |= expect_untyped_unheld(what, state);
     }
     teardown_walk_list(opts, state);
@@ -9930,6 +9925,48 @@ untyped_goto_waits_on_the_tune_in_flight_case(int over_walk) {
     return rc;
 }
 
+/* Issue #644: a held running untyped list on BRAVO, Next to CHARLIE still waiting on its tune, then a row tune the RTL
+   leg refuses (@p by_goto: a typed entry's go-to of ALPHA; else Next again). The refused tune decides nothing, so the
+   walk still pending stands: the controller lands it, and its landing commits CHARLIE, the hold carried there, so the
+   receiver, the row heard and the hold agree. */
+static int
+untyped_refusal_keeps_the_pending_walk_case(int by_goto) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = by_goto ? "a go-to refused over a pending walk" : "Next refused over a pending walk";
+    const long int base_hz = 1730012500L + (long int)by_goto * 5000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1);
+    g_rtl_last_applied_hz = (uint32_t)(base_hz + 1000000L);
+    state->lcn_scan_hold = 1U;
+    rc |= expect_case(what, "Next to CHARLIE waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 2);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    if (by_goto) {
+        rc |= expect_case(what, "the go-to of ALPHA is refused",
+                          dsd_engine_channel_scan_goto_row(opts, state, 0) == DSD_SCAN_GOTO_REFUSED);
+    } else {
+        (void)press_walk(opts, state, 1);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the walk is still pending", dsd_engine_manual_tune_pending_row(state, NULL) == 2);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the walk lands", poll_until_landed(opts, state));
+    rc |= expect_case(what, "the receiver, the row heard and the hold agree on CHARLIE",
+                      opts->rtlsdr_center_freq == (uint32_t)(base_hz + 2000000L) && dsd_state_lcn_heard_row(state) == 2
+                          && state->lcn_scan_hold == 1U);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_goto_over_a_pending_goto(void) {
     int rc = test_untyped_goto_cancelled_by_a_pause();
@@ -9939,6 +9976,7 @@ test_untyped_goto_over_a_pending_goto(void) {
     for (int c = 0; c < UAGAIN_CASES; c++) {
         rc |= untyped_goto_over_a_pending_goto_case(c);
     }
+    rc |= untyped_refusal_keeps_the_pending_walk_case(1) | untyped_refusal_keeps_the_pending_walk_case(0);
     rc |= untyped_goto_waits_on_the_tune_in_flight_case(0) | untyped_goto_waits_on_the_tune_in_flight_case(1);
     return rc;
 }

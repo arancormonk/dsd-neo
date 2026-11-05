@@ -338,6 +338,12 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     }
     manual_tune_settle();
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
+        /* The controller applied this tune, and no tune it took since replaced the record: its target is where the
+           receiver is, which a later tune's refusal may have put back over the one cached when this one timed out (a
+           -Y scan's row tune outlives a refusal, issue #644). */
+        if (opts && g_record.requested_hz != 0U) {
+            opts->rtlsdr_center_freq = g_record.requested_hz;
+        }
         manual_tune_rr_report(state, MANUAL_TUNE_RR_LANDED);
         return DSD_MANUAL_TUNE_LANDED;
     }

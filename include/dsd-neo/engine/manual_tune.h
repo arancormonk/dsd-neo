@@ -142,7 +142,9 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
  * (taken here unless the caller holds it), so a late failure never puts back a centre over a newer watchdog tune's. A record whose stream session has ended (rtl_stream_session_generation())
  * is dropped, and so reported, as one superseded is (dsd_engine_manual_tune_supersede()): the cached centre stays, for
  * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
- * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.
+ * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed; on
+ * a landing it is the tune's target, which a later tune's refusal may have put back meanwhile (a -Y scan's own row tune
+ * outlives a refusal, issue #644).
  * A RadioReference import's tune posts every outcome (dsd_engine_manual_tune_note_rr_import()).
  * An untyped -Y step's failure is not toasted, nor a walk's (DSD_MANUAL_TUNE_LCN_CYCLE): the scan passes the row, as
  * after a step that failed in its wait (issue #666), and the engine's loop settles the row
