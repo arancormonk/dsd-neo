@@ -48,6 +48,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/runtime/tuner_owner.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -224,6 +225,57 @@ dsd_engine_scan_entry_intent_drop_request(dsd_state* state, uint64_t request) {
     if (state && intent.active && request != 0U && intent.request == request) {
         dsd_engine_scan_entry_intent_cancel(state);
     }
+}
+
+/** The entry @p intent failed, coming to @p result (DSD_SCAN_GOTO_REFUSED, _DEFERRED or _SETUP_FAILED): kept for
+ * app-control to name the row once (dsd_engine_scan_entry_take_failure()). A newer failure replaces one not taken. */
+static inline void
+dsd_engine_scan_entry_note_failure(dsd_state* state, const dsd_engine_scan_entry_intent* intent,
+                                   dsd_scan_goto_result result) {
+    dsd_engine_scan_owner* owner = state && intent ? dsd_engine_scan_owner_ensure(state) : NULL;
+    if (owner) {
+        const dsd_engine_scan_entry_failure failed = {
+            .set = 1U, .by = intent->by, .result = (uint8_t)result, .row = intent->row};
+        owner->entry_failed = failed;
+    }
+}
+
+/** The tune @p request failed after the go-to that began it returned (@p result as above): an entry waiting on it is
+ * cancelled, and its failure kept. A tune dropped because something else took the tuner is no failure: that one
+ * cancels with dsd_engine_scan_entry_intent_drop_request(). */
+static inline void
+dsd_engine_scan_entry_intent_fail_request(dsd_state* state, uint64_t request, dsd_scan_goto_result result) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (state && intent.active && request != 0U && intent.request == request) {
+        dsd_engine_scan_entry_note_failure(state, &intent, result);
+        dsd_engine_scan_entry_intent_cancel(state);
+    }
+}
+
+/** A -Y resume an entry rides failed (@p result as above): the entry waiting on it is cancelled, and its failure kept.
+ */
+static inline void
+dsd_engine_scan_entry_intent_fail(dsd_state* state, dsd_scan_goto_result result) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (state && intent.active) {
+        dsd_engine_scan_entry_note_failure(state, &intent, result);
+        dsd_engine_scan_entry_intent_cancel(state);
+    }
+}
+
+/** Take the entry failure kept, if any, into @p out (may be NULL); none is kept after. Returns 1 when there was one. */
+static inline int
+dsd_engine_scan_entry_failure_take(dsd_state* state, dsd_engine_scan_entry_failure* out) {
+    dsd_engine_scan_owner* owner =
+        state ? DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
+    if (!owner || !owner->entry_failed.set) {
+        return 0;
+    }
+    if (out) {
+        *out = owner->entry_failed;
+    }
+    owner->entry_failed = (dsd_engine_scan_entry_failure){0};
+    return 1;
 }
 
 /** The scan holds the row on air, marked an entry hold, and no entry waits on a landing any more: a go-to whose row was

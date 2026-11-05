@@ -4200,8 +4200,9 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
         return p25_recovery;
     }
 
-    /* An entry waiting on the park holds nothing: it never landed (issue #644). */
-    dsd_engine_scan_entry_intent_drop_request(state, request_id);
+    /* An entry waiting on the park holds nothing: it never landed, and its failure is kept for its toast (issue
+       #644). */
+    dsd_engine_scan_entry_intent_fail_request(state, request_id, DSD_SCAN_GOTO_REFUSED);
     rt->tune_request_id = 0U;
     rt->tune_pending = 0;
     rt->retry_until_m = now_m + TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S;

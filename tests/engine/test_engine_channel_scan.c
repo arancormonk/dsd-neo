@@ -3990,6 +3990,20 @@ typed_entry_held_on(const dsd_state* state, int row) {
            && !dsd_engine_channel_scan_entry_pending(state);
 }
 
+/* Whether the scan kept a failure of an entry to -Y row @p row coming to @p result, for app-control to name once
+   (dsd_engine_scan_entry_take_failure()); @p row -1 for none kept. Takes it either way. */
+static int
+entry_failure_taken(dsd_state* state, int row, dsd_scan_goto_result result) {
+    dsd_scan_entry_failure_t failed;
+    DSD_MEMSET(&failed, 0, sizeof failed);
+    const int took = dsd_engine_scan_entry_take_failure(state, &failed);
+    if (row < 0) {
+        return !took;
+    }
+    return took && failed.scanner == DSD_SCAN_ENTRY_CHANNEL && failed.row == row && failed.result == result
+           && !dsd_engine_scan_entry_take_failure(state, NULL);
+}
+
 /* Issue #644 D1: a frequency typed by hand that is a row of a running typed list sends the scan to that row (a step
    to it, after which the scan goes on from it) and holds it there, marked an entry hold, once its tune lands. A row
    already confirmed on air is only held; one whose landing was forgotten since (a step's refused tune) is tuned
@@ -4161,6 +4175,8 @@ test_typed_goto_pending_outcomes(void) {
                                                                              : DSD_TRUNK_TUNE_RESULT_OK);
         assert(dsd_engine_channel_scan_pending(opts, state) == 0);
         assert(!dsd_engine_channel_scan_entry_pending(state));
+        /* Only the entry's own late failure is kept for its toast; a cancel keeps none. */
+        assert(entry_failure_taken(state, variant == GOTO_FAILS_LATE ? 3 : -1, DSD_SCAN_GOTO_REFUSED));
         if (variant == GOTO_LANDS) {
             assert(typed_entry_held_on(state, 3) && strcmp(row_named(opts, state), "West") == 0);
         } else if (variant == GOTO_FAILS_LATE) {
@@ -4401,6 +4417,8 @@ test_typed_resume_at(void) {
             assert(result == (variant == RESUME_AT_LANDS ? DSD_SCAN_GOTO_HOLDING : DSD_SCAN_GOTO_REFUSED));
         }
         assert(!dsd_engine_channel_scan_entry_pending(state));
+        /* A refusal at once or late is kept, both alike: the go-to's caller drops one its own call returned. */
+        assert(entry_failure_taken(state, variant >= RESUME_AT_REFUSED ? 3 : -1, DSD_SCAN_GOTO_REFUSED));
         if (variant <= RESUME_AT_PENDING_LANDS) {
             assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0U && typed_entry_held_on(state, 3));
         } else {

@@ -19013,6 +19013,25 @@ expect_goto(const char* stage, int ok) {
     return 0;
 }
 
+/* Whether the scan kept the failure of an entry to target @p index, a refused park, for app-control to name once
+   (dsd_engine_scan_entry_take_failure()); @p index -1 for none kept. Takes it either way. */
+static int
+expect_goto_failure(dsd_state* state, const char* stage, int index) {
+    dsd_scan_entry_failure_t failed;
+    DSD_MEMSET(&failed, 0, sizeof failed);
+    const int took = dsd_engine_scan_entry_take_failure(state, &failed);
+    const int ok = index < 0 ? !took
+                             : took && failed.scanner == DSD_SCAN_ENTRY_TRUNK && failed.row == index
+                                   && failed.result == DSD_SCAN_GOTO_REFUSED
+                                   && !dsd_engine_scan_entry_take_failure(state, NULL);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "go-to %s: failure kept %d (target %d), want target %d\n", stage, took,
+                    took ? failed.row : -1, index);
+        return 1;
+    }
+    return 0;
+}
+
 /* A go-to and a release as app-control runs them: inside the P25 SM tick guard, which they never take themselves. */
 static dsd_scan_goto_result
 goto_target(dsd_opts* opts, dsd_state* state, int index, dsd_trunk_scan_goto_report* report) {
@@ -19182,6 +19201,8 @@ goto_pending_case(int c, const char* what) {
     tick_at(&opts, &state, 1.1);
     test_rc |= expect_goto_entry(&state, what, on, hold, mark);
     test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    /* Only the entry's own park failing is kept for its toast; a cancel or a replacement keeps none. */
+    test_rc |= expect_goto_failure(&state, what, c == GOTO_PENDING_FAILS_LATE ? 1 : -1);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -19577,6 +19598,7 @@ goto_paused_case(int c, const char* what) {
         test_rc |= expect_goto_entry(&state, what, held ? 1U : 0U, held, held);
         test_rc |= expect_goto(what, state.trunk_scan_paused == 0U && dsd_engine_trunk_scan_entry_pending(&state) == 0);
     }
+    test_rc |= expect_goto_failure(&state, what, c == GOTO_PAUSED_FAILS_LATE ? 1 : -1);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, keys_path);

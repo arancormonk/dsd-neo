@@ -60,6 +60,27 @@ typedef enum {
     DSD_SCAN_GOTO_SETUP_FAILED, /**< The row's settings could not be prepared: nothing was tuned. */
 } dsd_scan_goto_result;
 
+/** An entry that failed after its go-to returned PENDING (dsd_engine_scan_entry_take_failure()). */
+typedef struct {
+    dsd_scan_entry_scanner scanner; /**< CHANNEL or TRUNK */
+    int row;                        /**< the -Y row or trunk-scan target gone to (0-based) */
+    dsd_scan_goto_result result;    /**< REFUSED, DEFERRED or SETUP_FAILED */
+} dsd_scan_entry_failure_t;
+
+/**
+ * @brief Take the failure of an entry whose tune failed after its go-to returned (issue #644), once.
+ *
+ * The scan records one where it drops an entry for its own tune's failure: a -Y row's tune or restage refused or
+ * deferred, an untyped walk's tune that failed, a -Y resume-at that stays paused (refused, deferred or not set up; an
+ * interrupted one, which a stream reopen ends, is no failure), and a trunk-scan park that failed. A cancel records
+ * none: `Y`, `L`, `J`, `b`, another entry, a pause, a stop, or another tune taking the tuner. A newer failure replaces
+ * one not taken. A failure inside the go-to's own call is recorded too; that call's caller, which names the outcome
+ * it returned, takes and drops it. Decoder thread.
+ *
+ * @return 1 with @p out (may be NULL) filled when one was kept, else 0; none is kept after either way.
+ */
+int dsd_engine_scan_entry_take_failure(dsd_state* state, dsd_scan_entry_failure_t* out);
+
 /**
  * @brief Find the row of the scan in force that the frequency @p hz typed by hand picks (issue #644 D4, D5).
  *

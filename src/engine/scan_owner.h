@@ -34,6 +34,15 @@ typedef struct {
                             begun */
 } dsd_engine_scan_entry_intent;
 
+/** An entry whose own tune failed after its go-to returned (issue #644; scan_landing.h): kept until app-control takes
+ * it, once, to name the row in a toast. A cancel (`Y`, `L`, `J`, `b`, another entry, a pause, a stop) records none. */
+typedef struct {
+    uint8_t set;    /**< 0: no failure waits to be taken */
+    uint8_t by;     /**< the scan it failed in (DSD_ENGINE_SCAN_LANDING_ROW or _TARGET) */
+    uint8_t result; /**< the dsd_scan_goto_result it came to: REFUSED, DEFERRED or SETUP_FAILED */
+    int row;        /**< the -Y row or trunk-scan target gone to */
+} dsd_engine_scan_entry_failure;
+
 typedef struct {
     void* trunk;
     void* search;
@@ -41,6 +50,7 @@ typedef struct {
     dsd_state_ext_cleanup_fn trunk_free, search_free, analog_call_free;
     dsd_engine_scan_landing landing;
     dsd_engine_scan_entry_intent entry;
+    dsd_engine_scan_entry_failure entry_failed;
 } dsd_engine_scan_owner;
 
 static inline void

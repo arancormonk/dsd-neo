@@ -8906,6 +8906,13 @@ untyped_goto_case(int c) {
         } else if (c == UGOTO_FAILS_LATE) {
             rc |= expect_walk_refused(what, state, 1, 2);
             rc |= expect_untyped_unheld(what, state);
+            dsd_scan_entry_failure_t failed;
+            DSD_MEMSET(&failed, 0, sizeof failed);
+            rc |= expect_case(what, "the entry's failure is kept, once",
+                              dsd_engine_scan_entry_take_failure(state, &failed) == 1
+                                  && failed.scanner == DSD_SCAN_ENTRY_CHANNEL && failed.row == 2
+                                  && failed.result == DSD_SCAN_GOTO_REFUSED
+                                  && dsd_engine_scan_entry_take_failure(state, NULL) == 0);
         } else {
             const int row = c == UGOTO_NEXT_CANCELS ? 0 : 2;
             rc |= expect_case(what, "the row lands as a step's",
@@ -8919,6 +8926,9 @@ untyped_goto_case(int c) {
     } else {
         rc |= expect_walk_left_alone(what, "refused", state, carrier_seq);
         rc |= expect_untyped_unheld(what, state);
+    }
+    if (c != UGOTO_FAILS_LATE && result == DSD_SCAN_GOTO_PENDING) {
+        rc |= expect_case(what, "a cancel keeps no failure", dsd_engine_scan_entry_take_failure(state, NULL) == 0);
     }
     teardown_walk_list(opts, state);
     return rc;

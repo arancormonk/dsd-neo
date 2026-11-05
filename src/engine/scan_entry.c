@@ -23,6 +23,7 @@
 
 #include "scan_entry_internal.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
 
 int
 dsd_engine_channel_scan_row_confirmed(const dsd_state* state, int row) {
@@ -107,4 +108,18 @@ dsd_engine_scan_entry_match(const dsd_opts* opts, const dsd_state* state, uint32
         scan_entry_channel_rows(opts, state, hz, &tally);
     }
     return dsd_scan_entry_tally_end(&tally);
+}
+
+int
+dsd_engine_scan_entry_take_failure(dsd_state* state, dsd_scan_entry_failure_t* out) {
+    dsd_engine_scan_entry_failure failed;
+    if (!dsd_engine_scan_entry_failure_take(state, &failed)) {
+        return 0;
+    }
+    if (out) {
+        out->scanner = failed.by == DSD_ENGINE_SCAN_LANDING_TARGET ? DSD_SCAN_ENTRY_TRUNK : DSD_SCAN_ENTRY_CHANNEL;
+        out->row = failed.row;
+        out->result = (dsd_scan_goto_result)failed.result;
+    }
+    return 1;
 }

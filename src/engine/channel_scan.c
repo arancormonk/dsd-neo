@@ -264,6 +264,12 @@ channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const 
            && channel_scan_row_still_listed(state, scan->list_rev, scan->row, scan->row_freq);
 }
 
+/* What a row tune that failed with @p result comes to for an entry waiting on it (issue #644). */
+static dsd_scan_goto_result
+channel_scan_entry_failure(dsd_trunk_tune_result result) {
+    return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
+}
+
 /* End every slot's call and commit it, an NFM call first (dsd_engine_end_calls()). */
 static void
 channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
@@ -515,8 +521,9 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (channel_scan_row_still_listed(state, scan->list_rev, scan->row, scan->row_freq)) {
         channel_scan_row_refused(state, scan, result);
     }
-    /* An entry waiting on the tune holds nothing: it never landed (issue #644). */
-    dsd_engine_scan_entry_intent_drop_request(state, scan->attempt);
+    /* An entry waiting on the tune holds nothing: it never landed, and its failure is kept for its toast (issue
+       #644). */
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result));
     scan->request = 0;
     return 0;
 }
@@ -1282,7 +1289,7 @@ channel_scan_tune_outcome(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
         result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
     channel_scan_end_calls(opts, state);
     channel_scan_row_refused(state, scan, result);
-    dsd_engine_scan_entry_intent_drop_request(state, scan->attempt);
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result));
     scan->request = 0;
     return -1;
 }
@@ -1701,8 +1708,25 @@ dsd_engine_scan_toast_resume_failed(dsd_state* state, long freq, int why) {
     channel_scan_toast_resume(state, text);
 }
 
+/* The goto outcome a resume's failure @p why names, for an entry the resume carried (issue #644); HOLDING for an
+   interrupted resume, which a stream reopen ends: no failure of the entry's. */
+static dsd_scan_goto_result
+channel_scan_resume_failure_result(int why) {
+    switch (why) {
+        case DSD_SCAN_RESUME_FAILED_DEFERRED: return DSD_SCAN_GOTO_DEFERRED;
+        case DSD_SCAN_RESUME_FAILED_SETUP: return DSD_SCAN_GOTO_SETUP_FAILED;
+        case DSD_SCAN_RESUME_INTERRUPTED: return DSD_SCAN_GOTO_HOLDING;
+        default: return DSD_SCAN_GOTO_REFUSED;
+    }
+}
+
 void
 dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long freq, int why) {
+    /* A resume-at's entry failed with its resume: kept for its toast before the pause below cancels it (issue #644). */
+    const dsd_scan_goto_result entry_result = channel_scan_resume_failure_result(why);
+    if (entry_result != DSD_SCAN_GOTO_HOLDING) {
+        dsd_engine_scan_entry_intent_fail(state, entry_result);
+    }
     if (dsd_channel_modes_present(state)) {
         /* The pause again, in place of the row attempt: every scope it began is detached and the configured front end
            is asked back, through the pause app-control installed, which records that request for the decoder as an

@@ -1822,8 +1822,13 @@ static void
 untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_settled* settled, int polled) {
     const int landed = polled == DSD_MANUAL_TUNE_LANDED;
     if (!landed && settled->scan_owned) {
-        /* An entry waiting on the tune holds nothing: it will not land (issue #644). */
-        dsd_engine_scan_entry_intent_drop_request(state, settled->id);
+        /* An entry waiting on the tune holds nothing: it will not land (issue #644). A tune that failed keeps the
+           entry's failure for its toast; one dropped, because something else took the tuner, is no failure of it. */
+        if (polled == DSD_MANUAL_TUNE_DROPPED) {
+            dsd_engine_scan_entry_intent_drop_request(state, settled->id);
+        } else {
+            dsd_engine_scan_entry_intent_fail_request(state, settled->id, DSD_SCAN_GOTO_REFUSED);
+        }
     }
     if (polled == DSD_MANUAL_TUNE_DROPPED) {
         return;
