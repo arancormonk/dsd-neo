@@ -107,6 +107,15 @@ matchValue(const QString& name, qint64 hz, const QVariant& systemUid, const QVar
     return value;
 }
 
+/* @p identity with the label of @p protocol (a scan-list protocol id), which tells two matches of one name apart;
+   none for no protocol (a saved system that auto-detects). */
+QVariantMap
+withProtocol(QVariantMap identity, const QString& protocol) {
+    identity.insert(QStringLiteral("protocolLabel"),
+                    protocol.isEmpty() ? QString() : scan_entry_protocol_label(protocol));
+    return identity;
+}
+
 /* A channel map's row under @p identity's list, if any: it names the channel and starts nothing. */
 QVariantMap
 channelMapIdentity(const QVariantMap& identity) {
@@ -188,6 +197,9 @@ rowIdentity(const QStringList& fields, const CsvColumns& columns, const QVariant
     const QString id = fields.value(columns.id);
     row.insert(QStringLiteral("targetId"), id);
     row.insert(QStringLiteral("selectable"), identity.value(QStringLiteral("selectable")).toBool() && !id.isEmpty());
+    // A target's type is its protocol and its kind: "nxdn48-conventional".
+    row.insert(QStringLiteral("protocolLabel"),
+               scan_entry_protocol_label(fields.value(columns.mode).section(QLatin1Char('-'), 0, 0).toLower()));
     return row;
 }
 } // namespace
@@ -323,7 +335,8 @@ KnownFrequencyIndex::rebuild() {
                 scan_entry_name(s.value(QStringLiteral("name")).toString(),
                                 scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
                                 s.value(QStringLiteral("freqMhz")).toString()),
-                matchIdentity(QStringLiteral("system"), QString(), QString(), true));
+                withProtocol(matchIdentity(QStringLiteral("system"), QString(), QString(), true),
+                             scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString())));
         }
     }
     if (m_lists) {
@@ -344,8 +357,9 @@ KnownFrequencyIndex::rebuild() {
                             + scan_entry_name(s.value(QStringLiteral("name")).toString(),
                                               s.value(QStringLiteral("protocol")).toString(),
                                               s.value(QStringLiteral("freqMhz")).toString()),
-                        matchIdentity(QStringLiteral("scanEntry"), listUid, uid,
-                                      startable && enabled && !uid.isEmpty()));
+                        withProtocol(matchIdentity(QStringLiteral("scanEntry"), listUid, uid,
+                                                   startable && enabled && !uid.isEmpty()),
+                                     s.value(QStringLiteral("protocol")).toString()));
                 }
             }
             addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500,
@@ -400,14 +414,19 @@ KnownFrequencyIndex::tunedMatches(double frequency, double channelWidth) const {
 }
 
 QStringList
-KnownFrequencyIndex::tunedNames(double frequency, double channelWidth) const {
+KnownFrequencyIndex::matchNames(const QVariantList& matches) {
     QStringList names;
-    for (const QVariant& match : tunedMatches(frequency, channelWidth)) {
+    for (const QVariant& match : matches) {
         const QString name = match.toMap().value(QStringLiteral("name")).toString();
         if (!names.contains(name)) {
             names.append(name);
         }
     }
     return names;
+}
+
+QStringList
+KnownFrequencyIndex::tunedNames(double frequency, double channelWidth) const {
+    return matchNames(tunedMatches(frequency, channelWidth));
 }
 } // namespace dsd_qt

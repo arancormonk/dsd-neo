@@ -32,7 +32,9 @@ class ScanListsModel;
  * - `targetId`: the id the list's session names the row by (the entry's uid, the CSV row's `id`), else empty;
  * - `selectable`: whether the match can be started with its own settings: a saved system, or a scan list's row that
  *   becomes a target when the list starts (an enabled entry of a list that is no draft, a CSV row with an id). A
- *   channel map's row only names the channel.
+ *   channel map's row only names the channel;
+ * - `protocolLabel`: the protocol of a saved system, an entry or a target as the scan list editor names it ("NXDN48"),
+ *   which tells two matches of one name apart; empty for a channel map's row and a saved system with no decode flag.
  */
 class KnownFrequencyIndex : public QObject {
     Q_OBJECT
@@ -45,6 +47,8 @@ class KnownFrequencyIndex : public QObject {
     Q_INVOKABLE QVariantList tunedMatches(double frequency, double channelWidth) const;
     /** The names of tunedMatches(), each once. */
     Q_INVOKABLE QStringList tunedNames(double frequency, double channelWidth) const;
+    /** The names of @p matches, each once, in their order: two rows of one name on one channel are named once. */
+    static QStringList matchNames(const QVariantList& matches);
     void rebuild();
 
     qulonglong

@@ -540,10 +540,7 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
         width = std::min(width, (double)h.step_num / h.step_den);
     }
     auto matches = m_index ? m_index->lookup(h.frequency_hz, width) : QVariantList();
-    QStringList labels;
-    for (const auto& m : matches) {
-        labels.append(m.toMap().value(QStringLiteral("name")).toString());
-    }
+    const QStringList labels = KnownFrequencyIndex::matchNames(matches);
     return {{QStringLiteral("session"), QString::number(h.session_id)},
             {QStringLiteral("id"), QString::number(h.hit_id)},
             {QStringLiteral("frequency"), h.frequency_hz},

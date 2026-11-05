@@ -500,7 +500,7 @@ testKnownFrequencyIdentity(const QString& dir) {
                    imported, QStringLiteral("tower"), 483300000, true);
     assertIdentity(matchNamed(index.tunedMatches(484100000, 12500), QStringLiteral("Imported / trunk")), "scanTarget",
                    imported, QStringLiteral("trunk"), 484100000, true);
-    // The trunked target's channel map, and the saved system's, both name 461 MHz; neither is a row of its own.
+    // The trunked target's channel map, and the saved system's, both name 481 MHz; neither is a row of its own.
     const auto mapped = index.tunedMatches(481000000, 12500);
     assert(mapped.size() == 2);
     assertIdentity(matchNamed(mapped, QStringLiteral("Imported / trunk / 1")), "channelMap", imported, QString(),
@@ -513,6 +513,32 @@ testKnownFrequencyIdentity(const QString& dir) {
     assert(gate[0].toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("nxdn-a"));
     assert(gate[1].toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("nxdn-b"));
     assert(index.tunedNames(485000000, 12500) == QStringList{QStringLiteral("Imported / Gate")});
+    // Each says its protocol, which tells the two apart: an entry's protocol, a saved system's decode flag's.
+    assert(gate[0].toMap().value(QStringLiteral("protocolLabel")).toString() == QStringLiteral("NXDN96"));
+    assert(gate[1].toMap().value(QStringLiteral("protocolLabel")).toString() == QStringLiteral("NXDN48"));
+    assert(matchNamed(index.tunedMatches(482000000, 12500), QStringLiteral("Hospital / ER desk"))
+               .value(QStringLiteral("protocolLabel"))
+               .toString()
+           == QStringLiteral("DMR"));
+    assert(matchNamed(index.tunedMatches(480100000, 12500), QStringLiteral("County"))
+               .value(QStringLiteral("protocolLabel"))
+               .toString()
+               .isEmpty());
+    // Signal search names the channel's matches once each, as the tuned-name line does.
+    dsd_signal_search_status status{};
+    status.session_id = 19;
+    status.revision = 9001;
+    status.phase = DSD_SEARCH_LISTENING;
+    status.hit.session_id = 19;
+    status.hit.hit_id = 9001;
+    status.hit.frequency_hz = 485000000;
+    status.hit.bandwidth_hz = 12500;
+    dsd_app_signal_search_publish(&status, &status.hit, nullptr);
+    dsd_qt::SignalSearchModel search(nullptr, &index);
+    search.refresh();
+    const QVariantMap hit = search.status().value(QStringLiteral("hit")).toMap();
+    assert(hit.value(QStringLiteral("knownNames")).toStringList() == QStringList{QStringLiteral("Imported / Gate")});
+    assert(hit.value(QStringLiteral("knownLabel")).toString() == QStringLiteral("Imported / Gate"));
     // The live views' width rule: 0 takes a 12.5 kHz channel, as tunedNames() does.
     assert(index.tunedMatches(482005000, 0).size() == 1);
     assert(index.tunedMatches(482005000, 6000).isEmpty());
