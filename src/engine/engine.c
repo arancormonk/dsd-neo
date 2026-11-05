@@ -48,6 +48,7 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/slicer_thresholds.h>
@@ -118,6 +119,7 @@
 #include "engine_test_support.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
 #include "scan_step_untyped.h"
 
 struct CODEC2;
@@ -1512,7 +1514,8 @@ untyped_tune_row(dsd_opts* opts, dsd_state* state, int row, long int freq, int w
  * never runs the acquisition reset the typed rows do, so a new channel must not inherit the old one's, issue #522), the
  * frequency an analog call on audio input is heard on (issue #667 D9), and fresh scan clocks. A placeholder (0 Hz) row
  * parks where the receiver is: only the cursor and the clocks, so the row heard stays the one the receiver is still
- * on. Runs after the carrier boundary has ended the calls of the row left, under its keys and its name. */
+ * on. An entry waiting on the row holds it there (issue #644). Runs after the carrier boundary has ended the calls of
+ * the row left, under its keys and its name. */
 static void
 untyped_install_row(dsd_state* state, int row, time_t now) {
     state->lcn_freq_roll = row + 1;
@@ -1522,6 +1525,7 @@ untyped_install_row(dsd_state* state, int row, time_t now) {
         dsd_scan_row_keys_apply(state, row);
         dsd_analog_rx_reset(state);
         dsd_engine_scan_landing_note_row(state, row, freq);
+        dsd_engine_scan_entry_landed(state, row);
         /* The scan has the tuner on a row of its own (issue #644): the operator's calls ended at the boundary, so a
            start that found no list, or turned the scanner on over a manual tune, stops filing its calls as the
            operator's here, whichever way the list arrived. */
@@ -1620,11 +1624,15 @@ untyped_note_unlanded(const dsd_opts* opts, dsd_state* state, int moved, time_t 
 
 /* Tune @p row (not a placeholder) as untyped_tune_row() does for @p walk_dir, and commit it if it landed: the
    SCAN_STEP boundary for any move, then the install with clocks from @p now. A row that did not land after a leg moved
-   the receiver still clears the tone heard on the row left (issue #522). Returns the DSD_UNTYPED_STEP_* result. */
+   the receiver still clears the tone heard on the row left (issue #522). Returns the DSD_UNTYPED_STEP_* result, and
+   in @p moved_out (optional) whether a leg moved the receiver. */
 static int
-untyped_enter_tuned_row(dsd_opts* opts, dsd_state* state, int row, int walk_dir, time_t now) {
+untyped_enter_tuned_row(dsd_opts* opts, dsd_state* state, int row, int walk_dir, time_t now, int* moved_out) {
     int moved = 0;
     const int result = untyped_tune_row(opts, state, row, *dsd_state_trunk_lcn_slot(state, row), walk_dir, &moved);
+    if (moved_out) {
+        *moved_out = moved;
+    }
     if (result == DSD_UNTYPED_STEP_OK || moved) {
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_SCAN_STEP, 0);
     }
@@ -1649,7 +1657,7 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
         untyped_install_row(state, row, now_s);
         return DSD_UNTYPED_STEP_OK;
     }
-    const int result = untyped_enter_tuned_row(opts, state, row, 0, now_s);
+    const int result = untyped_enter_tuned_row(opts, state, row, 0, now_s, NULL);
     if (result != DSD_UNTYPED_STEP_OK) {
         /* An abandoned step: the windows reopen, as untyped_note_unlanded() reopens them. */
         no_carrier_rearm_abandoned_scan(opts, state, now_s);
@@ -1663,9 +1671,11 @@ dsd_engine_channel_scan_walk_row(dsd_opts* opts, dsd_state* state, int row, int 
         return DSD_SCAN_WALK_REFUSED;
     }
     const int walk_dir = dir < 0 ? -1 : 1;
-    /* The row landed last is no longer known to be on air, whatever this walk comes to (issue #667 D9). */
+    /* The row landed last is no longer known to be on air, whatever this walk comes to (issue #667 D9), and an entry
+       waiting on a landing is no longer the operator's last word (issue #644). */
     dsd_engine_scan_landing_forget(state);
-    const int result = untyped_enter_tuned_row(opts, state, row, walk_dir, dsd_decode_time());
+    dsd_engine_scan_entry_intent_cancel(state);
+    const int result = untyped_enter_tuned_row(opts, state, row, walk_dir, dsd_decode_time(), NULL);
     switch (result) {
         case DSD_UNTYPED_STEP_OK: return DSD_SCAN_WALK_LANDED;
         case DSD_UNTYPED_STEP_PENDING: return DSD_SCAN_WALK_PENDING;
@@ -1674,6 +1684,36 @@ dsd_engine_channel_scan_walk_row(dsd_opts* opts, dsd_state* state, int row, int 
     }
     dsd_engine_channel_walk_note_outcome(state, row, walk_dir, 0);
     return DSD_SCAN_WALK_REFUSED;
+}
+
+dsd_scan_goto_result
+dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
+    if (!opts || !state || row < 0 || row >= state->lcn_freq_count || *dsd_state_trunk_lcn_slot(state, row) == 0) {
+        return DSD_SCAN_GOTO_REFUSED;
+    }
+    const dsd_engine_scan_entry_intent earlier = dsd_engine_scan_entry_intent_get(state);
+    dsd_engine_scan_entry_intent_set(state, row);
+    /* The row landed last is no longer known to be on air, whatever this go-to comes to (issue #667 D9). */
+    dsd_engine_scan_landing_forget(state);
+    int moved = 0;
+    const int result = untyped_enter_tuned_row(opts, state, row, 1, dsd_decode_time(), &moved);
+    if (result == DSD_UNTYPED_STEP_OK) {
+        return DSD_SCAN_GOTO_HOLDING;
+    }
+    if (result == DSD_UNTYPED_STEP_PENDING) {
+        return DSD_SCAN_GOTO_PENDING;
+    }
+    if (!moved) {
+        /* Nothing moved: the scan, and the entry before this one, stand. */
+        dsd_engine_scan_entry_intent_put(state, &earlier);
+        return result == DSD_UNTYPED_STEP_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
+    }
+    dsd_engine_scan_entry_intent_drop_row(state, row);
+    if (result == DSD_UNTYPED_STEP_DEFERRED) {
+        return DSD_SCAN_GOTO_DEFERRED;
+    }
+    dsd_engine_channel_walk_note_outcome(state, row, 1, 0);
+    return DSD_SCAN_GOTO_REFUSED;
 }
 
 void
@@ -1736,10 +1776,14 @@ untyped_settle_stale_row(dsd_opts* opts, dsd_state* state, const dsd_manual_tune
    boundary runs for the move. */
 static void
 untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_settled* settled, int polled) {
+    const int landed = polled == DSD_MANUAL_TUNE_LANDED;
+    if (!landed && settled->scan_owned) {
+        /* An entry waiting on the row holds nothing: its tune will not land (issue #644). */
+        dsd_engine_scan_entry_intent_drop_row(state, settled->row);
+    }
     if (polled == DSD_MANUAL_TUNE_DROPPED) {
         return;
     }
-    const int landed = polled == DSD_MANUAL_TUNE_LANDED;
     if (!settled->scan_owned) {
         const dsd_channel_walk_settle_fn settle = dsd_channel_walk_settle_hook_get();
         if (settle) {
@@ -1888,8 +1932,10 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
         return 0;
     }
     state->lcn_freq_roll = row;
-    /* The row landed last is no longer known to be on air, whatever this step comes to (issue #667 D9). */
+    /* The row landed last is no longer known to be on air, whatever this step comes to (issue #667 D9), and an entry
+       waiting on a landing is no longer the operator's last word (issue #644). */
     dsd_engine_scan_landing_forget(state);
+    dsd_engine_scan_entry_intent_cancel(state);
 
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     if (freq == 0) {

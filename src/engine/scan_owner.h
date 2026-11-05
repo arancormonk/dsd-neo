@@ -21,12 +21,22 @@ typedef struct {
     int index;         /**< the -Y row or trunk-scan target landed */
 } dsd_engine_scan_landing;
 
+/** The -Y row a frequency typed by hand went to, whose confirmed landing holds the scan there (issue #644;
+ * scan_landing.h). */
+typedef struct {
+    uint8_t active;    /**< 0: no entry waits on a landing */
+    int row;           /**< the -Y row gone to */
+    uint32_t session;  /**< dsd_state::lcn_scan_session of its tune */
+    uint64_t list_rev; /**< dsd_state::lcn_list_rev of its tune */
+} dsd_engine_scan_entry_intent;
+
 typedef struct {
     void* trunk;
     void* search;
     void* analog_call;
     dsd_state_ext_cleanup_fn trunk_free, search_free, analog_call_free;
     dsd_engine_scan_landing landing;
+    dsd_engine_scan_entry_intent entry;
 } dsd_engine_scan_owner;
 
 static inline void

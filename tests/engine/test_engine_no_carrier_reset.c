@@ -8781,6 +8781,281 @@ test_avoided_row_departs_under_a_carrier(void) {
     return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
            | typed_departure_case();
 }
+
+/* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */
+static int
+expect_untyped_entry_held(const char* what, const dsd_state* state, int row) {
+    int rc =
+        expect_case(what, "held, marked an entry hold", state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 1U);
+    rc |= expect_case(what, "the row committed",
+                      state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+    rc |= expect_case(what, "no entry left waiting", !dsd_engine_channel_scan_entry_pending(state));
+    return rc;
+}
+
+/* Nothing holds the scan, and no entry waits. */
+static int
+expect_untyped_unheld(const char* what, const dsd_state* state) {
+    return expect_case(what, "nothing held",
+                       state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U
+                           && !dsd_engine_channel_scan_entry_pending(state));
+}
+
+/* Poll the manual tunes until one lands; 1 when one did. */
+static int
+poll_until_landed(dsd_opts* opts, dsd_state* state) {
+    int landed = 0;
+    for (int i = 0; i < 4; i++) {
+        landed |= dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED;
+    }
+    return landed;
+}
+
+enum {
+    UGOTO_LANDS = 0,
+    UGOTO_PENDING_LANDS,
+    UGOTO_FAILS_LATE,
+    UGOTO_Y_CANCELS,
+    UGOTO_NEXT_CANCELS,
+    UGOTO_REFUSED,
+    UGOTO_DEFERRED,
+    UGOTO_REFUSED_MOVED,
+    UGOTO_CASES,
+};
+
+/* Ask the walk list's running scan to go to row 2, its tune answering as case @p c scripts. */
+static dsd_scan_goto_result
+untyped_goto_scripted(dsd_opts* opts, dsd_state* state, int c) {
+    static const int k_rtl[] = {
+        RTL_STREAM_TUNE_OK,      RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_TIMEOUT,  RTL_STREAM_TUNE_TIMEOUT,
+        RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_FAILED,  RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED,
+    };
+    const int timeout = k_rtl[c] == RTL_STREAM_TUNE_TIMEOUT;
+    if (c == UGOTO_REFUSED_MOVED) {
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        g_rigctl_setfreq_ok = 1;
+    }
+    g_rtl_timeout_outstanding = timeout;
+    g_rtl_tune_result = k_rtl[c];
+    const dsd_scan_goto_result result = dsd_engine_channel_scan_goto_row(opts, state, 2);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    return result;
+}
+
+/* What a pending go-to's case @p c does before its tune settles, and how it settles; 0 when it went as it should. */
+static int
+untyped_goto_settle(dsd_opts* opts, dsd_state* state, int c, const char* what) {
+    if (c == UGOTO_Y_CANCELS) {
+        dsd_engine_channel_scan_entry_cancel(state);
+    } else if (c == UGOTO_NEXT_CANCELS && press_walk_into_a_timeout(opts, state, 1) != 1) {
+        /* Next goes on from the go-to's row (issue #644 B-2), and its walk cancels the entry. */
+        return expect_case(what, "Next is applied", 0);
+    }
+    land_outstanding_tunes(c == UGOTO_FAILS_LATE ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+    if (c == UGOTO_FAILS_LATE) {
+        return expect_case(what, "the failure is taken",
+                           dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    }
+    return expect_case(what, "a landing is taken", poll_until_landed(opts, state));
+}
+
+/* Issue #644 D1: a running untyped list's go-to (the row a typed frequency picked) walks to the row as Next does
+   and holds it, marked an entry hold, once it lands: at once, or when its pending tune lands. A late failure is
+   Next's (the cursor past the row) and holds nothing, and so does a go-to cancelled meanwhile (`Y`, Next) whose tune
+   lands after all. A refusal or deferral before any leg moved changes nothing; after rigctl moved, it is Next's. */
+static int
+untyped_goto_case(int c) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const k_names[] = {
+        "lands",        "pending lands", "fails late", "Y cancels",
+        "Next cancels", "refused",       "deferred",   "refused after rigctl moved",
+    };
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "untyped go-to %s", k_names[c]);
+    const long int base_hz = 1500012500L + (long int)c * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const uint32_t carrier_seq = state->carrier_seq;
+    const dsd_scan_goto_result result = untyped_goto_scripted(opts, state, c);
+    static const dsd_scan_goto_result k_want[] = {
+        DSD_SCAN_GOTO_HOLDING, DSD_SCAN_GOTO_PENDING, DSD_SCAN_GOTO_PENDING,  DSD_SCAN_GOTO_PENDING,
+        DSD_SCAN_GOTO_PENDING, DSD_SCAN_GOTO_REFUSED, DSD_SCAN_GOTO_DEFERRED, DSD_SCAN_GOTO_REFUSED,
+    };
+    int rc = expect_case(what, "the go-to's result", result == k_want[c]);
+    rc |= expect_case(what, "row 2 is tuned", g_rtl_tune_freq == (uint32_t)(base_hz + 2000000L));
+    if (c == UGOTO_LANDS) {
+        rc |= expect_untyped_entry_held(what, state, 2);
+        rc |= expect_case(what, "its keys and boundary",
+                          state->rkey_array[9] == 777ULL && state->carrier_seq != carrier_seq);
+    } else if (result == DSD_SCAN_GOTO_PENDING) {
+        rc |= expect_walk_left_alone(what, "pending", state, carrier_seq);
+        rc |=
+            expect_case(what, "the entry waits", dsd_engine_channel_scan_entry_pending(state) && !state->lcn_scan_hold);
+        rc |= untyped_goto_settle(opts, state, c, what);
+        if (c == UGOTO_PENDING_LANDS) {
+            rc |= expect_untyped_entry_held(what, state, 2);
+        } else if (c == UGOTO_FAILS_LATE) {
+            rc |= expect_walk_refused(what, state, 1, 2);
+            rc |= expect_untyped_unheld(what, state);
+        } else {
+            const int row = c == UGOTO_NEXT_CANCELS ? 0 : 2;
+            rc |= expect_case(what, "the row lands as a step's",
+                              state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+            rc |= expect_untyped_unheld(what, state);
+        }
+    } else if (c == UGOTO_REFUSED_MOVED) {
+        rc |= expect_case(what, "the outgoing boundary ran", state->carrier_seq == carrier_seq + 1U);
+        rc |= expect_walk_refused(what, state, 1, 2);
+        rc |= expect_untyped_unheld(what, state);
+    } else {
+        rc |= expect_walk_left_alone(what, "refused", state, carrier_seq);
+        rc |= expect_untyped_unheld(what, state);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_untyped_goto_outcomes(void) {
+    int rc = 0;
+    for (int c = 0; c < UGOTO_CASES; c++) {
+        rc |= untyped_goto_case(c);
+    }
+    return rc;
+}
+
+/* Issue #644: a go-to of the untyped row confirmed on air needs no tune: the hold only. One whose landing is no longer
+   in force (here a step's refused tune since) is tuned again, though the receiver is still on it. */
+static int
+test_untyped_goto_on_air_holds_only(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped go-to on air";
+    if (setup_walk_list(opts, state, 1, 1530012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "the first go-to lands",
+                         dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING);
+    dsd_engine_channel_scan_entry_release(opts, state);
+    rc |= expect_untyped_unheld(what, state);
+    const int calls = g_rtl_tune_calls;
+    rc |= expect_case(what, "on air: the hold only",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING
+                          && g_rtl_tune_calls == calls);
+    rc |= expect_untyped_entry_held(what, state, 1);
+    dsd_engine_channel_scan_entry_release(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_case(what, "a walk is refused",
+                      dsd_engine_channel_scan_walk_row(opts, state, 2, 1) == DSD_SCAN_WALK_REFUSED);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the landing is forgotten", !dsd_engine_channel_scan_row_confirmed(state, 1));
+    rc |= expect_case(what, "so the go-to tunes again",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING
+                          && g_rtl_tune_calls == calls + 2);
+    rc |= expect_untyped_entry_held(what, state, 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+enum {
+    URESUME_LANDS = 0,
+    URESUME_PENDING_LANDS,
+    URESUME_REFUSED,
+    URESUME_OVER_PENDING,
+    URESUME_OVER_PENDING_REFUSED,
+    URESUME_CASES,
+};
+
+/* Issue #644 D1: a paused untyped list resumes at the row a typed frequency picked (row 2, not the cursor's
+   row 1) and holds it once it lands, at once or when its pending tune lands; refused, it stays paused, holding
+   nothing. Over a resume still pending (row 1's), the go-to replaces it: the earlier tune's report changes nothing,
+   and the go-to's own landing runs the scan, held; refused, the scan stays paused. */
+static int
+untyped_resume_at_case(int c) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const k_names[] = {
+        "lands", "pending lands", "refused", "over a pending resume", "over a pending resume, refused",
+    };
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "untyped resume-at %s", k_names[c]);
+    const long int base_hz = 1560012500L + (long int)c * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    int rc = 0;
+    if (c >= URESUME_OVER_PENDING) {
+        g_rtl_timeout_outstanding = 1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+        rc |= expect_case(what, "a resume is pending",
+                          dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                              && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L));
+    }
+    const int pending = c == URESUME_PENDING_LANDS || c == URESUME_OVER_PENDING;
+    g_rtl_timeout_outstanding = pending;
+    static const int k_rtl[] = {
+        RTL_STREAM_TUNE_OK,      RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_FAILED,
+        RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_FAILED,
+    };
+    g_rtl_tune_result = k_rtl[c];
+    const dsd_scan_goto_result result = dsd_engine_channel_scan_resume_at(opts, state, 2);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "row 2 is tuned", g_rtl_tune_freq == (uint32_t)(base_hz + 2000000L));
+    if (pending) {
+        rc |= expect_case(what, "pending", result == DSD_SCAN_GOTO_PENDING && state->lcn_scan_resume_pending == 1U);
+        rc |= expect_case(what, "the entry waits", dsd_engine_channel_scan_entry_pending(state));
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing is taken", poll_until_landed(opts, state));
+    } else if (c == URESUME_LANDS) {
+        rc |= expect_case(what, "landed", result == DSD_SCAN_GOTO_HOLDING);
+    }
+    if (c == URESUME_LANDS || pending) {
+        rc |= expect_case(what, "the scan runs", opts->scanner_mode == 1 && state->lcn_scan_paused == 0U);
+        rc |= expect_untyped_entry_held(what, state, 2);
+    } else {
+        rc |= expect_case(what, "refused", result == DSD_SCAN_GOTO_REFUSED);
+        rc |= expect_case(what, "the scan stays paused",
+                          opts->scanner_mode == 0 && state->lcn_scan_paused == 1U
+                              && state->lcn_scan_resume_pending == 0U);
+        rc |= expect_case(what, "its toast", strncmp(state->ui_msg, "Scan stays paused: tune to ", 27) == 0);
+        rc |= expect_untyped_unheld(what, state);
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        (void)poll_until_landed(opts, state);
+        rc |= expect_case(what, "and a late landing leaves it paused",
+                          state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
+        rc |= expect_untyped_unheld(what, state);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_untyped_resume_at(void) {
+    int rc = 0;
+    for (int c = 0; c < URESUME_CASES; c++) {
+        rc |= untyped_resume_at_case(c);
+    }
+    return rc;
+}
 #endif
 
 int
@@ -10574,6 +10849,9 @@ main(void) {
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();
     rc |= test_walk_landing_after_the_list_changed();
+    rc |= test_untyped_goto_outcomes();
+    rc |= test_untyped_goto_on_air_holds_only();
+    rc |= test_untyped_resume_at();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_targets_on_a_resampled_chain();

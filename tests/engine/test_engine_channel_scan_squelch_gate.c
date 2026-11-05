@@ -23,6 +23,8 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -35,6 +37,7 @@
 #include <stdlib.h>
 
 #include "frame_sync_internal.h"
+#include "scan_entry_internal.h"
 #include "scan_step_untyped.h"
 
 static int g_pushes;
@@ -99,6 +102,35 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
     (void)row;
     (void)now;
     return DSD_UNTYPED_STEP_FAILED;
+}
+
+/* The typed-frequency match (scan_entry.c, issue #644) built in: no manual tune is ever noted here, and no trunk scan
+   runs. */
+int
+dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
+    (void)state;
+    if (out_scan_walk) {
+        *out_scan_walk = 0;
+    }
+    return -1;
+}
+
+void
+dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz,
+                                 dsd_scan_entry_tally* tally) {
+    (void)opts;
+    (void)state;
+    (void)hz;
+    (void)tally;
+}
+
+/* The -Y go-to's untyped walk (engine.c, issue #644), which no case here reaches: ENGINE_NO_CARRIER_RESET drives it. */
+dsd_scan_goto_result
+dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
+    (void)opts;
+    (void)state;
+    (void)row;
+    return DSD_SCAN_GOTO_REFUSED;
 }
 
 /* The scanner's DSP-rate read beside the tune above (trunk_tuning.c): no rate, so no row width is checked. */

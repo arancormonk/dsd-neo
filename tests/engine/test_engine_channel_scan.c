@@ -181,10 +181,13 @@ static int tuned_am_width_hz = -1;
 /* The row's own width a rigctl leg would hand its peer (dsd_engine_scan_tuning_row_options()); 0 for none. */
 static int tuned_row_width_hz = -1;
 
-/* The stub scanner tunes here model no rigctl leg, so none moved the radio (dsd_engine_scan_tune_moved()). */
+/* The stub scanner tunes here model no rigctl leg, so none moved the radio (dsd_engine_scan_tune_moved()), unless a
+   case says one did ahead of an RTL leg it scripts a refusal for (issue #644). */
+static int g_tune_moved;
+
 int
 dsd_engine_scan_tune_moved(void) {
-    return 0;
+    return g_tune_moved;
 }
 
 /* Whether slot 0's call was still open at the tune, and whether the scan ran as the tuner's owner then (issue #671:
@@ -287,6 +290,20 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
         state->lcn_freq_roll = row + 1;
     }
     return g_untyped_enter_result;
+}
+
+/* The untyped go-to (engine.c), which ENGINE_NO_CARRIER_RESET drives for real: here the row asked for, answered
+   with a scripted result (issue #644). */
+static int g_untyped_goto_calls;
+static int g_untyped_goto_row = -1;
+
+dsd_scan_goto_result
+dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
+    (void)opts;
+    (void)state;
+    g_untyped_goto_calls++;
+    g_untyped_goto_row = row;
+    return DSD_SCAN_GOTO_PENDING;
 }
 
 /* The conventional NFM call's end (issue #637): when it ran, and whether slot 0's call was still open for it to close
@@ -3940,6 +3957,420 @@ test_resume_skips_a_row_every_visit_skips(void) {
     tunes = reset_count = 0;
 }
 
+/* Issue #644: the typed list on distinct frequencies (typed_walk_fixture()), loaded by the user, running and landed on
+   North (row 0). West (row 3) carries keys of its own, so its staging captures the session's keyring, which holds a
+   key. */
+static void
+typed_goto_fixture(dsd_opts* opts, dsd_state* state) {
+    typed_walk_fixture(opts, state);
+    state->rkey_array[3] = 777;
+    state->rkey_array_loaded[3] = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    dsd_key_set keys = {0};
+    keys.present = 1;
+    keys.scalars.R = keys.scalars.RR = 0x3333ULL;
+    assert(dsd_state_trunk_lcn_keys_set(state, 3, &keys) == 0);
+    state->lcn_freq_roll = 0;
+    assert(typed_walk_step(opts, state, 1, 0) == 1);
+    assert(dsd_engine_channel_scan_row_confirmed(state, 0) && state->lcn_scan_hold == 0);
+}
+
+/* A go-to of @p row (its frequency the one the next tune must ask for). */
+static dsd_scan_goto_result
+typed_goto(dsd_opts* opts, dsd_state* state, int row) {
+    expected_tune_hz = k_walk_hz[row];
+    return dsd_engine_channel_scan_goto_row(opts, state, row);
+}
+
+/* The scan holds row @p row, marked an entry hold, as the row committed. */
+static int
+typed_entry_held_on(const dsd_state* state, int row) {
+    return state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 1U && state->scan_row_index == row
+           && state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row
+           && !dsd_engine_channel_scan_entry_pending(state);
+}
+
+/* Issue #644 D1: a frequency typed by hand that is a row of a running typed list sends the scan to that row (a step
+   to it, after which the scan goes on from it) and holds it there, marked an entry hold, once its tune lands. A row
+   already confirmed on air is only held; one whose landing was forgotten since (a step's refused tune) is tuned
+   again, though the receiver is still on it. */
+static void
+test_typed_goto_lands_and_holds(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    const int tunes_before = tunes;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_HOLDING);
+    assert(tunes == tunes_before + 1 && typed_entry_held_on(state, 3));
+    assert(strcmp(row_named(opts, state), "West") == 0 && dsd_engine_channel_scan_row_confirmed(state, 3));
+    assert(dsd_engine_channel_scan_hold_keeps_row(state));
+
+    /* On air already: the hold only. */
+    dsd_engine_channel_scan_entry_release(opts, state);
+    assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_HOLDING);
+    assert(tunes == tunes_before + 1 && typed_entry_held_on(state, 3));
+
+    /* Next's tune refused: the receiver stays on West, whose landing it forgot, so a go-to tunes West again. */
+    dsd_engine_channel_scan_entry_release(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(typed_walk_step(opts, state, 1, 4) == -1);
+    assert(dsd_engine_channel_scan_on_air_row(state) == 3 && !dsd_engine_channel_scan_row_confirmed(state, 3));
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_HOLDING);
+    assert(tunes == tunes_before + 3 && typed_entry_held_on(state, 3));
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #644: rows a go-to never takes, and scans it never acts on: nothing changes, nothing is tuned. */
+static void
+test_typed_goto_refuses_what_it_cannot_reach(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    const int tunes_before = tunes;
+    assert(dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_REFUSED); /* the placeholder */
+    assert(dsd_engine_channel_scan_goto_row(opts, state, 5) == DSD_SCAN_GOTO_REFUSED);
+    assert(dsd_engine_channel_scan_goto_row(opts, state, -1) == DSD_SCAN_GOTO_REFUSED);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 3, 1) == 0);
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 3, 0) == 0);
+    opts->trunk_scan_enabled = 1;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED);
+    opts->trunk_scan_enabled = 0;
+    opts->chan_in_file[0] = '\0'; /* no list of the user's own */
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED);
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    (void)dsd_engine_channel_scan_pause(opts, state, 0); /* a paused scan resumes at a row instead */
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED);
+    assert(dsd_engine_channel_scan_resume_at(opts, state, 2) == DSD_SCAN_GOTO_REFUSED);
+    assert(tunes == tunes_before && state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+    assert(state->lcn_scan_paused == 1U && state->lcn_scan_resume_pending == 0U);
+    expected_tune_hz = k_walk_hz[1]; /* the plain resume, from the cursor */
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED);
+    assert(dsd_engine_channel_scan_resume_at(opts, state, 3) == DSD_SCAN_GOTO_REFUSED); /* running: not paused */
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #644: a running untyped list goes to the row through the untyped walk (engine.c), which a row confirmed on
+   air does not need. */
+static void
+test_untyped_goto_walks_to_the_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000 + row * 1000000;
+    }
+    g_untyped_goto_calls = 0;
+    assert(dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    assert(g_untyped_goto_calls == 1 && g_untyped_goto_row == 2 && tunes == 0);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
+enum {
+    GOTO_LANDS = 0,
+    GOTO_FAILS_LATE,
+    GOTO_NEXT_CANCELS,
+    GOTO_Y_CANCELS,
+    GOTO_PAUSE_CANCELS,
+    GOTO_PENDING_CASES,
+};
+
+/* Issue #644: a go-to whose tune is outstanding holds nothing yet, and its landing holds the row. A late failure
+   is the step's (the cursor past the row) and holds nothing. One cancelled meanwhile -- Next pressed while the tune is
+   outstanding, which services it (issue #666); `Y`; a pause -- holds nothing when its tune lands after all. */
+static void
+test_typed_goto_pending_outcomes(void) {
+    for (int variant = 0; variant < GOTO_PENDING_CASES; variant++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_goto_fixture(opts, state);
+        tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_PENDING);
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+        assert(dsd_engine_channel_scan_entry_pending(state) && dsd_engine_channel_scan_waiting(state));
+        assert(state->scan_row_index == 0 && !dsd_engine_channel_scan_row_confirmed(state, 0));
+        const int tunes_before = tunes;
+        if (variant == GOTO_NEXT_CANCELS) {
+            assert(dsd_engine_channel_scan_step_manual_dir(opts, state, 1) == 0 && tunes == tunes_before);
+        } else if (variant == GOTO_Y_CANCELS) {
+            dsd_engine_channel_scan_entry_cancel(state);
+        } else if (variant == GOTO_PAUSE_CANCELS) {
+            (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        }
+        assert(dsd_engine_channel_scan_entry_pending(state) == (variant <= GOTO_FAILS_LATE));
+        dsd_trunk_tuning_request_publish(request, variant == GOTO_FAILS_LATE ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                                             : DSD_TRUNK_TUNE_RESULT_OK);
+        assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+        assert(!dsd_engine_channel_scan_entry_pending(state));
+        if (variant == GOTO_LANDS) {
+            assert(typed_entry_held_on(state, 3) && strcmp(row_named(opts, state), "West") == 0);
+        } else if (variant == GOTO_FAILS_LATE) {
+            assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+            assert(state->lcn_freq_roll == 4 && state->scan_row_index == 0 && dsd_state_lcn_heard_row(state) == 0);
+        } else if (variant == GOTO_PAUSE_CANCELS) {
+            /* The pause dropped the row in flight: nothing commits, and the resume holds nothing. */
+            assert(state->lcn_scan_paused == 1U && state->scan_row_index == -1 && state->lcn_scan_hold == 0U);
+            expected_tune_hz = k_walk_hz[1];
+            assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED);
+            assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+        } else {
+            /* The row lands as the step's, unheld. */
+            assert(state->scan_row_index == 3 && state->lcn_freq_roll == 4);
+            assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+        }
+        typed_walk_fixture_free(opts, state);
+    }
+}
+
+enum {
+    OVER_PREP_FAILS = 0,
+    OVER_REFUSED_UNMOVED,
+    OVER_DEFERRED_UNMOVED,
+    OVER_REFUSED_MOVED,
+    OVER_PENDING_TAKEN,
+    OVER_CASES,
+};
+
+/* The go-to's outcome over a row in flight, scripted by @p c (OVER_*). */
+static dsd_scan_goto_result
+typed_goto_scripted(dsd_opts* opts, dsd_state* state, int c, int row) {
+    static const dsd_trunk_tune_result k_tune[] = {
+        DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_FAILED,  DSD_TRUNK_TUNE_RESULT_DEFERRED,
+        DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_PENDING,
+    };
+    tune_result = k_tune[c];
+    g_tune_moved = c == OVER_REFUSED_MOVED;
+    if (c == OVER_PREP_FAILS) {
+        dsd_key_set_test_alloc_fail_after(0);
+    }
+    const int tunes_before = tunes;
+    const dsd_scan_goto_result result = typed_goto(opts, state, row);
+    dsd_key_set_test_alloc_fail_after(-1);
+    g_tune_moved = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    static const dsd_scan_goto_result k_want[] = {
+        DSD_SCAN_GOTO_SETUP_FAILED, DSD_SCAN_GOTO_REFUSED, DSD_SCAN_GOTO_DEFERRED,
+        DSD_SCAN_GOTO_REFUSED,      DSD_SCAN_GOTO_PENDING,
+    };
+    if (result != k_want[c]) {
+        DSD_FPRINTF(stderr, "go-to case %d: result %d, want %d\n", c, (int)result, (int)k_want[c]);
+    }
+    assert(result == k_want[c]);
+    assert(tunes == tunes_before + (c == OVER_PREP_FAILS ? 0 : 1));
+    return result;
+}
+
+/* Issue #644: a go-to stages its row apart from a row still in flight (here an earlier go-to's, East's).
+   Its preparation failing, or its tune refused or deferred before any backend moved, leaves that one as it was: no
+   call ends, East still lands, and holds for the earlier entry. Once its own tune is taken, or a backend moved, the
+   earlier one is retired: its landing commits nothing, and a refusal is the step's (the calls end, the cursor passes
+   the row, nothing is held). */
+static void
+test_typed_goto_over_a_row_in_flight(void) {
+    for (int c = 0; c < OVER_CASES; c++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_goto_fixture(opts, state);
+        tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+        const uint64_t earlier = request;
+        open_manual_call(state);
+        (void)typed_goto_scripted(opts, state, c, 3);
+        if (c <= OVER_DEFERRED_UNMOVED) {
+            assert(dsd_engine_channel_scan_waiting(state) && dsd_engine_channel_scan_entry_pending(state));
+            assert(slot0_call_open(state) && state->lcn_freq_roll == 1 && state->scan_row_index == 0);
+            expected_tune_hz = k_walk_hz[1];
+            dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+            assert(typed_entry_held_on(state, 1) && strcmp(row_named(opts, state), "East") == 0);
+        } else if (c == OVER_REFUSED_MOVED) {
+            assert(!dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_entry_pending(state));
+            assert(!slot0_call_open(state) && state->lcn_freq_roll == 4 && state->scan_row_index == 0);
+            dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+            assert(state->scan_row_index == 0 && state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+        } else {
+            dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 1 && state->scan_row_index == 0);
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0 && typed_entry_held_on(state, 3));
+        }
+        typed_walk_fixture_free(opts, state);
+    }
+}
+
+/* Issue #644: an entry hold goes with the scan it holds (a pause, a stop) and with `y`'s release, which restarts
+   the windows as `Y` off does; `Y`'s cancel takes the mark and leaves the hold to its caller. Next keeps it, mark and
+   all. An ordinary hold is as before: a release leaves it, a stop keeps it. */
+static void
+test_typed_entry_hold_lifecycle(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_HOLDING);
+    assert(typed_walk_step(opts, state, 1, 4) == 1);
+    assert(state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 1U && state->scan_row_index == 4);
+    /* `b`: the row avoided and stepped off; the hold and its mark go with the scan. */
+    assert(dsd_state_trunk_lcn_avoid_set(state, 4, 1) == 0);
+    assert(typed_walk_step(opts, state, 1, 0) == 1);
+    assert(state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 1U && state->scan_row_index == 0);
+    assert(dsd_state_trunk_lcn_avoid_set(state, 4, 0) == 0);
+    assert(typed_walk_step(opts, state, 1, 1) == 1);
+
+    state->last_cc_sync_time = 1;
+    state->last_cc_sync_time_m = 1.0;
+    state->scan_visit_since_m = -1.0;
+    state->scan_visit_roll_seen = 0;
+    state->scan_visit_rearm_pending = 1U;
+    dsd_engine_channel_scan_entry_release(opts, state);
+    assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U && state->last_cc_sync_time != 1);
+    assert(fabs(state->scan_visit_since_m - state->last_cc_sync_time_m) < 1e-9 && state->last_cc_sync_time_m > 1.5);
+    assert(state->scan_visit_roll_seen == state->lcn_freq_roll && state->scan_visit_rearm_pending == 0U);
+    state->lcn_scan_hold = 1U; /* `Y` */
+    dsd_engine_channel_scan_entry_release(opts, state);
+    assert(state->lcn_scan_hold == 1U);
+
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_HOLDING && state->lcn_scan_entry_hold == 1U);
+    dsd_engine_channel_scan_entry_cancel(state);
+    assert(state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 0U);
+
+    state->lcn_scan_hold = 0U;
+    assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_HOLDING && state->lcn_scan_entry_hold == 1U);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+    expected_tune_hz = k_walk_hz[3];
+    assert(dsd_engine_channel_scan_resume_at(opts, state, 3) == DSD_SCAN_GOTO_HOLDING);
+    assert(state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 1U);
+    (void)dsd_engine_channel_scan_leave(opts, state);
+    assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+
+    /* An ordinary hold outlives a stop, as it always has. */
+    dsd_engine_channel_scan_start(opts, state);
+    expected_tune_hz = k_walk_hz[3];
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    state->lcn_scan_hold = 1U;
+    (void)dsd_engine_channel_scan_leave(opts, state);
+    assert(state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 0U);
+    typed_walk_fixture_free(opts, state);
+}
+
+enum {
+    RESUME_AT_LANDS = 0,
+    RESUME_AT_PENDING_LANDS,
+    RESUME_AT_REFUSED,
+    RESUME_AT_FAILS_LATE,
+    RESUME_AT_CASES,
+};
+
+/* Issue #644 D1: a paused typed list resumes at the row a typed frequency picked, not at its cursor, and holds it once
+   it lands: at once, or when its pending tune lands. Refused, at once or late, it stays paused and holds nothing. */
+static void
+test_typed_resume_at(void) {
+    for (int variant = 0; variant < RESUME_AT_CASES; variant++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_goto_fixture(opts, state);
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        static const dsd_trunk_tune_result k_tune[] = {
+            DSD_TRUNK_TUNE_RESULT_OK,
+            DSD_TRUNK_TUNE_RESULT_PENDING,
+            DSD_TRUNK_TUNE_RESULT_FAILED,
+            DSD_TRUNK_TUNE_RESULT_PENDING,
+        };
+        tune_result = k_tune[variant];
+        expected_tune_hz = k_walk_hz[3];
+        const dsd_scan_goto_result result = dsd_engine_channel_scan_resume_at(opts, state, 3);
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        if (variant == RESUME_AT_PENDING_LANDS || variant == RESUME_AT_FAILS_LATE) {
+            assert(result == DSD_SCAN_GOTO_PENDING && state->lcn_scan_resume_pending == 1U);
+            assert(dsd_engine_channel_scan_entry_pending(state) && state->lcn_scan_hold == 0U);
+            dsd_trunk_tuning_request_publish(request, variant == RESUME_AT_FAILS_LATE ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                                                      : DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+        } else {
+            assert(result == (variant == RESUME_AT_LANDS ? DSD_SCAN_GOTO_HOLDING : DSD_SCAN_GOTO_REFUSED));
+        }
+        assert(!dsd_engine_channel_scan_entry_pending(state));
+        if (variant <= RESUME_AT_PENDING_LANDS) {
+            assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0U && typed_entry_held_on(state, 3));
+        } else {
+            assert(opts->scanner_mode == 0 && state->lcn_scan_paused == 1U && state->lcn_scan_resume_pending == 0U);
+            assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+            assert(strcmp(state->ui_msg, "Scan stays paused: tune to 154.000000 MHz failed") == 0);
+        }
+        typed_walk_fixture_free(opts, state);
+    }
+}
+
+/* Issue #644: a resume-at over a resume still pending (East's) stages its row apart. Its preparation failing, or
+   its tune refused before any backend moved, keeps that resume: East lands, the scan runs, unheld. Taken, it replaces
+   that resume (whose landing commits nothing), and holds West once it lands. Refused after a backend moved, the scan
+   stays paused with its cursor back where the first resume found it. */
+static void
+test_typed_resume_at_over_a_pending_resume(void) {
+    static const int k_cases[] = {OVER_PREP_FAILS, OVER_REFUSED_UNMOVED, OVER_REFUSED_MOVED, OVER_PENDING_TAKEN};
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        const int c = k_cases[i];
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_goto_fixture(opts, state);
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        expected_tune_hz = k_walk_hz[1];
+        assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+        const uint64_t earlier = request;
+        tune_result = c == OVER_PENDING_TAKEN ? DSD_TRUNK_TUNE_RESULT_PENDING : DSD_TRUNK_TUNE_RESULT_FAILED;
+        g_tune_moved = c == OVER_REFUSED_MOVED;
+        if (c == OVER_PREP_FAILS) {
+            dsd_key_set_test_alloc_fail_after(0);
+        }
+        expected_tune_hz = k_walk_hz[3];
+        const dsd_scan_goto_result result = dsd_engine_channel_scan_resume_at(opts, state, 3);
+        dsd_key_set_test_alloc_fail_after(-1);
+        g_tune_moved = 0;
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        if (c == OVER_PREP_FAILS || c == OVER_REFUSED_UNMOVED) {
+            assert(result == (c == OVER_PREP_FAILS ? DSD_SCAN_GOTO_SETUP_FAILED : DSD_SCAN_GOTO_REFUSED));
+            assert(state->lcn_scan_resume_pending == 1U && opts->scanner_mode == 0);
+            dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+            assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0U && state->scan_row_index == 1);
+            assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+        } else if (c == OVER_REFUSED_MOVED) {
+            assert(result == DSD_SCAN_GOTO_REFUSED && state->lcn_scan_paused == 1U);
+            assert(state->lcn_scan_resume_pending == 0U && opts->scanner_mode == 0 && state->lcn_freq_roll == 1);
+            dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0 && state->lcn_scan_paused == 1U);
+            assert(state->lcn_scan_hold == 0U && !dsd_engine_channel_scan_entry_pending(state));
+        } else {
+            assert(result == DSD_SCAN_GOTO_PENDING && state->lcn_scan_resume_pending == 1U);
+            dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 1 && state->lcn_scan_resume_pending == 1U);
+            dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+            assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+            assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0U && typed_entry_held_on(state, 3));
+        }
+        typed_walk_fixture_free(opts, state);
+    }
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -3993,6 +4424,14 @@ main(void) {
     test_untyped_resume_results();
     test_refused_resume_undoes_through_the_pause_hook();
     test_resume_skips_a_row_every_visit_skips();
+    test_untyped_goto_walks_to_the_row();
+    test_typed_goto_lands_and_holds();
+    test_typed_goto_refuses_what_it_cannot_reach();
+    test_typed_goto_pending_outcomes();
+    test_typed_goto_over_a_row_in_flight();
+    test_typed_entry_hold_lifecycle();
+    test_typed_resume_at();
+    test_typed_resume_at_over_a_pending_resume();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);

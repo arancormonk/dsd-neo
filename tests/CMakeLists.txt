@@ -8496,6 +8496,8 @@ add_executable(
     engine/test_engine_channel_scan_squelch_gate.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # The row confirmed on air, which a typed frequency's go-to reads (issue #644).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
 )
 target_include_directories(

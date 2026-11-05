@@ -26,6 +26,12 @@
  *
  * Analog rows only take the frequency: the tracker takes it at a reception's first block when the input names no
  * frequency, and never for a digital row (the frequency rule in dsd_opts_tuned_freq_hz() stays for those).
+ *
+ * The entry intent (issue #644): a frequency typed by hand that is a -Y row sends the scan to that row, and the scan
+ * holds it there, marked an entry hold, only once that row lands in that scan session and on that list
+ * (dsd_engine_scan_entry_landed(), at every -Y landing). Every landing spends the intent. Any other tune of the scan
+ * cancels it before it starts (a step, Next or Previous, an avoid's step), and so do a pause, a stop, `Y` and the
+ * failure of its own tune, so a tune that lands after the intent was cancelled or replaced holds nothing.
  */
 #ifndef DSD_NEO_ENGINE_SCAN_LANDING_H
 #define DSD_NEO_ENGINE_SCAN_LANDING_H
@@ -133,6 +139,80 @@ dsd_engine_scan_landing_hz(const dsd_opts* opts, const dsd_state* state) {
                        : 0U;
         case DSD_ENGINE_SCAN_LANDING_TARGET: return dsd_trunk_scan_owns_tuner(opts, state) ? landing->hz : 0U;
         default: return 0U;
+    }
+}
+
+/* The entry intent in force; one with active 0 for none. */
+static inline dsd_engine_scan_entry_intent
+dsd_engine_scan_entry_intent_get(const dsd_state* state) {
+    const dsd_engine_scan_owner* owner =
+        state ? (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
+    if (owner) {
+        return owner->entry;
+    }
+    const dsd_engine_scan_entry_intent none = {0};
+    return none;
+}
+
+/** @p intent is the entry intent in force (a go-to refused before any backend moved puts back the one before it). A
+ * state with no scan owner gets none made for no intent. */
+static inline void
+dsd_engine_scan_entry_intent_put(dsd_state* state, const dsd_engine_scan_entry_intent* intent) {
+    if (!state || !intent || (!intent->active && !dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN))) {
+        return;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state);
+    if (owner) {
+        owner->entry = *intent;
+    }
+}
+
+/** An entry now waits on -Y row @p row's landing in the current scan session and on the current list. */
+static inline void
+dsd_engine_scan_entry_intent_set(dsd_state* state, int row) {
+    if (!state) {
+        return;
+    }
+    const dsd_engine_scan_entry_intent intent = {
+        .active = 1U, .row = row, .session = state->lcn_scan_session, .list_rev = state->lcn_list_rev};
+    dsd_engine_scan_entry_intent_put(state, &intent);
+}
+
+/** No entry waits on a landing any more. */
+static inline void
+dsd_engine_scan_entry_intent_cancel(dsd_state* state) {
+    const dsd_engine_scan_entry_intent none = {0};
+    dsd_engine_scan_entry_intent_put(state, &none);
+}
+
+/** Whether an entry waits on -Y row @p row's landing in the current scan session and on the current list. */
+static inline int
+dsd_engine_scan_entry_intent_is(const dsd_state* state, int row) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    return intent.active && intent.row == row && intent.session == state->lcn_scan_session
+           && intent.list_rev == state->lcn_list_rev;
+}
+
+/** The tune of -Y row @p row ended without landing: an entry waiting on that row is cancelled. */
+static inline void
+dsd_engine_scan_entry_intent_drop_row(dsd_state* state, int row) {
+    if (state && dsd_engine_scan_entry_intent_is(state, row)) {
+        dsd_engine_scan_entry_intent_cancel(state);
+    }
+}
+
+/** -Y row @p row landed and committed: an entry waiting on it holds the scan there (lcn_scan_hold), marked an entry
+ * hold (lcn_scan_entry_hold). The landing spends the intent whichever row it is. */
+static inline void
+dsd_engine_scan_entry_landed(dsd_state* state, int row) {
+    if (!state) {
+        return;
+    }
+    const int ours = dsd_engine_scan_entry_intent_is(state, row);
+    dsd_engine_scan_entry_intent_cancel(state);
+    if (ours) {
+        state->lcn_scan_hold = 1U;
+        state->lcn_scan_entry_hold = 1U;
     }
 }
 #endif

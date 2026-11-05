@@ -48,6 +48,18 @@ typedef struct {
     char label[64]; /**< The row's name: its label, else its target id, else "row N" (1-based). */
 } dsd_scan_entry_match_t;
 
+/** What a scan's go-to of the row a typed frequency picked came to (issue #644 D1): the -Y scan's
+ * (dsd_engine_channel_scan_goto_row(), dsd_engine_channel_scan_resume_at()) and the trunk scan's. */
+typedef enum {
+    DSD_SCAN_GOTO_HOLDING = 0,  /**< The row is on air and the scan holds it, marked an entry hold: it was confirmed
+                                     on air already (the hold only), or its tune landed now. */
+    DSD_SCAN_GOTO_PENDING,      /**< Its tune is outstanding (or the settings it lands with restage): the hold
+                                     follows its confirmed landing, if the entry is still the one in force then. */
+    DSD_SCAN_GOTO_REFUSED,      /**< Its tune was refused, or there is no such scan or row to go to: no hold. */
+    DSD_SCAN_GOTO_DEFERRED,     /**< Its tune was deferred behind another owner's: no hold; a retry may land. */
+    DSD_SCAN_GOTO_SETUP_FAILED, /**< The row's settings could not be prepared: nothing was tuned. */
+} dsd_scan_goto_result;
+
 /**
  * @brief Find the row of the scan in force that the frequency @p hz typed by hand picks (issue #644 D4, D5).
  *

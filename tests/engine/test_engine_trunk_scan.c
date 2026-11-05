@@ -19278,6 +19278,15 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
     return DSD_UNTYPED_STEP_FAILED;
 }
 
+/* The -Y go-to's untyped walk (engine.c, issue #644), which no case here reaches: ENGINE_NO_CARRIER_RESET drives it. */
+dsd_scan_goto_result
+dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
+    (void)opts;
+    (void)state;
+    (void)row;
+    return DSD_SCAN_GOTO_REFUSED;
+}
+
 void
 dsd_engine_legacy_tune_caches_forget(void) {}
 
