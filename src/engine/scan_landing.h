@@ -266,9 +266,13 @@ dsd_engine_scan_entry_intent_fail(dsd_state* state, dsd_scan_goto_result result)
 /** Take the entry failure kept, if any, into @p out (may be NULL); none is kept after. Returns 1 when there was one. */
 static inline int
 dsd_engine_scan_entry_failure_take(dsd_state* state, dsd_engine_scan_entry_failure* out) {
-    dsd_engine_scan_owner* owner =
-        state ? DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
-    if (!owner || !owner->entry_failed.set) {
+    const dsd_engine_scan_owner* kept =
+        state ? (const dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
+    if (!kept || !kept->entry_failed.set) {
+        return 0;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_ensure(state); /* the one just read */
+    if (!owner) {
         return 0;
     }
     if (out) {
