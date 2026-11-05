@@ -117,7 +117,10 @@ int dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state);
  *   tune is taken or moved a backend: a preparation that fails (SETUP_FAILED) or a tune refused or deferred before
  *   any backend moved (REFUSED, DEFERRED) leaves the scan, its row in flight and an earlier entry as they were.
  * - An untyped list walks to the row as `L` does (dsd_engine_channel_scan_walk_row(): both front ends, the row
- *   committed on its confirmed landing); a refusal or deferral before any leg moved changes nothing either.
+ *   committed on its confirmed landing); a refusal or deferral before any leg moved changes nothing either (a
+ *   refusal its RTL leg answered still lets go of a tune noted before it, as Next's does).
+ * - Either way, a refusal or deferral before any backend moved keeps the row confirmed on air confirmed: the receiver
+ *   is still on it. Only a tune taken, or a leg that moved, forgets that landing.
  * - A refusal after a leg moved is the step's: the outgoing calls end, a refusal passes the row (the cursor past it).
  * The hold (lcn_scan_hold) and its entry mark (lcn_scan_entry_hold) are set on the row's confirmed landing only: at
  * once (HOLDING), or when the tune outstanding (PENDING) lands while the entry is still the one in force. Another
@@ -133,10 +136,11 @@ dsd_scan_goto_result dsd_engine_channel_scan_goto_row(dsd_opts* opts, dsd_state*
  * outstanding (the scan is resume-pending until it lands, then runs, held), REFUSED, DEFERRED or SETUP_FAILED when it
  * stays paused. Over a resume still pending: a typed list stages the row apart, so a preparation that fails or a tune
  * refused or deferred before any backend moved keeps that resume as it was; once the row's tune is taken it replaces
- * that resume, and a failure after a backend moved leaves the scan paused. An untyped list's resume that is still
- * pending is replaced at once (a new scan session), since the untyped tune decides where the receiver goes whatever it
- * answers: the scan then stays paused unless the row lands or is pending. Under the P25 SM tick guard the scanner
- * commands hold. Decoder thread. */
+ * that resume, and a failure after a backend moved leaves the scan paused. An untyped list tunes the row as its resume
+ * does: landed, the scan runs, held; pending, it replaces that resume (a new scan session its tune is rebound to, so
+ * the earlier resume's tune, whatever it comes to, is no longer the scan's); refused or deferred before any leg moved,
+ * that resume stands (a refusal its RTL leg answered lets go of the earlier tune, whose drop then ends that resume);
+ * after a leg moved, the scan stays paused. Under the P25 SM tick guard the scanner commands hold. Decoder thread. */
 dsd_scan_goto_result dsd_engine_channel_scan_resume_at(dsd_opts* opts, dsd_state* state, int row);
 
 /** Release an entry hold (`y`, SCAN_RESUME; issue #644 D1): the hold and its entry mark go, and the dwell, visit and

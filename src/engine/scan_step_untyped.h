@@ -44,12 +44,14 @@ int dsd_engine_scan_untyped_find_row(const dsd_state* state, int from_roll, int 
    tick guard. Decoder thread. */
 int dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, double now);
 
-/* The running untyped -Y scan's go-to of @p row (dsd_engine_channel_scan_goto_row(), issue #644): the walk's tune
+/* The untyped -Y go-to of @p row (issue #644). Running (dsd_engine_channel_scan_goto_row()): the walk's tune
    (dsd_engine_channel_scan_walk_row(): every front end, rigctl first, a timed-out RTL leg noted as a walk the scan
-   owns), with an entry waiting on the row's landing. HOLDING once it landed (installed as a step's row is, and held),
+   owns), with an entry waiting on that noted tune. HOLDING once it landed (installed as a step's row is, and held),
    PENDING while its RTL leg is outstanding. A refusal or deferral before any leg moved changes nothing, an earlier
-   entry included (REFUSED, DEFERRED); after a leg moved the entry goes, and a refusal passes the row as Next does.
-   Decoder thread. */
+   entry and the row confirmed on air included (REFUSED, DEFERRED); after a leg moved the entry goes, and a refusal
+   passes the row as Next does. With a resume still pending (dsd_engine_channel_scan_resume_at()): the resume's own
+   step tune; landed, the scan runs, held; pending, it replaces that resume (a new scan session, which the tune just
+   noted is rebound to); nothing moved, that resume stands; a leg moved, the scan stays paused. Decoder thread. */
 dsd_scan_goto_result dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row);
 
 /* The engine loop's poll of a manual tune that timed out (dsd_engine_manual_tune_poll()). An untyped step's row commits

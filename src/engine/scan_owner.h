@@ -28,6 +28,8 @@ typedef struct {
     int row;           /**< the -Y row gone to */
     uint32_t session;  /**< dsd_state::lcn_scan_session of its tune */
     uint64_t list_rev; /**< dsd_state::lcn_list_rev of its tune */
+    uint64_t request;  /**< its tune: a typed row's first request, kept through its restages; an untyped row's noted
+                            manual tune; 0 until the tune is begun */
 } dsd_engine_scan_entry_intent;
 
 typedef struct {

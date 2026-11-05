@@ -16,7 +16,8 @@
  * manual Next or Previous on an untyped list whose tune the front end confirmed, which installs its row as the step
  * does: dsd_engine_channel_scan_walk_row()), and the trunk scan a target once its retune completed: a conventional
  * target with its frequency, a trunked one with none (its park is its control channel, never a call's frequency). The
- * record is forgotten before every row or target tune (a manual untyped step's included), at every carrier boundary
+ * record is forgotten before every row or target tune (a manual untyped step's included; a -Y go-to's only once its
+ * tune is taken or a leg moved, below), at every carrier boundary
  * that moves the receiver (a manual tune among them; a step to a row of the list is the scan's own, which notes its row
  * again after it), at every radio stream start (a reopened stream starts wherever it is told, which no landing
  * confirmed), and at the -Y scan's release, which a pause, a stop and a trunk-scan pause or stop run, so the operator's
@@ -27,11 +28,18 @@
  * Analog rows only take the frequency: the tracker takes it at a reception's first block when the input names no
  * frequency, and never for a digital row (the frequency rule in dsd_opts_tuned_freq_hz() stays for those).
  *
+ * The -Y scan's go-to (issue #644) is the one row tune that keeps the landing when it is refused or deferred before
+ * any backend moved: the receiver is still on the row landed, so that row is still confirmed on air. It forgets the
+ * landing once its tune is taken or a leg moved.
+ *
  * The entry intent (issue #644): a frequency typed by hand that is a -Y row sends the scan to that row, and the scan
- * holds it there, marked an entry hold, only once that row lands in that scan session and on that list
- * (dsd_engine_scan_entry_landed(), at every -Y landing). Every landing spends the intent. Any other tune of the scan
- * cancels it before it starts (a step, Next or Previous, an avoid's step), and so do a pause, a stop, `Y` and the
- * failure of its own tune, so a tune that lands after the intent was cancelled or replaced holds nothing.
+ * holds it there, marked an entry hold, only once that row lands from the intent's own tune in that scan session and
+ * on that list (dsd_engine_scan_entry_landed(), at every -Y landing). The tune is named by its request: a typed row's
+ * first request, which its restages keep, or an untyped row's noted manual tune; a landing within the go-to's own
+ * call holds the row directly (dsd_engine_scan_entry_hold_now()). Every landing spends the intent. Any other tune of
+ * the scan cancels it before it starts (a step, Next or Previous, an avoid's step, a plain resume), and so do a pause,
+ * a stop, `Y` and the failure of its own tune. A new site that starts a -Y row tune must cancel the intent before it
+ * tunes (dsd_engine_scan_entry_intent_cancel()); the request check is the second guard.
  */
 #ifndef DSD_NEO_ENGINE_SCAN_LANDING_H
 #define DSD_NEO_ENGINE_SCAN_LANDING_H
@@ -167,14 +175,18 @@ dsd_engine_scan_entry_intent_put(dsd_state* state, const dsd_engine_scan_entry_i
     }
 }
 
-/** An entry now waits on -Y row @p row's landing in the current scan session and on the current list. */
+/** An entry now waits on -Y row @p row's landing in the current scan session and on the current list, from the tune
+ * @p request names (0: the tune about to begin, which dsd_engine_scan_entry_intent_bind() names). */
 static inline void
-dsd_engine_scan_entry_intent_set(dsd_state* state, int row) {
+dsd_engine_scan_entry_intent_set(dsd_state* state, int row, uint64_t request) {
     if (!state) {
         return;
     }
-    const dsd_engine_scan_entry_intent intent = {
-        .active = 1U, .row = row, .session = state->lcn_scan_session, .list_rev = state->lcn_list_rev};
+    const dsd_engine_scan_entry_intent intent = {.active = 1U,
+                                                 .row = row,
+                                                 .session = state->lcn_scan_session,
+                                                 .list_rev = state->lcn_list_rev,
+                                                 .request = request};
     dsd_engine_scan_entry_intent_put(state, &intent);
 }
 
@@ -193,22 +205,48 @@ dsd_engine_scan_entry_intent_is(const dsd_state* state, int row) {
            && intent.list_rev == state->lcn_list_rev;
 }
 
-/** The tune of -Y row @p row ended without landing: an entry waiting on that row is cancelled. */
+/** The tune @p request of -Y row @p row began: an entry waiting on that row whose tune was not named yet is that
+ * tune's. */
 static inline void
-dsd_engine_scan_entry_intent_drop_row(dsd_state* state, int row) {
-    if (state && dsd_engine_scan_entry_intent_is(state, row)) {
+dsd_engine_scan_entry_intent_bind(dsd_state* state, int row, uint64_t request) {
+    dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (state && request != 0U && intent.request == 0U && dsd_engine_scan_entry_intent_is(state, row)) {
+        intent.request = request;
+        dsd_engine_scan_entry_intent_put(state, &intent);
+    }
+}
+
+/** The tune @p request ended without landing: an entry waiting on it is cancelled. */
+static inline void
+dsd_engine_scan_entry_intent_drop_request(dsd_state* state, uint64_t request) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (state && intent.active && request != 0U && intent.request == request) {
         dsd_engine_scan_entry_intent_cancel(state);
     }
 }
 
-/** -Y row @p row landed and committed: an entry waiting on it holds the scan there (lcn_scan_hold), marked an entry
- * hold (lcn_scan_entry_hold). The landing spends the intent whichever row it is. */
+/** The scan holds the row on air, marked an entry hold, and no entry waits on a landing any more: a go-to whose row was
+ * on air, or landed within its own call. */
 static inline void
-dsd_engine_scan_entry_landed(dsd_state* state, int row) {
+dsd_engine_scan_entry_hold_now(dsd_state* state) {
     if (!state) {
         return;
     }
-    const int ours = dsd_engine_scan_entry_intent_is(state, row);
+    dsd_engine_scan_entry_intent_cancel(state);
+    state->lcn_scan_hold = 1U;
+    state->lcn_scan_entry_hold = 1U;
+}
+
+/** -Y row @p row landed and committed from the tune @p request (0: one no entry waits on): an entry waiting on that
+ * tune of that row holds the scan there (lcn_scan_hold), marked an entry hold (lcn_scan_entry_hold). The landing spends
+ * the intent whichever row and tune it is. */
+static inline void
+dsd_engine_scan_entry_landed(dsd_state* state, int row, uint64_t request) {
+    if (!state) {
+        return;
+    }
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    const int ours = dsd_engine_scan_entry_intent_is(state, row) && request != 0U && intent.request == request;
     dsd_engine_scan_entry_intent_cancel(state);
     if (ours) {
         state->lcn_scan_hold = 1U;

@@ -4023,6 +4023,52 @@ test_typed_goto_lands_and_holds(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #644: a go-to refused or deferred before any backend moved leaves the receiver on the row landed, which stays
+   confirmed on air; one refused after a leg moved does not. */
+static void
+test_typed_goto_refused_keeps_the_row_on_air(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED && dsd_engine_channel_scan_row_confirmed(state, 0));
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_DEFERRED && dsd_engine_channel_scan_row_confirmed(state, 0));
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    g_tune_moved = 1;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_REFUSED && !dsd_engine_channel_scan_row_confirmed(state, 0));
+    g_tune_moved = 0;
+    assert(state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U);
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #644: a go-to's row whose settings change while its tune is outstanding (a session edit of West's squelch)
+   lands, restages under a new request, and is still the entry's row: its landing holds it. */
+static void
+test_typed_goto_restaged_landing_holds(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_PENDING);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -45;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 3, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    const uint64_t first = request;
+    dsd_trunk_tuning_request_publish(first, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* landed, owed a restage */
+    assert(state->lcn_scan_hold == 0U && dsd_engine_channel_scan_entry_pending(state));
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0 && request != first);
+    assert(typed_entry_held_on(state, 3));
+    typed_walk_fixture_free(opts, state);
+}
+
 /* Issue #644: rows a go-to never takes, and scans it never acts on: nothing changes, nothing is tuned. */
 static void
 test_typed_goto_refuses_what_it_cannot_reach(void) {
@@ -4324,7 +4370,9 @@ test_typed_resume_at(void) {
    stays paused with its cursor back where the first resume found it. */
 static void
 test_typed_resume_at_over_a_pending_resume(void) {
-    static const int k_cases[] = {OVER_PREP_FAILS, OVER_REFUSED_UNMOVED, OVER_REFUSED_MOVED, OVER_PENDING_TAKEN};
+    static const int k_cases[] = {
+        OVER_PREP_FAILS, OVER_REFUSED_UNMOVED, OVER_DEFERRED_UNMOVED, OVER_REFUSED_MOVED, OVER_PENDING_TAKEN,
+    };
     for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
         const int c = k_cases[i];
         dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -4336,7 +4384,11 @@ test_typed_resume_at_over_a_pending_resume(void) {
         expected_tune_hz = k_walk_hz[1];
         assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
         const uint64_t earlier = request;
-        tune_result = c == OVER_PENDING_TAKEN ? DSD_TRUNK_TUNE_RESULT_PENDING : DSD_TRUNK_TUNE_RESULT_FAILED;
+        static const dsd_trunk_tune_result k_tune[] = {
+            DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_FAILED,  DSD_TRUNK_TUNE_RESULT_DEFERRED,
+            DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_PENDING,
+        };
+        tune_result = k_tune[c];
         g_tune_moved = c == OVER_REFUSED_MOVED;
         if (c == OVER_PREP_FAILS) {
             dsd_key_set_test_alloc_fail_after(0);
@@ -4346,8 +4398,13 @@ test_typed_resume_at_over_a_pending_resume(void) {
         dsd_key_set_test_alloc_fail_after(-1);
         g_tune_moved = 0;
         tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-        if (c == OVER_PREP_FAILS || c == OVER_REFUSED_UNMOVED) {
-            assert(result == (c == OVER_PREP_FAILS ? DSD_SCAN_GOTO_SETUP_FAILED : DSD_SCAN_GOTO_REFUSED));
+        if (c == OVER_PREP_FAILS || c == OVER_REFUSED_UNMOVED || c == OVER_DEFERRED_UNMOVED) {
+            static const dsd_scan_goto_result k_kept[] = {
+                DSD_SCAN_GOTO_SETUP_FAILED,
+                DSD_SCAN_GOTO_REFUSED,
+                DSD_SCAN_GOTO_DEFERRED,
+            };
+            assert(result == k_kept[c]);
             assert(state->lcn_scan_resume_pending == 1U && opts->scanner_mode == 0);
             dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
             assert(dsd_engine_channel_scan_pending(opts, state) == 0);
@@ -4427,6 +4484,8 @@ main(void) {
     test_untyped_goto_walks_to_the_row();
     test_typed_goto_lands_and_holds();
     test_typed_goto_refuses_what_it_cannot_reach();
+    test_typed_goto_refused_keeps_the_row_on_air();
+    test_typed_goto_restaged_landing_holds();
     test_typed_goto_pending_outcomes();
     test_typed_goto_over_a_row_in_flight();
     test_typed_entry_hold_lifecycle();
