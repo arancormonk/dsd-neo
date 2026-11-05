@@ -96,7 +96,10 @@ internal object UsbReceiverKind {
         "--iq-replay-rate", "--iq-info",
     )
 
-    /** Long options whose value is free text, taken whatever it starts with: an API token or a target id may begin with '-'. `k_free_value_options`. */
+    /**
+     * Long options whose value is free text, taken whatever it starts with: an API token or a target id may begin
+     * with '-'. `k_free_value_options`.
+     */
     private val LONG_FREE_VALUE: Set<String> = setOf(
         "--api-token", "--api-token-file", "--trunk-scan-hold",
     )
