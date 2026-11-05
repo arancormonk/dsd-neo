@@ -536,7 +536,7 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   that cannot park (`trunk_scan_resume_rollback()`) is paused again first, internally and as published, then drops what
   it began: a preparation failure its scopes; a refused retune the target's state (the manual session's and its received
   identity back first), options, keys, policy and maps, with the scope leave's front-end request last; the status line
-  says why, naming the frequency the park asked for (`coord->park_tried_hz`, which `trunk_scan_resume_switch()` records
+  says why, naming the frequency the park asked for (`coord->park_tried_hz`, which `trunk_scan_park_noting()` records
   from `trunk_scan_retune_freq()`: a trunked target's learned control channel ahead of its CSV seed; the seed when the
   preparation failed before any tune; issue #644 B-6). Everything outside the coordinator that acts for the scan's
   ownership of the receiver reads the running predicate `dsd_trunk_scan_owns_tuner()` (runtime hooks below); what a
@@ -3698,13 +3698,13 @@ row directly. Otherwise `dsd_engine_scan_entry_landed()` runs at both -Y landing
 are the intent's, and spends the intent at every landing.
 
 Beside the request check, every other tune of the scan cancels the intent before it starts, and a new tune-start
-site must do the same. Today these are the typed step past its pending check, `step_manual_dir()` (Next, Previous
-and an avoid's step), the untyped timed step, `dsd_engine_channel_scan_walk_row()` and a plain resume; an untyped
-Next or Previous also cancels it at its control entry (`dsd_engine_channel_scan_entry_supersede()` atop
-`apply_manual_lcn_cycle_untyped_dir_locked()`), so one with nowhere to land still does. The release
-(a pause, a stop) also cancels it. So does `Y`: `apply_manual_scan_hold_toggle()` calls
-`dsd_engine_channel_scan_entry_cancel()` before it toggles, so an entry hold loses its mark and the toggle releases
-it. The failure or drop of the intent's own tune cancels it too. A failure keeps it in the owner's `entry_failed`
+site must do the same. Today these are the typed step past its pending check,
+`dsd_engine_channel_scan_step_manual_dir()` (Next, Previous and an avoid's step), the untyped timed step,
+`dsd_engine_channel_scan_walk_row()` and a plain resume; an untyped Next or Previous also cancels it at its control
+entry (`dsd_engine_channel_scan_entry_supersede()` atop `apply_manual_lcn_cycle_untyped_dir_locked()`), so one with
+nowhere to land still does. The release (a pause, a stop) also cancels it. So does `Y`:
+`apply_manual_scan_hold_toggle()` calls `dsd_engine_channel_scan_entry_cancel()` before it toggles, so an entry hold
+loses its mark and the toggle releases it. The failure or drop of the intent's own tune cancels it too. A failure keeps it in the owner's `entry_failed`
 record (`dsd_engine_scan_entry_intent_fail_request()` in `dsd_engine_channel_scan_pending()`,
 `channel_scan_tune_outcome()` and `untyped_settle_walk()`; `dsd_engine_scan_entry_intent_fail()` for a resume-at in
 `dsd_engine_channel_scan_resume_failed()`, though not an interrupted one), which app-control takes once
