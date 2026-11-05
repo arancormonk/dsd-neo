@@ -3711,7 +3711,12 @@ gets the hold only. A row whose tune is already in flight in this scan (a typed 
 request or a retry, `channel_scan_row_in_flight()`; an untyped row's walk the scan owns, or its timed step's tune, still
 noted, `dsd_engine_manual_tune_pending_row()`, `dsd_engine_manual_tune_pending_step_row()`), whether an earlier go-to, a
 Next or the timed step began it, is not tuned again: the go-to takes an entry hold off the row left, sets the intent on
-that attempt or noted tune and answers `PENDING`, as the trunk scan's go-to waits on a park in flight. A timed step's
+that attempt or noted tune and answers `PENDING`, as the trunk scan's go-to waits on a park in flight. A tune that can
+no longer land is never joined: a noted tune asked of a stream that has since stopped (its record's stream session
+behind `rtl_stream_session_generation()`, which the next poll drops) is no pending row, pending id, walk owning the
+tuner or walk to adopt (`manual_tune_record_live()`), and a typed attempt or a park whose request already failed (a
+stream stop fails the one it queued) is not in flight (`channel_scan_row_in_flight()`, `trunk_scan_park_live()`): the
+go-to, resume-at, walk or `y` start goes on as with nothing pending. A timed step's
 late failure fails such an intent (kept for its toast) and its drop drops it, as a walk's do; while that tune is
 pending the rotation waits for it (`no_carrier_scan_tune_awaited()`, as for a walk of the scan's), so a timed step
 taken again over an expired dwell never cancels the intent (a typed step pending only services its attempt). A typed

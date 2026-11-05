@@ -6141,6 +6141,17 @@ dsd_engine_trunk_scan_target_confirmed(const dsd_state* state, int index) {
     return !coord->targets[index].tune_pending && dsd_engine_scan_landing_is_target(state, index, coord->session);
 }
 
+/* Whether @p rt's park is in flight and may still land: a request that already failed (a stream stop fails the one it
+   queued) is dead, its end only waiting for the next tick, so a go-to never waits on it (issue #644). */
+static int
+trunk_scan_park_live(const dsd_trunk_scan_target_runtime* rt) {
+    if (!rt->tune_pending) {
+        return 0;
+    }
+    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(rt->tune_request_id, NULL);
+    return result == DSD_TRUNK_TUNE_RESULT_PENDING || result == DSD_TRUNK_TUNE_RESULT_OK;
+}
+
 /* What a go-to's park of target @p index came to (issue #644), once its switch or resume ran: on air, the hold now; in
    flight, the entry waits on that park; otherwise what stopped it, the preparation (no park tried) or the retune. */
 static dsd_scan_goto_result
@@ -6151,7 +6162,7 @@ trunk_scan_goto_outcome(dsd_state* state, dsd_trunk_scan_coord* coord, size_t in
             trunk_scan_entry_hold_now(state, coord);
             return DSD_SCAN_GOTO_HOLDING;
         }
-        if (rt->tune_pending) {
+        if (trunk_scan_park_live(rt)) {
             dsd_engine_scan_entry_intent_set_target(state, (int)index, coord->session, rt->tune_request_id);
             return DSD_SCAN_GOTO_PENDING;
         }
@@ -6189,7 +6200,7 @@ trunk_scan_goto_running(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
         coord->hold_active = 0;
         coord->entry_hold = 0;
     }
-    if (!(coord->active == target && coord->targets[target].tune_pending)) {
+    if (!(coord->active == target && trunk_scan_park_live(&coord->targets[target]))) {
         (void)trunk_scan_operator_move_locked(opts, state, coord, 1, target);
     }
     const dsd_scan_goto_result result = trunk_scan_goto_outcome(state, coord, target);

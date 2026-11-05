@@ -89,6 +89,7 @@ void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32
  *
  * A press while it is pending goes on from that row in its own direction, so quick presses and key auto-repeat keep
  * advancing (issue #644), and the -Y timed step waits while a walk the scan owns is pending (it would supersede it).
+ * A tune asked of a stream that has since stopped is none: the next poll drops it, so nothing goes on from it.
  *
  * @param state          Decoder state; NULL reads as none.
  * @param out_scan_walk  Optional; set to 1 when the tune is a walk the running -Y scan owns, else 0 (a walk off any
@@ -106,7 +107,7 @@ int dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_wal
  * state machines (dsd_engine_manual_tune_operator_walk_noted() reads 0). Only a walk on @p state's current list
  * (dsd_state::lcn_list_rev) whose row still holds the frequency walked to, and only on a list with no modes (a typed
  * row lands with settings a walk never tuned). A `y` start (dsd_engine_channel_scan_start()) and a config that turns
- * the scanner on take it this way.
+ * the scanner on take it this way. A walk asked of a stream that has since stopped is never taken.
  *
  * @return 1 when taken, 0 otherwise (nothing changes). Decoder thread.
  */

@@ -4161,6 +4161,31 @@ test_typed_goto_joins_the_pending_timed_step(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #644: the timed step to East still pending when the stream restarts, the decoder not having taken the failure
+   the stop gave its tune: that attempt is dead, so East typed before the next service never waits on it, but tunes
+   East afresh, whose landing holds it. */
+static void
+test_typed_goto_never_joins_a_dead_attempt(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[0];
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[1];
+    assert(dsd_engine_channel_scan_step(opts, state) == 0 && dsd_engine_channel_scan_waiting(state));
+    const uint64_t step = request;
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    dsd_trunk_tuning_request_publish(step, DSD_TRUNK_TUNE_RESULT_FAILED); /* the stop fails the tune it queued */
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const int tunes_before = tunes;
+    assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_HOLDING);
+    assert(tunes == tunes_before + 1 && request != step && typed_entry_held_on(state, 1));
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0 && typed_entry_held_on(state, 1));
+    assert(entry_failure_taken(state, -1, DSD_SCAN_GOTO_REFUSED));
+    typed_walk_fixture_free(opts, state);
+}
+
 /* Issue #644: a stream about to stop while a typed row's tune is pending, its timeout having cached the row's frequency
    as the centre: the centre goes back to the one last confirmed, where the receiver was, so the reopened stream opens
    where the scan's row on air is; a centre something else set since is left alone. The attempt is retired either
@@ -4769,6 +4794,7 @@ main(void) {
     test_typed_goto_pending_outcomes();
     test_typed_goto_waits_on_the_tune_in_flight();
     test_typed_goto_joins_the_pending_timed_step();
+    test_typed_goto_never_joins_a_dead_attempt();
     test_typed_stream_stop_puts_the_centre_back();
     test_typed_stream_stop_after_a_replacement();
     typed_stream_stop_after_a_completion_case(0);

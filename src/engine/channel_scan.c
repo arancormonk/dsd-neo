@@ -2231,13 +2231,22 @@ channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired)
 }
 
 /* Whether typed row @p row's tune is already outstanding in this scan (issue #644): the attempt staged for it, by a
-   go-to or a step, still waits on its request or a retry, on the list it was staged from. A go-to then waits on that
-   attempt: its landing holds the row, with no second tune, as the trunk scan's go-to waits on a park in flight. */
+   go-to or a step, still waits on a retry or on a request that may still land, on the list it was staged from. A go-to
+   then waits on that attempt: its landing holds the row, with no second tune, as the trunk scan's go-to waits on a
+   park in flight. A request that already failed (a stream stop fails the one it queued) is dead, its end only waiting
+   for the next service: a go-to tunes afresh over it. */
 static int
 channel_scan_row_in_flight(const dsd_opts* opts, const dsd_state* state, int row) {
     const channel_scan* scan = channel_scan_get(state);
-    return scan && (scan->request != 0 || scan->retry) && scan->row == row
-           && channel_scan_row_is_current(opts, state, scan);
+    if (!scan || scan->row != row || !channel_scan_row_is_current(opts, state, scan)) {
+        return 0;
+    }
+    if (scan->retry) {
+        return 1;
+    }
+    const dsd_trunk_tune_result result =
+        scan->request ? dsd_trunk_tuning_request_status(scan->request, NULL) : DSD_TRUNK_TUNE_RESULT_FAILED;
+    return result == DSD_TRUNK_TUNE_RESULT_PENDING || result == DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 dsd_scan_goto_result

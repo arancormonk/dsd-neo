@@ -9921,6 +9921,80 @@ test_untyped_rotation_waits_for_a_joined_step(void) {
     return untyped_rotation_waits_for_a_joined_step_case(0) | untyped_rotation_waits_for_a_joined_step_case(1);
 }
 
+/* Issue #644: a running untyped list on ALPHA, Next to BRAVO still waiting on its tune, then the stream restarts (a
+   gain or bandwidth change) and BRAVO is typed before the decoder's next poll. The stopped stream's tune is dead: the
+   go-to never joins it, but tunes BRAVO afresh, which lands and holds BRAVO, marked an entry hold. */
+static int
+test_goto_never_joins_a_tune_of_a_stopped_stream(void) {
+    const char* what = "a go-to after a restart over a pending walk";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1780012500L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune",
+                         press_walk_into_a_timeout(opts, state, 1) == 1
+                             && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    /* The restart, with the decoder's next poll still to come: the stop moves the stream session and fails the tune. */
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_case(what, "the stopped stream's walk is no row to join",
+                      dsd_engine_manual_tune_pending_row(state, NULL) < 0 && dsd_engine_manual_tune_pending_id() == 0U);
+    const int tunes = g_rtl_tune_calls;
+    g_rtl_last_applied_hz = bravo_hz;
+    rc |= expect_case(what, "BRAVO is typed",
+                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, bravo_hz) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                          && dsd_app_drain_cmds(opts, state) == 1);
+    rc |=
+        expect_case(what, "the go-to tunes BRAVO afresh", g_rtl_tune_calls == tunes + 1 && g_rtl_tune_freq == bravo_hz);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_untyped_entry_held(what, state, 1);
+    rc |= expect_case(what, "the receiver is on BRAVO", opts->rtlsdr_center_freq == bravo_hz);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a Next off any scan still waiting on its tune when the stream restarts is dead before the decoder's next
+   poll drops it: it owns the tuner no longer, a `y` start never adopts it, and the next Previous walks from the row
+   heard, not from the dead walk's row. */
+static int
+test_dead_walk_is_never_adopted(void) {
+    const char* what = "a walk off the scan over a restart";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 0, 1785012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune",
+                         press_walk_into_a_timeout(opts, state, 1) == 1 && dsd_engine_manual_tune_operator_walk_noted()
+                             && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_case(what, "the dead walk owns the tuner no longer", !dsd_engine_manual_tune_operator_walk_noted());
+    rc |= expect_case(what, "nothing adopts it", dsd_engine_manual_tune_adopt_walk(state) == 0);
+    rc |= expect_case(what, "and no walk goes on from its row", dsd_engine_manual_tune_pending_row(state, NULL) < 0);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
 static int
 test_untyped_resume_at(void) {
     int rc = 0;
@@ -9933,6 +10007,8 @@ test_untyped_resume_at(void) {
     rc |= test_untyped_resume_at_joins_the_pending_resume_of_its_row();
     rc |= test_untyped_goto_joins_the_pending_timed_step();
     rc |= test_untyped_rotation_waits_for_a_joined_step();
+    rc |= test_goto_never_joins_a_tune_of_a_stopped_stream();
+    rc |= test_dead_walk_is_never_adopted();
     return rc;
 }
 

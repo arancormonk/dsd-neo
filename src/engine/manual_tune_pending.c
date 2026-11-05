@@ -68,6 +68,9 @@ static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
 /* Whether the record noted last is a Next or Previous walk off any scan: stored before the record reads as noted, and
    read with it from any thread (dsd_engine_manual_tune_operator_walk_noted()). */
 static atomic_int g_record_walk_off_scan;
+/* The stream session the record noted last was asked of: stored before the record reads as noted, and read with it from
+   any thread (manual_tune_record_live()). */
+static atomic_uint g_record_generation;
 /* A walk off any scan whose completion a poll took, landed or failed, whose settling (its row and the state machines'
    handoff, dsd_engine_scan_untyped_poll()) has not finished: it still owns the tuner until
    dsd_engine_manual_tune_walk_settled(). */
@@ -142,6 +145,14 @@ manual_tune_applied_after_failure(void) {
     return g_record.prior_applied_hz;
 }
 
+/* Whether a tune is noted and its stream still runs: one asked of a stream that has since stopped is dead, its drop
+   only waiting for the next poll, so nothing joins, adopts or walks on from it. */
+static int
+manual_tune_record_live(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED
+           && atomic_load(&g_record_generation) == manual_tune_session_generation();
+}
+
 void
 dsd_engine_manual_tune_completion(uint64_t id, int result) {
     const uint64_t packed = ((uint64_t)(uint32_t)id << 32) | (uint64_t)(uint32_t)result;
@@ -172,6 +183,7 @@ manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
     g_record = *record;
     g_record.confirmed_hz = confirmed_hz;
     g_record.session_generation = manual_tune_session_generation();
+    atomic_store(&g_record_generation, g_record.session_generation);
     atomic_store(&g_rr_owner_took_over, 0);
     atomic_store(&g_record_walk_off_scan, record->kind == DSD_MANUAL_TUNE_LCN_CYCLE && !record->scan_owned);
     atomic_store(&g_record_pending, MANUAL_TUNE_NOTED);
@@ -424,7 +436,7 @@ dsd_engine_manual_tune_noted(void) {
 
 uint64_t
 dsd_engine_manual_tune_pending_id(void) {
-    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED ? g_record.id : 0U;
+    return manual_tune_record_live() ? g_record.id : 0U;
 }
 
 void
@@ -439,7 +451,7 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
     if (out_scan_walk) {
         *out_scan_walk = 0;
     }
-    if (!state || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED
+    if (!state || !manual_tune_record_live()
         || (g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE && g_record.kind != DSD_MANUAL_TUNE_UNTYPED_STEP)
         || g_record.scan_session != state->lcn_scan_session || g_record.list_rev != state->lcn_list_rev) {
         return -1;
@@ -453,7 +465,7 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
 int
 dsd_engine_manual_tune_operator_walk_noted(void) {
     return atomic_load(&g_walk_yields) == 0
-           && ((atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && atomic_load(&g_record_walk_off_scan) != 0)
+           && ((manual_tune_record_live() && atomic_load(&g_record_walk_off_scan) != 0)
                || atomic_load(&g_walk_settling) != 0);
 }
 
@@ -502,6 +514,7 @@ dsd_engine_manual_tune_session_reset(dsd_state* state) {
     g_displaced_unreported = 0;
     DSD_MEMSET(&g_settled, 0, sizeof g_settled);
     atomic_store(&g_record_walk_off_scan, 0);
+    atomic_store(&g_record_generation, 0U);
     atomic_store(&g_walk_settling, 0);
     atomic_store(&g_walk_yields, 0);
     atomic_store(&g_rr_owner_took_over, 0);
@@ -519,9 +532,9 @@ dsd_engine_manual_tune_session_reset(dsd_state* state) {
 
 int
 dsd_engine_manual_tune_adopt_walk(const dsd_state* state) {
-    if (!state || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE
-        || g_record.scan_owned || dsd_channel_modes_present(state) || g_record.list_rev != state->lcn_list_rev
-        || g_record.row < 0 || g_record.row >= state->lcn_freq_count
+    if (!state || !manual_tune_record_live() || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE || g_record.scan_owned
+        || dsd_channel_modes_present(state) || g_record.list_rev != state->lcn_list_rev || g_record.row < 0
+        || g_record.row >= state->lcn_freq_count
         || *dsd_state_trunk_lcn_slot_const(state, g_record.row) != (long int)g_record.requested_hz) {
         return 0;
     }

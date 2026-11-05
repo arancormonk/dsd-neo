@@ -19541,6 +19541,38 @@ test_goto_single_target(void) {
     return test_rc;
 }
 
+/* Issue #644: a park whose request already failed (a stream stop fails the one it queued) before the coordinator's next
+   tick is dead: a go-to of its target never waits on it, but parks the target afresh, and that park's landing holds
+   it. */
+static int
+test_goto_never_joins_a_failed_park(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    if (scan_visit_init(NULL, "a,dmr-trunk,451000000,,250,,\n", 0, &opts, &state, dir, sizeof dir, target_path,
+                        sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    const uint64_t park = dsd_trunk_tuning_pending_request();
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const int calls = g_counting_tune_to_cc_calls;
+    int test_rc = expect_goto_rc("over a failed park", goto_target(&opts, &state, 0, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto("over a failed park: parked afresh", park != 0U && g_counting_tune_to_cc_calls == calls + 1);
+    test_rc |= expect_goto_entry(&state, "over a failed park", 0U, 1U, 1U);
+    tick_at(&opts, &state, 0.1);
+    test_rc |= expect_goto_entry(&state, "over a failed park, after a tick", 0U, 1U, 1U);
+    test_rc |= expect_goto_failure(&state, "over a failed park", -1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* The same channel in two lists (issue #697) is two targets, each with its own settings: a go-to of the copy not on
    air switches to it. */
 static int
@@ -20453,6 +20485,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_preparation_failure_changes_nothing);
     rc |= run_with_default_tune_hook(test_goto_refuses_a_target_out_of_the_rotation);
     rc |= run_with_default_tune_hook(test_goto_single_target);
+    rc |= run_with_default_tune_hook(test_goto_never_joins_a_failed_park);
     rc |= run_with_default_tune_hook(test_goto_a_copy_in_another_list);
     rc |= run_with_default_tune_hook(test_goto_paused_resumes_at_the_target);
     rc |= run_with_default_tune_hook(test_entry_hold_lifecycle);
