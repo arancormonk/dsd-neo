@@ -3402,8 +3402,13 @@ request_manual_tune_io(dsd_opts* opts, dsd_state* state, long int freq, dsd_trun
     if (result != RTL_STREAM_TUNE_DEFERRED) {
         /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). It went past the
            engine's legacy legs, and runs no carrier boundary to tell them: whatever it came to, what they last sent no
-           longer vouches for the receiver (issue #671), as the legacy RTL leg treats its own failure. */
-        dsd_engine_manual_tune_supersede(state);
+           longer vouches for the receiver (issue #671), as the legacy RTL leg treats its own failure. A walk's refusal
+           (@p pending_id: the walk follows its tune) decides nothing about where the receiver goes, so a walk still
+           waiting on its tune stands, which the controller may still land or already did (issue #644). */
+        const int refused = result != RTL_STREAM_TUNE_OK && result != RTL_STREAM_TUNE_TIMEOUT;
+        if (!(refused && pending_id && dsd_engine_manual_tune_pending_row(state, NULL) >= 0)) {
+            dsd_engine_manual_tune_supersede(state);
+        }
         dsd_engine_legacy_tune_caches_forget();
     } else {
         *tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;

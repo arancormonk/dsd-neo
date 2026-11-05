@@ -9979,6 +9979,37 @@ untyped_refusal_keeps_the_pending_walk_case(int by_goto) {
     return rc;
 }
 
+/* Issue #644: off any scan, Next to BRAVO still waiting on its tune, then Next again, which the front end refuses on
+   CHARLIE. The refused walk decides nothing about where the receiver goes, so the walk still pending stands: its
+   landing makes BRAVO the row heard, where the receiver is, as a walk off the scan's landing does. */
+static int
+test_off_scan_refusal_keeps_the_pending_walk(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "Next refused over a pending walk off the scan";
+    const long int base_hz = 1740012500L;
+    if (setup_named_walk_list(opts, state, 0, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune",
+                         press_walk_into_a_timeout(opts, state, 1) == 1 && dsd_engine_manual_tune_noted());
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    (void)press_walk(opts, state, 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the walk is still pending", dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the walk lands", poll_until_landed(opts, state));
+    rc |=
+        expect_case(what, "the receiver and the row heard agree on BRAVO",
+                    opts->rtlsdr_center_freq == (uint32_t)(base_hz + 1000000L) && dsd_state_lcn_heard_row(state) == 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_goto_over_a_pending_goto(void) {
     int rc = test_untyped_goto_cancelled_by_a_pause();
@@ -9989,6 +10020,7 @@ test_untyped_goto_over_a_pending_goto(void) {
         rc |= untyped_goto_over_a_pending_goto_case(c);
     }
     rc |= untyped_refusal_keeps_the_pending_walk_case(1) | untyped_refusal_keeps_the_pending_walk_case(0);
+    rc |= test_off_scan_refusal_keeps_the_pending_walk();
     rc |= untyped_goto_waits_on_the_tune_in_flight_case(0) | untyped_goto_waits_on_the_tune_in_flight_case(1);
     return rc;
 }

@@ -3568,14 +3568,17 @@ back keeps it for a retry), a deferral changes nothing, and a rigctl leg that mo
 out runs the outgoing boundary and the analog reset at once. An RTL timeout notes a `DSD_MANUAL_TUNE_LCN_CYCLE` record
 and nothing else: the cursor, the row heard, the keys, the clocks and the calls stay. While it is pending
 (`dsd_engine_manual_tune_pending_row()`: its row on the current list and session) another press goes on from its row in
-the press's own direction (`lcn_cycle_start()`), so quick presses and key auto-repeat keep advancing; that tune
-supersedes the first, whose record then settles nothing. A press while the timed step's own tune is pending goes on from
-that step's row the same way. And the timed `-Y` step waits for a pending walk the scan owns
-(`no_carrier_scan_walk_pending()`), so it never supersedes it and turns a Previous into a forward step; the rotation
-goes on at its own time once the walk settles. The synced-frames loop ends a reception on its landing as on a step's,
-and the engine loop's poll settles it: a drop changes nothing; a scan-owned walk commits its row as the step does while
-the scan is still the same one (session, list, the row on the frequency tuned), applies the refusal rules on a late
-failure, and otherwise runs only the `TUNE` boundary for a landing's move; a walk off any scan goes to the hook
+the press's own direction (`lcn_cycle_start()`), so quick presses and key auto-repeat keep advancing; that tune, once
+the controller takes it, supersedes the first, whose record then settles nothing. One the front end refuses with nothing
+moved decides nothing about where the receiver goes: the walk still pending stands, and its landing or late failure
+settles its row as usual (off any scan `request_manual_tune_io()`; under `-Y`, `untyped_refusal_keeps_scan_tune()`, as
+for the step's own tune), while a landing puts the cached centre on its target again. A press while the timed step's own
+tune is pending goes on from that step's row the same way. And the timed `-Y` step waits for a pending walk the scan
+owns (`no_carrier_scan_tune_awaited()`), so it never supersedes it and turns a Previous into a forward step; the
+rotation goes on at its own time once the walk settles. The synced-frames loop ends a reception on its landing as on a
+step's, and the engine loop's poll settles it: a drop changes nothing; a scan-owned walk commits its row as the step
+does while the scan is still the same one (session, list, the row on the frequency tuned), applies the refusal rules on
+a late failure, and otherwise runs only the `TUNE` boundary for a landing's move; a walk off any scan goes to the hook
 app-control installs with its session (`dsd_channel_walk_settle_hook_set()`, `<dsd-neo/runtime/channel_scan_hooks.h>`,
 `dsd_app_channel_walk_settled()`), which runs the landing (the row named only while the list and the row are the ones
 walked and no scan owns the tuner) or the late failure's refusal rules, under the P25 SM tick guard when the P25 machine
