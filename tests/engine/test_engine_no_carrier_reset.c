@@ -8748,6 +8748,38 @@ departure_nowhere_to_go_case(void) {
     return rc;
 }
 
+/* No carrier at all: the dwell stays expired, so every pass finds the step due. A held scan on its avoided row whose
+   steps are all refused retries at the step cadence, not on every pass. */
+static int
+departure_without_a_carrier_case(void) {
+    const char* what = "departure without a carrier";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1285012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = sit_on_an_avoided_row(opts, state, 1, what);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    g_rtl_tune_calls = 0;
+    for (int pass = 0; pass < 4; pass++) {
+        untyped_step_now(opts, state);
+    }
+    rc |= expect_case(what, "one refused try in the cadence",
+                      g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) == 0);
+    /* The cadence ran out: one more try. */
+    state->lcn_avoid_depart_m -= 60.0;
+    untyped_step_now(opts, state);
+    untyped_step_now(opts, state);
+    rc |= expect_case(what, "one more try after it", g_rtl_tune_calls == 2);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 /* A held typed list (three NXDN48 rows) on a row the operator avoided, with a carrier: the frame loop yields, the
    typed step lands the next row, and the hold stays. */
 static int
@@ -9002,7 +9034,7 @@ test_typed_goto_refused_by_rigctl_keeps_the_frames(void) {
 static int
 test_avoided_row_departs_under_a_carrier(void) {
     return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
-           | typed_departure_case();
+           | departure_without_a_carrier_case() | typed_departure_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */

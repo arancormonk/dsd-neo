@@ -1952,14 +1952,20 @@ dsd_engine_channel_scan_departure_note(const dsd_opts* opts, dsd_state* state, d
 
 /* Whether the timed -Y step stays where it is this pass, though due: the operator hold keeps the row on air, unless the
    operator avoided it (dsd_engine_channel_scan_hold_keeps_row(), issue #644: the hold then keeps the row the step lands
-   on), or a walk the scan owns still waits on its tune. A step off an avoided row paces the next departure. */
+   on), or a walk the scan owns still waits on its tune. A step off an avoided row paces the next departure, and none
+   is taken before it (dsd_state::lcn_avoid_depart_m): with no carrier the dwell stays expired, so a refused step would
+   otherwise be retried on every pass. */
 static int
 no_carrier_step_stays(const dsd_opts* opts, dsd_state* state) {
     if (dsd_engine_channel_scan_hold_keeps_row(state) || no_carrier_scan_walk_pending(state)) {
         return 1;
     }
     if (dsd_engine_channel_scan_on_avoided_row(state)) {
-        dsd_engine_channel_scan_departure_note(opts, state, dsd_decode_now_mono_s());
+        const double now_m = dsd_decode_now_mono_s();
+        if (now_m < state->lcn_avoid_depart_m) {
+            return 1;
+        }
+        dsd_engine_channel_scan_departure_note(opts, state, now_m);
     }
     return 0;
 }
