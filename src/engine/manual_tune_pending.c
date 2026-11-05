@@ -44,6 +44,10 @@ typedef struct {
     int dir;
     int scan_owned;
     uint32_t session_generation;
+    /* The centre the receiver was last confirmed on before this tune: the one in force when no tune was pending,
+       carried from a tune this one replaced while that one was still pending
+       (dsd_engine_manual_tune_stream_stopping()). */
+    uint32_t confirmed_hz;
 } dsd_manual_tune_record;
 
 /* Where the record stands: nothing noted, a tune noted and its completion awaited, or the noted tune dropped (another
@@ -151,11 +155,21 @@ manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
         g_displaced = g_record;
         g_displaced_unreported = 1;
     }
+    /* The centre cached before this tune is a tune's speculative target while one is still pending (issue #644): the
+       one confirmed before it carries over, unless that tune already landed, whose target is then confirmed. */
+    uint32_t confirmed_hz = record->prior_applied_hz;
+    uint64_t packed = 0U;
+    if (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED) {
+        const int landed =
+            manual_tune_completion_for(g_record.id, &packed) && (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
+        confirmed_hz = landed ? g_record.requested_hz : g_record.confirmed_hz;
+    }
     dsd_engine_manual_tune_supersede(state);
     if (record->id == 0U) {
         return;
     }
     g_record = *record;
+    g_record.confirmed_hz = confirmed_hz;
     g_record.session_generation = manual_tune_session_generation();
     atomic_store(&g_rr_owner_took_over, 0);
     atomic_store(&g_record_walk_off_scan, record->kind == DSD_MANUAL_TUNE_LCN_CYCLE && !record->scan_owned);
@@ -465,7 +479,7 @@ dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state) {
         || g_record.requested_hz == 0U || opts->rtlsdr_center_freq != g_record.requested_hz) {
         return;
     }
-    uint32_t back_hz = g_record.prior_applied_hz;
+    uint32_t back_hz = g_record.confirmed_hz;
     const int scans_own = opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1
                           && (g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP || g_record.scan_owned)
                           && dsd_engine_manual_tune_pending_row(state, NULL) >= 0;

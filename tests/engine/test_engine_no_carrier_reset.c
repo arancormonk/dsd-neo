@@ -8524,6 +8524,58 @@ reopen_over_a_pending_scan_tune_case(int adopted) {
     return rc;
 }
 
+/* Issue #644: a tune still pending replaced by another before a stream stop: the centre a stop puts back is the one
+   last confirmed, carried across the replacement, never the first tune's target that its timeout cached. Off any scan
+   (@p resume 0), Next to BRAVO and then to CHARLIE, both waiting, from ALPHA; on a paused list (1), a resume to BRAVO
+   replaced by a resume-at of CHARLIE, from the manual frequency. The stream reopens on ALPHA, or on the manual
+   frequency, and the dropped tunes name nothing. */
+static int
+reopen_over_a_replaced_tune_case(int resume) {
+    const char* what =
+        resume ? "a reopen over a resume-at that replaced a resume" : "a reopen over a walk that replaced a walk";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1770012500L + (long int)resume * 5000000L;
+    if (setup_named_walk_list(opts, state, resume, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    uint32_t confirmed = (uint32_t)base_hz;
+    int rc = 0;
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    if (resume) {
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        confirmed = (uint32_t)(base_hz + 4500000L); /* the operator's manual frequency */
+        opts->rtlsdr_center_freq = confirmed;
+        rc |= expect_case(what, "a resume to BRAVO waits",
+                          dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+        rc |= expect_case(what, "a resume-at of CHARLIE replaces it",
+                          dsd_engine_channel_scan_resume_at(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    } else {
+        rc |= expect_case(what, "Next to BRAVO waits", press_walk(opts, state, 1) == 1);
+        rc |= expect_case(what, "Next to CHARLIE replaces it", press_walk(opts, state, 1) == 1);
+    }
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "CHARLIE's tune is pending",
+                      dsd_engine_manual_tune_noted() && opts->rtlsdr_center_freq == (uint32_t)(base_hz + 2000000L));
+    reopen_the_stream(opts, state);
+    rc |= expect_case(what, "the stream reopens where the receiver was confirmed",
+                      !dsd_engine_manual_tune_noted() && opts->rtlsdr_center_freq == confirmed);
+    if (resume) {
+        rc |= expect_case(what, "the scan stays paused", state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
+    } else {
+        rc |= expect_case(what, "ALPHA is still the row heard", dsd_state_lcn_heard_row(state) == 0);
+    }
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
 static int
 test_y_start_adopts_a_pending_walk(void) {
     int rc = 0;
@@ -8533,6 +8585,7 @@ test_y_start_adopts_a_pending_walk(void) {
     rc |= y_start_keeps_a_hold_only_where_the_receiver_is_case(1)
           | y_start_keeps_a_hold_only_where_the_receiver_is_case(0);
     rc |= reopen_over_a_pending_scan_tune_case(0) | reopen_over_a_pending_scan_tune_case(1);
+    rc |= reopen_over_a_replaced_tune_case(0) | reopen_over_a_replaced_tune_case(1);
     return rc;
 }
 

@@ -120,7 +120,8 @@ int dsd_engine_manual_tune_adopt_walk(const dsd_state* state);
  *
  * While @p opts->rtlsdr_center_freq is still that target (nothing set another since), it goes back to the frequency
  * the receiver was confirmed on before the tune: for the running -Y scan's own tune of a row of its current list, the
- * row heard's; otherwise (a walk off any scan, a resume's) the centre in force before the tune, the walk's origin.
+ * row heard's; otherwise (a walk off any scan, a resume's) the centre last confirmed before the tune, the walk's
+ * origin, carried across tunes that replaced one another while pending (never a replaced tune's speculative target).
  * The stream then reopens where the row heard and a hold say the receiver is; no tune is made and nothing lands. An
  * entry's or an import's tune reopens on its target, which the operator asked for. Decoder thread, before the stream
  * stops.

@@ -2059,7 +2059,11 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("pending channel cycle keeps CC sync", state.last_cc_sync_time_m == 42.0);
     rc |= expect_call_phase("pending channel cycle keeps canonical slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
     rc |= expect_call_phase("pending channel cycle keeps canonical slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
-    rc |= expect_int("pending channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
+    /* The walk's own note takes the record over (issue #644: it carries the centre last confirmed), not a supersede
+       ahead of it. */
+    rc |= expect_int("pending channel cycle supersedes nothing ahead of its note", g_manual_tune_supersedes, 0);
+    rc |= expect_true("pending channel cycle owns the record",
+                      dsd_engine_manual_tune_pending_id() == g_io_control_pending_id);
     rc |= expect_int("pending channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
     rc |= expect_true("pending channel cycle is noted",
                       dsd_engine_manual_tune_settled_ready() == 0
@@ -2075,7 +2079,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
     rc |= expect_int("accepted channel cycle uses raw tune", g_io_control_tune_calls, 1);
-    rc |= expect_int("accepted channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
+    rc |= expect_int("accepted channel cycle supersedes nothing ahead of its note", g_manual_tune_supersedes, 0);
     rc |= expect_int("accepted channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
     rc |= expect_true("accepted channel cycle frequency", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("accepted channel cycle skips CC tune", g_cc_tune_calls, 0);

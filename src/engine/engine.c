@@ -1469,7 +1469,8 @@ walk_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t h
     if (result == RTL_STREAM_TUNE_DEFERRED) {
         return DSD_UNTYPED_STEP_DEFERRED;
     }
-    if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT || moved) {
+    /* A timeout is noted below, which takes the record over itself, carrying the centre last confirmed. */
+    if (result == RTL_STREAM_TUNE_OK || (result != RTL_STREAM_TUNE_TIMEOUT && moved)) {
         dsd_engine_manual_tune_supersede(state);
     }
     dsd_engine_legacy_tune_caches_forget();
