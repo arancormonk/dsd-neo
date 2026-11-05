@@ -55,6 +55,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -2099,16 +2100,20 @@ ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
 #endif
 
 /* A success names @p applied, the frequency the controller applied (a coalesced request can land on another than
-   @p v); a pending, deferred or failed tune names the one asked for. */
+   @p v); a pending, deferred or failed tune names the one asked for. An accepted entry on the frequency of a row the
+   scan cannot take (@p match, issue #644 D5) says why it stayed a plain tune. */
 static void
-ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied, int scan_paused) {
+ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied, int scan_paused,
+                          const dsd_scan_entry_match_t* match) {
     char mhz[16];
     if (rc == 0) {
         ui_set_toast(state, 3, "Applied: frequency -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz),
                      scan_paused ? "; scan paused" : "");
+        svc_scan_entry_toast_reason(state, match);
     } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
         ui_set_toast(state, 3, "Accepted: frequency -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
                      scan_paused ? "; scan paused" : "");
+        svc_scan_entry_toast_reason(state, match);
     } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
         ui_set_toast(state, 4, "Deferred; retry: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     } else if (ui_rc_is_not_supported(rc)) {
@@ -2158,7 +2163,18 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
     return rc;
 }
 
-/* A frequency the operator entered: it wins over a running -Y scan or trunk scan, which pauses until `y` or
+/* A frequency typed by hand that is a row of the scan in force (issue #644 D1): the scan goes to that row and holds
+   it, with the row's own settings, and the status line says what that came to. A go-to still waiting on its tune is
+   accepted; a refused, deferred or unprepared one fails the command. */
+static int
+ui_cmd_rtl_set_freq_goto(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match_t* match) {
+    const int result = svc_scan_goto_entry(opts, state, match);
+    return result == DSD_SCAN_GOTO_HOLDING || result == DSD_SCAN_GOTO_PENDING ? UI_CMD_APPLY_COMPLETED
+                                                                              : UI_CMD_APPLY_FAILED;
+}
+
+/* A frequency the operator entered. One that is a row of the scan in force sends the scan to that row and holds it
+   there (issue #644). Any other wins over a running -Y scan or trunk scan, which pauses until `y` or
    DSD_APP_CMD_SCAN_RESUME resumes it, and over nothing else. A paused scan stays paused: a second entry only tunes.
    Under -T it selects a P25 control channel (#476). A tune refused or deferred changes nothing, the scan included. */
 static int
@@ -2170,6 +2186,10 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         if (ui_cmd_rtl_set_freq_refused(opts, state, v, &refused_status)) {
             return refused_status;
         }
+        dsd_scan_entry_match_t match;
+        if (dsd_engine_scan_entry_match(opts, state, v, &match)) {
+            return ui_cmd_rtl_set_freq_goto(opts, state, &match);
+        }
         /* A trunked target parked by a running trunk scan has trunking on: the scan's branch comes first. */
         if (!dsd_trunk_scan_owns_tuner(opts, state) && manual_frequency_selects_p25_cc(opts, state)) {
             return ui_cmd_handle_p25_cc_selection(opts, state, v);
@@ -2178,7 +2198,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         const int rc = ui_cmd_rtl_set_freq_tune(opts, state, v, &scan_paused);
         const uint32_t applied = opts->rtlsdr_center_freq; /* io_control_set_freq() caches what a success applied */
         result = ui_cmd_apply_status_from_tune_rc(rc);
-        ui_cmd_rtl_set_freq_toast(state, rc, v, applied, scan_paused);
+        ui_cmd_rtl_set_freq_toast(state, rc, v, applied, scan_paused, &match);
     }
     return result;
 }
@@ -7925,6 +7945,19 @@ apply_manual_scan_hold_toggle(dsd_state* state) {
     ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
 }
 
+/* `Y` while a -Y resume carries an entry still waiting on its row's tune (issue #644): the resume goes on, and lands
+   with no hold, as `Y` off would leave it; the entry's hold is what `Y` toggled. A paused scan has no row on air to
+   hold, so `Y` takes no ordinary hold here, and a resume with no entry is still refused as a paused scan's. */
+static int
+apply_scan_hold_cancels_a_resume_entry(dsd_state* state) {
+    if (!state->lcn_scan_resume_pending || !dsd_engine_channel_scan_entry_pending(state)) {
+        return 0;
+    }
+    dsd_engine_channel_scan_entry_cancel(state);
+    ui_set_toast(state, 3, "%s", "Scan hold off");
+    return 1;
+}
+
 /* An avoided -Y row's frequency as its avoid and put-back toasts show it (issue #672), after the row number the avoided
    channel list leads with (two rows can share a frequency): to the Hz, as every frequency is shown (issue #670), or
    "frequency unknown" for a placeholder, as the list says. A stored row is within the trunk ceiling, so a frequency
@@ -8280,6 +8313,9 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
        paused or stopped -Y list and -T keep their avoids, which the control-channel hunts skip. */
     if (op == DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR) {
         apply_manual_scan_avoid_clear(opts, state);
+        return 1;
+    }
+    if (op == DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE && apply_scan_hold_cancels_a_resume_entry(state)) {
         return 1;
     }
     if (state->lcn_scan_paused) {
@@ -10988,6 +11024,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
     ensure_mu_init();
     ui_publish_deferred_snapshots(opts, state);
     ui_show_stream_notice(opts, state);
+    svc_scan_entry_settle(state); /* an entry's late failure, or the hold its landing set (issue #644) */
     for (;;) {
         /* Before each command, not only once per drain: the demod thread can take or refuse a receive request between
            two commands, and a switch between analog kinds or onto the monitor keeps the baseline of one still armed

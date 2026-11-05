@@ -30,6 +30,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_device.h>
@@ -52,6 +53,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/tetra_rate.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <limits.h>
 #include <math.h>
 #include <sndfile.h>
@@ -2715,6 +2717,82 @@ svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
     const int rc = svc_trunk_scan_resume_and_record(opts, state, &report);
     svc_trunk_scan_settle_gain(opts, state, &report);
     return rc;
+}
+
+/* A trunk scan's go-to (issue #644): the target's resume-at, if the scan is paused, records its return to the monitor
+   and reopens on the configured gain as a refused resume does. Under the tick guard the caller holds. */
+static dsd_scan_goto_result
+svc_scan_goto_trunk_target(dsd_opts* opts, dsd_state* state, int index, long* park_hz) {
+    dsd_trunk_scan_goto_report report = {0};
+    const dsd_scan_goto_result result = svc_trunk_scan_goto_and_record(opts, state, index, &report);
+    const dsd_trunk_scan_leave_report left = {
+        .monitor_request = report.monitor_request,
+        .restart_gain = report.restart_gain,
+    };
+    svc_trunk_scan_settle_gain(opts, state, &left);
+    *park_hz = report.park_hz;
+    return result;
+}
+
+int
+svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match_t* match) {
+    if (!opts || !state || !match || match->scanner == DSD_SCAN_ENTRY_NONE) {
+        return DSD_SCAN_GOTO_REFUSED;
+    }
+    char before[sizeof state->ui_msg];
+    DSD_SNPRINTF(before, sizeof before, "%s", state->ui_msg);
+    const time_t before_expire = state->ui_msg_expire;
+    long park_hz = 0;
+    dsd_scan_goto_result result;
+    p25_sm_tick_guard_enter();
+    if (match->scanner == DSD_SCAN_ENTRY_TRUNK) {
+        result = svc_scan_goto_trunk_target(opts, state, match->row, &park_hz);
+    } else if (opts->scanner_mode == 1 && !state->lcn_scan_paused) {
+        result = dsd_engine_channel_scan_goto_row(opts, state, match->row);
+    } else {
+        result = dsd_engine_channel_scan_resume_at(opts, state, match->row);
+    }
+    p25_sm_tick_guard_leave();
+    /* A failure inside the call is the outcome named below, not a late one to name again. */
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    const int engine_toasted = state->ui_msg_expire != before_expire || strcmp(state->ui_msg, before) != 0;
+    svc_scan_entry_toast_outcome(state, match, result, park_hz, engine_toasted);
+    return (int)result;
+}
+
+int
+svc_scan_entry_continue(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        if (!dsd_trunk_scan_owns_tuner(opts, state)) {
+            return 0;
+        }
+        if (state->trunk_scan_entry_hold) {
+            dsd_engine_trunk_scan_entry_release_locked(opts, state);
+            svc_scan_entry_toast_continues(state);
+            return 1;
+        }
+        if (dsd_engine_trunk_scan_entry_pending(state)) {
+            svc_scan_entry_toast_waiting(state);
+            return 1;
+        }
+        return 0;
+    }
+    if (opts->scanner_mode != 1) {
+        return 0;
+    }
+    if (state->lcn_scan_entry_hold) {
+        dsd_engine_channel_scan_entry_release(opts, state);
+        svc_scan_entry_toast_continues(state);
+        return 1;
+    }
+    if (dsd_engine_channel_scan_entry_pending(state)) {
+        svc_scan_entry_toast_waiting(state);
+        return 1;
+    }
+    return 0;
 }
 
 /* The squelch services run on every input: audio input takes a level or the noise squelch (issue #628). */

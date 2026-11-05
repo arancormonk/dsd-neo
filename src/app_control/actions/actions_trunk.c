@@ -176,11 +176,16 @@ scanner_start_refused_for_next_start(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* `y`: a paused scan resumes; a running trunk scan pauses where it is (it has no stop at runtime); a running -Y scan
-   stops, and a stopped one starts (issue #671). A pending trunk-scan resume is running: `y` pauses it again. */
+   stops, and a stopped one starts (issue #671). A pending trunk-scan resume is running: `y` pauses it again. A running
+   scan that holds the row a typed frequency picked continues instead, and one still going there waits (issue #644):
+   `y` never pauses a trunk scan or stops -Y over an entry. */
 static int
 ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (!state) {
+        return TRUNK_ACTION_DONE;
+    }
+    if (svc_scan_entry_continue(opts, state)) {
         return TRUNK_ACTION_DONE;
     }
     if (opts->trunk_scan_enabled == 1) {
@@ -222,11 +227,15 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
 }
 
 /* DSD_APP_CMD_SCAN_RESUME: resume whichever scan is paused (issue #671), and only that: a running scan is left as it
-   is, and with no scan paused nothing starts. */
+   is, and with no scan paused nothing starts. A running scan's entry hold is released, as `y` releases it, so the
+   scan continues (issue #644). */
 static int
 ui_handle_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (!state) {
+        return TRUNK_ACTION_DONE;
+    }
+    if (svc_scan_entry_continue(opts, state)) {
         return TRUNK_ACTION_DONE;
     }
     if (trunk_scan_is_paused(opts, state)) {

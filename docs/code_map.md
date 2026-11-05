@@ -585,7 +585,9 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `trunk_scan_goto_running()` takes the hold and its mark before it moves, and puts them back only when the move got no
   further than its preparation, so a mark never sits on a target whose park is not confirmed and a late failure takes
   the normal failure path unheld. An ordinary hold carries over, as `L` carries it.
-  `dsd_engine_trunk_scan_entry_pending()` says an entry still waits. `coord->entry_hold` is published as
+  `dsd_engine_trunk_scan_entry_pending()` says an entry still waits. A park that fails
+  (`trunk_scan_resolve_pending_retune()`) cancels the entry with `dsd_engine_scan_entry_intent_fail_request()`, which
+  keeps its failure for app-control to name, as the -Y scan's do. `coord->entry_hold` is published as
   `trunk_scan_entry_hold` beside `trunk_scan_hold` (`trunk_scan_publish_configured()`, cleared at the detach). `L`, `J`,
   an avoid's step and a departure carry it with the hold; `Y` (`trunk_scan_control_hold_toggle()`) drops the mark and
   toggles the hold as an ordinary one; a pause takes both, while an ordinary hold still outlives a pause;
@@ -3675,9 +3677,15 @@ Next or Previous also cancels it at its control entry (`dsd_engine_channel_scan_
 `apply_manual_lcn_cycle_untyped_dir_locked()`), so one with nowhere to land still does. The release
 (a pause, a stop) also cancels it. So does `Y`: `apply_manual_scan_hold_toggle()` calls
 `dsd_engine_channel_scan_entry_cancel()` before it toggles, so an entry hold loses its mark and the toggle releases
-it. The failure or drop of the intent's own tune cancels it too (`dsd_engine_scan_entry_intent_drop_request()` in
-`dsd_engine_channel_scan_pending()`, `channel_scan_tune_outcome()` and `untyped_settle_walk()`). A late landing of a
-cancelled or replaced entry therefore holds nothing; a restage of the intent's own row keeps it.
+it. The failure or drop of the intent's own tune cancels it too. A failure keeps it in the owner's `entry_failed`
+record (`dsd_engine_scan_entry_intent_fail_request()` in `dsd_engine_channel_scan_pending()`,
+`channel_scan_tune_outcome()` and `untyped_settle_walk()`; `dsd_engine_scan_entry_intent_fail()` for a resume-at in
+`dsd_engine_channel_scan_resume_failed()`, though not an interrupted one), which app-control takes once
+(`dsd_engine_scan_entry_take_failure()`, `<dsd-neo/engine/scan_entry.h>`) to name the row in a toast. A drop
+(`dsd_engine_scan_entry_intent_drop_request()`: an untyped walk's tune another tune dropped, a retry whose row went out
+of date) and every cancel keep none, so a cancel by `Y`, `L`, `J`, `b`, another entry, a pause or a stop is never named
+as a failure. A late landing of a cancelled or replaced entry therefore holds nothing; a restage of the intent's own
+row keeps it.
 `dsd_engine_channel_scan_entry_pending()` says an entry still waits. A go-to replaces an entry hold: once its tune is
 taken or a backend moved, the hold and its mark go (`dsd_engine_scan_entry_hold_replaced()`, in
 `channel_scan_goto_typed()` and `untyped_goto_running()`), so only its own row's confirmed landing sets them again and
@@ -3856,8 +3864,40 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `DSD_TRUNK_FREQ_MAX_HZ` on every platform, as `state.h` promises, rather than storing it; the entry refuses it
     before converting the payload to that `long`, toasting `Above 2147.483647 MHz, the trunking limit`
     (`UI_CMD_APPLY_FAILED`). Tests: `APP_COMMAND_QUEUE`, `APP_P25_CC_SELECTION`.
+  - Typed frequency on a scan row (issue #644 D1-D5): after its replay and 0 refusals, `ui_cmd_handle_rtl_set_freq()`
+    asks `dsd_engine_scan_entry_match()`. A match goes to `svc_scan_goto_entry()` (`menu_services.c`), which takes the
+    P25 SM tick guard around the scan's own go-to: `dsd_engine_channel_scan_goto_row()` on a running `-Y` scan,
+    `dsd_engine_channel_scan_resume_at()` on a paused one (a resume pending included), and for a trunk scan, running or
+    paused, `svc_trunk_scan_goto_and_record()` (`symbol_profile.c`: `dsd_engine_trunk_scan_goto_locked()` with a
+    resume-at's return to the monitor recorded, issue #578), then `svc_trunk_scan_settle_gain()` with the report's
+    `restart_gain`. The scan tunes the row as it tunes any row (both legs where it uses both), never the plain entry's
+    leg; no pause, no `operator_tuned`. HOLDING and PENDING complete the command; REFUSED, DEFERRED and SETUP_FAILED
+    fail it. No match (or an ineligible one) takes the plain path below, whose accepted toast gains the D5 reason
+    (`svc_scan_entry_toast_reason()`). Every entry toast comes from `src/app_control/scan_entry_toast.c`: `Holding:
+    <name>`, `(n of N)` for duplicates (eligible rows only), `, trunked: following its control channel <MHz> MHz`;
+    `Going to <name>: waiting for the tune` (`Resuming scan at <name>: ...` over a paused `-Y` list, `to its control
+    channel <MHz> MHz` for a trunked target); `Failed: tune to <name>`, `Deferred; retry: tune to <name>`, `Failed:
+    <name> could not be set up`, each with `; scan stays paused` while paused; `Scan continues`; the reasons `; <name>
+    is avoided`, `; <name> is in a list that is off`, `; <name> is skipped: its width does not fit` (bare `; avoided`,
+    `; its list is off`, `; its width does not fit` where the name will not fit). Each fits `ui_msg`: optional parts
+    drop whole, the count first, then a trunked target's frequency, and the name (63 bytes at most) is never cut. A
+    HOLDING whose own call left a text (`engine_toasted`) keeps that text. A failure the engine kept inside the call is
+    taken and dropped there. A PENDING go-to is remembered (name, count, park frequency); `svc_scan_entry_settle()`,
+    at the top of every `dsd_app_drain_cmds()`, takes a late failure the engine kept
+    (`dsd_engine_scan_entry_take_failure()`) and names it once, or, once the remembered entry stops waiting with its
+    entry hold set, replaces its own waiting text, and nothing newer, with `Holding: <name>`; a cancel names nothing.
+    `svc_scan_entry_continue()` runs first in `ui_handle_scanner_toggle()` and `ui_handle_scan_resume()`: on a running
+    scan an entry hold is released (`dsd_engine_channel_scan_entry_release()`,
+    `dsd_engine_trunk_scan_entry_release_locked()`; `Scan continues`), and an entry still waiting says so; `y` then
+    never pauses a trunk scan or stops `-Y`, and an ordinary hold keeps `y`'s meaning. `Y` over a `-Y` resume-at still
+    waiting (`apply_scan_hold_cancels_a_resume_entry()`) cancels the entry and lets the resume land unheld (`Scan hold
+    off`) rather than refusing as a paused scan; a resume with no entry is still refused. Tests: `APP_COMMAND_QUEUE`
+    (the composer at its limits; both scans running and paused: holding, on air, duplicates and one avoided, pending,
+    landing, late failure once, cancel by `Y`, `y`/`SCAN_RESUME`, `Y` over a resume-at; a refused trunk resume-at's
+    monitor request and gain reopen), `APP_CONTROL_ACTIONS`, `API_SERVER`.
   - Scan pause commands (issue #671): an accepted frequency entry wins over a running scan and pauses it.
-    `ui_cmd_handle_rtl_set_freq()` refuses a replay and 0 only. A running trunk scan comes first, before
+    `ui_cmd_handle_rtl_set_freq()` refuses a replay and 0 only, then sends a typed scan row to the entry service above.
+    A running trunk scan comes first, before
     `manual_frequency_selects_p25_cc()`, since a parked trunked target has trunking on:
     `svc_pause_trunk_scan_for_tune()` takes the P25 SM tick guard (the entry is not apply-guarded), runs the tune leg
     alone, and only on an accepted tune (applied or pending) pauses the coordinator
@@ -4582,7 +4622,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the session has and whether it runs or the operator paused it: `dsd_app_scan_state_view_get()` gives `kind`
   (`NONE`, `CHANNEL` for `-Y`, `TRUNK` for `--trunk-scan`, which wins), `running` (`dsd_trunk_scan_owns_tuner()`, or
   `scanner_mode`), `paused` (a trunk scan with `trunk_scan_paused`, or `-Y` with `lcn_scan_paused`, a resume still
-  pending included), `resume_pending`, `target_count` (targets, or `-Y` rows) and `operator_tuned`, from a snapshot
+  pending included), `resume_pending`, `target_count` (targets, or `-Y` rows), `operator_tuned` and `entry_hold`
+  (`trunk_scan_entry_hold` or `lcn_scan_entry_hold`, the scan's own only; issue #644), from a snapshot
   pair or the decoder's structs, at the cost of a few loads. It is the one predicate the terminal's scan labels and
   gates, the Qt metrics and the API feed's `status.scan` (`dsd_app_scan_kind_name()`, `dsd_app_scan_state_name()`:
   `off|running|paused`) read; the scan timing, scan row and gain views read the same running predicate directly.
@@ -4897,7 +4938,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `get` answers `null` rather than the previous run's or previous client's record. The `status` record carries what
     the stateful commands must quote back: the talkgroup policy version, the decryption context and the scan row view.
     Its `scan` object (issue #697) adds, from the scan state view, the scan list view and the published position
-    fields only: `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), the trunk scan's "n of m"
+    fields only: `hold` (`trunk_scan_hold` or `lcn_scan_hold`, by the scan's kind), `entry_hold` (that hold is a typed
+    frequency's, the view's `entry_hold`; issue #644), the trunk scan's "n of m"
     `ordinal` (null while the target on air is outside the lists switched on) and `count`
     (`trunk_scan_rotation_ordinal`/`_count`), and `session`, `lists_seq`, `list` (the list on air, or null) and
     `lists[]` that `scan_list_set` and its results quote; the avoid count stays in `status.scan_avoids`. RF metrics

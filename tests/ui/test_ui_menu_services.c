@@ -33,6 +33,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
@@ -926,6 +927,11 @@ svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan
 int
 svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out) {
     return dsd_engine_trunk_scan_resume_ex_locked(opts, state, out);
+}
+
+dsd_scan_goto_result
+svc_trunk_scan_goto_and_record(dsd_opts* opts, dsd_state* state, int index, dsd_trunk_scan_goto_report* out) {
+    return dsd_engine_trunk_scan_goto_locked(opts, state, index, out);
 }
 
 static int

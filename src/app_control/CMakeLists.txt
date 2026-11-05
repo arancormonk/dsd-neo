@@ -39,6 +39,7 @@ target_sources(
         receive_view.c
         recording_view.c
         scan_avoid_view.c
+        scan_entry_toast.c
         scan_list_results.c
         scan_list_rows.c
         scan_list_view.c

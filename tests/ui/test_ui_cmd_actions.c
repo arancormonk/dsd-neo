@@ -176,6 +176,19 @@ svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
     return g_trunk_resume_rc;
 }
 
+/* `y` and SCAN_RESUME over an entry (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real one over
+   both scans, issue #644): handled, with nothing else done, while g_entry_continue is set. */
+static int g_entry_continue;
+static int g_entry_continue_calls;
+
+int
+svc_scan_entry_continue(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_entry_continue_calls++;
+    return g_entry_continue;
+}
+
 /* The next-start check (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real one): passes unless
    g_next_start_why is set, and records the save the change leaves from an empty one. */
 static const char* g_next_start_why;
@@ -898,6 +911,44 @@ test_scanner_toggle_pauses_and_resumes(void) {
     return rc;
 }
 
+/* Issue #644: `y` and SCAN_RESUME ask the entry service first. While it handles them (an entry hold released, or an
+   entry still waiting), neither scan is paused, stopped, started or resumed; once it does not, `y` keeps its
+   meaning. */
+static int
+test_scanner_toggle_continues_an_entry(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    struct dsd_app_command y = {0};
+    y.id = DSD_APP_CMD_SCANNER_TOGGLE;
+    struct dsd_app_command resume = {0};
+    resume.id = DSD_APP_CMD_SCAN_RESUME;
+    g_entry_continue = 1;
+    g_entry_continue_calls = 0;
+
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_target_count = 2U;
+    g_trunk_pause_calls = g_trunk_resume_calls = 0;
+    rc |= expect_int("y over a trunk-scan entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_int("resume over a trunk-scan entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 1);
+    rc |= expect_true("the trunk scan is neither paused nor resumed",
+                      g_trunk_pause_calls == 0 && g_trunk_resume_calls == 0 && state.trunk_scan_paused == 0U);
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_target_count = 0U;
+
+    opts.scanner_mode = 1;
+    rc |= expect_int("y over a -Y entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_int("resume over a -Y entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 1);
+    rc |= expect_true("-Y still runs", opts.scanner_mode == 1 && g_entry_continue_calls == 4);
+
+    g_entry_continue = 0;
+    rc |= expect_int("y with no entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("y with no entry stops -Y", opts.scanner_mode == 0 && g_entry_continue_calls == 5);
+    return rc;
+}
+
 /* Issue #671 (B5): trunking is not the operator's to switch while a trunk-scan coordinator exists, running or paused;
    each target sets its own. A paused -Y scan ends when trunking takes the tuner, and stays paused when it is switched
    off. */
@@ -996,6 +1047,7 @@ main(void) {
     rc |= test_trunk_on_forgets_tetra_moves();
     rc |= test_trunk_ownership_guard();
     rc |= test_scanner_toggle_pauses_and_resumes();
+    rc |= test_scanner_toggle_continues_an_entry();
     rc |= test_scanner_start_held_to_the_next_start();
     rc |= test_trunking_under_a_scan();
     rc |= test_radio_actions();

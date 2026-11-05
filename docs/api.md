@@ -338,8 +338,9 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
 
 * `message`: `{text, expires}` while the decoder shows a notice (for example the
   reason it refused a queued command), else `null`.
-* `scan`: `{kind, state, targets, hold, ordinal, count, session, lists_seq,
-  list, lists}`, the scan the session has, as every frontend shows it.
+* `scan`: `{kind, state, targets, hold, entry_hold, ordinal, count, session,
+  lists_seq, list, lists}`, the scan the session has, as every frontend shows
+  it.
   * `kind` is `none`, `channel` (the `-Y` conventional scan) or `trunk`
     (`--trunk-scan`); `state` is `off` (no scan), `running`, or `paused` (the
     operator took the tuner; `scan_resume` resumes it); `targets` is the trunk
@@ -348,6 +349,10 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
     `paused`.
   * `hold`: `true` while the operator holds the scan on the row or target on
     air (`scan_hold_toggle`); `false` with no scan.
+  * `entry_hold`: `true` while that hold is the one a frequency entry set
+    (`rtl_set_freq` on a row of the scan, below): `scanner_toggle` and
+    `scan_resume` then let the scan continue from that row. It implies `hold`;
+    `false` with no scan.
   * `ordinal` and `count`: the trunk scan's position, as the terminal shows
     `(2/14)`. `count` is the number of targets in the lists switched on,
     avoided ones included; `ordinal` is the target on air's place among them,
@@ -811,15 +816,33 @@ field, and the decoder refuses the rest when it applies the command.
   landing (`...; tuned to <MHz> MHz`) or an interruption (`Interrupted: RR
   import -> tune to <MHz> MHz; ...`) replaces the import's message only while
   it is still up.
-* **`rtl_set_freq`**: tunes the radio (and a rigctl peer) to `value` Hz, as the
-  terminal's frequency entry does. It is refused during an I/Q replay and for
-  `0`. With single-system P25 trunking on and no scan it selects that control
-  channel. Otherwise, once the tune is accepted (applied, or still pending on
-  the tuner), a running `-Y` scan or trunk scan pauses: the scan keeps its list,
-  cursor, avoids and session edits, the receiver stays on `value` with the
-  configured decoder, and `status.message` ends in `; scan paused`. A refused or
-  deferred tune changes nothing and says why. An entry while a scan is paused
-  only tunes; the scan stays paused.
+* **`rtl_set_freq`**: tunes to `value` Hz, as the terminal's frequency entry
+  does. It is refused during an I/Q replay and for `0`.
+  * When `value` is exactly the frequency of a row of the scan in force (a `-Y`
+    list of your own, running or paused, or a trunk-scan target), the scan goes
+    to that row and holds it there with the row's own settings: its mode,
+    options, keys, receive profile, gain and name, as at any visit. A running
+    scan switches to the row; a paused one resumes at it. The scan tunes the
+    row as it tunes any row, both a rigctl peer and the radio where the scan
+    uses both. A trunked target parks on its control channel, so the receiver
+    may end up on another frequency than `value`. `status.message` says
+    `Holding: <name>`, adds `(1 of 2)` when several rows share the frequency
+    (`L` and `J` reach the others), and names a trunked target's control
+    channel. A tune still on its way says `Going to <name>: waiting for the
+    tune` (`Resuming scan at <name>: ...` over a paused `-Y` list), and its
+    landing or failure arrives in `status.message` later. `status.scan` reads
+    `hold` and `entry_hold` true once it lands. A row that is avoided, whose
+    list is off, or whose width the input cannot run is not taken: the entry
+    is a plain one, below, and its message ends with the reason
+    (`; fire-dispatch is avoided`).
+  * Otherwise, with single-system P25 trunking on and no scan, it selects that
+    control channel. Otherwise it tunes a rigctl peer when one is in use, else
+    the radio, and once the tune is accepted (applied, or still pending on the
+    tuner) a running `-Y` scan or trunk scan pauses: the scan keeps its list,
+    cursor, avoids and session edits, the receiver stays on `value` with the
+    configured decoder, and `status.message` ends in `; scan paused`. A refused
+    or deferred tune changes nothing and says why. An entry while a scan is
+    paused only tunes; the scan stays paused.
 * **`channel_cycle`** and **`channel_cycle_prev`**: one step forward or back
   through the list the session runs: the trunk-scan targets, a `-Y` channel
   map, the P25 control-channel candidates (`-^`) or the channel list, with the
@@ -834,7 +857,10 @@ field, and the decoder refuses the rest when it applies the command.
 * **`scanner_toggle`**: the terminal's `y`. A paused scan resumes; a running
   trunk scan pauses where it is (it cannot be stopped at runtime); a running
   `-Y` scan stops, and with none running `-Y` starts. A `-Y` resume still
-  waiting for its row's tune is left alone.
+  waiting for its row's tune is left alone. A running scan holding the row a
+  frequency entry picked (`status.scan.entry_hold`) continues instead (`Scan
+  continues`), and one still going there says it is waiting: neither pauses
+  nor stops the scan.
 * **`scan_avoid`**: the terminal's `b`. Avoids the `-Y` row or trunk-scan
   target on air for the rest of the session and steps on. It needs a running
   scan (refused while paused), and the last usable row or target is never
@@ -863,7 +889,8 @@ field, and the decoder refuses the rest when it applies the command.
   left, with fresh timers. A running scan is left as it is (`Not paused: the
   scan is running`), and with nothing paused nothing starts. A resume that
   finds no row to tune, or whose tune is refused, leaves the scan paused and
-  says why.
+  says why. A running scan's entry hold is let go as `scanner_toggle` lets it
+  go (`Scan continues`).
 * **`manual_tune`**: a spectrum tap. It is refused while trunking, a running
   `-Y` scan or a running trunk scan owns the tuner (`status.message` says
   which); a paused scan does not refuse it, and it leaves the scan paused. A

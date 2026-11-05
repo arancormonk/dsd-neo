@@ -46,6 +46,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -153,6 +154,9 @@ static uint64_t g_io_control_pending_id = 0U;
    that walk tunes in the engine, past the queue's seam. */
 static int (*g_rtl_leg_seam)(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id) = NULL;
 static dsd_trunk_tune_result g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+/* Set: the control-channel tune goes to the hook table a case installed, with its request ID, as off the wrap
+   toolchains (issue #644). */
+static int g_cc_tune_through_hooks = 0;
 static int g_cc_tune_calls = 0;
 static long int g_cc_tune_freq = 0;
 static int g_cc_tune_ted_sps = 0;
@@ -267,6 +271,8 @@ int __wrap_dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size
 int __real_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 int __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_health* out);
 dsd_trunk_tune_result __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
+                                                              int ted_sps, uint64_t* out_request_id);
+dsd_trunk_tune_result __real_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq,
                                                               int ted_sps, uint64_t* out_request_id);
 int __real_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
 int __wrap_dsd_tg_policy_call_skip_arm(dsd_state* state, uint32_t id, uint32_t src, int fallback, double now_mono_s);
@@ -505,6 +511,9 @@ __wrap_dsd_audio_output_health_get(dsd_audio_stream* stream, dsd_audio_output_he
 dsd_trunk_tune_result
 __wrap_dsd_trunk_tuning_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                         uint64_t* out_request_id) {
+    if (g_cc_tune_through_hooks) {
+        return __real_dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, ted_sps, out_request_id);
+    }
     (void)opts;
     if (out_request_id) {
         *out_request_id = 0U;
@@ -18187,6 +18196,31 @@ test_trunk_scan_pause_returns_to_the_monitor(void) {
                        "Refused: NFM 16 kHz does not fit the 16 kHz DSP rate; the monitor is back on the NFM default");
     rc |= expect_int("entry: still paused", state.trunk_scan_paused, 1);
 
+    /* Issue #644: an entry on the target's own frequency resumes at it through the go-to's service. Its retune
+       refused, the scan stays paused, and the rollback's return to the monitor is recorded and reconciled as a
+       pause's: refused where it lands, the decoder follows the 12.5 kHz the front end kept. */
+    demod_thread_lands(0);
+    opts.analog_nfm_bandwidth_hz = 16000;
+    g_fake_analog_req_max_hz = 0;
+    const int goto_requests = g_analog_req_calls;
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_int("go-to queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 154430000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("go-to drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_OK;
+    rc |= expect_str("go-to refused toast", state.ui_msg, "Failed: tune to fire; scan stays paused");
+    rc |= expect_int("go-to refused: still paused, failed",
+                     state.trunk_scan_paused == 1 && dsd_app_command_test_last_failed() == 1, 1);
+    rc |= expect_int("go-to refused asked for the configured monitor",
+                     g_analog_req_calls > goto_requests && g_analog_req_kind == DSD_ANALOG_DEMOD_FM
+                         && g_analog_req_width_hz == 16000,
+                     1);
+    demod_thread_refuses_analog_keeping(1, 12500);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_toast("go-to refused: refusal toast", &state, "Refused: NFM 16 kHz");
+    rc |= expect_int("go-to refused: the decoder follows what the front end kept", opts.analog_nfm_bandwidth_hz, 12500);
+
     /* Resumed, then paused in place by `y`: the return is queued and refused where it lands, keeping 12.5 kHz. */
     demod_thread_lands(0);
     opts.analog_nfm_bandwidth_hz = 16000;
@@ -18341,6 +18375,22 @@ test_trunk_scan_pause_reopens_for_the_configured_gain(void) {
     rc |= expect_int("refused resume: still paused, configured gain",
                      state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
     rc |= expect_int("refused resume: the stream reopened on the configured gain",
+                     g_config_rtl_creates == 1 && g_config_rtl_create_gain == 22 && state.rtl_ctx != NULL, 1);
+
+    /* Issue #644: an entry on "own" resumes at it through the go-to's service; its retune refused, the scan stays
+       paused and the stream reopens on the configured gain, as at a refused resume. */
+    g_config_rtl_creates = 0;
+    g_config_rtl_create_gain = -1;
+    g_cc_tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    rc |=
+        expect_int("gain go-to queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, 851000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("gain go-to drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_cc_tune_result = cc_result;
+    rc |= expect_str("gain go-to toast", state.ui_msg, "Failed: tune to own; scan stays paused");
+    rc |= expect_int("gain go-to: still paused, configured gain",
+                     state.trunk_scan_paused == 1 && opts.rtl_gain_value == 22, 1);
+    rc |= expect_int("gain go-to: the stream reopened on the configured gain",
                      g_config_rtl_creates == 1 && g_config_rtl_create_gain == 22 && state.rtl_ctx != NULL, 1);
 
     /* Resumed onto "own", advanced to "inherit" (the configured gain), paused again: nothing to reopen. */
@@ -25388,6 +25438,315 @@ test_trunk_scan_pauses_for_an_entry_and_resumes(void) {
     return rc;
 }
 
+/* A trunk-scan target's park as a case scripts it (issue #644): landing at once, still in flight, or refused. The
+   request of the last park is kept for a case to answer later. */
+static dsd_trunk_tune_result g_entry_park_result = DSD_TRUNK_TUNE_RESULT_OK;
+static uint64_t g_entry_park_request;
+
+static dsd_trunk_tune_result
+entry_park_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)ted_sps;
+    g_entry_park_request = request_id;
+    if (state && dsd_trunk_tune_result_is_ok(g_entry_park_result)) {
+        state->trunk_cc_freq = freq;
+    }
+    return g_entry_park_result;
+}
+
+/* The park in flight answers @p result, the coordinator's tick sees it, and the next drain settles the entry. */
+static int
+entry_park_answers(dsd_opts* opts, dsd_state* state, dsd_trunk_tune_result result, const char* label) {
+    dsd_trunk_tuning_request_publish(g_entry_park_request, result);
+    dsd_engine_trunk_scan_tick(opts, state);
+    state->ui_msg[0] = '\0';
+    return expect_int(label, dsd_app_drain_cmds(opts, state), 0);
+}
+
+/* The trunk scan holds target @p id, marked an entry hold, running. */
+static int
+expect_trunk_entry_held(const dsd_state* state, const char* id, const char* label) {
+    return expect_int(label,
+                      state->trunk_scan_hold == 1U && state->trunk_scan_entry_hold == 1U
+                          && state->trunk_scan_paused == 0U && strcmp(state->trunk_scan_active_id, id) == 0,
+                      1);
+}
+
+/*
+ * Issue #644 D1, D3: a frequency typed by hand that is a trunk-scan target sends the scan there and holds it, with the
+ * target's own settings: no plain tune, no pause. A trunked target parks on its control channel, which the toast names.
+ * Running, the scan switches; paused, it resumes at the target. `y` and SCAN_RESUME on that hold continue the scan,
+ * never pause it, while `y` on an ordinary hold or none pauses it as before. A park still in flight says so, `y` then
+ * waits with it, and its landing or its failure, once, is named when the next drain runs; one `Y` cancelled names
+ * nothing more.
+ */
+static int
+test_trunk_scan_entry_holds_the_target(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char dir[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    int rc = expect_true("trunk entry dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_trunk_entry") != NULL);
+    rc |= init_running_trunk_scan(&opts, &state, dir, csv, sizeof csv);
+    g_entry_park_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = entry_park_tune_to_cc});
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    g_cc_tune_through_hooks = 1;
+#endif
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+
+    /* Running: a switch to b, held. */
+    rc |= drain_entry(&opts, &state, 452000000U, "running entry");
+    rc |= expect_str("running entry toast", state.ui_msg,
+                     "Holding: b, trunked: following its control channel 452.000000 MHz");
+    rc |= expect_trunk_entry_held(&state, "b", "running entry holds b");
+    rc |= expect_int("running entry: no plain tune, completed",
+                     g_seam_tune_calls == 0 && dsd_app_command_test_last_failed() == 0 && state.operator_tuned == 0, 1);
+    rc |= expect_int("running entry: the guard is free again", p25_sm_tick_guard_held_by_caller(), 0);
+
+    /* `y` continues; `y` again, with no hold, pauses as before. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y over the entry hold");
+    rc |= expect_str("y over the entry hold toast", state.ui_msg, "Scan continues");
+    rc |= expect_int("y continues the scan",
+                     state.trunk_scan_paused == 0U && state.trunk_scan_hold == 0U && state.trunk_scan_entry_hold == 0U
+                         && strcmp(state.trunk_scan_active_id, "b") == 0,
+                     1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y unheld");
+    rc |= expect_str("y unheld toast", state.ui_msg, "Trunk scan paused");
+    rc |= expect_int("y unheld pauses", state.trunk_scan_paused, 1);
+
+    /* Paused: a resume at a, held; SCAN_RESUME continues it. */
+    rc |= drain_entry(&opts, &state, 851000000U, "paused entry");
+    rc |= expect_str("paused entry toast", state.ui_msg,
+                     "Holding: a, trunked: following its control channel 851.000000 MHz");
+    rc |= expect_trunk_entry_held(&state, "a", "paused entry resumes at a, held");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "resume over the entry hold");
+    rc |= expect_str("resume over the entry hold toast", state.ui_msg, "Scan continues");
+    rc |= expect_int("resume continues the scan", state.trunk_scan_paused == 0U && state.trunk_scan_hold == 0U, 1);
+
+    /* An ordinary hold keeps `y`'s meaning: it pauses. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "ordinary hold");
+    rc |= expect_str("ordinary hold toast", state.ui_msg, "Trunk scan hold on");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y over an ordinary hold");
+    rc |= expect_str("y over an ordinary hold toast", state.ui_msg, "Trunk scan paused");
+    rc |= expect_int("y over an ordinary hold pauses", state.trunk_scan_paused, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "resume the ordinary hold");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "ordinary hold off");
+    rc |= expect_int("running unheld again", state.trunk_scan_paused == 0U && state.trunk_scan_hold == 0U, 1);
+
+    /* A park in flight: waiting, `y` waits with it, and its landing is named. */
+    g_entry_park_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    rc |= drain_entry(&opts, &state, 452000000U, "pending entry");
+    rc |= expect_str("pending entry toast", state.ui_msg,
+                     "Going to b: waiting for the tune to its control channel 452.000000 MHz");
+    rc |= expect_int("pending entry completed", dsd_app_command_test_last_failed(), 0);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y while the park is in flight");
+    rc |= expect_str("y while the park is in flight toast", state.ui_msg,
+                     "Going to b: waiting for the tune to its control channel 452.000000 MHz");
+    rc |= expect_int("y while the park is in flight: running, still waiting",
+                     state.trunk_scan_paused == 0U && dsd_engine_trunk_scan_entry_pending(&state) == 1, 1);
+    DSD_SNPRINTF(state.ui_msg, sizeof state.ui_msg, "%s",
+                 "Going to b: waiting for the tune to its control channel 452.000000 MHz");
+    dsd_trunk_tuning_request_publish(g_entry_park_request, DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    rc |= expect_int("landing drained", dsd_app_drain_cmds(&opts, &state), 0);
+    rc |=
+        expect_str("landing toast", state.ui_msg, "Holding: b, trunked: following its control channel 452.000000 MHz");
+    rc |= expect_trunk_entry_held(&state, "b", "the landing holds b");
+
+    /* A park that fails late (the DMR target, whose machine recovers nothing on its own): named once, and the scan
+       runs on unheld. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y before a late failure");
+    g_entry_park_result = DSD_TRUNK_TUNE_RESULT_OK;
+    rc |= drain_entry(&opts, &state, 851000000U, "back to a");
+    rc |= expect_trunk_entry_held(&state, "a", "back to a, held");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y on a");
+    g_entry_park_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    rc |= drain_entry(&opts, &state, 452000000U, "entry that fails late");
+    rc |= entry_park_answers(&opts, &state, DSD_TRUNK_TUNE_RESULT_FAILED, "late failure drained");
+    rc |= expect_str("late failure toast", state.ui_msg, "Failed: tune to b");
+    rc |= expect_int("late failure: running unheld",
+                     state.trunk_scan_paused == 0U && state.trunk_scan_hold == 0U && state.trunk_scan_entry_hold == 0U,
+                     1);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("late failure named once", state.ui_msg, "");
+
+    /* Cancelled by `Y` while in flight: its failure names nothing. */
+    const uint32_t other = strcmp(state.trunk_scan_active_id, "b") == 0 ? 851000000U : 452000000U;
+    rc |= drain_entry(&opts, &state, other, "entry cancelled by Y");
+    rc |= expect_int("entry cancelled by Y: in flight", dsd_engine_trunk_scan_entry_pending(&state), 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "Y while the park is in flight");
+    rc |= entry_park_answers(&opts, &state, DSD_TRUNK_TUNE_RESULT_FAILED, "cancelled park drained");
+    rc |= expect_str("a cancelled entry's failure names nothing", state.ui_msg, "");
+    rc |= expect_int("cancelled: no entry mark", state.trunk_scan_entry_hold, 0);
+
+    g_entry_park_result = DSD_TRUNK_TUNE_RESULT_OK;
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    g_cc_tune_through_hooks = 0;
+#endif
+    finish_trunk_scan(&opts, &state, csv);
+    (void)dsd_test_rmdir(dir);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* A frequency entry whose -Y go-to waits on its walk's tune, and the toast it left. */
+static int
+drain_waiting_entry(dsd_opts* opts, dsd_state* state, uint32_t hz, const char* want, const char* label) {
+    manual_leg_script(hz, RTL_STREAM_TUNE_TIMEOUT);
+    int rc = drain_entry(opts, state, hz, label);
+    rc |= expect_str(label, state->ui_msg, want);
+    rc |= expect_int(label, dsd_engine_channel_scan_entry_pending(state) && dsd_app_command_test_last_failed() == 0, 1);
+    manual_leg_script(hz, RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/* The walk's tune settles as @p result, and the next drain says what it came to. */
+static int
+settle_entry_walk(dsd_opts* opts, dsd_state* state, int result, const char* label) {
+    (void)settle_walk_tune(opts, state, result);
+    return expect_int(label, dsd_app_drain_cmds(opts, state), 0);
+}
+
+/* The -Y scan runs, holding row @p row, marked an entry hold. */
+static int
+expect_channel_entry_held(const dsd_opts* opts, const dsd_state* state, int row, const char* label) {
+    return expect_int(label,
+                      opts->scanner_mode == 1 && state->lcn_scan_paused == 0U && state->lcn_scan_hold == 1U
+                          && state->lcn_scan_entry_hold == 1U && dsd_state_lcn_heard_row(state) == row,
+                      1);
+}
+
+/*
+ * Issue #644 D1, D4, D5 on a running and a paused untyped -Y list [north 871, fire-dispatch 872, south 871]: a
+ * frequency typed by hand that is a row sends the scan there (a walk tune, never the plain entry's) and holds it; the
+ * row on air is held with no tune. Two eligible rows on the frequency are named "(1 of 2)"; with one avoided the other
+ * is chosen, with no count. Both avoided, the entry is a plain one that says why. `y` and a pending walk, its landing,
+ * its late failure (once), and `Y` over a resume-at still waiting; `y` on an ordinary hold still stops the scan.
+ */
+static int
+test_channel_scan_entry_holds_the_row(void) {
+    static const long kRows[] = {871000000L, 872000000L, 871000000L};
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    init_manual_walk_context(&opts, &state, kRows, 3);
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx; /* the resume's leg is the timed step's, which the seam answers */
+    int rc = expect_int("names", dsd_state_trunk_lcn_name_set(&state, 0U, "north"), 0);
+    rc |= expect_int("names", dsd_state_trunk_lcn_name_set(&state, 1U, "fire-dispatch"), 0);
+    rc |= expect_int("names", dsd_state_trunk_lcn_name_set(&state, 2U, "south"), 0);
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+
+    rc |= drain_entry(&opts, &state, 872000000U, "running entry");
+    rc |= expect_str("running entry toast", state.ui_msg, "Holding: fire-dispatch");
+    rc |= expect_channel_entry_held(&opts, &state, 1, "running entry holds fire-dispatch");
+    rc |= expect_int("running entry: the walk tuned, not the plain entry",
+                     g_manual_leg_hz == 872000000U && g_seam_tune_calls == 0 && dsd_app_command_test_last_failed() == 0,
+                     1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y over the entry hold");
+    rc |= expect_str("y over the entry hold toast", state.ui_msg, "Scan continues");
+    rc |= expect_int("y continues: still scanning, unheld",
+                     opts.scanner_mode == 1 && state.lcn_scan_hold == 0U && state.lcn_scan_entry_hold == 0U, 1);
+
+    const int calls = g_manual_leg_calls;
+    rc |= drain_entry(&opts, &state, 872000000U, "entry on air");
+    rc |= expect_str("entry on air toast", state.ui_msg, "Holding: fire-dispatch");
+    rc |= expect_int("entry on air: the hold only", g_manual_leg_calls, calls);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "resume over the entry hold");
+    rc |= expect_str("resume over the entry hold toast", state.ui_msg, "Scan continues");
+
+    rc |= drain_entry(&opts, &state, 871000000U, "two rows");
+    rc |= expect_str("two rows toast", state.ui_msg, "Holding: north (1 of 2)");
+    rc |= expect_channel_entry_held(&opts, &state, 0, "two rows: the first held");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y after two rows");
+    rc |= expect_int("avoid north", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1), 0);
+    rc |= drain_entry(&opts, &state, 871000000U, "one of two avoided");
+    rc |= expect_str("one of two avoided toast", state.ui_msg, "Holding: south");
+    rc |= expect_channel_entry_held(&opts, &state, 2, "one of two avoided: the other held");
+    rc |= expect_int("north back", dsd_state_trunk_lcn_avoid_set(&state, 0U, 0), 0);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y after one of two");
+
+    /* A walk still waiting: `y` waits with it; its landing is named. */
+    rc |= drain_waiting_entry(&opts, &state, 872000000U, "Going to fire-dispatch: waiting for the tune", "waiting");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y while waiting");
+    rc |= expect_str("y while waiting toast", state.ui_msg, "Going to fire-dispatch: waiting for the tune");
+    rc |= expect_int("y while waiting: still scanning, waiting",
+                     opts.scanner_mode == 1 && dsd_engine_channel_scan_entry_pending(&state), 1);
+    rc |= settle_entry_walk(&opts, &state, RTL_STREAM_TUNE_OK, "landing");
+    rc |= expect_str("landing toast", state.ui_msg, "Holding: fire-dispatch");
+    rc |= expect_channel_entry_held(&opts, &state, 1, "landing holds fire-dispatch");
+
+    /* A walk that fails late: named once. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y before a late failure");
+    rc |= drain_waiting_entry(&opts, &state, 871000000U, "Going to north (1 of 2): waiting for the tune", "fails late");
+    state.ui_msg[0] = '\0';
+    rc |= settle_entry_walk(&opts, &state, RTL_STREAM_TUNE_FAILED, "late failure");
+    rc |= expect_str("late failure toast", state.ui_msg, "Failed: tune to north");
+    rc |= expect_int("late failure: scanning, unheld", opts.scanner_mode == 1 && state.lcn_scan_entry_hold == 0U, 1);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_str("late failure named once", state.ui_msg, "");
+
+    /* Both rows on 871 avoided: a plain entry, which says why. */
+    rc |= expect_int("avoid north", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1), 0);
+    rc |= expect_int("avoid south", dsd_state_trunk_lcn_avoid_set(&state, 2U, 1), 0);
+    rc |= drain_entry(&opts, &state, 871000000U, "avoided entry");
+    rc |= expect_str("avoided entry toast", state.ui_msg,
+                     "Applied: frequency -> 871.000000 MHz; scan paused; north is avoided");
+    rc |= expect_int("avoided entry: the plain tune, paused",
+                     g_seam_tune_calls == 1 && opts.scanner_mode == 0 && state.lcn_scan_paused == 1U, 1);
+    (void)dsd_state_trunk_lcn_avoid_clear(&state);
+
+    /* Paused: a resume at the row, held. */
+    rc |= drain_entry(&opts, &state, 872000000U, "paused entry");
+    rc |= expect_str("paused entry toast", state.ui_msg, "Holding: fire-dispatch");
+    rc |= expect_channel_entry_held(&opts, &state, 1, "paused entry resumes, held");
+
+    /* `Y` over a resume-at still waiting: the resume goes on and lands unheld. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "pause before Y");
+    rc |= drain_waiting_entry(&opts, &state, 871000000U, "Resuming scan at north (1 of 2): waiting for the tune",
+                              "resume-at waiting");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "Y over the resume-at");
+    rc |= expect_str("Y over the resume-at toast", state.ui_msg, "Scan hold off");
+    rc |= expect_int("Y over the resume-at: taken, the resume still waits",
+                     dsd_app_command_test_last_failed() == 0 && state.lcn_scan_resume_pending == 1U
+                         && !dsd_engine_channel_scan_entry_pending(&state),
+                     1);
+    state.ui_msg[0] = '\0';
+    rc |= settle_entry_walk(&opts, &state, RTL_STREAM_TUNE_OK, "Y'd resume lands");
+    rc |= expect_int("the resume lands unheld",
+                     opts.scanner_mode == 1 && state.lcn_scan_paused == 0U && state.lcn_scan_hold == 0U
+                         && state.lcn_scan_entry_hold == 0U,
+                     1);
+    rc |= expect_str("the cancelled entry names nothing", state.ui_msg, "");
+
+    /* A resume-at that fails late stays paused, and says so. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_TUNER_RELEASE, "pause before a failing resume-at");
+    rc |= drain_waiting_entry(&opts, &state, 872000000U, "Resuming scan at fire-dispatch: waiting for the tune",
+                              "failing resume-at");
+    state.ui_msg[0] = '\0';
+    rc |= settle_entry_walk(&opts, &state, RTL_STREAM_TUNE_FAILED, "resume-at fails late");
+    rc |= expect_str("resume-at late failure toast", state.ui_msg, "Failed: tune to fire-dispatch; scan stays paused");
+    rc |= expect_int("resume-at late failure: paused", opts.scanner_mode == 0 && state.lcn_scan_paused == 1U, 1);
+
+    /* An ordinary hold keeps `y`'s meaning: it stops the scan. */
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "plain resume");
+    rc |= expect_int("plain resume runs", opts.scanner_mode, 1);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_HOLD_TOGGLE, "ordinary hold");
+    rc |= expect_str("ordinary hold toast", state.ui_msg, "Scan hold on");
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCANNER_TOGGLE, "y over an ordinary hold");
+    rc |=
+        expect_int("y over an ordinary hold stops the scan", opts.scanner_mode == 0 && state.lcn_scan_paused == 0U, 1);
+
+    dsd_app_command_test_set_tune_leg(NULL);
+    disarm_manual_leg();
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+#endif
+
 /*
  * Issue #671 (B6, F11): [trunking] enabled = true applied under a trunk scan is the configured setting the coordinator
  * puts back at shutdown and a save writes, never the live flag: a paused scan stays untrunked on the operator's
@@ -27217,6 +27576,129 @@ test_scan_list_set_under_signal_search(void) {
 #endif
 #endif /* USE_RADIO */
 
+/* A match of the row a typed frequency picked, as dsd_engine_scan_entry_match() fills one (issue #644). */
+static dsd_scan_entry_match_t
+entry_match(dsd_scan_entry_scanner scanner, int row, const char* label, unsigned ordinal, unsigned count, int trunked) {
+    dsd_scan_entry_match_t m;
+    DSD_MEMSET(&m, 0, sizeof m);
+    m.scanner = scanner;
+    m.row = row;
+    m.ordinal = ordinal;
+    m.count = count;
+    m.trunked = trunked;
+    m.reason = scanner == DSD_SCAN_ENTRY_NONE ? DSD_SCAN_ENTRY_AVOIDED : DSD_SCAN_ENTRY_OK;
+    DSD_SNPRINTF(m.label, sizeof m.label, "%s", label);
+    return m;
+}
+
+/* The toast left for @p result of a go-to of @p m, with the status line it began on. */
+static int
+expect_entry_toast(dsd_state* state, const dsd_scan_entry_match_t* m, dsd_scan_goto_result result, long park_hz,
+                   const char* want, const char* label) {
+    state->ui_msg[0] = '\0';
+    svc_scan_entry_toast_outcome(state, m, result, park_hz, 0);
+    return expect_str(label, state->ui_msg, want) | expect_true(label, strlen(state->ui_msg) < sizeof state->ui_msg);
+}
+
+/*
+ * Issue #644: every entry toast fits the status line whole. A trunked target's control channel and the "(n of N)" of
+ * duplicate rows are dropped whole, the count first, and the row's name, up to the 63 bytes a label holds, is never
+ * cut. A HOLDING whose own call put a text on the status line leaves that text, and the reason an entry on an
+ * ineligible row's frequency stayed a plain tune names the row only where it fits.
+ */
+static int
+test_scan_entry_toasts_fit_the_status_line(void) {
+    static dsd_state state;
+    char longest[64];
+    DSD_MEMSET(longest, 'x', sizeof longest - 1U);
+    longest[sizeof longest - 1U] = '\0';
+    char want[160];
+    int rc = 0;
+
+    dsd_scan_entry_match_t m = entry_match(DSD_SCAN_ENTRY_TRUNK, 0, "county-p25", 1U, 2U, 1);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_HOLDING, 851012500L,
+                             "Holding: county-p25 (1 of 2), trunked: following its control channel 851.012500 MHz",
+                             "holding, trunked");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_PENDING, 851012500L,
+                             "Going to county-p25 (1 of 2): waiting for the tune to its control channel 851.012500 MHz",
+                             "pending, trunked");
+    m = entry_match(DSD_SCAN_ENTRY_CHANNEL, 2, "fire-dispatch", 1U, 1U, 0);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_HOLDING, 0L, "Holding: fire-dispatch", "holding, one row");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 0L, "Failed: tune to fire-dispatch", "refused");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 0L, "Deferred; retry: tune to fire-dispatch",
+                             "deferred");
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_SETUP_FAILED, 0L, "Failed: fire-dispatch could not be set up",
+                             "not set up");
+    state.lcn_scan_paused = 1U;
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_REFUSED, 0L, "Failed: tune to fire-dispatch; scan stays paused",
+                             "refused, paused");
+    state.lcn_scan_resume_pending = 1U;
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_PENDING, 0L,
+                             "Resuming scan at fire-dispatch: waiting for the tune", "resume-at pending");
+    state.lcn_scan_resume_pending = 0U;
+
+    /* The longest label with the widest count and frequency: the frequency goes, then the count would. */
+    m = entry_match(DSD_SCAN_ENTRY_TRUNK, 0, longest, 65535U, 65535U, 1);
+    DSD_SNPRINTF(want, sizeof want, "Holding: %s (65535 of 65535)", longest);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_HOLDING, 2147483647L, want, "holding at the limit");
+    DSD_SNPRINTF(want, sizeof want, "Going to %s (65535 of 65535): waiting for the tune", longest);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_PENDING, 2147483647L, want, "pending at the limit");
+    m.count = 2U;
+    m.ordinal = 2U;
+    m.label[60] = '\0'; /* a 60-byte name: room for the frequency without the count */
+    DSD_SNPRINTF(want, sizeof want, "Holding: %s, trunked: following its control channel 2147.483647 MHz", m.label);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_HOLDING, 2147483647L, want, "count dropped first");
+    m = entry_match(DSD_SCAN_ENTRY_TRUNK, 0, longest, 65535U, 65535U, 1);
+    state.trunk_scan_paused = 1U;
+    DSD_SNPRINTF(want, sizeof want, "Failed: %s could not be set up; scan stays paused", longest);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_SETUP_FAILED, 0L, want, "failure at the limit");
+    DSD_SNPRINTF(want, sizeof want, "Deferred; retry: tune to %s; scan stays paused", longest);
+    rc |= expect_entry_toast(&state, &m, DSD_SCAN_GOTO_DEFERRED, 0L, want, "deferred at the limit");
+    state.trunk_scan_paused = 0U;
+    state.lcn_scan_paused = 0U;
+
+    /* A HOLDING after the call itself put a text on the status line leaves it. */
+    DSD_SNPRINTF(state.ui_msg, sizeof state.ui_msg, "%s", "Scan stays paused: tune to 851.375000 MHz failed");
+    svc_scan_entry_toast_outcome(&state, &m, DSD_SCAN_GOTO_HOLDING, 0L, 1);
+    rc |= expect_str("holding keeps the call's own text", state.ui_msg,
+                     "Scan stays paused: tune to 851.375000 MHz failed");
+
+    /* The plain entry's reason: named where it fits, else the reason alone. */
+    static const struct {
+        dsd_scan_entry_reason reason;
+        const char* named;
+        const char* bare;
+    } k_reasons[] = {
+        {DSD_SCAN_ENTRY_AVOIDED, "; fire-dispatch is avoided", "; avoided"},
+        {DSD_SCAN_ENTRY_LIST_OFF, "; fire-dispatch is in a list that is off", "; its list is off"},
+        {DSD_SCAN_ENTRY_WIDTH, "; fire-dispatch is skipped: its width does not fit", "; its width does not fit"},
+    };
+
+    static const char k_short[] = "Applied: frequency -> 461.000000 MHz; scan paused";
+    static const char k_long[] = "Accepted: frequency -> 2147.483647 MHz (pending); scan paused";
+    for (size_t i = 0; i < sizeof k_reasons / sizeof k_reasons[0]; i++) {
+        m = entry_match(DSD_SCAN_ENTRY_NONE, 2, "fire-dispatch", 0U, 0U, 0);
+        m.reason = k_reasons[i].reason;
+        DSD_SNPRINTF(state.ui_msg, sizeof state.ui_msg, "%s", k_short);
+        svc_scan_entry_toast_reason(&state, &m);
+        DSD_SNPRINTF(want, sizeof want, "%s%s", k_short, k_reasons[i].named);
+        rc |= expect_str("reason named", state.ui_msg, want);
+        DSD_SNPRINTF(m.label, sizeof m.label, "%s", longest);
+        DSD_SNPRINTF(state.ui_msg, sizeof state.ui_msg, "%s", k_long);
+        svc_scan_entry_toast_reason(&state, &m);
+        DSD_SNPRINTF(want, sizeof want, "%s%s", k_long, k_reasons[i].bare);
+        rc |= expect_str("reason at the limit", state.ui_msg, want);
+    }
+    /* No row on the frequency, or one the scan took: nothing added. */
+    m = entry_match(DSD_SCAN_ENTRY_NONE, -1, "", 0U, 0U, 0);
+    m.reason = DSD_SCAN_ENTRY_NO_ROW;
+    DSD_SNPRINTF(state.ui_msg, sizeof state.ui_msg, "%s", k_short);
+    svc_scan_entry_toast_reason(&state, &m);
+    rc |= expect_str("no row: nothing added", state.ui_msg, k_short);
+    state.ui_msg[0] = '\0';
+    return rc;
+}
+
 int
 main(void) {
     if (dsd_socket_init() != 0) {
@@ -27233,10 +27715,15 @@ main(void) {
     rc |= test_manual_tunes_mark_the_operator();
     rc |= test_paused_list_controls_and_stops();
     rc |= test_trunk_scan_pauses_for_an_entry_and_resumes();
+    rc |= test_trunk_scan_entry_holds_the_target();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_channel_scan_entry_holds_the_row();
+#endif
     rc |= test_config_trunking_under_a_trunk_scan_is_the_configured_setting();
 #endif
     rc |= test_config_settles_a_paused_list();
     rc |= test_config_apply_keeps_a_running_scans_entry_hold();
+    rc |= test_scan_entry_toasts_fit_the_status_line();
     rc |= test_frequency_entry_reaches_a_rigctl_peer_on_every_build();
     rc |= test_config_channel_map_waits_for_a_restart();
     rc |= test_config_restart_settings_wait_for_the_next_start();

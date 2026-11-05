@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/channel_scan.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -550,6 +551,21 @@ svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_sca
     return rc;
 #else
     return dsd_engine_trunk_scan_resume_ex_locked(opts, state, out);
+#endif
+}
+
+dsd_scan_goto_result
+svc_trunk_scan_goto_and_record(dsd_opts* opts, dsd_state* state, int index, dsd_trunk_scan_goto_report* out) {
+#ifdef USE_RADIO
+    int earlier_not_run = 0;
+    const int running = symbol_profile_scan_release_begin(opts, state, &earlier_not_run);
+    const dsd_scan_goto_result result = dsd_engine_trunk_scan_goto_locked(opts, state, index, out);
+    /* Only a paused scan's resume-at that stayed paused left a target's scopes, and so asked the monitor for
+       anything. */
+    symbol_profile_scan_release_record(opts, running, earlier_not_run, out->monitor_request);
+    return result;
+#else
+    return dsd_engine_trunk_scan_goto_locked(opts, state, index, out);
 #endif
 }
 

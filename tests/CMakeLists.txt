@@ -2848,6 +2848,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
+    # A typed frequency's go-to names its outcome (issue #644); the engine side is stubbed.
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_entry_toast.c
     # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().

@@ -45,6 +45,8 @@ typedef struct {
     uint8_t resume_pending; /**< 1 = a -Y resume waits for its row's tune; still @c paused until it lands. */
     uint16_t target_count;  /**< The trunk scan's targets, or the -Y list's rows; 0 with no scan. */
     uint8_t operator_tuned; /**< 1 = the operator moved the receiver off its session (a pause, a release, a tune). */
+    uint8_t entry_hold;     /**< 1 = the scan holds the row a frequency typed by hand picked; `y` continues it
+                                 (issue #644). Only with @c kind CHANNEL or TRUNK. */
 } dsd_app_scan_state_view;
 
 /**
