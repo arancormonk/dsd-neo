@@ -605,7 +605,11 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - Start hold (issue #644 D7): `--trunk-scan-hold <target-id>` (`dsd_opts::trunk_scan_hold_id`, one target id long; no
   INI key, never in `dsd_snapshot_opts_to_user_config()`) starts the scan parked on that target, entry-held, through
   the go-to's own intent. The CLI (`cli_set_trunk_scan_hold()`) stores the id and refuses an empty or over-long one;
-  `cli_validate_trunk_scan_runtime_args()` refuses it without a trunk scan (`-Y` included). Init takes the id once,
+  `cli_validate_trunk_scan_runtime_args()` refuses it without a trunk scan (`-Y` included), naming why none runs
+  (`cli_refuse_trunk_scan_hold_without_scan()`: an option of this command line turned off a config's scan, which the
+  bootstrap's gating records in `dsd_opts::trunk_scan_off_by_cli`; the config's lists are off; no lists). The id is a
+  free value (`dsd_cli_option_takes_free_value()`), so every raw-argv pre-scan steps over it and an id spelled like an
+  option ("--trunk-scan", "--print-config") is never read as one. Init takes the id once,
   whatever comes of the start: after the targets are built, `trunk_scan_hold_target()` finds the target (ids are unique
   across lists, so there is no several-rows choice) and refuses the start, naming the id, for an unknown id or a
   target the rotation would not take (`trunk_scan_entry_reason()`, the typed frequency's rule: avoided, which a fresh
@@ -614,9 +618,12 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   (`trunk_scan_goto_outcome()`): on air, the entry hold at once; in flight, the intent waits on that park and its
   landing or failure goes as any go-to's; refused or deferred at once, the failure is kept
   (`dsd_engine_scan_entry_note_failure()`) for app-control's settle to name once, and the start's own failed-park
-  advance runs the scan on unheld. The Qt/Android frontend passes it on the command line it builds. Tests:
-  `ENGINE_TRUNK_SCAN` (`hold_start_*`: refusals, holds in either list, pending landing and late failure, refused and
-  deferred start parks), `RUNTIME_CLI_PARSE`, `RUNTIME_CLI_COMPACT`, `RUNTIME_CONFIG_TRUNK_SCAN_LISTS` (never saved).
+  advance runs the scan on unheld (a one-target scan stays on its target, unheld). Init logs the outcome once: held,
+  holding once the tune lands, or a warning that the tune was refused or deferred and the scan runs on unheld. A
+  frontend can pass the option on the command line it builds for a start. Tests: `ENGINE_TRUNK_SCAN` (`hold_start_*`:
+  refusals, holds in either list, pending landing and late failure, refused and deferred start parks, a one-target
+  refusal, the start's log line), `RUNTIME_CLI_PARSE` (spellings, refusals by cause, ids that read like options
+  through the bootstrap), `RUNTIME_CLI_COMPACT`, `RUNTIME_CONFIG_TRUNK_SCAN_LISTS` (never saved).
 - Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
   `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
   under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a

@@ -2184,7 +2184,10 @@ is delayed.
     when the target's list starts off (`--trunk-scan-off`, or `lists_off` in a config), and when the target's width
     does not fit the input, for example `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not
     fit the 16 kHz DSP rate)`. Without a trunk scan (`--trunk-scan`, or a config's `[trunk_scan]` lists) the option
-    is refused. It has no INI key and is never saved: a start that wants the hold gives it again.
+    is refused, saying why none runs: an option on this command line turned off the config's scan, or the config's
+    lists are off (`enabled = false`). The id is taken whatever it reads like, so an id that starts with `-` works
+    in both spellings. The start logs whether the target is held, holds once its tune lands, or was refused or
+    deferred. It has no INI key and is never saved: a start that wants the hold gives it again.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional rows,
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
