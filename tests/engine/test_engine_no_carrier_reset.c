@@ -9062,13 +9062,13 @@ test_walk_owns_the_tuner_through_its_settling(void) {
 /* Issue #644: the operator's return to the control channel (a P25 trunk's, through the control-channel tune) while a
    walk off any scan waits on its tune replaces the walk and tunes. */
 static int
-test_return_to_cc_replaces_a_pending_walk(void) {
+return_to_cc_over_a_pending_walk_case(int refused) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    const char* what = "Return to CC over a pending walk";
+    const char* what = refused ? "Return to CC refused over a pending walk" : "Return to CC over a pending walk";
     dsd_trunk_tuning_requests_reset();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
                                                         .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
@@ -9078,7 +9078,7 @@ test_return_to_cc_replaces_a_pending_walk(void) {
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->setmod_bw = 0;
     opts->frame_p25p1 = 1;
-    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_ok = refused ? 0 : 1;
     const long cc = 942262500L;
     opts->trunk_enable = 1;
     state->trunk_cc_freq = cc;
@@ -9089,9 +9089,19 @@ test_return_to_cc_replaces_a_pending_walk(void) {
     dsd_engine_manual_tune_note_lcn_cycle(state, 0x645U, 943112500U, 942612500U, 1, 1, 0);
     g_rigctl_setfreq_calls = 0;
     dsd_app_frontend_runtime_start(opts, state);
-    int rc = expect_case(what, "the command applies", press_action(opts, state, DSD_APP_CMD_RETURN_CC) == 1);
-    rc |= expect_case(what, "the control channel is tuned", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
-    rc |= expect_case(what, "the walk is replaced", !dsd_engine_manual_tune_noted());
+    (void)press_action(opts, state, DSD_APP_CMD_RETURN_CC);
+    int rc = 0;
+    if (refused) {
+        /* Refused with nothing moved, the tune decides nothing: the walk stands, and owns the tuner again. */
+        rc |= expect_case(what, "the walk stands",
+                          dsd_engine_manual_tune_noted() && dsd_engine_manual_tune_operator_walk_noted());
+    } else {
+        rc |= expect_case(what, "the control channel is tuned",
+                          g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+        rc |= expect_case(what, "the walk is replaced", !dsd_engine_manual_tune_noted());
+    }
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
     dsd_app_frontend_runtime_stop();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();
@@ -9099,6 +9109,11 @@ test_return_to_cc_replaces_a_pending_walk(void) {
     opts->use_rigctl = 0;
     free_test_runtime(opts, state);
     return rc;
+}
+
+static int
+test_return_to_cc_replaces_a_pending_walk(void) {
+    return return_to_cc_over_a_pending_walk_case(0) | return_to_cc_over_a_pending_walk_case(1);
 }
 
 /* Issue #644: a held typed list on a rigctl peer and an RTL input, a go-to whose rigctl leg refuses before anything
@@ -9979,18 +9994,25 @@ untyped_refusal_keeps_the_pending_walk_case(int by_goto) {
     return rc;
 }
 
-/* Issue #644: off any scan, Next to BRAVO still waiting on its tune, then Next again, which the front end refuses on
-   CHARLIE. The refused walk decides nothing about where the receiver goes, so the walk still pending stands: its
-   landing makes BRAVO the row heard, where the receiver is, as a walk off the scan's landing does. */
+/* What the front end refuses over a walk off the scan still pending (test_off_scan_refusal_keeps_the_pending_walk()). */
+enum { OFFSCAN_BY_NEXT = 0, OFFSCAN_BY_ENTRY, OFFSCAN_BY_TAP, OFFSCAN_CASES };
+
+/* Issue #644: off any scan, Next to BRAVO still waiting on its tune, then a tune the front end refuses: Next again (on
+   CHARLIE), a frequency typed by hand, or a spectrum tap. The refused tune decides nothing about where the receiver
+   goes, so the walk still pending stands: its landing makes BRAVO the row heard (the Previous anchor), where the
+   receiver is, as a walk off the scan's landing does. */
 static int
-test_off_scan_refusal_keeps_the_pending_walk(void) {
+off_scan_refusal_keeps_the_pending_walk_case(int c) {
+    static const char* const k_what[] = {"Next refused over a pending walk off the scan",
+                                         "an entry refused over a pending walk off the scan",
+                                         "a tap refused over a pending walk off the scan"};
+    const char* what = k_what[c];
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    const char* what = "Next refused over a pending walk off the scan";
-    const long int base_hz = 1740012500L;
+    const long int base_hz = 1740012500L + (long int)c * 5000000L;
     if (setup_named_walk_list(opts, state, 0, base_hz) != 0) {
         teardown_walk_list(opts, state);
         return 1;
@@ -9998,7 +10020,16 @@ test_off_scan_refusal_keeps_the_pending_walk(void) {
     int rc = expect_case(what, "Next to BRAVO waits on its tune",
                          press_walk_into_a_timeout(opts, state, 1) == 1 && dsd_engine_manual_tune_noted());
     g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
-    (void)press_walk(opts, state, 1);
+    if (c == OFFSCAN_BY_NEXT) {
+        (void)press_walk(opts, state, 1);
+    } else {
+        const uint32_t elsewhere = (uint32_t)(base_hz + 3500000L);
+        rc |= expect_case(what, "the tune is queued",
+                          dsd_app_command_set_u32(
+                              c == OFFSCAN_BY_ENTRY ? DSD_APP_CMD_RTL_SET_FREQ : DSD_APP_CMD_MANUAL_TUNE, elsewhere)
+                              == DSD_APP_COMMAND_SUBMIT_QUEUED);
+        (void)dsd_app_drain_cmds(opts, state);
+    }
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     rc |= expect_case(what, "the walk is still pending", dsd_engine_manual_tune_pending_row(state, NULL) == 1);
     land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
@@ -10007,6 +10038,15 @@ test_off_scan_refusal_keeps_the_pending_walk(void) {
         expect_case(what, "the receiver and the row heard agree on BRAVO",
                     opts->rtlsdr_center_freq == (uint32_t)(base_hz + 1000000L) && dsd_state_lcn_heard_row(state) == 1);
     teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_off_scan_refusal_keeps_the_pending_walk(void) {
+    int rc = 0;
+    for (int c = 0; c < OFFSCAN_CASES; c++) {
+        rc |= off_scan_refusal_keeps_the_pending_walk_case(c);
+    }
     return rc;
 }
 

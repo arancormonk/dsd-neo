@@ -1476,12 +1476,13 @@ test_apply_immediate_tune_failures(void) {
     opts.rigctl_sockfd = DSD_INVALID_SOCKET;
     tune_session_end(&state);
 
-    /* Failed in the RTL wait: the controller had queued it (a coalesced request among them), so it decides. */
+    /* Failed in the RTL wait: a refusal decides nothing about where the receiver goes, so the older tune, which the
+       controller may still land, stands (issue #644). */
     tune_session(&opts, &state, 1);
     rc |= apply_tuned_import("queued", &opts, &state, &p, RTL_STREAM_TUNE_FAILED, 0U);
     rc |= expect_str("queued: toast", state.ui_msg, "Failed: RR import -> tune to 851.012500 MHz failed; mode applied");
-    rc |= expect_int("queued: supersedes the older tune", g_manual_tune_supersedes, 1);
-    rc |= expect_int("queued: older tune dropped", dsd_engine_manual_tune_noted(), 0);
+    rc |= expect_int("queued: supersedes nothing", g_manual_tune_supersedes, 0);
+    rc |= expect_older_entry_kept("queued: older tune kept");
     tune_session_end(&state);
 
     /* No tuner at all (PulseAudio): nothing said of a tune, as before. */

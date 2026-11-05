@@ -113,6 +113,15 @@ int dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_wal
 int dsd_engine_manual_tune_adopt_walk(const dsd_state* state);
 
 /**
+ * @brief The operator's own control-channel tune (app-control's Return to CC, a block transition) runs while a walk off
+ * the scan is pending (issue #644): with @p yields 1 the walk does not defer the engine's trunk tunes
+ * (dsd_engine_manual_tune_operator_walk_noted() reads 0), and with 0, set right after that tune, it does again. The
+ * caller lets go of the walk once its tune is taken; a refusal with nothing moved leaves it. Decoder thread, under the
+ * P25 SM tick guard (a guarded command), so no watchdog tick reads the flag between the two.
+ */
+void dsd_engine_manual_tune_walk_yields(int yields);
+
+/**
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
  * dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_RR_IMPORT, with what its outcome is to say.
  *

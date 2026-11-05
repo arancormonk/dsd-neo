@@ -1508,8 +1508,9 @@ test_backend_tune_updates_center_freq_cache(void) {
     int takeovers = g_manual_tune_owner_takeovers;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts->rtlsdr_center_freq == 111111100U);
-    assert(g_manual_tune_supersedes == supersedes + 1);
-    assert(g_manual_tune_owner_takeovers == takeovers + 1);
+    /* A refusal decides nothing about where the receiver goes: a manual tune still pending stands (issue #644). */
+    assert(g_manual_tune_supersedes == supersedes);
+    assert(g_manual_tune_owner_takeovers == takeovers);
 
     /* A deferred tune never reached the controller: a manual tune still pending keeps the receiver. */
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;

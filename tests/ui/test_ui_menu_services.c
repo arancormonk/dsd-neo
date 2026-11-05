@@ -1368,8 +1368,8 @@ test_rtl_restart_quiesces_p25_retunes(void) {
 }
 
 /* Issue #671: a frequency entry's tune that timed out is noted with the ID it handed back, the frequency asked for and
-   the centre cached before the tune; any other result that reached the tuner notes nothing pending (ID 0), which
-   supersedes an older record; a deferred tune never reached it and leaves the record alone. */
+   the centre cached before the tune; one applied notes nothing pending (ID 0), which supersedes an older record; a
+   refused or deferred tune decides nothing about where the receiver goes and leaves the record alone (issue #644). */
 static int
 test_tune_notes_a_timed_out_tune(void) {
     static dsd_opts opts;
@@ -1391,15 +1391,17 @@ test_tune_notes_a_timed_out_tune(void) {
     rc |= expect_int("and the centre before the tune", g_note_pending_prior_hz == 851000000U, 1);
     rc |= expect_int("with no row", g_note_pending_row, -1);
 
-    const int done[] = {RTL_STREAM_TUNE_OK, RTL_STREAM_TUNE_FAILED};
-    for (size_t i = 0; i < sizeof done / sizeof done[0]; i++) {
-        g_note_pending_calls = 0;
-        g_note_pending_id = UINT64_MAX;
-        g_io_control_set_freq_result = done[i];
-        (void)svc_rtl_set_freq(&opts, &state, 855000000U);
-        rc |= expect_int("a tune that reached the tuner supersedes", g_note_pending_calls, 1);
-        rc |= expect_int("with nothing pending", g_note_pending_id == 0U, 1);
-    }
+    g_note_pending_calls = 0;
+    g_note_pending_id = UINT64_MAX;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_OK;
+    (void)svc_rtl_set_freq(&opts, &state, 855000000U);
+    rc |= expect_int("a tune applied supersedes", g_note_pending_calls, 1);
+    rc |= expect_int("with nothing pending", g_note_pending_id == 0U, 1);
+
+    g_note_pending_calls = 0;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_int("refused tune", svc_rtl_set_freq(&opts, &state, 856000000U), RTL_STREAM_TUNE_FAILED);
+    rc |= expect_int("a refused tune leaves the record", g_note_pending_calls, 0);
 
     g_note_pending_calls = 0;
     g_io_control_set_freq_result = RTL_STREAM_TUNE_DEFERRED;

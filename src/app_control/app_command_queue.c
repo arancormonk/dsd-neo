@@ -3402,11 +3402,10 @@ request_manual_tune_io(dsd_opts* opts, dsd_state* state, long int freq, dsd_trun
     if (result != RTL_STREAM_TUNE_DEFERRED) {
         /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). It went past the
            engine's legacy legs, and runs no carrier boundary to tell them: whatever it came to, what they last sent no
-           longer vouches for the receiver (issue #671), as the legacy RTL leg treats its own failure. A walk's refusal
-           (@p pending_id: the walk follows its tune) decides nothing about where the receiver goes, so a walk still
-           waiting on its tune stands, which the controller may still land or already did (issue #644). */
-        const int refused = result != RTL_STREAM_TUNE_OK && result != RTL_STREAM_TUNE_TIMEOUT;
-        if (!(refused && pending_id && dsd_engine_manual_tune_pending_row(state, NULL) >= 0)) {
+           longer vouches for the receiver (issue #671), as the legacy RTL leg treats its own failure. A refusal (this
+           leg is the one backend io_control selects) decides nothing about where the receiver goes, so a tune still
+           waiting on its own stands, which the controller may still land or already did (issue #644). */
+        if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT) {
             dsd_engine_manual_tune_supersede(state);
         }
         dsd_engine_legacy_tune_caches_forget();
@@ -3439,13 +3438,18 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     if (p25_cc_symbol_rate != 0) {
-        /* This tune decides where the receiver goes, not a walk's still pending, which would otherwise keep the
-           control-channel tune waiting behind it (issue #644). */
-        dsd_engine_manual_tune_supersede(state);
+        /* The operator's own tune: a walk still pending does not keep it waiting behind it (issue #644). Taken, it
+           decides where the receiver goes, not the walk; refused with nothing moved, the walk stands (the engine's
+           legs let go of it after a rigctl leg moved). */
+        dsd_engine_manual_tune_walk_yields(1);
         const int ted_sps = dsd_opts_compute_sps_rate(opts, p25_cc_symbol_rate, current_demod_rate(opts, state));
         tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, ted_sps, &request_id);
+        dsd_engine_manual_tune_walk_yields(0);
         result = (int)tune_result;
         accepted = dsd_trunk_tune_result_is_ok(tune_result);
+        if (accepted) {
+            dsd_engine_manual_tune_supersede(state);
+        }
     } else {
         result = request_manual_tune_io(opts, state, freq, &tune_result, out_pending_id ? &pending_id : NULL);
         accepted = result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT;
@@ -6854,10 +6858,10 @@ typedef struct {
 } rr_apply_tune_result;
 
 /* The import's tune, through io_control_set_freq_tagged(). Only a request the tuner took decides where the receiver
-   goes, so only that supersedes a manual tune still pending (issue #671): one applied or accepted, or an RTL request
-   that failed in its wait after the controller queued it (a coalesced one among them). A rigctl refusal, an RTL input
-   with no stream, and a deferral queued nothing, and an older pending tune keeps the receiver. A timed-out request is
-   noted once the import has posted its toast (rr_apply_report()). */
+   goes, so only that supersedes a manual tune still pending (issue #671): one applied or accepted. A refusal (an RTL
+   request that failed, a rigctl refusal, an RTL input with no stream) and a deferral decide nothing, and an older
+   pending tune keeps the receiver, which the controller may still land (issue #644). A timed-out request is noted
+   once the import has posted its toast (rr_apply_report()). */
 static rr_apply_tune_result
 rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
     rr_apply_tune_result r = {RR_TUNE_NONE, 0U, opts->rtlsdr_center_freq};
@@ -6866,7 +6870,6 @@ rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* 
     if (dsd_opts_input_is_iq_replay(opts) || !rr_apply_tune_frequency_fits(p)) {
         return r;
     }
-    const int rtl_queues = opts->use_rigctl != 1 && dsd_opts_input_is_radio(opts) && state->rtl_ctx != NULL;
     const int rc = io_control_set_freq_tagged(opts, state, p->tune_hz, &r.pending_id);
     if (rc == RTL_STREAM_TUNE_DEFERRED) {
         r.outcome = RR_TUNE_DEFERRED;
@@ -6877,10 +6880,8 @@ rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* 
         return r;
     }
     const int accepted = rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT;
-    if (accepted || rtl_queues) {
-        dsd_engine_manual_tune_supersede(state);
-    }
     if (accepted) {
+        dsd_engine_manual_tune_supersede(state);
         r.outcome = RR_TUNE_APPLIED;
     } else if (rr_apply_moves_the_receiver(opts, p)) {
         r.outcome = RR_TUNE_FAILED;

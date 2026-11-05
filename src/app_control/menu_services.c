@@ -2609,7 +2609,9 @@ svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
     const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
-    if (state && rc != RTL_STREAM_TUNE_DEFERRED) {
+    /* A tune taken decides where the receiver goes, so it replaces a tune still pending; a refused one decides nothing,
+       and that tune stands (issue #644). */
+    if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
         dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
     }
     return rc;
