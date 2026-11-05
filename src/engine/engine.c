@@ -1537,7 +1537,7 @@ untyped_install_row(dsd_state* state, int row, time_t now, uint64_t request) {
 }
 
 static int
-no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
+no_carrier_scanner_step_is_due(const dsd_opts* opts, dsd_state* state, time_t now) {
     /* The per-visit cap (issue #507) outranks every reason to stay, because every reason to stay
      * can outlast it: sync refreshes the hangtime anchor for as long as a repeater transmits, and
      * the voice gate holds for as long as media keeps arriving. Opt-in, so with the cap off this
@@ -1907,7 +1907,7 @@ no_carrier_scan_walk_pending(const dsd_state* state) {
 }
 
 int
-dsd_engine_channel_scan_departure_due(const dsd_opts* opts, const dsd_state* state, double now_m) {
+dsd_engine_channel_scan_departure_due(const dsd_opts* opts, dsd_state* state, double now_m) {
     if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || now_m < state->lcn_avoid_depart_m
         || !dsd_engine_channel_scan_on_avoided_row(state) || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
@@ -1916,8 +1916,13 @@ dsd_engine_channel_scan_departure_due(const dsd_opts* opts, const dsd_state* sta
     if (dsd_engine_channel_scan_waiting(state) || dsd_engine_manual_tune_pending_row(state, NULL) >= 0) {
         return 0;
     }
-    /* The avoided row on air is no row a step lands on, so any counted is somewhere else to go. */
-    return dsd_engine_channel_scan_reachable_rows(opts, state) > 0;
+    /* The avoided row on air is no row a step lands on, so any counted is somewhere else to go. With none, the next
+       look waits the step cadence, as after a step: the row walk runs once a cadence, not on every frame. */
+    if (dsd_engine_channel_scan_reachable_rows(opts, state) > 0) {
+        return 1;
+    }
+    dsd_engine_channel_scan_departure_note(opts, state, now_m);
+    return 0;
 }
 
 void
@@ -3877,7 +3882,7 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
    admit moves on. The receive verdict first: it answers at once under the default (disabled) policy, before the row
    walk. */
 static int
-live_scanner_receive_should_yield(const dsd_opts* opts, const dsd_state* state) {
+live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
     if (dsd_engine_trunk_receive_release_due(opts, state)) {
         return 1;
     }

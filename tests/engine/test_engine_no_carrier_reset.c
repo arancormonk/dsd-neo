@@ -8694,7 +8694,8 @@ untyped_departure_case(int held) {
 
 /* Nowhere to go: every step refused (the row tried is passed, so the next try is another row), and then every other
    row avoided. The departure retries at the step cadence, never on every frame, and with nothing to land on the
-   carrier is not cut at all. */
+   carrier is not cut at all; the look that found nowhere to go moves the cadence on, as a step does, so the rows are
+   not counted again on every frame. A row put back is left for at the next cadence. */
 static int
 departure_nowhere_to_go_case(void) {
     const char* what = "departure with nowhere to go";
@@ -8729,8 +8730,19 @@ departure_nowhere_to_go_case(void) {
                       dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0
                           && dsd_state_trunk_lcn_avoid_set(state, 2U, 1) == 0);
     state->lcn_avoid_depart_m = 0.0;
+    const double looked_m = dsd_decode_now_mono_s();
     rc |= expect_case(what, "nothing to land on: no yield", carrier_frames(opts, state, 20) == 21);
+    rc |= expect_case(what, "nowhere to go waits the cadence", state->lcn_avoid_depart_m >= looked_m + 1.0);
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    /* Row 1 put back: the departure takes it at the next cadence. */
+    rc |= expect_case(what, "row 1 put back", dsd_state_trunk_lcn_avoid_set(state, 1U, 0) == 0);
+    state->lcn_avoid_depart_m -= 60.0;
+    rc |= expect_case(what, "the put-back row's departure yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the step takes row 1",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)(1280012500L + 1000000L)
+                          && dsd_state_lcn_heard_row(state) == 1);
     teardown_walk_list(opts, state);
     return rc;
 }

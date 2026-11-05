@@ -217,10 +217,12 @@ int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);
  * go (a row a step can land on: dsd_engine_channel_scan_reachable_rows()), no tune of the scan's still in flight (a
  * typed row's request or retry, an untyped step's or walk's), and at the step cadence: not before
  * dsd_state::lcn_avoid_depart_m, which every step taken off an avoided row moves on
- * (dsd_engine_channel_scan_departure_note()). The frame loop yields for it while a carrier holds sync, so the
- * no-carrier step takes it; that step's timing rule answers due for it too. 0 for NULL arguments, without -Y running,
- * under a trunk scan, and without a list of the user's own. Decoder thread; one read while nothing is avoided. */
-int dsd_engine_channel_scan_departure_due(const dsd_opts* opts, const dsd_state* state, double now_m);
+ * (dsd_engine_channel_scan_departure_note()). With nowhere to go when it is due, it answers 0 and moves that time on
+ * as a step does, so the rows are counted once a cadence and not on every frame; a row that becomes reachable is left
+ * for at the next cadence. The frame loop yields for it while a carrier holds sync, so the no-carrier step takes it;
+ * that step's timing rule answers due for it too. 0 for NULL arguments, without -Y running, under a trunk scan, and
+ * without a list of the user's own. Decoder thread; one read while nothing is avoided. */
+int dsd_engine_channel_scan_departure_due(const dsd_opts* opts, dsd_state* state, double now_m);
 /** A step off an avoided row is being taken at @p now_m (decode monotonic clock): the next departure waits the step
  * cadence (-t, at least 1 s), whatever this one comes to (issue #644). */
 void dsd_engine_channel_scan_departure_note(const dsd_opts* opts, dsd_state* state, double now_m);

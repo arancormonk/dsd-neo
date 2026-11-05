@@ -4004,8 +4004,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     (`live_scanner_receive_should_yield()`, `scan_visit_should_yield_from_frame()`) and the no-carrier step's timing
     rule answer due. Every step taken off an avoided row moves `lcn_avoid_depart_m` on by the step cadence (`-t`, at
     least 1 s; `dsd_engine_channel_scan_departure_note()`), so a refused or pending step is retried at that cadence,
-    never on every frame, and with nowhere to go (every other row avoided or width-skipped) the carrier is never cut.
-    The hold stays, and keeps the row the step lands on; a row put back first is held where it is. One predicate says
+    never on every frame, and with nowhere to go (every other row avoided or width-skipped) the carrier is never cut:
+    the due check that finds nowhere to go moves `lcn_avoid_depart_m` on the same way, so the row count runs once a
+    cadence, and a row put back is left for at the next one. The hold stays, and keeps the row the step lands on; a row put back first is held where it is. One predicate says
     what the hold keeps, `dsd_engine_channel_scan_hold_keeps_row()` (held and the row on air not avoided), read by
     every rule the hold suspends: the timed step (with the tone-rejection step it gates), the receive-policy leave and
     its two frame-loop yields, the voice gate's step, the per-visit cap (`scan_visit_suspended()`) and the timing
