@@ -2123,8 +2123,8 @@ scan it as usual. A frequency that is only in a channel map, a turned-off entry 
 draft list offers nothing. While a scan list you paused (or left with **Explore from
 here**) is on screen, the button offers only the entries that session would take now,
 saved systems added to its lists included: as the session started them (an edit you
-saved since takes effect at the next start), on a list that is switched on, and not
-avoided. It takes you back in place: the scan resumes on the entry and holds it, with
+saved since, or a list you deleted, takes effect at the next start), on a list that is
+switched on, and not avoided. It takes you back in place: the scan resumes on the entry and holds it, with
 its other lists kept. Other lists and saved systems are not offered there, since
 starting one would end that session. The button does not check whether your radio can
 take the entry's channel width. If it can't, tapping it pauses the scan on that

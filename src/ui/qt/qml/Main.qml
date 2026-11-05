@@ -277,14 +277,19 @@ Window {
         }
         return mainRoot.listenLabels(rows.concat(systems));
     }
-    // The targets the scan-list session scans, as it started them: read from
-    // the target files its start wrote, so a list edited and saved since
-    // changes nothing here (the session still runs what it started with).
-    readonly property var sessionTargets: mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
-        && typeof scanListStarter !== "undefined"
-        ? knownFrequencies.sessionTargets(mainRoot.sessionLists.map(function (list) {
-            return {uid: list.uid || "", name: list.name || "", path: scanListStarter.sessionCsvPath(list)};
-        })) : []
+    // The targets the scan-list session scans, as it started them: read once,
+    // when its start is accepted (or a recreated Activity takes the session
+    // up), from the target files that start wrote, so a list edited, saved or
+    // deleted since changes nothing here (the session still runs what it
+    // started with).
+    property var sessionTargets: []
+    function captureSessionTargets() {
+        mainRoot.sessionTargets = mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
+            && typeof scanListStarter !== "undefined"
+            ? knownFrequencies.sessionTargets(mainRoot.sessionLists.map(function (list) {
+                return {uid: list.uid || "", name: list.name || "", path: scanListStarter.sessionCsvPath(list)};
+            })) : [];
+    }
     // The session's own targets on the channel at @p hz, @p width wide, that
     // the paused or released scan would take now: on a list switched on, and
     // not avoided. The nearest only, one tune per frequency (the scan picks
@@ -952,6 +957,7 @@ Window {
             var list = scanLists.getByUid(mainRoot.sessionStartUid);
             if (list && list.uid)
                 mainRoot.sessionSystem = list;
+            mainRoot.captureSessionTargets();
         } else if (mainRoot.sessionStartKind === "explore") {
             mainRoot.exploring = true;
             // Where it got to before the recreation is not known here.
@@ -1412,6 +1418,7 @@ Window {
         prefs.acceptedStartKind = mainRoot.sessionStartKind;
         prefs.acceptedStartUid = mainRoot.sessionStartUid;
         mainRoot.forgetOperatorHold();
+        mainRoot.captureSessionTargets();
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
         mainRoot.awaitingSessionInitialized = true;
         mainRoot.sessionReachedRunning = decoderHost.sessionState === 2;
