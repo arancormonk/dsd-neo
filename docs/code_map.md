@@ -619,8 +619,10 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   landing or failure goes as any go-to's; refused or deferred at once, the failure is kept
   (`dsd_engine_scan_entry_note_failure()`) for app-control's settle to name once, and the start's own failed-park
   advance runs the scan on unheld (a one-target scan stays on its target, unheld). Init logs the outcome once: held,
-  holding once the tune lands, or a warning that the tune was refused or deferred and the scan runs on unheld. A
-  frontend can pass the option on the command line it builds for a start. Tests: `ENGINE_TRUNK_SCAN` (`hold_start_*`:
+  holding once the tune lands, or a warning that the tune was refused or deferred and the scan runs on unheld. The
+  Qt/Android frontend passes it for one start only, Explore's "Listen with its settings"
+  (`session_args_with_scan_hold()`; see "Listen with its settings" under the Qt frontend), and refuses it in any
+  extra options (`session_args_extra_safe()`), which are saved. Tests: `ENGINE_TRUNK_SCAN` (`hold_start_*`:
   refusals, holds in either list, pending landing and late failure, refused and deferred start parks, a one-target
   refusal, the start's log line), `RUNTIME_CLI_PARSE` (spellings, refusals by cause, ids that read like options
   through the bootstrap), `RUNTIME_CLI_COMPACT`, `RUNTIME_CONFIG_TRUNK_SCAN_LISTS` (never saved).
@@ -10046,7 +10048,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   decoder chosen only through its extra arguments is not read, a documented limit, so such a
   system is labeled as its decode flag's channel. A scan-list entry's mode is its protocol. The Monitor and Spectrum labels name the
   tuned channel through `tunedNames()`, at the width the receiver filters
-  (`MetricsModel::channelBandwidthHz`, 12.5 kHz when the input publishes none). Saving uses an immutable
+  (`MetricsModel::channelBandwidthHz`, 12.5 kHz when the input publishes none); `tunedMatches()` is the same lookup
+  with each match's identity (issue #644): `source` (`system`, a saved system's own frequency; `scanEntry`, a scan
+  list's entry; `scanTarget`, a row of a list's target CSV; `channelMap`, a row of a saved system's or a trunked
+  target's channel map), `listUid`, `targetId` (the entry's uid or the CSV row's `id`, the id the list's session names
+  the target by), `frequencyHz` (the row's own frequency) and `selectable` (a saved system, an enabled entry of a list
+  that is no draft, a CSV row with an id; a channel map's row only names the channel). Rows of one list on one
+  frequency under one name stay apart by id; `tunedNames()` says each name once (`UI_QT_SIGNAL_SEARCH`
+  `testKnownFrequencyIdentity()`). Saving uses an immutable
   hit snapshot, including its original source settings and unresolved identity.
   `SignalSearchModel::systemForHit()` shapes the captured receiver settings as saved-system
   fields, each source only its own: an Airspy's native `airspy` map, or an RTL's `ppm`
@@ -11161,6 +11170,25 @@ Qt Quick frontend (`src/ui/qt`):
     `UI_QT_QML_CALL_LISTS` (`tst_spectrum_screen.qml` 03j-03o, `tst_monitor_scan_target.qml`,
     `tst_monitor_recent_calls.qml`, `tst_history_session_identity.qml`, `tst_history_hold.qml`,
     `tst_main_session_tools.qml`), `APP_COMMAND_QUEUE` (`test_manual_tunes_mark_the_operator()`).
+  - Listen with its settings (issue #644 D7): while the session is the operator's to tune (`Main.qml` `exploring`,
+    session active), `listenActions` lists what the tuned channel (`metrics.centerFreqHz` at `channelBandwidthHz`) can
+    be started as with its own settings, from `KnownFrequencyIndex::tunedMatches()`'s `selectable` matches: each
+    scan-list row whose list still exists (`key: "scan"`, its text the row's name, read out as "Listen to <name> with
+    its settings"), then each saved system once ("Start “Name”", as Signal search offers it; an avoided one disabled
+    with the reason). The Monitor shows the row names and one `OutlineButton` in its live strip (`monitorListen`, a part
+    of `stripHeight`), the Spectrum one more button in its tuning controls (`spectrumListenWithSettings`); both read
+    `Util.listenText()`/`listenAccessibleName()`: "Start “Name”" for a saved system alone, else "Listen with its
+    settings". `requestListen()` runs the one action, or opens `listenMenu` (an `ActionMenu`, whose rows take an
+    `accessibleName`) over a snapshot of several. `listenWith()` stops the session as a site restart does and leaves
+    `pendingRestart` `{kind: "scan", uid, holdTarget}` (or `{uid}` for a saved system) for `finishPendingRestart()`,
+    so the hold rides only that request: a Back or another start drops it, a USB permission wait carries it to the
+    grant (`pendingStartHold`), and a refused or failed start's Retry starts the list unheld. The decoder parks the
+    target first and holds it once the park lands; until then the scan runs unheld. The Monitor's Hold button and the
+    header's ` · HOLD` read `scanHold` or `MetricsModel::scanEntryHold` (the scan-state view's `entry_hold`, read with
+    the hold it marks), and the Hold toggle releases an entry hold as any hold (`SCAN_HOLD`). Tests:
+    `tst_main_session_tools.qml` (`test_listen_with_its_settings_*`,
+    `test_an_entry_hold_shows_held_and_the_hold_toggle_releases_it`), `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`
+    (`test_scan_hold_option()`).
   - Carrier identity (Spectrum strip): `SpectrumScreen.qml`'s status strip is two lines bounded by the Radio button
     (the strip edge when it is hidden). Line 1 (`spectrumSyncLabel`, SNR, `spectrumCfoLabel`, `spectrumCallLabel`)
     gives way talkgroup first (elided), then the offset (hidden); line 2 (`spectrumIdentityLabel`) is
@@ -11288,7 +11316,8 @@ Qt Quick frontend (`src/ui/qt`):
   (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
   `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
 - Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
-  (`monitorLiveStrip`: the second-slot strip, then the scan controls, each only when the session has them), one
+  (`monitorLiveStrip`: the second-slot strip, the scan controls, then Listen with its settings, each only when the
+  session has them), one
   `ListView` (`recentCallsList`), the call actions and Stop. The list is the only scrolling surface: its header
   (`monitorListHeader`, declared outside the view and parented into `headerItem` so the screen reaches its rows by id)
   holds the "Signal & site" disclosure (`monitorDetailsRow`, a `DisclosureRow` in `monitorDetailsCard`), the readings it
@@ -13124,6 +13153,9 @@ Several lists in one session (issue #697):
   recording session (the first list's) and one argv (`session_args_scan_build_lists()`: the first list's receiver and
   session options, one `--trunk-scan` per list in order) go to one `host->start()`; nothing starts unless all of it
   passes. A single list is `start()`, unchanged. Every list starts on: the app has no start-off state.
+  `startLists(lists, host, holdTargetId)` (issue #644) starts the scan held on that target of the first list:
+  `session_args_with_scan_hold()` puts `--trunk-scan-hold <id>` after the last `--trunk-scan`, ahead of the extra
+  options, and refuses an id the decoder cannot keep (empty, a control character, 64 bytes or more).
 - Home: a ready card's More menu offers `Scan with other lists…` while another ready list exists (`HomeScreen.qml`
   `canScanWithOthers()`), opening `ScanTogetherSheet.qml`: one `ToggleRow` per other ready list in Home order, off,
   disabled with its conflict (or `A scan runs 8 lists at most` once full); the button reads `Start N lists`, disabled
@@ -13138,7 +13170,9 @@ Several lists in one session (issue #697):
   (`UiController::autoStartRequested(kind, uid, companions)`, from `qt_ui.cpp`) and `pruneScanCompanions()` trims of
   removed lists. A start resolves the uids as the lists are saved then (`scanListsByUid()`): a removed companion is left
   out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
-  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`.
+  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. A start hold (issue #644) is
+  no part of the identity: `startWithMap()` takes it in `options.holdTarget` for that start, across a USB permission
+  wait in `pendingStartHold` (set by every wait, read once by the grant), and never in `attemptedSource` or prefs.
 - In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
   (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
   every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the

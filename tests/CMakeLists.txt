@@ -5297,6 +5297,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+            # Issue #644: the known-frequency index Main offers Listen with its settings from.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/known_frequency_index.cpp
             # Issue #782: whether a screen reader is on, as views read it.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the

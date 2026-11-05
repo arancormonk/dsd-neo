@@ -100,6 +100,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
+#include "known_frequency_index.h"
 #include "p25_network_model.h" // WP-F2
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -4468,6 +4469,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("operatorTuned")] = false;
         metrics[QStringLiteral("optionsKnown")] = false;
         metrics[QStringLiteral("scanHold")] = false;
+        metrics[QStringLiteral("scanEntryHold")] = false;
         metrics[QStringLiteral("scanTargetId")] = QString();
         metrics[QStringLiteral("scanTargetLabel")] = QString();
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;
@@ -4818,6 +4820,9 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("uiController"), controller);
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
         ctx->setContextProperty(QStringLiteral("scanLists"), scan_lists);
+        // Issue #644: the production index over them, so Main offers what a case saves on the tuned channel.
+        ctx->setContextProperty(QStringLiteral("knownFrequencies"),
+                                new dsd_qt::KnownFrequencyIndex(saved_systems, scan_lists, engine));
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);

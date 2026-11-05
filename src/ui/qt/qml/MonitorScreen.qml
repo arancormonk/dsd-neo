@@ -36,6 +36,11 @@ Item {
     signal openSites
     signal openSessionMenu
     signal openTalkgroups
+    // Issue #644: what the channel the operator tuned to can be started as,
+    // with its own settings (Main's listenActions), and the ask; Main starts
+    // the one there is, or opens the menu of several.
+    property var listenActions: []
+    signal listenRequested
 
     // The saved-system map the session was started from (may be null for a
     // network/file quick start).
@@ -178,7 +183,9 @@ Item {
     // run inverted against the live session.
     readonly property bool muted: metrics ? metrics.audioMuted : false
     readonly property bool holding: metrics ? metrics.heldTg > 0 : false
-    readonly property bool scanHeld: metrics ? metrics.scanHold : false
+    // Issue #644: a hold a frequency entry set is held too; the Hold toggle
+    // releases it as it releases any hold.
+    readonly property bool scanHeld: metrics ? metrics.scanHold === true || metrics.scanEntryHold === true : false
     // Issue #671: a scan the operator paused, by a typed frequency or Explore.
     // It owns nothing until resumed, so the header says so in place of the
     // rotation, and the scan controls give way to Resume scan.
@@ -213,7 +220,7 @@ Item {
         if (count <= 0)
             return "";
         var place = !lists ? metrics.scanTargetOrdinal : metrics.scanRotationOrdinal > 0 ? metrics.scanRotationOrdinal : "-";
-        var out = qsTr("SCANNING · %1/%2").arg(place).arg(count) + (metrics.scanHold ? qsTr(" · HOLD") : "");
+        var out = qsTr("SCANNING · %1/%2").arg(place).arg(count) + (screen.scanHeld ? qsTr(" · HOLD") : "");
         if (screen.scanTargetName.length > 0)
             out += " · " + screen.scanTargetName;
         if (lists && screen.scanListName.length > 0)
@@ -305,6 +312,8 @@ Item {
             parts.push(otherSlotHost.height);
         if (metrics.scanRotationActive || screen.scanPaused)
             parts.push(scanControls.height);
+        if (screen.listenActions.length > 0)
+            parts.push(listenControls.height);
         return columnHeight(parts);
     }
 
@@ -1346,6 +1355,47 @@ Item {
                 visible: !screen.scanPaused
                 enabled: decoderHost.running
                 onClicked: commands.nextChannel()
+            }
+        }
+
+        // Issue #644: the channel the operator tuned to, when it is a scan-list
+        // row or a saved system, and the way to listen to it with its own
+        // settings. The name line goes where the button already says what it
+        // starts ("Start “County”"). Sized from its parts' own heights, which
+        // a hidden host does not zero (see stripHeight), at the width both of
+        // the strip's hosts give it, as scanControls is: its height is part of
+        // the budget that picks the host.
+        Item {
+            id: listenControls
+            objectName: "monitorListen"
+            width: screen.width - 2 * Theme.screenPadding
+            readonly property bool named: screen.listenActions.length === 1 && screen.listenActions[0].key === "saved"
+            height: (named ? 0 : listenNames.implicitHeight + 6) + listenButton.implicitHeight
+            visible: screen.listenActions.length > 0
+
+            Text {
+                id: listenNames
+                objectName: "monitorListenNames"
+                width: parent.width
+                visible: !listenControls.named
+                text: Util.listenNames(screen.listenActions)
+                textFormat: Text.PlainText
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(12)
+                color: Theme.textSecondary
+                elide: Text.ElideRight
+            }
+
+            OutlineButton {
+                id: listenButton
+                objectName: "monitorListenButton"
+                y: listenControls.named ? 0 : listenNames.implicitHeight + 6
+                width: parent.width
+                height: implicitHeight
+                text: Util.listenText(screen.listenActions)
+                accessibleName: Util.listenAccessibleName(screen.listenActions)
+                enabled: decoderHost.running
+                onClicked: screen.listenRequested()
             }
         }
     }

@@ -900,6 +900,273 @@ Item {
             }
         }
 
+        // ---- Issue #644: Listen with its settings ----
+
+        // An Explore session on @p freqMhz, running, the receiver tuned there.
+        function exploreOn(freqMhz) {
+            testContext.setLifecyclePhase(0);
+            app.startWithMap(app.exploreSystem("rtltcp", "127.0.0.1", 1234, freqMhz), -1, false);
+            testContext.setLifecyclePhase(2);
+            testContext.setMetrics({centerFreqHz: Math.round(Number(freqMhz) * 1e6), channelBandwidthHz: 12500});
+            verify(app.exploring);
+        }
+        function endExplore() {
+            testContext.setMetrics({centerFreqHz: 851000000, channelBandwidthHz: 12500, scanKind: 0,
+                                    scanRotationActive: false, scanHold: false, scanEntryHold: false,
+                                    scanTargetId: "", scanTargetOrdinal: 0, scanTargetCount: 0, optionsKnown: false});
+            testContext.setDelayedStop(false);
+            testContext.setScanTestAcceptStart(true);
+            testContext.setScanTestUsb(false, false);
+            app.cancelPendingRestart();
+            app.awaitingUsbAccess = false;
+            app.pendingStart = null;
+            app.startError = "";
+            findChild(app, "listenMenu").visible = false;
+        }
+        // The value the argv gives --trunk-scan-hold, or "" with none.
+        function heldTarget(args) {
+            var at = args.indexOf("--trunk-scan-hold");
+            return at < 0 ? "" : args[at + 1];
+        }
+        function listenButton() {
+            return findChild(findChild(app, "monitorScreen"), "monitorListenButton");
+        }
+
+        // One scan-list row on the tuned channel: the Monitor names it and offers to listen with its settings, read
+        // out with the row's name; the action stops the Explore session and starts the list held on that row, for
+        // that start only. Nothing keeps the hold: not the attempt Retry repeats, nor the remembered start.
+        function test_listen_with_its_settings_starts_the_list_held_on_the_row() {
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var desk = hospital.entries[0].uid;
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            try {
+                exploreOn("852.012500");
+                var button = listenButton();
+                tryVerify(function () { return button.visible; });
+                compare(button.text, "Listen with its settings");
+                compare(button.Accessible.name, "Listen to Hospital / ER desk with its settings");
+                compare(findChild(findChild(app, "monitorScreen"), "monitorListenNames").text, "Hospital / ER desk");
+                // Off the channel, or out of Explore, there is nothing to offer.
+                testContext.setMetric("centerFreqHz", 853500000);
+                tryVerify(function () { return !button.visible; });
+                testContext.setMetric("centerFreqHz", 852012500);
+                tryVerify(function () { return button.visible; });
+
+                var stops = decoderHost.stopCalls();
+                button.activate();
+                verify(decoderHost.stopCalls() > stops, "the Explore session was not stopped");
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(heldTarget(testContext.lastStartArgs()), desk);
+                compare(prefs.acceptedStartKind, "scan");
+                compare(prefs.acceptedStartUid, hospital.uid);
+                verify(app.sessionScanList && !app.exploring);
+                testContext.emitSessionInitialized();
+                compare(prefs.lastStartedUid, hospital.uid);
+                // Consumed: Retry after a failure, and the list's next start, scan it as ever.
+                testContext.setLifecycleFailure("Connection refused");
+                testContext.setLifecyclePhase(4);
+                app.retrySource();
+                tryCompare(decoderHost, "sessionState", 1);
+                verify(testContext.lastStartArgs().indexOf("--trunk-scan") >= 0);
+                compare(heldTarget(testContext.lastStartArgs()), "");
+                testContext.setLifecycleFailure("");
+                testContext.setLifecyclePhase(0);
+                app.startScanList(scanLists.rowForUid(hospital.uid));
+                compare(heldTarget(testContext.lastStartArgs()), "");
+            } finally {
+                endExplore();
+                testContext.setLifecycleFailure("");
+                testContext.setLifecyclePhase(2);
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                removeScanLists([hospital.uid]);
+            }
+        }
+
+        // The hold is carried through a stop the host takes its time over and a USB permission wait, and dropped by a
+        // cancel, a dismissed wait, a start the host refuses, and another start in its place.
+        function test_listen_with_its_settings_is_one_shot() {
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            scanLists.add({name: "Gate", sourceType: "usb",
+                entries: [{kind: "freq", name: "Front", protocol: "p25", freqMhz: "852.5125", enabled: true}]});
+            var gate = scanLists.get(scanLists.count - 1);
+            var desk = hospital.entries[0].uid;
+            var front = gate.entries[0].uid;
+            try {
+                // 1. A slow stop: the start waits for Idle, then holds.
+                exploreOn("852.012500");
+                testContext.setDelayedStop(true);
+                listenButton().activate();
+                compare(decoderHost.sessionState, 3);
+                verify(app.pendingRestart && app.pendingRestart.holdTarget === desk);
+                testContext.setLifecyclePhase(0);
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(heldTarget(testContext.lastStartArgs()), desk);
+                // 2. Cancelled while it stops (Back): nothing starts.
+                exploreOn("852.012500");
+                listenButton().activate();
+                app.requestBack();
+                verify(!app.pendingRestart);
+                testContext.setLifecyclePhase(0);
+                wait(0);
+                compare(decoderHost.sessionState, 0);
+                // 3. Another start in its place takes no hold.
+                exploreOn("852.012500");
+                listenButton().activate();
+                app.startScanList(scanLists.rowForUid(hospital.uid));
+                verify(!app.pendingRestart);
+                compare(heldTarget(testContext.lastStartArgs()), "");
+                // 4. A USB permission wait carries it to the grant.
+                testContext.setDelayedStop(false);
+                exploreOn("852.512500");
+                testContext.setScanTestUsb(true, false);
+                listenButton().activate();
+                tryVerify(function () { return app.awaitingUsbAccess; });
+                compare(app.pendingStartHold, front);
+                testContext.setScanTestUsb(true, true);
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(heldTarget(testContext.lastStartArgs()), front);
+                compare(app.pendingStartHold, "");
+                // 5. A dismissed wait drops it: the list's next start holds nothing.
+                exploreOn("852.512500");
+                testContext.setScanTestUsb(true, false);
+                listenButton().activate();
+                tryVerify(function () { return app.awaitingUsbAccess; });
+                app.dismissedFailure = app.failureText.length > 0 ? app.failureText : "USB";
+                verify(!app.awaitingUsbAccess);
+                testContext.setScanTestUsb(true, true);
+                compare(decoderHost.sessionState, 0);
+                app.dismissedFailure = "";
+                app.startScanList(scanLists.rowForUid(gate.uid));
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(heldTarget(testContext.lastStartArgs()), "");
+                // 6. A start the host refuses drops it: Retry starts the list unheld.
+                testContext.setScanTestUsb(false, false);
+                exploreOn("852.012500");
+                testContext.setScanTestAcceptStart(false);
+                listenButton().activate();
+                tryVerify(function () { return heldTarget(testContext.lastStartArgs()) === desk; });
+                compare(decoderHost.sessionState, 0);
+                testContext.setScanTestAcceptStart(true);
+                app.retrySource();
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(heldTarget(testContext.lastStartArgs()), "");
+            } finally {
+                endExplore();
+                testContext.setLifecyclePhase(2);
+                removeScanLists([hospital.uid, gate.uid]);
+            }
+        }
+
+        // Several on the channel: the action opens the menu of them, scan-list rows by name (read out as what they
+        // do) and a saved system as "Start “Name”", an avoided one disabled with the reason; the pick starts it. One
+        // saved system alone is offered as "Start “Name”" directly, with no hold, from the Monitor and the Spectrum.
+        function test_listen_with_its_settings_offers_every_match() {
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var security = addScanList("Security", "Gate", "852.0125");
+            savedSystems.add({name: "County", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                freqMhz: "852.0125"});
+            var county = savedSystems.get(savedSystems.count - 1).uid;
+            savedSystems.add({name: "Shop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "852.0125",
+                avoidSite: true});
+            var shop = savedSystems.get(savedSystems.count - 1).uid;
+            try {
+                exploreOn("852.012500");
+                var button = listenButton();
+                tryVerify(function () { return button.visible; });
+                compare(button.text, "Listen with its settings");
+                compare(button.Accessible.name, "Listen with its settings: 4 to choose from");
+                button.activate();
+                var menu = findChild(app, "listenMenu");
+                tryVerify(function () { return menu.visible; });
+                compare(menu.title, "Listen with its settings");
+                compare(menu.actions.map(function (a) { return a.text; }).join("|"),
+                        "Hospital / ER desk|Security / Gate|Start “County”|Start “Shop”");
+                var first = findChild(menu, "actionMenuAction0");
+                compare(first.Accessible.name, "Listen to Hospital / ER desk with its settings");
+                var avoided = findChild(menu, "actionMenuAction3");
+                verify(!avoided.enabled);
+                compare(avoided.Accessible.name,
+                        "Start “Shop”. Avoided; remove the avoid in its site list to start it");
+                findChild(menu, "actionMenuAction1").activate();
+                verify(!menu.visible);
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(prefs.acceptedStartUid, security.uid);
+                compare(heldTarget(testContext.lastStartArgs()), security.entries[0].uid);
+                // The lists gone, the one saved system that can start: its own name, no menu, no hold.
+                removeScanLists([hospital.uid, security.uid]);
+                savedSystems.remove(savedSystems.rowForUid(shop));
+                exploreOn("852.012500");
+                tryCompare(button, "text", "Start “County”");
+                compare(button.Accessible.name, "Start “County”");
+                verify(!findChild(findChild(app, "monitorScreen"), "monitorListenNames").visible);
+                // The Spectrum offers the same action under its tuning controls.
+                findChild(app, "spectrumLoader").active = true;
+                app.spectrumOpen = true;
+                var spectrum = findChild(app, "spectrumScreen");
+                var spectrumButton = findChild(spectrum, "spectrumListenWithSettings");
+                tryVerify(function () { return spectrumButton.visible; });
+                compare(spectrumButton.text, "Start “County”");
+                spectrumButton.activate();
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(prefs.acceptedStartKind, "saved");
+                compare(prefs.acceptedStartUid, county);
+                compare(heldTarget(testContext.lastStartArgs()), "");
+            } finally {
+                endExplore();
+                app.spectrumOpen = false;
+                testContext.setLifecyclePhase(2);
+                removeScanLists([hospital.uid, security.uid]);
+                for (var uid of [county, shop]) {
+                    var row = savedSystems.rowForUid(uid);
+                    if (row >= 0)
+                        savedSystems.remove(row);
+                }
+            }
+        }
+
+        // The held start on air: while its park is still tuning the scan runs unheld, and the Hold button and the
+        // header say so; once the park lands the hold is the entry's, shown held, and the ordinary Hold toggle
+        // releases it.
+        function test_an_entry_hold_shows_held_and_the_hold_toggle_releases_it() {
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var desk = hospital.entries[0].uid;
+            var monitor = findChild(app, "monitorScreen");
+            var header = function () { return findChild(monitor, "scanTargetHeader").text; };
+            try {
+                exploreOn("852.012500");
+                listenButton().activate();
+                tryCompare(decoderHost, "sessionState", 1);
+                compare(heldTarget(testContext.lastStartArgs()), desk);
+                testContext.setLifecyclePhase(2);
+                testContext.setMetrics({optionsKnown: true, scanKind: 2, scanRotationActive: true, scanPaused: false,
+                                        operatorTuned: false, tunerControlled: true, scanTargetId: desk,
+                                        scanTargetOrdinal: 1, scanTargetCount: 1, scanHold: false,
+                                        scanEntryHold: false});
+                var hold = findChild(monitor, "scanHoldButton");
+                tryVerify(function () { return hold.visible; });
+                verify(!hold.checked, "a park still tuning showed held");
+                compare(header(), "SCANNING · 1/1 · ER desk");
+                verify(!listenButton().visible, "a scan list's session offered to listen to its own row");
+                testContext.setMetrics({scanHold: true, scanEntryHold: true});
+                tryVerify(function () { return hold.checked; });
+                compare(header(), "SCANNING · 1/1 · HOLD · ER desk");
+                testContext.resetCommands();
+                hold.activate();
+                compare(testContext.scanHoldCalls(), 1);
+                testContext.setMetrics({scanHold: false, scanEntryHold: false});
+                tryVerify(function () { return !hold.checked; });
+                compare(header(), "SCANNING · 1/1 · ER desk");
+            } finally {
+                endExplore();
+                testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
+                                        tunerControlled: false});
+                testContext.setLifecyclePhase(2);
+                removeScanLists([hospital.uid]);
+            }
+        }
+
         // A list removed on Home while its session runs keeps its place: the decoder still runs it as list 2, so after
         // a recreated Activity list 3 is still Parks, the title still counts two more lists, and the list removed is
         // named by the decoder. The next start forgets it; the running session's record does not.

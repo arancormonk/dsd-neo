@@ -2099,6 +2099,21 @@ the scan position, the session is named **Exploring** until the resume, and **Re
 scan** takes the place of **Hold**, **Avoid**, **Prev** and **Next**. A pause made from
 the terminal or the API shows the same way.
 
+**Go to** a frequency that is one of the scan's entries (not avoided, its list on) does
+not pause the scan: the scan moves to that entry and holds there, with the entry's own
+mode, keys and options (a paused scan resumes there). **Hold** shows it held; tap **Hold**
+to let the scan go on. The Go to sheet says so while a scan runs.
+
+In Explore, when the frequency you are on is a scan list's entry or a saved system,
+Monitor (above Recent calls) and Spectrum (beside **Save**) offer to listen to it with
+its own settings. For a scan-list entry the button reads **Listen with its settings**: it
+stops Explore and starts that scan list held on the entry, which **Hold** shows once the
+radio has landed there; tap **Hold** to let the scan go on. For a saved system it reads
+**Start “Name”** and starts that system, as Signal search does. With several on the
+frequency, the button opens a list of them. The hold is for that one start: **Retry** and
+later starts of the list scan it as usual. A frequency that is only in a channel map, a
+turned-off entry or a draft list offers nothing.
+
 While a scan runs, Monitor's scan row under the call offers **Hold** (stay on this
 channel), **Avoid** (skip it for the session), **Prev** and **Next**. **Prev** steps
 back one channel (or scan-list target) in the list **Next** walks, and the scan carries
