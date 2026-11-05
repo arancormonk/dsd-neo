@@ -3833,8 +3833,9 @@ class Setup : public QObject {
 
     /**
      * @brief Issue #672: make the avoid list (the real ScanAvoidListModel `metrics.scanAvoidModel` is) the entries
-     * @p entries, each {key, label}, in order, as MetricsModel hands it a new list: by key, so a row whose key stays
-     * keeps its delegate. The readings beside it (scanAvoidCount and the rest) are the case's to set.
+     * @p entries, each {key, label} and an optional targetId (issue #644), in order, as MetricsModel hands it a new
+     * list: by key, so a row whose key stays keeps its delegate. The readings beside it (scanAvoidCount and the rest)
+     * are the case's to set.
      */
     Q_INVOKABLE void
     setScanAvoids(const QVariantList& entries) {
@@ -3846,6 +3847,8 @@ class Setup : public QObject {
             const QVariantMap entry = value.toMap();
             dsd_qt::ScanAvoidListModel::Entry row{entry.value("key").toString(), entry.value("label").toString(), {}};
             row.identity.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+            const QByteArray target = entry.value("targetId").toString().toUtf8();
+            DSD_SNPRINTF(row.identity.target_id, sizeof row.identity.target_id, "%s", target.constData());
             next.append(row);
         }
         m_scan_avoid_model->apply(std::move(next));

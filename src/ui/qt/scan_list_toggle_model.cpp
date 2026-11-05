@@ -93,6 +93,11 @@ ScanListToggleModel::listName(int number) const {
     return data(index(number - 1), NameRole).toString();
 }
 
+bool
+ScanListToggleModel::listSwitchedOff(int number) const {
+    return number >= 1 && number <= count() && !rowOn(number - 1);
+}
+
 int
 ScanListToggleModel::listsOn() const {
     int on = 0;

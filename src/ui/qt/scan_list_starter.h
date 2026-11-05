@@ -58,6 +58,12 @@ class ScanListStarter : public QObject {
      */
     Q_INVOKABLE QVariantMap startLists(const QVariantList& lists, DecoderHost* host,
                                        const QString& holdTargetId = QString()) const;
+    /**
+     * @brief The target CSV the last start of @p list ran (issue #644): the file its start wrote in the list's own
+     * folder (scan_list_csv_path()'s, which holds only that one), else the imported file it ran from when no copy was
+     * made; empty for neither. A saved edit changes neither: they are what the running session scans.
+     */
+    Q_INVOKABLE QString sessionCsvPath(const QVariantMap& list) const;
     /** @brief Why @p other cannot scan in one session with @p primary, or empty; see session_args_scan_join_conflict(). */
     Q_INVOKABLE QString joinConflict(const QVariantMap& primary, const QVariantMap& other) const;
     static int maxLists();

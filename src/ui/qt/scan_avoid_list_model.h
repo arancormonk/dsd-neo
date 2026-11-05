@@ -71,6 +71,10 @@ class ScanAvoidListModel : public QAbstractListModel {
      */
     QVariantMap entry(const QString& key) const;
 
+    /** @brief A trunk-scan target with id @p targetId is avoided (issue #644: a paused session's rows are reached only
+     *  when they are not). */
+    Q_INVOKABLE bool avoidsTarget(const QString& targetId) const;
+
     /** @brief The key of an identity: "lcn:<instance>:<list rev>:<row>:<Hz>" or "trunk:<session>:<target id>". */
     static QString keyOf(const dsd_app_scan_avoid_remove_payload& identity);
     /** @brief The UTF-8 text of a fixed-size name field, up to its NUL or its end when it has none. */

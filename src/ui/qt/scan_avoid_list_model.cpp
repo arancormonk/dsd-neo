@@ -52,6 +52,14 @@ ScanAvoidListModel::fieldText(const char* field, size_t size) {
     return QString::fromUtf8(field, static_cast<qsizetype>(length));
 }
 
+bool
+ScanAvoidListModel::avoidsTarget(const QString& targetId) const {
+    return std::any_of(m_rows.cbegin(), m_rows.cend(), [&targetId](const Entry& row) {
+        return row.identity.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN
+               && fieldText(row.identity.target_id, sizeof row.identity.target_id) == targetId;
+    });
+}
+
 QString
 ScanAvoidListModel::keyOf(const dsd_app_scan_avoid_remove_payload& identity) {
     if (identity.kind == DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN) {

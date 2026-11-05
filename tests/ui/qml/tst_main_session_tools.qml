@@ -1250,6 +1250,72 @@ Item {
             }
         }
 
+        // A paused scan-list session with @p security and @p hospital (its companion), paused on @p hz.
+        function pauseBundleOn(security, hospital, hz) {
+            testContext.setLifecyclePhase(0);
+            app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid]);
+            testContext.setLifecyclePhase(2);
+            testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
+                                    scanRotationActive: false, scanPaused: true, scanResumable: true,
+                                    tunerControlled: false, centerFreqHz: hz, channelBandwidthHz: 12500});
+            tryVerify(function () { return app.operatorHolds && app.exploring; });
+        }
+        function endPausedBundle(uids) {
+            endExplore();
+            testContext.resetScanLists();
+            testContext.setScanAvoids([]);
+            testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
+                                    tunerControlled: false, scanAvoidCount: 0});
+            testContext.setLifecyclePhase(2);
+            removeScanLists(uids);
+        }
+
+        // A paused scan-list session reaches in place only a row its session would take now: not one on a list
+        // switched off, nor one avoided. Either offers nothing.
+        function test_a_paused_scan_list_offers_only_rows_its_session_takes() {
+            var security = addScanList("Security", "Gate", "851.0125");
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            var desk = hospital.entries[0].uid;
+            try {
+                pauseBundleOn(security, hospital, 852012500);
+                testContext.setScanLists({paused: true, lists: [{name: "Security", on: true, targets: 1},
+                                                                {name: "Hospital", on: false, targets: 1}]});
+                compare(app.listenActions.length, 0, "a list switched off");
+                testContext.setScanLists({paused: true, lists: [{name: "Security", on: true, targets: 1},
+                                                                {name: "Hospital", on: true, targets: 1}]});
+                compare(app.listenActions.length, 1, "the list switched back on");
+                testContext.setScanAvoids([{key: "trunk:7:" + desk, label: "ER desk", targetId: desk}]);
+                testContext.setMetric("scanAvoidCount", 1);
+                compare(app.listenActions.length, 0, "an avoided target");
+                testContext.setScanAvoids([]);
+                testContext.setMetric("scanAvoidCount", 0);
+                compare(app.listenActions.length, 1, "the target put back");
+            } finally {
+                endPausedBundle([security.uid, hospital.uid]);
+            }
+        }
+
+        // A paused scan-list session reaches its rows as it started them: a row saved on another frequency since is
+        // still reached where the session runs it, under the name it started with, and not at the frequency saved.
+        function test_a_paused_scan_list_reaches_rows_as_its_session_started_them() {
+            var security = addScanList("Security", "Gate", "851.0125");
+            var hospital = addScanList("Hospital", "ER desk", "852.0125");
+            try {
+                pauseBundleOn(security, hospital, 851012500);
+                var edited = scanLists.get(scanLists.rowForUid(security.uid));
+                edited.entries[0].freqMhz = "853.0125";
+                verify(scanLists.update(scanLists.rowForUid(security.uid), edited));
+                compare(app.listenActions.length, 1, "the frequency the session runs");
+                compare(app.listenActions[0].key, "tune");
+                compare(app.listenActions[0].hz, 851012500);
+                compare(app.listenActions[0].name, "Security / Gate");
+                testContext.setMetric("centerFreqHz", 853012500);
+                compare(app.listenActions.length, 0, "the frequency saved since");
+            } finally {
+                endPausedBundle([security.uid, hospital.uid]);
+            }
+        }
+
         // "Explore from here" on a scan list marks the session exploring before the decoder reports the operator's
         // tune: in that moment its own rows are still reached in place, and nothing that restarts it is offered.
         function test_a_released_scan_list_offers_no_restart_before_the_tune_reads_back() {

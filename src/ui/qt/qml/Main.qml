@@ -243,38 +243,30 @@ Window {
     // is the operator's to tune; a channel map's row, a disabled entry or a
     // draft list's starts nothing, and is not offered. A scan-list session the
     // operator paused or released (from the moment it reads as exploring, before
-    // the decoder reports the tune) keeps its lists: a row of one of them is reached in
-    // place (the entry's tune, which resumes the scan there and holds it), and
-    // nothing that would restart the session is offered.
+    // the decoder reports the tune) keeps its lists: a row the session would take
+    // is reached in place (the entry's tune, which resumes the scan there and
+    // holds it; sessionRowsAt()), and nothing that would restart the session is
+    // offered.
     readonly property var listenActions: mainRoot.exploring && decoderHost.sessionActive
         ? mainRoot.listenActionsAt(metrics.centerFreqHz, metrics.channelBandwidthHz) : []
     function listenActionsAt(hz, width) {
         if (typeof knownFrequencies === "undefined" || !(hz > 0))
             return [];
+        if (mainRoot.sessionScanList)
+            return mainRoot.listenLabels(mainRoot.sessionRowsAt(hz, width));
         // Read so the actions follow a list or system edited meanwhile.
         var revision = knownFrequencies.revision;
-        var paused = mainRoot.sessionScanList;
-        var own = mainRoot.sessionLists.map(function (list) {
-            return list.uid;
-        });
         var rows = [], systems = [], seen = {};
         for (var match of knownFrequencies.tunedMatches(hz, width)) {
             if (!match.selectable)
                 continue;
             if (match.source === "system") {
                 var system = savedSystems.getByUid(String(match.systemUid || ""));
-                if (!paused && system && system.uid && !seen[system.uid]) {
+                if (system && system.uid && !seen[system.uid]) {
                     seen[system.uid] = true;
                     var avoided = qsTr("Avoided; remove the avoid in its site list to start it");
                     systems.push({key: "saved", uid: system.uid, name: match.name, protocolLabel: match.protocolLabel,
                         enabled: !system.avoidSite, description: system.avoidSite ? avoided : ""});
-                }
-            } else if (paused) {
-                // One tune per frequency: the scan picks among its own rows on it.
-                if (own.indexOf(match.listUid) >= 0 && !seen[match.frequencyHz]) {
-                    seen[match.frequencyHz] = true;
-                    rows.push({key: "tune", hz: match.frequencyHz, name: match.name,
-                        protocolLabel: match.protocolLabel});
                 }
             } else {
                 var list = scanLists.getByUid(match.listUid);
@@ -284,6 +276,45 @@ Window {
             }
         }
         return mainRoot.listenLabels(rows.concat(systems));
+    }
+    // The targets the scan-list session scans, as it started them: read from
+    // the target files its start wrote, so a list edited and saved since
+    // changes nothing here (the session still runs what it started with).
+    readonly property var sessionTargets: mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
+        && typeof scanListStarter !== "undefined"
+        ? knownFrequencies.sessionTargets(mainRoot.sessionLists.map(function (list) {
+            return {uid: list.uid || "", name: list.name || "", path: scanListStarter.sessionCsvPath(list)};
+        })) : []
+    // The session's own targets on the channel at @p hz, @p width wide, that
+    // the paused or released scan would take now: on a list switched on, and
+    // not avoided. The nearest only, one tune per frequency (the scan picks
+    // among its rows on it).
+    function sessionRowsAt(hz, width) {
+        var lists = metrics.scanListModel, avoids = metrics.scanAvoidModel;
+        // Read so the rows follow a list switched, or a target avoided or put back.
+        var listsOn = lists.listsOn, avoidCount = metrics.scanAvoidCount;
+        var channel = width > 0 ? width : 12500;
+        var near = [], nearest = Infinity;
+        for (var target of mainRoot.sessionTargets) {
+            var distance = Math.abs(hz - target.frequencyHz);
+            if (distance > Math.min(channel, target.width) / 2 || lists.listSwitchedOff(target.listNumber)
+                || avoids.avoidsTarget(target.targetId))
+                continue;
+            if (distance + 0.5 < nearest) {
+                near = [];
+                nearest = distance;
+            }
+            if (Math.abs(distance - nearest) < 0.5)
+                near.push(target);
+        }
+        var rows = [], seen = {};
+        for (var row of near) {
+            if (seen[row.frequencyHz])
+                continue;
+            seen[row.frequencyHz] = true;
+            rows.push({key: "tune", hz: row.frequencyHz, name: row.name, protocolLabel: row.protocolLabel});
+        }
+        return rows;
     }
     // Each action's text and spoken name. Two of one kind that would read the
     // same say their protocols: "Gate (NXDN96)", "Gate (NXDN48)".

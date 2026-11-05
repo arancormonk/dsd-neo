@@ -350,6 +350,62 @@ KnownFrequencyIndex::addListEntry(const QVariantMap& entry, const QString& listN
         withProtocol(matchIdentity(QStringLiteral("scanEntry"), listUid, uid, selectable), protocol));
 }
 
+namespace {
+/* The target rows of the session CSV at @p path, list @p number (@p listUid, named @p listName), appended to @p out. */
+void
+appendSessionTargets(const QString& path, int number, const QString& listUid, const QString& listName,
+                     QVariantList* out) {
+    QFile f(path);
+    if (path.isEmpty() || !f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return;
+    }
+    QTextStream text(&f);
+    CsvColumns columns;
+    bool first = true;
+    int rows = 0;
+    while (!text.atEnd() && ++rows <= 100000) {
+        const QString line = text.readLine(1048576).trimmed();
+        if (line.startsWith(QLatin1Char('#')) || line.isEmpty()) {
+            continue;
+        }
+        const auto fields = csvFields(line);
+        if (first) {
+            columns = csvColumns(fields);
+            first = false;
+            continue;
+        }
+        const qint64 hz = parseFrequency(fields.value(columns.frequency), false);
+        const QString id = fields.value(columns.id);
+        if (!hz || id.isEmpty()) {
+            continue;
+        }
+        const QString mode = fields.value(columns.mode);
+        out->append(QVariantMap{
+            {QStringLiteral("listNumber"), number},
+            {QStringLiteral("listUid"), listUid},
+            {QStringLiteral("targetId"), id},
+            {QStringLiteral("frequencyHz"), hz},
+            {QStringLiteral("width"), knownWidth(mode, fields.value(columns.options), 12500)},
+            {QStringLiteral("name"), listName + QStringLiteral(" / ") + rowName(fields, columns)},
+            {QStringLiteral("protocolLabel"),
+             scan_entry_protocol_label(mode.section(QLatin1Char('-'), 0, 0).toLower())},
+        });
+    }
+}
+} // namespace
+
+QVariantList
+KnownFrequencyIndex::sessionTargets(const QVariantList& lists) const {
+    QVariantList out;
+    for (qsizetype i = 0; i < lists.size(); ++i) {
+        const QVariantMap list = lists.at(i).toMap();
+        appendSessionTargets(list.value(QStringLiteral("path")).toString(), static_cast<int>(i) + 1,
+                             list.value(QStringLiteral("uid")).toString(),
+                             list.value(QStringLiteral("name")).toString(), &out);
+    }
+    return out;
+}
+
 void
 KnownFrequencyIndex::rebuild() {
     m_entries.clear();

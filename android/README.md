@@ -2121,10 +2121,12 @@ held on it, and the system on its own. With several on the frequency, the button
 a list of them. The hold is for that one start: **Retry** and later starts of the list
 scan it as usual. A frequency that is only in a channel map, a turned-off entry or a
 draft list offers nothing. While a scan list you paused (or left with **Explore from
-here**) is on screen, the button offers only that session's own entries, saved systems
-added to its lists included, and takes you back in place: the scan resumes on the entry
-and holds it, with its other lists kept. Other lists and saved systems are not offered
-there, since starting one would end that session.
+here**) is on screen, the button offers only the entries that session would take now,
+saved systems added to its lists included: as the session started them (an edit you
+saved since takes effect at the next start), on a list that is switched on, and not
+avoided. It takes you back in place: the scan resumes on the entry and holds it, with
+its other lists kept. Other lists and saved systems are not offered there, since
+starting one would end that session.
 
 While a scan runs, Monitor's scan row under the call offers **Hold** (stay on this
 channel), **Avoid** (skip it for the session), **Prev** and **Next**. **Prev** steps

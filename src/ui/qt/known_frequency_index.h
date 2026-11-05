@@ -48,6 +48,15 @@ class KnownFrequencyIndex : public QObject {
     Q_INVOKABLE QVariantList tunedMatches(double frequency, double channelWidth) const;
     /** The names of tunedMatches(), each once. */
     Q_INVOKABLE QStringList tunedNames(double frequency, double channelWidth) const;
+    /**
+     * The targets a running scan-list session scans, read from the target CSVs it started with (issue #644): @p lists
+     * holds the session's lists in list order, each {uid, name, path} (path: ScanListStarter::sessionCsvPath()). One
+     * map per target row with an id: `listNumber` (1-based), `listUid`, `targetId`, `frequencyHz`, `width` (the
+     * channel width its mode names, as the index takes it), `name` ("<list name> / <label>") and `protocolLabel`. A
+     * list whose file cannot be read gives none. Reads the files on each call: for a session's start or its lists
+     * changing, not per frame.
+     */
+    Q_INVOKABLE QVariantList sessionTargets(const QVariantList& lists) const;
     /** The names of @p matches, each once, in their order: two rows of one name on one channel are named once. */
     static QStringList matchNames(const QVariantList& matches);
     void rebuild();

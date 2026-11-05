@@ -497,6 +497,8 @@ ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int 
         }
     }
     if (!why.isEmpty()) {
+        /* The folder holds the run's file or none (sessionCsvPath()): an earlier start's copy goes too. */
+        remove_other_list_csvs(uid, copy);
         QFile::remove(copy);
         LOG_INFO("NOTICE: Scan list \"%s\" runs from its imported file, named after that file: no copy under the "
                  "list's name (%s)\n",
@@ -504,6 +506,19 @@ ScanListStarter::listCopyOf(const QVariantMap& list, const QString& source, int 
         return source;
     }
     return copy;
+}
+
+QString
+ScanListStarter::sessionCsvPath(const QVariantMap& list) const {
+    const QString uid = list.value("uid").toString();
+    if (QRegularExpression(QStringLiteral("^[A-Za-z0-9_-]{1,63}$")).match(uid).hasMatch()) {
+        const QDir folder(QFileInfo(scan_list_csv_path(uid, QString(), 1)).absolutePath());
+        const auto files = folder.entryInfoList({QStringLiteral("*.csv")}, QDir::Files | QDir::Hidden, QDir::Time);
+        if (!files.isEmpty()) {
+            return files.first().absoluteFilePath();
+        }
+    }
+    return list.value("targetsCsvPath").toString();
 }
 
 int

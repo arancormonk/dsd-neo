@@ -88,6 +88,9 @@ class ScanListToggleModel : public QAbstractListModel {
     Q_INVOKABLE bool setEnabled(int number, bool on);
     /** @brief The decoder's name for list @p number (its file name without folder and extension), or empty. */
     Q_INVOKABLE QString listName(int number) const;
+    /** @brief List @p number is shown switched off (as its switch shows it, a switch still pending included); false
+     *  for a list the view does not hold (issue #644: a paused session's rows are reached only on lists that are on). */
+    Q_INVOKABLE bool listSwitchedOff(int number) const;
 
     int
     count() const {

@@ -11210,22 +11210,27 @@ Qt Quick frontend (`src/ui/qt`):
     ("Start “Name”", as Signal search offers it; an avoided one disabled with the reason). Two of one kind that would
     read the same say their `protocolLabel` (`listenLabels()`: "Gate (P25)", "Gate (DMR)"). A scan-list session the
     operator paused or released (`sessionScanList` while exploring, from before the decoder reports the tune) keeps its
-    lists: a row of one of `sessionLists` (a saved-system entry included) is `key: "tune"`, one per frequency, which
-    `listenWith()` sends as `CommandBridge::tuneHz()` at the row's own frequency (`RTL_SET_FREQ`: the engine resumes the
-    scan at that row and holds it, the session, its companions and avoids kept), and rows of other lists and saved
-    systems, which would restart the session, are not offered. The Monitor shows the row names and one `OutlineButton`
-    in its live strip (`monitorListen`, a part of `stripHeight`), the Spectrum one more button in its tuning controls
-    (`spectrumListenWithSettings`); both read `Util.listenText()`/`listenAccessibleName()`: "Start “Name”" for a saved
-    system alone, else "Listen with its settings". `requestListen()` runs the one action, or opens `listenMenu` (an
-    `ActionMenu`, whose rows take an `accessibleName`) over a snapshot of several. `listenWith()` stops the session as a
-    site restart does and leaves `pendingRestart` `{kind: "scan", uid, holdTarget}` (or `{uid}` for a saved system) for
-    `finishPendingRestart()`, so the hold rides only that request: a Back or another start drops it, a USB permission
-    wait carries it to the grant (`pendingStartHold`), and a refused or failed start's Retry starts the list unheld. The
-    decoder parks the target first and holds it once the park lands; until then the scan runs unheld. The Monitor's Hold
-    button and the header's ` · HOLD` read `scanHold` or `MetricsModel::scanEntryHold` (the scan-state view's
-    `entry_hold`, read with the hold it marks), and the Hold toggle releases an entry hold as any hold (`SCAN_HOLD`).
-    Tests: `tst_main_session_tools.qml` (`test_listen_with_its_settings_*`,
-    `test_listen_names_two_rows_of_one_name_by_protocol`, `test_a_paused_scan_list_reaches_its_own_rows_in_place`,
+    lists: a target that session would take now is `key: "tune"`, one per frequency (`sessionRowsAt()`, the nearest
+    only), which `listenWith()` sends as `CommandBridge::tuneHz()` at the row's own frequency (`RTL_SET_FREQ`: the
+    engine resumes the scan at that row and holds it, the session, its companions and avoids kept), and rows of other
+    lists and saved systems, which would restart the session, are not offered. Its targets are the session's own, as it
+    started them (`sessionTargets`: `KnownFrequencyIndex::sessionTargets()` reads the target CSV each list's start
+    wrote, `ScanListStarter::sessionCsvPath()`, the one file in the list's folder, else the imported file it ran from; a
+    list saved since changes neither, the saved index being for Explore), less those on a list shown off
+    (`ScanListToggleModel::listSwitchedOff()`, the #697 publication) or avoided (`ScanAvoidListModel::avoidsTarget()`,
+    the #672 publication). The Monitor shows the row names and one `OutlineButton` in its live strip (`monitorListen`, a
+    part of `stripHeight`), the Spectrum one more button in its tuning controls (`spectrumListenWithSettings`); both
+    read `Util.listenText()`/`listenAccessibleName()`: "Start “Name”" for a saved system alone, else "Listen with its
+    settings". `requestListen()` runs the one action, or opens `listenMenu` (an `ActionMenu`, whose rows take an
+    `accessibleName`) over a snapshot of several. `listenWith()` stops the session as a site restart does and leaves
+    `pendingRestart` `{kind: "scan", uid, holdTarget}` (or `{uid}` for a saved system) for `finishPendingRestart()`, so
+    the hold rides only that request: a Back or another start drops it, a USB permission wait carries it to the grant
+    (`pendingStartHold`), and a refused or failed start's Retry starts the list unheld. The decoder parks the target
+    first and holds it once the park lands; until then the scan runs unheld. The Monitor's Hold button and the header's
+    ` · HOLD` read `scanHold` or `MetricsModel::scanEntryHold` (the scan-state view's `entry_hold`, read with the hold
+    it marks), and the Hold toggle releases an entry hold as any hold (`SCAN_HOLD`). Tests: `tst_main_session_tools.qml`
+    (`test_listen_with_its_settings_*`, `test_listen_names_two_rows_of_one_name_by_protocol`,
+    `test_a_paused_scan_list_reaches_its_own_rows_in_place`,
     `test_a_released_scan_list_offers_no_restart_before_the_tune_reads_back`,
     `test_an_entry_hold_shows_held_and_the_hold_toggle_releases_it`), `UI_QT_METRICS_MODEL`, `UI_QT_SESSION_ARGS`
     (`test_scan_hold_option()`).
