@@ -16,6 +16,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaType>

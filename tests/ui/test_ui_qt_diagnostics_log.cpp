@@ -23,6 +23,7 @@
 #include <Qt>
 #include <QtEnvironmentVariables>
 #include <QtGlobal>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -41,6 +42,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <functional>
 #include <mutex>
+#include <stdint.h>
 #include <string.h>
 #include <thread>
 #include <utility>

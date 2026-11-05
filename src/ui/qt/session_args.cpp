@@ -32,6 +32,7 @@
 
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
