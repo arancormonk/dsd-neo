@@ -367,12 +367,13 @@ Window {
             decoderHost.stop();
     }
     // The tuned channel's action: the one there is at once, else the menu of
-    // them, as they stand when it opens.
+    // them, as they stand when it opens. One that cannot run (an avoided saved
+    // system) opens the menu too, whose row shows it disabled and says why.
     function requestListen() {
         var actions = mainRoot.listenActions;
-        if (actions.length === 1) {
+        if (actions.length === 1 && actions[0].enabled !== false) {
             mainRoot.listenWith(actions[0]);
-        } else if (actions.length > 1) {
+        } else if (actions.length > 0) {
             listenMenu.actions = actions.slice();
             listenMenu.visible = true;
         }

@@ -1126,6 +1126,50 @@ Item {
             }
         }
 
+        // The only match on the channel is a saved system that cannot start (its site avoided): the Monitor's and the
+        // Spectrum's button say why to a screen reader and open the menu, whose one row is disabled with the reason.
+        // Nothing starts.
+        function test_listen_shows_a_lone_disabled_action_with_its_reason() {
+            savedSystems.add({name: "Shop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "852.0125",
+                avoidSite: true});
+            var shop = savedSystems.get(savedSystems.count - 1).uid;
+            var reason = "Avoided; remove the avoid in its site list to start it";
+            try {
+                exploreOn("852.012500");
+                var button = listenButton();
+                tryVerify(function () { return button.visible; });
+                compare(button.text, "Start “Shop”");
+                compare(button.Accessible.name, "Start “Shop”. " + reason);
+                var stops = decoderHost.stopCalls();
+                button.activate();
+                var menu = findChild(app, "listenMenu");
+                tryVerify(function () { return menu.visible; });
+                var row = findChild(menu, "actionMenuAction0");
+                verify(!row.enabled);
+                compare(row.Accessible.name, "Start “Shop”. " + reason);
+                row.activate();
+                compare(decoderHost.stopCalls(), stops);
+                verify(!app.pendingRestart);
+                menu.visible = false;
+                // The Spectrum's button does the same.
+                findChild(app, "spectrumLoader").active = true;
+                app.spectrumOpen = true;
+                var spectrumButton = findChild(findChild(app, "spectrumScreen"), "spectrumListenWithSettings");
+                tryVerify(function () { return spectrumButton.visible; });
+                compare(spectrumButton.Accessible.name, "Start “Shop”. " + reason);
+                spectrumButton.activate();
+                tryVerify(function () { return menu.visible; });
+                compare(decoderHost.stopCalls(), stops);
+            } finally {
+                endExplore();
+                app.spectrumOpen = false;
+                testContext.setLifecyclePhase(2);
+                var at = savedSystems.rowForUid(shop);
+                if (at >= 0)
+                    savedSystems.remove(at);
+            }
+        }
+
         // A scan list's entry for a saved system is a target of that list too: on the system's channel, Explore
         // offers to listen with the list held on that entry, beside starting the saved system itself.
         function test_listen_offers_a_list_held_on_its_saved_system_entry() {

@@ -64,10 +64,13 @@ function listenText(actions) {
 }
 
 // What a screen reader says for that action: the one action's own name
-// ("Listen to Hospital / ER desk with its settings"), or how many there are.
+// ("Listen to Hospital / ER desk with its settings"), and why it cannot run
+// when it cannot, as its menu row says it; or how many there are.
 function listenAccessibleName(actions) {
-    return actions.length === 1 ? actions[0].accessibleName
-                                : qsTr("Listen with its settings: %1 to choose from").arg(actions.length);
+    if (actions.length !== 1)
+        return qsTr("Listen with its settings: %1 to choose from").arg(actions.length);
+    var action = actions[0];
+    return action.accessibleName + (action.enabled === false && action.description ? ". " + action.description : "");
 }
 
 // The names of those actions, once each, as the tuned-name line joins them.
