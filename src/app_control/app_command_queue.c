@@ -3817,17 +3817,21 @@ dsd_app_channel_walk_settled(dsd_opts* opts, dsd_state* state, int row, int dir,
 /* Where a backward untyped walk starts looking (issue #666): before the row a refused Previous left to retry, else
    before the row heard, taken back to the first row of its run of equal frequencies (a run is one channel; never
    across row 0), wrapping; with neither, at the last row. */
+/* The first row of @p row's run of equal frequencies (a run is one channel; never across row 0); -1 stays -1. */
+static int
+lcn_run_first(const dsd_state* state, int row) {
+    while (row > 0 && *dsd_state_trunk_lcn_slot_const(state, row - 1) == *dsd_state_trunk_lcn_slot_const(state, row)) {
+        row--;
+    }
+    return row;
+}
+
 static int
 lcn_cycle_back_start(const dsd_state* state) {
     const int count = state->lcn_freq_count;
     int anchor = dsd_state_lcn_back_retry_row(state);
     if (anchor < 0) {
-        anchor = dsd_state_lcn_heard_row(state);
-        while (anchor > 0
-               && *dsd_state_trunk_lcn_slot_const(state, anchor - 1)
-                      == *dsd_state_trunk_lcn_slot_const(state, anchor)) {
-            anchor--;
-        }
+        anchor = lcn_run_first(state, dsd_state_lcn_heard_row(state));
     }
     return anchor < 0 ? count - 1 : (anchor - 1 + count) % count;
 }
@@ -3835,14 +3839,16 @@ lcn_cycle_back_start(const dsd_state* state) {
 /* Where a walk in direction @p dir starts looking (issue #666): forward at the cursor, back at lcn_cycle_back_start().
    While an earlier walk's tune, or the -Y timed step's, is still pending, from the row it went to instead, in this
    press's direction (issue #644): the cursor waits for that landing, so quick presses and key auto-repeat would
-   otherwise pick the same row again. This press's tune supersedes the earlier one, whose record then settles
+   otherwise pick the same row again; back, from the first row of its run. This press's tune supersedes the earlier one, whose record then settles
    nothing. */
 static int
 lcn_cycle_start(const dsd_state* state, int dir) {
     const int count = state->lcn_freq_count;
     const int pending_row = dsd_engine_manual_tune_pending_row(state, NULL);
     if (pending_row >= 0 && pending_row < count) {
-        return (pending_row + dir + count) % count;
+        /* Back leaves the pending row's whole run, as from the row heard. */
+        const int from = dir < 0 ? lcn_run_first(state, pending_row) : pending_row;
+        return (from + dir + count) % count;
     }
     if (dir < 0) {
         return lcn_cycle_back_start(state);

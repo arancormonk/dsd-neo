@@ -6461,6 +6461,35 @@ test_channel_cycle_prev_duplicate_runs(int scan_owned) {
     return rc;
 }
 
+/*
+ * Issue #644: Previous while a tune is still pending goes back from that tune's row, and, as from the row heard, from
+ * the first row of its run: with the timed step waiting on Q's second row, Previous lands on P, not on Q's first row
+ * (the same channel).
+ */
+static int
+test_channel_cycle_prev_from_a_pending_run_row(void) {
+    /* P, Q, Q, R */
+    static const long kRows[] = {891000000L, 892000000L, 892000000L, 893000000L};
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_manual_walk_context(&opts, &state, kRows, 4);
+    opts.scanner_mode = 0;
+    state.lcn_freq_roll = 0;
+    dsd_state_lcn_on_air_note(&state, 3);
+    dsd_engine_manual_tune_note_pending(&state, DSD_MANUAL_TUNE_UNTYPED_STEP,
+                                        RTL_STREAM_TUNE_ID_MANUAL_BIT | (uint64_t)++g_fake_manual_id_seq, 892000000U,
+                                        893000000U, 2, state.lcn_scan_session, state.lcn_list_rev);
+    rc |= expect_int("pending run row: Q's second row awaited", dsd_engine_manual_tune_pending_row(&state, NULL), 2);
+    rc |= prev_lands(&opts, &state, 891000000U, 1, 0, "pending run row: back past the whole run, onto P");
+    dsd_engine_manual_tune_supersede(&state);
+    rc |= expect_int("pending run row: the step's tune dropped", dsd_engine_scan_untyped_poll(&opts, &state),
+                     DSD_MANUAL_TUNE_DROPPED);
+    disarm_manual_leg();
+    freeState(&state);
+    return rc;
+}
+
 /* Row @p row's own key set: one keyloader key, @p value at index 9. */
 static int
 set_row_key(dsd_state* state, size_t row, unsigned long long value) {
@@ -28182,6 +28211,7 @@ main(void) {
 #endif
     rc |= test_channel_cycle_p25_candidate_hunt_drops_the_retry();
     rc |= test_channel_cycle_prev_duplicate_runs(0);
+    rc |= test_channel_cycle_prev_from_a_pending_run_row();
     rc |= test_channel_cycle_prev_refused_row(0);
     rc |= test_channel_cycle_prev_after_avoid_and_reload(0);
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
