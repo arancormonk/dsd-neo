@@ -5924,7 +5924,7 @@ confirmed_targets_are(const char* tag, const dsd_state* state, int t0, int t1, i
     return 0;
 }
 
-/* Issue #644 [F1]: a target is confirmed on air only by its park's completed retune, a trunked target's control-channel
+/* Issue #644: a target is confirmed on air only by its park's completed retune, a trunked target's control-channel
    park included; a park in flight, a pause, a switch and a rollback onto it each take that away. */
 static int
 test_target_confirmed_only_by_its_park(void) {
