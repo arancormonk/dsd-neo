@@ -68,6 +68,7 @@
 #include <string.h>
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
+#include "manual_tune_pending.h"
 #include "scan_landing.h"
 #include "scan_step_untyped.h"
 #include "test_env.h"
@@ -14367,6 +14368,17 @@ test_nfm_target_refused_width_skipped_quietly(void) {
         return 1;
     }
     return 0;
+}
+
+/* No walk off the scan is ever noted here, so a start takes nothing over (issue #644). */
+int
+dsd_engine_manual_tune_operator_walk_noted(void) {
+    return 0;
+}
+
+void
+dsd_engine_manual_tune_supersede(dsd_state* state) {
+    (void)state;
 }
 
 /* The typed-frequency match (scan_entry.c, issue #644) built in: no manual tune is ever noted here. */

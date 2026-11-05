@@ -8284,6 +8284,47 @@ test_y_start_gives_the_tuner_to_the_scan(void) {
     return rc;
 }
 
+/* Issue #644: a held untyped list stopped with `y` on BRAVO, a walk off the scan to CHARLIE still waiting on its tune,
+   and `y` again: the start takes the tuner over from the walk, whose late landing then decides nothing, and the scan
+   tunes the row it holds; the row heard, the hold and the receiver agree on BRAVO once everything lands. */
+static int
+test_y_start_takes_over_a_pending_walk(void) {
+    const char* what = "y start over a pending walk";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1700012500L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1);
+    state->lcn_scan_hold = 1U;
+    rc |= expect_case(what, "y stops the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0);
+    rc |= expect_case(what, "the hold stays", state->lcn_scan_hold == 1U);
+    rc |= expect_case(what, "Next off the scan to CHARLIE waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1 && dsd_engine_manual_tune_noted());
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_case(what, "y starts the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_case(what, "the receiver, the row heard and the hold agree on BRAVO",
+                      opts->rtlsdr_center_freq == (uint32_t)(base_hz + 1000000L) && dsd_state_lcn_heard_row(state) == 1
+                          && state->lcn_scan_hold == 1U);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 /* A running untyped list left by something other than `y`, its call heard on keyed row BRAVO. A config that turns the
    scanner off (@p map_clear 0) took the scanner flag down while staging its own keys and policy, before its scope
    leave, so the call went on, named after no row; a channel-map clear (1) emptied the map before its leave, so the
@@ -11524,6 +11565,7 @@ main(void) {
     rc |= test_walk_landing_ends_a_synced_reception();
     rc |= test_y_stop_ends_the_untyped_scans_calls();
     rc |= test_y_start_gives_the_tuner_to_the_scan();
+    rc |= test_y_start_takes_over_a_pending_walk();
     rc |= test_running_list_left_by_a_config_or_a_map_clear();
     rc |= test_first_row_landing_takes_the_tuner();
     rc |= test_refused_config_leaves_the_scan_alone();

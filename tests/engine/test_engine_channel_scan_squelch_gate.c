@@ -37,6 +37,7 @@
 #include <stdlib.h>
 
 #include "frame_sync_internal.h"
+#include "manual_tune_pending.h"
 #include "scan_entry_internal.h"
 #include "scan_step_untyped.h"
 
@@ -102,6 +103,17 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
     (void)row;
     (void)now;
     return DSD_UNTYPED_STEP_FAILED;
+}
+
+/* No walk off the scan is ever noted here, so a start takes nothing over (issue #644). */
+int
+dsd_engine_manual_tune_operator_walk_noted(void) {
+    return 0;
+}
+
+void
+dsd_engine_manual_tune_supersede(dsd_state* state) {
+    (void)state;
 }
 
 /* The typed-frequency match (scan_entry.c, issue #644) built in: no manual tune is ever noted here, and no trunk scan

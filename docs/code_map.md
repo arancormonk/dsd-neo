@@ -3976,7 +3976,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the user's own it only sets `scanner_mode`, ending no call and leaving `operator_tuned` as it is until the scan
     first lands a row, since the scan never moves the receiver), which ends the calls heard so far under what they began
     with and then gives the tuner to the scan (`scanner_mode` 1, `operator_tuned` 0; issue #644 B-4), before trunking
-    goes off; `SCAN_RESUME` resumes only
+    goes off. A walk off the scan still waiting on its tune (`dsd_engine_manual_tune_operator_walk_noted()`) is taken
+    over first (`dsd_engine_manual_tune_supersede()`, so its landing decides nothing), and once the scan owns the
+    tuner it tunes its row heard (else the cursor's) again (`channel_scan_start_takeover_row()`), whose landing
+    commits it, so the row heard, a hold kept across the stop and the receiver agree; `SCAN_RESUME` resumes only
     a paused scan (`Not paused: the scan is running`, `Not scanning: no paused scan to resume`), and a second one while
     a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are refused under a trunk-scan coordinator (`Trunk
     scan: each target sets its own trunking`): clearing trunking there stranded a target in a followed call (B5). Over a
