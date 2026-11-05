@@ -1470,7 +1470,7 @@ Item {
             objectName: "spectrumGoToScanNote"
             width: parent.width
             visible: screen.scanOwnsTuner
-            text: qsTr("Tuning pauses the scan; a frequency in its list holds it there, with that entry's settings.")
+            text: qsTr("Tuning pauses the scan. A frequency in the scan's list moves the scan there and holds it, with that entry's settings.")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary

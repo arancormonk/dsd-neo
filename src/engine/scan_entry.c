@@ -3,7 +3,7 @@
 
 /*
  * A frequency typed by hand that is a row of the scan in force (issue #644): the match over the -Y list or the
- * trunk-scan targets (D4, D5), and the -Y row confirmed on air. The trunk scan walks its own targets
+ * trunk-scan targets (issue #644 D4, D5), and the -Y row confirmed on air. The trunk scan walks its own targets
  * (dsd_engine_trunk_scan_entry_rows()); the -Y list is walked here.
  */
 
