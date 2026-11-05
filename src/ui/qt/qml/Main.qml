@@ -242,7 +242,8 @@ Window {
     // row), then each saved system on it, once each. Offered while the session
     // is the operator's to tune; a channel map's row, a disabled entry or a
     // draft list's starts nothing, and is not offered. A scan-list session the
-    // operator paused keeps its lists: a row of one of them is reached in
+    // operator paused or released (from the moment it reads as exploring, before
+    // the decoder reports the tune) keeps its lists: a row of one of them is reached in
     // place (the entry's tune, which resumes the scan there and holds it), and
     // nothing that would restart the session is offered.
     readonly property var listenActions: mainRoot.exploring && decoderHost.sessionActive
@@ -252,7 +253,7 @@ Window {
             return [];
         // Read so the actions follow a list or system edited meanwhile.
         var revision = knownFrequencies.revision;
-        var paused = mainRoot.operatorHolds && mainRoot.sessionScanList;
+        var paused = mainRoot.sessionScanList;
         var own = mainRoot.sessionLists.map(function (list) {
             return list.uid;
         });

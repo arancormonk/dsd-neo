@@ -1173,6 +1173,34 @@ Item {
             }
         }
 
+        // "Explore from here" on a scan list marks the session exploring before the decoder reports the operator's
+        // tune: in that moment its own rows are still reached in place, and nothing that restarts it is offered.
+        function test_a_released_scan_list_offers_no_restart_before_the_tune_reads_back() {
+            var security = addScanList("Security", "Gate", "851.0125");
+            var parks = addScanList("Parks", "Ranger", "853.0125");
+            try {
+                testContext.setLifecyclePhase(0);
+                app.startScanBundle(scanLists.rowForUid(security.uid), []);
+                testContext.setLifecyclePhase(2);
+                testContext.setMetrics({optionsKnown: true, operatorTuned: false, scanKind: 2,
+                                        scanRotationActive: true, scanPaused: false, tunerControlled: false,
+                                        centerFreqHz: 851012500, channelBandwidthHz: 12500});
+                app.exploring = true;
+                verify(!app.operatorHolds);
+                verify(app.sessionScanList);
+                compare(app.listenActions.length, 1);
+                compare(app.listenActions[0].key, "tune");
+                testContext.setMetric("centerFreqHz", 853012500);
+                compare(app.listenActions.length, 0);
+            } finally {
+                endExplore();
+                testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
+                                        scanRotationActive: false, tunerControlled: false});
+                testContext.setLifecyclePhase(2);
+                removeScanLists([security.uid, parks.uid]);
+            }
+        }
+
         // Two rows of one name on the channel (one list's entries for two protocols) say their protocols in the
         // menu and to a screen reader, so they never read the same; a name of its own stays plain.
         function test_listen_names_two_rows_of_one_name_by_protocol() {
