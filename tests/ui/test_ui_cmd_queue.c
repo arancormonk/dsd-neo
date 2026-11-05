@@ -17983,13 +17983,10 @@ test_pending_resume_taken_back(int typed, int taker) {
         }
         rc |= expect_pending_resume_settled_paused(label, &opts, &state);
         char want[96];
-        /* A typed row's ledger request is failed by the stop; an untyped row's tune is dropped unanswered, and the
-           reopened stream starts on the frequency it asked for (final re-review, Minor 2). */
-        if (typed) {
-            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: tune to %s MHz failed", "851.375000");
-        } else {
-            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: the resume to %s MHz was interrupted", "853.375000");
-        }
+        /* Either row's tune is retired or dropped by the stop, unanswered, and the reopened stream starts where the
+           receiver was before the resume (issue #644): the resume was interrupted, not refused. */
+        DSD_SNPRINTF(want, sizeof want, "Scan stays paused: the resume to %s MHz was interrupted",
+                     typed ? "851.375000" : "853.375000");
         rc |= expect_str(label, state.ui_msg, want);
     }
 

@@ -137,10 +137,15 @@ typedef struct {
        row, going back it stays and the row is the one the next Previous retries (channel_scan_row_refused()). */
     int step_dir;
     /* The tune the staged row belongs to: the request its first tune began, which a restage of that row keeps (an
-       entry waiting on the row names it, issue #644), and the receiver's centre before that first tune, where a stream
-       stopped while it is pending reopens (dsd_engine_channel_scan_stream_stopping()). */
+       entry waiting on the row names it, issue #644). */
     uint64_t attempt;
-    uint32_t attempt_prior_hz;
+    /* The centre the receiver was last confirmed on (issue #644): the one in force when an attempt begins with none
+       outstanding, kept across attempts that replace or restage one still outstanding (the cached centre is then a
+       pending tune's target), and the row's frequency once a tune of it lands. Where a stream stopped under an
+       attempt reopens (dsd_engine_channel_scan_stream_stopping()). */
+    uint32_t rollback_hz;
+    /* A resume's attempt that a stream stop retired: the next service ends the resume as interrupted. */
+    int resume_interrupted;
 } channel_scan;
 
 static void
@@ -362,6 +367,7 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
      * the outgoing profile until a row is successfully committed. */
     scan->needs_commit = 1;
     scan->tuned = 1;
+    scan->rollback_hz = scan->row_freq > 0 ? (uint32_t)scan->row_freq : scan->rollback_hz;
     scan->tuned_row = scan->row;
     scan->tuned_list = scan->list_rev;
     scan->tuned_freq = scan->row_freq;
@@ -481,6 +487,20 @@ channel_scan_resume_row_failed(dsd_opts* opts, dsd_state* state, const channel_s
     dsd_engine_channel_scan_resume_failed(opts, state, scan->row_freq, why);
 }
 
+/* A stream stop retired a resume's attempt (dsd_engine_channel_scan_stream_stopping(), issue #644): the resume never
+   lands, and the scan stays paused where the receiver reopened. Returns 1 when it did. */
+static int
+channel_scan_end_interrupted_resume(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
+    if (!scan->resume_interrupted) {
+        return 0;
+    }
+    scan->resume_interrupted = 0;
+    if (state->lcn_scan_resume_pending) {
+        channel_scan_resume_row_failed(opts, state, scan, DSD_SCAN_RESUME_INTERRUPTED);
+    }
+    return 1;
+}
+
 int
 dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -488,6 +508,9 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     }
     channel_scan* scan = channel_scan_get(state);
     if (!scan) {
+        return 0;
+    }
+    if (channel_scan_end_interrupted_resume(opts, state, scan)) {
         return 0;
     }
     if (scan->retry) {
@@ -1161,7 +1184,6 @@ typedef struct {
     int retry;
     int step_dir;
     uint64_t attempt;
-    uint32_t attempt_prior_hz;
 } channel_scan_staging;
 
 /* Exchange what @p staging holds with what @p scan has staged, the keys moved, not copied. */
@@ -1186,7 +1208,6 @@ channel_scan_staging_swap(channel_scan* scan, channel_scan_staging* staging) {
     held.retry = scan->retry;
     held.step_dir = scan->step_dir;
     held.attempt = scan->attempt;
-    held.attempt_prior_hz = scan->attempt_prior_hz;
     scan->row = staging->row;
     scan->mode = staging->mode;
     scan->list_rev = staging->list_rev;
@@ -1205,7 +1226,6 @@ channel_scan_staging_swap(channel_scan* scan, channel_scan_staging* staging) {
     scan->retry = staging->retry;
     scan->step_dir = staging->step_dir;
     scan->attempt = staging->attempt;
-    scan->attempt_prior_hz = staging->attempt_prior_hz;
     DSD_MEMCPY(staging, &held, sizeof(*staging));
     DSD_SECURE_ZERO(&held, sizeof(held));
 }
@@ -1251,11 +1271,19 @@ channel_scan_prepare_row(dsd_opts* opts, dsd_state* state, channel_scan* scan, i
     return 0;
 }
 
+/* An attempt begins (issue #644): with none outstanding, the cached centre is where the receiver was confirmed, the
+   point a stream stop reopens on; with one outstanding it is that tune's speculative target, so the point stays. */
+static void
+channel_scan_note_rollback(const dsd_opts* opts, channel_scan* scan) {
+    if (!scan->request && !scan->retry) {
+        scan->rollback_hz = opts->rtlsdr_center_freq;
+    }
+}
+
 /* Tune the row staged in @p scan with the settings it was prepared with (@p next), noting the family requests its
    commit checks it against. */
 static dsd_trunk_tune_result
 channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, const dsd_scan_settings* next) {
-    const uint32_t prior_hz = opts->rtlsdr_center_freq;
     dsd_scan_settings before;
     dsd_scan_settings_capture(opts, state, &before);
     dsd_scan_settings_restore(next, opts, state);
@@ -1269,7 +1297,6 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
        attempt's (issue #644). */
     if (scan->attempt == 0U) {
         scan->attempt = scan->request;
-        scan->attempt_prior_hz = prior_hz;
     }
     dsd_engine_scan_entry_intent_bind(state, scan->row, scan->attempt);
     return result;
@@ -1323,6 +1350,7 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
         return -1;
     }
     scan->start_failure = DSD_SCAN_RESUME_FAILED_SETUP;
+    channel_scan_note_rollback(opts, scan);
     channel_scan_staging staging;
     dsd_scan_settings next;
     /* A failed preparation leaves the row staged before as it was, a completed tune's retry gate included: that tune
@@ -1542,7 +1570,7 @@ channel_scan_drop_row(channel_scan* scan) {
     scan->step_dir = 0;
     /* And the attempt it was: a resume's row is a new one (issue #644). */
     scan->attempt = 0U;
-    scan->attempt_prior_hz = 0U;
+    scan->resume_interrupted = 0;
 }
 
 void
@@ -1700,13 +1728,24 @@ channel_scan_start_settles_hold(const dsd_opts* opts, dsd_state* state, int adop
 }
 
 void
-dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, const dsd_state* state) {
-    const channel_scan* scan = state ? channel_scan_get(state) : NULL;
-    if (!opts || !scan || (!scan->request && !scan->retry) || scan->attempt_prior_hz == 0U || scan->row_freq <= 0
-        || opts->rtlsdr_center_freq != (uint32_t)scan->row_freq) {
+dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, dsd_state* state) {
+    channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    if (!opts || !scan || !scan->request || scan->row_freq <= 0 || scan->rollback_hz == 0U
+        || scan->rollback_hz == (uint32_t)scan->row_freq || opts->rtlsdr_center_freq != (uint32_t)scan->row_freq) {
         return;
     }
-    opts->rtlsdr_center_freq = scan->attempt_prior_hz;
+    opts->rtlsdr_center_freq = scan->rollback_hz;
+    /* The attempt is retired with the revert: its completion, one published before the stop included, would commit a
+       row the reopened receiver is not on. A resume ends interrupted at the next service; a running scan's row ends
+       unlanded as a deferral leaves it (the next step tries it again), and an entry waiting on it fails. */
+    dsd_trunk_tuning_request_disown(scan->request);
+    scan->request = 0;
+    scan->retry = 0;
+    if (state->lcn_scan_resume_pending) {
+        scan->resume_interrupted = 1;
+        return;
+    }
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, DSD_SCAN_GOTO_REFUSED, NULL);
 }
 
 void
@@ -2146,6 +2185,7 @@ channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired)
     if (!scan) {
         return DSD_SCAN_GOTO_SETUP_FAILED;
     }
+    channel_scan_note_rollback(opts, scan);
     channel_scan_staging staging;
     dsd_scan_settings next;
     if (channel_scan_prepare_row(opts, state, scan, row, *dsd_state_trunk_lcn_slot_const(state, row), 1, &staging,

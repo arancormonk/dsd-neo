@@ -679,7 +679,7 @@ dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state) {
 }
 
 void
-dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, const dsd_state* state) {
+dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     g_scan_stream_stopping_calls++;

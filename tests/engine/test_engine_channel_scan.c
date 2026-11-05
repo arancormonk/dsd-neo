@@ -4162,26 +4162,112 @@ test_typed_goto_joins_the_pending_timed_step(void) {
 }
 
 /* Issue #644: a stream about to stop while a typed row's tune is pending, its timeout having cached the row's frequency
-   as the centre: the centre goes back to the one in force before the attempt's first tune, where the receiver was, so
-   the reopened stream opens where the scan's row on air is. A centre something else set since is left alone. */
+   as the centre: the centre goes back to the one last confirmed, where the receiver was, so the reopened stream opens
+   where the scan's row on air is; a centre something else set since is left alone. The attempt is retired either
+   way: its completion, one published before the stop included, commits nothing, and an entry waiting on it fails. */
 static void
 test_typed_stream_stop_puts_the_centre_back(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
     typed_goto_fixture(opts, state);
-    const uint32_t before_hz = 850012500U;
-    opts->rtlsdr_center_freq = before_hz;
+    const uint32_t on_air_hz = (uint32_t)k_walk_hz[0];
+    opts->rtlsdr_center_freq = on_air_hz;
     tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
     expected_tune_hz = k_walk_hz[1];
     assert(dsd_engine_channel_scan_step(opts, state) == 0 && dsd_engine_channel_scan_waiting(state));
     opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[1]; /* the timeout cached the row's frequency */
     dsd_engine_channel_scan_stream_stopping(opts, state);
-    assert(opts->rtlsdr_center_freq == before_hz);
-    opts->rtlsdr_center_freq = 862012500U; /* a centre set since stays */
-    dsd_engine_channel_scan_stream_stopping(opts, state);
-    assert(opts->rtlsdr_center_freq == 862012500U);
+    assert(opts->rtlsdr_center_freq == on_air_hz);
     tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #644: a go-to of row 1 still pending, then a go-to of row 3 replacing it, before a stream stop: the centre a
+   stop puts back is the one confirmed before the first (row 0's), carried across the replacement, not row 1's frequency
+   that the first timeout cached. */
+static void
+test_typed_stream_stop_after_a_replacement(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    const uint32_t on_air_hz = (uint32_t)k_walk_hz[0];
+    opts->rtlsdr_center_freq = on_air_hz;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[1];
+    assert(typed_goto(opts, state, 3) == DSD_SCAN_GOTO_PENDING);
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[3];
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    assert(opts->rtlsdr_center_freq == on_air_hz);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    (void)entry_failure_taken(state, 3, DSD_SCAN_GOTO_REFUSED);
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #644: a go-to of row 1 whose tune completed just before a stream stop, the decoder not having taken that yet:
+   the stop puts the centre back on row 0 and retires the attempt, so the completion taken after it commits nothing,
+   holds nothing and installs none of row 1's settings; the entry's failure is kept for its toast. With @p resume, a
+   paused list's resume of row 1 the same way: it stays paused, back on the manual frequency, interrupted. */
+static void
+typed_stream_stop_after_a_completion_case(int resume) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    uint32_t confirmed_hz = (uint32_t)k_walk_hz[0];
+    opts->rtlsdr_center_freq = confirmed_hz;
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    if (resume) {
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        confirmed_hz = 870012500U; /* the operator's manual frequency */
+        opts->rtlsdr_center_freq = confirmed_hz;
+        expected_tune_hz = k_walk_hz[1];
+        assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    } else {
+        assert(typed_goto(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    }
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[1];
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    assert(opts->rtlsdr_center_freq == confirmed_hz);
+    for (int i = 0; i < 3; i++) {
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    }
+    assert(!dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_row_confirmed(state, 1));
+    assert(state->lcn_scan_entry_hold == 0U && !dsd_engine_channel_scan_entry_pending(state));
+    if (resume) {
+        assert(state->lcn_scan_paused == 1U && state->lcn_scan_resume_pending == 0U && opts->scanner_mode == 0);
+    } else {
+        assert(state->scan_row_index == 0 && entry_failure_taken(state, 1, DSD_SCAN_GOTO_REFUSED));
+    }
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #644: a row whose tune landed and then restages (a keyring change while it was outstanding): the receiver is
+   confirmed on it, so a stream stop while the restage is pending changes nothing, and the restage lands the row. */
+static void
+test_typed_stream_stop_over_a_restage(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[0];
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[1];
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[1];
+    dsd_enc_lockout_bump_key_epoch(state);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* landed, restages */
+    assert(dsd_engine_channel_scan_pending(opts, state) == 1); /* the restage's tune is pending */
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    assert(opts->rtlsdr_center_freq == (uint32_t)k_walk_hz[1] && dsd_engine_channel_scan_waiting(state));
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0 && dsd_engine_channel_scan_row_confirmed(state, 1));
     typed_walk_fixture_free(opts, state);
 }
 
@@ -4684,6 +4770,10 @@ main(void) {
     test_typed_goto_waits_on_the_tune_in_flight();
     test_typed_goto_joins_the_pending_timed_step();
     test_typed_stream_stop_puts_the_centre_back();
+    test_typed_stream_stop_after_a_replacement();
+    typed_stream_stop_after_a_completion_case(0);
+    typed_stream_stop_after_a_completion_case(1);
+    test_typed_stream_stop_over_a_restage();
     test_typed_goto_replaces_an_entry_hold();
     test_typed_goto_over_a_row_in_flight();
     test_typed_entry_hold_lifecycle();

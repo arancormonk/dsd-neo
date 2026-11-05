@@ -3518,18 +3518,25 @@ RadioReference apply's, an owner tune's, the step's and a walk's. Only a refusal
 cached centre, which a timeout set to the dropped tune's target, a frequency nothing then names, so before every stop
 (`svc_rtl_stop_ex_locked()`) a walk's or the untyped step's pending tune puts a centre still on its target back where
 the receiver was confirmed (`dsd_engine_manual_tune_stream_stopping()`, issue #644: the running scan's own tune of a row
-of its list to the row heard, a walk off any scan or a resume to the centre before the tune), and so does a typed row's
-pending attempt (`dsd_engine_channel_scan_stream_stopping()`: the centre before its first tune). A centre something else
-set since stays, and an entry's or an import's reopens on its target, which the operator asked for. A trunk scan needs
-none: its coordinator names the target whose park is pending (`trunk_scan_switch_to()` publishes it before the retune),
-which the reopened stream opens on; the poll reads the completion before the session, so a stop's failure is never
-toasted. A dropped record is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in
-`dsd_engine_manual_tune_last_settled()`), so its owner settles what it was waiting on (an untyped resume, below); a
-newer tune noted in its place owns the receiver, and the older drop goes unreported. The record is process-wide, as the
-controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late
-failure, late success, a newer entry, coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report,
-what ends a synced reception, and an RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes),
-`IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
+of its list to the row heard, a walk off any scan or a resume to the centre last confirmed before it), and so does a
+typed row's pending attempt (`dsd_engine_channel_scan_stream_stopping()`). The point is never a pending tune's
+speculative target: a record noted over one still pending carries that one's confirmed centre (or its target, once its
+completion reported a landing), and a typed scan keeps `channel_scan::rollback_hz` from the attempt that began with none
+outstanding, across go-tos that replace and restages, and moves it to a row's frequency once a tune of it lands (a
+restage, confirmed there, changes nothing). The untyped records' completions are dropped with the session, unconsumed;
+the typed attempt is retired with the revert (`dsd_trunk_tuning_request_disown()`), so a completion published before the
+stop commits nothing: a running scan's row ends unlanded with its entry's failure kept, a resume ends interrupted at the
+next service. A centre something else set since stays, and an entry's or an import's reopens on its target, which the
+operator asked for. A trunk scan needs none: its coordinator names the target whose park is pending
+(`trunk_scan_switch_to()` publishes it before the retune), which the reopened stream opens on; the poll reads the
+completion before the session, so a stop's failure is never toasted. A dropped record is reported once
+(`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so its owner settles
+what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver, and the older drop
+goes unreported. The record is process-wide, as the controller and its callback are. Tests: `ENGINE_MANUAL_TUNE_PENDING`
+(the real controller stood in for, with late failure, late success, a newer entry, coalescing, a failure inside a
+coalesced wait, a stop, a supersede's drop report, what ends a synced reception, and an RR import's outcomes),
+`APP_CONTROL_RR_APPLY` (the import's tune outcomes), `IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`,
+`ENGINE_SIGNAL_SEARCH`.
 
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
 engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It finds the
