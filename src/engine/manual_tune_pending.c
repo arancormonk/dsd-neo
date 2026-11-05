@@ -229,6 +229,7 @@ manual_tune_keep_settled(const dsd_manual_tune_record* record) {
     g_settled.list_rev = record->list_rev;
     g_settled.dir = record->dir;
     g_settled.scan_owned = record->scan_owned;
+    g_settled.id = record->id;
 }
 
 /* The record goes, and what it was stays for its owner. */
@@ -382,6 +383,18 @@ dsd_engine_manual_tune_last_settled(dsd_manual_tune_settled* out) {
 int
 dsd_engine_manual_tune_noted(void) {
     return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED;
+}
+
+uint64_t
+dsd_engine_manual_tune_pending_id(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED ? g_record.id : 0U;
+}
+
+void
+dsd_engine_manual_tune_rebind_session(uint64_t id, uint32_t session) {
+    if (id != 0U && atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && g_record.id == id) {
+        g_record.scan_session = session;
+    }
 }
 
 int

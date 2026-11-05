@@ -28,6 +28,7 @@ typedef struct {
     uint64_t list_rev;
     int dir;        /* a walk's direction (DSD_MANUAL_TUNE_LCN_CYCLE): 1 Next, -1 Previous; 0 for any other kind */
     int scan_owned; /* a walk the running -Y scan owns (DSD_MANUAL_TUNE_LCN_CYCLE) */
+    uint64_t id;    /* the tune's own ID, which an entry waiting on its row names (issue #644) */
 } dsd_manual_tune_settled;
 
 /* The record the last dsd_engine_manual_tune_poll() that returned DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or
@@ -46,6 +47,15 @@ int dsd_engine_manual_tune_settled_ready(void);
 /* Whether a manual tune of any kind is noted and its completion still awaited: it decides where the receiver goes, so
    no state machine moves the tuner meanwhile (dsd_engine_tuner_free_for_protocol()). Decoder thread. */
 int dsd_engine_manual_tune_noted(void);
+
+/* The ID of the tune noted and still awaited, or 0 with none: what an entry waiting on that tune's -Y row names
+   (issue #644). Decoder thread. */
+uint64_t dsd_engine_manual_tune_pending_id(void);
+
+/* The tune noted as @p id, still awaited, now belongs to -Y scan session @p session: a resume-at that replaced a
+   resume still pending moved the session after its own tune was noted, so the resume it replaced, whatever its tune
+   comes to, is no longer the scan's (issue #644). Nothing for any other tune. Decoder thread. */
+void dsd_engine_manual_tune_rebind_session(uint64_t id, uint32_t session);
 
 /* Store the completion of the manual tune @p id (an rtl_stream_tune_result) for the decoder's next poll. Called on
    the RTL controller thread, or on the thread stopping the stream; never blocks. */
