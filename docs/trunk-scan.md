@@ -446,9 +446,10 @@ During scanning:
   deferred changes nothing, and the scan keeps running. While paused the Trunk Scan row reads
   `| Trunk Scan: PAUSED (y resumes)` with no target or Scan Timing row, nothing rotates, and calls heard are the
   operator's (Qt/Android history files them under **Exploring**). Another frequency entry (not a target's), a spectrum
-  tap or a drag only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first` (putting avoided targets back, one from the list or all with
-  "Clear avoids", still works: it never tunes), and `t` stays refused as during the scan (`Trunk scan: each target sets
-  its own trunking`). A per-target edit made while paused waits for that target's next visit.
+  tap or a drag only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first` (putting avoided targets back,
+  one from the list or all with "Clear avoids", still works: it never tunes), and `t` stays refused as during the scan
+  (`Trunk scan: each target sets its own trunking`). A per-target edit made while paused waits for that target's next
+  visit.
 - **Typing a target's frequency** (issue #644). A frequency entry (`=`, Qt/Android **Go to**, the API's `rtl_set_freq`)
   that is exactly a target's `frequency_hz` does not pause the scan: the scan goes to that target and holds it there,
   with everything the target sets (type, options, keys, modulation, gain), as on any visit. A running scan moves to it;
@@ -464,9 +465,9 @@ During scanning:
   is not gone to: the entry pauses the scan as above, and its message ends with the reason (`; #3 County Fire is
   avoided`). Only a typed frequency does this: a spectrum tap, a drag and **Explore from here** keep the configured
   settings. To hear a target's frequency with the configured settings, pause the scan in place while it is on that
-  target with `y` (a first `y` lets a typed frequency's hold go). After the radio stream restarts (a reconnect, a config
-  that reopens the input), the scan is not sure of the target on air until its next park, so typing that target's
-  frequency parks it again, which ends a call in progress.
+  target with `y` (a first `y` lets a typed frequency's hold go, a second pauses). After the radio stream restarts (a
+  reconnect, a config that reopens the input), the scan is not sure of the target on air until its next park, so typing
+  that target's frequency parks it again, which ends a call in progress.
 - **Resuming.** `y`, Qt/Android **Resume scan** or the API's `scan_resume` resumes on the target the scan left, with a
   fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were, except a hold
   that typing a target's frequency set, which the pause ended. A resume whose retune is refused, or whose target cannot
