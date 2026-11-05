@@ -3604,22 +3604,25 @@ resume's step does and decides by the answer first, so a refusal or deferral bef
 RTL refusal lets go of its tune, whose drop then ends it); a landing runs the scan, held; a pending tune moves the scan
 session and rebinds the tune just noted to it (`dsd_engine_manual_tune_rebind_session()`), so the displaced earlier
 record reads stale and cannot undo it; a leg that moved leaves the scan paused. The hold is set only on the row's
-confirmed landing: an entry intent (`dsd_engine_scan_entry_intent`: the row, `lcn_scan_session`, `lcn_list_rev` and the
-request of its tune, in `dsd_engine_scan_owner::entry`; helpers in `scan_landing.h`) rides the go-to. The request is a
-typed row's attempt (`channel_scan::attempt`, its first request, which a restage keeps; an intent set before its tune
-binds to it in `channel_scan_tune_staged()`) or an untyped row's noted manual tune
-(`dsd_engine_manual_tune_pending_id()`, bound in `untyped_enter_tuned_row()`; the settled record carries its `id`), and
-a landing within the go-to's own call holds the row directly, and `dsd_engine_scan_entry_landed()`, at both -Y landings
-(`channel_scan_commit()`, `untyped_install_row()`), sets `lcn_scan_hold` and `lcn_scan_entry_hold` when the row,
-session, list and request are the intent's, and spends the intent at every landing. Beside the request check, every
-other tune of the scan cancels the intent before it starts (a new tune-start site must too) (the typed step past its
-pending check, `step_manual_dir()` for Next, Previous and an avoid's step, the untyped timed step,
-`dsd_engine_channel_scan_walk_row()`, a plain resume), and so do the release (a pause, a stop), `Y`
-(`dsd_engine_channel_scan_entry_cancel()`, which `apply_manual_scan_hold_toggle()` calls before it toggles: an entry
-hold loses its mark and the toggle releases it) and the failure or drop of the intent's own tune
-(`dsd_engine_scan_entry_intent_drop_request()` in `dsd_engine_channel_scan_pending()`, `channel_scan_tune_outcome()`,
-`untyped_settle_walk()`), so a late landing of a cancelled or replaced entry holds nothing; a restage of the intent's
-own row keeps it. `dsd_engine_channel_scan_entry_pending()` says an entry still waits.
+confirmed landing. An entry intent rides the go-to: `dsd_engine_scan_entry_intent`, held in
+`dsd_engine_scan_owner::entry` (helpers in `scan_landing.h`), names the row, `lcn_scan_session`, `lcn_list_rev` and
+the request of its tune. For a typed row the request is the row's attempt (`channel_scan::attempt`, its first
+request, which a restage keeps); an intent set before its tune binds to it in `channel_scan_tune_staged()`. For an
+untyped row it is the row's noted manual tune (`dsd_engine_manual_tune_pending_id()`, bound in
+`untyped_enter_tuned_row()`); the settled record carries its `id`. A landing within the go-to's own call holds the
+row directly. Otherwise `dsd_engine_scan_entry_landed()` runs at both -Y landings (`channel_scan_commit()`,
+`untyped_install_row()`). It sets `lcn_scan_hold` and `lcn_scan_entry_hold` when the row, session, list and request
+are the intent's, and spends the intent at every landing.
+
+Beside the request check, every other tune of the scan cancels the intent before it starts, and a new tune-start
+site must do the same. Today these are the typed step past its pending check, `step_manual_dir()` (Next, Previous
+and an avoid's step), the untyped timed step, `dsd_engine_channel_scan_walk_row()` and a plain resume. The release
+(a pause, a stop) also cancels it. So does `Y`: `apply_manual_scan_hold_toggle()` calls
+`dsd_engine_channel_scan_entry_cancel()` before it toggles, so an entry hold loses its mark and the toggle releases
+it. The failure or drop of the intent's own tune cancels it too (`dsd_engine_scan_entry_intent_drop_request()` in
+`dsd_engine_channel_scan_pending()`, `channel_scan_tune_outcome()` and `untyped_settle_walk()`). A late landing of a
+cancelled or replaced entry therefore holds nothing; a restage of the intent's own row keeps it.
+`dsd_engine_channel_scan_entry_pending()` says an entry still waits.
 `dsd_engine_channel_scan_entry_release()` (`y`, SCAN_RESUME on an entry hold) takes the hold and its mark and restarts
 the dwell, visit and voice-gate windows as `Y` off does; an ordinary hold is left to `y`'s old meaning. Lifecycle: Next,
 Previous and `b` keep an entry hold, mark and all, on the row they land; a pause takes both
