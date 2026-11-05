@@ -8788,6 +8788,107 @@ typed_departure_case(void) {
     return rc;
 }
 
+/* Issue #644: an NXDN trunk on a rigctl peer, tuned to a voice channel whose hangtime ran out, with a Next walk off any
+   scan still waiting on its tune: the walk owns the tuner until it settles, so the no-carrier return to the control
+   channel waits, and a state machine's own retunes (a DMR return, a control-channel or voice-channel tune) are
+   deferred, tuning nothing. The operator's own return to the control channel replaces the walk. Once the walk is gone
+   the hangtime return goes as before. */
+static int
+test_pending_walk_owns_the_tuner_against_trunk_recovery(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "a pending walk against trunk recovery";
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+    g_rigctl_setfreq_ok = 1;
+    const long cc = 942162500L; /* a frequency no other case uses: engine.c caches the last rigctl tune */
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = cc;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_vc_sync_time = 0;
+    dsd_engine_manual_tune_note_lcn_cycle(state, 0x644U, 943012500U, 942512500U, 1, 1, 0);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    int rc = expect_case(what, "the hangtime return waits",
+                         g_rigctl_setfreq_calls == 0 && opts->trunk_is_tuned == 1 && dsd_engine_manual_tune_noted());
+    dmr_sm_ctx_t ctx;
+    dmr_sm_init_ctx(&ctx, opts, state);
+    rc |= expect_case(what, "a DMR return is deferred",
+                      dmr_sm_return_to_cc(&ctx, opts, state, cc) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_case(what, "a control-channel tune is deferred",
+                      dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0, NULL) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_case(what, "a voice-channel tune is deferred",
+                      dsd_trunk_tuning_hook_tune_to_freq(opts, state, 943512500L, 0, NULL)
+                          == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_case(what, "nothing tuned", g_rigctl_setfreq_calls == 0 && dsd_trunk_tuning_pending_request() == 0U);
+    /* The walk gone: the hangtime return goes. */
+    dsd_engine_manual_tune_supersede(state);
+    noCarrier(opts, state);
+    rc |=
+        expect_case(what, "then the hangtime return tunes", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #644: the operator's return to the control channel (a P25 trunk's, through the control-channel tune) while a
+   walk off any scan waits on its tune replaces the walk and tunes. */
+static int
+test_return_to_cc_replaces_a_pending_walk(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "Return to CC over a pending walk";
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    opts->frame_p25p1 = 1;
+    g_rigctl_setfreq_ok = 1;
+    const long cc = 942262500L;
+    opts->trunk_enable = 1;
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = cc;
+    state->p25_cc_is_tdma = 0;
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    dsd_engine_manual_tune_note_lcn_cycle(state, 0x645U, 943112500U, 942612500U, 1, 1, 0);
+    g_rigctl_setfreq_calls = 0;
+    dsd_app_frontend_runtime_start(opts, state);
+    int rc = expect_case(what, "the command applies", press_action(opts, state, DSD_APP_CMD_RETURN_CC) == 1);
+    rc |= expect_case(what, "the control channel is tuned", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+    rc |= expect_case(what, "the walk is replaced", !dsd_engine_manual_tune_noted());
+    dsd_app_frontend_runtime_stop();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #644: a held typed list on a rigctl peer and an RTL input, a go-to whose rigctl leg refuses before anything
    moved: the row on air, its hold and its frames stand; the refused tune keeps no frame gate closed. */
 static int
@@ -11332,6 +11433,8 @@ main(void) {
     rc |= test_held_scan_steps_off_an_avoided_row();
     rc |= test_avoided_row_departs_under_a_carrier();
     rc |= test_typed_goto_refused_by_rigctl_keeps_the_frames();
+    rc |= test_pending_walk_owns_the_tuner_against_trunk_recovery();
+    rc |= test_return_to_cc_replaces_a_pending_walk();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();

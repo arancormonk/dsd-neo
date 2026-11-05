@@ -3434,6 +3434,9 @@ request_manual_tune(dsd_opts* opts, dsd_state* state, long int freq, int p25_cc_
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     if (p25_cc_symbol_rate != 0) {
+        /* This tune decides where the receiver goes, not a walk's still pending, which would otherwise keep the
+           control-channel tune waiting behind it (issue #644). */
+        dsd_engine_manual_tune_supersede(state);
         const int ted_sps = dsd_opts_compute_sps_rate(opts, p25_cc_symbol_rate, current_demod_rate(opts, state));
         tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, ted_sps, &request_id);
         result = (int)tune_result;

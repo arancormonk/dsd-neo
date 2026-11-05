@@ -59,6 +59,9 @@ static int g_displaced_unreported;
 /* The record the last poll that settled one took. */
 static dsd_manual_tune_settled g_settled;
 static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
+/* Whether the record noted last is a Next or Previous walk off any scan: stored before the record reads as noted, and
+   read with it from any thread (dsd_engine_manual_tune_operator_walk_noted()). */
+static atomic_int g_record_walk_off_scan;
 /* A RadioReference import's tune (dsd_engine_manual_tune_note_rr_import(), issue #803): the toast its late failure
    posts, the one its landing posts, and the import's own toast, the only one its landing or drop replaces. Kept for
    the import noted last; a record of another kind never reads them. g_rr_owner_took_over says the tune that dropped
@@ -147,6 +150,7 @@ manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
     g_record = *record;
     g_record.session_generation = manual_tune_session_generation();
     atomic_store(&g_rr_owner_took_over, 0);
+    atomic_store(&g_record_walk_off_scan, record->kind == DSD_MANUAL_TUNE_LCN_CYCLE && !record->scan_owned);
     atomic_store(&g_record_pending, MANUAL_TUNE_NOTED);
 }
 
@@ -411,6 +415,11 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
         *out_scan_walk = g_record.kind == DSD_MANUAL_TUNE_LCN_CYCLE && g_record.scan_owned;
     }
     return g_record.row;
+}
+
+int
+dsd_engine_manual_tune_operator_walk_noted(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && atomic_load(&g_record_walk_off_scan) != 0;
 }
 
 int

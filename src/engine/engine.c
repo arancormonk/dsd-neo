@@ -2037,7 +2037,9 @@ no_carrier_step_scanner_mode_if_needed(dsd_opts* opts, dsd_state* state, time_t 
 
 static int
 no_carrier_is_cc_return_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
-    if ((opts->trunk_enable != 1) || (opts->trunk_is_tuned != 1)) {
+    /* The operator's walk off any scan waiting on its tune owns the tuner (issue #644): its landing hands the voice
+       channel over, and its failure leaves the return to the next pass. */
+    if ((opts->trunk_enable != 1) || (opts->trunk_is_tuned != 1) || dsd_engine_manual_tune_operator_walk_noted()) {
         return 0;
     }
     if (dsd_trunk_p25_recovery_allowed(opts, state)

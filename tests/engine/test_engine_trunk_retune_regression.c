@@ -620,6 +620,12 @@ dsd_engine_manual_tune_noted(void) {
     return 0;
 }
 
+/* No walk is ever noted here either (dsd_engine_trunk_tune_to_freq_request() and its siblings). */
+int
+dsd_engine_manual_tune_operator_walk_noted(void) {
+    return 0;
+}
+
 int
 rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
     g_rtl_tagged_tune_calls++;

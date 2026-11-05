@@ -53,6 +53,12 @@ int dsd_engine_manual_tune_noted(void);
    (issue #644). Decoder thread. */
 uint64_t dsd_engine_manual_tune_pending_id(void);
 
+/* Whether a Next or Previous walk off any scan (DSD_MANUAL_TUNE_LCN_CYCLE, not the -Y scan's own) is noted and its
+   completion still awaited: the operator's move, which owns the tuner until it settles, so no trunking state machine
+   retunes meanwhile (dsd_engine_trunk_tune_to_freq_request() and its siblings answer DEFERRED; the no-carrier
+   control-channel return waits). Two atomic loads; any thread (the P25 watchdog's tick included). */
+int dsd_engine_manual_tune_operator_walk_noted(void);
+
 /* The row the untyped -Y step's own tune (DSD_MANUAL_TUNE_UNTYPED_STEP: a timed step's or a resume's) still awaits on
    @p state's current list and scan session, or -1 with none (a walk's is not one). Decoder thread. */
 int dsd_engine_manual_tune_pending_step_row(const dsd_state* state);

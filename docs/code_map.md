@@ -3579,10 +3579,17 @@ failure, and otherwise runs only the `TUNE` boundary for a landing's move; a wal
 app-control installs with its session (`dsd_channel_walk_settle_hook_set()`, `<dsd-neo/runtime/channel_scan_hooks.h>`,
 `dsd_app_channel_walk_settled()`), which runs the landing (the row named only while the list and the row are the ones
 walked and no scan owns the tuner) or the late failure's refusal rules, under the P25 SM tick guard when the P25 machine
-owns the trunk. Tests: `ENGINE_NO_CARRIER_RESET` (both directions, both owners, a late landing, a late failure, a drop,
-a rigctl move with the RTL leg refused or failing late, a landing in the middle of a reception, a second press while
-pending, the timed step held by a pending walk, a landing after a stop or a reload), `ENGINE_MANUAL_TUNE_PENDING` (the
-record), `APP_COMMAND_QUEUE` (the owner-independent walk cases off any scan on every toolchain and under `-Y` where the
+owns the trunk. Until a walk off any scan settles it owns the tuner (`dsd_engine_manual_tune_operator_walk_noted()`, an
+atomic flag beside the record, readable from the P25 watchdog's tick): the old assignment's recovery waits, so the
+engine's trunk tunes (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`,
+`dsd_engine_return_to_cc_request()`, behind every state machine's grant, hunt and return) answer `DEFERRED`, which each
+machine retries (P25's release keeps its latch; DMR's return stays `TUNED`), and the no-carrier hangtime return is not
+due; the landing then hands the machines over with the row, its keys and the call boundary. App-control's own
+control-channel tune (Return to CC, a block) supersedes the walk first, as its io_control leg does. Tests:
+`ENGINE_NO_CARRIER_RESET` (both directions, both owners, a late landing, a late failure, a drop, a rigctl move with the
+RTL leg refused or failing late, a landing in the middle of a reception, a second press while pending, the timed step
+held by a pending walk, a landing after a stop or a reload), `ENGINE_MANUAL_TUNE_PENDING` (the record),
+`APP_COMMAND_QUEUE` (the owner-independent walk cases off any scan on every toolchain and under `-Y` where the
 io_control wrap links; the `-Y`-only cases there; row keys only under `-Y`).
 
 A `-Y` scan, typed or untyped, can be paused and resumed (issue #671, `dsd_engine_channel_scan_pause()`, `_resume()`;

@@ -1104,6 +1104,14 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     return tune_result;
 }
 
+/* A trunking state machine's tune while the operator's walk off any scan waits on its own (issue #644): the walk owns the
+   tuner until it settles, so the machine's recovery, return or grant waits (each treats a deferral as one to retry), and
+   the walk's landing hands the machine over. */
+static int
+engine_operator_walk_owns_tuner(void) {
+    return dsd_engine_manual_tune_operator_walk_noted();
+}
+
 int
 dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* state) {
     return !dsd_engine_manual_tune_noted() && dsd_trunk_tuning_pending_request() == 0U
@@ -1112,6 +1120,9 @@ dsd_engine_tuner_free_for_protocol(const dsd_opts* opts, const dsd_state* state)
 
 dsd_trunk_tune_result
 dsd_engine_return_to_cc_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    if (engine_operator_walk_owns_tuner()) {
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    }
     dsd_engine_tune_decision_begin();
     const dsd_trunk_tune_result result = engine_return_to_cc_request_once(opts, state, request_id);
     dsd_engine_tune_decision_end();
@@ -1214,6 +1225,9 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
 dsd_trunk_tune_result
 dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
                                       uint64_t request_id) {
+    if (engine_operator_walk_owns_tuner()) {
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    }
     dsd_engine_tune_decision_begin();
     const dsd_trunk_tune_result result = engine_trunk_tune_to_freq_request_once(opts, state, freq, ted_sps, request_id);
     dsd_engine_tune_decision_end();
@@ -1288,6 +1302,9 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
 
 dsd_trunk_tune_result
 dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    if (engine_operator_walk_owns_tuner()) {
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    }
     dsd_engine_tune_decision_begin();
     const dsd_trunk_tune_result result = engine_trunk_tune_to_cc_request_once(opts, state, freq, ted_sps, request_id);
     dsd_engine_tune_decision_end();
