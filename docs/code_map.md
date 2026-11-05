@@ -150,7 +150,8 @@ Generated (do not edit/commit):
     depending on IO
   - Single-tuner trunk scan coordinator: `src/engine/trunk_scan.c` behind
     `include/dsd-neo/engine/trunk_scan.h` (see below), including its pause and resume (issue #671)
-  - `-Y` pause and resume and the manual-tune completion record (issue #671): `src/engine/channel_scan.c` behind
+  - `-Y` pause and resume, a typed frequency's go-to and resume-at with its entry hold (issue #644), and the
+    manual-tune completion record (issue #671): `src/engine/channel_scan.c` behind
     `include/dsd-neo/engine/channel_scan.h`, `src/engine/manual_tune_pending.c` behind
     `include/dsd-neo/engine/manual_tune.h`, and the untyped step's shared pieces in `src/engine/scan_step_untyped.h`
     (see "A manual tune stays out of that ledger" under the trunk-tuning hooks below)
@@ -3574,6 +3575,54 @@ reception, landing and late failure, which keeps the call heard, and its row tun
 services, the monitor reconciliation at once and late, the caller's guard, a tap, a search start and a reopen over an
 untyped and a typed pending resume, a stop over a paused typed list, and a typed resume under the real tick guard
 through landing, refusal and pending), `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`.
+
+A frequency typed by hand that is a `-Y` row (issue #644 D1; the match is `dsd_engine_scan_entry_match()`, above) moves
+the scan to that row and holds it there, through `dsd_engine_channel_scan_goto_row()` (running) and
+`dsd_engine_channel_scan_resume_at()` (paused, or a resume pending), both returning a `dsd_scan_goto_result`
+(`<dsd-neo/engine/scan_entry.h>`, shared with the trunk scan's go-to): `HOLDING`, `PENDING`, `REFUSED`, `DEFERRED`,
+`SETUP_FAILED`. Both take only a row a step can land on (`channel_scan_row_reachable()`), and a scan that runs (or is
+paused) over a list of the user's own; anything else is `REFUSED` with nothing changed. A row confirmed on air
+(`dsd_engine_channel_scan_row_confirmed()`) gets the hold only. A typed row is staged apart: the row start is split into
+`channel_scan_prepare_row()` (into a `channel_scan_staging`, the scan untouched), `channel_scan_staging_swap()` (the
+row's identity, prepared settings, keys and request exchanged with the scan's, the keys moved and the stack copy
+securely zeroed), `channel_scan_tune_staged()` and `channel_scan_tune_outcome()`; `channel_scan_start_row()` runs them
+in a row, so a failed preparation now leaves the row staged before as it was there too. The go-to swaps its row in for
+the tune and swaps back, the earlier entry put back, when the tune is refused or deferred before any backend moved
+(`dsd_engine_scan_tune_moved()` 0); once the tune is taken, or a leg moved, the row staged before is retired (its
+request handed to `dsd_trunk_tuning_request_disown()`) and the answer is a forward step's (a refusal ends the calls and
+passes the row). An untyped row goes through `dsd_engine_scan_untyped_goto_row()` (`engine.c`, private in
+`scan_step_untyped.h`): the walk's tune, both legs, a timed-out RTL leg noted as a walk the scan owns, with the same
+"nothing moved, nothing changes" rule and Next's refusal after a leg moved. A resume-at is today's resume on the row
+given (`channel_scan_resume_on()`, which the plain resume now calls too), so its failures leave the scan paused with the
+toast and the pause hook's undo. Over a typed resume still pending it is the staged go-to under the resume's ownership
+(a refusal after a backend moved then runs the resume's own failure, cursor back); over an untyped one it moves the scan
+session first, since the untyped tune decides where the receiver goes whatever it answers (a refusal supersedes the tune
+noted before it), so that resume's tune, displaced or not, is no longer this resume's. The hold is set only on the row's
+confirmed landing: an entry intent (`dsd_engine_scan_entry_intent`, the row, `lcn_scan_session` and `lcn_list_rev`, in
+`dsd_engine_scan_owner::entry`; helpers in `scan_landing.h`) rides the go-to, and `dsd_engine_scan_entry_landed()`, at
+both -Y landings (`channel_scan_commit()`, `untyped_install_row()`), sets `lcn_scan_hold` and `lcn_scan_entry_hold` when
+the row, session and list are the intent's, and spends the intent at every landing. The intent identifies its tune by
+cancellation: every other tune of the scan cancels it before it starts (the typed step past its pending check,
+`step_manual_dir()` for Next, Previous and an avoid's step, the untyped timed step,
+`dsd_engine_channel_scan_walk_row()`, a plain resume), and so do the release (a pause, a stop), `Y`
+(`dsd_engine_channel_scan_entry_cancel()`, which `apply_manual_scan_hold_toggle()` calls before it toggles: an entry
+hold loses its mark and the toggle releases it) and the failure or drop of the intent's own row tune
+(`dsd_engine_scan_entry_intent_drop_row()` in `dsd_engine_channel_scan_pending()`, `channel_scan_tune_outcome()`,
+`untyped_settle_walk()`), so a late landing of a cancelled or replaced entry holds nothing; a restage of the intent's
+own row keeps it. `dsd_engine_channel_scan_entry_pending()` says an entry still waits.
+`dsd_engine_channel_scan_entry_release()` (`y`, SCAN_RESUME on an entry hold) takes the hold and its mark and restarts
+the dwell, visit and voice-gate windows as `Y` off does; an ordinary hold is left to `y`'s old meaning. Lifecycle: Next,
+Previous and `b` keep an entry hold, mark and all, on the row they land; a pause takes both
+(`dsd_engine_channel_scan_pause()`, the untyped resume failure); the leave takes an entry hold with the scan
+(`channel_scan_release()`, so a stop, `t`, an input switch, a RadioReference import, a map reload, a config that turns
+`-Y` off, a trunk-scan start and the shutdown leave), while an ordinary hold outlives a stop as before; the map adopt
+and clear clear the mark beside the hold (`menu_services.c`); a config apply that keeps the scan keeps both; neither is
+ever saved. Tests: `ENGINE_CHANNEL_SCAN` (typed: landing, hold only, a forgotten landing tuned again, refusals, pending
+landing, late failure and cancels by Next, `Y` and a pause, over a row in flight for each outcome, lifecycle, resume-at
+and resume-at over a pending resume), `ENGINE_NO_CARRIER_RESET` (untyped through the real walk and step: each outcome,
+partial movement, hold only, resume-at and resume-at over a pending resume), `APP_COMMAND_QUEUE` (`Y` over an entry
+hold, a config apply that keeps or stops the scan), `UI_MENU_SERVICES` (map adopt and clear), `RUNTIME_CONFIG_USER`
+(never saved).
 
 ### Channel Scan Pause Hook (Engine → Runtime ← App-Control)
 

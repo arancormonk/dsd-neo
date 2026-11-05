@@ -5558,6 +5558,14 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_true("scan hold release restarts the cap", state.scan_visit_since_m >= state.last_cc_sync_time_m);
     rc |= expect_true("scan hold release publishes a full cap",
                       state.scan_timing.visit_deadline_m >= state.last_cc_sync_time_m + 1.0);
+    /* An entry hold (issue #644): `Y` takes the hold and its entry mark together. */
+    state.lcn_scan_hold = 1U;
+    state.lcn_scan_entry_hold = 1U;
+    rc |= expect_int("entry hold release queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("entry hold release drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("entry hold release clears the hold and its mark",
+                     state.lcn_scan_hold == 0U && state.lcn_scan_entry_hold == 0U, 1);
     rc |= expect_contains("scan hold release toast", state.ui_msg, "hold off");
     rc |= expect_int("scan release publishes hangtime", state.scan_timing.reason, DSD_SCAN_STAY_HANGTIME);
     rc |= expect_true("scan release publishes a fresh deadline",
@@ -23830,6 +23838,39 @@ pause_seeded_list(dsd_opts* opts, dsd_state* state, const char* label) {
     return rc;
 }
 
+/* Issue #644: a config apply that keeps a running -Y scan keeps its entry hold, mark and all; one that turns the
+   scanner off stops the scan, and the entry hold goes with it. */
+static int
+test_config_apply_keeps_a_running_scans_entry_hold(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "scan.csv");
+    seed_running_list(&opts, &state);
+    state.lcn_scan_entry_hold = 1U;
+    dsdneoUserConfig keep;
+    DSD_MEMSET(&keep, 0, sizeof keep);
+    keep.has_analog = 1;
+    keep.analog_nfm_bandwidth_hz = 12500;
+    int rc = expect_true("entry hold: scan-keeping config queued", dsd_app_command_apply_config(&keep) > 0);
+    rc |= expect_int("entry hold: scan-keeping config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("entry hold: the scan runs on", opts.scanner_mode == 1 && state.lcn_scan_paused == 0U, 1);
+    rc |=
+        expect_int("entry hold: kept over the apply", state.lcn_scan_hold == 1U && state.lcn_scan_entry_hold == 1U, 1);
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.trunk_scanner = 0;
+    DSD_SNPRINTF(cfg.trunk_chan_csv, sizeof cfg.trunk_chan_csv, "%s", "scan.csv");
+    rc |= expect_true("entry hold: scanner-off config queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_int("entry hold: scanner-off config drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("entry hold: the scan stopped", opts.scanner_mode, 0);
+    rc |= expect_int("entry hold: gone with the scan", state.lcn_scan_hold == 0U && state.lcn_scan_entry_hold == 0U, 1);
+    freeState(&state);
+    return rc;
+}
+
 /* Apply @p cfg and drain it, with the status line cleared first. */
 static int
 drain_config(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const char* label) {
@@ -27195,6 +27236,7 @@ main(void) {
     rc |= test_config_trunking_under_a_trunk_scan_is_the_configured_setting();
 #endif
     rc |= test_config_settles_a_paused_list();
+    rc |= test_config_apply_keeps_a_running_scans_entry_hold();
     rc |= test_frequency_entry_reaches_a_rigctl_peer_on_every_build();
     rc |= test_config_channel_map_waits_for_a_restart();
     rc |= test_config_restart_settings_wait_for_the_next_start();

@@ -770,8 +770,9 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
     dsd_state_lcn_nav_reset(dst);
-    // The scan hold indexes rows that no longer exist, as the avoids did.
+    // The scan hold indexes rows that no longer exist, as the avoids did; an entry hold's mark goes with it.
     dst->lcn_scan_hold = 0;
+    dst->lcn_scan_entry_hold = 0;
     // The visit the per-visit cap was measuring belonged to a row that no longer exists.
     dst->scan_visit_since_m = -1.0;
     dst->scan_visit_roll_seen = 0;
@@ -929,6 +930,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     state->lcn_freq_roll = 0;
     dsd_state_lcn_nav_reset(state);
     state->lcn_scan_hold = 0;
+    state->lcn_scan_entry_hold = 0;
     // Nothing left to visit, so the per-visit cap has nothing to measure from.
     state->scan_visit_since_m = -1.0;
     state->scan_visit_roll_seen = 0;

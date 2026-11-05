@@ -7907,6 +7907,9 @@ scan_control_tuner_present(const dsd_opts* opts) {
 
 static void
 apply_manual_scan_hold_toggle(dsd_state* state) {
+    /* Over an entry (issue #644): one still waiting on its row's landing never holds it, and an entry hold loses its
+       mark, so this toggle releases it as an ordinary hold. */
+    dsd_engine_channel_scan_entry_cancel(state);
     state->lcn_scan_hold = state->lcn_scan_hold ? 0U : 1U;
     if (!state->lcn_scan_hold) {
         // The rotation left the dwell timer alone while held; give the row a full hangtime
