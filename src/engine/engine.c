@@ -1696,6 +1696,12 @@ dsd_engine_channel_scan_walk_row(dsd_opts* opts, dsd_state* state, int row, int 
    earlier resume stands. A leg that moved before a refusal or deferral leaves the scan paused. */
 static dsd_scan_goto_result
 untyped_goto_over_a_pending_resume(dsd_opts* opts, dsd_state* state, int row) {
+    if (dsd_engine_manual_tune_pending_step_row(state) == row) {
+        /* That resume's own tune is for this row already: the entry waits on it, with no second one, and the resume's
+           landing holds the row. */
+        dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_pending_id());
+        return DSD_SCAN_GOTO_PENDING;
+    }
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
     const time_t now = dsd_decode_time();
     int moved = 0;

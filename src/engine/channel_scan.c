@@ -2172,9 +2172,14 @@ channel_scan_goto_of_resume(int result, int why) {
 
 /* A resume-at over a typed resume still pending: the go-to's row staged apart, under the resume's ownership. A
    refusal after a backend moved retired that resume too, so the scan stays paused, its cursor back where the resume
-   found its row. */
+   found its row. A resume whose tune is for that row already is the entry's: it waits on that tune, with no second
+   one, and the resume's landing holds the row. */
 static dsd_scan_goto_result
 channel_scan_resume_at_typed_pending(dsd_opts* opts, dsd_state* state, int row) {
+    if (channel_scan_row_in_flight(opts, state, row)) {
+        dsd_engine_scan_entry_intent_set(state, row, channel_scan_get(state)->attempt);
+        return DSD_SCAN_GOTO_PENDING;
+    }
     const int owned = channel_scan_resume_owns(opts, state);
     int retired = 0;
     const dsd_scan_goto_result result = channel_scan_goto_typed(opts, state, row, &retired);

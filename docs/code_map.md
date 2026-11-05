@@ -3686,7 +3686,11 @@ private in `scan_step_untyped.h`): the walk's tune, both legs, a timed-out RTL l
 the same "nothing moved, nothing changes" rule (the landing kept too; an RTL refusal still lets go of a tune noted
 before it, as Next's does) and Next's refusal after a leg moved. A resume-at is today's resume on the row given
 (`channel_scan_resume_on()`, which the plain resume now calls too), so its failures leave the scan paused with the toast
-and the pause hook's undo. Over a typed resume still pending it is the staged go-to under the resume's ownership (a
+and the pause hook's undo. Over a resume still pending whose own tune is for the row already (typed:
+`channel_scan_row_in_flight()`; untyped: the step tune `dsd_engine_manual_tune_pending_step_row()` names) it sets the
+intent on that tune and answers `PENDING` with no second tune, so the resume's landing holds the row; a trunk scan's
+resume clears `paused` as its park begins, so its go-to takes the running scan's park-in-flight join. Otherwise, over
+a typed resume still pending it is the staged go-to under the resume's ownership (a
 refusal after a backend moved then runs the resume's own failure, cursor back); over an untyped one it is the untyped
 go-to's (`untyped_goto_over_a_pending_resume()`): it tunes the row as the resume's step does and decides by the answer
 first, so a refusal or deferral before any leg moved keeps that resume (an RTL refusal lets go of its tune, whose drop

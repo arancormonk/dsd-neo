@@ -12,6 +12,7 @@
 #ifndef DSD_NEO_SRC_ENGINE_MANUAL_TUNE_PENDING_H
 #define DSD_NEO_SRC_ENGINE_MANUAL_TUNE_PENDING_H
 
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <stdint.h>
 
@@ -51,6 +52,10 @@ int dsd_engine_manual_tune_noted(void);
 /* The ID of the tune noted and still awaited, or 0 with none: what an entry waiting on that tune's -Y row names
    (issue #644). Decoder thread. */
 uint64_t dsd_engine_manual_tune_pending_id(void);
+
+/* The row the untyped -Y step's own tune (DSD_MANUAL_TUNE_UNTYPED_STEP: a timed step's or a resume's) still awaits on
+   @p state's current list and scan session, or -1 with none (a walk's is not one). Decoder thread. */
+int dsd_engine_manual_tune_pending_step_row(const dsd_state* state);
 
 /* The tune noted as @p id, still awaited, now belongs to -Y scan session @p session: a resume-at that replaced a
    resume still pending moved the session after its own tune was noted, so the resume it replaced, whatever its tune

@@ -413,6 +413,12 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
     return g_record.row;
 }
 
+int
+dsd_engine_manual_tune_pending_step_row(const dsd_state* state) {
+    const int row = dsd_engine_manual_tune_pending_row(state, NULL);
+    return row >= 0 && g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP ? row : -1;
+}
+
 /* A RadioReference import's record that the next poll reports at once, before its completion: dropped by a tune that
    is announced (or after it landed), or its stream's session ended. Ending the reception then costs nothing (the
    receiver moved, or its stream went), and the outcome is posted while the import's toast is still up. */

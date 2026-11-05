@@ -9207,6 +9207,45 @@ untyped_resume_at_over_pending_case(int c) {
     return rc;
 }
 
+/* Issue #644: `y` resuming a paused untyped list at row 1, its tune still pending, then row 1 typed: the entry waits on
+   that resume's tune, with no second one (here a second one would be deferred), and the resume's landing holds row 1.
+   A pending walk is no resume's tune. */
+static int
+test_untyped_resume_at_joins_the_pending_resume_of_its_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped resume-at of the pending resume's row";
+    const long int base_hz = 1680012500L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "a resume to row 1 is pending",
+                         dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                             && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L));
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the go-to waits on the resume's tune",
+                      dsd_engine_channel_scan_resume_at(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "no second tune", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the resume and the entry wait",
+                      state->lcn_scan_resume_pending == 1U && dsd_engine_channel_scan_entry_pending(state));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the resume lands", poll_until_landed(opts, state));
+    rc |= expect_case(what, "the scan runs", opts->scanner_mode == 1 && state->lcn_scan_paused == 0U);
+    rc |= expect_untyped_entry_held(what, state, 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_resume_at(void) {
     int rc = 0;
@@ -9216,6 +9255,7 @@ test_untyped_resume_at(void) {
     for (int c = 0; c < UOVER_CASES; c++) {
         rc |= untyped_resume_at_over_pending_case(c);
     }
+    rc |= test_untyped_resume_at_joins_the_pending_resume_of_its_row();
     return rc;
 }
 

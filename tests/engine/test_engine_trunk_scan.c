@@ -19209,6 +19209,43 @@ goto_pending_case(int c, const char* what) {
     return test_rc;
 }
 
+/* A paused scan resumed at its target, the park still in flight, then that target typed: the go-to waits on that park,
+   with no second one, and the park's landing holds the target, marked an entry hold. */
+static int
+test_goto_joins_a_pending_resume_of_its_target(void) {
+    const char* what = "go-to of the target a pending resume parks";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc =
+        expect_control_rc(what, dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    test_rc |= expect_control_rc(what, dsd_engine_trunk_scan_resume_locked(&opts, &state), 1);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    const int calls = g_counting_tune_to_cc_calls;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    dsd_trunk_scan_goto_report report;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 0, &report), DSD_SCAN_GOTO_PENDING);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    test_rc |= expect_goto(what, park != 0U && g_counting_tune_to_cc_calls == calls
+                                     && dsd_engine_trunk_scan_entry_pending(&state) == 1);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, what, 0U, 1U, 1U);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_goto_running_pending_outcomes(void) {
     return goto_pending_case(GOTO_PENDING_LANDS, "pending, lands")
@@ -20351,6 +20388,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_controls_publish_timing_only_under_the_guard);
     rc |= run_with_default_tune_hook(test_goto_running_switches_and_holds);
     rc |= run_with_default_tune_hook(test_goto_running_pending_outcomes);
+    rc |= run_with_default_tune_hook(test_goto_joins_a_pending_resume_of_its_target);
     rc |= run_with_default_tune_hook(test_goto_lands_on_a_p25_recovery);
     rc |= run_with_default_tune_hook(test_goto_running_refused_rolls_back);
     rc |= run_with_default_tune_hook(test_goto_preparation_failure_changes_nothing);

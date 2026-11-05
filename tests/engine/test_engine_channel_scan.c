@@ -4533,6 +4533,32 @@ test_typed_resume_at_over_a_pending_resume(void) {
     }
 }
 
+/* Issue #644: `y` resuming a paused typed list at West, its tune still pending, then West typed: the entry waits on that
+   resume's tune, with no second one (here a second one would be deferred), and the resume's landing holds West. */
+static void
+test_typed_resume_at_joins_the_pending_resume_of_its_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    state->lcn_freq_roll = 3; /* the cursor on West */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[3];
+    assert(dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    const uint64_t resume_request = request;
+    const int tunes_before = tunes;
+    tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    assert(dsd_engine_channel_scan_resume_at(opts, state, 3) == DSD_SCAN_GOTO_PENDING);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    assert(tunes == tunes_before && request == resume_request);
+    assert(state->lcn_scan_resume_pending == 1U && dsd_engine_channel_scan_entry_pending(state));
+    dsd_trunk_tuning_request_publish(resume_request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+    assert(opts->scanner_mode == 1 && state->lcn_scan_paused == 0U && typed_entry_held_on(state, 3));
+    typed_walk_fixture_free(opts, state);
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(count_squelch_warnings, NULL);
@@ -4598,6 +4624,7 @@ main(void) {
     test_typed_entry_hold_lifecycle();
     test_typed_resume_at();
     test_typed_resume_at_over_a_pending_resume();
+    test_typed_resume_at_joins_the_pending_resume_of_its_row();
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
