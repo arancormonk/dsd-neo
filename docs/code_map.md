@@ -1918,7 +1918,9 @@ suite runs under this compiler.
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8; runtime 6;
   DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is `DSD_STATE_EXT_DSP_ANALOG_RX`,
   the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog monitor's audio chains, and 11
-  `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate. `CORE_STATE_EXT` pins all three.
+  `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate; app-control owns 16, from the ui
+  range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on its tune (issue #644).
+  `CORE_STATE_EXT` pins these four.
 - API note: `dsd_state::analog_rx` (`dsd_analog_rx_publication` in `<dsd-neo/core/state.h>`, issues #522 and #523) is
   the received-tone publication every frontend reads: int-only (`carrier_open`, `tone_kind`, `tone_state`,
   `ctcss_tenths_hz`, `ctcss_off_value` (1 while the locked CTCSS tone rests on transmitter tone error alone, issue #643:
@@ -3681,7 +3683,8 @@ it. The failure or drop of the intent's own tune cancels it too. A failure keeps
 record (`dsd_engine_scan_entry_intent_fail_request()` in `dsd_engine_channel_scan_pending()`,
 `channel_scan_tune_outcome()` and `untyped_settle_walk()`; `dsd_engine_scan_entry_intent_fail()` for a resume-at in
 `dsd_engine_channel_scan_resume_failed()`, though not an interrupted one), which app-control takes once
-(`dsd_engine_scan_entry_take_failure()`, `<dsd-neo/engine/scan_entry.h>`) to name the row in a toast. A drop
+(`dsd_engine_scan_entry_take_failure()`, `<dsd-neo/engine/scan_entry.h>`) to name the row in a toast; the record
+carries the name as the failure found it (a row's label, else `row N`; a target's label, else its id). A drop
 (`dsd_engine_scan_entry_intent_drop_request()`: an untyped walk's tune another tune dropped, a retry whose row went out
 of date) and every cancel keep none, so a cancel by `Y`, `L`, `J`, `b`, another entry, a pause or a stop is never named
 as a failure. A late landing of a cancelled or replaced entry therefore holds nothing; a restage of the intent's own
@@ -3873,18 +3876,22 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `restart_gain`. The scan tunes the row as it tunes any row (both legs where it uses both), never the plain entry's
     leg; no pause, no `operator_tuned`. HOLDING and PENDING complete the command; REFUSED, DEFERRED and SETUP_FAILED
     fail it. No match (or an ineligible one) takes the plain path below, whose accepted toast gains the D5 reason
-    (`svc_scan_entry_toast_reason()`). Every entry toast comes from `src/app_control/scan_entry_toast.c`: `Holding:
-    <name>`, `(n of N)` for duplicates (eligible rows only), `, trunked: following its control channel <MHz> MHz`;
+    (`svc_scan_entry_toast_reason()`). Every entry toast comes from `src/app_control/scan_entry_toast.c`, which names a
+    -Y row by its label (else `row N`) and a trunk-scan target as every target toast does,
+    `svc_trunk_scan_toast_name()` (`#<n> <label>`, its id for a label it lacks; the avoid, put-back and Next toasts
+    use it too): `Holding: <name>`, `(n of N)` for duplicates (eligible rows only), `, trunked: following its control
+    channel <MHz> MHz`;
     `Going to <name>: waiting for the tune` (`Resuming scan at <name>: ...` over a paused `-Y` list, `to its control
     channel <MHz> MHz` for a trunked target); `Failed: tune to <name>`, `Deferred; retry: tune to <name>`, `Failed:
     <name> could not be set up`, each with `; scan stays paused` while paused; `Scan continues`; the reasons `; <name>
-    is avoided`, `; <name> is in a list that is off`, `; <name> is skipped: its width does not fit` (bare `; avoided`,
-    `; its list is off`, `; its width does not fit` where the name will not fit). Each fits `ui_msg`: optional parts
-    drop whole, the count first, then a trunked target's frequency, and the name (63 bytes at most) is never cut. A
+    is avoided`, `; <name> is in a list that is off`, `; <name>'s width does not fit` (with `that row` or `that
+    target` for a name that will not fit). Each fits `ui_msg`: optional parts drop whole, the count first, then a
+    trunked target's frequency, and the name (`#65535 ` and 63 bytes at most) is never cut. A
     HOLDING whose own call left a text (`engine_toasted`) keeps that text. A failure the engine kept inside the call is
-    taken and dropped there. A PENDING go-to is remembered (name, count, park frequency); `svc_scan_entry_settle()`,
-    at the top of every `dsd_app_drain_cmds()`, takes a late failure the engine kept
-    (`dsd_engine_scan_entry_take_failure()`) and names it once, or, once the remembered entry stops waiting with its
+    taken and dropped there. A PENDING go-to is remembered (match, park frequency, the text it left) in the state's own
+    slot, `DSD_STATE_EXT_APP_SCAN_ENTRY`; `svc_scan_entry_settle()`, at the top of every `dsd_app_drain_cmds()`, takes
+    a late failure the engine kept (`dsd_engine_scan_entry_take_failure()`) and names it once by the name the engine
+    recorded with it, so an entry no toast began is named too, or, once the remembered entry stops waiting with its
     entry hold set, replaces its own waiting text, and nothing newer, with `Holding: <name>`; a cancel names nothing.
     `svc_scan_entry_continue()` runs first in `ui_handle_scanner_toggle()` and `ui_handle_scan_resume()`: on a running
     scan an entry hold is released (`dsd_engine_channel_scan_entry_release()`,

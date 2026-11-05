@@ -772,22 +772,32 @@ int svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_m
  */
 int svc_scan_entry_continue(dsd_opts* opts, dsd_state* state);
 
+/* "#65535 " and a 63-byte label or id, terminated. */
+#define DSD_TRUNK_SCAN_TOAST_NAME_SIZE 80
+
+/** @brief A --trunk-scan target as every toast names it (issue #672, #644): "#<ordinal> <label>", the list position and
+ * label column the avoided channel list shows, or the id when the target has no label. The id alone names nothing on
+ * Android, whose target ids are entry UIDs. An ordinal of 0 (none known) leaves the position out. Returns @p out. */
+const char* svc_trunk_scan_toast_name(uint32_t ordinal, const char* label, const char* id, char* out, size_t out_size);
+
 /** @brief Put what a go-to of @p match came to (@p result, @p park_hz from its report, 0 for -Y) on the status line
  * (issue #644): Holding, waiting for the tune, or the failure, with the row's name. A HOLDING with @p engine_toasted
- * (the call itself put a text there) leaves that text. A PENDING outcome is remembered for svc_scan_entry_settle(). */
+ * (the call itself put a text there) leaves that text. A PENDING outcome is remembered in the state's own slot
+ * (DSD_STATE_EXT_APP_SCAN_ENTRY) for svc_scan_entry_settle(). */
 void svc_scan_entry_toast_outcome(dsd_state* state, const dsd_scan_entry_match_t* match, dsd_scan_goto_result result,
                                   long park_hz, int engine_toasted);
-/** @brief Once per command drain (issue #644): name an entry's late failure the scan kept
- * (dsd_engine_scan_entry_take_failure()), once, or the hold of an entry that was waiting and has landed. */
+/** @brief Once per command drain (issue #644): name an entry's late failure the scan kept, once, by the name the scan
+ * recorded (dsd_engine_scan_entry_take_failure()), so an entry no toast began is named too; or the hold of an entry
+ * that was waiting and has landed. */
 void svc_scan_entry_settle(dsd_state* state);
 /** @brief `Scan continues`: `y` released an entry hold (issue #644). */
 void svc_scan_entry_toast_continues(dsd_state* state);
 /** @brief The entry waiting still waits on its tune (issue #644): `y` says so, naming its row. */
 void svc_scan_entry_toast_waiting(dsd_state* state);
 /** @brief Append to the toast in dsd_state::ui_msg why an entry on a row's frequency stayed a plain tune (@p match with
- * no row chosen and an AVOIDED, LIST_OFF or WIDTH reason, issue #644 D5), the row named when that fits, else only the
- * reason, else nothing. */
-void svc_scan_entry_toast_reason(dsd_state* state, const dsd_scan_entry_match_t* match);
+ * no row chosen and an AVOIDED, LIST_OFF or WIDTH reason, issue #644 D5): the row named as the entry toasts name it
+ * (a trunk-scan target while @p opts runs one) when that fits, else as "that row" or "that target". */
+void svc_scan_entry_toast_reason(const dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match_t* match);
 
 /** @brief Tune receiver frequency (Hz), RTL or a rigctl peer, on every build; caller owns trunking and call bookkeeping. */
 /* A tune the user asked for. An accepted one is a carrier boundary (dsd_engine_carrier_boundary(), issue #575); the

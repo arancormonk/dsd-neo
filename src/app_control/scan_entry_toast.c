@@ -8,12 +8,17 @@
  * what the scan's go-to of that row came to, what became of an entry whose tune was still outstanding, `y` continuing
  * an entry hold, and why an entry on a row's frequency that the scan cannot take stayed a plain tune.
  *
- * Every text fits dsd_state::ui_msg. The row's name is never cut: a part that would not fit is dropped whole, the
- * "(1 of 2)" count first, then a trunked target's control-channel frequency.
+ * A -Y row is named by its label, else "row N"; a trunk-scan target as every target toast names it, "#<n> <label>",
+ * its id in place of a label it lacks (svc_trunk_scan_toast_name()). Every text fits dsd_state::ui_msg. The name is
+ * never cut: a part that would not fit is dropped whole, the "(1 of 2)" count first, then a trunked target's
+ * control-channel frequency.
  */
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/scan_entry.h>
@@ -22,17 +27,55 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "services.h"
 
-/* The entry whose tune is outstanding: the row a go-to that answered PENDING went to, named in the toast its landing
-   or failure leaves (svc_scan_entry_settle()) and in `y`'s while it waits. Decoder thread only, as every command is. */
-static struct {
+/* The entry whose tune is outstanding, in the state's own slot (DSD_STATE_EXT_APP_SCAN_ENTRY): the row a go-to that
+   answered PENDING went to, named in the toast its landing leaves (svc_scan_entry_settle()) and in `y`'s while it
+   waits. A failure is named by the scan's own record instead, which every entry has. Decoder thread only. */
+typedef struct {
     int waiting;
     dsd_scan_entry_match_t match;
     long park_hz;
     char text[sizeof(((dsd_state*)0)->ui_msg)]; /* the toast it left, which only its own landing replaces */
-} g_entry;
+} scan_entry_waiting;
+
+/* The state's slot; made on first use when @p create, else NULL until then (and when it cannot be made). */
+static scan_entry_waiting*
+entry_waiting_slot(dsd_state* state, int create) {
+    scan_entry_waiting* slot = DSD_STATE_EXT_GET_AS(scan_entry_waiting, state, DSD_STATE_EXT_APP_SCAN_ENTRY);
+    if (slot || !create) {
+        return slot;
+    }
+    slot = (scan_entry_waiting*)calloc(1, sizeof(*slot));
+    if (slot && dsd_state_ext_set(state, DSD_STATE_EXT_APP_SCAN_ENTRY, slot, free) != 0) {
+        free(slot);
+        slot = NULL;
+    }
+    return slot;
+}
+
+const char*
+svc_trunk_scan_toast_name(uint32_t ordinal, const char* label, const char* id, char* out, size_t out_size) {
+    const char* shown = (label && label[0]) ? label : (id ? id : "");
+    if (ordinal > 0U) {
+        DSD_SNPRINTF(out, out_size, "#%u %s", (unsigned)ordinal, shown);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", shown);
+    }
+    return out;
+}
+
+/* @p m's row as a toast names it: a target's place in the list and its label (or id), a -Y row's label. */
+static const char*
+entry_name(const dsd_scan_entry_match_t* m, char* out, size_t size) {
+    if (m->scanner == DSD_SCAN_ENTRY_TRUNK) {
+        return svc_trunk_scan_toast_name(m->row >= 0 ? (uint32_t)m->row + 1U : 0U, m->label, NULL, out, size);
+    }
+    DSD_SNPRINTF(out, size, "%s", m->label);
+    return out;
+}
 
 static void
 entry_toast_set(dsd_state* state, int seconds, const char* text) {
@@ -45,6 +88,8 @@ entry_toast_set(dsd_state* state, int seconds, const char* text) {
 static void
 entry_compose(char* out, size_t size, const char* lead, const dsd_scan_entry_match_t* m, const char* body,
               const char* extra) {
+    char name[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+    (void)entry_name(m, name, sizeof name);
     char count[32] = "";
     if (m->count > 1U) {
         DSD_SNPRINTF(count, sizeof count, " (%u of %u)", m->ordinal, m->count);
@@ -52,7 +97,7 @@ entry_compose(char* out, size_t size, const char* lead, const dsd_scan_entry_mat
     const char* counts[] = {count, "", count, ""};
     const char* extras[] = {extra, extra, "", ""};
     for (size_t i = 0; i < sizeof counts / sizeof counts[0]; i++) {
-        const int n = DSD_SNPRINTF(out, size, "%s%s%s%s%s", lead, m->label, counts[i], body, extras[i]);
+        const int n = DSD_SNPRINTF(out, size, "%s%s%s%s%s", lead, name, counts[i], body, extras[i]);
         if (n >= 0 && (size_t)n < size) {
             return;
         }
@@ -108,13 +153,28 @@ entry_scan_paused(const dsd_state* state, dsd_scan_entry_scanner scanner) {
     return scanner == DSD_SCAN_ENTRY_TRUNK ? state->trunk_scan_paused != 0U : state->lcn_scan_paused != 0U;
 }
 
+/* Remember the entry @p match left waiting, with the toast @p text it left; or forget one (@p match NULL). */
+static void
+entry_remember(dsd_state* state, const dsd_scan_entry_match_t* match, long park_hz, const char* text) {
+    scan_entry_waiting* slot = entry_waiting_slot(state, match != NULL);
+    if (!slot) {
+        return;
+    }
+    slot->waiting = match != NULL;
+    if (match) {
+        slot->match = *match;
+        slot->park_hz = park_hz;
+        DSD_SNPRINTF(slot->text, sizeof slot->text, "%s", text);
+    }
+}
+
 void
 svc_scan_entry_toast_outcome(dsd_state* state, const dsd_scan_entry_match_t* match, dsd_scan_goto_result result,
                              long park_hz, int engine_toasted) {
     if (!state || !match) {
         return;
     }
-    g_entry.waiting = 0;
+    entry_remember(state, NULL, 0L, NULL);
     char text[sizeof state->ui_msg];
     switch (result) {
         case DSD_SCAN_GOTO_HOLDING:
@@ -127,10 +187,7 @@ svc_scan_entry_toast_outcome(dsd_state* state, const dsd_scan_entry_match_t* mat
         case DSD_SCAN_GOTO_PENDING:
             entry_waiting_text(text, sizeof text, match, park_hz,
                                match->scanner == DSD_SCAN_ENTRY_CHANNEL && state->lcn_scan_resume_pending);
-            g_entry.waiting = 1;
-            g_entry.match = *match;
-            g_entry.park_hz = park_hz;
-            DSD_SNPRINTF(g_entry.text, sizeof g_entry.text, "%s", text);
+            entry_remember(state, match, park_hz, text);
             break;
         default:
             entry_failure_text(text, sizeof text, match, result, entry_scan_paused(state, match->scanner));
@@ -140,32 +197,31 @@ svc_scan_entry_toast_outcome(dsd_state* state, const dsd_scan_entry_match_t* mat
     entry_toast_set(state, 3, text);
 }
 
-/* The entry named for @p failed: the one waiting when it is that row, else the row by its place in the list. */
+/* Whether the entry @p slot remembers still waits on its tune. */
+static int
+entry_still_waiting(const dsd_state* state, const scan_entry_waiting* slot) {
+    return slot->match.scanner == DSD_SCAN_ENTRY_TRUNK ? dsd_engine_trunk_scan_entry_pending(state)
+                                                       : dsd_engine_channel_scan_entry_pending(state);
+}
+
+/* Whether the scan now holds the row @p slot's entry went to, marked an entry hold: its tune landed. */
+static int
+entry_landed(const dsd_state* state, const scan_entry_waiting* slot) {
+    return slot->match.scanner == DSD_SCAN_ENTRY_TRUNK ? state->trunk_scan_entry_hold != 0U
+                                                       : state->lcn_scan_entry_hold != 0U;
+}
+
+/* Name the late failure the scan kept, as the scan named what the entry went to. */
 static void
-entry_failure_name(const dsd_scan_entry_failure_t* failed, dsd_scan_entry_match_t* out) {
-    if (g_entry.waiting && g_entry.match.scanner == failed->scanner && g_entry.match.row == failed->row) {
-        *out = g_entry.match;
-        return;
-    }
-    DSD_MEMSET(out, 0, sizeof(*out));
-    out->scanner = failed->scanner;
-    out->row = failed->row;
-    DSD_SNPRINTF(out->label, sizeof out->label, "%s %d", failed->scanner == DSD_SCAN_ENTRY_TRUNK ? "target" : "row",
-                 failed->row + 1);
-}
-
-/* Whether the entry waiting still waits on its tune. */
-static int
-entry_still_waiting(const dsd_state* state) {
-    return g_entry.match.scanner == DSD_SCAN_ENTRY_TRUNK ? dsd_engine_trunk_scan_entry_pending(state)
-                                                         : dsd_engine_channel_scan_entry_pending(state);
-}
-
-/* Whether the scan now holds the row the entry waiting went to, marked an entry hold: its tune landed. */
-static int
-entry_landed(const dsd_state* state) {
-    return g_entry.match.scanner == DSD_SCAN_ENTRY_TRUNK ? state->trunk_scan_entry_hold != 0U
-                                                         : state->lcn_scan_entry_hold != 0U;
+entry_failure_toast(dsd_state* state, const dsd_scan_entry_failure_t* failed) {
+    dsd_scan_entry_match_t named;
+    DSD_MEMSET(&named, 0, sizeof named);
+    named.scanner = failed->scanner;
+    named.row = failed->row;
+    DSD_SNPRINTF(named.label, sizeof named.label, "%s", failed->label);
+    char text[sizeof state->ui_msg];
+    entry_failure_text(text, sizeof text, &named, failed->result, entry_scan_paused(state, failed->scanner));
+    entry_toast_set(state, 4, text);
 }
 
 void
@@ -175,23 +231,20 @@ svc_scan_entry_settle(dsd_state* state) {
     }
     dsd_scan_entry_failure_t failed;
     if (dsd_engine_scan_entry_take_failure(state, &failed)) {
-        dsd_scan_entry_match_t named;
-        entry_failure_name(&failed, &named);
-        char text[sizeof state->ui_msg];
-        entry_failure_text(text, sizeof text, &named, failed.result, entry_scan_paused(state, failed.scanner));
-        entry_toast_set(state, 4, text);
-        g_entry.waiting = 0;
+        entry_failure_toast(state, &failed);
+        entry_remember(state, NULL, 0L, NULL);
         return;
     }
-    if (!g_entry.waiting || entry_still_waiting(state)) {
+    scan_entry_waiting* slot = entry_waiting_slot(state, 0);
+    if (!slot || !slot->waiting || entry_still_waiting(state, slot)) {
         return;
     }
-    g_entry.waiting = 0;
+    slot->waiting = 0;
     /* Landed: the hold replaces the entry's own waiting text, and nothing newer (a failure, another command's). A
        cancel (`Y`, `L`, `J`, `b`, another entry, a pause, a stop) leaves what it said. */
-    if (entry_landed(state) && strcmp(state->ui_msg, g_entry.text) == 0) {
+    if (entry_landed(state, slot) && strcmp(state->ui_msg, slot->text) == 0) {
         char text[sizeof state->ui_msg];
-        entry_holding_text(text, sizeof text, &g_entry.match, g_entry.park_hz);
+        entry_holding_text(text, sizeof text, &slot->match, slot->park_hz);
         entry_toast_set(state, 3, text);
     }
 }
@@ -208,52 +261,46 @@ svc_scan_entry_toast_waiting(dsd_state* state) {
     if (!state) {
         return;
     }
-    if (!g_entry.waiting) {
+    scan_entry_waiting* slot = entry_waiting_slot(state, 0);
+    if (!slot || !slot->waiting) {
         entry_toast_set(state, 3, "Scan: waiting for the tune");
         return;
     }
     char text[sizeof state->ui_msg];
-    entry_waiting_text(text, sizeof text, &g_entry.match, g_entry.park_hz, 0);
-    DSD_SNPRINTF(g_entry.text, sizeof g_entry.text, "%s", text);
+    entry_waiting_text(text, sizeof text, &slot->match, slot->park_hz, 0);
+    DSD_SNPRINTF(slot->text, sizeof slot->text, "%s", text);
     entry_toast_set(state, 3, text);
 }
 
-/* Why an entry on @p match's row stayed a plain tune: with the row's name, else (no room) without it. */
+/* Why an entry on @p match's row stayed a plain tune: with the row's name (@p name), else (no room) as "that row" or
+   "that target" (@p trunk). */
 static void
-entry_reason_text(const dsd_scan_entry_match_t* match, int named, char* out, size_t size) {
-    const char* phrase = NULL; /* after the row's name */
-    const char* bare = NULL;   /* in its place */
+entry_reason_text(const dsd_scan_entry_match_t* match, const char* name, int trunk, char* out, size_t size) {
+    const char* noun = trunk ? "that target" : "that row";
+    const char* phrase = NULL; /* after the name, or after the noun */
     switch (match->reason) {
-        case DSD_SCAN_ENTRY_AVOIDED:
-            phrase = " is avoided";
-            bare = "; avoided";
-            break;
-        case DSD_SCAN_ENTRY_LIST_OFF:
-            phrase = " is in a list that is off";
-            bare = "; its list is off";
-            break;
-        case DSD_SCAN_ENTRY_WIDTH:
-            phrase = " is skipped: its width does not fit";
-            bare = "; its width does not fit";
-            break;
+        case DSD_SCAN_ENTRY_AVOIDED: phrase = " is avoided"; break;
+        case DSD_SCAN_ENTRY_LIST_OFF: phrase = name ? " is in a list that is off" : "'s list is off"; break;
+        case DSD_SCAN_ENTRY_WIDTH: phrase = "'s width does not fit"; break;
         default: out[0] = '\0'; return;
     }
-    if (named) {
-        DSD_SNPRINTF(out, size, "; %s%s", match->label, phrase);
-    } else {
-        DSD_SNPRINTF(out, size, "%s", bare);
-    }
+    DSD_SNPRINTF(out, size, "; %s%s", name ? name : noun, phrase);
 }
 
 void
-svc_scan_entry_toast_reason(dsd_state* state, const dsd_scan_entry_match_t* match) {
-    if (!state || !match || match->scanner != DSD_SCAN_ENTRY_NONE) {
+svc_scan_entry_toast_reason(const dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match_t* match) {
+    if (!opts || !state || !match || match->scanner != DSD_SCAN_ENTRY_NONE) {
         return;
     }
+    const int trunk = opts->trunk_scan_enabled == 1;
+    dsd_scan_entry_match_t named = *match;
+    named.scanner = trunk ? DSD_SCAN_ENTRY_TRUNK : DSD_SCAN_ENTRY_CHANNEL;
+    char name[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
+    (void)entry_name(&named, name, sizeof name);
     const size_t used = strnlen(state->ui_msg, sizeof state->ui_msg);
-    for (int named = 1; named >= 0; named--) {
+    for (int with_name = 1; with_name >= 0; with_name--) {
         char reason[sizeof state->ui_msg];
-        entry_reason_text(match, named, reason, sizeof reason);
+        entry_reason_text(match, with_name ? name : NULL, trunk, reason, sizeof reason);
         if (reason[0] == '\0') {
             return;
         }

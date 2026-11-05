@@ -2103,17 +2103,17 @@ ui_cmd_radio_unavailable_toast(dsd_state* state, int rc) {
    @p v); a pending, deferred or failed tune names the one asked for. An accepted entry on the frequency of a row the
    scan cannot take (@p match, issue #644 D5) says why it stayed a plain tune. */
 static void
-ui_cmd_rtl_set_freq_toast(dsd_state* state, int rc, uint32_t v, uint32_t applied, int scan_paused,
+ui_cmd_rtl_set_freq_toast(const dsd_opts* opts, dsd_state* state, int rc, uint32_t v, uint32_t applied, int scan_paused,
                           const dsd_scan_entry_match_t* match) {
     char mhz[16];
     if (rc == 0) {
         ui_set_toast(state, 3, "Applied: frequency -> %s MHz%s", ui_toast_mhz(applied, mhz, sizeof mhz),
                      scan_paused ? "; scan paused" : "");
-        svc_scan_entry_toast_reason(state, match);
+        svc_scan_entry_toast_reason(opts, state, match);
     } else if (rc == RTL_STREAM_TUNE_TIMEOUT) {
         ui_set_toast(state, 3, "Accepted: frequency -> %s MHz (pending)%s", ui_toast_mhz(v, mhz, sizeof mhz),
                      scan_paused ? "; scan paused" : "");
-        svc_scan_entry_toast_reason(state, match);
+        svc_scan_entry_toast_reason(opts, state, match);
     } else if (rc == RTL_STREAM_TUNE_DEFERRED) {
         ui_set_toast(state, 4, "Deferred; retry: frequency -> %s MHz", ui_toast_mhz(v, mhz, sizeof mhz));
     } else if (ui_rc_is_not_supported(rc)) {
@@ -2198,7 +2198,7 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         const int rc = ui_cmd_rtl_set_freq_tune(opts, state, v, &scan_paused);
         const uint32_t applied = opts->rtlsdr_center_freq; /* io_control_set_freq() caches what a success applied */
         result = ui_cmd_apply_status_from_tune_rc(rc);
-        ui_cmd_rtl_set_freq_toast(state, rc, v, applied, scan_paused, &match);
+        ui_cmd_rtl_set_freq_toast(opts, state, rc, v, applied, scan_paused, &match);
     }
     return result;
 }
@@ -7973,23 +7973,6 @@ scan_avoid_lcn_toast_freq(uint64_t hz, char* out, size_t out_size) {
     return out;
 }
 
-/* "#65535 " and a 63-byte label or id, terminated. */
-#define DSD_TRUNK_SCAN_TOAST_NAME_SIZE 80
-
-/* A --trunk-scan target as its avoid and put-back toasts name it (issue #672): "#<ordinal> <label>", the list position
-   and label column the avoided channel list shows, or the id when the target has no label. The id alone names nothing
-   on Android, whose target ids are entry UIDs. An ordinal of 0 (none known) leaves the position out. */
-static const char*
-trunk_scan_toast_name(uint32_t ordinal, const char* label, const char* id, char* out, size_t out_size) {
-    const char* shown = (label && label[0]) ? label : (id ? id : "");
-    if (ordinal > 0U) {
-        DSD_SNPRINTF(out, out_size, "#%u %s", (unsigned)ordinal, shown);
-    } else {
-        DSD_SNPRINTF(out, out_size, "%s", shown);
-    }
-    return out;
-}
-
 /* The avoided -Y rows, exact, through the scan avoid view (issue #672 B6): lcn_avoid_count saturates at 65,535. */
 static size_t
 scan_avoid_lcn_total(const dsd_opts* opts, const dsd_state* state) {
@@ -8054,7 +8037,7 @@ static const char k_scan_paused_refusal[] = "Scan paused: resume it first";
 static const char k_channel_cycle_no_tuner[] = "No tuner to change channel: use a radio input or a rigctl peer";
 
 /* The toast for an op the coordinator answered. @p target names the target that was on air before the op
-   (trunk_scan_toast_name()). */
+   (svc_trunk_scan_toast_name()). */
 static void
 trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target) {
     switch (op) {
@@ -8088,8 +8071,8 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target) {
                    receiver fell back (issue #666). The coordinator does not say which, so neither does the toast. The
                    target is the one on air now, named as the avoid toasts name one (issue #672). */
                 char stayed[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
-                (void)trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
-                                            state->trunk_scan_active_id, stayed, sizeof stayed);
+                (void)svc_trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
+                                                state->trunk_scan_active_id, stayed, sizeof stayed);
                 ui_set_toast(state, 3, "Staying on target %s", stayed);
             }
             break;
@@ -8101,8 +8084,8 @@ trunk_scan_control_toast(dsd_state* state, int op, int rc, const char* target) {
 static int
 apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
     char target[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
-    (void)trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
-                                state->trunk_scan_active_id, target, sizeof target);
+    (void)svc_trunk_scan_toast_name(state->trunk_scan_active_ordinal, state->trunk_scan_active_label,
+                                    state->trunk_scan_active_id, target, sizeof target);
     const int rc = dsd_trunk_scan_hook_control(opts, state, op);
     if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
         ui_set_toast(state, 3, "Trunk scan busy; try again");
@@ -8166,7 +8149,7 @@ apply_scan_avoid_remove_trunk_scan(const dsd_opts* opts, dsd_state* state, const
     dsd_trunk_scan_target_name named;
     const int rc = dsd_trunk_scan_hook_unavoid(opts, state, p->session, p->target_id, &named);
     char target[DSD_TRUNK_SCAN_TOAST_NAME_SIZE];
-    (void)trunk_scan_toast_name(named.ordinal, named.label, p->target_id, target, sizeof target);
+    (void)svc_trunk_scan_toast_name(named.ordinal, named.label, p->target_id, target, sizeof target);
     switch (rc) {
         case DSD_TRUNK_SCAN_CONTROL_OK:
             ui_set_toast(state, 3, "Put back target %s (%u avoided)", target,

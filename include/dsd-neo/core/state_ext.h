@@ -52,7 +52,8 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /*
      * Core facilities use dedicated slots rather than expanding `dsd_state`.
      * Engine owns 0, 1, 3 and 7; core owns 2, 4, 5 and 8; runtime owns 6; DSP owns 9, 10 and 11
-     * (taken from the core range, as runtime took 6 from the engine range) and 12 (taken from the io range).
+     * (taken from the core range, as runtime took 6 from the engine range) and 12 (taken from the io range);
+     * app-control owns 16, from the ui range.
      */
     DSD_STATE_EXT_CORE_TG_POLICY = 2,
     DSD_STATE_EXT_ENGINE_TRUNK_SCAN = 3,
@@ -71,6 +72,9 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /* The symbol grid's sync anchor: recent samples and symbol centres (src/dsp/symbol_anchor.c, issue #729).
      * Decoder-thread private. */
     DSD_STATE_EXT_DSP_SYMBOL_ANCHOR = 12,
+    /* App-control's frequency entry that sent a scan to one of its rows and still waits on its tune (issue #644,
+     * src/app_control/scan_entry_toast.c): what its landing's toast names. Decoder-thread private. */
+    DSD_STATE_EXT_APP_SCAN_ENTRY = 16,
     DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG = 24,
     DSD_STATE_EXT_PROTO_DMR_RC = 25,
     DSD_STATE_EXT_PROTO_P25_CC_SELECTION = 26,

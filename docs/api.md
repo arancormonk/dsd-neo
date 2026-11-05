@@ -828,13 +828,21 @@ field, and the decoder refuses the rest when it applies the command.
     may end up on another frequency than `value`. `status.message` says
     `Holding: <name>`, adds `(1 of 2)` when several rows share the frequency
     (`L` and `J` reach the others), and names a trunked target's control
-    channel. A tune still on its way says `Going to <name>: waiting for the
-    tune` (`Resuming scan at <name>: ...` over a paused `-Y` list), and its
-    landing or failure arrives in `status.message` later. `status.scan` reads
-    `hold` and `entry_hold` true once it lands. A row that is avoided, whose
+    channel. A `-Y` row is named by its label, else `row N`; a trunk-scan
+    target by its place in the list and its label, or its id when it has none
+    (`#3 County Fire`), as the scan avoid messages name it. A tune still on its
+    way says `Going to <name>: waiting for the tune` (`Resuming scan at <name>:
+    ...` over a paused `-Y` list), and its landing or failure arrives in
+    `status.message` later. `status.scan` reads `hold` and `entry_hold` true
+    once it lands. A go-to refused, deferred or not set up at once fails the
+    command, and `status.message` says `Failed: tune to <name>`, `Deferred;
+    retry: tune to <name>` or `Failed: <name> could not be set up`, each ending
+    `; scan stays paused` while the scan is paused. A row that is avoided, whose
     list is off, or whose width the input cannot run is not taken: the entry
     is a plain one, below, and its message ends with the reason
-    (`; fire-dispatch is avoided`).
+    (`; fire-dispatch is avoided`, `; #3 County Fire is in a list that is off`,
+    `; fire-dispatch's width does not fit`; `that row` or `that target` in
+    place of a name too long to fit).
   * Otherwise, with single-system P25 trunking on and no scan, it selects that
     control channel. Otherwise it tunes a rigctl peer when one is in use, else
     the radio, and once the tune is accepted (applied, or still pending on the
