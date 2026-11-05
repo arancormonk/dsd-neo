@@ -4090,6 +4090,38 @@ test_typed_goto_restaged_landing_holds(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #644: a go-to of a row whose tune is already outstanding in this scan -- a second go-to while the first one's
+   tune is in flight, or one over Next's tune of that row -- tunes nothing again: the entry waits on that tune, and its
+   landing holds the row, as the trunk scan's go-to waits on a park in flight. */
+static void
+test_typed_goto_waits_on_the_tune_in_flight(void) {
+    for (int over_next = 0; over_next <= 1; over_next++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        assert(opts && state);
+        typed_goto_fixture(opts, state);
+        const int row = over_next ? 1 : 3;
+        tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        if (over_next) {
+            assert(typed_walk_step(opts, state, 1, 1) == 0);
+            assert(!dsd_engine_channel_scan_entry_pending(state));
+        } else {
+            assert(typed_goto(opts, state, row) == DSD_SCAN_GOTO_PENDING);
+        }
+        tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+        const int tunes_before = tunes;
+        const uint64_t first = request;
+        assert(typed_goto(opts, state, row) == DSD_SCAN_GOTO_PENDING);
+        assert(typed_goto(opts, state, row) == DSD_SCAN_GOTO_PENDING);
+        assert(tunes == tunes_before && request == first);
+        assert(dsd_engine_channel_scan_entry_pending(state) && state->lcn_scan_hold == 0U);
+        dsd_trunk_tuning_request_publish(first, DSD_TRUNK_TUNE_RESULT_OK);
+        assert(dsd_engine_channel_scan_pending(opts, state) == 0);
+        assert(tunes == tunes_before && typed_entry_held_on(state, row));
+        typed_walk_fixture_free(opts, state);
+    }
+}
+
 /* Issue #644: rows a go-to never takes, and scans it never acts on: nothing changes, nothing is tuned. */
 static void
 test_typed_goto_refuses_what_it_cannot_reach(void) {
@@ -4560,6 +4592,7 @@ main(void) {
     test_typed_goto_refused_keeps_the_row_on_air();
     test_typed_goto_restaged_landing_holds();
     test_typed_goto_pending_outcomes();
+    test_typed_goto_waits_on_the_tune_in_flight();
     test_typed_goto_replaces_an_entry_hold();
     test_typed_goto_over_a_row_in_flight();
     test_typed_entry_hold_lifecycle();

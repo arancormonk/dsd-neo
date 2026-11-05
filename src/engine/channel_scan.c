@@ -2112,6 +2112,16 @@ channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired)
     return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
 }
 
+/* Whether typed row @p row's tune is already outstanding in this scan (issue #644): the attempt staged for it, by a
+   go-to or a step, still waits on its request or a retry, on the list it was staged from. A go-to then waits on that
+   attempt: its landing holds the row, with no second tune, as the trunk scan's go-to waits on a park in flight. */
+static int
+channel_scan_row_in_flight(const dsd_opts* opts, const dsd_state* state, int row) {
+    const channel_scan* scan = channel_scan_get(state);
+    return scan && (scan->request != 0 || scan->retry) && scan->row == row
+           && channel_scan_row_is_current(opts, state, scan);
+}
+
 dsd_scan_goto_result
 dsd_engine_channel_scan_goto_row(dsd_opts* opts, dsd_state* state, int row) {
     if (!opts || !state || !channel_scan_runs_users_list(opts, state)
@@ -2130,6 +2140,12 @@ dsd_engine_channel_scan_goto_row(dsd_opts* opts, dsd_state* state, int row) {
     if (!dsd_channel_modes_present(state)) {
         return channel_scan_untyped_run_avoided(state, row) ? DSD_SCAN_GOTO_REFUSED
                                                             : dsd_engine_scan_untyped_goto_row(opts, state, row);
+    }
+    if (channel_scan_row_in_flight(opts, state, row)) {
+        /* An entry hold on the row left goes, as at any go-to; the attempt's landing sets it again. */
+        dsd_engine_scan_entry_hold_replaced(state);
+        dsd_engine_scan_entry_intent_set(state, row, channel_scan_get(state)->attempt);
+        return DSD_SCAN_GOTO_PENDING;
     }
     int retired = 0;
     return channel_scan_goto_typed(opts, state, row, &retired);

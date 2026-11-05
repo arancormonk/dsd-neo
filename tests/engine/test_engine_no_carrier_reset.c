@@ -9401,6 +9401,51 @@ test_untyped_goto_refuses_an_avoided_channel(void) {
     return rc;
 }
 
+/* Issue #644: a go-to of the row whose walk tune is already in flight in this session -- a second go-to while the
+   first one's tune is pending (@p over_walk 0), or one over Next's walk to that row (@p over_walk 1) -- tunes nothing
+   again: the entry waits on that tune, and its landing holds the row, as the trunk scan's go-to waits on a park in
+   flight. */
+static int
+untyped_goto_waits_on_the_tune_in_flight_case(int over_walk) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = over_walk ? "untyped go-to over Next's tune in flight" : "untyped go-to over its own tune";
+    if (setup_walk_list(opts, state, 1, 1660012500L + (long int)over_walk * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = 0;
+    if (over_walk) {
+        rc |= expect_case(what, "Next's walk to row 1 is pending",
+                          dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING
+                              && !dsd_engine_channel_scan_entry_pending(state));
+    } else {
+        rc |= expect_case(what, "row 1's go-to is pending",
+                          dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    }
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the go-to waits on the tune in flight",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    rc |= expect_case(what, "and so does a second one",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    rc |= expect_case(what, "no second tune", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the entry waits, unheld",
+                      dsd_engine_channel_scan_entry_pending(state) && state->lcn_scan_hold == 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "its landing is taken", poll_until_landed(opts, state));
+    rc |= expect_untyped_entry_held(what, state, 1);
+    rc |= expect_case(what, "still one tune", g_rtl_tune_calls == tunes);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_goto_over_a_pending_goto(void) {
     int rc = test_untyped_goto_cancelled_by_a_pause();
@@ -9410,6 +9455,7 @@ test_untyped_goto_over_a_pending_goto(void) {
     for (int c = 0; c < UAGAIN_CASES; c++) {
         rc |= untyped_goto_over_a_pending_goto_case(c);
     }
+    rc |= untyped_goto_waits_on_the_tune_in_flight_case(0) | untyped_goto_waits_on_the_tune_in_flight_case(1);
     return rc;
 }
 #endif

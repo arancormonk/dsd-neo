@@ -1721,9 +1721,17 @@ untyped_goto_over_a_pending_resume(dsd_opts* opts, dsd_state* state, int row) {
     return deferred ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
 }
 
-/* The running untyped go-to: the walk's tune of @p row. */
+/* The running untyped go-to: the walk's tune of @p row. A walk of the scan's to @p row still in flight in this session
+   (an earlier go-to's, or Next's) is that tune: the entry waits on it, with no second tune, as the trunk scan's go-to
+   waits on a park in flight, and an entry hold on the row left goes as at any go-to. */
 static dsd_scan_goto_result
 untyped_goto_running(dsd_opts* opts, dsd_state* state, int row) {
+    int scan_walk = 0;
+    if (dsd_engine_manual_tune_pending_row(state, &scan_walk) == row && scan_walk) {
+        dsd_engine_scan_entry_hold_replaced(state);
+        dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_pending_id());
+        return DSD_SCAN_GOTO_PENDING;
+    }
     int moved = 0;
     const int result = untyped_enter_tuned_row(opts, state, row, 1, dsd_decode_time(), &moved);
     if (result == DSD_UNTYPED_STEP_OK) {
