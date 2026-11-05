@@ -2088,7 +2088,8 @@ A typed frequency wins over a scan; a tap or a drag does not. While a scan list 
 its Spectrum view stays **VIEW ONLY** for taps and drags, but **Go to** is offered and
 says that tuning pauses the scan; **Tune** pauses it and the receiver stays on the
 frequency until you resume. Once paused, the scan list's Spectrum view works as
-Explore does (tap, drag, step and **Go to** all tune, and the scan stays paused) until
+Explore does (tap, drag, step and **Go to** all tune, and the scan stays paused,
+except for **Go to** on a scan entry, below) until
 **Resume scan**, and for the rest of the session if the paused scan is stopped. A saved
 system that scans its channel list stays view-only until **Explore from here**, whose
 confirmation says it pauses the scan rather than ending it; paused, it still takes
@@ -2099,22 +2100,29 @@ the scan position, the session is named **Exploring** until the resume, and **Re
 scan** takes the place of **Hold**, **Avoid**, **Prev** and **Next**. A pause made from
 the terminal or the API shows the same way.
 
-**Go to** a frequency that is one of the scan's entries (not avoided, its list on) does
-not pause the scan: the scan moves to that entry and holds there, with the entry's own
-mode, keys and options (a paused scan resumes there). **Hold** shows it held; tap **Hold**
-to let the scan go on. The Go to sheet says so while a scan runs.
+**Go to** a frequency that is one of the scan's entries (a scan-list entry, or a channel
+of a saved system that scans its channel list) does not pause the scan: the scan moves
+to that entry and holds there, with the entry's own mode, keys and options (a paused
+scan resumes there). For a trunked system the scan goes to its control channel, which
+may not be the frequency you typed. **Hold** shows it held once the radio is there; tap
+**Hold** to let the scan go on. An entry that is avoided, or whose list is off, is not
+taken: **Go to** pauses the scan as usual and the message says why. Only **Go to** does
+this: on a paused scan, a tap, a drag or a step to the same frequency tunes it with your
+usual settings. The Go to sheet says so while a scan runs.
 
 In Explore, when the frequency you are on is a scan list's entry or a saved system,
 Monitor (above Recent calls) and Spectrum (beside **Save**) offer to listen to it with
-its own settings. For a scan-list entry the button reads **Listen with its settings**: it
-stops Explore and starts that scan list held on the entry, which **Hold** shows once the
-radio has landed there; tap **Hold** to let the scan go on. For a saved system it reads
-**Start “Name”** and starts that system, as Signal search does. With several on the
-frequency, the button opens a list of them. The hold is for that one start: **Retry** and
-later starts of the list scan it as usual. A frequency that is only in a channel map, a
-turned-off entry or a draft list offers nothing. While a scan list you paused is on
-screen, the button only offers that session's own entries, and takes you back in place:
-the scan resumes on the entry and holds it, with its other lists kept.
+its own settings. For a scan-list entry the button reads **Listen with its settings**:
+it stops Explore and starts that scan list held on the entry, which **Hold** shows once
+the radio has landed there; tap **Hold** to let the scan go on. For a saved system it
+reads **Start “Name”** and starts that system, as Signal search does. With several on
+the frequency, the button opens a list of them. The hold is for that one start:
+**Retry** and later starts of the list scan it as usual. A frequency that is only in a
+channel map, a turned-off entry or a draft list offers nothing. While a scan list you
+paused (or left with **Explore from here**) is on screen, the button offers only that
+session's own entries, and takes you back in place: the scan resumes on the entry and
+holds it, with its other lists kept. Other lists and saved systems are not offered
+there, since starting one would end that session.
 
 While a scan runs, Monitor's scan row under the call offers **Hold** (stay on this
 channel), **Avoid** (skip it for the session), **Prev** and **Next**. **Prev** steps

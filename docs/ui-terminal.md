@@ -420,11 +420,19 @@ tuning its capture recorded, and on audio input without a connected rigctl peer;
 instead (`An I/Q replay cannot retune: it plays the tuning it recorded.`, or
 `Nothing to tune: this input needs a connected rigctl peer (key 9, or Input > Rigctl).`).
 
-A frequency in the scan's own list is the exception (issue #644): a running or paused scan goes to that row, with the
-row's own settings, and holds there (`Holding: Marion`, with `(1 of 2)` when rows share the frequency). The scan row
-reads `HOLD (y continues)`, and `y` continues the scan from that row; `Y` releases the hold too. A row that is
-avoided, whose list is off or whose width the input cannot run is not taken: the entry tunes as above, and its toast
-ends with the reason (`; Marion is avoided`).
+A frequency in the scan's own list is the exception (issue #644): a running or paused scan goes to that row, or
+`--trunk-scan` target, and holds it there with the row's own settings (mode, options, keys, name), as on any visit
+(`Holding: Marion`, with `(1 of 2)` when rows share the frequency; `L` and `J` reach the others). A scan already on that
+row only holds it. Until the tune lands the toast reads `Going to Marion: waiting for the tune`. A trunked target parks
+on its control channel, as at any visit, so the receiver may go to another frequency than the one typed, and the toast
+names that channel (`Holding: #1 county-p25, trunked: following its control channel 851.012500 MHz`). The scan row reads
+`HOLD (y continues)`, and `y` continues the scan from that row; `Y` releases the hold too. A row that is avoided, whose
+list is off or whose width the input cannot run is not taken: the entry tunes as above, and its toast ends with the
+reason (`; Marion is avoided`). To hear a row's frequency with the configured settings, pause a trunk scan in place on
+it with `y` (after a first `y` lets an entry's hold go), or stop `-Y` with `y`, after which an entry matches no row.
+After the radio stream restarts (a reconnect, a config that reopens the input) the scan is not sure of the row on air
+until its next tune, so an entry on that row tunes it again, which ends a call in progress. The details are in
+`docs/cli.md` (`-Y`) and `docs/trunk-scan.md`.
 
 ### Avoided channels
 
@@ -789,9 +797,9 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable; not a private voice call, whose target is a radio: block it from the radio ID list. An individually addressed data call cannot be told from group data and is locked out as a talkgroup: decided limit); lifetime follows **Save user TG lockouts**, like Qt/Android **Avoid TG**/**Lock out** |
 
 While a scan is paused, `Y`, `b`, `J`, `L` and a scan-list switch are refused with `Scan paused: resume it first`; the
-avoids, and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold). Trunking > Avoids > **Avoided
-channels...** and **Clear avoids** still work while paused: they only change which entries the rotation skips, and
-nothing retunes. Under `--trunk-scan`, running or paused, `t` is refused with
+avoids, and a trunk scan's hold, stay for the resume (a `-Y` pause drops a `Y` hold, and any pause drops the hold an
+entry set). Trunking > Avoids > **Avoided channels...** and **Clear avoids** still work while paused: they only change
+which entries the rotation skips, and nothing retunes. Under `--trunk-scan`, running or paused, `t` is refused with
 `Trunk scan: each target sets its own trunking`. Over a paused `-Y` scan, `t` turning trunking on stops the scan.
 
 **Mouse wheel.** Off by default: turn on Display → **Mouse wheel steps channels**, or set `terminal_mouse_wheel = true`

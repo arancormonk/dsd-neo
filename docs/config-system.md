@@ -279,7 +279,8 @@ the config is applied; a load that is not applied leaves the autosave as it was,
 that file.
 
 A frequency entry, a tuner release (Qt/Android **Explore from here**, the API's `tuner_release`) and `y` under a trunk
-scan pause a scan instead of stopping it (issue #671; see `docs/cli.md` and `docs/trunk-scan.md`). A save made while a
+scan pause a scan instead of stopping it (issue #671; see `docs/cli.md` and `docs/trunk-scan.md`); an entry on a row of
+the scan holds it there instead (issue #644), and no save writes that hold. A save made while a
 scan is paused writes the scan as configured, so the next start runs it from the beginning: `[trunking] scanner = true`
 for a paused `-Y` scan, and for a paused trunk scan `[trunk_scan] enabled = true` with the configured trunking setting
 (`[trunking] enabled`), not the one a parked target ran. A `-Y` scan stopped with `y` saves `scanner = false`. A config

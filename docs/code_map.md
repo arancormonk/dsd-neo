@@ -3562,11 +3562,11 @@ any answer but a deferral forgets the legacy caches, as the step's leg does), an
 boundary and `untyped_install_row()` (the row's keys included). Off any scan (`-T` included) the walk keeps its one leg,
 the backend io_control selects (`request_manual_tune()` with an `out_pending_id`), and its landing is app-control's
 `lcn_cycle_finish()`: the calls end, the `TUNE` boundary (trunking off) or the identity forget (trunking on), the TETRA,
-cold-start and P25 handoffs, and the row named; no row keys apply off `-Y` (B-1, docs/csv-formats.md). A refusal applies
-the walk's row rules by its direction (`dsd_engine_channel_walk_note_outcome()`: forward passes the row, back keeps it
-for a retry), a deferral changes nothing, and a rigctl leg that moved before the RTL leg failed or timed out runs the
-outgoing boundary and the analog reset at once. An RTL timeout notes a `DSD_MANUAL_TUNE_LCN_CYCLE` record and nothing
-else: the cursor, the row heard, the keys, the clocks and the calls stay. While it is pending
+cold-start and P25 handoffs, and the row named; no row keys apply off `-Y` (issue #644 B-1, docs/csv-formats.md). A
+refusal applies the walk's row rules by its direction (`dsd_engine_channel_walk_note_outcome()`: forward passes the row,
+back keeps it for a retry), a deferral changes nothing, and a rigctl leg that moved before the RTL leg failed or timed
+out runs the outgoing boundary and the analog reset at once. An RTL timeout notes a `DSD_MANUAL_TUNE_LCN_CYCLE` record
+and nothing else: the cursor, the row heard, the keys, the clocks and the calls stay. While it is pending
 (`dsd_engine_manual_tune_pending_row()`: its row on the current list and session) another press goes on from its row in
 the press's own direction (`lcn_cycle_start()`), so quick presses and key auto-repeat keep advancing; that tune
 supersedes the first, whose record then settles nothing. A press while the timed step's own tune is pending goes on from
@@ -3900,9 +3900,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     resume-at's return to the monitor recorded, issue #578), then `svc_trunk_scan_settle_gain()` with the report's
     `restart_gain`. The scan tunes the row as it tunes any row (both legs where it uses both), never the plain entry's
     leg; no pause, no `operator_tuned`. HOLDING and PENDING complete the command; REFUSED, DEFERRED and SETUP_FAILED
-    fail it. No match (or an ineligible one) takes the plain path below, whose accepted toast gains the D5 reason
-    (`svc_scan_entry_toast_reason()`). Every entry toast comes from `src/app_control/scan_entry_toast.c`, which names a
-    -Y row by its label (else `row N`) and a trunk-scan target as every target toast does,
+    fail it. No match (or an ineligible one) takes the plain path below, whose accepted toast gains the reason the row
+    was not taken (`svc_scan_entry_toast_reason()`). Every entry toast comes from `src/app_control/scan_entry_toast.c`,
+    which names a -Y row by its label (else `row N`) and a trunk-scan target as every target toast does,
     `svc_trunk_scan_toast_name()` (`#<n> <label>`, its id for a label it lacks; the avoid, put-back and Next toasts
     use it too): `Holding: <name>`, `(n of N)` for duplicates (eligible rows only), `, trunked: following its control
     channel <MHz> MHz`;
@@ -3927,7 +3927,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     (the composer at its limits; both scans running and paused: holding, on air, duplicates and one avoided, pending,
     landing, late failure once, cancel by `Y`, `y`/`SCAN_RESUME`, `Y` over a resume-at; a refused trunk resume-at's
     monitor request and gain reopen), `APP_CONTROL_ACTIONS`, `API_SERVER`.
-  - Scan pause commands (issue #671): an accepted frequency entry wins over a running scan and pauses it.
+  - Scan pause commands (issue #671): an accepted frequency entry that is no scan row (above) wins over a running scan
+    and pauses it.
     `ui_cmd_handle_rtl_set_freq()` refuses a replay and 0 only, then sends a typed scan row to the entry service above.
     A running trunk scan comes first, before
     `manual_frequency_selects_p25_cc()`, since a parked trunked target has trunking on:
@@ -3942,20 +3943,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `svc_pause_channel_scan()` under the guard (`ui_cmd_pause_channel_scan_after_tune()`): the tune came first, so the
     row's calls end under its label and keys. Every accepted tune on these two paths, not a P25 control-channel
     selection, marks the operator's tuner (`ui_mark_operator_tuned()`), and its toast ends `; scan paused` when it
-    paused one; an entry over a paused scan only tunes. `ui_cmd_leaves_scanner_scope()` answers 0 while a `-Y` pause
-    stands, so `apply_cmd_scoped()`'s post-handler leave never drops one. `TUNER_RELEASE` (`apply_tuner_release()`)
-    stops `-T` as before, pauses a running `-Y` scan or trunk scan in place (`svc_pause_channel_scan(..., 1)`,
-    `svc_pause_trunk_scan_in_place()`; `Automatic tuning paused`) and leaves a paused one alone; it sets
-    `operator_tuned` itself whenever it releases trunking, and the pauses set it. `SCANNER_TOGGLE` (`y`) and
-    `SCAN_RESUME` (219, API `scan_resume`, `CommandBridge::resumeScan()`) live in `actions/actions_trunk.c`: `y` resumes
-    a paused scan, pauses a running trunk scan in place (a pending trunk-scan resume counts as running), and stops or
-    starts `-Y`. The stop leaves with `scanner_mode` still 1, then the row keys leave, then the flag clears, so a
-    running untyped list's calls end under its row and keys (issue #644 B-3); the start goes through
+    paused one; an entry over a paused scan only tunes, unless it is a row of that scan. `ui_cmd_leaves_scanner_scope()`
+    answers 0 while a `-Y` pause stands, so `apply_cmd_scoped()`'s post-handler leave never drops one. `TUNER_RELEASE`
+    (`apply_tuner_release()`) stops `-T` as before, pauses a running `-Y` scan or trunk scan in place
+    (`svc_pause_channel_scan(..., 1)`, `svc_pause_trunk_scan_in_place()`; `Automatic tuning paused`) and leaves a paused
+    one alone; it sets `operator_tuned` itself whenever it releases trunking, and the pauses set it. `SCANNER_TOGGLE`
+    (`y`) and `SCAN_RESUME` (219, API `scan_resume`, `CommandBridge::resumeScan()`) live in `actions/actions_trunk.c`:
+    `y` resumes a paused scan, pauses a running trunk scan in place (a pending trunk-scan resume counts as running), and
+    stops or starts `-Y`. The stop leaves with `scanner_mode` still 1, then the row keys leave, then the flag clears, so
+    a running untyped list's calls end under its row and keys (issue #644 B-3); the start goes through
     `dsd_engine_channel_scan_start()` (refused over a pause or a pending resume, which resume instead; with no list of
     the user's own it only sets `scanner_mode`, ending no call and leaving `operator_tuned` as it is until the scan
     first lands a row, since the scan never moves the receiver), which ends the calls heard so far under what they began
-    with and then gives the tuner to the scan (`scanner_mode` 1, `operator_tuned` 0; B-4), before trunking goes off;
-    `SCAN_RESUME` resumes only
+    with and then gives the tuner to the scan (`scanner_mode` 1, `operator_tuned` 0; issue #644 B-4), before trunking
+    goes off; `SCAN_RESUME` resumes only
     a paused scan (`Not paused: the scan is running`, `Not scanning: no paused scan to resume`), and a second one while
     a `-Y` resume waits on its row only says so. `t`/`TRUNK_SET` are refused under a trunk-scan coordinator (`Trunk
     scan: each target sets its own trunking`): clearing trunking there stranded a target in a followed call (B5). Over a
@@ -10230,19 +10231,22 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     connection: set by the manual, scan and trunking rigctl legs, 0 after a connect) off one, `[-]` at 0.
     `input_freq_offered()` / `freq_entry_offered(opts)` offer it on a radio input or with a live rigctl peer
     (`dsd_opts_rigctl_live()`), never during an I/Q replay; a scan no longer hides it, since an accepted entry pauses
-    the scan. `=` (and, under PDCurses, `SHF_PADENTER` and Enter with `PDC_get_key_modifiers() &
-    PDC_KEY_MODIFIER_SHIFT`, guarded on those names, not on `DSD_USE_PDCURSES`) opens `act_freq_key()` through
-    `ui_menu_open_modal_async()`: the overlay with an empty frame and `g_modal_only` set, which `menu_core.c` closes
-    once no prompt, help, chooser, RadioReference panel or Scan lists modal is left (in the opener's own call, after the
-    modal routing of each key, at the top of each tick), so no empty frame is drawn. `act_freq_key()` decides on the
-    frame's published options (the menu's context), as the row's predicate does, and opens the prompt or one line of
-    help with the reason (an I/Q replay; no connected rigctl peer). The `y` row (`lbl_scan()`) and the main screen's
-    paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y resumes)`, `| Trunk Scan: PAUSED (y resumes)`,
-    with the avoid count and, with 2+ trunk-scan lists, `Lists: n/m on`) read `dsd_app_scan_state_view_get()`; hold and
-    avoid (`scan_rotation_active()`) and Next and Previous channel under a trunk scan (`trunk_enabled()`) need the scan
-    running (the avoids list and Clear do not: see Scan avoids above). Tests: `UI_MENU_ACTIONS`,
-    `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT`
-    (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
+    the scan or, on a row of its list, holds it there (issue #644). The `-Y` Scan Mode row and the Trunk Scan row show
+    that entry hold as one field, `HOLD (y continues)` (`ui_row_scan_hold_field()`, from the scan-state view's
+    `entry_hold` for the row's own scan kind), in place of `HOLD`, so a narrow row's cut drops whole fields after it;
+    the `input.freq` help says what an entry on a row does. `=` (and, under PDCurses, `SHF_PADENTER` and Enter with
+    `PDC_get_key_modifiers() & PDC_KEY_MODIFIER_SHIFT`, guarded on those names, not on `DSD_USE_PDCURSES`) opens
+    `act_freq_key()` through `ui_menu_open_modal_async()`: the overlay with an empty frame and `g_modal_only` set, which
+    `menu_core.c` closes once no prompt, help, chooser, RadioReference panel or Scan lists modal is left (in the
+    opener's own call, after the modal routing of each key, at the top of each tick), so no empty frame is drawn.
+    `act_freq_key()` decides on the frame's published options (the menu's context), as the row's predicate does, and
+    opens the prompt or one line of help with the reason (an I/Q replay; no connected rigctl peer). The `y` row
+    (`lbl_scan()`) and the main screen's paused rows (`ui_render_paused_scan_row()`: `| Scan Mode: PAUSED (y resumes)`,
+    `| Trunk Scan: PAUSED (y resumes)`, with the avoid count and, with 2+ trunk-scan lists, `Lists: n/m on`) read
+    `dsd_app_scan_state_view_get()`; hold and avoid (`scan_rotation_active()`) and Next and Previous channel under a
+    trunk scan (`trunk_enabled()`) need the scan running (the avoids list and Clear do not: see Scan avoids above).
+    Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_NAVIGATION`, `UI_HOTKEYS_REGRESSION`,
+    `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `UI_NCURSES_PRINTER_HELPERS`.
   - Key reads (issue #670): every terminal key read goes through `ui_read_key()` (terminal-private `ui_keys.h`,
     `ui_read_key.c`). A wide PDCurses build (`DSD_HAS_PDCURSES_WIDE_API`) reads with `wget_wch()`, so a character
     never reads as the key code it equals (U+0157 is `KEY_ENTER`): function keys keep their codes, characters up to
@@ -11139,8 +11143,10 @@ Qt Quick frontend (`src/ui/qt`):
     `scanRotationActive` and the target fields; a paused `--trunk-scan` keeps `trunk_scan_enabled`, so no Qt reading may
     gate on that flag. Spectrum's "Go to" has its own predicate (`goToAllowed`: `!replay && (exploring && !tunerHeld ||
     scanList && scanRotationActive || scanPaused)`, where `scanList` is Main's `sessionScanList`) and sends
-    `CommandBridge::tuneHz()` (`RTL_SET_FREQ`, the override tune that pauses a running scan); taps, drags and steps keep
-    `tuneTo()` (`MANUAL_TUNE`) and its view-only gate. The sheet says Tune pauses the scan while one runs, and closes
+    `CommandBridge::tuneHz()` (`RTL_SET_FREQ`, the override tune that pauses a running scan, or on a row of its list
+    holds it there, issue #644); taps, drags and steps keep `tuneTo()` (`MANUAL_TUNE`, which never takes a row) and its
+    view-only gate. The sheet (`spectrumGoToScanNote`) says Tune pauses the scan while one runs, and that a frequency in
+    its list holds it, and closes
     with the reason when `goToAllowed` falls (a replay keeps its own). `CommandBridge::resumeScan()` (`SCAN_RESUME`)
     backs "Resume scan" on Spectrum and in the Monitor's scan controls row, which shows it in place of
     Hold/Avoid/Prev/Next while paused, one row across the grid's columns; the header reads `SCAN PAUSED · n
@@ -11150,8 +11156,9 @@ Qt Quick frontend (`src/ui/qt`):
     `pausedScanSystem`/`pausedSessionRow` (`scanTargetLabel()` reads it) and restoring them on the
     resume; a scan list's session is an Explore one for the hold (`exploring`, Explore prefs not remembered), so its
     spectrum takes taps until Resume scan, or for good once the paused scan is stopped. The decoder sets
-    `operator_tuned` on every accepted manual tune (RTL_SET_FREQ other than a P25 control-channel selection,
-    MANUAL_TUNE; `ui_mark_operator_tuned()`), on a TUNER_RELEASE that releases trunking (`apply_tuner_release()`) and in
+    `operator_tuned` on every accepted manual tune (RTL_SET_FREQ other than a P25 control-channel selection or a
+    scan row's go-to, MANUAL_TUNE; `ui_mark_operator_tuned()`), on a TUNER_RELEASE that releases trunking
+    (`apply_tuner_release()`) and in
     every scan pause (the engine's `-Y` and trunk-scan pauses), so Explore from here never relabels history: with an
     owner the session is named on the decoder's answer, and with none it only detaches the session map and row (the
     calls before the first tune are still the system's). History rows take their identity from the call's own stamps
@@ -13378,8 +13385,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
     session or channel map (`trunk_chan_map_seq`, a map replacement) moved. As with `dsd_opts_tuned_freq_hz()`, a
     frequency changed on the peer itself is not seen. Analog rows only take the frequency: digital rows on a rigctl -Y
     channel keep the `dsd_opts_tuned_freq_hz()` rule. The row or target is the "confirmed on air" proof a typed
-    frequency reads (`dsd_engine_channel_scan_row_confirmed()`, `dsd_engine_trunk_scan_target_confirmed()`, below under
-    the typed-frequency match). Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
+    frequency reads (`dsd_engine_channel_scan_row_confirmed()`, `dsd_engine_trunk_scan_target_confirmed()`; see the
+    typed-frequency match under Engine). Tests: `ENGINE_ANALOG_SCAN_CALLS` (a reconnect and a disconnect through the
     real service included, and `C`, `J`, a refused `C` and `=` through the real command queue),
     `ENGINE_NO_CARRIER_RESET` (pending typed and untyped steps, `test_untyped_row_confirmed_only_by_its_landing`),
     `ENGINE_TRUNK_SCAN` (`test_target_confirmed_only_by_its_park`), `APP_COMMAND_QUEUE` (a manual step's confirmed,

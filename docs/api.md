@@ -351,8 +351,8 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
     air (`scan_hold_toggle`); `false` with no scan.
   * `entry_hold`: `true` while that hold is the one a frequency entry set
     (`rtl_set_freq` on a row of the scan, below): `scanner_toggle` and
-    `scan_resume` then let the scan continue from that row. It implies `hold`;
-    `false` with no scan.
+    `scan_resume` then let the scan continue from that row, and
+    `scan_hold_toggle` lets it go too. It implies `hold`; `false` with no scan.
   * `ordinal` and `count`: the trunk scan's position, as the terminal shows
     `(2/14)`. `count` is the number of targets in the lists switched on,
     avoided ones included; `ordinal` is the target on air's place among them,
@@ -822,27 +822,29 @@ field, and the decoder refuses the rest when it applies the command.
     list of your own, running or paused, or a trunk-scan target), the scan goes
     to that row and holds it there with the row's own settings: its mode,
     options, keys, receive profile, gain and name, as at any visit. A running
-    scan switches to the row; a paused one resumes at it. The scan tunes the
-    row as it tunes any row, both a rigctl peer and the radio where the scan
-    uses both. A trunked target parks on its control channel, so the receiver
-    may end up on another frequency than `value`. `status.message` says
-    `Holding: <name>`, adds `(1 of 2)` when several rows share the frequency
-    (`L` and `J` reach the others), and names a trunked target's control
-    channel. A `-Y` row is named by its label, else `row N`; a trunk-scan
-    target by its place in the list and its label, or its id when it has none
-    (`#3 County Fire`), as the scan avoid messages name it. A tune still on its
-    way says `Going to <name>: waiting for the tune` (`Resuming scan at <name>:
-    ...` over a paused `-Y` list), and its landing or failure arrives in
-    `status.message` later. `status.scan` reads `hold` and `entry_hold` true
-    once it lands. A go-to refused, deferred or not set up at once fails the
-    command, and `status.message` says `Failed: tune to <name>`, `Deferred;
-    retry: tune to <name>` or `Failed: <name> could not be set up`, each ending
-    `; scan stays paused` while the scan is paused. A row that is avoided, whose
-    list is off, or whose width the input cannot run is not taken: the entry
-    is a plain one, below, and its message ends with the reason
+    scan switches to the row; a paused one resumes at it; a scan already on the
+    row only holds it (after the radio stream restarts it is not sure of the row
+    on air until its next tune, so it tunes the row again, which ends a call in
+    progress). The scan tunes the row as it tunes any row, both a rigctl peer
+    and the radio where the scan uses both. A trunked target parks on its
+    control channel, so the receiver may end up on another frequency than
+    `value`. `status.message` says `Holding: <name>`, adds `(1 of 2)` when
+    several rows share the frequency (`L` and `J` reach the others), and names a
+    trunked target's control channel. A `-Y` row is named by its label, else
+    `row N`; a trunk-scan target by its place in the list and its label, or its
+    id when it has none (`#3 County Fire`), as the scan avoid messages name it.
+    A tune still on its way says `Going to <name>: waiting for the tune`
+    (`Resuming scan at <name>: ...` over a paused `-Y` list), and its landing or
+    failure arrives in `status.message` later. `status.scan` reads `hold` and
+    `entry_hold` true once it lands. A go-to refused, deferred or not set up at
+    once fails the command, and `status.message` says `Failed: tune to <name>`,
+    `Deferred; retry: tune to <name>` or `Failed: <name> could not be set up`,
+    each ending `; scan stays paused` while the scan is paused. A row that is
+    avoided, whose list is off, or whose width the input cannot run is not
+    taken: the entry is a plain one, below, and its message ends with the reason
     (`; fire-dispatch is avoided`, `; #3 County Fire is in a list that is off`,
-    `; fire-dispatch's width does not fit`; `that row` or `that target` in
-    place of a name too long to fit).
+    `; fire-dispatch's width does not fit`; `that row` or `that target` in place
+    of a name too long to fit).
   * Otherwise, with single-system P25 trunking on and no scan, it selects that
     control channel. Otherwise it tunes a rigctl peer when one is in use, else
     the radio, and once the tune is accepted (applied, or still pending on the
@@ -901,10 +903,12 @@ field, and the decoder refuses the rest when it applies the command.
   go (`Scan continues`).
 * **`manual_tune`**: a spectrum tap. It is refused while trunking, a running
   `-Y` scan or a running trunk scan owns the tuner (`status.message` says
-  which); a paused scan does not refuse it, and it leaves the scan paused. A
-  `-Y` resume still waiting on its row's tune does not refuse it either: the tap
-  takes the receiver back, the scan stays paused (the toast ends `; scan
-  paused`), and the row's tune commits nothing when it lands.
+  which); a paused scan does not refuse it, and it leaves the scan paused.
+  Unlike `rtl_set_freq` it never goes to a scan row: on a row's frequency it
+  tunes with the configured settings. A `-Y` resume still waiting on its row's
+  tune does not refuse it either: the tap takes the receiver back, the scan
+  stays paused (the toast ends `; scan paused`), and the row's tune commits
+  nothing when it lands.
 * Key words (`key_rc4des_set`, `key_hytera_set`, `key_aes_set`) are 64-bit:
   send them as `"0x..."` strings.
 
