@@ -420,6 +420,12 @@ tuning its capture recorded, and on audio input without a connected rigctl peer;
 instead (`An I/Q replay cannot retune: it plays the tuning it recorded.`, or
 `Nothing to tune: this input needs a connected rigctl peer (key 9, or Input > Rigctl).`).
 
+A frequency in the scan's own list is the exception (issue #644): a running or paused scan goes to that row, with the
+row's own settings, and holds there (`Holding: Marion`, with `(1 of 2)` when rows share the frequency). The scan row
+reads `HOLD (y continues)`, and `y` continues the scan from that row; `Y` releases the hold too. A row that is
+avoided, whose list is off or whose width the input cannot run is not taken: the entry tunes as above, and its toast
+ends with the reason (`; Marion is avoided`).
+
 ### Avoided channels
 
 `b` takes the channel on air, or the `--trunk-scan` target, out of the rotation for the rest of the session (issue
@@ -766,8 +772,8 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | Key | Action |
 |---|---|
 | `t` | Toggle trunking |
-| `=` | Frequency entry over the main screen (Input > `Frequency...`); a running scan pauses on the frequency typed. On Windows also `Shift+Enter` and `Shift`+keypad Enter |
-| `y` | Conventional scanning (`-Y`) on or off; a paused scan resumes. Under `--trunk-scan`, pause or resume the trunk scan (it cannot be stopped at runtime) |
+| `=` | Frequency entry over the main screen (Input > `Frequency...`); a running scan pauses on the frequency typed, and a frequency in the scan's list holds the scan on its row (`y` continues). On Windows also `Shift+Enter` and `Shift`+keypad Enter |
+| `y` | Conventional scanning (`-Y`) on or off; a paused scan resumes. Under `--trunk-scan`, pause or resume the trunk scan (it cannot be stopped at runtime). A scan held on the row a typed frequency picked continues instead |
 | `C` | Return to control channel (when following a voice channel) |
 | `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels or P25 control-channel candidates (`-^`), or move to the next `--trunk-scan` target. Needs a radio input or a rigctl peer |
 | `J` | Previous channel: the same list as `L`, one step back; a running scan carries on forward from there. Same requirements |
@@ -941,6 +947,16 @@ targets alone.
 | Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion Avoids: 2
 ```
 
+A hold a typed frequency set reads `HOLD (y continues)` in the same place, and the fields after it move right while it
+lasts:
+
+```
+| Scan Mode: Frequency:  462.012500 MHz HOLD (y continues) Hangtime: 2.00 sec Channel: Marion
+```
+
+At 80 columns that leaves no room for the channel's name (nor, where the terminal takes no UTF-8 and the cut marker is
+`...`, the hangtime); the `Holding:` toast named the row.
+
 With `--trunk-scan` the same section names its place in the rotation and the target on air:
 
 ```
@@ -948,7 +964,11 @@ With `--trunk-scan` the same section names its place in the rotation and the tar
 ```
 
 `HOLD` and `[avoided]` follow the position in rooms that stay there when they are gone, then the target's id, then
-the list's `Avoids: N`.
+the list's `Avoids: N`. A hold a typed frequency set reads `HOLD (y continues)` there, as on the Scan Mode row:
+
+```
+| Trunk Scan: (3/6) HOLD (y continues)           Target: county-p25
+```
 
 `county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation (right
 aligned to the count's digits, `( 3/12)`): among the targets of the lists that are on, avoided ones included. With two
