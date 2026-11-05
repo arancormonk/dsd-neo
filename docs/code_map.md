@@ -3580,8 +3580,9 @@ app-control installs with its session (`dsd_channel_walk_settle_hook_set()`, `<d
 `dsd_app_channel_walk_settled()`), which runs the landing (the row named only while the list and the row are the ones
 walked and no scan owns the tuner) or the late failure's refusal rules, under the P25 SM tick guard when the P25 machine
 owns the trunk. Until a walk off any scan settles it owns the tuner (`dsd_engine_manual_tune_operator_walk_noted()`, an
-atomic flag beside the record, readable from the P25 watchdog's tick): the old assignment's recovery waits, so the
-engine's trunk tunes (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`,
+atomic flag beside the record, readable from the P25 watchdog's tick, kept from the poll that takes its landing or late
+failure until `dsd_engine_manual_tune_walk_settled()` after its settling, so no tick runs between the two): the old
+assignment's recovery waits, so the engine's trunk tunes (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`,
 `dsd_engine_return_to_cc_request()`, behind every state machine's grant, hunt and return) answer `DEFERRED`, which each
 machine retries (P25's release keeps its latch; DMR's return stays `TUNED`), and the no-carrier hangtime return is not
 due; the landing then hands the machines over with the row, its keys and the call boundary. App-control's own

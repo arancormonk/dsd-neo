@@ -1878,6 +1878,8 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
     dsd_engine_manual_tune_last_settled(&settled);
     if (settled.kind == DSD_MANUAL_TUNE_LCN_CYCLE) {
         untyped_settle_walk(opts, state, &settled, polled);
+        /* A walk off any scan owned the tuner through its settling: the state machines' recovery may run again. */
+        dsd_engine_manual_tune_walk_settled();
         return polled;
     }
     if (settled.kind != DSD_MANUAL_TUNE_UNTYPED_STEP) {

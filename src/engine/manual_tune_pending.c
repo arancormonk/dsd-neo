@@ -62,6 +62,10 @@ static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
 /* Whether the record noted last is a Next or Previous walk off any scan: stored before the record reads as noted, and
    read with it from any thread (dsd_engine_manual_tune_operator_walk_noted()). */
 static atomic_int g_record_walk_off_scan;
+/* A walk off any scan whose completion a poll took, landed or failed, whose settling (its row and the state machines'
+   handoff, dsd_engine_scan_untyped_poll()) has not finished: it still owns the tuner until
+   dsd_engine_manual_tune_walk_settled(). */
+static atomic_int g_walk_settling;
 /* A RadioReference import's tune (dsd_engine_manual_tune_note_rr_import(), issue #803): the toast its late failure
    posts, the one its landing posts, and the import's own toast, the only one its landing or drop replaces. Kept for
    the import noted last; a record of another kind never reads them. g_rr_owner_took_over says the tune that dropped
@@ -327,6 +331,10 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     if (!completed) {
         return DSD_MANUAL_TUNE_NONE;
     }
+    /* Set before the record goes, so the walk's ownership has no gap before its settling. */
+    if ((int32_t)(uint32_t)packed != RTL_STREAM_TUNE_SUPERSEDED && atomic_load(&g_record_walk_off_scan) != 0) {
+        atomic_store(&g_walk_settling, 1);
+    }
     manual_tune_settle();
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
         manual_tune_rr_report(state, MANUAL_TUNE_RR_LANDED);
@@ -419,7 +427,13 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
 
 int
 dsd_engine_manual_tune_operator_walk_noted(void) {
-    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && atomic_load(&g_record_walk_off_scan) != 0;
+    return (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && atomic_load(&g_record_walk_off_scan) != 0)
+           || atomic_load(&g_walk_settling) != 0;
+}
+
+void
+dsd_engine_manual_tune_walk_settled(void) {
+    atomic_store(&g_walk_settling, 0);
 }
 
 int

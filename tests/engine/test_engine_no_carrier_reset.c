@@ -46,6 +46,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -8847,6 +8848,71 @@ test_pending_walk_owns_the_tuner_against_trunk_recovery(void) {
     return rc;
 }
 
+/* What a state machine's return to the control channel came to when it ran inside a walk's late settling. */
+static int g_settling_return_calls;
+static dsd_trunk_tune_result g_settling_return_result;
+
+/* A walk's settling (dsd_channel_walk_settle_hook_set()) that lets a state machine's return run first, as a watchdog
+   tick between the completion's consumption and the walk's handoff would. */
+static void
+settle_after_a_trunk_return(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
+                            uint64_t list_rev, int landed) {
+    (void)row;
+    (void)dir;
+    (void)requested_hz;
+    (void)list_rev;
+    (void)landed;
+    g_settling_return_calls++;
+    g_settling_return_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
+}
+
+/* Issue #644: a walk off any scan whose tune lands late owns the tuner until its settling (the row and the state
+   machines' handoff) is done, not only until its completion is taken: a state machine's return in between is still
+   deferred, tuning nothing. After the settling the tuner is free again. */
+static int
+test_walk_owns_the_tuner_through_its_settling(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "a late walk's settling against trunk recovery";
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    const dsd_channel_walk_settle_fn previous = dsd_channel_walk_settle_hook_get();
+    dsd_channel_walk_settle_hook_set(settle_after_a_trunk_return);
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = 942362500L;
+    state->p25_cc_freq = 942362500L;
+    const uint64_t id = 0x647U;
+    dsd_engine_manual_tune_note_lcn_cycle(state, id, 943212500U, 942712500U, 1, 1, 0);
+    dsd_engine_manual_tune_completion(id, RTL_STREAM_TUNE_OK);
+    g_settling_return_calls = 0;
+    g_settling_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_rigctl_setfreq_calls = 0;
+    int rc =
+        expect_case(what, "the landing is taken", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_case(what, "the return inside the settling is deferred",
+                      g_settling_return_calls == 1 && g_settling_return_result == DSD_TRUNK_TUNE_RESULT_DEFERRED
+                          && g_rigctl_setfreq_calls == 0);
+    rc |= expect_case(what, "the tuner is free after it", !dsd_engine_manual_tune_operator_walk_noted());
+    dsd_channel_walk_settle_hook_set(previous);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* Issue #644: the operator's return to the control channel (a P25 trunk's, through the control-channel tune) while a
    walk off any scan waits on its tune replaces the walk and tunes. */
 static int
@@ -11435,6 +11501,7 @@ main(void) {
     rc |= test_typed_goto_refused_by_rigctl_keeps_the_frames();
     rc |= test_pending_walk_owns_the_tuner_against_trunk_recovery();
     rc |= test_return_to_cc_replaces_a_pending_walk();
+    rc |= test_walk_owns_the_tuner_through_its_settling();
     rc |= test_walk_press_while_pending_steps_on();
     rc |= test_walk_press_while_a_step_is_pending_steps_on();
     rc |= test_walk_holds_the_timed_step();
