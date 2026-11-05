@@ -21,15 +21,17 @@ typedef struct {
     int index;         /**< the -Y row or trunk-scan target landed */
 } dsd_engine_scan_landing;
 
-/** The -Y row a frequency typed by hand went to, whose confirmed landing holds the scan there (issue #644;
- * scan_landing.h). */
+/** The -Y row or trunk-scan target a frequency typed by hand went to, whose confirmed landing holds the scan there
+ * (issue #644; scan_landing.h). */
 typedef struct {
     uint8_t active;    /**< 0: no entry waits on a landing */
-    int row;           /**< the -Y row gone to */
-    uint32_t session;  /**< dsd_state::lcn_scan_session of its tune */
-    uint64_t list_rev; /**< dsd_state::lcn_list_rev of its tune */
+    uint8_t by;        /**< the scan it waits in (DSD_ENGINE_SCAN_LANDING_ROW or _TARGET) */
+    int row;           /**< the -Y row or trunk-scan target gone to */
+    uint32_t session;  /**< -Y: dsd_state::lcn_scan_session of its tune; trunk scan: the coordinator's session */
+    uint64_t list_rev; /**< -Y: dsd_state::lcn_list_rev of its tune */
     uint64_t request;  /**< its tune: a typed row's first request, kept through its restages; an untyped row's noted
-                            manual tune; 0 until the tune is begun */
+                            manual tune; a target's park, or the P25 recovery tune it adopted; 0 until the tune is
+                            begun */
 } dsd_engine_scan_entry_intent;
 
 typedef struct {

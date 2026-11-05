@@ -439,7 +439,8 @@ During scanning:
   stays refused as during the scan (`Trunk scan: each target sets its own trunking`). A per-target edit made while
   paused waits for that target's next visit.
 - **Resuming.** `y`, Qt/Android **Resume scan** or the API's `scan_resume` resumes on the target the scan left, with a
-  fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were. A resume whose
+  fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were, except a hold
+  that a frequency typed for a target set (issue #644), which the pause ended. A resume whose
   retune is refused, or whose target cannot be set up again, leaves the scan paused and says why. A trunk scan cannot be
   stopped while the decoder runs, so a paused one, with everything it learned and every session edit, lasts until the
   decoder stops. A save made while it is paused still writes `[trunk_scan] enabled = true` and the configured

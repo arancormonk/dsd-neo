@@ -47,6 +47,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/engine/scan_entry.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/platform/platform.h"
 #if DSD_PLATFORM_WIN_NATIVE
@@ -839,6 +840,69 @@ watchdog_beside_pause_and_resume(void) {
     return rc;
 }
 
+/* A go-to (issue #644) as app-control runs it: inside the tick guard, which the engine call never takes itself. */
+static dsd_scan_goto_result
+goto_under_the_guard(int index) {
+    p25_sm_tick_guard_enter();
+    const dsd_scan_goto_result result = dsd_engine_trunk_scan_goto_locked(&g_opts, &g_state, index, NULL);
+    p25_sm_tick_guard_leave();
+    return result;
+}
+
+/* Go-tos of a running and of a paused scan, and the release of their entry hold, over and over while the watchdog ticks
+   and reads beside them: the switch, the resume at a target and the hold are each one step under the guard, so the
+   watchdog never sees one half done. Each go-to lands on the target given, held and marked. */
+static int
+watchdog_beside_a_goto(void) {
+    if (setup()) {
+        cleanup();
+        return 1;
+    }
+    atomic_store(&g_watchdog.run, 1);
+    atomic_store(&g_watchdog.reads, 0);
+    atomic_store(&g_watchdog.paused_reads, 0);
+    atomic_store(&g_watchdog.torn, 0);
+    dsd_thread_t reader;
+    int rc = expect(dsd_thread_create(&reader, watchdog_reader, NULL) == 0, "watchdog reader started");
+    if (rc) {
+        cleanup();
+        return rc;
+    }
+    for (int i = 0; i < 20; ++i) {
+        rc |= expect(goto_under_the_guard(1) == DSD_SCAN_GOTO_HOLDING && g_state.trunk_scan_entry_hold == 1U
+                         && g_frequency == k_dmr_cc_hz,
+                     "a go-to of the DMR system parks and holds it");
+        rc |= watchdog_read_it(0);
+        rc |= expect_running_on("go-to of the DMR system", "tiii");
+        rc |= expect(goto_under_the_guard(0) == DSD_SCAN_GOTO_HOLDING && g_state.trunk_scan_entry_hold == 1U
+                         && g_frequency == k_p25_cc_hz,
+                     "a go-to of the P25 system parks and holds it");
+        rc |= watchdog_read_it(0);
+        rc |= expect(run_action(DSD_APP_CMD_TUNER_RELEASE) == 1 && toast_is("Automatic tuning paused"),
+                     "a release pauses");
+        rc |= watchdog_read_it(1);
+        rc |= expect(g_state.trunk_scan_hold == 0U && g_state.trunk_scan_entry_hold == 0U,
+                     "the pause takes the entry hold");
+        rc |= expect(goto_under_the_guard(1) == DSD_SCAN_GOTO_HOLDING && g_state.trunk_scan_entry_hold == 1U,
+                     "a go-to of the paused scan resumes at the DMR system, held");
+        rc |= watchdog_read_it(0);
+        rc |= expect_running_on("resumed at the DMR system", "tiii");
+        p25_sm_tick_guard_enter();
+        dsd_engine_trunk_scan_entry_release_locked(&g_opts, &g_state);
+        p25_sm_tick_guard_leave();
+        rc |= expect(g_state.trunk_scan_hold == 0U && g_state.trunk_scan_entry_hold == 0U,
+                     "the release lets the scan continue");
+        rc |= watchdog_read_it(0);
+    }
+    atomic_store(&g_watchdog.run, 0);
+    dsd_thread_join(reader);
+    rc |= expect(atomic_load(&g_watchdog.torn) == 0, "the watchdog never saw a half-done go-to");
+    rc |= expect(!p25_sm_tick_guard_held_by_caller() && p25_sm_tick_guard_try_enter(), "no go-to kept the guard");
+    p25_sm_tick_guard_leave();
+    cleanup();
+    return rc;
+}
+
 /* ---- The guard held elsewhere ----------------------------------------------------------------------------------- */
 
 /* A watchdog tick in progress (a Phase 2 release, say) holds the guard. A `y`, a SCAN_RESUME, a tuner release or a
@@ -1180,6 +1244,7 @@ main(void) {
     rc |= pause_on_a_pending_dmr_tune(1);
     rc |= resume_failures_stay_paused();
     rc |= watchdog_beside_pause_and_resume();
+    rc |= watchdog_beside_a_goto();
     rc |= pause_and_resume_wait_for_the_guard();
     rc |= controls_beside_the_watchdog();
     rc |= list_toggle_takes_the_guard();

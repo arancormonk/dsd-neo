@@ -14,6 +14,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
@@ -219,6 +220,67 @@ int dsd_engine_trunk_scan_pause_locked(dsd_opts* opts, dsd_state* state, dsd_tru
 int dsd_engine_trunk_scan_resume_ex_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out);
 /** @brief dsd_engine_trunk_scan_resume_ex_locked() without the report. */
 int dsd_engine_trunk_scan_resume_locked(dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief What a go-to (dsd_engine_trunk_scan_goto_locked()) asked of the receiver, for the caller to settle and name.
+ *
+ * @p monitor_request and @p restart_gain are a paused scan's, as dsd_trunk_scan_leave_report's: a resume-at that
+ * stayed paused left the target's scope (its front-end request, recorded as for a pause) and may have put the target's
+ * own gain on the device. A running scan's go-to sets neither: the scan keeps the receiver, and its retune carries the
+ * gain. @p park_hz is the frequency the target's park asked the tuner for, or would ask for: a trunked target's learned
+ * control channel ahead of its CSV seed, a conventional target's own frequency; its CSV seed when its preparation
+ * failed before any tune.
+ */
+typedef struct {
+    int monitor_request;
+    int restart_gain;
+    long park_hz;
+} dsd_trunk_scan_goto_report;
+
+/**
+ * @brief Send the trunk scan to target @p index and hold it there, marked an entry hold (issue #644 D1): the target a
+ * frequency typed by hand picked (dsd_engine_scan_entry_match()).
+ *
+ * Only a target the rotation takes: in a list that is on, not avoided, and not an analog target skipped at every visit
+ * for its width. Its retry cooldown does not keep it out: the pick is explicit. Anything else, and no trunk scan, is
+ * REFUSED with nothing changed. A trunked target parks as any visit does, on its learned control channel first, and
+ * follows its calls.
+ * - A target confirmed on air (dsd_engine_trunk_scan_target_confirmed()) needs no tune: the hold only (HOLDING).
+ * - A running scan whose park of that target is in flight waits on that park (PENDING).
+ * - Otherwise a running scan switches to the target as `L` does, one target long: a parked visit's carrier is handed
+ *   back and its calls end under its own name, then the target is parked. The park ends the calls of the target left
+ *   before it tunes, so only a preparation that fails (SETUP_FAILED) moves nothing: the scan, its park in flight and an
+ *   earlier entry stay as they were. A retune refused or deferred (REFUSED, DEFERRED) is rolled back as an advance's,
+ *   with a recovery park of the target left; a recovery that fails too leaves it installed and cooling down, as a
+ *   failed advance does. A single target works the same way.
+ * - A paused scan resumes at the target as dsd_engine_trunk_scan_resume_ex_locked() resumes, with the target given
+ *   in place of the one it paused at: every failure leaves it paused, with the toast, and with the target it paused at
+ *   still its resume target; @p report carries what that failure asks of the caller.
+ *
+ * The hold (dsd_state::trunk_scan_hold) and its entry mark (dsd_state::trunk_scan_entry_hold) are set on the park's
+ * confirmed completion only: at once (HOLDING), or when the park in flight (PENDING) lands in this scan session while
+ * the entry is still the one in force; a P25 control channel the target's state machine recovered counts as that
+ * landing. Every other park cancels it (an advance, `L`, `J`, an avoid, a departure, a retry in place, a resume, a
+ * later go-to that gets past its preparation), and so do `Y`, a pause and the park's own failure, which leaves the scan
+ * running unheld on its normal failure path. Running or paused, the caller holds the P25 SM tick guard, and nothing
+ * here takes it. Decoder thread.
+ *
+ * @p report (may be NULL) is filled on every return.
+ */
+dsd_scan_goto_result dsd_engine_trunk_scan_goto_locked(dsd_opts* opts, dsd_state* state, int index,
+                                                       dsd_trunk_scan_goto_report* report);
+
+/**
+ * @brief Release an entry hold (`y`, SCAN_RESUME; issue #644 D1): the hold and its entry mark go, and the target gets
+ * a fresh idle dwell and visit cap as at `Y` off, so the scan continues from it. An entry still waiting on its park is
+ * cancelled too. Nothing else without an entry hold: an ordinary hold stays. The caller holds the P25 SM tick guard.
+ * Decoder thread.
+ */
+void dsd_engine_trunk_scan_entry_release_locked(dsd_opts* opts, dsd_state* state);
+
+/** @brief Whether an entry waits on its target's park (a go-to that answered PENDING): the park is still in flight in
+ * this scan session and nothing has cancelled the entry. 0 without a coordinator. Decoder thread. */
+int dsd_engine_trunk_scan_entry_pending(const dsd_state* state);
 
 /** @brief Whether a trunk-scan coordinator exists and is paused (issue #671). */
 int dsd_engine_trunk_scan_paused(const dsd_state* state);

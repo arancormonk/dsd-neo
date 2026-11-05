@@ -149,7 +149,8 @@ Generated (do not edit/commit):
     runtime table (`include/dsd-neo/runtime/trunk_tuning_hooks.h`) so protocol state machines can retune without
     depending on IO
   - Single-tuner trunk scan coordinator: `src/engine/trunk_scan.c` behind
-    `include/dsd-neo/engine/trunk_scan.h` (see below), including its pause and resume (issue #671)
+    `include/dsd-neo/engine/trunk_scan.h` (see below), including its pause and resume (issue #671) and a typed
+    frequency's go-to and resume-at with its entry hold (issue #644)
   - `-Y` pause and resume, a typed frequency's go-to and resume-at with its entry hold (issue #644), and the
     manual-tune completion record (issue #671): `src/engine/channel_scan.c` behind
     `include/dsd-neo/engine/channel_scan.h`, `src/engine/manual_tune_pending.c` behind
@@ -548,6 +549,49 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   driven by the app-control services and commands: a pause over a Phase 2 call, a pause over a P25 park or DMR tune in
   flight and its late answer, a resume that supersedes one, both resume failures, a watchdog thread reading the hooks
   beside a pause and a resume, each command waiting out a held guard), `APP_COMMAND_QUEUE`.
+- Go-to and entry hold (issue #644 D1; the match is `dsd_engine_scan_entry_match()`):
+  `dsd_engine_trunk_scan_goto_locked()` sends the scan to the target a typed frequency picked, the caller holding the
+  P25 SM tick guard. It answers a `dsd_scan_goto_result` (`<dsd-neo/engine/scan_entry.h>`, shared with -Y) and fills a
+  `dsd_trunk_scan_goto_report`: a paused scan's monitor request and gain restart, as `dsd_trunk_scan_leave_report`, and
+  `park_hz`, the frequency the park asked for. That is `coord->park_tried_hz`, which `trunk_scan_park_noting()` records
+  with `park_tried_deferred` for a resume's and a go-to's park (a trunked target's learned control channel ahead of its
+  seed), else the target's live control channel on air, else its seed. Only a target the rotation takes is gone to
+  (`trunk_scan_entry_reason()`, the match's rule, its cooldown no bar); anything else is `REFUSED` with nothing changed.
+  A target confirmed on air gets the hold only, and a running scan whose park of the target is in flight waits on that
+  park. Otherwise a running scan moves as `L` does, one target long: `trunk_scan_operator_move_locked()`, which `L`,
+  `J`, an avoid and a departure run through `trunk_scan_control_advance_locked()`, releases a parked visit
+  (`trunk_scan_advance_releasing()`) and walks (`trunk_scan_walk_to()`; `trunk_scan_advance_walk()` is its rotation
+  form). A go-to's walk tries its target (`trunk_scan_goto_candidate()`), then, once that retune failed, the original as
+  the walk's own fallback under the original's cooldown, and rolls back as an advance does
+  (`trunk_scan_walk_rollback()`). A recovery that fails too leaves the original installed and cooling down, retried in
+  place at the cooldown's end. A one-target scan walks the same way (no `count < 2` shortcut), and a go-to that tried
+  nothing leaves the dwell alone. The park ends the outgoing calls before it tunes, so only a preparation failure moves
+  nothing (`SETUP_FAILED`); a deferred retune answers `DEFERRED` (`TRUNK_SCAN_RETUNE_DEFERRED`, which every other switch
+  caller takes as a failed retune). A paused scan resumes at the target through `trunk_scan_resume_from()`, the resume's
+  body with the target to park, which `dsd_engine_trunk_scan_resume_ex_locked()` runs with `coord->active`. Every
+  failure there puts `coord->active` back to the target paused at before the rollback, so a refused go-to leaves the
+  scan paused with its own resume target, the resume's toast and its report.
+- Entry intent: the shared `dsd_engine_scan_entry_intent` (`scan_landing.h`), here naming the target (`by` = target),
+  the coordinator's session and the park's request (`dsd_engine_scan_entry_intent_set_target()`), set once the park is
+  in flight. Every park cancels it once past its preparation (`trunk_scan_park_begins()`, beside the landing forget), so
+  only the go-to's own park can land it; `Y`, a pause, the detach and a release cancel it too, and the park's failure
+  drops it by request. The landing (`trunk_scan_resolve_pending_retune()`: a completed park, or a P25 replacement tune
+  found complete) holds the target, `coord->hold_active` with `coord->entry_hold` (`trunk_scan_entry_hold_now()`), when
+  the intent's target, session and request match (`dsd_engine_scan_entry_landed_target()`); when the coordinator adopts
+  the P25 machine's recovery request, the intent follows it (`dsd_engine_scan_entry_intent_rebind()`). A late failure
+  takes the normal failure path, unheld unless a hold carried over from the target left.
+  `dsd_engine_trunk_scan_entry_pending()` says an entry still waits. `coord->entry_hold` is published as
+  `trunk_scan_entry_hold` beside `trunk_scan_hold` (`trunk_scan_publish_configured()`, cleared at the detach). `L`, `J`,
+  an avoid's step and a departure carry it with the hold; `Y` (`trunk_scan_control_hold_toggle()`) drops the mark and
+  toggles the hold as an ordinary one; a pause takes both, while an ordinary hold still outlives a pause;
+  `dsd_engine_trunk_scan_entry_release_locked()` (`y` and SCAN_RESUME on an entry hold) releases it as `Y` off does,
+  with a fresh dwell and visit cap, and leaves an ordinary hold alone. Neither is ever saved. Tests: `ENGINE_TRUNK_SCAN`
+  (conventional, analog and trunked targets with a learned control channel; on air; pending landing, late failure, and
+  cancels by `L`, `Y`, a pause, a release and a later go-to; P25 recovery found complete and adopted; refused and
+  deferred with recovery, and a refused recovery; a preparation failure over an earlier entry and over a hold; refusals
+  out of the rotation and for width; one target; a copy in another list; paused landing, pending, refusal, failed
+  preparation and late failure; the entry hold's lifecycle), `ENGINE_TRUNK_SCAN_PAUSE` (`watchdog_beside_a_goto`: go-tos
+  of a running and a paused scan and the release under the real guard beside the watchdog; run under `tsan-debug`).
 - Avoid list and put back (issue #672): `trunk_scan_publish_avoids()` rebuilds `dsd_state::trunk_scan_avoids` (one
   `dsd_trunk_scan_avoid_entry` per avoided target in list order: 1-based position, configured frequency, id, label)
   under a new `trunk_scan_avoid_rev` where the membership changes and nowhere else: the attach (empty), an avoid, a
@@ -3605,7 +3649,8 @@ RTL refusal lets go of its tune, whose drop then ends it); a landing runs the sc
 session and rebinds the tune just noted to it (`dsd_engine_manual_tune_rebind_session()`), so the displaced earlier
 record reads stale and cannot undo it; a leg that moved leaves the scan paused. The hold is set only on the row's
 confirmed landing. An entry intent rides the go-to: `dsd_engine_scan_entry_intent`, held in
-`dsd_engine_scan_owner::entry` (helpers in `scan_landing.h`), names the row, `lcn_scan_session`, `lcn_list_rev` and
+`dsd_engine_scan_owner::entry` (helpers in `scan_landing.h`), names its scan (`by`, so a trunk-scan intent never reads
+as a -Y one; the trunk scan's go-to is under the coordinator above), the row, `lcn_scan_session`, `lcn_list_rev` and
 the request of its tune. For a typed row the request is the row's attempt (`channel_scan::attempt`, its first
 request, which a restage keeps); an intent set before its tune binds to it in `channel_scan_tune_staged()`. For an
 untyped row it is the row's noted manual tune (`dsd_engine_manual_tune_pending_id()`, bound in

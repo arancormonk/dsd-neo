@@ -183,6 +183,7 @@ dsd_engine_scan_entry_intent_set(dsd_state* state, int row, uint64_t request) {
         return;
     }
     const dsd_engine_scan_entry_intent intent = {.active = 1U,
+                                                 .by = (uint8_t)DSD_ENGINE_SCAN_LANDING_ROW,
                                                  .row = row,
                                                  .session = state->lcn_scan_session,
                                                  .list_rev = state->lcn_list_rev,
@@ -201,8 +202,8 @@ dsd_engine_scan_entry_intent_cancel(dsd_state* state) {
 static inline int
 dsd_engine_scan_entry_intent_is(const dsd_state* state, int row) {
     const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
-    return intent.active && intent.row == row && intent.session == state->lcn_scan_session
-           && intent.list_rev == state->lcn_list_rev;
+    return intent.active && intent.by == DSD_ENGINE_SCAN_LANDING_ROW && intent.row == row
+           && intent.session == state->lcn_scan_session && intent.list_rev == state->lcn_list_rev;
 }
 
 /** The tune @p request of -Y row @p row began: an entry waiting on that row whose tune was not named yet is that
@@ -252,5 +253,55 @@ dsd_engine_scan_entry_landed(dsd_state* state, int row, uint64_t request) {
         state->lcn_scan_hold = 1U;
         state->lcn_scan_entry_hold = 1U;
     }
+}
+
+/*
+ * The trunk scan's entry intent: the same record, waiting on a target's park in the coordinator's session rather than
+ * on a -Y row. Its tune is the park's request; a P25 target whose park failed while its state machine's own
+ * control-channel tune recovered it hands the intent to that tune when the coordinator adopts it
+ * (dsd_engine_scan_entry_intent_rebind()), and a recovery found complete is the park's own landing. Every park cancels
+ * the intent once past its preparation (trunk_scan_switch_to()), so only the go-to's own park, set after it, can land
+ * it; the coordinator holds the target itself, as the hold is its own (dsd_trunk_scan_coord::hold_active).
+ */
+
+/** An entry now waits on the park @p request of trunk-scan target @p index in coordinator session @p session. */
+static inline void
+dsd_engine_scan_entry_intent_set_target(dsd_state* state, int index, uint32_t session, uint64_t request) {
+    const dsd_engine_scan_entry_intent intent = {.active = 1U,
+                                                 .by = (uint8_t)DSD_ENGINE_SCAN_LANDING_TARGET,
+                                                 .row = index,
+                                                 .session = session,
+                                                 .request = request};
+    dsd_engine_scan_entry_intent_put(state, &intent);
+}
+
+/** Whether an entry waits on a park of trunk-scan target @p index in coordinator session @p session. */
+static inline int
+dsd_engine_scan_entry_intent_is_target(const dsd_state* state, int index, uint32_t session) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    return intent.active && intent.by == DSD_ENGINE_SCAN_LANDING_TARGET && intent.row == index
+           && intent.session == session;
+}
+
+/** The tune @p request an entry waits on was replaced by @p next (a P25 recovery tune the coordinator adopted): the
+ * entry waits on that one now. */
+static inline void
+dsd_engine_scan_entry_intent_rebind(dsd_state* state, uint64_t request, uint64_t next) {
+    dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (state && intent.active && request != 0U && next != 0U && intent.request == request) {
+        intent.request = next;
+        dsd_engine_scan_entry_intent_put(state, &intent);
+    }
+}
+
+/** The park @p request of trunk-scan target @p index in coordinator session @p session completed: whether an entry
+ * waited on it, so the coordinator holds the target, marked an entry hold. The landing spends the intent either way. */
+static inline int
+dsd_engine_scan_entry_landed_target(dsd_state* state, int index, uint32_t session, uint64_t request) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    const int ours =
+        dsd_engine_scan_entry_intent_is_target(state, index, session) && request != 0U && intent.request == request;
+    dsd_engine_scan_entry_intent_cancel(state);
+    return ours;
 }
 #endif
