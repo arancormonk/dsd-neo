@@ -109,9 +109,10 @@ int dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state);
 
 /** Send the running -Y scan to @p row and hold it there (issue #644 D1): the row a frequency typed by hand picked
  * (dsd_engine_scan_entry_match()). Only a row a step can land on: one with a frequency, not avoided, and not an analog
- * row skipped at every visit for its width. Any other row, and a scan that is not running (paused or a resume pending:
- * see dsd_engine_channel_scan_resume_at(); stopped; under a trunk scan; no list of the user's own), is REFUSED, and
- * nothing changes.
+ * row skipped at every visit for its width; on an untyped list, whose run of rows on one frequency is one channel, not
+ * a row of a run whose first row is avoided, unless that row is confirmed on air (as the match rules). Any other row,
+ * and a scan that is not running (paused or a resume pending: see dsd_engine_channel_scan_resume_at(); stopped; under a
+ * trunk scan; no list of the user's own), is REFUSED, and nothing changes.
  * - A row confirmed on air (dsd_engine_channel_scan_row_confirmed()) needs no tune: the hold only (HOLDING).
  * - A typed list stages the row apart from any row or tune still outstanding, and retires that one only once its own
  *   tune is taken or moved a backend: a preparation that fails (SETUP_FAILED) or a tune refused or deferred before
@@ -154,6 +155,11 @@ void dsd_engine_channel_scan_entry_release(dsd_opts* opts, dsd_state* state);
 /** `Y` over an entry (issue #644): an entry still waiting on its row's landing is cancelled, so its landing holds
  * nothing, and the entry mark goes; the hold itself is the caller's to toggle. Decoder thread. */
 void dsd_engine_channel_scan_entry_cancel(dsd_state* state);
+
+/** A Next, Previous or avoid's step on an untyped list (issue #644): an entry still waiting on its row's landing is
+ * cancelled, whether or not the step lands anywhere, so its landing holds nothing. A committed entry hold and its mark
+ * stay, as a step keeps them. Decoder thread. */
+void dsd_engine_channel_scan_entry_supersede(dsd_state* state);
 
 /** Whether an entry waits on its row's landing in this scan session (a go-to or resume-at that is PENDING): its tune
  * has neither landed nor failed, and nothing has cancelled it. 0 for a NULL @p state. Decoder thread. */

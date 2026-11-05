@@ -9302,10 +9302,89 @@ untyped_goto_replaces_a_hold_case(int entry) {
     return rc;
 }
 
+/* The walk list as two channels, each a run of two rows on one frequency: rows 0 and 1, then rows 2 and 3. */
+static void
+make_walk_list_two_runs(dsd_state* state, long int base_hz) {
+    state->trunk_lcn_freq[0] = state->trunk_lcn_freq[1] = base_hz;
+    state->trunk_lcn_freq[2] = state->trunk_lcn_freq[3] = base_hz + 1000000L;
+    state->lcn_freq_count = 4;
+}
+
+/* Issue #644: a Next with nowhere to land (every run's first row avoided, so the walk skips every channel) still acts
+   on the scan, so it cancels an entry waiting on its row's landing: the late landing holds nothing. */
+static int
+test_untyped_next_with_nowhere_to_land_cancels_an_entry(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped Next with nowhere to land";
+    if (setup_walk_list(opts, state, 1, 1660012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    make_walk_list_two_runs(state, 1660012500L);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "the go-to of row 2 is pending",
+                         dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "both channels avoided",
+                      dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0
+                          && dsd_state_trunk_lcn_avoid_set(state, 2U, 1) == 0);
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "Next is taken", press_walk(opts, state, 1) == 1);
+    rc |= expect_case(what, "Next tunes nothing", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "no entry waits", !dsd_engine_channel_scan_entry_pending(state));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the go-to's tune lands", poll_until_landed(opts, state));
+    rc |= expect_untyped_unheld(what, state);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644 D4, D5: in an untyped list a run of rows on one frequency is one channel, and its first row stands for it
+   unless another row of it is confirmed on air. With the first row avoided the channel is avoided: the match offers
+   none of its rows, and neither a running scan's go-to nor a paused scan's resume-at tunes one. */
+static int
+test_untyped_goto_refuses_an_avoided_channel(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped go-to of an avoided channel";
+    const long int base_hz = 1670012500L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    make_walk_list_two_runs(state, base_hz);
+    int rc = expect_case(what, "row 0 avoided", dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
+    dsd_scan_entry_match_t match;
+    rc |= expect_case(what, "the match offers none of its rows",
+                      dsd_engine_scan_entry_match(opts, state, (uint32_t)base_hz, &match) == 0
+                          && match.reason == DSD_SCAN_ENTRY_AVOIDED);
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the running go-to of row 1 is refused",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_REFUSED);
+    rc |= expect_case(what, "nothing tuned, nothing held", g_rtl_tune_calls == tunes && state->lcn_scan_hold == 0U);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    rc |= expect_case(what, "the paused resume-at of row 1 is refused",
+                      dsd_engine_channel_scan_resume_at(opts, state, 1) == DSD_SCAN_GOTO_REFUSED);
+    rc |= expect_case(what, "still paused, nothing tuned", state->lcn_scan_paused == 1U && g_rtl_tune_calls == tunes);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_goto_over_a_pending_goto(void) {
     int rc = test_untyped_goto_cancelled_by_a_pause();
     rc |= untyped_goto_replaces_a_hold_case(1) | untyped_goto_replaces_a_hold_case(0);
+    rc |= test_untyped_next_with_nowhere_to_land_cancels_an_entry();
+    rc |= test_untyped_goto_refuses_an_avoided_channel();
     for (int c = 0; c < UAGAIN_CASES; c++) {
         rc |= untyped_goto_over_a_pending_goto_case(c);
     }

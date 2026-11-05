@@ -2015,6 +2015,22 @@ channel_scan_goto_row_valid(const dsd_opts* opts, const dsd_state* state, int ro
            && channel_scan_row_reachable(opts, state, row, dsd_engine_scan_dsp_rate_hz(opts, state));
 }
 
+/* Whether untyped row @p row belongs to a channel the operator avoided (issue #644 D4, D5): on a list without modes a
+   run of adjacent rows on one frequency is one channel, which its first row stands for, as the walk and the match take
+   it (an avoided first row skips its run), so a row of that run that is not confirmed on air is no go-to's. */
+static int
+channel_scan_untyped_run_avoided(const dsd_state* state, int row) {
+    if (dsd_channel_modes_present(state)) {
+        return 0;
+    }
+    const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
+    int first = row;
+    while (first > 0 && *dsd_state_trunk_lcn_slot_const(state, first - 1) == freq) {
+        first--;
+    }
+    return dsd_state_trunk_lcn_avoid_get(state, (size_t)first);
+}
+
 /* Whether a -Y scan over a list of the user's own runs: not paused, no resume pending, no trunk scan. */
 static int
 channel_scan_runs_users_list(const dsd_opts* opts, const dsd_state* state) {
@@ -2088,7 +2104,8 @@ dsd_engine_channel_scan_goto_row(dsd_opts* opts, dsd_state* state, int row) {
         return DSD_SCAN_GOTO_HOLDING;
     }
     if (!dsd_channel_modes_present(state)) {
-        return dsd_engine_scan_untyped_goto_row(opts, state, row);
+        return channel_scan_untyped_run_avoided(state, row) ? DSD_SCAN_GOTO_REFUSED
+                                                            : dsd_engine_scan_untyped_goto_row(opts, state, row);
     }
     int retired = 0;
     return channel_scan_goto_typed(opts, state, row, &retired);
@@ -2128,7 +2145,8 @@ channel_scan_resume_at_typed_pending(dsd_opts* opts, dsd_state* state, int row) 
 dsd_scan_goto_result
 dsd_engine_channel_scan_resume_at(dsd_opts* opts, dsd_state* state, int row) {
     if (!opts || !state || opts->trunk_scan_enabled == 1 || !state->lcn_scan_paused
-        || !dsd_state_trunk_lcn_user_list_present(opts, state) || !channel_scan_goto_row_valid(opts, state, row)) {
+        || !dsd_state_trunk_lcn_user_list_present(opts, state) || !channel_scan_goto_row_valid(opts, state, row)
+        || channel_scan_untyped_run_avoided(state, row)) {
         return DSD_SCAN_GOTO_REFUSED;
     }
     if (!dsd_engine_scan_owner_ensure(state)) {
@@ -2176,6 +2194,11 @@ dsd_engine_channel_scan_entry_cancel(dsd_state* state) {
     }
     dsd_engine_scan_entry_intent_cancel(state);
     state->lcn_scan_entry_hold = 0U;
+}
+
+void
+dsd_engine_channel_scan_entry_supersede(dsd_state* state) {
+    dsd_engine_scan_entry_intent_cancel(state);
 }
 
 int

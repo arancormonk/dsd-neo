@@ -3632,7 +3632,9 @@ the scan to that row and holds it there, through `dsd_engine_channel_scan_goto_r
 `dsd_engine_channel_scan_resume_at()` (paused, or a resume pending), both returning a `dsd_scan_goto_result`
 (`<dsd-neo/engine/scan_entry.h>`, shared with the trunk scan's go-to): `HOLDING`, `PENDING`, `REFUSED`, `DEFERRED`,
 `SETUP_FAILED`. Both take only a row a step can land on (`channel_scan_row_reachable()`), and a scan that runs (or is
-paused) over a list of the user's own; anything else is `REFUSED` with nothing changed. Both first make sure the scan
+paused) over a list of the user's own; on an untyped list, not a row of a run whose first row is avoided, the run
+being one channel (`channel_scan_untyped_run_avoided()`, the match's rule), unless the running go-to finds that row
+confirmed on air; anything else is `REFUSED` with nothing changed. Both first make sure the scan
 owner exists (the intent lives there): without it they answer `SETUP_FAILED` before any tune, and `HOLDING` always sets
 the hold itself (`dsd_engine_scan_entry_hold_now()`). A row confirmed on air (`dsd_engine_channel_scan_row_confirmed()`)
 gets the hold only. A typed row is staged apart: the row start is split into `channel_scan_prepare_row()` (into a
@@ -3668,7 +3670,9 @@ are the intent's, and spends the intent at every landing.
 
 Beside the request check, every other tune of the scan cancels the intent before it starts, and a new tune-start
 site must do the same. Today these are the typed step past its pending check, `step_manual_dir()` (Next, Previous
-and an avoid's step), the untyped timed step, `dsd_engine_channel_scan_walk_row()` and a plain resume. The release
+and an avoid's step), the untyped timed step, `dsd_engine_channel_scan_walk_row()` and a plain resume; an untyped
+Next or Previous also cancels it at its control entry (`dsd_engine_channel_scan_entry_supersede()` atop
+`apply_manual_lcn_cycle_untyped_dir_locked()`), so one with nowhere to land still does. The release
 (a pause, a stop) also cancels it. So does `Y`: `apply_manual_scan_hold_toggle()` calls
 `dsd_engine_channel_scan_entry_cancel()` before it toggles, so an entry hold loses its mark and the toggle releases
 it. The failure or drop of the intent's own tune cancels it too (`dsd_engine_scan_entry_intent_drop_request()` in
@@ -3689,10 +3693,11 @@ ever saved. Tests: `ENGINE_CHANNEL_SCAN` (typed: landing, hold only, a forgotten
 the row on air, a restaged landing, pending landing, late failure and cancels by Next, `Y` and a pause, over a row in
 flight for each outcome, a go-to over an entry hold and over an ordinary hold, lifecycle, resume-at and resume-at over
 a pending resume), `ENGINE_NO_CARRIER_RESET` (untyped through the real walk and step: each outcome, partial movement,
-hold only and refusals that keep it, a go-to over a pending go-to, over an entry hold and over an ordinary hold, a pause
-cancel, resume-at and resume-at over a pending resume both ways), `APP_COMMAND_QUEUE` (`Y` over an entry hold, a config
-apply that keeps or stops the scan), `UI_MENU_SERVICES` (map adopt and clear), `RUNTIME_CONFIG_USER` (never saved,
-the -Y and the trunk-scan hold and mark alike).
+hold only and refusals that keep it, a go-to over a pending go-to, over an entry hold and over an ordinary hold, an
+avoided channel refused, a Next with nowhere to land cancelling a pending entry, a pause cancel, resume-at and
+resume-at over a pending resume both ways), `APP_COMMAND_QUEUE` (`Y` over an entry hold, a config apply that keeps or
+stops the scan), `UI_MENU_SERVICES` (map adopt and clear), `RUNTIME_CONFIG_USER` (never saved, the -Y and the
+trunk-scan hold and mark alike).
 
 ### Channel Scan Pause Hook (Engine → Runtime ← App-Control)
 

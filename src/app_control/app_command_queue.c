@@ -3856,6 +3856,9 @@ lcn_cycle_walk_off_scan(dsd_opts* opts, dsd_state* state, int p25_live, int row,
    on the confirmed landing); any other walk is lcn_cycle_walk_off_scan()'s. */
 static int
 apply_manual_lcn_cycle_untyped_dir_locked(dsd_opts* opts, dsd_state* state, int p25_live, int dir) {
+    /* A press acts on the scan whatever it comes to, nowhere to land included: an entry waiting on its row's landing
+       holds nothing when it lands (issue #644). The walk below cancels it too; this covers every way out. */
+    dsd_engine_channel_scan_entry_supersede(state);
     const int count = state->lcn_freq_count;
     if (count <= 0) {
         return UI_CMD_APPLY_COMPLETED;
