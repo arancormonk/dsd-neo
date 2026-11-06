@@ -1185,6 +1185,7 @@ init_state_scan_avoid_identity(dsd_state* state) {
     dsd_state_trunk_scan_avoids_free(state);
     dsd_state_trunk_scan_entry_reasons_free(state);
     state->trunk_scan_entry_rev = 0;
+    state->trunk_scan_entry_on_air = -1;
     state->state_instance = dsd_state_rev_next();
     state->lcn_list_rev = dsd_state_rev_next();
     state->lcn_avoid_rev = dsd_state_rev_next();

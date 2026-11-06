@@ -1366,6 +1366,7 @@ MetricsModel::refreshScanLists(View& next, const dsd_opts* opts_snapshot, const 
         m_scanTargetEligible = eligible;
     }
     next.scan_target_eligible = m_scanTargetEligible;
+    next.scan_target_on_air = static_cast<int>(entries.on_air);
 }
 
 /*

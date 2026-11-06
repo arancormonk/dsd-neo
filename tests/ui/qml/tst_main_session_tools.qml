@@ -1491,6 +1491,42 @@ Item {
             }
         }
 
+        // Issue #644: two of the session's targets on one frequency while a released session's rotation still runs,
+        // parked on the second. The engine takes a target as on air only once its park landed, and publishes which
+        // (scanTargetOnAir): until then the action names the first in list order, after it the parked one.
+        function test_a_released_scan_list_names_the_parked_row_only_once_confirmed() {
+            scanLists.add({name: "Security", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Gate", protocol: "p25", freqMhz: "851.0125", enabled: true}]});
+            var security = scanLists.get(scanLists.count - 1);
+            scanLists.add({name: "Hospital", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Lobby", protocol: "p25", freqMhz: "851.0125", enabled: true}]});
+            var hospital = scanLists.get(scanLists.count - 1);
+            try {
+                testContext.setLifecyclePhase(0);
+                app.startScanBundle(scanLists.rowForUid(security.uid), [hospital.uid]);
+                testContext.setLifecyclePhase(2);
+                compare(app.sessionTargets.length, 2);
+                testContext.setMetrics({optionsKnown: true, operatorTuned: false, scanKind: 2,
+                                        scanRotationActive: true, scanPaused: false, tunerControlled: false,
+                                        centerFreqHz: 851012500, channelBandwidthHz: 12500,
+                                        scanTargetId: app.sessionTargets[1].targetId, scanTargetOnAir: -1});
+                publishAllEligible();
+                app.exploring = true;
+                compare(app.listenActions.length, 1);
+                compare(app.listenActions[0].name, "Security / Gate", "the park not landed");
+                testContext.setMetric("scanTargetOnAir", 1);
+                compare(app.listenActions.length, 1);
+                compare(app.listenActions[0].name, "Hospital / Lobby", "the park landed");
+            } finally {
+                endExplore();
+                testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
+                                        scanRotationActive: false, tunerControlled: false, scanTargetId: "",
+                                        scanTargetOnAir: -1, scanTargetEligible: []});
+                testContext.setLifecyclePhase(2);
+                removeScanLists([security.uid, hospital.uid]);
+            }
+        }
+
         // "Explore from here" on a scan list marks the session exploring before the decoder reports the operator's
         // tune: in that moment its own rows are still reached in place, and nothing that restarts it is offered.
         function test_a_released_scan_list_offers_no_restart_before_the_tune_reads_back() {

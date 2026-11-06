@@ -4492,6 +4492,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanActiveListOff")] = false;
         /* Issue #644: the engine publishes none until a trunk scan runs. */
         metrics[QStringLiteral("scanTargetEligible")] = QVariantList();
+        metrics[QStringLiteral("scanTargetOnAir")] = -1;
         metrics[QStringLiteral("scanRotationOrdinal")] = 0;
         metrics[QStringLiteral("scanRotationCount")] = 0;
         m_scan_list_model = new dsd_qt::ScanListToggleModel(engine);

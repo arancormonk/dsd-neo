@@ -2638,6 +2638,10 @@ struct dsd_state {
     /* Moves whenever trunk_scan_entry_reasons changes, and at its release (issue #644); what the snapshot's copy keys
        on. */
     uint64_t trunk_scan_entry_rev;
+    /* The target the entry match would take as on air (dsd_engine_trunk_scan_target_confirmed(), issue #644): its
+       index in trunk_scan_entry_reasons' order, -1 for none (paused, or the park not landed). Published with the
+       reasons, under the same trunk_scan_entry_rev. */
+    int32_t trunk_scan_entry_on_air;
     uint32_t trunk_scan_session;
     uint8_t trunk_scan_avoids_ok;
     uint8_t scan_avoids_complete;

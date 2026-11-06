@@ -297,8 +297,8 @@ Window {
     // there (dsd_engine_scan_entry_match()): of the rows the engine says it
     // could pick now (metrics.scanTargetEligible, published in the session's
     // target order: a list switched on, not avoided, a width the DSP rate can
-    // filter), the one on air while the rotation still runs (the target it
-    // publishes, metrics.scanTargetId; a paused scan has none), else the first
+    // filter), the one it takes as on air (metrics.scanTargetOnAir: parked,
+    // its park landed, not paused; published with the rest), else the first
     // in list order. With none it would take, or nothing published yet,
     // nothing is offered: the scan would refuse the frequency. One tune per
     // frequency.
@@ -321,14 +321,14 @@ Window {
                 centres.push(target.frequencyHz);
         }
         var rows = [];
-        var onAir = metrics.scanRotationActive ? String(metrics.scanTargetId || "") : "";
+        var onAir = metrics.scanTargetOnAir;
         for (var centre of centres) {
             var pick = null;
             for (var i = 0; i < targets.length; ++i) {
                 var row = targets[i];
                 if (row.frequencyHz !== centre || eligible[i] !== true)
                     continue;
-                if (pick === null || (onAir !== "" && row.targetId === onAir))
+                if (pick === null || i === onAir)
                     pick = row;
             }
             if (pick !== null)

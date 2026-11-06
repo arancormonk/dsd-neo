@@ -213,10 +213,15 @@ test_entry_eligibility(dsd_opts* opts, dsd_state* state) {
     const uint8_t reasons[] = {0U, 4U, 1U};
     assert(dsd_state_trunk_scan_entry_reasons_set(state, reasons, 3U) == 0);
     state->trunk_scan_entry_rev = 77U;
+    state->trunk_scan_entry_on_air = -1;
     dsd_app_scan_entry_summary summary;
     DSD_MEMSET(&summary, 0xA5, sizeof summary);
     assert(dsd_app_scan_entry_summary_get(opts, state, &summary) == 0);
-    assert(summary.count == 3U && summary.revision == 77U);
+    assert(summary.count == 3U && summary.revision == 77U && summary.on_air == -1);
+    state->trunk_scan_entry_on_air = 2;
+    assert(dsd_app_scan_entry_summary_get(opts, state, &summary) == 0 && summary.on_air == 2);
+    state->trunk_scan_entry_on_air = 3; /* past the count: none */
+    assert(dsd_app_scan_entry_summary_get(opts, state, &summary) == 0 && summary.on_air == -1);
     assert(dsd_app_scan_entry_eligible(opts, state, 0U) == 1);
     assert(dsd_app_scan_entry_eligible(opts, state, 1U) == 0);
     assert(dsd_app_scan_entry_eligible(opts, state, 2U) == 0);

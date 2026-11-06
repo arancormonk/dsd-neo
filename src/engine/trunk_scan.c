@@ -2412,6 +2412,7 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_avoids_ok = 1U;
     state->trunk_scan_avoid_rev = dsd_state_rev_next();
     dsd_state_trunk_scan_entry_reasons_free(state);
+    state->trunk_scan_entry_on_air = -1;
     state->trunk_scan_entry_rev = dsd_state_rev_next();
 }
 
@@ -4786,6 +4787,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
 }
 
 static void trunk_scan_publish_entry_reasons(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord);
+static void trunk_scan_publish_entry_on_air(dsd_state* state, const dsd_trunk_scan_coord* coord);
 
 void
 dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
@@ -4808,6 +4810,8 @@ dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     trunk_scan_tick_locked(opts, state, coord);
+    /* What this tick landed or left is the entry match's on-air target now. */
+    trunk_scan_publish_entry_on_air(state, coord);
     p25_sm_tick_guard_leave();
 }
 
@@ -6163,9 +6167,24 @@ trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_
 /* Publish whether a frequency typed by hand could pick each target (dsd_state::trunk_scan_entry_reasons, issue #644),
    as trunk_scan_entry_reason() decides it, so a frontend names the row the engine takes without deciding it again.
    Decided again only when the DSP rate, the lists, the avoids or a session edit moved, or once a second (for what no
-   counter here follows: a configured width); stamped trunk_scan_entry_rev only when a byte or the count changed. */
+   counter here follows: a configured width); stamped trunk_scan_entry_rev only when a byte or the count changed. The
+   target the match would take as on air (dsd_engine_trunk_scan_target_confirmed()) is checked at every call, a few
+   loads, and stamped the same way when it changes: a park landing, a pause. */
+static void
+trunk_scan_publish_entry_on_air(dsd_state* state, const dsd_trunk_scan_coord* coord) {
+    const int32_t on_air =
+        coord->active < coord->count && dsd_engine_trunk_scan_target_confirmed(state, (int)coord->active)
+            ? (int32_t)coord->active
+            : -1;
+    if (state->trunk_scan_entry_on_air != on_air) {
+        state->trunk_scan_entry_on_air = on_air;
+        state->trunk_scan_entry_rev = dsd_state_rev_next();
+    }
+}
+
 static void
 trunk_scan_publish_entry_reasons(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    trunk_scan_publish_entry_on_air(state, coord);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     const double now_s = dsd_realtime_mono_s();
     if (coord->entry_decided && coord->entry_rate_hz == rate_hz && coord->entry_lists_seq == coord->lists_seq

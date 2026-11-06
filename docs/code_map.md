@@ -11318,7 +11318,9 @@ Qt Quick frontend (`src/ui/qt`):
     list, an avoid or a session edit moved, and once a second for a configured width, stamped
     `trunk_scan_entry_rev` only when a byte changed; copied to the snapshot by that revision), which
     `dsd_app_scan_entry_eligible()` reads and `MetricsModel::scanTargetEligible` carries. Of the eligible rows on the
-    frequency the one on air while the rotation still runs (`scanTargetId`) is named, else the first in list order;
+    frequency the one the match takes as on air is named (`dsd_state::trunk_scan_entry_on_air`, the confirmed
+    target or -1, published under the same revision and checked at every tick; `scanTargetOnAir`), else the first in
+    list order;
     with none, or nothing published yet, nothing is offered. A `-Y` channel map's rows are never a Listen action
     (they only name the channel), so nothing there needs it. Rows of other
     lists and saved systems, which would restart the session, are not offered. Its targets are the session's own, as it

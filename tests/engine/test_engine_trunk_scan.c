@@ -19357,6 +19357,47 @@ goto_park_over_a_restart_case(int elsewhere) {
     return test_rc;
 }
 
+/* Issue #644: the published target the entry match would take as on air follows the park's confirmation: none while
+   the go-to's park of b is in flight, b once it lands, none again once the scan is paused; each change with a new
+   revision. */
+static int
+test_entry_on_air_follows_the_park(void) {
+    const char* what = "entry on air";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.05);
+    test_rc |= expect_goto("the park in flight is no target on air", state.trunk_scan_entry_on_air == -1);
+    uint64_t rev = state.trunk_scan_entry_rev;
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto("the landed park is on air",
+                           state.trunk_scan_entry_on_air == 1 && state.trunk_scan_entry_rev != rev);
+    rev = state.trunk_scan_entry_rev;
+    p25_sm_tick_guard_enter();
+    test_rc |=
+        expect_goto("the pause", dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) == 0);
+    p25_sm_tick_guard_leave();
+    tick_at(&opts, &state, 1.2);
+    test_rc |= expect_goto("a paused scan has none on air",
+                           state.trunk_scan_entry_on_air == -1 && state.trunk_scan_entry_rev != rev);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_goto_park_over_a_restart(void) {
     return goto_park_over_a_restart_case(0) | goto_park_over_a_restart_case(1);
@@ -20659,6 +20700,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_never_joins_a_failed_park);
     rc |= run_with_default_tune_hook(test_goto_entry_waiting_on_nothing);
     rc |= run_with_default_tune_hook(test_goto_park_over_a_restart);
+    rc |= run_with_default_tune_hook(test_entry_on_air_follows_the_park);
     rc |= run_with_default_tune_hook(test_goto_a_copy_in_another_list);
     rc |= run_with_default_tune_hook(test_goto_paused_resumes_at_the_target);
     rc |= run_with_default_tune_hook(test_entry_hold_lifecycle);

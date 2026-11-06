@@ -69,6 +69,8 @@ int dsd_app_scan_list_view_get(const dsd_opts* opts, const dsd_state* state, dsd
 typedef struct {
     uint64_t revision; /**< dsd_state::trunk_scan_entry_rev: moves whenever an answer or the count changes. */
     size_t count;      /**< Targets answered; 0 with no trunk scan, or before the coordinator first publishes. */
+    int32_t on_air;    /**< The target the scan would take as on air (confirmed there: parked, its park landed, not
+                            paused), its index in the same order; -1 for none. */
 } dsd_app_scan_entry_summary;
 
 /** @brief Fill @p out from decoder state or a frontend snapshot pair (a few loads, no walk). Zeroes @p out first.

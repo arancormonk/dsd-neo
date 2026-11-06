@@ -83,6 +83,8 @@ dsd_app_scan_entry_summary_get(const dsd_opts* opts, const dsd_state* state, dsd
     }
     out->count = scan_entry_published_count(opts, state);
     out->revision = state->trunk_scan_entry_rev;
+    const int32_t on_air = state->trunk_scan_entry_on_air;
+    out->on_air = on_air >= 0 && (size_t)on_air < out->count ? on_air : -1;
     return 0;
 }
 
