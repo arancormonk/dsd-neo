@@ -30,8 +30,12 @@
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/engine/analog_call.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -39,6 +43,8 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -310,6 +316,7 @@ rig_open_ex(rig* r, const char* prefix, int with_journal) {
     (void)dsd_test_path_join(r->journal, sizeof r->journal, r->dir, "calls.jsonl");
     dsd_wav_recording_session_reset();
     dsd_wav_journal_test_fail_writes_after(-1);
+    dsd_signal_search_visit_clear();
     g_journal_errors = 0;
     int rc = 0;
     if (with_journal) {
@@ -338,6 +345,7 @@ rig_close(rig* r) {
     dsd_app_frontend_runtime_stop();
     dsd_wav_journal_close();
     dsd_wav_journal_test_fail_writes_after(-1);
+    dsd_signal_search_visit_clear();
     if (r->opts) {
         r->opts->wav_out_f = close_wav_file(r->opts->wav_out_f);
         r->opts->wav_out_fR = close_wav_file(r->opts->wav_out_fR);
@@ -374,21 +382,31 @@ voice_frames(rig* r, int slot, int frames) {
 }
 
 static void
-begin_call(rig* r, int protocol, uint32_t tg, uint32_t src, dsd_call_boundary boundary) {
+begin_call_on(rig* r, uint8_t slot, int protocol, uint32_t tg, uint32_t src, dsd_call_boundary boundary) {
     const dsd_call_observation call = {.protocol = protocol,
-                                       .slot = 0U,
+                                       .slot = slot,
                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
                                        .ota_target_id = tg,
                                        .policy_target_id = tg,
                                        .ota_source_id = src};
     (void)dsd_call_state_observe(r->state, &call, boundary);
-    dsd_event_sync_slot(r->opts, r->state, 0);
+    dsd_event_sync_slot(r->opts, r->state, slot);
+}
+
+static void
+begin_call(rig* r, int protocol, uint32_t tg, uint32_t src, dsd_call_boundary boundary) {
+    begin_call_on(r, 0U, protocol, tg, src, boundary);
+}
+
+static void
+end_call_on(rig* r, uint8_t slot, dsd_call_end_reason reason) {
+    (void)dsd_call_state_end_ex(r->state, slot, 0.0, reason);
+    dsd_event_sync_slot(r->opts, r->state, slot);
 }
 
 static void
 end_call(rig* r, dsd_call_end_reason reason) {
-    (void)dsd_call_state_end_ex(r->state, 0, 0.0, reason);
-    dsd_event_sync_slot(r->opts, r->state, 0);
+    end_call_on(r, 0U, reason);
 }
 
 static uint64_t
@@ -1010,10 +1028,15 @@ current_frequency(const dsd_opts* opts) {
     return g_frequency;
 }
 
+static int g_tune_refused; /* the stand-in tuner refuses every tune */
+
 static dsd_trunk_tune_result
 tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_id) {
     (void)sps;
     (void)request_id;
+    if (g_tune_refused) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     g_frequency = freq;
     opts->rtlsdr_center_freq = (uint32_t)freq;
     state->trunk_cc_freq = freq;
@@ -1194,6 +1217,40 @@ test_start_on_the_replay_clock(void) {
     rc |= expect_int("the call's start on the capture's clock", pub ? field_ll(pub, "start") : -9,
                      (long long)anchor + 60);
     rc |= expect_int("stamped on the capture's clock", pub ? field_ll(pub, "t") : -9, (long long)anchor + 65);
+    rig_close(&r);
+    return rc;
+}
+
+/* The publish line's start is the second the call began (issue #809 B1), on the capture's clock: a call heard from
+   59.95 s into the capture and first rendered at 60.02 s began in second 59, not in second 60. */
+static int
+test_start_floors_once_on_the_replay_clock(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_floor");
+    const int64_t anchor = 1262304000LL; /* 2010-01-01T00:00:00Z */
+    dsd_decode_clock_use_replay(anchor);
+    dsd_decode_clock_set_media_ns(5ULL * 1000000000ULL);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 903U,
+        .policy_target_id = 903U,
+        .ota_source_id = 93U,
+    };
+    dsd_decode_clock_set_media_ns(59950ULL * 1000000ULL);
+    (void)dsd_call_state_observe(r.state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_decode_clock_set_media_ns(60020ULL * 1000000ULL);
+    (void)dsd_call_state_observe(r.state, &call, DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    voice_frames(&r, 0, 2);
+    dsd_decode_clock_set_media_ns(65ULL * 1000000000ULL);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |=
+        expect_int("the start is the second the call began", pub ? field_ll(pub, "start") : -9, (long long)anchor + 59);
     rig_close(&r);
     return rc;
 }
@@ -2173,6 +2230,701 @@ test_path_forms(void) {
     return rc;
 }
 
+/* --- Signal search visits (issue #809): each recording names the visit it was received on. --- */
+
+static const uint64_t k_visit_session = 1730000000000000ULL;
+
+/* @p line names the visit "<session>:<hit>" as @p want. */
+static int
+expect_visit(const char* what, const char* line, const char* want) {
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: a publish line", what);
+    if (expect_true(tag, line != NULL)) {
+        return 1;
+    }
+    DSD_SNPRINTF(tag, sizeof tag, "%s: names the visit", what);
+    if (expect_true(tag, strstr(line, "\"search\":") != NULL)) {
+        return 1;
+    }
+    return expect_str(what, field_s(line, "search"), want);
+}
+
+/* The @p nth (0-based) publish line at @p rate, or NULL. */
+static const char*
+publish_at_rate(int rate, int nth) {
+    const char* line = NULL;
+    for (int i = 0; (line = record(&g_j, "publish", i)) != NULL; i++) {
+        if (field_ll(line, "rate") == rate && nth-- == 0) {
+            return line;
+        }
+    }
+    return NULL;
+}
+
+static int
+count_publish_at_rate(int rate) {
+    int n = 0;
+    while (publish_at_rate(rate, n) != NULL) {
+        n++;
+    }
+    return n;
+}
+
+/* A digital call's commit rotates its slot file under the visit: the key comes after `source`, two decimal numbers,
+   and the whole uint64_t range is written as text. */
+static int
+test_digital_commit_names_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_commit");
+    dsd_signal_search_visit_set(k_visit_session, 7U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 100U, 77U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 3);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_int("one publish", count_records(&g_j, "publish"), 1);
+    rc |= expect_true("the visit follows the source and ends the record",
+                      pub && strstr(pub, ",\"source\":\"77\",\"search\":\"1730000000000000:7\"}") != NULL);
+
+    dsd_signal_search_visit_set(UINT64_MAX, UINT64_MAX);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 101U, 78U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 3);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    rc |= expect_int("a second publish", count_records(&g_j, "publish"), 2);
+    rc |=
+        expect_visit("the largest ids, exact", record(&g_j, "publish", 1), "18446744073709551615:18446744073709551615");
+    rig_close(&r);
+    return rc;
+}
+
+/* An NFM call's recording, published at its end, names the visit it was heard on. */
+static int
+test_nfm_recording_names_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_nfm");
+    setup_nfm(r.opts, r.state);
+    dsd_signal_search_visit_set(k_visit_session, 8U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("one NFM recording", count_publish_at_rate(48000), 1);
+    rc |= expect_visit("nfm", publish_at_rate(48000, 0), "1730000000000000:8");
+    rig_close(&r);
+    return rc;
+}
+
+/* DMR's two slots talking on one visit: both recordings name it. */
+static int
+test_both_slots_tagged(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_slots");
+    dsd_signal_search_visit_set(k_visit_session, 9U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call_on(&r, 0U, DSD_SYNC_DMR_BS_VOICE_POS, 200U, 20U, DSD_CALL_BOUNDARY_BEGIN);
+    begin_call_on(&r, 1U, DSD_SYNC_DMR_BS_VOICE_POS, 201U, 21U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    voice_frames(&r, 1, 2);
+    end_call_on(&r, 0U, DSD_CALL_END_EXPLICIT);
+    end_call_on(&r, 1U, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    rc |= expect_int("one recording per slot", count_records(&g_j, "publish"), 2);
+    for (int i = 0; i < 2; i++) {
+        const char* pub = record(&g_j, "publish", i);
+        rc |= expect_int("slot 1, then slot 2", pub ? field_ll(pub, "slot") : -9, i);
+        rc |= expect_visit("both slots", pub, "1730000000000000:9");
+    }
+    rig_close(&r);
+    return rc;
+}
+
+/* The closers that publish before their call's row commits name the visit too: a WAV stop mid-call and the EDACS
+   analog rotation. */
+static int
+test_pending_closer_names_visit(void) {
+    int rc = 0;
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_visit_stop");
+        dsd_signal_search_visit_set(k_visit_session, 10U);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 400U, 9U, DSD_CALL_BOUNDARY_BEGIN);
+        voice_frames(&r, 0, 2);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        end_call(&r, DSD_CALL_END_EXPLICIT);
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        rc |= expect_true("wav stop: published pending", pub && strcmp(field_s(pub, "pending"), "true") == 0);
+        rc |= expect_visit("wav stop", pub, "1730000000000000:10");
+        rig_close(&r);
+    }
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_visit_edacs");
+        dsd_signal_search_visit_set(k_visit_session, 11U);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_call(&r, DSD_SYNC_EDACS_POS, 321U, 1234U, DSD_CALL_BOUNDARY_BEGIN);
+        static short analog[3][960];
+        for (int i = 0; i < 960; i++) {
+            analog[0][i] = (short)(i * 8);
+            analog[1][i] = (short)(-i * 8);
+            analog[2][i] = (short)(i * 4);
+        }
+        edacs_write_analog_wav(r.opts, r.state, analog[0], analog[1], analog[2]);
+        r.opts->wav_out_f = close_and_publish_call_wav(r.opts->wav_out_f, r.opts, r.state, 0, r.opts->wav_out_file,
+                                                       r.opts->wav_out_dir, r.opts->wav_out_open_time);
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        rc |= expect_true("edacs rotation: published pending", pub && strcmp(field_s(pub, "pending"), "true") == 0);
+        rc |= expect_visit("edacs rotation", pub, "1730000000000000:11");
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* Outside a visit no record carries the key: a digital commit, an NFM call and a pending closer. Nor does a record
+   whose visit has a zero id, which a reader would reject: the writer never writes one. */
+static int
+test_no_visit_no_key(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_none");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 1U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 301U, 2U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    static const uint64_t zero_half[2][2] = {{0U, 5U}, {5U, 0U}};
+    for (int i = 0; i < 2; i++) {
+        wav_journal_publish_record rec;
+        DSD_MEMSET(&rec, 0, sizeof rec);
+        rec.path = r.journal;
+        rec.owner.kind = DSD_WAV_OWNER_NONE;
+        rec.owner.slot = DSD_WAV_OWNER_SLOT_UNKNOWN;
+        rec.has_search = 1;
+        rec.search_session = zero_half[i][0];
+        rec.search_hit = zero_half[i][1];
+        wav_journal_publish(&rec);
+    }
+    reload(&r);
+    rc |= expect_int("an NFM, a commit, a pending publish and two zero-id visits", count_records(&g_j, "publish"), 5);
+    for (int i = 0; i < g_j.count; i++) {
+        rc |= expect_true("no record names a visit", strstr(g_j.line[i], "\"search\":") == NULL);
+    }
+    rig_close(&r);
+    return rc;
+}
+
+/* A decoder session that ends during a visit (a Stop from the app) ends the search's hit and keeps the tag, and the
+   teardown's final closes publish under it (dsd_engine_cleanup(): dsd_engine_finalize_calls() ends the analog call and
+   the slots as a sync loss, dsd_engine_cleanup_close_wavs() publishes the slot files). The hit's end and the tag kept
+   through the real teardown are pinned by ENGINE_SIGNAL_SEARCH and ENGINE_LIFECYCLE_FINALIZE, which run the search;
+   here the final closes run in the teardown's order under the kept tag: an NFM call on slot 1 and a DMR call on
+   slot 2, both talking when the session ends. */
+static int
+test_session_final_closes_keep_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_end");
+    setup_nfm(r.opts, r.state);
+    dsd_signal_search_visit_set(k_visit_session, 12U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    begin_call_on(&r, 1U, DSD_SYNC_DMR_BS_VOICE_POS, 210U, 22U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 1, 2);
+
+    dsd_engine_analog_call_end(r.opts, r.state);
+    end_call_on(&r, 1U, DSD_CALL_END_SYNC_LOSS);
+    r.opts->wav_out_f = close_and_publish_call_wav(r.opts->wav_out_f, r.opts, r.state, 0, r.opts->wav_out_file,
+                                                   r.opts->wav_out_dir, r.opts->wav_out_open_time);
+    r.opts->wav_out_fR = close_and_publish_call_wav(r.opts->wav_out_fR, r.opts, r.state, 1, r.opts->wav_out_fileR,
+                                                    r.opts->wav_out_dir, r.opts->wav_out_open_timeR);
+    reload(&r);
+    rc |= expect_int("the NFM call's recording", count_publish_at_rate(48000), 1);
+    rc |= expect_visit("the NFM call at the session's end", publish_at_rate(48000, 0), "1730000000000000:12");
+    rc |= expect_int("slot 2's recording", count_publish_at_rate(8000), 1);
+    rc |= expect_visit("the slot 2 file at the session's end", publish_at_rate(8000, 0), "1730000000000000:12");
+    rig_close(&r);
+    return rc;
+}
+
+/* A visit's departure is a carrier boundary the engine runs under the visit's tag, which it clears right after; the
+   next landing sets the next visit's. The real boundary closes what the visit left on the air (its NFM call, and the
+   DMR call on slot 2 through the commit's rotation) under the departing visit, and the next visit's recording names
+   the next one. */
+static int
+test_departure_boundary_tags_departing_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_depart");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    dsd_signal_search_visit_set(k_visit_session, 13U);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    begin_call_on(&r, 1U, DSD_SYNC_DMR_BS_VOICE_POS, 220U, 23U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 1, 2);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_signal_search_visit_clear();
+    reload(&r);
+    rc |= expect_int("the boundary published the visit's NFM call", count_publish_at_rate(48000), 1);
+    rc |= expect_int("and slot 2's call", count_publish_at_rate(8000), 1);
+
+    dsd_signal_search_visit_set(k_visit_session, 14U);
+    setup_nfm(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_signal_search_visit_clear();
+    reload(&r);
+    rc |= expect_int("the next visit's NFM call", count_publish_at_rate(48000), 2);
+    rc |= expect_visit("the departing visit's NFM call", publish_at_rate(48000, 0), "1730000000000000:13");
+    rc |= expect_visit("the departing visit's slot 2 call", publish_at_rate(8000, 0), "1730000000000000:13");
+    rc |= expect_visit("the next visit's NFM call", publish_at_rate(48000, 1), "1730000000000000:14");
+    rig_close(&r);
+    return rc;
+}
+
+/* --- Issue #809 B4: a slot file holding audio no call owns is closed at every carrier departure. --- */
+
+/* The journal id slot @p slot (0 or 1) records under now. */
+static void
+slot_id(const rig* r, int slot, char* id, size_t cap) {
+    id_of_temp(slot == 1 ? r->opts->wav_out_fileR : r->opts->wav_out_file, id, cap);
+}
+
+/* @p line is an orphan's publish: slot @p slot, @p duration_ms long, no row's, not pending and not exported. */
+static int
+expect_orphan(const char* what, const char* line, int slot, long long duration_ms) {
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: a publish line", what);
+    if (expect_true(tag, line != NULL)) {
+        return 1;
+    }
+    int rc = 0;
+    DSD_SNPRINTF(tag, sizeof tag, "%s: slot", what);
+    rc |= expect_int(tag, field_ll(line, "slot"), slot);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: duration", what);
+    rc |= expect_int(tag, field_ll(line, "duration_ms"), duration_ms);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: no row, not pending, not exported", what);
+    rc |= expect_true(tag, strcmp(field_s(line, "row"), "null") == 0 && strcmp(field_s(line, "pending"), "false") == 0
+                               && strcmp(field_s(line, "rdio"), "false") == 0);
+    return rc;
+}
+
+/* Speech heard with no call (TETRA speech ahead of the signalling that admits a call), a tune, and more of it: the tune
+   closes the first carrier's audio as its own recording, so the two halves never share a file. */
+static int
+test_orphan_audio_split_at_tune_boundary(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_tune");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char first[64];
+    slot_id(&r, 0, first, sizeof first);
+    voice_frames(&r, 0, 10);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    char second[64];
+    slot_id(&r, 0, second, sizeof second);
+    rc |= expect_true("the slot file reopened", r.opts->wav_out_f != NULL && strcmp(first, second) != 0);
+    voice_frames(&r, 0, 5);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_int("two recordings, one per carrier", count_records(&g_j, "publish"), 2);
+    const char* left = record(&g_j, "publish", 0);
+    rc |= expect_orphan("the carrier left", left, 0, 200);
+    rc |= expect_true("is the first segment", left && strcmp(field_s(left, "id"), first) == 0);
+    const char* next = record(&g_j, "publish", 1);
+    rc |= expect_int("the next carrier's half", next ? field_ll(next, "duration_ms") : -9, 100);
+    rc |= expect_true("is the reopened segment", next && strcmp(field_s(next, "id"), second) == 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* Both slots' files hold audio with no call: the tune closes each, and each reopens. */
+static int
+test_orphan_flush_both_slots(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_slots");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char before[2][64];
+    slot_id(&r, 0, before[0], sizeof before[0]);
+    slot_id(&r, 1, before[1], sizeof before[1]);
+    voice_frames(&r, 0, 4);
+    voice_frames(&r, 1, 6);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    reload(&r);
+    rc |= expect_int("one recording per slot", count_records(&g_j, "publish"), 2);
+    for (int slot = 0; slot < 2; slot++) {
+        const char* pub = NULL;
+        for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+            if (strcmp(field_s(pub, "id"), before[slot]) == 0) {
+                break;
+            }
+        }
+        rc |= expect_orphan(slot == 0 ? "slot 1" : "slot 2", pub, slot, slot == 0 ? 80 : 120);
+        char after[64];
+        slot_id(&r, slot, after, sizeof after);
+        rc |= expect_true("the slot file reopened", (slot == 0 ? r.opts->wav_out_f : r.opts->wav_out_fR) != NULL
+                                                        && after[0] != '\0' && strcmp(after, before[slot]) != 0);
+    }
+    rig_close(&r);
+    return rc;
+}
+
+/* Nothing to close: an empty slot file stays open as it is (no discard, no new segment), with -P off nothing opens, and
+   a static WAV (-w), which holds every carrier by design, is never cut. */
+static int
+test_orphan_flush_skips_empty(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_empty");
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= expect_true("-P off: no slot file opened", r.opts->wav_out_f == NULL && r.opts->wav_out_fR == NULL);
+
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char before[2][64];
+    slot_id(&r, 0, before[0], sizeof before[0]);
+    slot_id(&r, 1, before[1], sizeof before[1]);
+    const SNDFILE* files[2] = {r.opts->wav_out_f, r.opts->wav_out_fR};
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    char after[2][64];
+    slot_id(&r, 0, after[0], sizeof after[0]);
+    slot_id(&r, 1, after[1], sizeof after[1]);
+    rc |= expect_true("the empty files stay open", r.opts->wav_out_f == files[0] && r.opts->wav_out_fR == files[1]
+                                                       && strcmp(after[0], before[0]) == 0
+                                                       && strcmp(after[1], before[1]) == 0);
+    reload(&r);
+    rc |= expect_int("nothing published", count_records(&g_j, "publish"), 0);
+    rc |= expect_int("nothing discarded", count_records(&g_j, "discard"), 0);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+
+    char path[DSD_TEST_PATH_MAX * 2];
+    (void)dsd_test_path_join(path, sizeof path, r.dir, "static.wav");
+    r.opts->static_wav_file = 1;
+    r.opts->wav_out_f = open_static_wav_file(path);
+    rc |= expect_true("the static WAV opens", r.opts->wav_out_f != NULL);
+    const SNDFILE* static_wav = r.opts->wav_out_f;
+    voice_frames(&r, 0, 3);
+    dsd_event_flush_orphan_recordings(r.opts, r.state);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= expect_true("the static WAV is never cut", r.opts->wav_out_f == static_wav);
+    reload(&r);
+    rc |= expect_int("and not published", count_records(&g_j, "publish"), 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* A slot whose call is active keeps its file: the call's own commit closes it, whole, under its row. The other slot's
+   audio, which no call owns, is closed. */
+static int
+test_orphan_flush_skips_active_call(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_active");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char call_id[64];
+    slot_id(&r, 0, call_id, sizeof call_id);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 30U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 5);
+    voice_frames(&r, 1, 3);
+    dsd_event_flush_orphan_recordings(r.opts, r.state);
+    char after[64];
+    slot_id(&r, 0, after, sizeof after);
+    rc |= expect_true("the call's file stays open", strcmp(after, call_id) == 0);
+    reload(&r);
+    rc |= expect_int("only the other slot's audio closed", count_records(&g_j, "publish"), 1);
+    rc |= expect_orphan("slot 2", record(&g_j, "publish", 0), 1, 60);
+
+    voice_frames(&r, 0, 5);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 1);
+    rc |= expect_true("the call's commit publishes its file", pub && strcmp(field_s(pub, "id"), call_id) == 0);
+    rc |= expect_int("whole", pub ? field_ll(pub, "duration_ms") : -9, 200);
+    rc |= expect_int("under its row", pub ? field_ll(pub, "row") : -9, (long long)r.state->event_history_s[0].push_seq);
+    rig_close(&r);
+    return rc;
+}
+
+/* An ended epoch whose row is held back (an identity-less call that faded: its drop verdict waits out the reacquisition
+   window) still owns its audio: the departure closes the file pending on that epoch, as a WAV stop would, and the
+   drop that follows unlinks it rather than leaving it no row's from the start. */
+static int
+test_orphan_flush_held_epoch_is_pending(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_held");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN);
+    const uint64_t epoch = call_epoch(&r);
+    voice_frames(&r, 0, 3);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    end_call(&r, DSD_CALL_END_SYNC_LOSS);
+    reload(&r);
+    rc |= expect_int("the faded epoch's row is held", count_records(&g_j, "publish"), 0);
+    dsd_event_flush_orphan_recordings(r.opts, r.state);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("its audio closed", pub && strcmp(field_s(pub, "id"), id) == 0);
+    rc |= expect_true("pending on its epoch, not exported", pub && strcmp(field_s(pub, "pending"), "true") == 0
+                                                                && strcmp(field_s(pub, "rdio"), "false") == 0);
+    rc |= expect_int("the epoch", pub ? field_ll(pub, "epoch") : -9, (long long)epoch);
+    /* Past the hold: the row is dropped, and the recording it waited for is unlinked. */
+    clock_at(g_now_s + 2);
+    dsd_event_sync_slot(r.opts, r.state, 0);
+    clock_at(g_now_s + 2);
+    dsd_event_sync_slot(r.opts, r.state, 0);
+    reload(&r);
+    rc |= expect_int("the drop unlinks it", count_for_id(&g_j, "unlink", id), 1);
+    rc |= expect_int("and links nothing", count_records(&g_j, "link"), 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* A stream gap leaves the receiver on its carrier: audio no call owns stays in its file across it. */
+static int
+test_stream_gap_keeps_orphan(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_gap");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    voice_frames(&r, 0, 5);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    char after[64];
+    slot_id(&r, 0, after, sizeof after);
+    rc |= expect_true("the file stays open", strcmp(after, id) == 0);
+    voice_frames(&r, 0, 5);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_int("one recording", count_records(&g_j, "publish"), 1);
+    rc |= expect_orphan("across the gap", record(&g_j, "publish", 0), 0, 200);
+    rig_close(&r);
+    return rc;
+}
+
+/* An orphan closed by the boundary that leaves a Signal search visit names that visit, as everything the visit
+   received does. */
+static int
+test_orphan_flush_names_the_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_visit");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    dsd_signal_search_visit_set(k_visit_session, 15U);
+    voice_frames(&r, 0, 4);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_signal_search_visit_clear();
+    voice_frames(&r, 0, 2);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_int("one recording per carrier", count_records(&g_j, "publish"), 2);
+    rc |= expect_orphan("the visit's orphan", record(&g_j, "publish", 0), 0, 80);
+    rc |= expect_visit("the visit's orphan", record(&g_j, "publish", 0), "1730000000000000:15");
+    const char* after = record(&g_j, "publish", 1);
+    rc |= expect_true("audio after the visit names none", after && strstr(after, "\"search\"") == NULL);
+    rig_close(&r);
+    return rc;
+}
+
+/* The orphan flush on the P25 watchdog's thread (a trunk control-channel return) beside the decoder thread's commit of
+   the slot's ended call (dsd_event_sync_slot() from noCarrier()): the close seam holds the flush inside its close of
+   the slot file until the commit closes that file too, or for a bound. A flush that rotates outside the call-state lock
+   the commit holds lets both close one SNDFILE (a double close, and one reopened handle lost); serialized, the commit
+   waits for the flush and then finds the slot's new, empty file. The seam never closes a handle twice, so the race
+   shows as a count rather than a use after free. Run under TSan as well. */
+static const SNDFILE* g_race_file;
+/* Cleared once the flush's file is really closed: a later file may reuse its address. */
+static atomic_int g_race_armed;
+static atomic_int g_race_closes;
+static atomic_int g_race_flush_closing;
+
+static int
+race_close(SNDFILE* file) {
+    if (!atomic_load(&g_race_armed) || file != g_race_file) {
+        return sf_close(file);
+    }
+    if (atomic_fetch_add(&g_race_closes, 1) > 0) {
+        return 0; /* the second close of one handle: counted, not made */
+    }
+    atomic_store(&g_race_flush_closing, 1);
+    const uint64_t deadline = dsd_realtime_mono_ms() + 500U;
+    while (atomic_load(&g_race_closes) < 2 && dsd_realtime_mono_ms() < deadline) {
+        dsd_sleep_ms(1U);
+    }
+    const int closed = sf_close(file);
+    atomic_store(&g_race_armed, 0);
+    return closed;
+}
+
+typedef struct {
+    rig* r;
+} race_flush_arg;
+
+static DSD_THREAD_RETURN_TYPE
+race_flush(void* arg) {
+    const race_flush_arg* a = (const race_flush_arg*)arg;
+    dsd_event_flush_orphan_recordings(a->r->opts, a->r->state);
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_orphan_flush_serialized_with_commit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_race");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 30U, DSD_CALL_BOUNDARY_BEGIN);
+    const uint64_t epoch = call_epoch(&r);
+    voice_frames(&r, 0, 5);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    /* The call ended and its row waits for the decoder's next sync pass: no active call owns the file, so the flush
+       takes it, and the commit would rotate it. */
+    (void)dsd_call_state_end_ex(r.state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+    g_race_file = r.opts->wav_out_f;
+    atomic_store(&g_race_closes, 0);
+    atomic_store(&g_race_flush_closing, 0);
+    atomic_store(&g_race_armed, 1);
+    dsd_wav_test_set_io(NULL, race_close);
+    race_flush_arg arg = {&r};
+    dsd_thread_t watchdog;
+    rc |= expect_int("the watchdog's flush starts", dsd_thread_create(&watchdog, race_flush, &arg), 0);
+    const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+    while (!atomic_load(&g_race_flush_closing) && dsd_realtime_mono_ms() < deadline) {
+        dsd_sleep_ms(1U);
+    }
+    rc |= expect_true("the flush is closing the slot file", atomic_load(&g_race_flush_closing) != 0);
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    (void)dsd_thread_join(watchdog);
+    dsd_wav_test_set_io(NULL, NULL);
+    rc |= expect_int("the slot file closed once", atomic_load(&g_race_closes), 1);
+    g_race_file = NULL;
+    char after[64];
+    slot_id(&r, 0, after, sizeof after);
+    rc |= expect_true("the slot holds a new file", r.opts->wav_out_f != NULL && strcmp(after, id) != 0);
+    reload(&r);
+    rc |= expect_int("published once", count_for_id(&g_j, "publish", id), 1);
+    rc |= expect_pending_then_linked("orphan flush beside the commit", id, epoch, &r.state->event_history_s[0],
+                                     r.state->event_history_s[0].push_seq);
+    rig_close(&r);
+    return rc;
+}
+
+/* Trunk scan, two P25 targets at 851 and 852 MHz on a stand-in tuner. */
+static int
+scan_rig_start_with(rig* r, const char* csv) {
+    char targets[DSD_TEST_PATH_MAX * 2];
+    (void)dsd_test_path_join(targets, sizeof targets, r->dir, "targets.csv");
+    FILE* f = dsd_fopen_private(targets, "wb");
+    if (!f) {
+        return 1;
+    }
+    const int wrote = fwrite(csv, 1, strlen(csv), f) == strlen(csv);
+    int rc = expect_true("targets written", fclose(f) == 0 && wrote);
+    r->opts->audio_in_type = AUDIO_IN_RTL;
+    r->opts->use_rigctl = 1;
+    r->opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(r->opts->trunk_scan_lists[0].path, sizeof r->opts->trunk_scan_lists[0].path, "%s", targets);
+    r->opts->trunk_scan_list_count = 1;
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = tune, .tune_to_cc_request = tune, .return_to_cc_request = return_to_cc});
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){.get_current_freq_hz = current_frequency});
+    trunk_scan_test_set_now(0.0);
+    char error[256] = {0};
+    rc |= expect_int("scan starts", dsd_engine_trunk_scan_init(r->opts, r->state, error, sizeof error), 0);
+    return rc;
+}
+
+static int
+scan_rig_start(rig* r) {
+    return scan_rig_start_with(r, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                  "a,p25-trunk,851000000,,250,250,\n"
+                                  "b,p25-trunk,852000000,,250,250,\n");
+}
+
+static void
+scan_rig_stop(rig* r) {
+    dsd_engine_trunk_scan_shutdown(r->opts, r->state);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_tune_refused = 0;
+}
+
+/* A trunk-scan target switch moves the tuner without the carrier boundary: the dwell's rotation (the switch ends the
+   outgoing target's calls) and an operator's advance (the switch hands the parked carrier back) each close what the
+   carrier left holds with no call. */
+static int
+test_trunk_scan_switch_flushes_orphans(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_scan");
+    rc |= scan_rig_start(&r);
+    rc |= expect_int("on target a", (long long)dsd_engine_trunk_scan_active_index(r.state), 0);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    voice_frames(&r, 0, 6);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(r.opts, r.state);
+    rc |= expect_int("the dwell hopped to b", (long long)dsd_engine_trunk_scan_active_index(r.state), 1);
+    reload(&r);
+    rc |= expect_int("a's audio closed at the hop", count_records(&g_j, "publish"), 1);
+    rc |= expect_orphan("a's audio", record(&g_j, "publish", 0), 0, 120);
+
+    voice_frames(&r, 0, 4);
+    rc |= expect_int("the operator advances",
+                     dsd_engine_trunk_scan_control(r.opts, r.state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_int("back on a", (long long)dsd_engine_trunk_scan_active_index(r.state), 0);
+    reload(&r);
+    rc |= expect_int("b's audio closed at the advance", count_records(&g_j, "publish"), 2);
+    rc |= expect_orphan("b's audio", record(&g_j, "publish", 1), 0, 80);
+    scan_rig_stop(&r);
+    rig_close(&r);
+    return rc;
+}
+
+/* A park that failed leaves the receiver where it was, and a call can be heard there before the retry's park: the retry
+   leaves that carrier, so the call ends with it and its recording closes under its own row, rather than the target's
+   restored state taking the slot from under it with the call's audio still in the file. */
+static int
+test_trunk_scan_retry_park_ends_the_call_left(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_scan_retry");
+    g_tune_refused = 1;
+    rc |= scan_rig_start_with(&r, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                  "a,p25-trunk,851000000,,250,250,\n");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 500U, 50U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 5);
+    g_tune_refused = 0;
+    trunk_scan_test_set_now(2.5);
+    dsd_engine_trunk_scan_tick(r.opts, r.state);
+    rc |= expect_int("the retry parked", (long long)g_frequency, 851000000);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("the call's recording closed at the retry", pub && strcmp(field_s(pub, "id"), id) == 0);
+    rc |= expect_int("whole", pub ? field_ll(pub, "duration_ms") : -9, 100);
+    rc |= expect_int("under its row", pub ? field_ll(pub, "row") : -9, (long long)r.state->event_history_s[0].push_seq);
+    rc |= expect_int("the call committed once", (long long)r.state->event_history_s[0].push_seq, 1);
+    /* Nothing of it closes again: no second publish, link or unlink, now or at the next tick. */
+    trunk_scan_test_set_now(2.6);
+    dsd_engine_trunk_scan_tick(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("one recording", count_records(&g_j, "publish"), 1);
+    rc |= expect_int("nothing pending to resolve", count_records(&g_j, "link") + count_records(&g_j, "unlink"), 0);
+    scan_rig_stop(&r);
+    rig_close(&r);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -2194,6 +2946,7 @@ main(void) {
     rc |= test_start_after_mid_call_enable();
     rc |= test_start_across_midnight();
     rc |= test_start_on_the_replay_clock();
+    rc |= test_start_floors_once_on_the_replay_clock();
     rc |= test_nfm_start_is_its_first_block();
     rc |= test_nfm_start_moves_back_by_its_preroll();
     rc |= test_stamped_start_is_the_journal_and_sidecar_start();
@@ -2210,6 +2963,23 @@ main(void) {
     rc |= test_failed_analog_open_keeps_its_error_through_a_discard();
     rc |= test_path_forms();
     rc |= test_temp_token_is_the_names_token();
+    rc |= test_digital_commit_names_visit();
+    rc |= test_nfm_recording_names_visit();
+    rc |= test_both_slots_tagged();
+    rc |= test_pending_closer_names_visit();
+    rc |= test_no_visit_no_key();
+    rc |= test_session_final_closes_keep_visit();
+    rc |= test_departure_boundary_tags_departing_visit();
+    rc |= test_orphan_audio_split_at_tune_boundary();
+    rc |= test_orphan_flush_both_slots();
+    rc |= test_orphan_flush_skips_empty();
+    rc |= test_orphan_flush_skips_active_call();
+    rc |= test_orphan_flush_held_epoch_is_pending();
+    rc |= test_stream_gap_keeps_orphan();
+    rc |= test_orphan_flush_names_the_visit();
+    rc |= test_orphan_flush_serialized_with_commit();
+    rc |= test_trunk_scan_switch_flushes_orphans();
+    rc |= test_trunk_scan_retry_park_ends_the_call_left();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

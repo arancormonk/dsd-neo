@@ -443,6 +443,12 @@ CallHistoryModel::recordingsForUid(qint64 uid) const {
     return row >= 0 ? data(index(row), RecordingsRole).toList() : QVariantList();
 }
 
+double
+CallHistoryModel::uidForFragment(const QString& fragment) const {
+    const auto it = m_fragmentIndex.constFind(fragment);
+    return it != m_fragmentIndex.constEnd() ? static_cast<double>(it.value()) : 0.0;
+}
+
 QVariantMap
 CallHistoryModel::recordFor(const QString& uid) const {
     // The keys the detail sheet's entry points have always passed, each read through its role as their delegates did.

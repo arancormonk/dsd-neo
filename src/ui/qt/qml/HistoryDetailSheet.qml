@@ -14,6 +14,9 @@ ModalSheet {
     readonly property bool singleSystemSession: metrics.scanKind === 0 && !metrics.operatorTuned
     readonly property bool canHold: decoderHost.running && metrics.optionsKnown && singleSystemSession && rowTg > 0 && rowUid.length > 0 && rowUid === callHistory.sessionUid
     readonly property bool heldHere: metrics.heldTg > 0 && metrics.heldTg === rowTg
+    // Issue #809: false where the receiver takes no hold (Signal search, which
+    // refuses receiver commands): the Hold button and its reason are hidden.
+    property bool showHold: true
     // Issue #667: an analog reception has no access code. Its tone ("CTCSS
     // 100.0 Hz") takes the code's line, and what it was heard in ("Analog
     // NFM", "Analog AM", "Analog" when not known) the Encrypted line's.
@@ -112,7 +115,7 @@ ModalSheet {
         id: holdButton
         objectName: "historyHoldButton"
         width: parent.width
-        visible: sheet.rowTg > 0
+        visible: sheet.showHold && sheet.rowTg > 0
         text: sheet.heldHere ? qsTr("Release hold") : qsTr("Hold TG %1").arg(Util.idText(sheet.rowTg))
         enabled: decoderHost.running && (sheet.canHold || sheet.heldHere)
         onClicked: {

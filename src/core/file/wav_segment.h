@@ -7,6 +7,7 @@
 #define DSD_NEO_SRC_CORE_FILE_WAV_SEGMENT_H_
 
 #include <dsd-neo/platform/sndfile_fwd.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +30,9 @@ int wav_recording_analog_rdio_skip_first_this_run(void);
 /* Forget @p file's segment, if it is one, and close it through libsndfile (or the test seam); sf_close()'s result.
    @p failed (may be NULL) gets whether a short write had latched the segment (the journal's `failed` flag). */
 int wav_segment_close(SNDFILE* file, int* failed);
+
+/* What libsndfile says of open segment @p file so far: 1 with its frames and sample rate, else 0 with both 0. */
+int wav_segment_info(SNDFILE* file, int64_t* frames, int* rate);
 
 #ifdef __cplusplus
 }

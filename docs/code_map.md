@@ -137,10 +137,26 @@ Generated (do not edit/commit):
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
     a call heard on the channel ends at the Pause, the input stall or any other failure rather
     than at the next tune or the Stop. It also publishes the opts/state snapshots, since frame
-    sync, which normally publishes them, does not run while the search is paused or failed. A decoder session that ends
+    sync, which normally publishes them, does not run while the search is paused, failed or stopping. A Stop's restore
+    tune runs the same close step (`search_close_reception()`) unconditionally and marks the reception ended, so an
+    input lost before the restore lands, or a restore that fails into ERROR, runs no second boundary, and the snapshot
+    the Stop published is the one that shows the call ended (`ENGINE_SIGNAL_SEARCH`). A decoder session that ends
     under the search (the Qt Stop) restores the options in
     `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
-    configuration never keeps a visited frequency. Protocol details enter only through
+    configuration never keeps a visited frequency. The coordinator names the visit on the air in the runtime visit
+    tag (issue #809), which the recorder reads at a publish: `search_wait_tune()` sets `(status.session_id,
+    status.hit.hit_id)` when a visit's tune lands, before the bypass passes its first sample, and each closing step
+    clears it right after its carrier boundary closed what the visit received under it: `search_queue_tune()` (quiet
+    expiry, the visit limit, Skip, Avoid, and the probe's retune of the same hit for analog listening, whose landing
+    sets the same pair again), `search_end_reception()` (Pause, a search error), `search_restore_tune()` (Stop) and
+    `search_input_lost()`, which ends the reception before it shuts the search down when a Stop can no longer restore
+    the input. A search start clears it (its first tune's boundary closes pre-search audio untagged); Resume, edited
+    ranges included, restores no ended hit, so the tag stays clear until the next landing; Hold changes nothing.
+    `dsd_engine_signal_search_shutdown()` leaves the tag alone: when the decoder session ends under the search, the
+    final publications (the finalize before the lifecycle stop hook, `dsd_engine_finalize_calls()`,
+    `dsd_engine_cleanup_close_wavs()`) carry the last visit's tag, and the engine clears it after its last close
+    (`dsd_engine_cleanup()`, `dsd_engine_release_outputs()`) and again at each session start
+    (`ENGINE_SIGNAL_SEARCH`, `ENGINE_LIFECYCLE_FINALIZE`). Protocol details enter only through
     CRC/FEC confirmation or validated activity hooks, never a generic sync or dispatcher
     verdict. See [Signal search](signal-search.md).
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
@@ -1712,6 +1728,41 @@ suite runs under this compiler.
     target restore (`trunk_scan_restore_call_snapshot()`, `dsd_wav_journal_unlink_pending()`) and the journal's close
     write `unlink`. A departure already ends the outgoing target's calls, which resolves most entries before the restore
     runs. A recording never linked stays unattributed; so does one whose `pending` and `link` straddle a crash.
+  - Carrier departures (issue #809 B4): a per-call recording never carries audio from two carriers, except a call that
+    continues across a move as one call (a TETRA reallocation keeps its epoch). A slot file can hold audio no active
+    call owns (TETRA speech decoded before its signalling admits an anonymous call: the record gate allows a slot with
+    no active call), which no commit would close. `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
+    slot file that holds frames (`dsd_wav_segment_frames()`, libsndfile's count, read through `wav_segment_info()` as a
+    close reads its length) while its slot has no active canonical call, publishes it without an rdio-scanner export and
+    reopens it through the commit's own rotation (`watchdog_event_rotate_slot_wav()`). It is published pending on the
+    slot's ended epoch whose row has yet to commit (a held drop verdict; `dsd_call_state_pending_row_epoch()`, the rule
+    `close_and_publish_call_wav()` follows), so the commit links it and a drop unlinks it; with no such epoch, as no
+    row's (nothing names it, as on the drop path). An empty file, `-P` off, a static WAV and an active call's file (its
+    commit closes it) are left alone. The check that no call owns the file and its close run as one step under the
+    call-state lock, the lock every commit holds while it rotates a slot: a flush on the P25 watchdog's thread (a trunk
+    control-channel return or tune, under the tick guard) can meet the decoder thread committing the slot's ended call
+    (`dsd_event_sync_slot()` from `noCarrier()` or `getFrameSync()`, which holds the call-state lock and not the tick
+    guard), and the two must never close the same file. The slot writers never meet a flush: they run on the decoder
+    thread under the tick guard (a frame dispatch), and the watchdog flushes only inside its tick. Lock order: tick
+    guard, then the call-state lock, then the journal's and the segment table's; no flush caller holds the call-state
+    lock or an event-history transaction. Every departure the decoder makes runs it, after ending its calls where it
+    ends them: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`); a
+    trunk-scan target switch (`trunk_scan_switch_to()` through `trunk_scan_leave_carrier()`, after either branch ends
+    the outgoing calls; a park that saves no target, a retry's after a failed park, ends a call heard since on the
+    carrier the receiver was left on first); the direct no-carrier return (`no_carrier_finish_cc_return()`, when the
+    return was accepted); and every accepted trunk tune that moves the receiver (`dsd_engine_tune_leaves_carrier()` in
+    `trunk_tuning.c`): the follow to a voice channel (`engine_trunk_tune_to_freq_request_once()`: only audio no call
+    owns, so the granted or reallocated call keeps its file), every control-channel tune
+    (`engine_trunk_tune_to_cc_request_once()`: a hunt's probe, a settle, a protocol's own return such as NXDN DISC,
+    EDACS EOT or the DMR SLCO tune; a DMR XPT or Capacity Plus control channel carries voice) and the return to the
+    control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
+    trunk tune to the frequency the receiver is on (a grant on a DMR composite control channel) moves nothing and closes
+    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune: on an RTL stream tuned
+    directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since a timed-out tune names
+    its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio where it was;
+    otherwise `opts->rtlsdr_center_freq`, which a rigctl tune sets once done. Retunes an external controller makes over
+    the RTL UDP port are invisible to the decoder: a recording can span one (limit). One `sf_command()` per open slot
+    file per departure; nothing on the write path.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
     analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
@@ -1756,6 +1807,15 @@ suite runs under this compiler.
     - `failed` (bool): a short write latched the segment; the file ends where the write failed.
     - `system`, `target`, `source` (string): the row's system string and its target and source as shown (text,
       else the number, else ""), as received (the file name holds the sanitized copies).
+    - `search` (string, optional, issue #809): `"<session_id>:<hit_id>"`, two non-zero decimal `uint64_t` numbers, on a
+      recording received on a Signal search visit: the detection it belongs to, by the ids the search status and the
+      app's search history give it. `wav_journal_published()` (`dsd_file.c`), the one path every publish takes, reads
+      the runtime visit tag (`dsd_signal_search_visit_get()`) as it builds the record, so the slot rotations, the
+      pending closers, the EDACS analog rotation and the NFM/AM recorder all carry it; the engine keeps the tag until
+      the closing step that ends the visit's reception has published what the visit received (Engine, Signal search).
+      Absent otherwise. A string, not two numbers, so both ids are exact in a reader that parses doubles. The version
+      stays 1: an older reader ignores the key, and an older app's compaction drops it, so a downgrade loses the links
+      but nothing else.
 
     `link` (a pending recording's row committed): `instance` (string), `slot` (number), `row` (number), as in
     `publish`. `unlink` (the row a pending recording waited for will never exist): no other field. `discard` (an empty
@@ -1769,11 +1829,19 @@ suite runs under this compiler.
   Tests: `CORE_WAV_JOURNAL` (commit, merge chain, a pending close merged, drop, 44-byte, rename failure, B3 name,
   pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
-  journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
-  path forms, the process token; the write and pending-list seams in `src/core/file/wav_journal_test_support.h`),
-  `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
-  `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
-  (`--wav-journal`).
+  journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the path
+  forms, the process token, the Signal search visit on a commit, an NFM call, both DMR slots, the pending closers, the
+  session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a zero id;
+  the orphan close at a tune (both slots, the two halves' lengths, the visit it names, a held epoch's pending and
+  unlinked at its drop, one close and one publish beside a commit on another thread), not of an empty file, a static
+  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, and a retry park
+  ending the call heard since a failed park; the write and pending-list seams in
+  `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at the direct and trunk
+  control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused one or a grant on the
+  carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each trunk tune's and switch's
+  close, counted), `TETRA_CALLS` (a reallocation keeps one recording), `EDACS_GRANT_TUNE_MATRIX` (the grant closes
+  through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec, `dsd_path_canonical()`),
+  `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
 - Invariant (rdio-scanner export verdict, issue #773 D7): the talkgroup and radio policy's `stream` flag decides only
   whether a call's per-call WAV is exported (DirWatch sidecar and API upload); audio and `-o udp`/`-o -` follow
   `audio`. The verdict is recording-owned: `watchdog_event_current_load_labels()` (`dsd_events.c`) judges the call on
@@ -1884,12 +1952,21 @@ suite runs under this compiler.
 - Analog stamps (issue #667). An analog row whose call has a `start_wall` is stamped from it on every render
   (`watchdog_event_current_stamp_item()`): `event_start_time = floor(start_wall)` and
   `event_time = floor(start_wall + elapsed)`, the end from the full sum, so 1000.9 s + 0.6 s ends in 1001 where
-  `start + (time_t)elapsed` gave 1000. Without one it is stamped as every row is (the first render's clock minus the
-  elapsed, then start + elapsed). An ended analog row's text prefix is its `event_time`, not the render's clock
-  (`watchdog_event_text_time()`), so a commit an input stall delayed still reads when the call ended (A2). Digital rows
-  ignore `start_wall`, keep the render's clock in their prefix, and `--playfiles` keeps the stamp the file reader gave
-  the row: the visible-prefix contract merges preserve. Tests: `CORE_RECEIVE` (`test_analog_seeded_begin`,
-  `test_analog_wall_anchored_stamps`).
+  `start + (time_t)elapsed` gave 1000. Without one it is stamped as a digital row is (below). An ended analog row's
+  text prefix is its `event_time`, not the render's clock (`watchdog_event_text_time()`), so a commit an input stall
+  delayed still reads when the call ended (A2). Digital rows ignore `start_wall`, keep the render's clock in their
+  prefix, and `--playfiles` keeps the stamp the file reader gave the row: the visible-prefix contract merges preserve.
+  Tests: `CORE_RECEIVE` (`test_analog_seeded_begin`, `test_analog_wall_anchored_stamps`).
+- Digital stamps (issue #809 B1). On the epoch's first render a digital row's start is
+  `event_start_time = floor(dsd_decode_now_realtime_s() - elapsed)`, from the render's one decode-clock reading, and
+  its end is `event_time = start + (time_t)elapsed` on every render. The start is floored once: the old
+  `floor(now) - floor(elapsed)` filed a call heard from 99.95 s and first rendered at 100.02 s in second 100. The
+  journal's `start` and the rdio-scanner `start_time` take the row's start, or the WAV's open stamp when that is later.
+  Every row builder (voice, status, system and data notices) takes its stamp and prefix second from the floored
+  decode wall reading (`watchdog_event_decode_second()`; the voice render floors its one reading), never
+  `dsd_decode_time()`: live that is `time()`, the coarse clock, which can read a second behind at a boundary, and the
+  terminal History orders rows by their prefix. Tests: `CORE_CALL_ALERT_HISTORY` (`test_digital_start_floors_once`,
+  `test_rows_rendered_together_share_the_second`), `CORE_WAV_JOURNAL` (`test_start_floors_once_on_the_replay_clock`).
 - API note: text arriving as UTF-16 code units (DMR UDT/SMS, talker aliases) is decoded with
   `<dsd-neo/core/utf16.h>` and printed one scalar value at a time through `dsd_unicode_fput_scalar()` in
   `<dsd-neo/runtime/unicode.h>`. Never pass a code unit to `%lc`: a lone surrogate has no encoding, and the
@@ -2700,14 +2777,18 @@ suite runs under this compiler.
     carries validated protocol evidence, CRC/FEC-checked site notes
     (`dsd_signal_search_note_site()`), call notes (`dsd_signal_search_note_call()`: a slot whose
     canonical call record a protocol just published after its check; the engine reads the record)
-    and the decoder-thread active query, with no-op defaults. The checked site record
-    (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`,
-    `dsd_signal_search_site_format()`) is runtime's: a P25 site note joins only a record with
-    no SYSID or the same one, and a network note naming another WACN or SYSID, another protocol's
-    note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a control block whose CRC passes
-    (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves, never
-    from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on
-    a large share of random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
+    and the decoder-thread active query, with no-op defaults. It also holds the visit tag (issue #809):
+    `dsd_signal_search_visit_set()`/`_clear()`/`_get()` keep one `(session_id, hit_id)` pair under a lazily
+    initialised mutex, so a reader on any thread sees the tag clear or one whole pair; a pair with a zero half reads as
+    clear, and the default is clear, so the CLI, headless runs and tests are unaffected (`RUNTIME_SIGNAL_SEARCH_VISIT`,
+    also under TSan). A lock that fails to initialise stays unusable: set and clear do nothing and the tag reads clear
+    (`RUNTIME_SIGNAL_SEARCH_VISIT_INIT_FAILURE`). The engine sets and clears it (Engine, Signal search). The checked
+    site record (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`, `dsd_signal_search_site_format()`) is
+    runtime's: a P25 site note joins only a record with no SYSID or the same one, and a network note naming another
+    WACN or SYSID, another protocol's note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a
+    control block whose CRC passes (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves,
+    never from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share of
+    random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
     It does not own radio I/O, persistence or Qt state.
   - Readout text (`include/dsd-neo/runtime/number_text.h`, issue #669): `dsd_number_text()` formats with the platform
     printf and drops the sign of a text whose digits are all zero (`-0.0` → `0.0`, any radix; `nan`/`inf` untouched),
@@ -8521,7 +8602,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      release no state machine: conventional scanning and trunking off exclude both recovery ticks, so none follows a
      voice channel, and a replay retune runs inside a sample read, where the guard's holder is not known.
   2. The outgoing calls end, as a hop, and commit (`no_carrier_finalize_canonical_calls()`), while the live codes are
-     still that carrier's.
+     still that carrier's; then the per-call recordings no call owns close (`dsd_event_flush_orphan_recordings()`, see
+     Core, "Recording journal", carrier departures).
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
      its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
      because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
@@ -8557,15 +8639,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   unpublished (`dsd_engine_analog_call_end()`), and analog reception starts over as at a retune
   (`dsd_analog_rx_reset()`: the received tone, the tone policy's verdict, the monitor's audio chain and converter;
   issue #667 A3), whether or not the stream's generation moved with the gap. The codes, the received identity, the
-  followed voice channel and trunk-scan ownership stay; the hangtime and visit timers decide as after a fade. It takes
-  the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its tick guard and before any
-  scan or trunk tick; a gap found in the hunt is consumed first in the next outer pass. A pending scan tune (which
-  makes `noCarrier()` return early) never skips it. An older symbol cache is dropped when a direct reader has already
-  acknowledged its gap, without moving the consumed count backwards. A capture's `MUTE` alone (samples dropped, as a
-  driver overflow leaves them) is no stream gap, live or replayed. Tests: `ENGINE_STREAM_GAP` (the analog side on a
-  replay's clock and a live input's: a toned call's row, the next reception's own tone or none, two short receptions
-  that stay candidates), `DECODE_IQ_ANALOG_STREAM_GAP_*` (a recorded USB recovery across two joined captures, fast
-  and paced).
+  followed voice channel, trunk-scan ownership and a recording no call owns stay; the hangtime and visit timers decide
+  as after a fade. It takes the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its
+  tick guard and before any scan or trunk tick; a gap found in the hunt is consumed first in the next outer pass. A
+  pending scan tune (which makes `noCarrier()` return early) never skips it. An older symbol cache is dropped when a
+  direct reader has already acknowledged its gap, without moving the consumed count backwards. A capture's `MUTE` alone
+  (samples dropped, as a driver overflow leaves them) is no stream gap, live or replayed. Tests: `ENGINE_STREAM_GAP`
+  (the analog side on a replay's clock and a live input's: a toned call's row, the next reception's own tone or none,
+  two short receptions that stay candidates), `DECODE_IQ_ANALOG_STREAM_GAP_*` (a recorded USB recovery across two joined
+  captures, fast and paced).
 
   The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
   publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit
@@ -10048,9 +10130,50 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `slot` and `crypt` through; the panel's two-line detail (`detailText()`) reads site,
   access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
   the whole text as its accessible name and description, and a history row shows site and
-  crypt under its verdict. `keepValues()` makes every space but the one after a `·`
-  non-breaking, so wrapped details break only between values. Its
-  liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
+  crypt under its verdict. `hitMap()` also gives `recordingKey` (issue #809), `"<session>:<hit>"`
+  formatted in C++ from the two `uint64_t`s, never through a JS number, and empty while either
+  is 0 (the live hit with no detection current): the recording store's
+  key for the detection's recordings (`recordingCountForDetection()`, `recordingsForDetection()`);
+  `UI_QT_SIGNAL_SEARCH` checks a session above 2^53. The QML fakes mirror that store and
+  History surface (`qml_test_context.h`: `RecordingsFake::setDetectionRecordings()` seeds a
+  detection and moves `revision` with `revisionChanged()`; `CallLogStore` has
+  `uidForFragment()`, `setFragmentRow()` and `trimRow()`), and `tst_context_fixture.qml` checks
+  the screen's and `DetectionRecordingsSheet.qml`'s reads. A history row's detail adds "N
+  recordings" (`recordingCount()`, which reads `recordings.revision` so the row follows the
+  store) to its text and accessible name, and its actions start with "Recordings (N)"
+  (`recordingsAction()`, rows only, not the Now panel's More; it opens the recordings and plays
+  nothing, so TalkBack announcing the sheet is not talked over); with none kept and
+  `prefs.recordCalls` off a disabled "Recordings" ends the actions with the Settings hint as its
+  description (`recordingsHint()`), and with Record calls on there is none (an RF-only
+  detection). The row's detail `Text` is a gated `StaticText` (named only while
+  `Navigation.allows()` it: B2). The action opens `DetectionRecordingsSheet.qml` (a
+  `ModalSheet`): title "%1 MHz", one `CallRecordingPlayer` bound to `[selected]` (reset on open,
+  `stopOwnPlayback()` on close), Call details, then the list under a `MicroLabel` count, newest
+  first, a `StableRows` row per recording keyed by id (line 1 time · length, line 2 target ·
+  source · system or "No target or source recorded", which stays true whether or not History
+  holds the call, "Storage not available" when away; its `Text`s are read in the row's name;
+  selected: a 2 px border and `PlayGlyph`, and "selected" in the name). The list is bound only
+  while visible and re-read on each `revision`; the selection is kept by id and, when its
+  recording leaves, passes by place: to the row that takes its place (the next older), else the
+  one before it, taking the focus if the list had it (an owned `Timer`); an emptied list closes
+  the sheet (an owned `Timer`: a close inside the list's change is a binding loop). A row tap
+  selects and plays, as a part's chip does. Call details is enabled while
+  `callHistory.uidForFragment(fragment)` is above 0 and otherwise disabled, its reason ("This
+  call is not in History", `detectionCallDetailsReason`, a `MicroLabel` as History's Hold
+  reason is, and the button's description) shown; the button and the reason's line stay laid
+  out in both states (the line only hidden and out of the tree), since the `ModalSheet` centres
+  its content and a control that came and went moved the list under the finger (emulator
+  check). It is resolved again on History `dataChanged`,
+  `rowPositionsChanged`, `modelReset` and `rowsRemoved` while open and on the click, which closes
+  the sheet (its playback stops) and has the screen open its own `HistoryDetailSheet`
+  (`searchCallDetails`, `showHold: false`). Both sheets join `menuOpen` (`tst_signal_search.qml`,
+  `tst_a11y_text_reach.qml`). `keepValues()` (the screen's, and the sheet's for its identity
+  line) makes every space but the one after a `·` non-breaking, so wrapped details break only
+  between values; a value that does not fit the width with the separator it carries keeps its
+  spaces and wraps at its words, since kept whole the line would break inside it, before its
+  separator (issue #809; `test_history_detail_never_starts_a_line_with_a_separator`,
+  `test_sheet_large_text_360` read each drawn line through a `TextEdit` mirror across widths).
+  Its liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
   Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
   (an avoided site's row disabled with its reason), Save as system, Avoid this session
@@ -10805,11 +10928,13 @@ Qt Quick frontend (`src/ui/qt`):
     `fr`): `call_history_fragment_key()` (`call_recording_provider.h`), `<16 uppercase hex ring instance>:<slot>:<push
     stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
     add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
-    clear. Rows older builds wrote have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a
-    `CallRecordingProvider` (the call recording store; none, and so no recordings, until one is set with
-    `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings changed through
-    `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the store knows before
-    its row exists shows when the row arrives.
+    clear. `uidForFragment()` (issue #809: a Signal search recording names its call by fragment) reads it: the uid of
+    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared; a
+    double, which QML reads exactly. Rows older builds wrote have no fragments, and no recordings. The `recordings` and
+    `hasRecording` roles ask a `CallRecordingProvider` (the call recording store; none, and so no recordings, until one
+    is set with `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings
+    changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
+    store knows before its row exists shows when the row arrives.
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model
@@ -10995,17 +11120,25 @@ Qt Quick frontend (`src/ui/qt`):
     and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording`
     is true (History, Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows
     its row by uid (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold:
-    play/pause, position and seek, the parts (the one shown kept on its recording by path) with a Play all parts action
+    play/pause, position and seek with a status line ("Opening…", "Paused") whose line stays laid out, empty and
+    unread, when there is none, so the block is as tall stopped, opening, playing and paused and a sheet centred on
+    its content does not move at a tap (`test_height_steady_across_states`), the parts (the one shown kept on its
+    recording by path) with a Play all parts action
     (the host keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a
     stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part
     the host reports "missing" leaves the block at once, until the store lists it as away (its storage went): from then
     on the store's availability speaks for it, so it shows away and plays again once the storage is back, without
     reopening the sheet; closing the sheet stops what it played; a pause the host made in the background (D10) reads as
-    Paused. The talkgroup editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when
-    tuned) and is sent with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it
-    for a row added listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS`
-    (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`,
-    `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted. History and
+    detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say the same of
+    their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal search
+    detection, so "the call stays in History" would not hold (issue #809 B3). `DetectionRecordingsSheet.qml` (Signal
+    search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows Listening
+    (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from
+    what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows `saveFailing`. Tests:
+    `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
+    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
+    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
     `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
@@ -11057,27 +11190,50 @@ Qt Quick frontend (`src/ui/qt`):
     every second while a folder is in use, else on request or once a minute (a folder turning in use, at a session start
     in it, changed or not, or a session the host reports, wakes one at once), and tail each journal from its byte
     cursor, complete lines only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name
-    inside the folder). A
-    journal shorter than the cursor was replaced and is read again; a folder whose folder.json is gone leaves the
-    index. The index keeps {id -> path, start, duration, fragment, folder, flags, size}: a `publish` of a file that is
-    not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment
-    (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. One
-    path has one owner, the newest publish in journal order: a journal not yet compacted can still name a recording
-    deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated), and the later publish
-    evicts that id, its fragment and its size (`insertEntryLocked()`). Decided limit: a delete of the old id that runs
-    after the later file is written but before its publish is read can remove the later file; the reuse already needs
-    the same second, talkgroup and source and a repeat of a 16-bit random suffix, so the store does not compare file
-    identity before an unlink. Temp
-    files (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are
-    unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
-    journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
-    `publish` per live recording, the cursor then at its end) once it holds more than twice as many lines as live
-    recordings, only while no session uses the folder (nor one that never ran, above), and only when nothing but a torn
-    line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage may refuse it). History
-    reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History read in before each slice
-    of 128 records of a whole-folder read, each recheck and each delete, and sums (usage, limit, compaction) are taken
-    on shared copies outside the lock. Changes reach the GUI as one queued delivery at a time (`changed()`,
-    `recordingFragmentsChanged()`, `limitReached()`), so a paused GUI thread never collects more than one.
+    inside the folder; a `search` only as `<session>:<hit>`, each 1 to 20 digits with no leading zero, non-zero and at
+    most `UINT64_MAX`, else the recording is kept with none). A journal shorter than the cursor was replaced and is read
+    again; a folder whose folder.json is gone leaves the index. The index keeps {id -> path, start, duration, fragment,
+    detection, folder, flags, size}: a `publish` of a file that is not a regular file on disk is not indexed (deleted),
+    a `link` gives a pending recording its fragment (`call_history_fragment_key()` of the record's instance, slot and
+    row), an `unlink` leaves it unattributed. One path has one owner, the newest publish in journal order: a journal not
+    yet compacted can still name a recording deleted since whose final name a later one reused (an I/Q replay's 16-bit
+    suffix repeated), and the later publish evicts that id, its fragment and its size (`insertEntryLocked()`). Decided
+    limit: a delete of the old id that runs after the later file is written but before its publish is read can remove
+    the later file; the reuse already needs the same second, talkgroup and source and a repeat of a 16-bit random
+    suffix, so the store does not compare file identity before an unlink. Temp files
+    (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are unfinished
+    recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the journal never
+    named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one `publish` per live
+    recording, its `search` written back only when it had one, the cursor then at its end) once it holds more than twice
+    as many lines as live recordings, only while no session uses the folder (nor one that never ran, above), and only
+    when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage
+    may refuse it). History reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History
+    read in before each slice of 128 records of a whole-folder read, each recheck and each delete, and sums (usage,
+    limit, compaction) are taken on shared copies outside the lock. A folder read again (storage back, a journal
+    replaced) drops its entries and rebuilds them slice by slice, so the GUI's reads (`recordingsForFragments()`,
+    `hasRecordingForFragments()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it
+    from a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
+    (`commitFolderLocked()`, which moves the revision): a delivery the GUI handles between two slices never finds a
+    History row's or a detection's recordings gone (an open detection list closed itself). Changes reach the GUI as one
+    queued delivery at a time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a
+    paused GUI thread never collects more than one.
+  - Signal search detections (issue #809): `m_bySearch` maps a journal `search` key (`<session>:<hit>`) to the ids
+    heard on that detection. It changes only in `insertEntryLocked()` and `removeEntryLocked()`, the one path every
+    removal takes (a delete, the limit, a file gone, a folder read again, replaced or gone, a path a later publish
+    reuses), never in `unindexFragmentLocked()`, which a `link` also calls while the recording stays; storage going away
+    removes nothing, so a recording there stays listed, its map's `available` false, and plays again when the storage
+    is back. QML reads it under the reader lock: `recordingCountForDetection(key)` (a lookup) and
+    `recordingsForDetection(key)` (newest first: start, then publish order; the History maps plus `system`, `target`,
+    `source` and `fragment`). `revision` (a double, so QML reads it exactly) is the worker's `m_generation`, bumped
+    under the lock by `noteQueryChangeLocked()` at every change a query can see (an entry inserted or removed, a link
+    that changes its fragment, a size a recheck reads again, a root marked away or read again); `publish()` copies the
+    current generation to the outbox with the summary, and `deliver()` emits `revisionChanged()` when it moved. A later
+    publication can only carry a newer generation, so coalesced deliveries never lose one, and `changed()`, which
+    follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
+    start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
+    `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`,
+    `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook),
+    `test_revision_coalesced_passes`, `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
     (`setPlayingPath()`) or a selection (`selectForExport()`, `selectRecordings()`, until `releaseSelection()`) holds
@@ -13496,7 +13652,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   (the NFM reception's included, which lives outside the snapshot) close under its own label and names: the visit cap
   and an operator's advance or avoid release the carrier (`trunk_scan_advance_releasing()`; an operator's departure from
   a park still pending, or one that never landed, is an ordinary one), and every other departure ends the calls in
-  `trunk_scan_switch_to()` and re-saves the rollback snapshot. `dmr_sm_abandon_carrier()` keeps the destination an
+  `trunk_scan_switch_to()` and re-saves the rollback snapshot. The switch then closes the per-call recordings no call
+  owns (issue #809 B4, see Core, "Recording journal"). `dmr_sm_abandon_carrier()` keeps the destination an
   ordinary release would return to (a Cap+ rest channel a voice LC named). `runtime/control_pump.h`
   `dsd_runtime_controls_need_frame_loop()` (installed from `dsd_app_commands_need_frame_loop()`: any queued command but
   those on `k_deferred_commands` (display, audio, keys and decryption, recording, front-end slider tweaks, the runtime

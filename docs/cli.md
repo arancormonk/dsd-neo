@@ -286,12 +286,13 @@ Windows console runs:
   the recordings, such as the app's call recording store, reads it to tie files to calls. A journal that ends in a
   torn line gets a newline first. A record's `start` is when the call started, or when the recording opened if that was
   later (recording switched on mid-call); an analog recording's is its own first sample (an NFM one's pre-roll
-  included). A journal that cannot be opened or written is turned off for the rest of the run with one error in the log;
-  decoding and recording go on. A run with a journal keeps every file it uploads: while the journal is set,
-  `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) deletes nothing, with one warning in
-  the log, because the journal's owner manages the recordings' retention. The option keeps its value, so a config saved
-  from the run (the exit's autosave included) still has it. The record format is in `docs/code_map.md` ("Recording
-  journal").
+  included). A recording received while a Signal search was listening to a detection names that detection (`search`),
+  so the app can list a detection's recordings. A journal that cannot be opened or written is turned off for the rest
+  of the run with one error in the log; decoding and recording go on. A run with a journal keeps every file it
+  uploads: while the journal is set, `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`)
+  deletes nothing, with one warning in the log, because the journal's owner manages the recordings' retention. The
+  option keeps its value, so a config saved from the run (the exit's autosave included) still has it. The record format
+  is in `docs/code_map.md` ("Recording journal").
 - `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional analog call in one
   recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on (`-P`);
   without it, calls end as before. When the signal comes back in time, the pause is saved as silence (its end as heard,

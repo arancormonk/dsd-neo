@@ -165,6 +165,11 @@ typedef struct {
     uint8_t stream_export;
     uint32_t policy_target_id;
     int export_call;
+    // The start the journal's publish line takes for this recording: what wav_close_and_publish() (dsd_file.c) passes
+    // it, from the same row and open time the rdio-scanner sidecar is written from. Recomputed here because this stub
+    // replaces the only path to that writer; CORE_WAV_JOURNAL reads the real publish line
+    // (test_start_floors_once_on_the_replay_clock).
+    time_t journal_start;
     char sidecar[1024];
 } close_wav_capture;
 
@@ -264,6 +269,7 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         capture->stream_export = event_struct->Event_History_Items[0].stream_blocked == 0U;
         capture->policy_target_id = event_struct->Event_History_Items[0].policy_target_id;
         capture->export_call = export_call;
+        capture->journal_start = dsd_rdio_recording_start(&event_struct->Event_History_Items[0], opened, 0);
         capture->sidecar[0] = '\0';
         if (export_call && capture->stream_export != 0U && opts != NULL && g_close_wav_export_dir[0] != '\0') {
             close_wav_export_sidecar(opts, event_struct, opened, index, capture);
@@ -302,6 +308,11 @@ getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, in
 // which of the two a row was rendered from.
 #define TEST_REPLAY_EVENT_TIME ((time_t)1000000000)
 
+// Set by a test that compares the seconds of row prefixes: a stamp on TEST_REPLAY_EVENT_TIME's UTC day (2001-09-09)
+// then renders as its real UTC date and time.
+static int g_render_utc_day;
+#define TEST_UTC_DAY_START ((time_t)999993600)
+
 int
 dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
     // An unstamped time really does render as the epoch, so the stub has to say so: rendering a
@@ -309,6 +320,15 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
     if (timestamp == 0) {
         const char* epoch = (format == DSD_LOCAL_DATETIME_DATE_HYPHEN) ? "1970-01-01" : "00:00:00";
         DSD_SNPRINTF(out, out_size, "%s", epoch);
+        return 1;
+    }
+    if (g_render_utc_day && timestamp >= TEST_UTC_DAY_START && timestamp < TEST_UTC_DAY_START + 86400) {
+        const long long t = (long long)(timestamp - TEST_UTC_DAY_START);
+        if (format == DSD_LOCAL_DATETIME_DATE_HYPHEN) {
+            DSD_SNPRINTF(out, out_size, "%s", "2001-09-09");
+        } else {
+            DSD_SNPRINTF(out, out_size, "%02lld:%02lld:%02lld", t / 3600, (t / 60) % 60, t % 60);
+        }
         return 1;
     }
     if (timestamp == TEST_REPLAY_EVENT_TIME) {
@@ -6225,6 +6245,148 @@ test_merged_history_duration_runs_on_the_decode_clock(void) {
     return rc;
 }
 
+// A decode instant in whole and part seconds, on the TEST clock.
+static void
+decode_clock_at_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(ms * 1000000ULL);
+}
+
+// A digital row's start is the second its call began: the render's clock less the call's elapsed time, floored once
+// from one reading. A call that began at 99.95 s and was first rendered at 100.02 s began in second 99; flooring the
+// render's second and the elapsed time apart (100 - 0) filed it a second late, in History, in the journal's start and
+// in the rdio-scanner sidecar alike. The end stays the start plus the truncated elapsed time, the stamp is taken once
+// per epoch, and a reacquired segment merged into the row leaves the first segment's start in place.
+static int
+test_digital_start_floors_once(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+    g_open_wav_result = &wav_sentinel;
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_start")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the start-floor test\n");
+        return 1;
+    }
+    // The slot's recording was opened at an earlier call's rotation.
+    dsd_decode_clock_use_test(95000000000ULL);
+    opts.wav_out_open_time = dsd_decode_time();
+
+    // The call's first frame is heard at 99.95 s; the slot first renders it 70 ms later, at 100.02 s.
+    decode_clock_at_ms(99950U);
+    int rc = expect_int("call begins", observe_unstamped_call(&state, 100U, 200U), 1);
+    decode_clock_at_ms(100020U);
+    rc |= expect_int("call continues", continue_unstamped_call(&state, 100U, 200U), 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* staged = &event_history[0].Event_History_Items[0];
+    rc |= expect_u64("first render files the call in the second it began", (uint64_t)staged->event_start_time, 99U);
+    rc |= expect_u64("first render ends it at start + truncated elapsed", (uint64_t)staged->event_time, 99U);
+
+    // A later render whose own derivation would land in second 101 (101.5 s less the 70 ms the call has run) keeps the
+    // epoch's stamp.
+    decode_clock_at_ms(101500U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_u64("the start is stamped once per epoch", (uint64_t)staged->event_start_time, 99U);
+
+    // The call fades at 102.40 s, 2.45 s after it began: the end is the start plus the truncated 2 s.
+    decode_clock_at_ms(102400U);
+    rc |= expect_int("call fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* row = &event_history[0].Event_History_Items[1];
+    rc |= expect_u64("committed row keeps the start", (uint64_t)row->event_start_time, 99U);
+    rc |= expect_u64("committed duration is the truncated elapsed", (uint64_t)(row->event_time - row->event_start_time),
+                     2U);
+    rc |= expect_int("the fade closes the recording", g_close_wav_capture_count, 1);
+    rc |= expect_u64("journal start is the call's start", (uint64_t)g_close_wav_captures[0].journal_start, 99U);
+    rc |= expect_close_sidecar("rdio start_time is the call's start", &g_close_wav_captures[0], 100U, 99);
+
+    // A quarter second later the transmission resumes for 1.6 s and merges into the row, which keeps its start; the
+    // segment's own recording is filed at the segment's.
+    decode_clock_at_ms(102650U);
+    rc |= expect_int("segment reacquires the transmission", observe_unstamped_call(&state, 0U, 0U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    decode_clock_at_ms(104250U);
+    rc |= expect_int("segment fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("segment merges into the transmission's row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_u64("merged row keeps the first segment's start", (uint64_t)row->event_start_time, 99U);
+    rc |= expect_int("segment closes its own recording", g_close_wav_capture_count, 2);
+    rc |= expect_u64("segment's journal start is its own", (uint64_t)g_close_wav_captures[1].journal_start, 102U);
+    rc |= expect_close_sidecar("segment's rdio start_time is its own", &g_close_wav_captures[1], 100U, 102);
+
+    dsd_decode_clock_use_system();
+    (void)dsd_test_rmdir(g_close_wav_export_dir);
+    g_close_wav_export_dir[0] = '\0';
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The "YYYY-MM-DD HH:MM:SS" prefix of the newest row in @p history whose text holds @p marker, or "" with none.
+static void
+row_prefix_holding(const Event_History_I* history, const char* marker, char* out, size_t out_size) {
+    out[0] = '\0';
+    for (size_t i = 0; i < 255U; i++) {
+        const char* text = history->Event_History_Items[i].event_string;
+        if (strstr(text, marker) != NULL) {
+            DSD_SNPRINTF(out, out_size, "%.19s", text);
+            return;
+        }
+    }
+}
+
+static int
+expect_prefix_not_before(const char* label, const char* row, const char* voice) {
+    if (row[0] == '\0' || strcmp(row, voice) < 0) {
+        DSD_FPRINTF(stderr, "%s: '%s' sorts before the voice row's '%s'\n", label, row, voice);
+        return 1;
+    }
+    return 0;
+}
+
+// Status, system notice and data notice rows stamped just after a voice row never carry an earlier second than it:
+// the terminal History orders rows by that prefix. Every builder reads the decode clock's wall reading. Rendered one
+// nanosecond before a second boundary, that reading is the next second as a double, where dsd_decode_time()'s whole
+// nanoseconds still read the second before: a builder left on dsd_decode_time() files its row a second before the
+// voice row rendered in the same instant. Live, the same split comes from time() reading the coarse clock.
+static int
+test_rows_rendered_together_share_the_second(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_render_utc_day = 1;
+    dsd_decode_clock_use_test(999999999999999999ULL);
+
+    int rc = expect_int("call begins", observe_unstamped_call(&state, 100U, 200U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    char voice[24];
+    char row[24];
+    row_prefix_holding(&event_history[0], "TGT: 00000100;", voice, sizeof voice);
+    rc |= expect_int("the voice row is rendered", voice[0] != '\0', 1);
+
+    watchdog_event_status(&state, "Status after voice;", 0U);
+    row_prefix_holding(&event_history[0], "Status after voice;", row, sizeof row);
+    rc |= expect_prefix_not_before("status row", row, voice);
+
+    rc |= expect_int("system notice emits", dsd_event_emit_system_notice(&opts, &state, 0U, "Notice after voice;"), 0);
+    row_prefix_holding(&event_history[0], "Notice after voice;", row, sizeof row);
+    rc |= expect_prefix_not_before("system notice row", row, voice);
+
+    rc |=
+        expect_int("data notice emits", emit_test_data_notice(&opts, &state, 1234U, 5678U, "Data after voice;", 0U), 0);
+    row_prefix_holding(&event_history[0], "Data after voice;", row, sizeof row);
+    rc |= expect_prefix_not_before("data notice row", row, voice);
+
+    g_render_utc_day = 0;
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // commit_rev is the committed-rows-only change counter frontends gate their ring rescans on:
 // staged-row renders must leave it alone, while commits, merges and late enrichment advance it.
 static int
@@ -9407,6 +9569,8 @@ main(void) {
     rc |= test_merged_row_end_stamp_advances();
     rc |= test_merged_row_start_stamp_is_frozen();
     rc |= test_merged_history_duration_runs_on_the_decode_clock();
+    rc |= test_digital_start_floors_once();
+    rc |= test_rows_rendered_together_share_the_second();
     rc |= test_commit_rev_tracks_committed_rows_only();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
     rc |= test_end_reason_upgrade_is_one_directional();

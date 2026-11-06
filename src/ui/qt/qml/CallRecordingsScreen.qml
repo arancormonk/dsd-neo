@@ -187,20 +187,27 @@ Item {
         }
     }
 
+    // What a delete of @p count recordings takes: only their files. A recording
+    // may have no History row (never linked, or trimmed) and may belong to a
+    // Signal search detection (issue #809); neither changes.
+    function deletedText(count) {
+        return count === 1 ? qsTr("Only the audio of 1 recording is deleted. History and detections are unchanged.")
+            : qsTr("Only the audio of %1 recordings is deleted. History and detections are unchanged.").arg(Util.countText(count));
+    }
     function askDelete(kind, folder) {
         subject = folder;
         confirmDelete.kind = kind;
         confirmDelete.confirmText = kind === "unfinished" ? qsTr("Delete unfinished") : kind === "all" ? qsTr("Delete all") : qsTr("Delete recordings");
         if (kind === "folder") {
             confirmDelete.title = qsTr("Delete recordings of %1?").arg(folder.name);
-            confirmDelete.message = folder.count === 1 ? qsTr("1 recording is deleted from this phone. The calls stay in History.") : qsTr("%1 recordings are deleted from this phone. The calls stay in History.").arg(Util.countText(folder.count));
+            confirmDelete.message = deletedText(folder.count);
         } else if (kind === "unfinished") {
             confirmDelete.title = qsTr("Delete unfinished recordings?");
             confirmDelete.message = qsTr("They were left when listening stopped unexpectedly, and may be cut short.");
         } else {
             var total = recordings.recordingCount + recordings.unfinishedCount;
             confirmDelete.title = qsTr("Delete all call recordings?");
-            confirmDelete.message = total === 1 ? qsTr("1 recording is deleted from this phone. The calls stay in History.") : qsTr("%1 recordings are deleted from this phone. The calls stay in History.").arg(Util.countText(total));
+            confirmDelete.message = deletedText(total);
         }
         confirmDelete.open();
     }

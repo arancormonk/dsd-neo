@@ -86,7 +86,9 @@ typedef enum {
  *     active, so the release's audio flush plays under the call's talkgroup: the P25 or DMR state machine comes to rest
  *     on its control channel without tuning (the caller's change is the move) and the shared release drops
  *     trunk_is_tuned and the voice channel frequencies (dsd_engine_release_tuned_call_state()).
- *  2. The calls heard on the carrier left end, as a hop, and commit, while the live codes are still that carrier's.
+ *  2. The calls heard on the carrier left end, as a hop, and commit, while the live codes are still that carrier's;
+ *     then the per-call recordings no call owns close (dsd_event_flush_orphan_recordings(), issue #809 B4), so the
+ *     next carrier's audio never joins one.
  *  3. The carrier's codes go (dsd_engine_forget_carrier_codes(): p2_cc_verified and the NAC with them, never p2_cc),
  *     with the evidence that vouched for its transmissions: every confirmation gate restarts, as the no-carrier pass
  *     restarts them, so the next carrier proves itself again; and with every multi-frame assembly that can publish an
@@ -99,8 +101,8 @@ typedef enum {
  * on a sync loss (after the P25 Phase 2 playout takes their verdicts), the DMR confirmation restarts
  * (dmr_confidence_reset(): candidate, lock, voice gate), the carrier's decoding is forgotten
  * (dsd_engine_forget_carrier_decoding()), and the carrier count moves. The carrier's codes (the colour code, RAN, NAC,
- * the Phase 2 seed's proof), the received identity, the followed voice channel and trunk-scan ownership stay: the
- * hangtime and scan visit timers decide what follows, as after a fade.
+ * the Phase 2 seed's proof), the received identity, the followed voice channel, trunk-scan ownership and a recording no
+ * call owns stay: the hangtime and scan visit timers decide what follows, as after a fade.
  * @p guard_held is 1 exactly when the calling thread holds the P25 SM tick guard and 0 when it does not; the guard is not
  * re-entrant, so the value must be exact. A tune, a source change or an input switch can run beside the watchdog's
  * ticks, which write the state machines, the followed assignment and the call state under that guard: the boundary then
@@ -114,7 +116,9 @@ typedef enum {
  * run_manual_retune_guarded() took the guard), a config apply and a RadioReference import (1, guarded commands), the
  * engine's input switch and stream gap (0), the scan steps and the replay hook. Exempt, and never routed here: retunes
  * within a system under trunking, trunk-scan target switches, and retunes an external controller makes over the RTL
- * UDP port. Decoder thread. */
+ * UDP port. The first two close the recordings no call owns themselves (every accepted trunk tune that moves the
+ * receiver, the direct control-channel return and trunk_scan_switch_to()); the last is invisible to the decoder, so a
+ * recording can span it. Decoder thread. */
 void dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held);
 
 /** The stream the decoder read was replaced (an input switch, a radio row's stream taking over, a config reopen, the

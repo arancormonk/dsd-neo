@@ -35,7 +35,9 @@ typedef struct {
     SNDFILE* wav;
     char path[1024];
     char dir[512]; /* The folder the recording was opened in, where it is published (issue #708). */
-    time_t opened; /* the wall second of its first sample, never read after the open (issues #667, #668) */
+    /* The wall second of its first sample (issues #667, #668). The close hands it to the publish, which files a
+       recording with no `started` at the later of it and the row's start. */
+    time_t opened;
     /* When the recording's first sample was heard, from the block's wall time (issue #668); 0 when the block carried
        none. The journal and the rdio-scanner sidecar take it as the start, over the row's own. */
     time_t started;

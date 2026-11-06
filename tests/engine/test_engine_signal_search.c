@@ -118,7 +118,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 62);
+    assert(owner >= 42 && owner <= 75);
     if (defer) {
         --defer;
         return 1;
@@ -295,12 +295,17 @@ dsd_engine_manual_tune_supersede(dsd_state* state) {
     ++manual_supersedes;
 }
 
+/* The visit tag in force when the latest carrier boundary ran: what the recordings it closed are published under. */
+static int boundary_tagged;
+static uint64_t boundary_session, boundary_hit;
+
 void
 dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind reason, int guard) {
     (void)opts;
     (void)reason;
     (void)guard;
     ++boundary;
+    boundary_tagged = dsd_signal_search_visit_get(&boundary_session, &boundary_hit);
     state->dmr_color_code = 16;
     state->nac = 0;
 }
@@ -1272,6 +1277,343 @@ test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     DSD_MEMSET(calls, 0, sizeof(calls));
 }
 
+/* Issue #809: the visit tag names the detection whose audio the decoder is receiving, and every recording closed while
+   it is set. It is set when a visit lands, and cleared right after the boundary that closes what the visit received. */
+static int
+tag_is(uint64_t session, uint64_t hit) {
+    uint64_t tag_session = 0, tag_hit = 0;
+    return dsd_signal_search_visit_get(&tag_session, &tag_hit) == 1 && tag_session == session && tag_hit == hit;
+}
+
+static int
+tag_clear(void) {
+    uint64_t tag_session = 1, tag_hit = 1;
+    return dsd_signal_search_visit_get(&tag_session, &tag_hit) == 0 && tag_session == 0 && tag_hit == 0;
+}
+
+/* The latest carrier boundary closed its recordings under the visit (@p session, @p hit). */
+static int
+boundary_closed_visit(uint64_t session, uint64_t hit) {
+    return boundary_tagged && boundary_session == session && boundary_hit == hit;
+}
+
+/* One range of three channels, 100.0 to 100.025 MHz, for session @p session. */
+static dsd_signal_search_config
+tag_config(const dsd_signal_search_config* base, uint64_t session, int digital, uint32_t max_visit_ms) {
+    dsd_signal_search_config one = *base;
+    one.session_id = session;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].enabled = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = digital;
+    one.ranges[0].max_visit_ms = max_visit_ms;
+    return one;
+}
+
+/* Start @p one on a live input with no carrier, and queue its first span tune. */
+static void
+start_tag_session(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* one) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    assert(dsd_engine_signal_search_start(o, s, one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+}
+
+/* Stop with no tune pending: the restore tune lands, and the decoder session goes on untagged. */
+static void
+stop_tag_session(dsd_opts* o, dsd_state* s) {
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && tag_clear());
+}
+
+static void
+test_visit_tag_set_on_landing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 63, 0, 0);
+    start_tag_session(o, s, &one);
+    assert(status.phase == DSD_SEARCH_TUNING && tag_clear()); // a span tune names no visit
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING && tag_clear());
+    ready = 1;
+    tick(o, s);
+    // The detection is chosen and its tune queued: nothing of it is received before the landing.
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id != 0 && tag_clear());
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !bypassed && tag_is(63, status.hit.hit_id));
+    stop_tag_session(o, s);
+}
+
+/* Every way a visit is left (quiet, its time limit, Skip, Avoid) closes what it received under its tag, then clears the
+   tag before the next tune passes anything. */
+static void
+test_visit_tag_cleared_after_departure_boundary(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 64, 0, 5000);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    uint64_t hit = status.hit.hit_id;
+    assert(status.phase == DSD_SEARCH_LISTENING && tag_is(64, hit));
+    tick(o, s); // the monitor's first verdict starts quiet timing
+    advance(500);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    assert(boundary_closed_visit(64, hit) && tag_clear());
+
+    visit_strongest(o, s);
+    hit = status.hit.hit_id;
+    assert(status.phase == DSD_SEARCH_LISTENING && tag_is(64, hit));
+    carrier = 1; // an active channel is left at the visit limit
+    advance(5000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    assert(boundary_closed_visit(64, hit) && tag_clear());
+    carrier = 0;
+
+    visit_strongest(o, s);
+    hit = status.hit.hit_id;
+    assert(status.phase == DSD_SEARCH_LISTENING && tag_is(64, hit));
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    assert(boundary_closed_visit(64, hit) && tag_clear());
+
+    land(o, s);
+    ready = 1;
+    tick(o, s); // every channel was visited this pass
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.pass == 2);
+    visit_strongest(o, s);
+    hit = status.hit.hit_id;
+    assert(status.phase == DSD_SEARCH_LISTENING && tag_is(64, hit));
+    act(o, s, DSD_SEARCH_ACTION_AVOID);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    assert(boundary_closed_visit(64, hit) && tag_clear());
+    land(o, s);
+    stop_tag_session(o, s);
+}
+
+/* A digital probe that finds no identity retunes the same detection for analog listening: the probe's audio closes
+   under the hit, and the analog landing names the same hit again. */
+static void
+test_visit_tag_probe_fallback_same_hit(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 65, 1, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    assert(status.identifying && tag_is(65, hit));
+    advance(2000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id == hit && !status.hit.ended);
+    assert(boundary_closed_visit(65, hit) && tag_clear());
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.hit_id == hit && tag_is(65, hit));
+    stop_tag_session(o, s);
+}
+
+/* A Pause, or a search failure, ends the visit's reception at the next tick: its boundary closes under the tag, which
+   then clears. */
+static void
+test_visit_tag_pause_and_error(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 66, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    uint64_t hit = status.hit.hit_id;
+    assert(tag_is(66, hit));
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && boundary_closed_visit(66, hit) && tag_clear());
+    stop_tag_session(o, s);
+
+    one = tag_config(config, 67, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    hit = status.hit.hit_id;
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_HELD && tag_is(67, hit));
+    stalled_ms = 20000;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && boundary_closed_visit(67, hit) && tag_clear());
+    stalled_ms = 0;
+    stop_tag_session(o, s);
+}
+
+/* A Resume restores no ended hit: the tag stays clear through the span tune and its measurement, until the next visit's
+   landing names that visit. Edited ranges resume the same way. */
+static void
+test_visit_tag_resume_waits_for_landing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    char error[192];
+    dsd_signal_search_config one = tag_config(config, 68, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t first = status.hit.hit_id;
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && tag_clear());
+    act(o, s, DSD_SEARCH_ACTION_RESUME);
+    assert(status.phase == DSD_SEARCH_TUNING && !boundary_tagged && tag_clear());
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING && tag_clear());
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && tag_clear());
+    land(o, s);
+    const uint64_t second = status.hit.hit_id;
+    assert(status.phase == DSD_SEARCH_LISTENING && second != first && tag_is(68, second));
+
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && tag_clear());
+    one.ranges[0].end_hz = 100012500;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING && tag_clear());
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && !boundary_tagged && tag_clear());
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && tag_clear());
+    land(o, s);
+    const uint64_t third = status.hit.hit_id;
+    assert(status.phase == DSD_SEARCH_LISTENING && third != second && tag_is(68, third));
+
+    // A Pause and a Resume taken before the tick that would end the paused reception (one command drain): the span
+    // tune's boundary is the one that closes the visit, still under its tag.
+    dsd_signal_search_control pause = {68, third, DSD_SEARCH_ACTION_PAUSE, 0};
+    assert(dsd_engine_signal_search_control(o, s, &pause) == 0);
+    dsd_signal_search_control resume = {68, third, DSD_SEARCH_ACTION_RESUME, 0};
+    assert(dsd_engine_signal_search_control(o, s, &resume) == 0);
+    assert(tag_is(68, third));
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && boundary_closed_visit(68, third) && tag_clear());
+    land(o, s);
+    stop_tag_session(o, s);
+}
+
+/* A Stop's restore tune closes the visit under its tag; the decoder session goes on, so the tag then clears. */
+static void
+test_visit_tag_stop_restore(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 69, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    assert(tag_is(69, hit));
+    const int before = boundary;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(boundary == before + 1 && boundary_closed_visit(69, hit) && tag_clear());
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && boundary == before + 1 && tag_clear());
+}
+
+/* A Stop the input can no longer restore still ends the visit's reception, under its tag, before the search stops: the
+   decoder session goes on, and nothing it receives after the Stop is the search's. */
+static void
+test_visit_tag_stop_with_input_lost(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 70, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    assert(tag_is(70, hit));
+    const int before = boundary;
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED && !status.owned && status.hit.ended);
+    assert(boundary == before + 1 && boundary_closed_visit(70, hit) && tag_clear());
+    tick(o, s);
+    assert(boundary == before + 1 && tag_clear());
+    live = 1;
+}
+
+/* A Stop's restore tune ends the visit's reception and tells the frontends the call ended. An input lost before that tune
+   lands, or a restore that fails, ends nothing again: one boundary. In ERROR the engine loop publishes nothing, so the
+   snapshot the Stop published is the one that shows the call ended. */
+static void
+test_stop_then_input_lost_one_boundary(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 74, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    int before = boundary;
+    snapshots = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(boundary == before + 1 && boundary_closed_visit(74, hit) && tag_clear());
+    assert(snapshots > 0 && snapshot_boundary == before + 1);
+    const int published = snapshots;
+    live = 0; // the input goes away before the restore tune lands
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && boundary == before + 1 && snapshots == published && tag_clear());
+    live = 1;
+
+    one = tag_config(config, 75, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    before = boundary;
+    snapshots = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    failed = 1;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && boundary == before + 1 && tag_clear());
+    assert(snapshots > 0 && snapshot_boundary == before + 1);
+    failed = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && tag_clear());
+}
+
+/* Hold and its release stay on the same visit: the tag does not change. */
+static void
+test_visit_tag_hold_keeps(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 71, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    const int before = boundary;
+    carrier = 1;
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_HELD && tag_is(71, hit));
+    advance(40000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_HELD && tag_is(71, hit));
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_LISTENING && boundary == before && tag_is(71, hit));
+    carrier = 0;
+    stop_tag_session(o, s);
+}
+
+/* The decoder session ends under the search (the Qt Stop, the exit flag, a failed device): the shutdown ends the hit and
+   keeps its tag, so the teardown's final closes still name the visit. The engine clears it after its last close
+   (ENGINE_LIFECYCLE_FINALIZE). */
+static void
+test_session_end_keeps_tag_until_final_close(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 72, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    const int before = boundary;
+    dsd_engine_signal_search_shutdown(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && status.hit.ended && !dsd_engine_signal_search_active(s));
+    assert(boundary == before && tag_is(72, hit));
+    dsd_signal_search_visit_clear(); // the engine's teardown, after its last close
+}
+
+/* A search start clears a tag an earlier session left: its first tune's boundary closes audio received before the
+   search, untagged. */
+static void
+test_visit_tag_cleared_at_search_start(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    char error[192];
+    const dsd_signal_search_config one = tag_config(config, 73, 0, 0);
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_visit_set(72, 9);
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    assert(tag_clear());
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && !boundary_tagged && tag_clear());
+    land(o, s);
+    stop_tag_session(o, s);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -1438,6 +1780,17 @@ main(void) {
     test_site_record_binding();
     test_site_notes_on_detection(o, s, &config);
     test_call_tuple_on_detection(o, s, &config);
+    test_visit_tag_set_on_landing(o, s, &config);
+    test_visit_tag_cleared_after_departure_boundary(o, s, &config);
+    test_visit_tag_probe_fallback_same_hit(o, s, &config);
+    test_visit_tag_pause_and_error(o, s, &config);
+    test_visit_tag_resume_waits_for_landing(o, s, &config);
+    test_visit_tag_stop_restore(o, s, &config);
+    test_visit_tag_stop_with_input_lost(o, s, &config);
+    test_stop_then_input_lost_one_boundary(o, s, &config);
+    test_visit_tag_hold_keeps(o, s, &config);
+    test_session_end_keeps_tag_until_final_close(o, s, &config);
+    test_visit_tag_cleared_at_search_start(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

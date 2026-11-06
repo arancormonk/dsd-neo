@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
@@ -1060,6 +1061,35 @@ dsd_engine_log_queued_ted_override(const dsd_opts* opts, const dsd_state* state,
 }
 #endif
 
+/* Where the receiver is before a tune (issue #809 B4): on an RTL stream tuned directly, the frequency the stream last
+   applied, since a timed-out tune names its target in opts->rtlsdr_center_freq before it lands and a later failure
+   leaves the radio where it was; otherwise the decoder's tuner frequency, which a rigctl tune sets once it is done. */
+static uint32_t
+dsd_engine_receiver_hz(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    uint32_t applied = 0U;
+    if (opts->use_rigctl != 1 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx
+        && rtl_stream_get_last_applied_freq(&applied) == 0 && applied != 0U) {
+        return applied;
+    }
+#else
+    (void)state;
+#endif
+    return opts->rtlsdr_center_freq;
+}
+
+/* After an accepted tune from @p from_hz (dsd_engine_receiver_hz() before it) to @p freq: when the tune moved the
+   receiver off its carrier, the per-call audio no call owns closes, so the next carrier's never joins it (issue #809
+   B4). Only that: a call the move carries over as one (a TETRA reallocation) is active, and its recording closes at its
+   own commit. A tune to the carrier the receiver is on (a grant on a DMR composite control channel) moves nothing and
+   closes nothing. */
+static void
+dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
+    if ((long int)from_hz != freq) {
+        dsd_event_flush_orphan_recordings(opts, state);
+    }
+}
+
 /**
  * @brief Return to the P25 control channel, draining audio and resetting state.
  *
@@ -1083,6 +1113,7 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     // explicit CC when available; otherwise fall back to any tracked CC.
     // Avoid sending a zero/unknown frequency to the tuner which can wedge the
     // pipeline at DC and delay CC hunting.
+    const uint32_t from_hz = dsd_engine_receiver_hz(opts, state);
     const long int cc = dsd_engine_resolve_cc_freq(state);
     const int trunk_enabled = (opts->trunk_enable == 1);
     const int retunes = trunk_enabled && cc != 0;
@@ -1095,6 +1126,10 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     }
 
     dsd_engine_release_tuned_call_state(opts, state);
+    if (retunes) {
+        /* The release ended the voice channel's calls before the receiver's audio of it closes. */
+        dsd_engine_tune_leaves_carrier(opts, state, from_hz, cc);
+    }
 
     /* Keep symbol timing aligned with the current control-channel mode. A return that retuned nothing leaves a chain
        comparison going on the carrier it is on, and the comparison owns the chain and the dwell there: the control
@@ -1153,6 +1188,7 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    const uint32_t from_hz = dsd_engine_receiver_hz(opts, state);
 #ifdef USE_RADIO
     /* Captured before the comparison below ends, so a failed tune puts the front end back with the comparison. */
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
@@ -1221,6 +1257,7 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
 
     dsd_engine_update_vc_tune_state(opts, state, freq);
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
     return result;
 }
 
@@ -1259,6 +1296,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    const uint32_t from_hz = dsd_engine_receiver_hz(opts, state);
 #ifndef USE_RADIO
     (void)ted_sps;
 #else
@@ -1299,6 +1337,9 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     dsd_engine_rxid_trunk_tune(state);
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    /* A hunt's probe, a settle, a protocol's own return: each leaves its carrier, which may carry voice (a DMR XPT or
+       Capacity Plus control channel is a voice repeater). */
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
     return result;
 }
 

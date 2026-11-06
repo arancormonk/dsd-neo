@@ -460,7 +460,8 @@ typedef struct {
     // access_code_kind is not DSD_ACCESS_CODE_NONE.
     uint16_t access_code;
     time_t event_time; //time event occurred
-    // Wall-clock time the transmission this row describes began, or 0 when unknown.
+    // Decode-clock time (dsd_decode_now_realtime_s(), whole seconds) the transmission this row describes began, or 0
+    // when unknown: wall time live, the capture's time in an I/Q replay.
     // event_time is restamped as last-activity on every render pass, so by commit it
     // reads as the call's end; the pair is what gives a frontend a real duration.
     time_t event_start_time;

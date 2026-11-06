@@ -99,6 +99,7 @@
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -2597,6 +2598,10 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
             dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
         }
         no_carrier_hand_tetra_over(opts, state, accepted_cc_return);
+        if (accepted_cc_return) {
+            /* The receiver left the voice channel: what it holds of it that no call owns closes too (issue #809 B4). */
+            dsd_event_flush_orphan_recordings(opts, state);
+        }
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
@@ -3519,6 +3524,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_engine_scan_landing_forget(state);
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
+    /* Their commits closed the calls' recordings; audio no call owns is closed too, so the next carrier's never joins
+       it (issue #809 B4). */
+    dsd_event_flush_orphan_recordings(opts, state);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_carrier_decoding(opts, state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);
@@ -4417,6 +4425,8 @@ dsd_engine_release_outputs(dsd_opts* opts, dsd_state* state) {
         return;
     }
     dsd_engine_cleanup_close_wavs(opts, state);
+    /* As in dsd_engine_cleanup(): no visit tag outlives the last recording close (issue #809). */
+    dsd_signal_search_visit_clear();
     dsd_engine_cleanup_close_output_files(opts, state);
 }
 
@@ -4457,6 +4467,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_codec2(state);
     dsd_engine_finalize_calls(opts, state);
     dsd_engine_cleanup_close_wavs(opts, state);
+    /* The session's last recordings are closed: a search the session ended under kept its last visit's tag for them
+       (dsd_engine_signal_search_shutdown()), and nothing is received after them (issue #809). */
+    dsd_signal_search_visit_clear();
     dsd_rdio_upload_shutdown();
     /* After the last recordings closed: those no row will claim now are unlinked (issue #708). */
     dsd_wav_journal_close();
@@ -4780,6 +4793,8 @@ dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
 static int
 engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     dsd_input_failure_clear();
+    /* No Signal search visit is on the air before this session lands one (issue #809). */
+    dsd_signal_search_visit_clear();
     reset_device_io_caches();
     /* A manual tune an earlier session in this process left noted is not this one's (issue #644): it must not own the
        tuner, defer the trunk scan's first park or report a drop here. */

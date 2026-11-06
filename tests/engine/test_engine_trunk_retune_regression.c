@@ -197,6 +197,17 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
+/* The close of the recordings no call owns at a departure (issue #809 B4); CORE_WAV_JOURNAL pins what it does. */
+static int g_orphan_flush_calls = 0;
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_orphan_flush_calls++;
+}
+
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_recent_activity_clear_all(dsd_state* state) {
@@ -2486,6 +2497,82 @@ check_rxid_watchdog_tunes(dsd_opts* opts, dsd_state* state) {
     dsd_engine_set_decoder_thread(1);
 }
 
+/* A trunk follow, a control-channel tune (a hunt's probe, a settle, a protocol's own return) and a return to the
+   control channel are carrier departures that run no carrier boundary: each closes the recordings no call owns once
+   the tuner took it (issue #809 B4); the return closes them again after its release ended the voice channel's calls. A
+   refused tune moved nothing, a tune to the frequency the receiver is on (a grant on a DMR composite control channel)
+   moves nothing, and a return that retunes nothing (no control channel known) leaves the receiver where it is: none
+   closes anything. On an RTL stream the receiver is where the stream last applied, not where a timed-out tune's
+   target, already in rtlsdr_center_freq, says. */
+static void
+check_departures_close_orphaned_recordings(dsd_opts* opts, dsd_state* state) {
+    g_orphan_flush_calls = 0;
+    opts->trunk_is_tuned = 0;
+    opts->rtlsdr_center_freq = 851000000U;
+    g_setfreq_result = false;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853037500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_orphan_flush_calls == 0);
+    g_setfreq_result = true;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853037500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 1 && opts->rtlsdr_center_freq == 853037500U);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853037500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 1);
+
+    g_setfreq_result = false;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_orphan_flush_calls == 1);
+    g_setfreq_result = true;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 2);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 2);
+
+    opts->trunk_enable = 1;
+    state->p25_cc_freq = 851000000;
+    opts->rtlsdr_center_freq = 853037500U;
+    opts->trunk_is_tuned = 1;
+    g_setfreq_result = false;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_orphan_flush_calls == 2);
+    g_setfreq_result = true;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 4 && opts->trunk_is_tuned == 0);
+
+    const long int cc = state->p25_cc_freq;
+    const long int trunk_cc = state->trunk_cc_freq;
+    state->p25_cc_freq = 0;
+    state->trunk_cc_freq = 0;
+    opts->trunk_is_tuned = 1;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 4 && opts->trunk_is_tuned == 0);
+    state->p25_cc_freq = cc;
+    state->trunk_cc_freq = trunk_cc;
+#ifdef USE_RADIO
+    /* A timed-out RTL tune named its target in rtlsdr_center_freq and then failed: the radio is still where the stream
+       last applied, so a tune to that target moves it and closes what it holds. Once it lands there, it does not. */
+    const int use_rigctl = opts->use_rigctl;
+    const int audio_in_type = opts->audio_in_type;
+    RtlSdrContext* const rtl_ctx = state->rtl_ctx;
+    opts->use_rigctl = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    opts->rtlsdr_center_freq = 853062500U;
+    g_rtl_last_applied_freq = 851000000U;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 5);
+    g_rtl_last_applied_freq = 853062500U;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 5);
+    g_rtl_last_applied_freq = 0U;
+    rtl_stream_clear_pending_retune_profile();
+    state->rtl_ctx = rtl_ctx;
+    opts->audio_in_type = audio_in_type;
+    opts->use_rigctl = use_rigctl;
+#endif
+    (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
+}
+
 /* The decoder thread's own retunes between frames (a frame sync release, a tick, the no-carrier pass, a command) drop
    the code at once, under the guard: its own hold, or one taken for the drop and left after it. Nothing it publishes
    next shows the carrier left's code, and the next carrier's code is its first, not a change. Runs on the record
@@ -2964,6 +3051,7 @@ main(void) {
     opts->receive.filters[DSD_RECEIVE_NAC].enabled = 0;
 
     check_rxid_watchdog_tunes(opts, state);
+    check_departures_close_orphaned_recordings(opts, state);
     check_rxid_decoder_tunes(opts, state);
     check_rxid_tunes_reset_dmr_ras(opts, state);
 

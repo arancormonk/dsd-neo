@@ -27,6 +27,11 @@ Column {
     property string title: ""
     // Where the delete confirmation opens: the sheet, so it dims the whole screen.
     property Item dialogParent: null
+    // What deleting a single recording leaves alone, as its confirmation says.
+    // Only the file goes: a recording may have no History row (never linked, or
+    // trimmed) and may belong to a Signal search detection (issue #809), so
+    // "the call stays in History" would not hold for every one.
+    property string deleteMessage: qsTr("Only the audio is deleted. History and detections are unchanged.")
 
     // The part shown, kept on its recording by path: a part that leaves (deleted,
     // or found missing) moves no other part's selection, and the index every label
@@ -263,7 +268,7 @@ Column {
         if (!part)
             return;
         confirmDelete.target = part;
-        confirmDelete.message = parts.length > 1 ? qsTr("Part %1 is deleted from this phone. The other parts and the call stay in History.").arg(current + 1) : qsTr("The recording is deleted from this phone. The call stays in History.");
+        confirmDelete.message = parts.length > 1 ? qsTr("Part %1 is deleted from this phone. The other parts and the call stay in History.").arg(current + 1) : deleteMessage;
         confirmDelete.open();
     }
     function deleteConfirmed() {
@@ -499,11 +504,16 @@ Column {
                 }
             }
 
+            // "Opening…" or "Paused". Its line is kept, empty, while there is
+            // none, so the player is as tall stopped, opening, playing and
+            // paused: a sheet centred on its content (History's, a detection's
+            // recordings) would otherwise move under the finger at a tap. An
+            // empty line is not read.
             Text {
                 id: recordingStatusText
                 objectName: "recordingStatus"
                 width: parent.width
-                visible: text.length > 0
+                height: Math.max(implicitHeight, statusLine.height)
                 text: player.statusText()
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
@@ -511,7 +521,11 @@ Column {
                 color: Theme.textSubdued
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
-                Accessible.ignored: !Navigation.allows(recordingStatusText) || !visible
+                Accessible.ignored: !Navigation.allows(recordingStatusText) || !visible || text.length === 0
+                FontMetrics {
+                    id: statusLine
+                    font: recordingStatusText.font
+                }
             }
         }
     }
