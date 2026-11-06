@@ -4190,13 +4190,13 @@ test_typed_goto_never_joins_a_dead_attempt(void) {
 /* Issue #644: a running typed list with an entry waiting on West that names no attempt, or one no longer outstanding
    (set so directly): the next service ends it, its failure kept for the toast, so nothing is left waiting. */
 static void
-typed_entry_waiting_on_nothing_case(uint64_t request) {
+typed_entry_waiting_on_nothing_case(uint64_t intent_request) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
     typed_goto_fixture(opts, state);
     (void)dsd_engine_scan_entry_take_failure(state, NULL);
-    dsd_engine_scan_entry_intent_set(state, 3, request);
+    dsd_engine_scan_entry_intent_set(state, 3, intent_request);
     assert(dsd_engine_channel_scan_entry_pending(state));
     (void)dsd_engine_channel_scan_pending(opts, state);
     assert(!dsd_engine_channel_scan_entry_pending(state));
