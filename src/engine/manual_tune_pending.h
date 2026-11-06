@@ -54,6 +54,12 @@ int dsd_engine_manual_tune_noted(void);
    thread. */
 uint64_t dsd_engine_manual_tune_pending_id(void);
 
+/* The ID of the tune noted, until a poll takes it, whatever its completion already said or its stream: which request
+   the record tracks, for what follows its own outcome (an entry bound to it, a resume rebound to it, issue #644), as
+   against dsd_engine_manual_tune_pending_id(), which says whether a new request may join it. 0 with none. Decoder
+   thread. */
+uint64_t dsd_engine_manual_tune_noted_id(void);
+
 /* Whether a Next or Previous walk off any scan (DSD_MANUAL_TUNE_LCN_CYCLE, not the -Y scan's own) is noted and its
    completion still awaited, or its landing or late failure was taken and its settling has not finished: the
    operator's move (not one asked of a stream that has since stopped), which owns the tuner until it settles, so no

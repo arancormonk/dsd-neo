@@ -1653,8 +1653,8 @@ untyped_enter_tuned_row(dsd_opts* opts, dsd_state* state, int row, int walk_dir,
         dsd_analog_rx_reset(state);
     }
     if (result == DSD_UNTYPED_STEP_PENDING) {
-        /* An entry waiting on the row is the noted tune's (issue #644). */
-        dsd_engine_scan_entry_intent_bind(state, row, dsd_engine_manual_tune_pending_id());
+        /* An entry waiting on the row is the noted tune's, whatever its completion already said (issue #644). */
+        dsd_engine_scan_entry_intent_bind(state, row, dsd_engine_manual_tune_noted_id());
     }
     return result;
 }
@@ -1724,7 +1724,8 @@ untyped_goto_over_a_pending_resume(dsd_opts* opts, dsd_state* state, int row) {
     }
     no_carrier_rearm_abandoned_scan(opts, state, now);
     if (result == DSD_UNTYPED_STEP_PENDING) {
-        const uint64_t id = dsd_engine_manual_tune_pending_id();
+        /* The tune just noted, even one whose failure came before its wait returned: its outcome is the resume's. */
+        const uint64_t id = dsd_engine_manual_tune_noted_id();
         state->lcn_scan_session++;
         dsd_engine_manual_tune_rebind_session(id, state->lcn_scan_session);
         dsd_engine_scan_entry_intent_set(state, row, id);
@@ -1766,7 +1767,7 @@ untyped_goto_running(dsd_opts* opts, dsd_state* state, int row) {
     dsd_engine_scan_landing_forget(state);
     dsd_engine_scan_entry_hold_replaced(state);
     if (result == DSD_UNTYPED_STEP_PENDING) {
-        dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_pending_id());
+        dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_noted_id());
         return DSD_SCAN_GOTO_PENDING;
     }
     /* A leg moved: the entry before this one goes with the movement, and a refusal is Next's. */
@@ -1881,9 +1882,25 @@ untyped_settle_walk(dsd_opts* opts, dsd_state* state, const dsd_manual_tune_sett
     dsd_engine_channel_walk_note_outcome(state, settled->row, settled->dir, 0);
 }
 
+/* An untyped list's resume waits on its row tune's record (issue #644). With none noted, nothing will ever settle it:
+   it ends here as interrupted, the scan paused as before it, so nothing says it is still resuming and `y` resumes
+   again. The toast names the row the resume would take from the kept cursor. */
+static void
+untyped_end_resume_waiting_on_nothing(dsd_opts* opts, dsd_state* state) {
+    if (!state->lcn_scan_resume_pending || dsd_channel_modes_present(state) || dsd_engine_manual_tune_noted()) {
+        return;
+    }
+    const int row = dsd_engine_scan_untyped_find_row(state, state->lcn_freq_roll, 1);
+    const long int freq = row >= 0 ? *dsd_state_trunk_lcn_slot_const(state, row) : 0L;
+    dsd_engine_channel_scan_resume_failed(opts, state, freq, DSD_SCAN_RESUME_INTERRUPTED);
+}
+
 int
 dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
     const int polled = dsd_engine_manual_tune_poll(opts, state);
+    if (polled == DSD_MANUAL_TUNE_NONE && opts && state) {
+        untyped_end_resume_waiting_on_nothing(opts, state);
+    }
     if (polled == DSD_MANUAL_TUNE_NONE || !opts || !state) {
         return polled;
     }

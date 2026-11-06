@@ -468,6 +468,11 @@ dsd_engine_manual_tune_rebind_session(uint64_t id, uint32_t session) {
     }
 }
 
+uint64_t
+dsd_engine_manual_tune_noted_id(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED ? g_record.id : 0U;
+}
+
 int
 dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
     if (out_scan_walk) {

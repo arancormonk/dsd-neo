@@ -3724,7 +3724,13 @@ tuner or walk to adopt (`manual_tune_record_live()`); one whose failure or drop 
 or pending id either (`manual_tune_record_joinable()`; a `y` start still adopts such a walk, whose failure the poll then
 passes by the scan's walk rules); and a typed attempt or a park whose request already failed (a
 stream stop fails the one it queued) is not in flight (`channel_scan_row_in_flight()`, `trunk_scan_park_live()`): the
-go-to, resume-at, walk or `y` start goes on as with nothing pending. A timed step's
+go-to, resume-at, walk or `y` start goes on as with nothing pending. Which request a noted record tracks is another
+question (`dsd_engine_manual_tune_noted_id()`, until its poll): an entry bound to the tune its own go-to just noted, and
+a resume-at's session hand-off (`dsd_engine_manual_tune_rebind_session()`), follow that tune even when its failure came
+before its wait returned, so its outcome settles them. An untyped resume left waiting on no record at all ends at the
+next poll as interrupted (`untyped_end_resume_waiting_on_nothing()`), the scan paused, so it never stays "resuming". A
+deferral, as a refusal, keeps a pending tune only while no leg moved: once a rigctl leg moved, the walk's, the timed
+step's and the two-leg backend tune's RTL legs supersede the record whatever the RTL leg answered. A timed step's
 late failure fails such an intent (kept for its toast) and its drop drops it, as a walk's do; while that tune is
 pending the rotation waits for it (`no_carrier_scan_tune_awaited()`, as for a walk of the scan's), so a timed step
 taken again over an expired dwell never cancels the intent (a typed step pending only services its attempt). A typed

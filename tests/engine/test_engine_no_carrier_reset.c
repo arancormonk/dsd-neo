@@ -777,6 +777,9 @@ tune_explicit_for(uint32_t freq) {
     return i >= 0 ? g_tune_log_explicit[i] : -2;
 }
 
+/* A tune that times out whose failure the controller publishes before the synchronous wait returns (issue #644). */
+static int g_rtl_timeout_failed_first = 0;
+
 static int
 fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     if (g_check_p25_tick_guard) {
@@ -789,6 +792,10 @@ fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     }
     note_tune_family(center_freq_hz);
     if (g_rtl_timeout_outstanding && g_rtl_tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+        if (g_rtl_timeout_failed_first) {
+            fake_publish_completion(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+            return g_rtl_tune_result;
+        }
         hold_outstanding_tune(center_freq_hz, request_id);
         return g_rtl_tune_result;
     }
@@ -10223,6 +10230,83 @@ moved_deferral_supersedes_case(int step) {
     return rc;
 }
 
+/* Issue #644: a paused untyped list resuming at row 1, its tune pending, then row 2 typed: the resume-at's own tune
+   times out, and the controller publishes its failure before the wait returns. The resume follows that tune, failed
+   as it is: the next poll reports the resume's failure, the scan stays paused with nothing waiting, and `y` resumes
+   again. */
+static int
+test_resume_at_whose_tune_failed_at_once(void) {
+    const char* what = "a resume-at whose tune failed before its wait returned";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1803012500L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "a resume is pending",
+                         dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    g_rtl_timeout_failed_first = 1;
+    rc |= expect_case(what, "the resume-at of row 2 waits",
+                      dsd_engine_channel_scan_resume_at(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_timeout_failed_first = 0;
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->ui_msg[0] = '\0';
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_case(what, "the resume's failure is reported",
+                      state->lcn_scan_resume_pending == 0U && state->lcn_scan_paused == 1U && opts->scanner_mode == 0
+                          && strstr(state->ui_msg, "failed") != NULL);
+    rc |= expect_case(what, "nothing waits", !dsd_engine_channel_scan_entry_pending(state));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_scan_untyped_poll(opts, state);
+    rc |= expect_case(what, "y resumes again",
+                      dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED && opts->scanner_mode == 1
+                          && state->lcn_scan_paused == 0U);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a paused untyped list whose resume waits on no tune at all (here its record went without a report): the
+   next poll ends the resume, so the scan stays paused, nothing says it is still resuming, and `y` resumes again. */
+static int
+test_resume_waiting_on_nothing_ends(void) {
+    const char* what = "a resume waiting on no tune";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_walk_list(opts, state, 1, 1806012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "a resume is pending",
+                         dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_engine_manual_tune_session_reset(NULL);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_scan_untyped_poll(opts, state);
+    rc |= expect_case(what, "the resume ended, the scan paused",
+                      state->lcn_scan_resume_pending == 0U && state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
+    rc |= expect_case(what, "y resumes again",
+                      dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED && opts->scanner_mode == 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_resume_at(void) {
     int rc = 0;
@@ -10239,6 +10323,8 @@ test_untyped_resume_at(void) {
     rc |= test_dead_walk_is_never_adopted();
     rc |= test_goto_never_joins_a_failed_walk();
     rc |= moved_deferral_supersedes_case(0) | moved_deferral_supersedes_case(1);
+    rc |= test_resume_at_whose_tune_failed_at_once();
+    rc |= test_resume_waiting_on_nothing_ends();
     return rc;
 }
 
