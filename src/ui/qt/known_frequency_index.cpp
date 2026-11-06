@@ -835,8 +835,10 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
             nearest = distance;
         }
         if (std::abs(distance - nearest) < 0.5) {
-            // Two rows of one list on one frequency under one name are two targets, each its own id.
-            QString key = entry.value.value(QStringLiteral("systemUid")).toString() + QLatin1Char('/')
+            // Two rows of one list on one frequency under one name are two targets, each its own id; rows of two
+            // lists stay apart too, even under one name with one entry uid.
+            QString key = entry.value.value(QStringLiteral("listUid")).toString() + QLatin1Char('/')
+                          + entry.value.value(QStringLiteral("systemUid")).toString() + QLatin1Char('/')
                           + entry.value.value(QStringLiteral("name")).toString() + QString::number(entry.hz)
                           + QLatin1Char('/') + entry.value.value(QStringLiteral("source")).toString() + QLatin1Char('/')
                           + entry.value.value(QStringLiteral("targetId")).toString();

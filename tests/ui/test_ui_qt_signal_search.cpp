@@ -439,6 +439,37 @@ assertIdentity(const QVariantMap& match, const char* source, const QString& list
     assert(match.value(QStringLiteral("selectable")).toBool() == selectable);
 }
 
+/* Issue #644: two lists under one name, each with an entry of one uid on one frequency, are two Listen choices, each
+   starting its own list: the matches stay apart by list as well as by id. */
+static void
+testKnownFrequencyListsApart() {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QVariantMap desk{
+        {QStringLiteral("uid"), QStringLiteral("entry")},        {QStringLiteral("kind"), QStringLiteral("freq")},
+        {QStringLiteral("name"), QStringLiteral("Desk")},        {QStringLiteral("protocol"), QStringLiteral("dmr")},
+        {QStringLiteral("freqMhz"), QStringLiteral("450.1250")}, {QStringLiteral("enabled"), true}};
+    QStringList uids;
+    for (int i = 0; i < 2; ++i) {
+        assert(lists.add(
+            {{QStringLiteral("name"), QStringLiteral("Gate")}, {QStringLiteral("entries"), QVariantList{desk}}}));
+        uids << lists.get(lists.count() - 1).value(QStringLiteral("uid")).toString();
+    }
+    assert(uids[0] != uids[1]);
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    const QVariantList matches = index.tunedMatches(450125000, 12500);
+    assert(matches.size() == 2);
+    QStringList listUids;
+    for (const QVariant& match : matches) {
+        assert(match.toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("entry"));
+        assert(match.toMap().value(QStringLiteral("selectable")).toBool());
+        listUids << match.toMap().value(QStringLiteral("listUid")).toString();
+    }
+    listUids.sort();
+    uids.sort();
+    assert(listUids == uids);
+}
+
 /* Issue #644: a target CSV row's id is what the engine loads, so a held start or an in-place go-to names a target the
    session has: the cell trimmed, then one pair of surrounding quotes taken off, which keeps the blanks inside them
    (" fire " is the id " fire "). The name shown is the trimmed text. The saved index and a session's own targets read
@@ -1397,6 +1428,7 @@ main(int argc, char** argv) {
     testRestartAfterPausedStop(&index);
     testStoredMarginBelowMinimum(&index);
     testKnownFrequencyIdentity(temp.path());
+    testKnownFrequencyListsApart();
     testKnownFrequencyEngineIds(temp.path());
     testKnownFrequencyEngineGrammar(temp.path());
     testKnownFrequencyQuotedCells(temp.path());
