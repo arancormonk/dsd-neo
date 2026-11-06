@@ -3717,7 +3717,9 @@ Next or the timed step began it, is not tuned again: the go-to takes an entry ho
 that attempt or noted tune and answers `PENDING`, as the trunk scan's go-to waits on a park in flight. A tune that can
 no longer land is never joined: a noted tune asked of a stream that has since stopped (its record's stream session
 behind `rtl_stream_session_generation()`, which the next poll drops) is no pending row, pending id, walk owning the
-tuner or walk to adopt (`manual_tune_record_live()`), and a typed attempt or a park whose request already failed (a
+tuner or walk to adopt (`manual_tune_record_live()`); one whose failure or drop came, not yet polled, is no pending row
+or pending id either (`manual_tune_record_joinable()`; a `y` start still adopts such a walk, whose failure the poll then
+passes by the scan's walk rules); and a typed attempt or a park whose request already failed (a
 stream stop fails the one it queued) is not in flight (`channel_scan_row_in_flight()`, `trunk_scan_park_live()`): the
 go-to, resume-at, walk or `y` start goes on as with nothing pending. A timed step's
 late failure fails such an intent (kept for its toast) and its drop drops it, as a walk's do; while that tune is

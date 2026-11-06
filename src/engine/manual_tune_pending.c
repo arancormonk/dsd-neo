@@ -153,6 +153,18 @@ manual_tune_record_live(void) {
            && atomic_load(&g_record_generation) == manual_tune_session_generation();
 }
 
+/* Whether the live record (manual_tune_record_live()) may still land: no completion came for it, or one that landed. A
+   tune whose failure or drop came, its report only waiting for the next poll, is never joined: whoever asks tunes
+   afresh. Decoder thread. */
+static int
+manual_tune_record_joinable(void) {
+    if (!manual_tune_record_live()) {
+        return 0;
+    }
+    uint64_t packed = 0U;
+    return !manual_tune_completion_for(g_record.id, &packed) || (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
+}
+
 void
 dsd_engine_manual_tune_completion(uint64_t id, int result) {
     const uint64_t packed = ((uint64_t)(uint32_t)id << 32) | (uint64_t)(uint32_t)result;
@@ -436,7 +448,7 @@ dsd_engine_manual_tune_noted(void) {
 
 uint64_t
 dsd_engine_manual_tune_pending_id(void) {
-    return manual_tune_record_live() ? g_record.id : 0U;
+    return manual_tune_record_joinable() ? g_record.id : 0U;
 }
 
 void
@@ -451,7 +463,7 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
     if (out_scan_walk) {
         *out_scan_walk = 0;
     }
-    if (!state || !manual_tune_record_live()
+    if (!state || !manual_tune_record_joinable()
         || (g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE && g_record.kind != DSD_MANUAL_TUNE_UNTYPED_STEP)
         || g_record.scan_session != state->lcn_scan_session || g_record.list_rev != state->lcn_list_rev) {
         return -1;

@@ -49,8 +49,9 @@ int dsd_engine_manual_tune_settled_ready(void);
    no state machine moves the tuner meanwhile (dsd_engine_tuner_free_for_protocol()). Decoder thread. */
 int dsd_engine_manual_tune_noted(void);
 
-/* The ID of the tune noted and still awaited, or 0 with none (one asked of a stream that has since stopped is
-   none): what an entry waiting on that tune's -Y row names (issue #644). Decoder thread. */
+/* The ID of the tune noted and still awaited, or 0 with none (one asked of a stream that has since stopped, or whose
+   failure or drop came already, is none): what an entry waiting on that tune's -Y row names (issue #644). Decoder
+   thread. */
 uint64_t dsd_engine_manual_tune_pending_id(void);
 
 /* Whether a Next or Previous walk off any scan (DSD_MANUAL_TUNE_LCN_CYCLE, not the -Y scan's own) is noted and its

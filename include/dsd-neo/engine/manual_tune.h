@@ -89,7 +89,8 @@ void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32
  *
  * A press while it is pending goes on from that row in its own direction, so quick presses and key auto-repeat keep
  * advancing (issue #644), and the -Y timed step waits while a walk the scan owns is pending (it would supersede it).
- * A tune asked of a stream that has since stopped is none: the next poll drops it, so nothing goes on from it.
+ * A tune asked of a stream that has since stopped, or whose failure or drop came already, is none: the next poll
+ * settles it, so nothing goes on from it.
  *
  * @param state          Decoder state; NULL reads as none.
  * @param out_scan_walk  Optional; set to 1 when the tune is a walk the running -Y scan owns, else 0 (a walk off any
