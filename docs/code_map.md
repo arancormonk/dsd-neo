@@ -140,7 +140,20 @@ Generated (do not edit/commit):
     sync, which normally publishes them, does not run while the search is paused or failed. A decoder session that ends
     under the search (the Qt Stop) restores the options in
     `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
-    configuration never keeps a visited frequency. Protocol details enter only through
+    configuration never keeps a visited frequency. The coordinator names the visit on the air in the runtime visit
+    tag (issue #809), which the recorder reads at a publish: `search_wait_tune()` sets `(status.session_id,
+    status.hit.hit_id)` when a visit's tune lands, before the bypass passes its first sample, and each closing step
+    clears it right after its carrier boundary closed what the visit received under it: `search_queue_tune()` (quiet
+    expiry, the visit limit, Skip, Avoid, and the probe's retune of the same hit for analog listening, whose landing
+    sets the same pair again), `search_end_reception()` (Pause, a search error), `search_restore_tune()` (Stop) and
+    `search_input_lost()`, which ends the reception before it shuts the search down when a Stop can no longer restore
+    the input. A search start clears it (its first tune's boundary closes pre-search audio untagged); Resume, edited
+    ranges included, restores no ended hit, so the tag stays clear until the next landing; Hold changes nothing.
+    `dsd_engine_signal_search_shutdown()` leaves the tag alone: when the decoder session ends under the search, the
+    final publications (the finalize before the lifecycle stop hook, `dsd_engine_finalize_calls()`,
+    `dsd_engine_cleanup_close_wavs()`) carry the last visit's tag, and the engine clears it after its last close
+    (`dsd_engine_cleanup()`, `dsd_engine_release_outputs()`) and again at each session start
+    (`ENGINE_SIGNAL_SEARCH`, `ENGINE_LIFECYCLE_FINALIZE`). Protocol details enter only through
     CRC/FEC confirmation or validated activity hooks, never a generic sync or dispatcher
     verdict. See [Signal search](signal-search.md).
   - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
@@ -2700,7 +2713,11 @@ suite runs under this compiler.
     carries validated protocol evidence, CRC/FEC-checked site notes
     (`dsd_signal_search_note_site()`), call notes (`dsd_signal_search_note_call()`: a slot whose
     canonical call record a protocol just published after its check; the engine reads the record)
-    and the decoder-thread active query, with no-op defaults. The checked site record
+    and the decoder-thread active query, with no-op defaults. It also holds the visit tag (issue #809):
+    `dsd_signal_search_visit_set()`/`_clear()`/`_get()` keep one `(session_id, hit_id)` pair under a lazily
+    initialised mutex, so a reader on any thread sees the tag clear or one whole pair; a pair with a zero half reads as
+    clear, and the default is clear, so the CLI, headless runs and tests are unaffected (`RUNTIME_SIGNAL_SEARCH_VISIT`,
+    also under TSan). The engine sets and clears it (Engine, Signal search). The checked site record
     (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`,
     `dsd_signal_search_site_format()`) is runtime's: a P25 site note joins only a record with
     no SYSID or the same one, and a network note naming another WACN or SYSID, another protocol's

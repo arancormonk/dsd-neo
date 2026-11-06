@@ -99,6 +99,7 @@
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -4417,6 +4418,8 @@ dsd_engine_release_outputs(dsd_opts* opts, dsd_state* state) {
         return;
     }
     dsd_engine_cleanup_close_wavs(opts, state);
+    /* As in dsd_engine_cleanup(): no visit tag outlives the last recording close (issue #809). */
+    dsd_signal_search_visit_clear();
     dsd_engine_cleanup_close_output_files(opts, state);
 }
 
@@ -4457,6 +4460,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_codec2(state);
     dsd_engine_finalize_calls(opts, state);
     dsd_engine_cleanup_close_wavs(opts, state);
+    /* The session's last recordings are closed: a search the session ended under kept its last visit's tag for them
+       (dsd_engine_signal_search_shutdown()), and nothing is received after them (issue #809). */
+    dsd_signal_search_visit_clear();
     dsd_rdio_upload_shutdown();
     /* After the last recordings closed: those no row will claim now are unlinked (issue #708). */
     dsd_wav_journal_close();
@@ -4780,6 +4786,8 @@ dsd_engine_decode_clock_leave_replay(dsd_opts* opts, dsd_state* state) {
 static int
 engine_run_session(dsd_opts* opts, dsd_state* state, const dsd_engine_lifecycle_hooks* hooks) {
     dsd_input_failure_clear();
+    /* No Signal search visit is on the air before this session lands one (issue #809). */
+    dsd_signal_search_visit_clear();
     reset_device_io_caches();
     /* A manual tune an earlier session in this process left noted is not this one's (issue #644): it must not own the
        tuner, defer the trunk scan's first park or report a drop here. */
