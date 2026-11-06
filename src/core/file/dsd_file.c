@@ -59,6 +59,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
@@ -1358,6 +1359,9 @@ wav_journal_published(const char* id, const char* path, const char* dir, const E
     rec.system = event_item ? event_item->sysid_string : "";
     rec.target = target;
     rec.source = source;
+    /* The Signal search visit on the air names the detection it was received on (issue #809): the engine keeps the
+       tag until the closing step that ends the visit's reception has published it. */
+    rec.has_search = dsd_signal_search_visit_get(&rec.search_session, &rec.search_hit);
     wav_journal_publish(&rec);
 }
 

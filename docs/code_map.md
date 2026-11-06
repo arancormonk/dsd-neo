@@ -1772,6 +1772,15 @@ suite runs under this compiler.
     - `failed` (bool): a short write latched the segment; the file ends where the write failed.
     - `system`, `target`, `source` (string): the row's system string and its target and source as shown (text,
       else the number, else ""), as received (the file name holds the sanitized copies).
+    - `search` (string, optional, issue #809): `"<session_id>:<hit_id>"`, two non-zero decimal `uint64_t` numbers, on a
+      recording received on a Signal search visit: the detection it belongs to, by the ids the search status and the
+      app's search history give it. `wav_journal_published()` (`dsd_file.c`), the one path every publish takes, reads
+      the runtime visit tag (`dsd_signal_search_visit_get()`) as it builds the record, so the slot rotations, the
+      pending closers, the EDACS analog rotation and the NFM/AM recorder all carry it; the engine keeps the tag until
+      the closing step that ends the visit's reception has published what the visit received (Engine, Signal search).
+      Absent otherwise. A string, not two numbers, so both ids are exact in a reader that parses doubles. The version
+      stays 1: an older reader ignores the key, and an older app's compaction drops it, so a downgrade loses the links
+      but nothing else.
 
     `link` (a pending recording's row committed): `instance` (string), `slot` (number), `row` (number), as in
     `publish`. `unlink` (the row a pending recording waited for will never exist): no other field. `discard` (an empty
@@ -1786,7 +1795,9 @@ suite runs under this compiler.
   pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
   journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
-  path forms, the process token; the write and pending-list seams in `src/core/file/wav_journal_test_support.h`),
+  path forms, the process token, the Signal search visit on a commit, an NFM call, both DMR slots, the pending closers,
+  the session's final closes and the real carrier boundary that leaves a visit, and none outside a visit; the write
+  and pending-list seams in `src/core/file/wav_journal_test_support.h`),
   `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
   `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
   (`--wav-journal`).

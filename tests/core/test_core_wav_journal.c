@@ -30,6 +30,7 @@
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/engine/analog_call.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -39,6 +40,7 @@
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -310,6 +312,7 @@ rig_open_ex(rig* r, const char* prefix, int with_journal) {
     (void)dsd_test_path_join(r->journal, sizeof r->journal, r->dir, "calls.jsonl");
     dsd_wav_recording_session_reset();
     dsd_wav_journal_test_fail_writes_after(-1);
+    dsd_signal_search_visit_clear();
     g_journal_errors = 0;
     int rc = 0;
     if (with_journal) {
@@ -338,6 +341,7 @@ rig_close(rig* r) {
     dsd_app_frontend_runtime_stop();
     dsd_wav_journal_close();
     dsd_wav_journal_test_fail_writes_after(-1);
+    dsd_signal_search_visit_clear();
     if (r->opts) {
         r->opts->wav_out_f = close_wav_file(r->opts->wav_out_f);
         r->opts->wav_out_fR = close_wav_file(r->opts->wav_out_fR);
@@ -374,21 +378,31 @@ voice_frames(rig* r, int slot, int frames) {
 }
 
 static void
-begin_call(rig* r, int protocol, uint32_t tg, uint32_t src, dsd_call_boundary boundary) {
+begin_call_on(rig* r, uint8_t slot, int protocol, uint32_t tg, uint32_t src, dsd_call_boundary boundary) {
     const dsd_call_observation call = {.protocol = protocol,
-                                       .slot = 0U,
+                                       .slot = slot,
                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
                                        .ota_target_id = tg,
                                        .policy_target_id = tg,
                                        .ota_source_id = src};
     (void)dsd_call_state_observe(r->state, &call, boundary);
-    dsd_event_sync_slot(r->opts, r->state, 0);
+    dsd_event_sync_slot(r->opts, r->state, slot);
+}
+
+static void
+begin_call(rig* r, int protocol, uint32_t tg, uint32_t src, dsd_call_boundary boundary) {
+    begin_call_on(r, 0U, protocol, tg, src, boundary);
+}
+
+static void
+end_call_on(rig* r, uint8_t slot, dsd_call_end_reason reason) {
+    (void)dsd_call_state_end_ex(r->state, slot, 0.0, reason);
+    dsd_event_sync_slot(r->opts, r->state, slot);
 }
 
 static void
 end_call(rig* r, dsd_call_end_reason reason) {
-    (void)dsd_call_state_end_ex(r->state, 0, 0.0, reason);
-    dsd_event_sync_slot(r->opts, r->state, 0);
+    end_call_on(r, 0U, reason);
 }
 
 static uint64_t
@@ -2173,6 +2187,255 @@ test_path_forms(void) {
     return rc;
 }
 
+/* --- Signal search visits (issue #809): each recording names the visit it was received on. --- */
+
+static const uint64_t k_visit_session = 1730000000000000ULL;
+
+/* @p line names the visit "<session>:<hit>" as @p want. */
+static int
+expect_visit(const char* what, const char* line, const char* want) {
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: a publish line", what);
+    if (expect_true(tag, line != NULL)) {
+        return 1;
+    }
+    DSD_SNPRINTF(tag, sizeof tag, "%s: names the visit", what);
+    if (expect_true(tag, strstr(line, "\"search\":") != NULL)) {
+        return 1;
+    }
+    return expect_str(what, field_s(line, "search"), want);
+}
+
+/* The @p nth (0-based) publish line at @p rate, or NULL. */
+static const char*
+publish_at_rate(int rate, int nth) {
+    const char* line = NULL;
+    for (int i = 0; (line = record(&g_j, "publish", i)) != NULL; i++) {
+        if (field_ll(line, "rate") == rate && nth-- == 0) {
+            return line;
+        }
+    }
+    return NULL;
+}
+
+static int
+count_publish_at_rate(int rate) {
+    int n = 0;
+    while (publish_at_rate(rate, n) != NULL) {
+        n++;
+    }
+    return n;
+}
+
+/* A digital call's commit rotates its slot file under the visit: the key comes after `source`, two decimal numbers,
+   and the whole uint64_t range is written as text. */
+static int
+test_digital_commit_names_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_commit");
+    dsd_signal_search_visit_set(k_visit_session, 7U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 100U, 77U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 3);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_int("one publish", count_records(&g_j, "publish"), 1);
+    rc |= expect_true("the visit follows the source and ends the record",
+                      pub && strstr(pub, ",\"source\":\"77\",\"search\":\"1730000000000000:7\"}") != NULL);
+
+    dsd_signal_search_visit_set(UINT64_MAX, UINT64_MAX);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 101U, 78U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 3);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    rc |= expect_int("a second publish", count_records(&g_j, "publish"), 2);
+    rc |=
+        expect_visit("the largest ids, exact", record(&g_j, "publish", 1), "18446744073709551615:18446744073709551615");
+    rig_close(&r);
+    return rc;
+}
+
+/* An NFM call's recording, published at its end, names the visit it was heard on. */
+static int
+test_nfm_recording_names_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_nfm");
+    setup_nfm(r.opts, r.state);
+    dsd_signal_search_visit_set(k_visit_session, 8U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("one NFM recording", count_publish_at_rate(48000), 1);
+    rc |= expect_visit("nfm", publish_at_rate(48000, 0), "1730000000000000:8");
+    rig_close(&r);
+    return rc;
+}
+
+/* DMR's two slots talking on one visit: both recordings name it. */
+static int
+test_both_slots_tagged(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_slots");
+    dsd_signal_search_visit_set(k_visit_session, 9U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call_on(&r, 0U, DSD_SYNC_DMR_BS_VOICE_POS, 200U, 20U, DSD_CALL_BOUNDARY_BEGIN);
+    begin_call_on(&r, 1U, DSD_SYNC_DMR_BS_VOICE_POS, 201U, 21U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    voice_frames(&r, 1, 2);
+    end_call_on(&r, 0U, DSD_CALL_END_EXPLICIT);
+    end_call_on(&r, 1U, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    rc |= expect_int("one recording per slot", count_records(&g_j, "publish"), 2);
+    for (int i = 0; i < 2; i++) {
+        const char* pub = record(&g_j, "publish", i);
+        rc |= expect_int("slot 1, then slot 2", pub ? field_ll(pub, "slot") : -9, i);
+        rc |= expect_visit("both slots", pub, "1730000000000000:9");
+    }
+    rig_close(&r);
+    return rc;
+}
+
+/* The closers that publish before their call's row commits name the visit too: a WAV stop mid-call and the EDACS
+   analog rotation. */
+static int
+test_pending_closer_names_visit(void) {
+    int rc = 0;
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_visit_stop");
+        dsd_signal_search_visit_set(k_visit_session, 10U);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 400U, 9U, DSD_CALL_BOUNDARY_BEGIN);
+        voice_frames(&r, 0, 2);
+        submit(&r, DSD_APP_CMD_WAV_STOP);
+        end_call(&r, DSD_CALL_END_EXPLICIT);
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        rc |= expect_true("wav stop: published pending", pub && strcmp(field_s(pub, "pending"), "true") == 0);
+        rc |= expect_visit("wav stop", pub, "1730000000000000:10");
+        rig_close(&r);
+    }
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_visit_edacs");
+        dsd_signal_search_visit_set(k_visit_session, 11U);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        begin_call(&r, DSD_SYNC_EDACS_POS, 321U, 1234U, DSD_CALL_BOUNDARY_BEGIN);
+        static short analog[3][960];
+        for (int i = 0; i < 960; i++) {
+            analog[0][i] = (short)(i * 8);
+            analog[1][i] = (short)(-i * 8);
+            analog[2][i] = (short)(i * 4);
+        }
+        edacs_write_analog_wav(r.opts, r.state, analog[0], analog[1], analog[2]);
+        r.opts->wav_out_f = close_and_publish_call_wav(r.opts->wav_out_f, r.opts, r.state, 0, r.opts->wav_out_file,
+                                                       r.opts->wav_out_dir, r.opts->wav_out_open_time);
+        reload(&r);
+        const char* pub = record(&g_j, "publish", 0);
+        rc |= expect_true("edacs rotation: published pending", pub && strcmp(field_s(pub, "pending"), "true") == 0);
+        rc |= expect_visit("edacs rotation", pub, "1730000000000000:11");
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* Outside a visit no record carries the key: a digital commit, an NFM call and a pending closer. */
+static int
+test_no_visit_no_key(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_none");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    dsd_engine_analog_call_end(r.opts, r.state);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 1U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 301U, 2U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    rc |= expect_int("an NFM, a commit and a pending publish", count_records(&g_j, "publish"), 3);
+    for (int i = 0; i < g_j.count; i++) {
+        rc |= expect_true("no record names a visit", strstr(g_j.line[i], "search") == NULL);
+    }
+    rig_close(&r);
+    return rc;
+}
+
+/* A decoder session that ends during a visit (a Stop from the app) ends the search's hit and keeps the tag, and the
+   teardown's final closes publish under it (dsd_engine_cleanup(): dsd_engine_finalize_calls() ends the analog call and
+   the slots as a sync loss, dsd_engine_cleanup_close_wavs() publishes the slot files; ENGINE_LIFECYCLE_FINALIZE pins
+   the tag through the real teardown). Here the same steps run in that order: an NFM call on slot 1 and a DMR call on
+   slot 2, both talking when the session ends. */
+static int
+test_publish_after_hit_end_keeps_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_end");
+    setup_nfm(r.opts, r.state);
+    dsd_signal_search_visit_set(k_visit_session, 12U);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    begin_call_on(&r, 1U, DSD_SYNC_DMR_BS_VOICE_POS, 210U, 22U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 1, 2);
+
+    dsd_engine_analog_call_end(r.opts, r.state);
+    end_call_on(&r, 1U, DSD_CALL_END_SYNC_LOSS);
+    r.opts->wav_out_f = close_and_publish_call_wav(r.opts->wav_out_f, r.opts, r.state, 0, r.opts->wav_out_file,
+                                                   r.opts->wav_out_dir, r.opts->wav_out_open_time);
+    r.opts->wav_out_fR = close_and_publish_call_wav(r.opts->wav_out_fR, r.opts, r.state, 1, r.opts->wav_out_fileR,
+                                                    r.opts->wav_out_dir, r.opts->wav_out_open_timeR);
+    reload(&r);
+    rc |= expect_int("the NFM call's recording", count_publish_at_rate(48000), 1);
+    rc |= expect_visit("the NFM call at the session's end", publish_at_rate(48000, 0), "1730000000000000:12");
+    rc |= expect_int("slot 2's recording", count_publish_at_rate(8000), 1);
+    rc |= expect_visit("the slot 2 file at the session's end", publish_at_rate(8000, 0), "1730000000000000:12");
+    rig_close(&r);
+    return rc;
+}
+
+/* A visit's departure is a carrier boundary the engine runs under the visit's tag, which it clears right after; the
+   next landing sets the next visit's. The real boundary closes what the visit left on the air (its NFM call, and the
+   DMR call on slot 2 through the commit's rotation) under the departing visit, and the next visit's recording names
+   the next one. */
+static int
+test_departure_boundary_tags_departing_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_visit_depart");
+    setup_nfm(r.opts, r.state);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    dsd_signal_search_visit_set(k_visit_session, 13U);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    begin_call_on(&r, 1U, DSD_SYNC_DMR_BS_VOICE_POS, 220U, 23U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 1, 2);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_signal_search_visit_clear();
+    reload(&r);
+    rc |= expect_int("the boundary published the visit's NFM call", count_publish_at_rate(48000), 1);
+    rc |= expect_int("and slot 2's call", count_publish_at_rate(8000), 1);
+
+    dsd_signal_search_visit_set(k_visit_session, 14U);
+    setup_nfm(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    nfm_block(r.opts, r.state);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_signal_search_visit_clear();
+    reload(&r);
+    rc |= expect_int("the next visit's NFM call", count_publish_at_rate(48000), 2);
+    rc |= expect_visit("the departing visit's NFM call", publish_at_rate(48000, 0), "1730000000000000:13");
+    rc |= expect_visit("the departing visit's slot 2 call", publish_at_rate(8000, 0), "1730000000000000:13");
+    rc |= expect_visit("the next visit's NFM call", publish_at_rate(48000, 1), "1730000000000000:14");
+    rig_close(&r);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -2210,6 +2473,13 @@ main(void) {
     rc |= test_failed_analog_open_keeps_its_error_through_a_discard();
     rc |= test_path_forms();
     rc |= test_temp_token_is_the_names_token();
+    rc |= test_digital_commit_names_visit();
+    rc |= test_nfm_recording_names_visit();
+    rc |= test_both_slots_tagged();
+    rc |= test_pending_closer_names_visit();
+    rc |= test_no_visit_no_key();
+    rc |= test_publish_after_hit_end_keeps_visit();
+    rc |= test_departure_boundary_tags_departing_visit();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }
