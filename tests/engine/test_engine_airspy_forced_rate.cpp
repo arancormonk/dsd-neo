@@ -662,11 +662,12 @@ check_stable_fields(const Case& c, const std::vector<std::string>& live, const s
 void
 run_replay_and_compare(const Case& c, const dsd_test_forced_rate_input& in, const char* meta_path, const LiveFeed& feed,
                        const std::vector<float>& live_post, const std::vector<std::string>& live_lines) {
-    std::vector<float> post;
-    /* Heap-held: the stream keeps the hook's context in a global while it is installed. */
+    /* Heap-held: the stream and the demod keep the hooks' contexts in globals while they are installed. */
+    auto held_post = std::make_unique<std::vector<float>>();
+    const std::vector<float>& post = *held_post;
     auto held_blocks = std::make_unique<ReplayBlocks>();
     ReplayBlocks& blocks = *held_blocks;
-    dsd_demod_test_set_post_step_tap(collect_post_step, &post);
+    dsd_demod_test_set_post_step_tap(collect_post_step, held_post.get());
     rtl_stream_test_set_replay_block_hook(collect_replay_block, held_blocks.get());
     std::vector<std::string> args = base_args(c);
     args.emplace_back("--iq-replay");
@@ -717,11 +718,12 @@ run_case(const Case& c) {
     airspy_double::rates[1] = c.spec.device_rate_hz;
 
     LiveFeed feed;
-    std::vector<float> live_post;
+    /* Heap-held: the demod keeps the post-step tap's context in a global while it is installed. */
+    auto live_post = std::make_unique<std::vector<float>>();
     std::vector<std::string> live_lines;
-    if (run_live(c, in, data_path, &feed, &live_post, &live_lines) && !c.retune) {
+    if (run_live(c, in, data_path, &feed, live_post.get(), &live_lines) && !c.retune) {
         check_capture(c, meta_path, in);
-        run_replay_and_compare(c, in, meta_path, feed, live_post, live_lines);
+        run_replay_and_compare(c, in, meta_path, feed, *live_post, live_lines);
     }
     static const char* const kFiles[] = {"live.iq", "live.iq.json", nullptr};
     (void)dsd_test_remove_temp_dir(dir, kFiles);
