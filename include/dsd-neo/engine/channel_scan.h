@@ -92,14 +92,19 @@ int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place
  * @return 0 when the scan started, -1 when it was refused. */
 int dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);
 
-/** The radio stream is about to stop (issue #644): a typed row's tune still pending, whose timeout cached its row's
- * frequency as the centre, would have the next stream open there, where no row the scan names is. While the cached
- * centre is still that frequency (nothing set another since) and the receiver was last confirmed elsewhere, it goes
- * back to the centre last confirmed, carried across attempts that replaced or restaged one still pending, and the
- * attempt is retired: its completion, one published before the stop included, commits nothing; a running scan's row
- * ends unlanded, its entry failed; a resume ends interrupted at the next service, the scan paused. A row whose tune
- * already landed (a restage) is confirmed there, and nothing changes. Decoder thread, before the stream stops. */
-void dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, dsd_state* state);
+/** The radio stream is about to stop (issue #644). The stop fails a typed row's request still pending; one that can
+ * still land (pending, or already landed and not yet serviced) is noted, with the source of the stream that stops, for
+ * the reopen that follows (dsd_engine_channel_scan_stream_reopened()). Nothing else changes. Decoder thread, before the
+ * stream stops. */
+void dsd_engine_channel_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state);
+
+/** The stream a restart stopped opened again (@p opened 1), or did not (0) (issue #644). The attempt the stop noted,
+ * still the scan's, lands when the new stream opened on the same source, not an I/Q replay, with the centre its row's
+ * frequency: the next service takes its request as landed whatever the stop published, so the row commits by its own
+ * path (its settings, a resume's resume, an entry's hold), or, gone out of date, notes the move as any landing does.
+ * Otherwise the note goes, and the stop's failure ends the attempt as before. Decoder thread, right after the restart's
+ * start. */
+void dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
 
 /** A config turns a stopped -Y scanner on over a list of the user's own (issue #644), before scanner_mode is set: a walk
  * off the scan still pending becomes the scan's own (dsd_engine_manual_tune_adopt_walk()), as at

@@ -45,10 +45,6 @@ typedef struct {
     int dir;
     int scan_owned;
     uint32_t session_generation;
-    /* The centre the receiver was last confirmed on before this tune: the one in force when no tune was pending,
-       carried from a tune this one replaced while that one was still pending
-       (dsd_engine_manual_tune_stream_stopping()). */
-    uint32_t confirmed_hz;
 } dsd_manual_tune_record;
 
 /* Where the record stands: nothing noted, a tune noted and its completion awaited, or the noted tune dropped (another
@@ -71,6 +67,17 @@ static atomic_int g_record_walk_off_scan;
 /* The stream session the record noted last was asked of: stored before the record reads as noted, and read with it from
    any thread (manual_tune_record_live()). */
 static atomic_uint g_record_generation;
+
+/* The record a stream stop found still able to land (dsd_engine_manual_tune_stream_stopping(), issue #644), and the
+   source of the stream that stopped: the reopen that follows decides whether it landed there
+   (dsd_engine_manual_tune_stream_reopened()). */
+static struct {
+    uint64_t id;
+    uint64_t source_key;
+} g_stop_note;
+
+/* The record landed at a reopen: its next poll takes it as landed, whatever the stop that dropped it published. */
+static int g_record_landed_at_reopen;
 /* A walk off any scan whose completion a poll took, landed or failed, whose settling (its row and the state machines'
    handoff, dsd_engine_scan_untyped_poll()) has not finished: it still owns the tuner until
    dsd_engine_manual_tune_walk_settled(). */
@@ -153,6 +160,16 @@ manual_tune_record_live(void) {
            && atomic_load(&g_record_generation) == manual_tune_session_generation();
 }
 
+/* The noted record's completion in @p packed: a landing at a reopen, else the one in the slots. 1 when one came. */
+static int
+manual_tune_record_completion(uint64_t* packed) {
+    if (g_record_landed_at_reopen) {
+        *packed = ((uint64_t)(uint32_t)g_record.id << 32) | (uint64_t)(uint32_t)RTL_STREAM_TUNE_OK;
+        return 1;
+    }
+    return manual_tune_completion_for(g_record.id, packed);
+}
+
 /* Whether the live record (manual_tune_record_live()) may still land: no completion came for it, or one that landed. A
    tune whose failure or drop came, its report only waiting for the next poll, is never joined: whoever asks tunes
    afresh. Decoder thread. */
@@ -162,7 +179,7 @@ manual_tune_record_joinable(void) {
         return 0;
     }
     uint64_t packed = 0U;
-    return !manual_tune_completion_for(g_record.id, &packed) || (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
+    return !manual_tune_record_completion(&packed) || (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
 }
 
 void
@@ -179,21 +196,12 @@ manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
         g_displaced = g_record;
         g_displaced_unreported = 1;
     }
-    /* The centre cached before this tune is a tune's speculative target while one is still pending (issue #644): the
-       one confirmed before it carries over, unless that tune already landed, whose target is then confirmed. */
-    uint32_t confirmed_hz = record->prior_applied_hz;
-    uint64_t packed = 0U;
-    if (atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED) {
-        const int landed =
-            manual_tune_completion_for(g_record.id, &packed) && (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
-        confirmed_hz = landed ? g_record.requested_hz : g_record.confirmed_hz;
-    }
     dsd_engine_manual_tune_supersede(state);
     if (record->id == 0U) {
         return;
     }
     g_record = *record;
-    g_record.confirmed_hz = confirmed_hz;
+    g_record_landed_at_reopen = 0;
     g_record.session_generation = manual_tune_session_generation();
     atomic_store(&g_record_generation, g_record.session_generation);
     atomic_store(&g_rr_owner_took_over, 0);
@@ -287,6 +295,7 @@ manual_tune_keep_settled(const dsd_manual_tune_record* record) {
 static void
 manual_tune_settle(void) {
     atomic_store(&g_record_pending, MANUAL_TUNE_NONE_NOTED);
+    g_record_landed_at_reopen = 0;
     manual_tune_keep_settled(&g_record);
 }
 
@@ -363,7 +372,7 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     /* The completion before the session: a stop moves the session before it fails the request it queued, so a failure
        read here that a stop made is always seen with the stop's session, and never toasted as a failed tune. */
     uint64_t packed = 0U;
-    const int completed = manual_tune_completion_for(g_record.id, &packed);
+    const int completed = manual_tune_record_completion(&packed);
     if (g_record.session_generation != manual_tune_session_generation()) {
         /* The stream it was asked of stopped: a stop fails its queued request, and the next stream opens on the
            frequency the decoder holds. */
@@ -486,34 +495,29 @@ dsd_engine_manual_tune_walk_yields(int yields) {
     atomic_store(&g_walk_yields, yields ? 1 : 0);
 }
 
-/* The frequency of the row heard on @p state's list, 0 for none. */
-static uint32_t
-manual_tune_heard_row_hz(const dsd_state* state) {
-    const int heard = dsd_state_lcn_heard_row(state);
-    if (heard < 0 || heard >= state->lcn_freq_count) {
-        return 0U;
+void
+dsd_engine_manual_tune_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
+    if (!opts || !state || !manual_tune_record_joinable() || g_record.requested_hz == 0U) {
+        return;
     }
-    const long int freq = *dsd_state_trunk_lcn_slot_const(state, heard);
-    return freq > 0 && (unsigned long)freq <= UINT32_MAX ? (uint32_t)freq : 0U;
+    g_stop_note.id = g_record.id;
+    g_stop_note.source_key = state->carrier_source_key;
 }
 
 void
-dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED
-        || (g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE && g_record.kind != DSD_MANUAL_TUNE_UNTYPED_STEP)
-        || g_record.requested_hz == 0U || opts->rtlsdr_center_freq != g_record.requested_hz) {
+dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    const uint64_t id = g_stop_note.id;
+    const uint64_t source_key = g_stop_note.source_key;
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
+    if (!opened || id == 0U || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED || g_record.id != id
+        || !dsd_engine_stream_reopened_on(opts, state, source_key, g_record.requested_hz)) {
         return;
     }
-    uint32_t back_hz = g_record.confirmed_hz;
-    const int scans_own = opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1
-                          && (g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP || g_record.scan_owned)
-                          && dsd_engine_manual_tune_pending_row(state, NULL) >= 0;
-    if (scans_own && manual_tune_heard_row_hz(state) != 0U) {
-        back_hz = manual_tune_heard_row_hz(state);
-    }
-    if (back_hz != 0U) {
-        opts->rtlsdr_center_freq = back_hz;
-    }
+    /* The new stream opened on the tune's target: the receiver is there, so the tune landed, in this stream. */
+    g_record.session_generation = manual_tune_session_generation();
+    atomic_store(&g_record_generation, g_record.session_generation);
+    g_record_landed_at_reopen = 1;
 }
 
 void
@@ -527,6 +531,8 @@ dsd_engine_manual_tune_session_reset(dsd_state* state) {
     DSD_MEMSET(&g_settled, 0, sizeof g_settled);
     atomic_store(&g_record_walk_off_scan, 0);
     atomic_store(&g_record_generation, 0U);
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
+    g_record_landed_at_reopen = 0;
     atomic_store(&g_walk_settling, 0);
     atomic_store(&g_walk_yields, 0);
     atomic_store(&g_rr_owner_took_over, 0);
@@ -597,7 +603,7 @@ dsd_engine_manual_tune_settled_ready(void) {
         return 0;
     }
     uint64_t packed = 0U;
-    if (!manual_tune_completion_for(g_record.id, &packed)) {
+    if (!manual_tune_record_completion(&packed)) {
         return 0;
     }
     /* A row's landing (a step's, a walk's) commits it, so a frame decoded after it is not named after the row left; a

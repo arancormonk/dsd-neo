@@ -3405,9 +3405,7 @@ request_manual_tune_io(dsd_opts* opts, dsd_state* state, long int freq, dsd_trun
            longer vouches for the receiver (issue #671), as the legacy RTL leg treats its own failure. A refusal (this
            leg is the one backend io_control selects) decides nothing about where the receiver goes, so a tune still
            waiting on its own stands, which the controller may still land or already did (issue #644). */
-        if (result == RTL_STREAM_TUNE_OK || (result == RTL_STREAM_TUNE_TIMEOUT && (!pending_id || *pending_id == 0U))) {
-            /* A timeout the caller follows (@p pending_id) is noted next, which takes the record over itself and
-               carries the centre last confirmed (dsd_engine_manual_tune_note_lcn_cycle()). */
+        if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT) {
             dsd_engine_manual_tune_supersede(state);
         }
         dsd_engine_legacy_tune_caches_forget();

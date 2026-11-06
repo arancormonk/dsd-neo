@@ -667,22 +667,47 @@ note_rtl_lifecycle_call(void) {
     }
 }
 
-/* Issue #644: the scans' pending tunes asked to put the centre back before a stream stops; the stop count each saw. */
+/* Issue #644: the scans told a stream stops (they note a pending tune) and the stop count each saw; then told where it
+   reopened, with the start count then and what each was told. */
 static int g_scan_stream_stopping_calls = 0;
 static int g_scan_stream_stopping_before_stop = 0;
+static int g_scan_stream_reopened_calls = 0;
+static int g_scan_stream_reopened_after_starts = 0;
+static int g_scan_stream_reopened_opened = -1;
 
 void
-dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state) {
+dsd_engine_manual_tune_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     g_scan_stream_stopping_calls++;
 }
 
 void
-dsd_engine_channel_scan_stream_stopping(dsd_opts* opts, dsd_state* state) {
+dsd_engine_channel_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     g_scan_stream_stopping_calls++;
+}
+
+static void
+note_scan_stream_reopened(int opened) {
+    g_scan_stream_reopened_calls++;
+    g_scan_stream_reopened_after_starts = g_rtl_start_calls;
+    g_scan_stream_reopened_opened = opened;
+}
+
+void
+dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    (void)opts;
+    (void)state;
+    note_scan_stream_reopened(opened);
+}
+
+void
+dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    (void)opts;
+    (void)state;
+    note_scan_stream_reopened(opened);
 }
 
 int
@@ -1460,18 +1485,30 @@ test_tune_and_start_run_the_carrier_boundary(void) {
 
     reset_rtl_restart_stubs();
     g_stream_source_notes = 0;
+    g_scan_stream_reopened_calls = 0;
+    g_scan_stream_reopened_opened = -1;
     rc |= expect_int("failed start", svc_rtl_restart(&opts, &state), -1);
     rc |= expect_int("a failed start notes no source", g_stream_source_notes, 0);
+    /* Issue #644: the scans are told a failed start opened nothing, so a tune its stop dropped lands nowhere. */
+    rc |= expect_int("the scans are told after a failed start", g_scan_stream_reopened_calls, 2);
+    rc |= expect_int("that nothing opened", g_scan_stream_reopened_opened, 0);
     g_rtl_create_result = 0;
     g_rtl_start_result = 0;
     rc |= expect_int("started stream", svc_rtl_restart(&opts, &state), 0);
     rc |= expect_int("a start notes its source", g_stream_source_notes, 1);
     rc |= expect_int("under the restart's guard", g_stream_source_guarded, 1);
-    /* Issue #644: a restart of a running stream asks the scans' pending tunes to put the centre back before it stops. */
+    /* Issue #644: a restart of a running stream tells the scans before it stops, so they note a pending tune, and once
+       the new stream started, so a tune it reopened on lands. */
     g_scan_stream_stopping_calls = 0;
     g_scan_stream_stopping_before_stop = -1;
+    g_scan_stream_reopened_calls = 0;
+    g_scan_stream_reopened_opened = -1;
+    const int starts = g_rtl_start_calls;
     rc |= expect_int("restarted stream", svc_rtl_restart(&opts, &state), 0);
     rc |= expect_int("the scans are told before the stop", g_scan_stream_stopping_before_stop, 2);
+    rc |= expect_int("and after the start", g_scan_stream_reopened_calls, 2);
+    rc |= expect_int("once the stream started", g_scan_stream_reopened_after_starts, starts + 1);
+    rc |= expect_int("that it opened", g_scan_stream_reopened_opened, 1);
     state.rtl_ctx = NULL;
     reset_rtl_restart_stubs();
     return rc;

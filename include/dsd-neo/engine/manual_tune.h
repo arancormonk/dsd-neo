@@ -115,20 +115,23 @@ int dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_wal
 int dsd_engine_manual_tune_adopt_walk(const dsd_state* state);
 
 /**
- * @brief The radio stream is about to stop (issue #644): a walk's (DSD_MANUAL_TUNE_LCN_CYCLE) or the untyped -Y step's
- * (DSD_MANUAL_TUNE_UNTYPED_STEP, a timed step's or a resume's) tune still pending, whose timeout cached its target as
- * the centre, would have the next stream open on that target while nothing names it: the stop drops the record, and no
- * landing ever commits its row.
- *
- * While @p opts->rtlsdr_center_freq is still that target (nothing set another since), it goes back to the frequency
- * the receiver was confirmed on before the tune: for the running -Y scan's own tune of a row of its current list, the
- * row heard's; otherwise (a walk off any scan, a resume's) the centre last confirmed before the tune, the walk's
- * origin, carried across tunes that replaced one another while pending (never a replaced tune's speculative target).
- * The stream then reopens where the row heard and a hold say the receiver is; no tune is made and nothing lands. An
- * entry's or an import's tune reopens on its target, which the operator asked for. Decoder thread, before the stream
- * stops.
+ * @brief The radio stream is about to stop (issue #644). The stop drops the tune noted, whose completion it will not
+ * deliver; a tune that can still land (one live and joinable: no failure or drop came for it) is noted, with the
+ * source of the stream that stops, for the reopen that follows (dsd_engine_manual_tune_stream_reopened()). Nothing
+ * else changes: the centre stays where it is. Decoder thread, before the stream stops.
  */
-void dsd_engine_manual_tune_stream_stopping(dsd_opts* opts, const dsd_state* state);
+void dsd_engine_manual_tune_stream_stopping(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief The stream a restart stopped opened again (@p opened 1), or did not (0) (issue #644).
+ *
+ * A tune the stop noted, still the record, lands when the new stream opened on the same source, not an I/Q replay,
+ * with @p opts->rtlsdr_center_freq its target: the receiver is there. The record moves to the new stream, and its next
+ * poll takes it as landed, so its owner runs the tune's ordinary landing (a row committed, a walk's row heard, an entry
+ * held, an import's toast). Otherwise the note goes, and the poll drops the record as for any stop. Decoder thread,
+ * right after the restart's start.
+ */
+void dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
 
 /**
  * @brief The operator's own control-channel tune (app-control's Return to CC, a block transition) runs while a walk off

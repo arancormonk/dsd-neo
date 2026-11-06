@@ -8455,24 +8455,51 @@ y_start_keeps_a_hold_only_where_the_receiver_is_case(int tuned_away) {
     return rc;
 }
 
-/* The radio stream stops and reopens, as a restart does (svc_rtl_restart()): the scans are told first, then the stop
-   moves the stream session and fails the request it had queued; the poll then takes the drop. */
+/* The radio stream stops and reopens, as a restart does (svc_rtl_restart_locked()): the scans note what may still land,
+   then the stop moves the stream session and fails the request it had queued, and the new stream opens on the same
+   source, its centre @p reopen_hz (0: the cached centre, where the stream reopens); the scans are told it opened, and
+   the poll then takes what that left. */
 static void
-reopen_the_stream(dsd_opts* opts, dsd_state* state) {
+reopen_the_stream_on(dsd_opts* opts, dsd_state* state, uint32_t reopen_hz) {
+    state->carrier_source_key = 1U; /* the running stream's source, which the restart keeps */
     dsd_engine_manual_tune_stream_stopping(opts, state);
     dsd_engine_channel_scan_stream_stopping(opts, state);
     g_session_generation_bump++;
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    if (reopen_hz != 0U) {
+        opts->rtlsdr_center_freq = reopen_hz;
+    }
+    dsd_engine_manual_tune_stream_reopened(opts, state, 1);
+    dsd_engine_channel_scan_stream_reopened(opts, state, 1);
     for (int i = 0; i < 4; i++) {
         (void)dsd_engine_scan_untyped_poll(opts, state);
     }
 }
 
-/* Issue #644: a stream stop or reopen while a scan tune is pending drops the tune, and the stream reopens on the cached
-   centre, which the tune's timeout set to its target. Held by `Y` while the timed step's tune is pending (@p adopted 0),
-   or by a hold kept across a `y` stop over a walk the start took as its own (1), the scan names the row heard: the
-   centre goes back to it before the stop, so the receiver, the row heard and the hold agree after the reopen, with no
-   tune made. */
+static void
+reopen_the_stream(dsd_opts* opts, dsd_state* state) {
+    reopen_the_stream_on(opts, state, 0U);
+}
+
+static int expect_untyped_entry_held(const char* what, const dsd_state* state, int row);
+
+/* The receiver, the row heard and the cursor all on walk-list row @p row, nothing noted, and no tune made since
+   @p tunes. */
+static int
+expect_reopen_landed_on(const char* what, const dsd_opts* opts, const dsd_state* state, int row, int tunes) {
+    int rc = expect_case(what, "the tune landed at the reopen, with no tune of its own",
+                         !dsd_engine_manual_tune_noted() && g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the receiver and the row heard agree on its row",
+                      row >= 0 && row < state->lcn_freq_count && dsd_state_lcn_heard_row(state) == row
+                          && opts->rtlsdr_center_freq == (uint32_t)state->trunk_lcn_freq[row]
+                          && state->lcn_freq_roll == row + 1);
+    return rc;
+}
+
+/* Issue #644: a restart while a scan tune is pending, whose timeout cached its target as the centre, so the new stream
+   opens there: the tune landed at the reopen, and the scan lands its row by its own path. Held by `Y` while the timed
+   step's tune is pending (@p adopted 0), or by a hold kept across a `y` stop over a walk the start took as its own (1),
+   the hold moves with the row: the receiver, the row heard and the hold agree after the reopen, with no tune made. */
 static int
 reopen_over_a_pending_scan_tune_case(int adopted) {
     const char* what = adopted ? "a reopen over an adopted walk" : "a reopen over a held pending timed step";
@@ -8511,24 +8538,24 @@ reopen_over_a_pending_scan_tune_case(int adopted) {
         rc |= expect_case(what, "Y holds the scan",
                           press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
     }
-    const int heard = dsd_state_lcn_heard_row(state);
+    const int row = dsd_engine_manual_tune_pending_row(state, NULL);
+    rc |= expect_case(what, "the pending row is the one the centre names",
+                      row >= 0 && row < state->lcn_freq_count
+                          && opts->rtlsdr_center_freq == (uint32_t)state->trunk_lcn_freq[row]);
     const int tunes = g_rtl_tune_calls;
     reopen_the_stream(opts, state);
-    rc |= expect_case(what, "the tune is dropped", !dsd_engine_manual_tune_noted() && g_rtl_tune_calls == tunes);
-    rc |= expect_case(what, "the receiver, the row heard and the hold agree",
-                      heard >= 0 && dsd_state_lcn_heard_row(state) == heard
-                          && opts->rtlsdr_center_freq == (uint32_t)state->trunk_lcn_freq[heard]
-                          && state->lcn_scan_hold == 1U);
+    rc |= expect_reopen_landed_on(what, opts, state, row, tunes);
+    rc |= expect_case(what, "the hold moved with it", state->lcn_scan_hold == 1U && opts->scanner_mode == 1);
     teardown_walk_list(opts, state);
     g_session_generation_bump = 0U;
     return rc;
 }
 
-/* Issue #644: a tune still pending replaced by another before a stream stop: the centre a stop puts back is the one
-   last confirmed, carried across the replacement, never the first tune's target that its timeout cached. Off any scan
-   (@p resume 0), Next to BRAVO and then to CHARLIE, both waiting, from ALPHA; on a paused list (1), a resume to BRAVO
-   replaced by a resume-at of CHARLIE, from the manual frequency. The stream reopens on ALPHA, or on the manual
-   frequency, and the dropped tunes name nothing. */
+/* Issue #644: a tune still pending replaced by another before a restart: the new stream opens on the second tune's
+   target, which its timeout cached, so that one landed at the reopen; the first, replaced, names nothing. Off any scan
+   (@p resume 0), Next to BRAVO and then to CHARLIE, both waiting, from ALPHA: CHARLIE is the row heard. On a paused
+   list (1), a resume to BRAVO replaced by a resume-at of CHARLIE, from the manual frequency: the scan resumes on
+   CHARLIE and holds it, marked an entry hold. */
 static int
 reopen_over_a_replaced_tune_case(int resume) {
     const char* what =
@@ -8543,14 +8570,12 @@ reopen_over_a_replaced_tune_case(int resume) {
         teardown_walk_list(opts, state);
         return 1;
     }
-    uint32_t confirmed = (uint32_t)base_hz;
     int rc = 0;
     g_rtl_timeout_outstanding = 1;
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     if (resume) {
         (void)dsd_engine_channel_scan_pause(opts, state, 0);
-        confirmed = (uint32_t)(base_hz + 4500000L); /* the operator's manual frequency */
-        opts->rtlsdr_center_freq = confirmed;
+        opts->rtlsdr_center_freq = (uint32_t)(base_hz + 4500000L); /* the operator's manual frequency */
         rc |= expect_case(what, "a resume to BRAVO waits",
                           dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
         rc |= expect_case(what, "a resume-at of CHARLIE replaces it",
@@ -8563,14 +8588,118 @@ reopen_over_a_replaced_tune_case(int resume) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     rc |= expect_case(what, "CHARLIE's tune is pending",
                       dsd_engine_manual_tune_noted() && opts->rtlsdr_center_freq == (uint32_t)(base_hz + 2000000L));
+    const int tunes = g_rtl_tune_calls;
     reopen_the_stream(opts, state);
-    rc |= expect_case(what, "the stream reopens where the receiver was confirmed",
-                      !dsd_engine_manual_tune_noted() && opts->rtlsdr_center_freq == confirmed);
+    rc |= expect_reopen_landed_on(what, opts, state, 2, tunes);
     if (resume) {
-        rc |= expect_case(what, "the scan stays paused", state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
-    } else {
-        rc |= expect_case(what, "ALPHA is still the row heard", dsd_state_lcn_heard_row(state) == 0);
+        rc |= expect_case(what, "the scan resumed", state->lcn_scan_paused == 0U && opts->scanner_mode == 1);
+        rc |= expect_untyped_entry_held(what, state, 2);
     }
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a running untyped list stopped by `y` on ALPHA, a manual tune off the list, `y` again, then Next to BRAVO
+   timing out and a restart before it lands: the new stream opens on BRAVO, which the timeout cached, so BRAVO landed
+   at the reopen. The receiver, the row heard and the cursor agree on BRAVO, and no hold names any other row. */
+static int
+test_reopen_after_a_manual_tune_and_a_restart_of_the_scan(void) {
+    const char* what = "a reopen over Next after a manual tune and y";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1790012500L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "y stops the scan on ALPHA",
+                         press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0
+                             && dsd_state_lcn_heard_row(state) == 0);
+    const uint32_t manual_hz = (uint32_t)(base_hz + 4500000L);
+    g_rtl_last_applied_hz = manual_hz;
+    rc |= expect_case(what, "a manual tune off the list",
+                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, manual_hz) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                          && dsd_app_drain_cmds(opts, state) == 1 && opts->rtlsdr_center_freq == manual_hz);
+    rc |= expect_case(what, "y starts the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1);
+    rc |= expect_case(what, "Next to BRAVO waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream(opts, state);
+    rc |= expect_reopen_landed_on(what, opts, state, 1, tunes);
+    rc |=
+        expect_case(what, "no hold on another row", state->lcn_scan_hold == 0U || dsd_state_lcn_heard_row(state) == 1);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: Next off any scan from ALPHA to BRAVO times out, its landing comes before the decoder's poll, and a
+   restart follows: the new stream opens on BRAVO, so BRAVO landed. Next again before any poll goes on from BRAVO to
+   CHARLIE, which times out, and a second restart opens on CHARLIE: CHARLIE landed. After each step the receiver and
+   the row heard agree. */
+static int
+test_reopens_over_walks_queued_across_restarts(void) {
+    const char* what = "walks queued across two restarts";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1795012500L;
+    if (setup_named_walk_list(opts, state, 0, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune", press_walk_into_a_timeout(opts, state, 1) == 1);
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    state->carrier_source_key = 1U;
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    dsd_engine_manual_tune_stream_reopened(opts, state, 1);
+    rc |= expect_case(what, "BRAVO landed at the reopen, the row still to commit",
+                      dsd_engine_manual_tune_pending_row(state, NULL) == 1
+                          && opts->rtlsdr_center_freq == (uint32_t)(base_hz + 1000000L));
+    rc |= expect_case(what, "Next goes on from BRAVO to CHARLIE, which waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 2);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream(opts, state);
+    rc |= expect_reopen_landed_on(what, opts, state, 2, tunes);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a restart while Next off any scan to BRAVO waits on its tune, whose new stream opens somewhere else (a
+   centre set since): the tune is dropped as before, nothing lands, and no centre is put back: the stream stays where
+   it opened, and ALPHA is still the row heard. */
+static int
+test_reopen_elsewhere_drops_the_tune(void) {
+    const char* what = "a reopen on another centre";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1797012500L;
+    if (setup_named_walk_list(opts, state, 0, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune", press_walk_into_a_timeout(opts, state, 1) == 1);
+    const uint32_t elsewhere = (uint32_t)(base_hz + 4500000L);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream_on(opts, state, elsewhere);
+    rc |= expect_case(what, "the tune is dropped, with no tune made",
+                      !dsd_engine_manual_tune_noted() && g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "nothing landed, nothing put back",
+                      dsd_state_lcn_heard_row(state) == 0 && opts->rtlsdr_center_freq == elsewhere);
     teardown_walk_list(opts, state);
     g_session_generation_bump = 0U;
     return rc;
@@ -8648,6 +8777,9 @@ test_y_start_adopts_a_pending_walk(void) {
           | y_start_keeps_a_hold_only_where_the_receiver_is_case(0);
     rc |= reopen_over_a_pending_scan_tune_case(0) | reopen_over_a_pending_scan_tune_case(1);
     rc |= reopen_over_a_replaced_tune_case(0) | reopen_over_a_replaced_tune_case(1);
+    rc |= test_reopen_after_a_manual_tune_and_a_restart_of_the_scan();
+    rc |= test_reopens_over_walks_queued_across_restarts();
+    rc |= test_reopen_elsewhere_drops_the_tune();
     return rc;
 }
 

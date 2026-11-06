@@ -46,6 +46,7 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -2059,9 +2060,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("pending channel cycle keeps CC sync", state.last_cc_sync_time_m == 42.0);
     rc |= expect_call_phase("pending channel cycle keeps canonical slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
     rc |= expect_call_phase("pending channel cycle keeps canonical slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
-    /* The walk's own note takes the record over (issue #644: it carries the centre last confirmed), not a supersede
-       ahead of it. */
-    rc |= expect_int("pending channel cycle supersedes nothing ahead of its note", g_manual_tune_supersedes, 0);
+    rc |= expect_int("pending channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
     rc |= expect_true("pending channel cycle owns the record",
                       dsd_engine_manual_tune_pending_id() == g_io_control_pending_id);
     rc |= expect_int("pending channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
@@ -2079,7 +2078,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_true("accepted channel cycle clears P25 VC", state.p25_vc_freq[0] == 0L);
     rc |= expect_true("accepted channel cycle refreshes CC sync", state.last_cc_sync_time_m > 42.0);
     rc |= expect_int("accepted channel cycle uses raw tune", g_io_control_tune_calls, 1);
-    rc |= expect_int("accepted channel cycle supersedes nothing ahead of its note", g_manual_tune_supersedes, 0);
+    rc |= expect_int("accepted channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
     rc |= expect_int("accepted channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
     rc |= expect_true("accepted channel cycle frequency", g_io_control_tune_freq == 857000000L);
     rc |= expect_int("accepted channel cycle skips CC tune", g_cc_tune_calls, 0);
@@ -17983,10 +17982,14 @@ test_pending_resume_taken_back(int typed, int taker) {
         }
         rc |= expect_pending_resume_settled_paused(label, &opts, &state);
         char want[96];
-        /* Either row's tune is retired or dropped by the stop, unanswered, and the reopened stream starts where the
-           receiver was before the resume (issue #644): the resume was interrupted, not refused. */
-        DSD_SNPRINTF(want, sizeof want, "Scan stays paused: the resume to %s MHz was interrupted",
-                     typed ? "851.375000" : "853.375000");
+        /* A typed row's ledger request is failed by the stop; an untyped row's tune is dropped unanswered. Neither
+           lands at the reopen: no source was noted for the stream that stopped, so the new one cannot be known to be
+           the same receiver (issue #644). */
+        if (typed) {
+            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: tune to %s MHz failed", "851.375000");
+        } else {
+            DSD_SNPRINTF(want, sizeof want, "Scan stays paused: the resume to %s MHz was interrupted", "853.375000");
+        }
         rc |= expect_str(label, state.ui_msg, want);
     }
 
@@ -18016,6 +18019,70 @@ test_pending_resume_taken_back(int typed, int taker) {
             rc |= expect_stop_leaves_the_manual_session(label, &opts, &state);
         }
     }
+    g_fake_stop_fails_request = 0U;
+    reset_config_rtl_wrap();
+    if (typed) {
+        finish_scan_row_on_analog(&opts, &state);
+    } else {
+        (void)svc_leave_channel_scan(&opts, &state);
+        state.rtl_ctx = NULL;
+        freeState(&state);
+    }
+    return rc;
+}
+
+/* Issue #644: the same -Y resume, its row tune timed out, then an explicit stream restart whose new stream opens on the
+   source the stopped one ran, on the row's frequency, which the timeout cached: the row landed at the reopen. The
+   engine loop's next pass lands it by the resume's own path: the scan runs on the row, unpaused, the tuner the scan's,
+   and nothing says the resume failed or was interrupted. */
+static int
+test_pending_resume_lands_at_a_restart(int typed) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    char label[64];
+    DSD_SNPRINTF(label, sizeof label, "%s pending resume, restart on its row", typed ? "typed" : "untyped");
+    int rc = 0;
+    if (typed) {
+        rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 0,
+                                      DSD_SCAN_MODE_NXDN48, NULL, label);
+        state.lcn_freq_count = 1;
+        *dsd_state_trunk_lcn_slot(&state, 0) = 851375000;
+        rc |= expect_int(label, dsd_channel_mode_set(&state, 0, DSD_SCAN_MODE_DMR), 0);
+    } else {
+        init_test_context(&opts, &state);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:48");
+        state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+        seed_running_list(&opts, &state);
+    }
+    /* The running stream's source, as its start noted it. */
+    dsd_engine_note_stream_source(&opts, &state, 0);
+    rc |= expect_int(label, svc_pause_channel_scan(&opts, &state, 1) >= 0 && state.lcn_scan_paused == 1, 1);
+    g_rtl_tune_tagged_scripted = 1;
+    g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_TIMEOUT;
+    p25_sm_tick_guard_enter();
+    rc |= expect_int(label, svc_resume_channel_scan(&opts, &state), DSD_SCAN_RESUME_PENDING);
+    p25_sm_tick_guard_leave();
+    g_rtl_tune_tagged_scripted = 0;
+    const uint64_t row_request = g_rtl_tune_tagged_id;
+    const uint32_t row_hz = typed ? 851375000U : 853375000U;
+    rc |= expect_int(label, state.lcn_scan_resume_pending == 1 && opts.rtlsdr_center_freq == row_hz, 1);
+    if (typed) {
+        g_fake_stop_fails_request = row_request;
+    }
+    rc |= drain_pending_taker(&opts, &state, PENDING_TAKEN_BY_REOPEN, label);
+    if (typed) {
+        (void)dsd_engine_channel_scan_pending(&opts, &state);
+    } else {
+        rc |= expect_int(label, dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_LANDED);
+    }
+    rc |= expect_int(label,
+                     opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                         && state.operator_tuned == 0 && opts.rtlsdr_center_freq == row_hz,
+                     1);
+    rc |= expect_int(label, strstr(state.ui_msg, "failed") == NULL && strstr(state.ui_msg, "interrupted") == NULL, 1);
+    opts.scanner_mode = 0;
     g_fake_stop_fails_request = 0U;
     reset_config_rtl_wrap();
     if (typed) {
@@ -18109,6 +18176,7 @@ test_pending_resume_taken_back_by_tap_search_and_reopen(void) {
         for (int taker = PENDING_TAKEN_BY_TAP; taker <= PENDING_TAKEN_BY_REOPEN; taker++) {
             rc |= test_pending_resume_taken_back(typed, taker);
         }
+        rc |= test_pending_resume_lands_at_a_restart(typed);
     }
     return rc;
 }

@@ -385,4 +385,15 @@ dsd_engine_scan_entry_landed_target(dsd_state* state, int index, uint32_t sessio
     dsd_engine_scan_entry_intent_cancel(state);
     return ours;
 }
+
+/** Whether the stream a restart reopened is where a tune dropped at its stop was going (issue #644): @p opts' radio
+ * input, not an I/Q replay, running on the source @p source_key the stopped stream had (one noted: 0 is none), with
+ * @p hz its centre. */
+static inline int
+dsd_engine_stream_reopened_on(const dsd_opts* opts, const dsd_state* state, uint64_t source_key, uint32_t hz) {
+    return opts && state && hz != 0U && source_key != 0U && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx
+           && !dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev) && state->carrier_source_key == source_key
+           && opts->rtlsdr_center_freq == hz;
+}
+
 #endif

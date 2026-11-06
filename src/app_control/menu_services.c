@@ -1915,8 +1915,8 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
 static void
 svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) {
     if (state->rtl_ctx) {
-        /* A scan's tune still pending would have the next stream open on its target, which nothing names: the centre
-           goes back to where the receiver was confirmed (issue #644). */
+        /* A tune still pending, which the stop drops, lands if a restart's new stream opens on its target (issue
+           #644): the scans note it here, and svc_rtl_restart_locked() tells them where the stream reopened. */
         dsd_engine_manual_tune_stream_stopping(opts, state);
         dsd_engine_channel_scan_stream_stopping(opts, state);
         rtl_stream_stop(state->rtl_ctx);
@@ -1994,7 +1994,11 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     svc_rtl_stop_locked(opts, state);
-    return svc_rtl_start_locked(opts, state);
+    const int rc = svc_rtl_start_locked(opts, state);
+    const int opened = rc == 0 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx != NULL;
+    dsd_engine_manual_tune_stream_reopened(opts, state, opened);
+    dsd_engine_channel_scan_stream_reopened(opts, state, opened);
+    return rc;
 }
 
 /* Start the replay the options describe at @p at (issue #701): the start's copy of the options carries the checkpoint
