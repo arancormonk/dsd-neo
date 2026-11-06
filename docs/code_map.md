@@ -2777,8 +2777,8 @@ suite runs under this compiler.
     also under TSan). A lock that fails to initialise stays unusable: set and clear do nothing and the tag reads clear
     (`RUNTIME_SIGNAL_SEARCH_VISIT_INIT_FAILURE`). The engine sets and clears it (Engine, Signal search). The checked
     site record (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`, `dsd_signal_search_site_format()`) is
-    runtime's: a P25 site note joins only a record with no SYSID or the same one, and a network note naming another WACN or SYSID, another protocol's
-    note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a control block whose CRC passes
+    runtime's: a P25 site note joins only a record with no SYSID or the same one, and a network note naming another
+    WACN or SYSID, another protocol's note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a control block whose CRC passes
     (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves, never
     from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on
     a large share of random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
@@ -11121,8 +11121,9 @@ Qt Quick frontend (`src/ui/qt`):
     search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows Listening
     (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from
     what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows `saveFailing`. Tests:
-    `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`,
-    `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
+    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
+    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
     `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
