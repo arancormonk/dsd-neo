@@ -50,8 +50,11 @@ test_zero_half_reads_clear(void) {
 enum { WRITES = 200000, OVERLAPPED_READS = 1000 };
 
 static atomic_int g_writer_done;
-/* Reads made, capped once the writer may stop: the writer keeps writing until the reader has overlapped it. */
+/* Reads made, capped once the writer may stop: the writer keeps writing until the reader has overlapped it, and has
+   seen the tag both set and clear (on one CPU the reader can make all its overlapped reads inside one phase). */
 static atomic_int g_reads;
+static atomic_int g_seen_tagged;
+static atomic_int g_seen_clear;
 static int g_mixed;
 static long g_reads_tagged;
 
@@ -63,11 +66,15 @@ read_visits(void* arg) {
         uint64_t session = 0, hit = 0;
         if (dsd_signal_search_visit_get(&session, &hit)) {
             ++g_reads_tagged;
+            atomic_store(&g_seen_tagged, 1);
             if (!((session == 11 && hit == 101) || (session == 22 && hit == 202))) {
                 g_mixed = 1;
             }
-        } else if (session != 0 || hit != 0) {
-            g_mixed = 1;
+        } else {
+            atomic_store(&g_seen_clear, 1);
+            if (session != 0 || hit != 0) {
+                g_mixed = 1;
+            }
         }
         if (atomic_load(&g_reads) < OVERLAPPED_READS) {
             (void)atomic_fetch_add(&g_reads, 1);
@@ -82,9 +89,13 @@ static void
 test_reader_never_sees_mixed_pair(void) {
     atomic_store(&g_writer_done, 0);
     atomic_store(&g_reads, 0);
+    atomic_store(&g_seen_tagged, 0);
+    atomic_store(&g_seen_clear, 0);
     dsd_thread_t reader;
     assert(dsd_thread_create(&reader, read_visits, NULL) == 0);
-    for (int i = 0; i < WRITES || atomic_load(&g_reads) < OVERLAPPED_READS; ++i) {
+    for (int i = 0; i < WRITES || atomic_load(&g_reads) < OVERLAPPED_READS || !atomic_load(&g_seen_tagged)
+                    || !atomic_load(&g_seen_clear);
+         ++i) {
         switch (i % 3) {
             case 0: dsd_signal_search_visit_set(11, 101); break;
             case 1: dsd_signal_search_visit_set(22, 202); break;
