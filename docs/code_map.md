@@ -137,7 +137,10 @@ Generated (do not edit/commit):
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
     a call heard on the channel ends at the Pause, the input stall or any other failure rather
     than at the next tune or the Stop. It also publishes the opts/state snapshots, since frame
-    sync, which normally publishes them, does not run while the search is paused or failed. A decoder session that ends
+    sync, which normally publishes them, does not run while the search is paused, failed or stopping. A Stop's restore
+    tune runs the same close step (`search_close_reception()`) unconditionally and marks the reception ended, so an
+    input lost before the restore lands, or a restore that fails into ERROR, runs no second boundary, and the snapshot
+    the Stop published is the one that shows the call ended (`ENGINE_SIGNAL_SEARCH`). A decoder session that ends
     under the search (the Qt Stop) restores the options in
     `dsd_engine_signal_search_shutdown()` before the engine's autosave, so the saved
     configuration never keeps a visited frequency. The coordinator names the visit on the air in the runtime visit
@@ -2717,7 +2720,8 @@ suite runs under this compiler.
     `dsd_signal_search_visit_set()`/`_clear()`/`_get()` keep one `(session_id, hit_id)` pair under a lazily
     initialised mutex, so a reader on any thread sees the tag clear or one whole pair; a pair with a zero half reads as
     clear, and the default is clear, so the CLI, headless runs and tests are unaffected (`RUNTIME_SIGNAL_SEARCH_VISIT`,
-    also under TSan). The engine sets and clears it (Engine, Signal search). The checked site record
+    also under TSan). A lock that fails to initialise stays unusable: set and clear do nothing and the tag reads clear
+    (`RUNTIME_SIGNAL_SEARCH_VISIT_INIT_FAILURE`). The engine sets and clears it (Engine, Signal search). The checked site record
     (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`,
     `dsd_signal_search_site_format()`) is runtime's: a P25 site note joins only a record with
     no SYSID or the same one, and a network note naming another WACN or SYSID, another protocol's

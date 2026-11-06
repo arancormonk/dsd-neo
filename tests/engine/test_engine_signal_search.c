@@ -118,7 +118,7 @@ rtl_stream_output_generation(void) {
 
 int
 rtl_stream_tune_async(uint32_t hz, uint64_t owner, uint32_t* out) {
-    assert(owner >= 42 && owner <= 73);
+    assert(owner >= 42 && owner <= 75);
     if (defer) {
         --defer;
         return 1;
@@ -1525,6 +1525,42 @@ test_visit_tag_stop_with_input_lost(dsd_opts* o, dsd_state* s, const dsd_signal_
     live = 1;
 }
 
+/* A Stop's restore tune ends the visit's reception and tells the frontends the call ended. An input lost before that tune
+   lands, or a restore that fails, ends nothing again: one boundary. In ERROR the engine loop publishes nothing, so the
+   snapshot the Stop published is the one that shows the call ended. */
+static void
+test_stop_then_input_lost_one_boundary(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 74, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    int before = boundary;
+    snapshots = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(boundary == before + 1 && boundary_closed_visit(74, hit) && tag_clear());
+    assert(snapshots > 0 && snapshot_boundary == before + 1);
+    const int published = snapshots;
+    live = 0; // the input goes away before the restore tune lands
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && boundary == before + 1 && snapshots == published && tag_clear());
+    live = 1;
+
+    one = tag_config(config, 75, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    before = boundary;
+    snapshots = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    failed = 1;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && boundary == before + 1 && tag_clear());
+    assert(snapshots > 0 && snapshot_boundary == before + 1);
+    failed = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && tag_clear());
+}
+
 /* Hold and its release stay on the same visit: the tag does not change. */
 static void
 test_visit_tag_hold_keeps(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
@@ -1751,6 +1787,7 @@ main(void) {
     test_visit_tag_resume_waits_for_landing(o, s, &config);
     test_visit_tag_stop_restore(o, s, &config);
     test_visit_tag_stop_with_input_lost(o, s, &config);
+    test_stop_then_input_lost_one_boundary(o, s, &config);
     test_visit_tag_hold_keeps(o, s, &config);
     test_session_end_keeps_tag_until_final_close(o, s, &config);
     test_visit_tag_cleared_at_search_start(o, s, &config);

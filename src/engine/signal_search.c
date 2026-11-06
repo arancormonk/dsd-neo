@@ -1069,6 +1069,19 @@ dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const cha
 }
 
 #ifdef USE_RADIO
+/* End what the decoder was receiving on the search's channel: the carrier boundary and acquisition reset, then the
+   snapshots, which the engine loop does not publish while the search is paused, failed or stopping (frame sync does,
+   and it is not running), so frontends learn here that the call ended. The visit's recordings closed at the boundary,
+   under its tag, which then clears: the next landing names its own visit (issue #809). */
+static void
+search_close_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    c->reception_ended = 1;
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_signal_search_visit_clear();
+    dsd_frame_sync_reset_acquisition(opts, state, 1);
+    dsd_telemetry_publish_both_and_redraw(opts, state);
+}
+
 static int
 search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
     search_end_hit(c);
@@ -1076,12 +1089,9 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
     rtl_signal_search_bypass(1);
     rtl_stream_clear_pending_retune_profile();
     /* Leaving the channel the search left the receiver on is a carrier change like any visit's: the call heard there
-       ends at the boundary, so nothing received on the restored frequency joins it. */
-    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
-    /* The decoder session goes on after the Stop: the visit's recordings closed at the boundary, under its tag, and
-       nothing received on the restored frequency is the search's (issue #809). */
-    dsd_signal_search_visit_clear();
-    dsd_frame_sync_reset_acquisition(opts, state, 1);
+       ends at the boundary, so nothing received on the restored frequency joins it, and the reception is over, so an
+       input lost or a failed restore before this tune lands ends nothing again. */
+    search_close_reception(c, opts, state);
     search_restore(c, opts, state);
     dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
     rtl_stream_retune_gain_profile gain = {1, c->saved_gain, c->saved_gain_auto, 1, c->saved_autogain};
@@ -1347,18 +1357,9 @@ search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
    search_queue_tune(), which runs them again and lets the next pause or failure end its reception. */
 static void
 search_end_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
-    if (c->reception_ended) {
-        return;
+    if (!c->reception_ended) {
+        search_close_reception(c, opts, state);
     }
-    c->reception_ended = 1;
-    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
-    /* The visit's recordings closed at the boundary, under its tag; a Resume names the next visit at its landing
-       (issue #809). */
-    dsd_signal_search_visit_clear();
-    dsd_frame_sync_reset_acquisition(opts, state, 1);
-    /* The engine loop publishes no snapshot while the search is paused or failed (frame sync does, and it is not
-       running): frontends learn here that the call ended. */
-    dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 
 static int

@@ -74,7 +74,7 @@ stop_sees_committed_call(dsd_opts* opts, dsd_state* state, void* context) {
     assert(state->event_history_s[0].push_seq > g_push_at_start);
     assert(state->event_history_s[0].Event_History_Items[1].target_id == 456U);
     assert(g_published_after_commit == 1);
-    /* The finalize ran under the visit's tag, and the WAV closes after these hooks still do. */
+    /* Nothing cleared the tag before the final closes. */
     assert(visit_tagged(7, 8));
 }
 

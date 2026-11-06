@@ -6237,6 +6237,32 @@ add_test(
     COMMAND dsd-neo_test_runtime_signal_search_visit
 )
 
+# The visit tag's lock failing to initialise (issue #809): nothing locked, nothing set, the tag reads clear.
+add_executable(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    runtime/test_runtime_signal_search_visit_init_failure.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    PRIVATE
+        dsd_mutex_init=dsd_test_visit_mutex_init
+        dsd_mutex_lock=dsd_test_visit_mutex_lock
+        dsd_mutex_unlock=dsd_test_visit_mutex_unlock
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_VISIT_INIT_FAILURE
+    COMMAND dsd-neo_test_runtime_signal_search_visit_init_failure
+)
+
 add_executable(
     dsd-neo_test_runtime_udp_audio_hooks
     runtime/test_runtime_udp_audio_hooks.c
