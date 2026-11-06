@@ -536,6 +536,14 @@ class CommandRecorder : public QObject {
         return DSD_SQUELCH_MARGIN_DEFAULT_DB;
     }
 
+    /* CommandBridge::receiveError(): what a receive filter or service names editor would refuse. The receive policy
+     * sheets the Monitor hosts read it while open; every edit is valid here (tst_receive_policy_sheet.qml checks the
+     * refusals with a bridge of its own). */
+    Q_INVOKABLE QString
+    receiveError(int, bool, const QString&, const QString&, const QVariantList&) const {
+        return {};
+    }
+
     /* The row on air an editor captures (setScanRowContext()), and the session edits it then sends. */
     Q_INVOKABLE QVariantMap
     scanRowContext() const {

@@ -402,6 +402,12 @@ Item {
         function initTestCase() {
             verify(testContext.accessibilityActive(), "run with DSD_QML_TEST_ACCESSIBILITY=1, or there is no tree");
         }
+        // A screen built here that calls what the fixture lacks would only warn
+        // (the Monitor's receive policy sheets once read commands.receiveError(),
+        // which CommandRecorder did not have): every such warning fails the case.
+        function init() {
+            failOnWarning(/TypeError/);
+        }
         function cleanup() {
             Ui.Navigation.speechPeriodMs = 5000;
             Ui.Navigation.modals = [];
