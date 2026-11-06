@@ -3530,31 +3530,38 @@ the centre the input ran and decides after its own start), `dsd_engine_manual_tu
 `dsd_engine_channel_scan_stream_reopened()` check `dsd_engine_stream_reopened_on()`: the stream opened, the input is the
 radio, not an I/Q replay, on the same noted source, and the centre is the tune's target (a timeout cached it there).
 Then the receiver is on the target: the manual record moves to the new stream and its next poll takes it as landed
-(`g_record_landed_at_reopen`), and a typed request is taken as landed by the next service whatever the stop published
-(`channel_scan::reopen_landed`; its failure has nothing to roll back, `dsd_trunk_tuning_request_disown()`). Each tune
-then lands by its owner's ordinary path: a walk's or step's row commits with its boundary and keys, a walk off any scan
-becomes the row heard, a typed row installs its settings, a resume resumes, an entry's intent holds the row. A landing
-gone out of date (list or session moved) notes the move as any late landing does. Otherwise (another centre, another
-source, an I/Q replay, a recovery that opened nothing, or a stop no restart follows: a switch away from the radio, a
-replay re-plan, the session's end) the note goes and the drop stands, as for any stop: the poll drops the record and
-the service ends the typed attempt with the stop's failure, each of which also lets the note go. Nothing puts a centre
-back. The session's start clears the note with the record. The trunk scan's park in flight lands the same way
+(`g_record_landed_at_reopen`). A typed row is restaged instead (`channel_scan_restage()`, the same attempt; the failure
+the stop published has nothing to roll back, `dsd_trunk_tuning_request_disown()`): a restart is a retune boundary, and
+the stream opened on the settings in force before the stop (the row committed last, or the configured ones), while a
+typed row's receive profile (family, symbol rate, demod and sync family, width) reaches the front end only with its own
+tune, so the row's landing is never taken as already applied, across a family change or not. Each tune then lands by its
+owner's ordinary path: a walk's or step's row commits with its boundary and keys, a walk off any scan becomes the row
+heard, a typed row installs its settings once its restaged tune lands, a resume resumes, an entry's intent holds the
+row. The manual kinds (an entry, an untyped step or walk, a walk off any scan, a RadioReference import) tune the centre
+only and carry no profile of their own: the one they land on is the session's, the one the new stream opened on. A
+landing gone out of date (list or session moved) notes the move as any late landing does. Otherwise (another centre,
+another source, an I/Q replay, a recovery that opened nothing, or a stop no restart follows: a switch away from the
+radio, a replay re-plan, the session's end) the note goes and the drop stands, as for any stop: the poll drops the
+record and the service ends the typed attempt with the stop's failure, each of which also lets the note go. Nothing puts
+a centre back. The session's start clears the note with the record. The trunk scan's park in flight lands the same way
 (`dsd_engine_trunk_scan_stream_stopping()`, `dsd_engine_trunk_scan_stream_reopened()`): the stop notes it with the
 frequency it asked for (`dsd_trunk_scan_target_runtime::tune_hz`, `trunk_scan_retune_freq()` at its retune: a trunked
 target's learned control channel ahead of its seed; none for an adopted P25 recovery tune), and a reopen on that
 frequency on the same source completes its request as landed (`dsd_trunk_tuning_request_land_at_reopen()`), so the next
-tick, the state machines awaiting it and an entry hold all take the landing; otherwise the stop's failure stands. The
-poll reads the completion before the session, so a stop's failure is never toasted. A dropped record is reported once
-(`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so its owner settles
-what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver, and the older drop
-goes unreported. The record is process-wide, as the controller and its callback are. Every session's start clears it,
-unreported, with what it carried (a walk's tuner ownership and settling, the control-channel yield, the import's texts,
-the completions kept, an entry waiting on it: `dsd_engine_manual_tune_session_reset()` in `engine_run_session()`), so a
-tune an earlier session in the process left noted never owns the next session's tuner or defers its first park. Tests:
-`ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late success, a newer entry,
-coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, what ends a synced reception, and an
-RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes), `IO_RIGCTL_CONTROL`,
-`ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
+tick, the state machines awaiting it and an entry hold all take the landing; otherwise the stop's failure stands. A park
+needs no restage: it puts its target's settings, decoder snapshot and mode in force before its tune
+(`trunk_scan_switch_to()`), so a restart, and a recovery on the settings that ran, opens on the target's own profile and
+publishes it. The poll reads the completion before the session, so a stop's failure is never toasted. A dropped record
+is reported once (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so
+its owner settles what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver,
+and the older drop goes unreported. The record is process-wide, as the controller and its callback are. Every session's
+start clears it, unreported, with what it carried (a walk's tuner ownership and settling, the control-channel yield, the
+import's texts, the completions kept, an entry waiting on it: `dsd_engine_manual_tune_session_reset()` in
+`engine_run_session()`), so a tune an earlier session in the process left noted never owns the next session's tuner or
+defers its first park. Tests: `ENGINE_MANUAL_TUNE_PENDING` (the real controller stood in for, with late failure, late
+success, a newer entry, coalescing, a failure inside a coalesced wait, a stop, a supersede's drop report, what ends a
+synced reception, and an RR import's outcomes), `APP_CONTROL_RR_APPLY` (the import's tune outcomes),
+`IO_RIGCTL_CONTROL`, `ENGINE_TRUNK_RETUNE_REGRESSION`, `ENGINE_SIGNAL_SEARCH`.
 
 The untyped `-Y` step (a list without modes, `no_carrier_step_scanner_mode_if_needed()` in `engine.c`, its shared pieces
 engine-private in `src/engine/scan_step_untyped.h`) commits a row only once its tune lands (issue #671). It finds the

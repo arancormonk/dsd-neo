@@ -19398,6 +19398,57 @@ test_entry_on_air_follows_the_park(void) {
     return test_rc;
 }
 
+/* Issue #644: a go-to from DMR trunked target a to NXDN48 trunked target b, its park pending when the radio stream
+   restarts on b's frequency. A park puts the target's settings in force before its tune, so the new stream opens on
+   b's (NXDN48 at 2400 sym/s, the profile a restart publishes to it), and the landing at the reopen keeps them, never
+   a's DMR at 4800. */
+static int
+test_goto_park_over_a_restart_runs_the_target_profile(void) {
+    const char* what = "go-to park over a restart across a family";
+    static const char k_body[] = "a,dmr-trunk,451000000,,250,,\n"
+                                 "b,nxdn48-trunk,452000000,,250,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = expect_goto(what, opts.frame_dmr == 1 && opts.frame_nxdn48 == 0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    const int input = opts.audio_in_type;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)(void*)&state;
+    state.carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED); /* the stop fails the park it queued */
+    /* What the restart opens on and publishes: b's settings. */
+    test_rc |= expect_goto("the restart opens on b's profile",
+                           opts.frame_nxdn48 == 1 && opts.frame_dmr == 0
+                               && dsd_scan_mode_effective_profile(&opts, &state).symbol_rate_hz == 2400);
+    opts.rtlsdr_center_freq = 452000000U;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    state.rtl_ctx = NULL;
+    opts.audio_in_type = input;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, what, 1U, 1U, 1U);
+    test_rc |=
+        expect_goto("the landed park runs b's profile",
+                    dsd_engine_trunk_scan_target_confirmed(&state, 1) && opts.frame_nxdn48 == 1 && opts.frame_dmr == 0
+                        && dsd_scan_mode_effective_profile(&opts, &state).symbol_rate_hz == 2400);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_goto_park_over_a_restart(void) {
     return goto_park_over_a_restart_case(0) | goto_park_over_a_restart_case(1);
@@ -20700,6 +20751,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_never_joins_a_failed_park);
     rc |= run_with_default_tune_hook(test_goto_entry_waiting_on_nothing);
     rc |= run_with_default_tune_hook(test_goto_park_over_a_restart);
+    rc |= run_with_default_tune_hook(test_goto_park_over_a_restart_runs_the_target_profile);
     rc |= run_with_default_tune_hook(test_entry_on_air_follows_the_park);
     rc |= run_with_default_tune_hook(test_goto_a_copy_in_another_list);
     rc |= run_with_default_tune_hook(test_goto_paused_resumes_at_the_target);

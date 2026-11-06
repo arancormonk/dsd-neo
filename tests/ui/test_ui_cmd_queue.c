@@ -18033,7 +18033,8 @@ test_pending_resume_taken_back(int typed, int taker) {
 
 /* Issue #644: the same -Y resume, its row tune timed out, then an explicit stream restart whose new stream opens on the
    source the stopped one ran, on the row's frequency, which the timeout cached: the row landed at the reopen. The
-   engine loop's next pass lands it by the resume's own path: the scan runs on the row, unpaused, the tuner the scan's,
+   engine loop's next pass lands it by the resume's own path (a typed row tuned again first, with its own profile, since
+   the new stream opened on what ran before the stop): the scan runs on the row, unpaused, the tuner the scan's,
    and nothing says the resume failed or was interrupted. With @p recovery the restart's start fails, and the recovery
    that starts the input again (svc_rtl_restart_recovery_locked(), as a failed change's rollback runs it) opens on the
    row's frequency: the row landed at that reopen the same way. */
@@ -18089,7 +18090,14 @@ test_pending_resume_lands_at_a_restart(int typed, int recovery) {
         rc |= drain_pending_taker(&opts, &state, PENDING_TAKEN_BY_REOPEN, label);
     }
     if (typed) {
+        /* The new stream opened on the settings in force before the stop, not the row's: the next pass tunes the row
+           again, its own profile with it, and that tune lands it. */
+        g_rtl_tune_tagged_scripted = 1;
+        g_rtl_tune_tagged_answer = RTL_STREAM_TUNE_OK;
+        g_rtl_tune_tagged_id = 0U;
         (void)dsd_engine_channel_scan_pending(&opts, &state);
+        g_rtl_tune_tagged_scripted = 0;
+        rc |= expect_int(label, g_rtl_tune_tagged_id != 0U && g_rtl_tune_tagged_id != row_request, 1);
     } else {
         rc |= expect_int(label, dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_LANDED);
     }

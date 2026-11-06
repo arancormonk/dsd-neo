@@ -4223,8 +4223,9 @@ typed_restart(dsd_opts* opts, dsd_state* state, uint64_t queued, uint32_t reopen
 }
 
 /* Issue #644: a restart while the timed step's tune of East is pending, its timeout having cached East's frequency as
-   the centre: the new stream opens on East, so the step landed there, and the next service commits East whatever the
-   stop published. With @p elsewhere the new stream opens somewhere else (a centre set since): the stop's failure ends
+   the centre: the new stream opens on East, so the receiver is there, and the next service tunes East again with its
+   own profile (the new stream opened on what ran before the stop) and commits it, whatever the stop published. With
+   @p elsewhere the new stream opens somewhere else (a centre set since): the stop's failure ends
    the step as before, and nothing puts any centre back. */
 static void
 typed_restart_over_a_pending_step_case(int elsewhere) {
@@ -4241,7 +4242,7 @@ typed_restart_over_a_pending_step_case(int elsewhere) {
     const int tunes_before = tunes;
     typed_restart(opts, state, request, reopen_hz);
     (void)dsd_engine_channel_scan_pending(opts, state);
-    assert(tunes == tunes_before && opts->rtlsdr_center_freq == reopen_hz);
+    assert(tunes == tunes_before + (elsewhere ? 0 : 1) && opts->rtlsdr_center_freq == reopen_hz);
     assert(dsd_engine_channel_scan_row_confirmed(state, 1) == !elsewhere);
     assert(!dsd_engine_channel_scan_waiting(state));
     if (!elsewhere) {
@@ -4338,6 +4339,54 @@ typed_resume_at_after_a_restart_case(int refused) {
         assert(typed_entry_held_on(state, 3) && state->ui_msg[0] == '\0');
     }
     assert(entry_failure_taken(state, -1, DSD_SCAN_GOTO_REFUSED));
+    typed_walk_fixture_free(opts, state);
+}
+
+/* Issue #644: the typed list with East (row 1) on NXDN48 while North (row 0), landed, runs DMR. A step to East (with
+   @p resume, a resume-at of East over the list paused on North) whose tune timed out, then a restart whose new stream
+   opens on East: that stream opened on the settings in force before the stop, not East's, so the landing tunes East
+   again, the same attempt, with East's whole receive profile (the stub sees NXDN48 at 20 samples a symbol), and only
+   then commits it on NXDN48. */
+static void
+typed_restart_across_a_family_case(int resume) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_walk_fixture(opts, state);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_NXDN48) == 0);
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    state->lcn_freq_roll = 0;
+    assert(typed_walk_step(opts, state, 1, 0) == 1);
+    assert(opts->frame_dmr == 1 && opts->frame_nxdn48 == 0);
+    opts->rtlsdr_center_freq = (uint32_t)k_walk_hz[0];
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    expected_tune_hz = k_walk_hz[1];
+    expected_nxdn = 1;
+    if (resume) {
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        assert(dsd_engine_channel_scan_resume_at(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    } else {
+        assert(dsd_engine_channel_scan_step(opts, state) == 0 && dsd_engine_channel_scan_waiting(state));
+    }
+    /* What the restart opens on: the settings in force, not East's. */
+    assert(opts->frame_nxdn48 == 0);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const int tunes_before = tunes;
+    typed_restart(opts, state, request, (uint32_t)k_walk_hz[1]);
+    for (int i = 0; i < 3; i++) {
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    }
+    if (tunes != tunes_before + 1) {
+        DSD_FPRINTF(stderr, "the landing at the reopen tuned %d time(s), want 1\n", tunes - tunes_before);
+    }
+    assert(tunes == tunes_before + 1);
+    assert(dsd_engine_channel_scan_row_confirmed(state, 1) && !dsd_engine_channel_scan_waiting(state));
+    assert(opts->frame_nxdn48 == 1 && opts->frame_dmr == 0 && state->samplesPerSymbol == 20);
+    if (resume) {
+        assert(typed_entry_held_on(state, 1));
+        assert(state->lcn_scan_paused == 0U && state->lcn_scan_resume_pending == 0U && opts->scanner_mode == 1);
+    }
+    expected_nxdn = 0;
     typed_walk_fixture_free(opts, state);
 }
 
@@ -4874,6 +4923,8 @@ main(void) {
     test_typed_restart_after_a_replacement();
     typed_restart_after_a_completion_case(0);
     typed_restart_after_a_completion_case(1);
+    typed_restart_across_a_family_case(0);
+    typed_restart_across_a_family_case(1);
     test_typed_stream_stop_over_a_restage();
     test_typed_goto_replaces_an_entry_hold();
     test_typed_goto_over_a_row_in_flight();

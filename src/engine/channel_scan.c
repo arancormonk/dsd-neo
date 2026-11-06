@@ -140,11 +140,10 @@ typedef struct {
        entry waiting on the row names it, issue #644). */
     uint64_t attempt;
     /* The request a stream stop found still able to land, and the source of the stream that stopped
-       (dsd_engine_channel_scan_stream_stopping(), issue #644); and the request the reopen after it found landed
-       (dsd_engine_channel_scan_stream_reopened()), which the next service takes as landed. */
+       (dsd_engine_channel_scan_stream_stopping(), issue #644): the reopen after it decides whether the row is
+       restaged there (dsd_engine_channel_scan_stream_reopened()). */
     uint64_t stop_request;
     uint64_t stop_source_key;
-    uint64_t reopen_landed;
 } channel_scan;
 
 static void
@@ -357,6 +356,17 @@ channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const ch
     return scan->familyless_supersedes != dsd_engine_scan_familyless_retune_supersedes(opts);
 }
 
+/* The receiver is on the staged row's frequency but not known to run its receive profile: the row is staged again in a
+   fresh request, the same attempt (channel_scan_start_row()), whose tune carries the row's profile as every row tune
+   does, and it commits only once that tune lands. The receiver has left the carrier already: the row's commit or its
+   end unlanded notes the boundary. */
+static void
+channel_scan_restage(channel_scan* scan) {
+    scan->request = 0;
+    scan->retry = 1;
+    scan->left_carrier = 1;
+}
+
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Row commits run only in conventional scanner mode. Entry into that mode
@@ -370,12 +380,8 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->tuned_list = scan->list_rev;
     scan->tuned_freq = scan->row_freq;
     if (channel_scan_staged_stale(opts, state, scan)) {
-        /* Stage the new effective profile in a fresh request before any frame
-         * can use it. The receiver has left the carrier already: the row's commit
-         * or its end unlanded notes the boundary. */
-        scan->request = 0;
-        scan->retry = 1;
-        scan->left_carrier = 1;
+        /* Stage the new effective profile in a fresh request before any frame can use it. */
+        channel_scan_restage(scan);
         return 0;
     }
     const int outgoing_force = state->M;
@@ -485,15 +491,10 @@ channel_scan_resume_row_failed(dsd_opts* opts, dsd_state* state, const channel_s
     dsd_engine_channel_scan_resume_failed(opts, state, scan->row_freq, why);
 }
 
-/* What @p scan's request came to: a request a reopen found landed (dsd_engine_channel_scan_stream_reopened(), issue
-   #644) is landed whatever the stop published for it; none is a failure. */
+/* What @p scan's request came to; none is a failure. */
 static dsd_trunk_tune_result
 channel_scan_request_result(const channel_scan* scan) {
-    if (!scan->request) {
-        return DSD_TRUNK_TUNE_RESULT_FAILED;
-    }
-    return scan->request == scan->reopen_landed ? DSD_TRUNK_TUNE_RESULT_OK
-                                                : dsd_trunk_tuning_request_status(scan->request, NULL);
+    return scan->request ? dsd_trunk_tuning_request_status(scan->request, NULL) : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
 /* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
@@ -1570,7 +1571,6 @@ channel_scan_drop_row(channel_scan* scan) {
     /* And the attempt it was: a resume's row is a new one (issue #644). */
     scan->attempt = 0U;
     scan->stop_request = 0U;
-    scan->reopen_landed = 0U;
 }
 
 void
@@ -1755,10 +1755,13 @@ dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* s
         || !dsd_engine_stream_reopened_on(opts, state, scan->stop_source_key, (uint32_t)scan->row_freq)) {
         return;
     }
-    /* The new stream opened on the row's frequency: the receiver is there, so the attempt landed. The failure the stop
-       published has nothing to roll back. */
-    scan->reopen_landed = request;
+    /* The new stream opened on the row's frequency: the receiver is there, so the attempt goes on, and the failure the
+       stop published has nothing to roll back. But a restart is a retune boundary: the stream opened on the settings in
+       force before the stop (the row committed last, or the configured ones), not this row's, whose receive profile
+       reaches the front end only with its own tune. So the row is restaged (channel_scan_restage()), and its landing
+       is the ordinary one, the row's whole profile with it. */
     dsd_trunk_tuning_request_disown(request);
+    channel_scan_restage(scan);
 }
 
 void
