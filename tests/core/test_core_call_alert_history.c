@@ -166,7 +166,9 @@ typedef struct {
     uint32_t policy_target_id;
     int export_call;
     // The start the journal's publish line takes for this recording: what wav_close_and_publish() (dsd_file.c) passes
-    // it, from the same row and open time the rdio-scanner sidecar is written from.
+    // it, from the same row and open time the rdio-scanner sidecar is written from. Recomputed here because this stub
+    // replaces the only path to that writer; CORE_WAV_JOURNAL reads the real publish line
+    // (test_start_floors_once_on_the_replay_clock).
     time_t journal_start;
     char sidecar[1024];
 } close_wav_capture;
@@ -306,6 +308,11 @@ getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, in
 // which of the two a row was rendered from.
 #define TEST_REPLAY_EVENT_TIME ((time_t)1000000000)
 
+// Set by a test that compares the seconds of row prefixes: a stamp on TEST_REPLAY_EVENT_TIME's UTC day (2001-09-09)
+// then renders as its real UTC date and time.
+static int g_render_utc_day;
+#define TEST_UTC_DAY_START ((time_t)999993600)
+
 int
 dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
     // An unstamped time really does render as the epoch, so the stub has to say so: rendering a
@@ -313,6 +320,15 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
     if (timestamp == 0) {
         const char* epoch = (format == DSD_LOCAL_DATETIME_DATE_HYPHEN) ? "1970-01-01" : "00:00:00";
         DSD_SNPRINTF(out, out_size, "%s", epoch);
+        return 1;
+    }
+    if (g_render_utc_day && timestamp >= TEST_UTC_DAY_START && timestamp < TEST_UTC_DAY_START + 86400) {
+        const long long t = (long long)(timestamp - TEST_UTC_DAY_START);
+        if (format == DSD_LOCAL_DATETIME_DATE_HYPHEN) {
+            DSD_SNPRINTF(out, out_size, "%s", "2001-09-09");
+        } else {
+            DSD_SNPRINTF(out, out_size, "%02lld:%02lld:%02lld", t / 3600, (t / 60) % 60, t % 60);
+        }
         return 1;
     }
     if (timestamp == TEST_REPLAY_EVENT_TIME) {
@@ -6308,6 +6324,69 @@ test_digital_start_floors_once(void) {
     return rc;
 }
 
+// The "YYYY-MM-DD HH:MM:SS" prefix of the newest row in @p history whose text holds @p marker, or "" with none.
+static void
+row_prefix_holding(const Event_History_I* history, const char* marker, char* out, size_t out_size) {
+    out[0] = '\0';
+    for (size_t i = 0; i < 255U; i++) {
+        const char* text = history->Event_History_Items[i].event_string;
+        if (strstr(text, marker) != NULL) {
+            DSD_SNPRINTF(out, out_size, "%.19s", text);
+            return;
+        }
+    }
+}
+
+static int
+expect_prefix_not_before(const char* label, const char* row, const char* voice) {
+    if (row[0] == '\0' || strcmp(row, voice) < 0) {
+        DSD_FPRINTF(stderr, "%s: '%s' sorts before the voice row's '%s'\n", label, row, voice);
+        return 1;
+    }
+    return 0;
+}
+
+// Status, system notice and data notice rows stamped just after a voice row never carry an earlier second than it:
+// the terminal History orders rows by that prefix. Every builder reads the decode clock's wall reading. Rendered one
+// nanosecond before a second boundary, that reading is the next second as a double, where dsd_decode_time()'s whole
+// nanoseconds still read the second before: a builder left on dsd_decode_time() files its row a second before the
+// voice row rendered in the same instant. Live, the same split comes from time() reading the coarse clock.
+static int
+test_rows_rendered_together_share_the_second(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_render_utc_day = 1;
+    dsd_decode_clock_use_test(999999999999999999ULL);
+
+    int rc = expect_int("call begins", observe_unstamped_call(&state, 100U, 200U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    char voice[24];
+    char row[24];
+    row_prefix_holding(&event_history[0], "TGT: 00000100;", voice, sizeof voice);
+    rc |= expect_int("the voice row is rendered", voice[0] != '\0', 1);
+
+    watchdog_event_status(&state, "Status after voice;", 0U);
+    row_prefix_holding(&event_history[0], "Status after voice;", row, sizeof row);
+    rc |= expect_prefix_not_before("status row", row, voice);
+
+    rc |= expect_int("system notice emits", dsd_event_emit_system_notice(&opts, &state, 0U, "Notice after voice;"), 0);
+    row_prefix_holding(&event_history[0], "Notice after voice;", row, sizeof row);
+    rc |= expect_prefix_not_before("system notice row", row, voice);
+
+    rc |=
+        expect_int("data notice emits", emit_test_data_notice(&opts, &state, 1234U, 5678U, "Data after voice;", 0U), 0);
+    row_prefix_holding(&event_history[0], "Data after voice;", row, sizeof row);
+    rc |= expect_prefix_not_before("data notice row", row, voice);
+
+    g_render_utc_day = 0;
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // commit_rev is the committed-rows-only change counter frontends gate their ring rescans on:
 // staged-row renders must leave it alone, while commits, merges and late enrichment advance it.
 static int
@@ -9491,6 +9570,7 @@ main(void) {
     rc |= test_merged_row_start_stamp_is_frozen();
     rc |= test_merged_history_duration_runs_on_the_decode_clock();
     rc |= test_digital_start_floors_once();
+    rc |= test_rows_rendered_together_share_the_second();
     rc |= test_commit_rev_tracks_committed_rows_only();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
     rc |= test_end_reason_upgrade_is_one_directional();

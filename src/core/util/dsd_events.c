@@ -2125,6 +2125,15 @@ watchdog_event_ctx_wall_anchored(const watchdog_event_current_ctx* ctx) {
     return ctx->protocol == DSD_SYNC_ANALOG && ctx->start_wall > 0.0;
 }
 
+// The whole second a row is stamped and prefixed with: the decode clock's wall reading, floored. Every row builder
+// reads this one clock, so a status or notice row stamped just after a voice row never carries an earlier second (the
+// terminal History orders rows by their prefix, ui_history.c). dsd_decode_time() would not do: live it is time(), the
+// coarse clock, which can read a second behind at a boundary.
+static time_t
+watchdog_event_decode_second(void) {
+    return (time_t)floor(dsd_decode_now_realtime_s());
+}
+
 // The row's start and end stamps, outside --playfiles (which keeps the stamp the file reader gave the row), from the
 // render's one decode-clock reading @p now_wall.
 static void
@@ -2893,8 +2902,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
 // parseable prefix -- a row a protocol staged directly rather than rendering.
 //
 // The displayed string is preferred rather than the stamp because the two are not always the same
-// clock. Every builder renders the prefix from dsd_decode_time() (an ended analog row's from its own
-// event_time, watchdog_event_text_time()), but watchdog_event_current_update_item()
+// clock. Every builder renders the prefix from the render's decode-clock reading (watchdog_event_decode_second(); an
+// ended analog row's from its own event_time, watchdog_event_text_time()), but watchdog_event_current_update_item()
 // only stamps event_time when opts->playfiles == 0; under --playfiles over an sdrtrunk recording it
 // is left as the recording's own timestamp instead (dsd_file.c). Formatting the stamp there would
 // rewrite a committed row's visible date and time to a value none of its siblings use, purely
@@ -3908,7 +3917,7 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
     item->source_id = 0;
     item->target_id = 0;
 
-    time_t now = dsd_decode_time();
+    time_t now = watchdog_event_decode_second();
     item->event_time = now;
 
     char timestr[9];
@@ -4003,7 +4012,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         (void)dsd_access_code_current(state, observation->protocol, observation->service_options,
                                       observation->has_service_metadata, &item->access_code_kind, &item->access_code);
     }
-    item->event_time = dsd_decode_time();
+    item->event_time = watchdog_event_decode_second();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
     if (consume_staged_payload) {
@@ -4089,7 +4098,7 @@ dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, con
     item->systype = DSD_SYNC_NONE;
     item->subtype = -1;
     item->gi = -1;
-    item->event_time = dsd_decode_time();
+    item->event_time = watchdog_event_decode_second();
 
     char timestr[9];
     char datestr[11];

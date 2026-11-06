@@ -1218,6 +1218,40 @@ test_start_on_the_replay_clock(void) {
     return rc;
 }
 
+/* The publish line's start is the second the call began (issue #809 B1), on the capture's clock: a call heard from
+   59.95 s into the capture and first rendered at 60.02 s began in second 59, not in second 60. */
+static int
+test_start_floors_once_on_the_replay_clock(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_floor");
+    const int64_t anchor = 1262304000LL; /* 2010-01-01T00:00:00Z */
+    dsd_decode_clock_use_replay(anchor);
+    dsd_decode_clock_set_media_ns(5ULL * 1000000000ULL);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 903U,
+        .policy_target_id = 903U,
+        .ota_source_id = 93U,
+    };
+    dsd_decode_clock_set_media_ns(59950ULL * 1000000ULL);
+    (void)dsd_call_state_observe(r.state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_decode_clock_set_media_ns(60020ULL * 1000000ULL);
+    (void)dsd_call_state_observe(r.state, &call, DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    voice_frames(&r, 0, 2);
+    dsd_decode_clock_set_media_ns(65ULL * 1000000000ULL);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |=
+        expect_int("the start is the second the call began", pub ? field_ll(pub, "start") : -9, (long long)anchor + 59);
+    rig_close(&r);
+    return rc;
+}
+
 /* An NFM block as the finalizer hands it while -P records (issue #668): its end read on the decode clock's wall time,
    before any file work. */
 static void
@@ -2826,6 +2860,7 @@ main(void) {
     rc |= test_start_after_mid_call_enable();
     rc |= test_start_across_midnight();
     rc |= test_start_on_the_replay_clock();
+    rc |= test_start_floors_once_on_the_replay_clock();
     rc |= test_nfm_start_is_its_first_block();
     rc |= test_nfm_start_moves_back_by_its_preroll();
     rc |= test_stamped_start_is_the_journal_and_sidecar_start();
