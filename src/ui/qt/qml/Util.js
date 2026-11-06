@@ -55,6 +55,34 @@ function callHeadline(kind, name, tgText, tgId, tgLabel, srcText, protocolLabel)
     return talkgroupHeadline(name, tgText, tgId);
 }
 
+// Issue #644: the action that listens to the tuned channel with its own
+// settings (Main's listenActions). One saved system says what it starts,
+// "Start “Name”", as Signal search does; a scan-list row, or several of either
+// (which open a menu), say "Listen with its settings".
+function listenText(actions) {
+    return actions.length === 1 && actions[0].key === "saved" ? actions[0].text : qsTr("Listen with its settings");
+}
+
+// What a screen reader says for that action: the one action's own name
+// ("Listen to Hospital / ER desk with its settings"), and why it cannot run
+// when it cannot, as its menu row says it; or how many there are.
+function listenAccessibleName(actions) {
+    if (actions.length !== 1)
+        return qsTr("Listen with its settings: %1 to choose from").arg(actions.length);
+    var action = actions[0];
+    return action.accessibleName + (action.enabled === false && action.description ? ". " + action.description : "");
+}
+
+// The names of those actions, once each, as the tuned-name line joins them.
+function listenNames(actions) {
+    var names = [];
+    for (var action of actions) {
+        if (names.indexOf(action.name) < 0)
+            names.push(action.name);
+    }
+    return names.join(" / ");
+}
+
 // String.arg(double) uses QString's six-significant-digit formatting. Convert
 // numeric IDs to decimal text first so seven-digit IDs never become exponents.
 function idText(id) {

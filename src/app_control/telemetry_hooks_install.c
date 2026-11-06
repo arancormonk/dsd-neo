@@ -72,6 +72,8 @@ dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* in
     /* A -Y scan the engine pauses again on its own (a resume whose row never landed) records its return to the monitor
        as an interactive pause does (issue #671). */
     dsd_channel_scan_pause_hook_set(svc_pause_channel_scan);
+    /* A Next or Previous walk off any scan whose tune timed out names its row only once the tune lands (issue #644). */
+    dsd_channel_walk_settle_hook_set(dsd_app_channel_walk_settled);
     /* Whatever an earlier session left in the slot is not this session's; cleared before the sink can fill it. */
     dsd_app_stream_notice_clear();
     dsd_runtime_stream_notice_set(dsd_app_stream_notice_post);
@@ -85,6 +87,7 @@ dsd_app_frontend_runtime_stop(void) {
     dsd_runtime_set_publish_pending(NULL);
     dsd_runtime_set_controls_need_frame_loop(NULL);
     dsd_channel_scan_pause_hook_set(NULL);
+    dsd_channel_walk_settle_hook_set(NULL);
     /* A notice the session did not get to show is not the next session's. The sink is removed first: a post still
        delivering to it finishes before the removal returns, so the clear after it is the last word. */
     dsd_runtime_stream_notice_set(NULL);

@@ -90,6 +90,9 @@ main(void) {
     (void)sizeof(dsd_app_scan_list_set_payload);
     (void)sizeof(dsd_app_scan_list_result);
     (void)&dsd_app_scan_list_view_get;
+    (void)sizeof(dsd_app_scan_entry_summary);
+    (void)&dsd_app_scan_entry_summary_get;
+    (void)&dsd_app_scan_entry_eligible;
     (void)&dsd_app_command_scan_list_set;
     (void)&dsd_app_scan_list_request_next;
     (void)&dsd_app_scan_list_result_get;

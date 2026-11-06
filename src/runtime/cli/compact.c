@@ -157,8 +157,8 @@ static const char* const k_skip_exact_next_any[] = {
     "--calc-start-lcn",
 };
 
-/* Their value is taken whatever it starts with, as is that of a free-value option (an API token may begin with '-'
-   and must not reach getopt; see dsd_cli_option_takes_free_value()). */
+/* Their value is taken whatever it starts with, as is that of a free-value option (an API token or a target id may
+   begin with '-' and must not reach getopt; see dsd_cli_option_takes_free_value()). */
 static const char* const k_skip_exact_next_nonnull[] = {
     "--iq-capture", "--iq-capture-format", "--iq-capture-max-mb", "--symbol-capture-format",
     "--iq-replay",  "--iq-replay-rate",    "--iq-info",
@@ -222,6 +222,7 @@ static const char* const k_skip_prefix[] = {
     "--config=",
     "--trunk-scan=",
     "--trunk-scan-off=",
+    "--trunk-scan-hold=",
     "--trunk-scan-dwell-ms=",
     "--trunk-scan-activity-hold-ms=",
     "--scan-voice-qualify-ms=",
@@ -252,7 +253,7 @@ static const char* const k_skip_prefix[] = {
 
 int
 dsd_cli_option_takes_free_value(const char* arg) {
-    static const char* const k_free_value_options[] = {"--api-token", "--api-token-file"};
+    static const char* const k_free_value_options[] = {"--api-token", "--api-token-file", "--trunk-scan-hold"};
     return arg != NULL
            && compact_matches_exact(arg, k_free_value_options,
                                     sizeof(k_free_value_options) / sizeof(k_free_value_options[0]));

@@ -59,6 +59,7 @@ typedef struct {
     uint8_t lcn_valid;
     ui_snapshot_store_mark chan_map;
     ui_snapshot_store_mark trunk_scan_avoids;
+    ui_snapshot_store_mark trunk_scan_entry_reasons;
 } ui_snapshot_marks;
 
 static ui_snapshot_marks g_pub_marks;
@@ -68,6 +69,7 @@ static const ui_snapshot_marks k_live_marks = {
     .lcn_valid = 1U,
     .chan_map = {.valid = 1U},
     .trunk_scan_avoids = {.valid = 1U},
+    .trunk_scan_entry_reasons = {.valid = 1U},
 };
 /* The consumer copy holds a store that is not whole: the next read copies again even with no new publication, so a
  * consumer-side allocation that failed recovers without waiting for the decoder to publish. */
@@ -205,6 +207,11 @@ _Static_assert(offsetof(dsd_state, trunk_scan_avoids) >= UI_SNAPSHOT_FIELD_END(t
                "trunk_scan_avoids must sit after the dibit_buf..trunk_lcn_freq copy range");
 _Static_assert(UI_SNAPSHOT_FIELD_END(trunk_scan_avoid_capacity) <= offsetof(dsd_state, audio_out_idx),
                "trunk_scan_avoids must sit before the audio_out_idx..lastsample copy range");
+/* The trunk-scan entry reasons (issue #644) are a sixth heap allocation with the same hazard. */
+_Static_assert(offsetof(dsd_state, trunk_scan_entry_reasons) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),
+               "trunk_scan_entry_reasons must sit after the dibit_buf..trunk_lcn_freq copy range");
+_Static_assert(UI_SNAPSHOT_FIELD_END(trunk_scan_entry_reason_capacity) <= offsetof(dsd_state, audio_out_idx),
+               "trunk_scan_entry_reasons must sit before the audio_out_idx..lastsample copy range");
 /* The trunk-scan publication and the scan hold/avoid scalars are plain inline bytes, so
  * unlike the stores above they want to be inside a copy range -- left out of one they
  * would silently never reach the UI. */
@@ -228,6 +235,13 @@ _Static_assert(
         && offsetof(dsd_state, operator_tuned) >= offsetof(dsd_state, trunk_scan_active_id)
         && UI_SNAPSHOT_FIELD_END(operator_tuned) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
     "lcn_scan_paused, lcn_scan_resume_pending and operator_tuned must ride the vertex_ks_count..ui_msg range");
+/* The entry holds (issue #644) sit beside the holds they mark, inside that range: every frontend's scan state and the
+ * terminal's hold field read them. */
+_Static_assert(offsetof(dsd_state, lcn_scan_entry_hold) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(lcn_scan_entry_hold) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
+                   && offsetof(dsd_state, trunk_scan_entry_hold) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_entry_hold) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
+               "lcn_scan_entry_hold and trunk_scan_entry_hold must ride the vertex_ks_count..ui_msg range");
 _Static_assert(offsetof(dsd_state, trunk_scan_paused) >= offsetof(dsd_state, trunk_scan_active_id)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_paused) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
                "trunk_scan_paused must ride the vertex_ks_count..ui_msg range");
@@ -375,6 +389,20 @@ ui_snapshot_copy_trunk_scan_avoids(dsd_state* dst, ui_snapshot_store_mark* mark,
     return rc;
 }
 
+/* The published trunk-scan entry reasons (issue #644) change only with trunk_scan_entry_rev or a new state instance,
+ * so they are copied as the avoid list is: only then, or while the copy held is not whole. */
+static int
+ui_snapshot_copy_trunk_scan_entry_reasons(dsd_state* dst, ui_snapshot_store_mark* mark, const dsd_state* src,
+                                          uint8_t src_valid) {
+    if (ui_snapshot_mark_current(mark, src->state_instance, src->trunk_scan_entry_rev)) {
+        return 0;
+    }
+    const int rc =
+        dsd_state_trunk_scan_entry_reasons_set(dst, src->trunk_scan_entry_reasons, src->trunk_scan_entry_reason_count);
+    ui_snapshot_mark_set(mark, src->state_instance, src->trunk_scan_entry_rev, src_valid && rc == 0);
+    return rc;
+}
+
 /* The scan-list stores beside the list (issue #672 B2): a copy that comes out short -- here, or at the hop before --
  * is marked not whole, so the snapshot's scan_avoids_complete says so instead of a short avoid list passing as whole. */
 static void
@@ -385,11 +413,14 @@ ui_snapshot_copy_scan_lists(dsd_state* dst, ui_snapshot_marks* marks, const dsd_
     const int flags_ok = ui_snapshot_copy_trunk_lcn_avoid(dst, src) == 0;
     marks->lcn_valid = (src_marks->lcn_valid && tail_ok && names_ok && flags_ok) ? 1U : 0U;
     (void)ui_snapshot_copy_trunk_scan_avoids(dst, &marks->trunk_scan_avoids, src, src_marks->trunk_scan_avoids.valid);
+    (void)ui_snapshot_copy_trunk_scan_entry_reasons(dst, &marks->trunk_scan_entry_reasons, src,
+                                                    src_marks->trunk_scan_entry_reasons.valid);
 }
 
 static int
 ui_snapshot_marks_whole(const ui_snapshot_marks* marks) {
-    return marks->lcn_valid && marks->chan_map.valid && marks->trunk_scan_avoids.valid;
+    return marks->lcn_valid && marks->chan_map.valid && marks->trunk_scan_avoids.valid
+           && marks->trunk_scan_entry_reasons.valid;
 }
 
 /* @p marks records what @p dst holds; @p src_marks what @p src holds (k_live_marks for the decoder's own state). */

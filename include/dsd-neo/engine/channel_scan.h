@@ -6,6 +6,7 @@
 #define DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -42,9 +43,20 @@ int dsd_engine_channel_scan_service_sync(dsd_opts* opts, dsd_state* state);
  * the monitor: NULL arguments, no active scan, not RTL input, or a digital configured family. A paused scan
  * (dsd_state::lcn_scan_paused, no resume pending; issue #671) is not active: its pause already left the row, so its
  * leave only drops the list state the pause kept, and ends no call, resets no acquisition and asks the monitor for
- * nothing of the manual session. The interactive leaves go through svc_leave_channel_scan(), which records the result
- * for the decoder (issue #578) and then clears the pause. */
+ * nothing of the manual session. A running untyped list of the user's own (issue #644 B-3) has no scope, yet its leave
+ * ends its calls, and changes nothing else (its rows ran the configured settings); a caller that stops the scan keeps
+ * scanner_mode and the row keys until after the leave, so the calls end under the row heard and its keys. An entry
+ * waiting on its row's landing is cancelled, and an entry hold goes with the scan (lcn_scan_hold and its mark off;
+ * issue #644), while an ordinary hold stays as it always has. The interactive leaves go through
+ * svc_leave_channel_scan(), which records the result for the decoder (issue #578) and then clears the pause. */
 int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
+/** End the calls of a running -Y list of the user's own, typed or untyped, now, as its leave would (issue #644): for a
+ * caller about to change what names, keys or judges them (a config apply that turns the scan off suspends a typed row's
+ * scope, writes its own keys and policy and takes the scanner flag down before the leave runs). The calls commit under
+ * the row heard and whatever row settings are in force. 1 when it ended them; 0 with no such list running (a paused
+ * one, a resume still pending, learned channels only, a trunk scan), when it does nothing. Decoder thread, under the
+ * P25 SM tick guard a guarded command holds. */
+int dsd_engine_channel_scan_end_running_calls(dsd_opts* opts, dsd_state* state);
 /** Pause a running -Y scan, typed or untyped (issue #671): the operator takes the tuner and the scan waits for a
  * resume. The calls heard end and commit under the row on air's label, keys and policy, whatever the list (an
  * untyped one has no scope); with @p in_place (no tune follows: a tuner release) the carrier's decoding is forgotten
@@ -52,12 +64,54 @@ int dsd_engine_channel_scan_leave(dsd_opts* opts, dsd_state* state);
  * passband come back as at a leave, and the row keys leave. Kept: the list, the cursor (lcn_freq_roll) and the row
  * heard (issue #666), the avoids, the session edits and their session. Dropped: a row tune staged or pending (nothing
  * commits after the pause, lcn_scan_session moves), a retry, a commit owed, the row on air and its staged options and
- * keys, and an operator hold. Leaves scanner_mode 0, lcn_scan_paused and operator_tuned 1. Also takes back a resume
+ * keys, an operator hold and its entry mark, and an entry waiting on its row's landing (issue #644). Leaves
+ * scanner_mode 0, lcn_scan_paused and operator_tuned 1. Also takes back a resume
  * still pending. Nothing to do (0) without a -Y scan running or resuming (dsd_channel_scan_owns_tuner()). Returns
  * what the return to the configured profile asked of the monitor, as dsd_engine_channel_scan_leave() does; the
  * interactive pause goes through svc_pause_channel_scan(). Safe under the P25 SM tick guard: nothing under it takes
  * the guard its caller holds. Decoder thread. */
 int dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place);
+
+/** Start a stopped -Y scan (`y`; issue #644 B-4): the calls heard so far end and commit under the attribution they
+ * began with (the operator's tuner after a manual tune, no row), then the scan owns the tuner: scanner_mode 1 and
+ * operator_tuned 0, so the calls heard next are the scan's, and frontends show a scan, not a manual session. The scan's
+ * first step tunes as any timed step does. With no list of the user's own (dsd_state_trunk_lcn_user_list_present())
+ * the scan never moves the receiver: only scanner_mode is set, no call ends and operator_tuned stays as it is until
+ * the scan first lands a row (every landing clears it, after the boundary has ended the operator's calls). A
+ * paused scan, or one whose resume is pending, is refused (nothing changes): it resumes through
+ * dsd_engine_channel_scan_resume(). A Next or Previous walk off the scan still waiting on its tune (issue #644) becomes
+ * the scan's own walk, with no tune of the start's: its landing commits its row, and its failure or drop follows the
+ * scan's walk rules (dsd_engine_channel_scan_walk_row()), so the row heard, a hold kept across the stop and the
+ * receiver agree. A walk the scan cannot take as its own (a typed list's, whose rows land with settings the walk never
+ * tuned; one to a row rewritten or a list replaced since) refuses the start, with the reason on the status line, and
+ * nothing changes. An ordinary hold kept across the stop stays only while the receiver's centre (the RTL front end's
+ * cached centre, else the frequency last sent to a rigctl peer) is the frequency of the row it holds, or the start took
+ * a walk as its own; otherwise the scan starts unheld and its next timed step tunes a row. Under the P25 SM tick guard
+ * the guarded scanner commands hold. Decoder thread.
+ *
+ * @return 0 when the scan started, -1 when it was refused. */
+int dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state);
+
+/** The radio stream is about to stop (issue #644). The stop fails a typed row's request still pending; one that can
+ * still land (pending, or already landed and not yet serviced) is noted, with the source of the stream that stops, for
+ * the reopen that follows (dsd_engine_channel_scan_stream_reopened()). Nothing else changes. Decoder thread, before the
+ * stream stops. */
+void dsd_engine_channel_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state);
+
+/** The stream a restart stopped opened again (@p opened 1), or did not (0) (issue #644). The attempt the stop noted,
+ * still the scan's, lands when the new stream opened on the same source, not an I/Q replay, with the centre its row's
+ * frequency: the next service takes its request as landed whatever the stop published, so the row commits by its own
+ * path (its settings, a resume's resume, an entry's hold), or, gone out of date, notes the move as any landing does.
+ * Otherwise the note goes, and the stop's failure ends the attempt as before. Decoder thread, right after the restart's
+ * start, or, when that start failed, after the start of the recovery that follows it. */
+void dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
+
+/** A config turns a stopped -Y scanner on over a list of the user's own (issue #644), before scanner_mode is set: a walk
+ * off the scan still pending becomes the scan's own (dsd_engine_manual_tune_adopt_walk()), as at
+ * dsd_engine_channel_scan_start(), and the ordinary hold kept across the stop is kept by the same rule. A walk it cannot
+ * take (a typed list's, a row rewritten since), which a config cannot refuse, lets that hold go: the scan runs unheld
+ * and its next timed step tunes a row of its own. Decoder thread, under the P25 SM tick guard. */
+void dsd_engine_channel_scan_config_start(const dsd_opts* opts, dsd_state* state);
 
 /** dsd_engine_channel_scan_resume() results. */
 enum {
@@ -83,6 +137,64 @@ enum {
  * line. Safe under the P25 SM tick guard the guarded scanner commands hold: nothing under it takes the guard again.
  * Decoder thread. */
 int dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state);
+
+/** Send the running -Y scan to @p row and hold it there (issue #644 D1): the row a frequency typed by hand picked
+ * (dsd_engine_scan_entry_match()). Only a row a step can land on: one with a frequency, not avoided, and not an analog
+ * row skipped at every visit for its width; on an untyped list, whose run of rows on one frequency is one channel, not
+ * a row of a run whose first row is avoided, unless that row is confirmed on air (as the match rules). Any other row,
+ * and a scan that is not running (paused or a resume pending: see dsd_engine_channel_scan_resume_at(); stopped; under a
+ * trunk scan; no list of the user's own), is REFUSED, and nothing changes.
+ * - A row confirmed on air (dsd_engine_channel_scan_row_confirmed()) needs no tune: the hold only (HOLDING).
+ * - A typed list stages the row apart from any row or tune still outstanding, and retires that one only once its own
+ *   tune is taken or moved a backend: a preparation that fails (SETUP_FAILED) or a tune refused or deferred before
+ *   any backend moved (REFUSED, DEFERRED) leaves the scan, its row in flight and an earlier entry as they were.
+ * - An untyped list walks to the row as `L` does (dsd_engine_channel_scan_walk_row(): both front ends, the row
+ *   committed on its confirmed landing); a refusal or deferral before any leg moved changes nothing either (a
+ *   refusal its RTL leg answered still lets go of a tune noted before it, as Next's does).
+ * - Either way, a refusal or deferral before any backend moved keeps the row confirmed on air confirmed: the receiver
+ *   is still on it. Only a tune taken, or a leg that moved, forgets that landing.
+ * - A refusal after a leg moved is the step's: the outgoing calls end, a refusal passes the row (the cursor past it).
+ * The hold (lcn_scan_hold) and its entry mark (lcn_scan_entry_hold) are set on the row's confirmed landing only: at
+ * once (HOLDING), or when the tune outstanding (PENDING) lands while the entry is still the one in force. Another
+ * step, Next, Previous or an avoid's step, `Y` (dsd_engine_channel_scan_entry_cancel()), a later go-to that is taken, a
+ * pause and a stop cancel it, and so does that tune's failure. A go-to from a row an entry holds takes that hold and
+ * its mark once its tune is taken or a backend moved, so a tune that fails late leaves the scan unheld; one that moved
+ * nothing leaves them, and an ordinary hold carries over, as Next carries it. The row lands as a step's does, so the
+ * scan continues from it. Under the P25 SM tick guard the scanner commands hold. Decoder thread. */
+dsd_scan_goto_result dsd_engine_channel_scan_goto_row(dsd_opts* opts, dsd_state* state, int row);
+
+/** Resume the paused -Y scan at @p row and hold it there (issue #644 D1), as dsd_engine_channel_scan_resume() resumes
+ * on the row it picks: the same row rule as dsd_engine_channel_scan_goto_row() (else REFUSED, nothing changed), the
+ * manual session's calls ended, a new scan session, and failures that leave it paused with the reason on the status
+ * line (a typed attempt undone through the pause hook). HOLDING once the row landed, PENDING while its tune is
+ * outstanding (the scan is resume-pending until it lands, then runs, held), REFUSED, DEFERRED or SETUP_FAILED when it
+ * stays paused. Over a resume still pending: a typed list stages the row apart, so a preparation that fails or a tune
+ * refused or deferred before any backend moved keeps that resume as it was; once the row's tune is taken it replaces
+ * that resume, and a failure after a backend moved leaves the scan paused. An untyped list tunes the row as its resume
+ * does: landed, the scan runs, held; pending, it replaces that resume (a new scan session its tune is rebound to, so
+ * the earlier resume's tune, whatever it comes to, is no longer the scan's); refused or deferred before any leg moved,
+ * that resume stands (a refusal its RTL leg answered lets go of the earlier tune, whose drop then ends that resume);
+ * after a leg moved, the scan stays paused. Under the P25 SM tick guard the scanner commands hold. Decoder thread. */
+dsd_scan_goto_result dsd_engine_channel_scan_resume_at(dsd_opts* opts, dsd_state* state, int row);
+
+/** Release an entry hold (`y`, SCAN_RESUME; issue #644 D1): the hold and its entry mark go, and the dwell, visit and
+ * voice-gate windows start again as at `Y` off, so the row gets a full hangtime and the scan continues from it. An
+ * entry still waiting on its row's landing is cancelled too. Nothing else without an entry hold: an ordinary hold
+ * stays. Decoder thread. */
+void dsd_engine_channel_scan_entry_release(dsd_opts* opts, dsd_state* state);
+
+/** `Y` over an entry (issue #644): an entry still waiting on its row's landing is cancelled, so its landing holds
+ * nothing, and the entry mark goes; the hold itself is the caller's to toggle. Decoder thread. */
+void dsd_engine_channel_scan_entry_cancel(dsd_state* state);
+
+/** A Next, Previous or avoid's step on an untyped list (issue #644): an entry still waiting on its row's landing is
+ * cancelled, whether or not the step lands anywhere, so its landing holds nothing. A committed entry hold and its mark
+ * stay, as a step keeps them. Decoder thread. */
+void dsd_engine_channel_scan_entry_supersede(dsd_state* state);
+
+/** Whether an entry waits on its row's landing in this scan session (a go-to or resume-at that is PENDING): its tune
+ * has neither landed nor failed, and nothing has cancelled it. 0 for a NULL @p state. Decoder thread. */
+int dsd_engine_channel_scan_entry_pending(const dsd_state* state);
 
 /** Count the analog (nfm or am) rows of the loaded channel map whose width the RTL front end refuses at DSP rate
  * @p dsp_rate_hz (issue #526): the row's own width of its kind (--nfm-bandwidth-hz, --am-bandwidth-hz), else the
@@ -122,14 +234,67 @@ int dsd_engine_channel_scan_reachable_rows(const dsd_opts* opts, const dsd_state
  * which a failed or pending start does not move; otherwise, and before a typed list's first landing, the row heard
  * (dsd_state_lcn_heard_row()), which a placeholder park does not move. -1 with none, and for a NULL state. */
 int dsd_engine_channel_scan_on_air_row(const dsd_state* state);
-/** A manual step of the untyped -Y list (Next or Previous, `C`/`J`, or the step an avoid takes; issue #666) tuned the
- * receiver to @p row, for an analog call on audio input (issue #667 D9). With @p landed (the tune was confirmed: a
- * rigctl peer took it, an RTL tune completed), called after the step's carrier boundary, a call is then heard on the
- * row's frequency, as after the scan's own step; a placeholder row names none. Without it (the tune was refused, or is
- * still outstanding) the scan's landing is forgotten: the receiver may be anywhere. Only while the untyped -Y scan
- * runs (scanner_mode 1, no trunk scan, no typed list, whose manual step notes its own landing); nothing for a scan
- * paused or resuming, a row out of range or NULL arguments. Decoder thread. */
-void dsd_engine_channel_scan_note_manual_step(const dsd_opts* opts, dsd_state* state, int row, int landed);
+/** Whether the -Y row on air (dsd_engine_channel_scan_on_air_row()) is one the operator avoided (issue #644): the `b`
+ * step off it was refused or failed late, or it was avoided while a tune elsewhere had not landed. One read while
+ * nothing is avoided. 0 for a NULL state. */
+int dsd_engine_channel_scan_on_avoided_row(const dsd_state* state);
+/** Whether the operator hold (dsd_state::lcn_scan_hold, `Y`) keeps the -Y scan on the row on air: held, and the row is
+ * not one the operator avoided (issue #644). Every rule an operator hold suspends reads this: the timed step, the
+ * receive-policy leave and its frame-loop yields, the voice gate, the per-visit cap and the timing view. A hold over an
+ * avoided row suspends none of them, so the scan leaves it; the hold stays and keeps the row it lands on. */
+int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);
+/** Whether a -Y scan sitting on an avoided row (dsd_engine_channel_scan_on_avoided_row()) steps off it now (issue
+ * #644): ahead of its carrier, its dwell and an operator hold, as a trunk scan's departure goes. Only with somewhere to
+ * go (a row a step can land on: dsd_engine_channel_scan_reachable_rows()), no tune of the scan's still in flight (a
+ * typed row's request or retry, an untyped step's or walk's), and at the step cadence: not before
+ * dsd_state::lcn_avoid_depart_m, which every step taken off an avoided row moves on
+ * (dsd_engine_channel_scan_departure_note()). With nowhere to go when it is due, it answers 0 and moves that time on
+ * as a step does, so the rows are counted once a cadence and not on every frame; a row that becomes reachable is left
+ * for at the next cadence. The frame loop yields for it while a carrier holds sync, so the no-carrier step takes it;
+ * that step's timing rule answers due for it too. 0 for NULL arguments, without -Y running, under a trunk scan, and
+ * without a list of the user's own. Decoder thread; one read while nothing is avoided. */
+int dsd_engine_channel_scan_departure_due(const dsd_opts* opts, dsd_state* state, double now_m);
+/** A step off an avoided row is being taken at @p now_m (decode monotonic clock): the next departure waits the step
+ * cadence (-t, at least 1 s), whatever this one comes to (issue #644). */
+void dsd_engine_channel_scan_departure_note(const dsd_opts* opts, dsd_state* state, double now_m);
+
+/** dsd_engine_channel_scan_walk_row() results. */
+typedef enum {
+    DSD_SCAN_WALK_LANDED = 0,   /**< Every front end took the row: it is committed (see below). */
+    DSD_SCAN_WALK_PENDING = 1,  /**< The RTL tune timed out: noted (DSD_MANUAL_TUNE_LCN_CYCLE); nothing commits yet. */
+    DSD_SCAN_WALK_REFUSED = 2,  /**< A front end refused the row (or none is configured): passed or kept for a retry. */
+    DSD_SCAN_WALK_DEFERRED = 3, /**< The RTL tune was deferred behind another owner's: nothing changes. */
+} dsd_scan_walk_result;
+
+/** The walk's own row rules, after its tune of @p row in direction @p dir (1 Next, -1 Previous; issue #666) ended:
+ * @p landed 1 (the cursor moves past the row, which becomes the row heard) or 0, refused (going back, the row is the
+ * one the next Previous retries and the cursor stays; going forward, the cursor moves past it, so a row the tuner never
+ * takes cannot hold Next on it). A refusal keeps a recorded row heard, and with none the row heard is none rather than
+ * the row before the cursor. The scan's visit timers read any cursor move as a retune, which a refusal is not, so each
+ * one that had seen the cursor is told the new one and keeps its windows; one that had not is left alone. A deferral
+ * changes nothing, so it never comes here. Shared by the walk the -Y scan owns and the one app-control makes off any
+ * scan (issue #644). Nothing for a NULL @p state or a row out of range. Decoder thread. */
+void dsd_engine_channel_walk_note_outcome(dsd_state* state, int row, int dir, int landed);
+
+/** Walk the running untyped -Y scan (scanner_mode 1, no trunk scan, a list without modes) to @p row in direction
+ * @p dir (1 Next, -1 Previous): the operator's `L`/`J` (issue #666), and a go-to of a chosen row (issue #644). It tunes
+ * as the scan's own step does, every configured front end, rigctl first, then RTL, and commits nothing it has not
+ * confirmed (issue #644 B-2). The row on air is forgotten at once (dsd_engine_scan_landing_forget()).
+ * - LANDED: the SCAN_STEP carrier boundary ends the calls of the row left, under its label and keys, then the row is
+ *   installed as a step's is: the cursor past it, the row heard, its keys, the analog reset, the landing the scan
+ *   confirmed, fresh scan clocks.
+ * - PENDING: the rigctl leg (if any) moved, the RTL tune timed out. Noted (dsd_engine_manual_tune_note_lcn_cycle());
+ *   the cursor, the row heard, the keys and the clocks stay. The engine loop's poll (dsd_engine_scan_untyped_poll())
+ *   then commits the row as above when it lands while the scan is still that one (same session and list, the row on the
+ *   frequency tuned), applies the refusal rules when it fails late (dsd_engine_channel_walk_note_outcome()), and
+ *   changes nothing when it is dropped; a landing after the scan changed only runs the boundary of the move. Meanwhile
+ *   the timed step waits, and the next walk goes on from this row (dsd_engine_manual_tune_pending_row()).
+ * - REFUSED: the refusal rules for @p dir. A rigctl leg that moved before the RTL leg failed already ran the outgoing
+ *   boundary and the analog reset: the receiver left the row on air.
+ * - DEFERRED: nothing but a rigctl move's boundary, as above; the next press tries the same row.
+ * Placeholder (0 Hz) rows are the caller's to skip. Takes no P25 SM tick guard (conventional scanning, trunking off).
+ * Decoder thread. */
+dsd_scan_walk_result dsd_engine_channel_scan_walk_row(dsd_opts* opts, dsd_state* state, int row, int dir);
 /**
  * @brief Edit one field of a typed -Y row's own settings until the scanner leaves ("this channel", issue #518).
  *

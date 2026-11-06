@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -2085,17 +2085,21 @@ is delayed.
   channel width and tone policy, and a trunk-scan target's tuner gain, can be changed for the rest of the session from
   the terminal's and Qt/Android's "this channel" editors, without touching the list or the configured defaults; see
   [Live per-channel edits](trunk-scan.md#runtime-behavior).
-  A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
-  row, in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
-  `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving or
-  pausing `-Y` (scanner toggle, trunk set, tuner release, a frequency entry) hands the foreground keyring back to the
-  global keys. A row may not mix direct and file sources.
+  A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode row,
+  in Call Info, and on the event history rows recorded while it is tuned. A map can load a per-row key set from
+  `keys_hex_csv`/`keys_dec_csv`, or embed `-b`/`-H` equivalents in `single_key_dec`/`single_key_hex`; leaving or pausing
+  `-Y` (scanner toggle, trunk set, tuner release, a frequency entry that is not one of its rows) hands the foreground
+  keyring back to the global keys. A row may not mix direct and file sources. Stopping `-Y` with `y` ends the calls
+  heard on the row on air under its name and keys before they go; starting it with `y` ends the calls heard before under
+  the name they had (after a manual tune, the operator's), and from then on the calls heard are the scan's.
   While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
   rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) or back to the previous one (`J`,
   the same rows backward; the scan then carries on forward from there), list the avoided rows and put one back, and
-  clear all avoids; see `docs/ui-terminal.md`. The avoids outlive `-Y`: with it stopped the DMR and NXDN
-  control-channel hunts under `-T` still skip those rows, and Trunking > Avoids still lists them, puts them back and
-  clears them.
+  clear all avoids; see `docs/ui-terminal.md`. A hold never keeps the scan on an avoided channel: when the step `b` asks
+  for fails, the scan, held or not, moves on promptly, even while the channel's carrier is heard, retrying at the step
+  interval (`-t`, at least a second) while nothing takes it, and a hold then holds the channel it lands on. The avoids
+  outlive `-Y`: with it stopped the DMR and NXDN control-channel hunts under `-T` still skip those rows, and Trunking >
+  Avoids still lists them, puts them back and clears them.
   Voice-only scan: `--scan-voice-only` steps on unless decoded voice frames hold the row. `--scan-voice-qualify-ms
   <100..600000>` (default `1000`) is the window after sync in which voice must appear or the scan moves on;
   `--scan-voice-hold-ms <100..600000>` (default `2000`) is the time to stay after the last voice frame. Encrypted
@@ -2140,26 +2144,47 @@ is delayed.
   decoder and keys. Manual `L` and `J` skip zero-frequency placeholders, while automatic scanning continues to park on
   them for the configured dwell.
   Pausing for a manual tune (issue #671): a frequency you enter wins over the scan, typed list or untyped, and pauses it
-  rather than ending it. That is the terminal's frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**
-  and the API's `rtl_set_freq`; a tuner release (Qt/Android **Explore from here**, the API's `tuner_release`) pauses the
-  scan the same way without a tune. Once the tune is accepted (applied, or still pending on the tuner) the row on air's
-  calls end under its name and keys, the configured decoder, receive settings and keys come back, and the receiver stays
-  on your frequency (`Applied: frequency -> 154.000000 MHz; scan paused`); a refused or deferred tune changes nothing.
-  With a rigctl peer under a typed row, the peer takes your frequency with the row's mode and passband, and the pause
-  then puts the configured ones back. The list, its place, the avoids and live per-channel edits (not a `Y` hold) wait
-  for `y` (Qt/Android **Resume scan**, the API's `scan_resume`), which carries on with the row the scan would have
-  stepped to next (`Scan resumed`, or `Resuming scan: waiting for the tune` until that row's tune lands; calls heard
-  meanwhile stay the operator's). A resume with no row to tune, or whose tune fails, leaves the scan paused and says
-  why. While a resume waits on its row, a frequency entry or a spectrum tap takes the receiver back and the scan stays
+  rather than ending it, unless it is one of the list's rows (next paragraph). That is the terminal's frequency entry
+  (`=`, or Input > `Frequency...`), Qt/Android **Go to** and the API's `rtl_set_freq`; a tuner release (Qt/Android
+  **Explore from here**, the API's `tuner_release`) pauses the scan the same way without a tune. Once the tune is
+  accepted (applied, or still pending on the tuner) the row on air's calls end under its name and keys, the configured
+  decoder, receive settings and keys come back, and the receiver stays on your frequency
+  (`Applied: frequency -> 154.000000 MHz; scan paused`); a refused or deferred tune changes nothing. With a rigctl peer
+  under a typed row, the peer takes your frequency with the row's mode and passband, and the pause then puts the
+  configured ones back. The list, its place, the avoids and live per-channel edits (not a `Y` hold) wait for `y`
+  (Qt/Android **Resume scan**, the API's `scan_resume`), which carries on with the row the scan would have stepped to
+  next (`Scan resumed`, or `Resuming scan: waiting for the tune` until that row's tune lands; calls heard meanwhile stay
+  the operator's). A resume with no row to tune, or whose tune fails, leaves the scan paused and says why. While a
+  resume waits on its row, a frequency entry (not of a row) or a spectrum tap takes the receiver back and the scan stays
   paused (`; scan paused`), and so does a Signal search start that goes on (it says nothing of the scan; one refused
-  leaves the resume waiting); a stream reopen that drops the row's tune does the same, saying `Scan stays paused: the
-  resume to ... was interrupted` (a typed list's row, whose tune the stop fails: `tune to ... failed`). While paused,
-  another entry or a spectrum tap only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first`, while
-  putting avoided rows back (one, or all with "Clear avoids") still works, since it never tunes. Turning trunking on,
-  an input switch that runs, or a channel-map import, clear or RadioReference import that replaces the list stops the
-  paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
+  leaves the resume waiting); a stream reopen that drops the row's tune does the same, saying
+  `Scan stays paused: the resume to ... was interrupted` (a typed list's row, whose tune the stop fails:
+  `tune to ... failed`). While paused, another entry (not of a row) or a spectrum tap only tunes; `Y`, `b`, `J` and `L`
+  answer `Scan paused: resume it first`, while putting avoided rows back (one, or all with "Clear avoids") still works,
+  since it never tunes. Turning trunking on, an input switch that runs, or a channel-map import, clear or RadioReference
+  import that replaces the list stops the paused scan; a save writes `[trunking] scanner = true` for a paused scan, so
   the next start runs it. The terminal shows the pause as `| Scan Mode: PAUSED (y resumes)`, and the Trunking menu's `y`
   row reads `[Paused]`.
+  Typing a row's frequency (issue #644): a frequency entry (`=`, Qt/Android **Go to**, the API's `rtl_set_freq`) that is
+  exactly a row's `frequency_hz` does not pause the scan: the scan goes to that row and holds it there, with the row's
+  mode, options, keys, name and receive settings, as on any visit. A running scan steps to it; a paused one (or one
+  whose resume is still waiting) resumes at it; a scan already on that row only holds it. The status line says
+  `Holding: Marion` (`Going to Marion: waiting for the tune` until the tune lands, `Resuming scan at Marion: ...` over a
+  paused list), naming a row by its `name`, else `row N`. With several rows on the frequency, the one on air wins, else
+  the first in the file; the message adds `(1 of 2)`, and `L` and `J` reach the others. In a list with neither `mode`
+  nor `options`, rows next to each other on one frequency are one channel, as `L` and `J` treat them: the entry takes
+  the one the scan is on, else the first. When that first row is avoided the entry is a plain one (unless the scan is
+  already on another row of the run), though the timed step still visits the others. The Scan Mode row reads
+  `HOLD (y continues)`: `y` (the API's `scanner_toggle` or `scan_resume`) lets the hold go and the scan carries on from
+  that row, where with an ordinary hold it stops `-Y`; `Y` and Qt/Android **Hold** let it go too. `L`, `J` and `b` keep
+  the hold on the row they move to, and any pause or stop ends it. A row that is avoided or whose width the input cannot
+  take is not gone to: the entry pauses the scan as above, and its message ends with the reason (`; Marion is avoided`).
+  Only a typed frequency does this: a spectrum tap and a tuner release keep the configured settings. From the terminal,
+  a row's frequency gets the configured settings only once `-Y` is stopped, since `y` stops a running list rather than
+  pause it in place. After the radio stream restarts (a reconnect, a config that reopens the input), the scan is not
+  sure of the row on air until its next tune, so typing that row's frequency tunes it again, which ends a call in
+  progress. Learned channels, a map used under `-T` and a stopped `-Y` list match nothing. Under `--trunk-scan` a
+  target's frequency does the same: see [Typing a target's frequency](trunk-scan.md#runtime-behavior).
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
@@ -2171,6 +2196,20 @@ is delayed.
     extension. A ninth list, the same path twice, a path of 1024 bytes or more and a start with every list off are
     refused. Lists on the command line replace a config file's lists as a whole. How the lists behave and are switched
     while scanning: [Several lists](trunk-scan.md#several-lists).
+  - Start held on one target: `--trunk-scan-hold <target-id>` (also `--trunk-scan-hold=<target-id>`) starts the scan
+    parked on the target whose `id` is the one given, and holds it there as typing that target's frequency does: the
+    hold comes once the target's park lands (on its learned control channel first, for a trunked target), and `y`
+    continues the scan from it. A park that is refused, deferred or fails later leaves the scan running unheld, on to
+    the next target, and the status line names the target once. Ids are unique across every list, so the id names one
+    target in whichever list holds it. The start is refused, naming the id and the reason, when no target has the id,
+    when the target's list starts off (`--trunk-scan-off`, or `lists_off` in a config), and when the target's width
+    does not fit the input, for example `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not
+    fit the 16 kHz DSP rate)`. Without a trunk scan (`--trunk-scan`, or a config's `[trunk_scan]` lists) the option
+    is refused, saying why none runs: an option on this command line turned off the config's scan, or the config's
+    lists are off (`enabled = false`). The id is taken whatever it reads like, so an id that starts with `-` works
+    in both spellings. The start logs whether the target is held, holds once its tune lands, or was refused or
+    deferred; a hold that comes once the tune lands shows as `HOLD (y continues)` on the Trunk Scan row, with no
+    `Holding:` message. It has no INI key and is never saved: a start that wants the hold gives it again.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional rows,
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
@@ -2320,7 +2359,8 @@ A failed or deferred request leaves the previous channel and calls intact; retry
 receive the configured CC acquisition grace after hardware completion. If completion fails, hunting retries the
 selected channel. Old site candidates are discarded; disk candidates require a freshly learned site and its own
 cache file. Under `--trunk-scan` a frequency entry selects no control channel: it pauses the scan on the frequency
-entered (see [Runtime Behavior](trunk-scan.md#runtime-behavior)), and `y` resumes it.
+entered, and `y` resumes it, unless it is a target's frequency, which holds the scan on that target (see
+[Runtime Behavior](trunk-scan.md#runtime-behavior)).
 
 ### Startup control-channel hunt
 

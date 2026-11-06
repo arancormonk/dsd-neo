@@ -16,9 +16,9 @@
 #ifndef DSD_NEO_SRC_UI_QT_SCAN_ENTRY_NAME_H_
 #define DSD_NEO_SRC_UI_QT_SCAN_ENTRY_NAME_H_
 
-#include <QLatin1Char>
 #include <QMap>
 #include <QString>
+#include <utility>
 
 namespace dsd_qt {
 
@@ -32,18 +32,24 @@ scan_entry_protocol_for_flag(const QString& decodeFlag) {
     return protocols.value(decodeFlag.simplified());
 }
 
+/** @p protocol (a scan-list protocol id) as the scan list editor names it (ScanListScreen.qml protocolLabels); an id
+    it does not name, upper-cased. */
+inline QString
+scan_entry_protocol_label(const QString& protocol) {
+    static const QMap<QString, QString> labels{{"p25", "P25"},     {"dmr", "DMR"},          {"nxdn48", "NXDN48"},
+                                               {"nxdn", "NXDN96"}, {"nfm", "NFM (analog)"}, {"am", "AM (analog)"}};
+    return labels.value(protocol, protocol.toUpper());
+}
+
 /** @p name when it has one, else @p protocol (a scan-list protocol id) and @p freqMhz as the scan list shows them. */
 inline QString
 scan_entry_name(const QString& name, const QString& protocol, const QString& freqMhz) {
-    const QString named = name.trimmed();
+    QString named = name.trimmed();
     if (!named.isEmpty()) {
         return named;
     }
-    // The scan list editor's protocol names (ScanListScreen.qml protocolLabels).
-    static const QMap<QString, QString> labels{{"p25", "P25"},     {"dmr", "DMR"},          {"nxdn48", "NXDN48"},
-                                               {"nxdn", "NXDN96"}, {"nfm", "NFM (analog)"}, {"am", "AM (analog)"}};
     const QString mhz = freqMhz.trimmed();
-    const QString label = labels.value(protocol, protocol.toUpper());
+    QString label = scan_entry_protocol_label(protocol);
     if (mhz.isEmpty()) {
         return label;
     }

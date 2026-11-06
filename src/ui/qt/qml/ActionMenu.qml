@@ -7,8 +7,9 @@ ModalSheet {
     id: menu
 
     property string title: ""
-    // Each action has text and optional destructive, enabled, description and
-    // objectName fields. Callers may carry a key for routing conditional rows.
+    // Each action has text and optional destructive, enabled, description,
+    // accessibleName (what a screen reader says for text) and objectName
+    // fields. Callers may carry a key for routing conditional rows.
     property var actions: []
     signal triggered(int index)
     signal cancelled
@@ -53,7 +54,8 @@ ModalSheet {
                 text: row.modelData.text
                 textColor: row.modelData.destructive ? Theme.magenta : Theme.buttonSecondaryText
                 enabled: row.modelData.enabled !== false
-                accessibleName: text + (row.modelData.description ? ". " + row.modelData.description : "")
+                accessibleName: (row.modelData.accessibleName || text)
+                    + (row.modelData.description ? ". " + row.modelData.description : "")
                 onClicked: menu.activate(row.index)
             }
             // Read in the action's own name above (issue #782).

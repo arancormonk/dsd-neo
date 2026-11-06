@@ -473,6 +473,7 @@ bootstrap_apply_trunk_scan_pre_cli_gating(dsd_opts* opts, int argc, char** argv,
     }
     if (bootstrap_cli_disables_inherited_trunk_scan(argc, argv, cfg_path_positional_ini)) {
         opts->trunk_scan_enabled = 0;
+        opts->trunk_scan_off_by_cli = 1;
     }
 }
 

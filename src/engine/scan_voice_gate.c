@@ -304,7 +304,7 @@ dsd_scan_voice_gate_should_step(const dsd_opts* opts, const dsd_state* state, do
     if (!dsd_scan_voice_gate_owns_step(opts, state)) {
         return 0;
     }
-    if (state->lcn_scan_hold) {
+    if (dsd_engine_channel_scan_hold_keeps_row(state)) {
         return 0;
     }
     if (state->scan_voice_gate_voice_m >= 0.0) {
@@ -340,10 +340,11 @@ scan_visit_scanner_owns(const dsd_opts* opts) {
 
 /* While this holds the cap neither counts down nor expires: the operator's row hold, and a
  * talkgroup hold on the very call being followed -- cutting that call short is exactly what the
- * operator asked the hold to prevent. */
+ * operator asked the hold to prevent. A row hold over a row the operator avoided keeps nothing
+ * (dsd_engine_channel_scan_hold_keeps_row(), issue #644). */
 static int
 scan_visit_suspended(const dsd_state* state) {
-    return state->lcn_scan_hold || dsd_scan_tg_hold_call_active(state);
+    return dsd_engine_channel_scan_hold_keeps_row(state) || dsd_scan_tg_hold_call_active(state);
 }
 
 /*
@@ -564,11 +565,13 @@ dsd_engine_scan_y_timing_tick(const dsd_opts* opts, dsd_state* state, double now
         /* No channel map of the user's (issue #697): nothing steps, so nothing counts down; a channel learned over the
            air is no row to step to. */
         report.reason = (uint8_t)DSD_SCAN_STAY_NO_LIST;
-    } else if (state->lcn_scan_hold) {
+    } else if (dsd_engine_channel_scan_hold_keeps_row(state)) {
         /* The rotation is parked by the operator: the window is paused, not expired.
          * dsd_scan_voice_gate_should_step() returns 0 here and the no-carrier step
          * returns early, so publishing a deadline would count down to a hop that the
-         * release, not the clock, actually causes. */
+         * release, not the clock, actually causes. A hold over a row the operator avoided
+         * keeps nothing (issue #644): the row reports the window it leaves by, as an
+         * unheld one does. */
         report.reason = (uint8_t)DSD_SCAN_STAY_MANUAL_HOLD;
     } else if (dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_REJECTED) {
         /* Traffic the tone policy rejected (issue #527) holds the row only while the list has nowhere else to go,

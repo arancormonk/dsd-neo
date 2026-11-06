@@ -176,11 +176,16 @@ scanner_start_refused_for_next_start(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* `y`: a paused scan resumes; a running trunk scan pauses where it is (it has no stop at runtime); a running -Y scan
-   stops, and a stopped one starts (issue #671). A pending trunk-scan resume is running: `y` pauses it again. */
+   stops, and a stopped one starts (issue #671). A pending trunk-scan resume is running: `y` pauses it again. A running
+   scan that holds the row a typed frequency picked continues instead, and one still going there waits (issue #644):
+   `y` never pauses a trunk scan or stops -Y over an entry. */
 static int
 ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (!state) {
+        return TRUNK_ACTION_DONE;
+    }
+    if (svc_scan_entry_continue(opts, state)) {
         return TRUNK_ACTION_DONE;
     }
     if (opts->trunk_scan_enabled == 1) {
@@ -202,25 +207,37 @@ ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     if (state->lcn_scan_paused || state->lcn_scan_resume_pending) {
         return scan_resume_channel(opts, state);
     }
-    const int was_scanner = opts->scanner_mode ? 1 : 0;
-    if (!was_scanner && scanner_start_refused_for_next_start(opts, state)) {
-        return TRUNK_ACTION_REFUSED;
+    if (!opts->scanner_mode) {
+        if (scanner_start_refused_for_next_start(opts, state)) {
+            return TRUNK_ACTION_REFUSED;
+        }
+        /* The calls heard so far end as they began, the operator's or trunking's, then the tuner is the scan's (issue
+           #644 B-4). */
+        if (dsd_engine_channel_scan_start(opts, state) != 0) {
+            return TRUNK_ACTION_REFUSED;
+        }
+        opts->trunk_enable = 0;
+        return TRUNK_ACTION_DONE;
     }
-    opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
-    if (was_scanner) {
-        (void)svc_leave_channel_scan(opts, state);
-        dsd_scan_keys_leave(state);
-    }
+    /* The scanner flag stays on through the leave, so a running untyped list's calls end under the row heard and its
+       keys, which only then go back to the configured ones (issue #644 B-3). */
+    (void)svc_leave_channel_scan(opts, state);
+    dsd_scan_keys_leave(state);
+    opts->scanner_mode = 0;
     return TRUNK_ACTION_DONE;
 }
 
 /* DSD_APP_CMD_SCAN_RESUME: resume whichever scan is paused (issue #671), and only that: a running scan is left as it
-   is, and with no scan paused nothing starts. */
+   is, and with no scan paused nothing starts. A running scan's entry hold is released, as `y` releases it, so the
+   scan continues (issue #644). */
 static int
 ui_handle_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     if (!state) {
+        return TRUNK_ACTION_DONE;
+    }
+    if (svc_scan_entry_continue(opts, state)) {
         return TRUNK_ACTION_DONE;
     }
     if (trunk_scan_is_paused(opts, state)) {

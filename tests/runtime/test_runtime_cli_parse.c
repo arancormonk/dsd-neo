@@ -9259,6 +9259,116 @@ test_trunk_scan_lists_refusals(void) {
     return rc;
 }
 
+/* Issue #644: --trunk-scan-hold names the target a trunk scan starts held on, in either spelling, beside the command
+   line's lists or a config's; which target it is waits for the lists to load (ENGINE_TRUNK_SCAN). */
+static int
+test_trunk_scan_hold_is_stored(void) {
+    int rc = 0;
+    char a1[] = "--trunk-scan", a2[] = "a.csv", a3[] = "--trunk-scan-hold", a4[] = "-county p25";
+    char* words[] = {a1, a2, a3, a4};
+    dsd_opts* opts = NULL;
+    int exit_rc = 0;
+    char err[1024];
+    int parsed = parse_trunk_scan_lists(4, words, NULL, &opts, &exit_rc, err, sizeof err);
+    if (parsed != DSD_PARSE_CONTINUE || !opts || strcmp(opts->trunk_scan_hold_id, "-county p25") != 0) {
+        DSD_FPRINTF(stderr, "hold beside a list: rc=%d id=\"%s\" %s\n", parsed, opts ? opts->trunk_scan_hold_id : "",
+                    err);
+        rc = 1;
+    }
+    free(opts);
+    opts = NULL;
+
+    char b1[] = "--trunk-scan-hold=fire";
+    char* joined[] = {b1};
+    parsed = parse_trunk_scan_lists(1, joined, inherit_two_lists, &opts, &exit_rc, err, sizeof err);
+    if (parsed != DSD_PARSE_CONTINUE || !opts || strcmp(opts->trunk_scan_hold_id, "fire") != 0) {
+        DSD_FPRINTF(stderr, "hold over a config's lists: rc=%d id=\"%s\" %s\n", parsed,
+                    opts ? opts->trunk_scan_hold_id : "", err);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+/* Issue #644: --trunk-scan-hold without a trunk scan is refused, and so are an empty id, a missing one and one that
+   does not fit a target id. */
+static int
+test_trunk_scan_hold_refusals(void) {
+    int rc = 0;
+    static const char k_needs[] =
+        "--trunk-scan-hold needs a trunk scan: give --trunk-scan <targets.csv>, or a config with [trunk_scan] lists";
+    char n1[] = "--trunk-scan-hold", n2[] = "fire";
+    char* alone[] = {n1, n2};
+    rc |= expect_trunk_scan_lists_refused("hold without a trunk scan", 2, alone, NULL, k_needs);
+
+    char y1[] = "-Y", y2[] = "--trunk-scan-hold=fire";
+    char* scanner[] = {y1, y2};
+    rc |= expect_trunk_scan_lists_refused("hold with -Y", 2, scanner, NULL, k_needs);
+
+    char e1[] = "--trunk-scan", e2[] = "a.csv", e3[] = "--trunk-scan-hold=";
+    char* empty[] = {e1, e2, e3};
+    rc |= expect_trunk_scan_lists_refused("empty hold id", 3, empty, NULL, "--trunk-scan-hold requires a target id");
+
+    char m1[] = "--trunk-scan", m2[] = "a.csv", m3[] = "--trunk-scan-hold";
+    char* missing[] = {m1, m2, m3};
+    rc |=
+        expect_trunk_scan_lists_refused("missing hold id", 3, missing, NULL, "--trunk-scan-hold requires a target id");
+
+    const dsd_opts* o = NULL;
+    char long_id[sizeof o->trunk_scan_hold_id + 1U];
+    DSD_MEMSET(long_id, 'x', sizeof long_id - 1U);
+    long_id[sizeof long_id - 1U] = '\0';
+    char l1[] = "--trunk-scan", l2[] = "a.csv", l3[] = "--trunk-scan-hold";
+    char* too_long[] = {l1, l2, l3, long_id};
+    rc |= expect_trunk_scan_lists_refused("hold id too long", 4, too_long, NULL,
+                                          "--trunk-scan-hold target id is too long");
+    /* The longest id a target can have fits. */
+    long_id[sizeof long_id - 2U] = '\0';
+    dsd_opts* opts = NULL;
+    int exit_rc = 0;
+    char err[1024];
+    const int parsed = parse_trunk_scan_lists(4, too_long, NULL, &opts, &exit_rc, err, sizeof err);
+    if (parsed != DSD_PARSE_CONTINUE || !opts || strcmp(opts->trunk_scan_hold_id, long_id) != 0) {
+        DSD_FPRINTF(stderr, "a %zu-byte hold id: rc=%d %s\n", strlen(long_id), parsed, err);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+/* Issue #644: options set up by initOpts() start with no hold, whatever the memory held before. */
+static int
+test_trunk_scan_hold_starts_empty(void) {
+    dsd_opts* opts = (dsd_opts*)malloc(sizeof(dsd_opts));
+    if (!opts) {
+        return 1;
+    }
+    DSD_MEMSET(opts, 0xA5, sizeof *opts);
+    initOpts(opts);
+    const int rc = opts->trunk_scan_hold_id[0] != '\0' || opts->trunk_scan_off_by_cli != 0;
+    if (rc) {
+        DSD_FPRINTF(stderr, "initOpts left a hold id or a scan the command line turned off\n");
+    }
+    free(opts);
+    return rc;
+}
+
+/* Issue #644: --trunk-scan-hold's id may read like an option: the pre-scan for the config one-shots steps over it, in
+   either spelling, so an id "--print-config" is an id, and a hold without a trunk scan is still refused. */
+static int
+test_trunk_scan_hold_id_is_never_an_option(void) {
+    static const char k_needs[] =
+        "--trunk-scan-hold needs a trunk scan: give --trunk-scan <targets.csv>, or a config with [trunk_scan] lists";
+    int rc = 0;
+    char s1[] = "--trunk-scan-hold", s2[] = "--print-config";
+    char* separate[] = {s1, s2};
+    rc |= expect_trunk_scan_lists_refused("hold id --print-config", 2, separate, NULL, k_needs);
+    char j1[] = "--trunk-scan-hold=--print-config";
+    char* joined[] = {j1};
+    rc |= expect_trunk_scan_lists_refused("hold id =--print-config", 1, joined, NULL, k_needs);
+    return rc;
+}
+
 /* Issue #697: a config's lists reach the session through the bootstrap; --trunk-scan-off, like --trunk-scan, takes
    the inherited scan off before the command line's lists replace them. */
 static int
@@ -9315,6 +9425,114 @@ test_bootstrap_trunk_scan_lists_from_config_and_cli(void) {
         rc = 1;
     }
     (void)remove(cfg_path);
+    free(opts);
+    return rc;
+}
+
+/* Run the bootstrap over a config @p ini and the words @p words (at most 3), stderr kept in @p err. */
+static int
+bootstrap_hold_case(const char* ini, int count, const char* const* words, dsd_opts* opts, int* exit_rc, char* err,
+                    size_t err_size) {
+    err[0] = '\0';
+    char cfg_path[1024];
+    if (count > 3 || test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        return -1;
+    }
+    char arg0[] = "dsd-neo", arg1[] = "--config";
+    char text[3][64];
+    char* argv[7] = {arg0, arg1, cfg_path};
+    for (int i = 0; i < count; i++) {
+        DSD_SNPRINTF(text[i], sizeof text[i], "%s", words[i]);
+        argv[3 + i] = text[i];
+    }
+    dsd_test_capture_stderr cap;
+    int boot = -1;
+    if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_hold") == 0) {
+        boot = bootstrap_trunk_scan_lists(3 + count, argv, opts, exit_rc);
+        if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, err, err_size) != 0) {
+            boot = -1;
+        }
+        (void)remove(cap.path);
+    }
+    (void)remove(cfg_path);
+    return boot;
+}
+
+/* Issue #644: under a config's trunk scan, a --trunk-scan-hold id that reads like an option, in either spelling, is
+   the id: it neither turns the config's scan off ("--trunk-scan") nor runs a config one-shot ("--print-config").
+   Without a trunk scan the refusal names why there is none: an option of this command line turned the config's scan
+   off, or the config's lists are off. */
+static int
+test_bootstrap_trunk_scan_hold(void) {
+    (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+    static const char on_ini[] = "[trunk_scan]\n"
+                                 "enabled = true\n"
+                                 "targets_csv = \"a.csv\"\n"
+                                 "targets_csv_2 = \"x.csv\"\n";
+    static const char off_ini[] = "[trunk_scan]\n"
+                                  "enabled = false\n"
+                                  "targets_csv = \"a.csv\"\n";
+
+    static const struct {
+        const char* words[2];
+        int count;
+        const char* id;
+    } ids[] = {
+        {{"--trunk-scan-hold", "--trunk-scan"}, 2, "--trunk-scan"},
+        {{"--trunk-scan-hold=--trunk-scan", NULL}, 1, "--trunk-scan"},
+        {{"--trunk-scan-hold", "--print-config"}, 2, "--print-config"},
+        {{"--trunk-scan-hold=--print-config", NULL}, 1, "--print-config"},
+    };
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    if (!opts) {
+        return 1;
+    }
+    int rc = 0;
+    char err[4096];
+    int exit_rc = 0;
+    for (size_t i = 0; i < sizeof ids / sizeof ids[0]; i++) {
+        const int boot = bootstrap_hold_case(on_ini, ids[i].count, ids[i].words, opts, &exit_rc, err, sizeof err);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || opts->trunk_scan_enabled != 1 || opts->trunk_scan_list_count != 2
+            || strcmp(opts->trunk_scan_hold_id, ids[i].id) != 0) {
+            DSD_FPRINTF(stderr, "hold id %s (%d words): rc=%d exit=%d enabled=%d id=\"%s\"\n%s\n", ids[i].id,
+                        ids[i].count, boot, exit_rc, opts->trunk_scan_enabled, opts->trunk_scan_hold_id, err);
+            rc = 1;
+        }
+    }
+
+    static const struct {
+        const char* ini;
+        const char* words[2];
+        int count;
+        const char* want;
+    } refusals[] = {
+        {
+            on_ini,
+            {"-T", "--trunk-scan-hold=fire"},
+            2,
+            "--trunk-scan-hold needs a trunk scan: an option on this command line (such as -T, -Y or -i) "
+            "turned off the config's trunk scan; drop it, or give --trunk-scan <targets.csv>",
+        },
+        {
+            off_ini,
+            {"--trunk-scan-hold=fire", NULL},
+            1,
+            "--trunk-scan-hold needs a trunk scan: the config's [trunk_scan] lists are off (enabled = false); set "
+            "enabled = true, or give --trunk-scan <targets.csv>",
+        },
+    };
+
+    for (size_t i = 0; i < sizeof refusals / sizeof refusals[0]; i++) {
+        const int boot =
+            bootstrap_hold_case(refusals[i].ini, refusals[i].count, refusals[i].words, opts, &exit_rc, err, sizeof err);
+        if (boot != DSD_BOOTSTRAP_ERROR || exit_rc != 1 || strstr(err, refusals[i].want) == NULL) {
+            DSD_FPRINTF(stderr, "hold refusal %zu: rc=%d exit=%d, wanted \"%s\"\n%s\n", i, boot, exit_rc,
+                        refusals[i].want, err);
+            rc = 1;
+        }
+    }
     free(opts);
     return rc;
 }
@@ -12069,6 +12287,11 @@ main(void) {
     rc |= test_trunk_scan_cli_clears_inherited_channel_map();
     rc |= test_trunk_scan_lists_accumulate_in_order();
     rc |= test_trunk_scan_lists_refusals();
+    rc |= test_trunk_scan_hold_is_stored();
+    rc |= test_trunk_scan_hold_refusals();
+    rc |= test_trunk_scan_hold_starts_empty();
+    rc |= test_trunk_scan_hold_id_is_never_an_option();
+    rc |= test_bootstrap_trunk_scan_hold();
     rc |= test_bootstrap_trunk_scan_lists_from_config_and_cli();
     rc |= test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations();
     rc |= test_src_csv_long_option_parse();

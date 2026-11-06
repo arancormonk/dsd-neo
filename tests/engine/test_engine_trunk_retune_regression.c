@@ -620,6 +620,12 @@ dsd_engine_manual_tune_noted(void) {
     return 0;
 }
 
+/* No walk is ever noted here either (dsd_engine_trunk_tune_to_freq_request() and its siblings). */
+int
+dsd_engine_manual_tune_operator_walk_noted(void) {
+    return 0;
+}
+
 int
 rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id) {
     g_rtl_tagged_tune_calls++;
@@ -1502,8 +1508,9 @@ test_backend_tune_updates_center_freq_cache(void) {
     int takeovers = g_manual_tune_owner_takeovers;
     assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 456318750, 10, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(opts->rtlsdr_center_freq == 111111100U);
-    assert(g_manual_tune_supersedes == supersedes + 1);
-    assert(g_manual_tune_owner_takeovers == takeovers + 1);
+    /* A refusal decides nothing about where the receiver goes: a manual tune still pending stands (issue #644). */
+    assert(g_manual_tune_supersedes == supersedes);
+    assert(g_manual_tune_owner_takeovers == takeovers);
 
     /* A deferred tune never reached the controller: a manual tune still pending keeps the receiver. */
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
@@ -1555,6 +1562,28 @@ test_backend_tune_updates_center_freq_cache(void) {
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
     g_trunk_scan_active_p25_class = 0;
     g_trunk_scan_target_count = 0;
+
+    /* A conventional scan's tune with a rigctl peer beside the radio (issue #644): once the peer moved, an RTL leg that
+       is deferred, as one refused, leaves a manual tune still pending deciding nothing. */
+    opts->scanner_mode = 1;
+    opts->trunk_scan_enabled = 0;
+    opts->use_rigctl = 1;
+    g_setfreq_result = true;
+    for (int refused = 0; refused <= 1; refused++) {
+        g_rtl_tune_result = refused ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_DEFERRED;
+        supersedes = g_manual_tune_supersedes;
+        assert(dsd_engine_scan_tune_to_freq(opts, state, 462000000 + refused * 12500, 20, NULL)
+               == (refused ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_DEFERRED));
+        if (g_manual_tune_supersedes != supersedes + 1) {
+            DSD_FPRINTF(stderr, "moved %s: %d supersedes (want 1)\n", refused ? "refusal" : "deferral",
+                        g_manual_tune_supersedes - supersedes);
+        }
+        assert(g_manual_tune_supersedes == supersedes + 1);
+    }
+    opts->scanner_mode = 0;
+    opts->use_rigctl = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rtl_stream_clear_pending_retune_profile();
 #endif
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->use_rigctl = 1;

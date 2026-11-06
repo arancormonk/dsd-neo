@@ -152,6 +152,11 @@ Notes:
 - Row keys take effect only under `-Y`: hopping onto a keyed row installs its set, hopping back onto an unkeyed
   row restores the global keys. Under plain trunking `-C` they are stored but never applied (one warning); under
   trunk-scan per-target `chan_csv` they are discarded, like `name`.
+- A frequency typed by hand (the terminal's `=`, Qt/Android **Go to**, the API's `rtl_set_freq`) that is exactly a row's
+  `frequency_hz` while `-Y` runs or is paused takes that row (issue #644): its `mode`, `options`, keys and `name` apply
+  as on any visit, and the scan holds there (see [Trunking & Scanning](cli.md#trunking--scanning)). Any other typed
+  frequency, and one on a row that is avoided or whose width the input cannot take, pauses the scan and runs with the
+  configured decoder, options and global keys. A spectrum tap or drag never takes a row's settings.
 - Validation opens key files and validates direct values, so an unloadable path or malformed direct key fails the
   import. Diagnostics name the field but never repeat a direct key value. The Qt/Android picker flow supports direct
   values because they are embedded in the copied channel map; it does not copy companion per-row key files.
@@ -570,6 +575,11 @@ Columns:
 | `options` | No | Scoped switches described above; target `type` determines which protocol options apply. |
 | `label` | No | The name the Qt and Android app show for this target while it is parked: in the monitor's scan header and the key sheet's target line. Empty shows the `id`. Everywhere else (the terminal, Call Info, the event-history and `-J` prefix, the rdio `talkgroup_tag` fallback, call history and recordings) the target keeps its `id`, so two targets that share a label stay apart. Free text, never an error: a cell wrapped in double quotes with every quote inside doubled (a spreadsheet's `"Tower ""A"""`) reads each doubled quote as one, control characters become spaces, the ends are trimmed, and it is cut to 63 bytes on a character boundary. |
 | `p25_bandplan_csv` | No | Per-target [P25 band plan CSV](#p25-band-plan-csv---p25-bandplan-file--trunking-p25_bandplan_csv) for a `p25-trunk` target, resolved relative to this CSV. Leave empty for conventional targets, including `p25-conventional`. The rows are parked in the trunk target's snapshot, so one exported multi-system file can be named on every `p25-trunk` row: each target seeds only the rows that carry its own WACN/SYS (and rows that carry none). |
+
+A frequency typed by hand that is exactly a target's `frequency_hz` takes that target, with its `type`, `options`, keys,
+`modulation` and `rtl_gain`, and holds the scan there; a trunked target parks on its control channel, which may not be
+the frequency typed (see [Typing a target's frequency](trunk-scan.md#runtime-behavior)). `--trunk-scan-hold <id>` starts
+the scan held on the target with that `id`.
 
 Validation notes:
 

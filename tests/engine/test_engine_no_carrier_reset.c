@@ -31,6 +31,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
@@ -45,6 +46,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -83,11 +85,16 @@
 #include "engine_test_support.h"
 #endif
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+#include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/control.h>
+#include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
 #include "scan_step_untyped.h"
 #endif
 
@@ -366,6 +373,23 @@ static int g_rigctl_kindmod_refuse = 0;
 
 // GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+/* A scan step's tune supersedes a pending manual tune (issue #671): counted where a case reads it, and superseded for
+   real. Wrapped in every build these wraps link, radio support or not: a -Y walk's RTL leg supersedes too (issue
+   #644). */
+#ifdef USE_RADIO
+static int g_manual_tune_supersedes = 0;
+#endif
+void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
+void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
+
+void
+__wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
+#ifdef USE_RADIO
+    g_manual_tune_supersedes++;
+#endif
+    __real_dsd_engine_manual_tune_supersede(state);
+}
+
 #ifdef USE_RADIO
 uint32_t
 __wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
@@ -754,6 +778,9 @@ tune_explicit_for(uint32_t freq) {
     return i >= 0 ? g_tune_log_explicit[i] : -2;
 }
 
+/* A tune that times out whose failure the controller publishes before the synchronous wait returns (issue #644). */
+static int g_rtl_timeout_failed_first = 0;
+
 static int
 fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     if (g_check_p25_tick_guard) {
@@ -766,6 +793,10 @@ fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     }
     note_tune_family(center_freq_hz);
     if (g_rtl_timeout_outstanding && g_rtl_tune_result == RTL_STREAM_TUNE_TIMEOUT) {
+        if (g_rtl_timeout_failed_first) {
+            fake_publish_completion(request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+            return g_rtl_tune_result;
+        }
         hold_outstanding_tune(center_freq_hz, request_id);
         return g_rtl_tune_result;
     }
@@ -777,24 +808,23 @@ fake_rtl_tune(uint32_t center_freq_hz, uint64_t request_id) {
     return g_rtl_tune_result;
 }
 
-/* A scan step's tune supersedes a pending manual tune (issue #671): counted, and superseded for real. */
-static int g_manual_tune_supersedes = 0;
-void __real_dsd_engine_manual_tune_supersede(dsd_state* state);
-void __wrap_dsd_engine_manual_tune_supersede(dsd_state* state);
-
-void
-__wrap_dsd_engine_manual_tune_supersede(dsd_state* state) {
-    g_manual_tune_supersedes++;
-    __real_dsd_engine_manual_tune_supersede(state);
-}
-
 /* Stream opens and stops, moved by a case that stops the stream (issue #803). */
 static uint32_t g_session_generation_bump = 0U;
 uint32_t __real_rtl_stream_session_generation(void);
 uint32_t __wrap_rtl_stream_session_generation(void);
 
+/* The controller's failure of the tune in flight, published at the stream-session read this many reads from now (0:
+   none): a completion that comes between two of the decoder's reads of the record (issue #644). */
+static int g_fail_in_flight_at_read = 0;
+
 uint32_t
 __wrap_rtl_stream_session_generation(void) {
+    if (g_fail_in_flight_at_read > 0) {
+        g_fail_in_flight_at_read--;
+        if (g_fail_in_flight_at_read == 0) {
+            land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        }
+    }
     return __real_rtl_stream_session_generation() + g_session_generation_bump;
 }
 
@@ -1665,6 +1695,9 @@ test_typed_scan_tune_boundaries(void) {
                       dsd_infer_decode_mode_preset_exact(opts) == DSDCFG_MODE_NXDN48 && state->lcn_freq_roll == 1
                           && g_rtl_symbol_rate_hz == 2400 && g_rtl_symbol_levels == 4
                           && g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+    /* Issue #644: the row landed is confirmed on air; the other row on its frequency is not. */
+    rc |= expect_true("typed landing confirms its row", dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                            && !dsd_engine_channel_scan_row_confirmed(state, 1));
     state->lcn_scan_hold = 1;
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
@@ -1683,6 +1716,8 @@ test_typed_scan_tune_boundaries(void) {
                                                                 && dsd_engine_channel_scan_pending(opts, state));
     /* Issue #667 D9: a tune still pending lands nothing, and its landing names the row. */
     rc |= expect_true("typed pending hop names no landing", dsd_engine_scan_landing_hz(opts, state) == 0U);
+    rc |= expect_true("typed pending hop confirms no row", !dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                               && !dsd_engine_channel_scan_row_confirmed(state, 1));
     dsd_call_snapshot pending_call;
     rc |= expect_true("typed pending hop keeps outgoing call", dsd_call_state_get(state, 0, &pending_call) == 1);
     rc |= expect_true("typed pending hop avoids premature sync loss", pending_call.phase == DSD_CALL_PHASE_ACTIVE);
@@ -1693,6 +1728,9 @@ test_typed_scan_tune_boundaries(void) {
                           && !opts->frame_dmr && state->lcn_freq_roll == 2 && g_rtl_symbol_rate_hz == 4800);
     rc |=
         expect_true("typed async completion names its landing", dsd_engine_scan_landing_hz(opts, state) == 941012500U);
+    rc |=
+        expect_true("typed async completion confirms its row", !dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                                   && dsd_engine_channel_scan_row_confirmed(state, 1));
     dsd_call_snapshot ended;
     rc |= expect_true("typed pending hop retains call", dsd_call_state_get(state, 0, &ended) == 1);
     rc |= expect_true("typed pending hop ends explicitly", ended.end_reason == DSD_CALL_END_EXPLICIT);
@@ -1703,6 +1741,8 @@ test_typed_scan_tune_boundaries(void) {
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
     rc |= expect_true("typed dual-backend partial failure leaves row", state->lcn_freq_roll == 1 && opts->frame_p25p1);
+    rc |= expect_true("typed partial failure confirms no row", !dsd_engine_channel_scan_row_confirmed(state, 0)
+                                                                   && !dsd_engine_channel_scan_row_confirmed(state, 1));
     rc |= expect_true("typed partial failure closes frame gate",
                       !dsd_trunk_tuning_frame_is_dispatchable(dsd_trunk_tuning_generation(), 1));
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
@@ -2356,6 +2396,123 @@ test_untyped_find_and_enter_row(void) {
     rc |= expect_true("enter-row-pending-lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                                                      && state->lcn_freq_roll == 4 && state->rkey_array[9] == 0ULL);
     rc |= expect_true("enter-row-pending-landing-names-its-row", dsd_engine_scan_landing_hz(opts, state) == 994012500U);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Land untyped @p row of the running -Y list, as a step does, with every front end taking it at once. */
+static int
+land_untyped_row(dsd_opts* opts, dsd_state* state, int row) {
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    return dsd_engine_scan_untyped_enter_row(opts, state, row, (double)time(NULL)) == DSD_UNTYPED_STEP_OK;
+}
+
+/* Which rows of a two-row list read as confirmed on air, as "01" (row 0 no, row 1 yes). */
+static int
+confirmed_rows_are(const char* tag, const dsd_state* state, int row0, int row1) {
+    const int got0 = dsd_engine_channel_scan_row_confirmed(state, 0);
+    const int got1 = dsd_engine_channel_scan_row_confirmed(state, 1);
+    if (got0 != row0 || got1 != row1) {
+        DSD_FPRINTF(stderr, "%s: confirmed rows %d%d (want %d%d)\n", tag, got0, got1, row0, row1);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #644: a -Y row is confirmed on air only by the landing the scan confirmed last, and every later tune
+   attempt or displacement takes that away, whatever frequency the receiver may still be on. */
+static int
+test_untyped_row_confirmed_only_by_its_landing(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_untyped_keyed_list(opts, state, 995012500, 996012500) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    /* The stream started on its source before the scan landed anything: a later start on it is a reopen. */
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= confirmed_rows_are("never landed", state, 0, 0);
+    rc |= expect_true("lands row 0", land_untyped_row(opts, state, 0));
+    rc |= confirmed_rows_are("row 0 landed", state, 1, 0);
+    /* A stream gap stays on the carrier. */
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    rc |= confirmed_rows_are("a stream gap keeps it", state, 1, 0);
+
+    /* A step still pending: neither the row left nor the row tuned, until it lands. */
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("steps into a timeout", dsd_engine_scan_untyped_enter_row(opts, state, 1, (double)time(NULL))
+                                                  == DSD_UNTYPED_STEP_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a pending step", state, 0, 0);
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("the pending step lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= confirmed_rows_are("the pending step landed", state, 0, 1);
+
+    /* A failed step, and one a front end moved for before another refused it. */
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_true("a refused step",
+                      dsd_engine_scan_untyped_enter_row(opts, state, 0, (double)time(NULL)) == DSD_UNTYPED_STEP_FAILED);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a refused step", state, 0, 0);
+    rc |= expect_true("lands row 1 again", land_untyped_row(opts, state, 1));
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_true("a partial step", dsd_engine_scan_untyped_enter_row(opts, state, 0, (double)time(NULL))
+                                            == DSD_UNTYPED_STEP_FAILED_MOVED);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a partial step", state, 0, 0);
+    opts->use_rigctl = 0;
+    g_rigctl_setfreq_ok = 0;
+
+    /* The operator's tune, a stream reopen, a rewrite of the row, another list and the pause each displace it. */
+    rc |= expect_true("lands row 0 again", land_untyped_row(opts, state, 0));
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= confirmed_rows_are("a manual tune", state, 0, 0);
+    rc |= expect_true("lands row 0 after the tune", land_untyped_row(opts, state, 0));
+    dsd_engine_note_stream_source(opts, state, 0);
+    rc |= confirmed_rows_are("a stream reopen on the same source", state, 0, 0);
+    rc |= expect_true("lands row 0 after the reopen", land_untyped_row(opts, state, 0));
+    state->trunk_lcn_freq[0] = 997012500;
+    rc |= confirmed_rows_are("the row rewritten in place", state, 0, 0);
+    state->trunk_lcn_freq[0] = 995012500;
+    rc |= confirmed_rows_are("the row's frequency put back", state, 1, 0);
+    const uint64_t list_rev = state->lcn_list_rev;
+    state->lcn_list_rev = list_rev + 1U;
+    rc |= confirmed_rows_are("another list", state, 0, 0);
+    state->lcn_list_rev = list_rev;
+    state->lcn_scan_paused = 1U;
+    state->lcn_scan_resume_pending = 1U;
+    rc |= confirmed_rows_are("a resume pending", state, 0, 0);
+    state->lcn_scan_paused = 0U;
+    state->lcn_scan_resume_pending = 0U;
+    rc |= confirmed_rows_are("the resume flags cleared", state, 1, 0);
+    /* A walk's tune still pending: the movement is outstanding, whatever landing is still recorded. */
+    dsd_engine_manual_tune_note_lcn_cycle(state, 4242U, 996012500U, 995012500U, 1, 1, 1);
+    rc |= confirmed_rows_are("a walk pending", state, 0, 0);
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    rc |= confirmed_rows_are("the walk dropped", state, 1, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_true("walks into a timeout",
+                      dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= confirmed_rows_are("a walk tuned", state, 0, 0);
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("the walk lands", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= confirmed_rows_are("the walk landed", state, 0, 1);
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    rc |= confirmed_rows_are("a pause", state, 0, 0);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -7490,6 +7647,3175 @@ test_p25_nocarrier_deferred_drain_keeps_the_switches(void) {
 }
 #endif
 
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* --- Issue #644 (B-2): the Next and Previous walk (`L`/`J`) over a list without modes. Its tune reported an RTL
+ * timeout as complete, so the row, its keys and the call boundary were published before the receiver got there, and a
+ * late failure or a drop could not take them back. The walk now waits for the landing, in both of its ownership
+ * modes: a walk the running -Y scan owns, which tunes as the scan's step does (rigctl, then RTL), and a walk off any
+ * scan, which keeps its one leg. --- */
+
+/* An untyped list of three rows from @p base_hz, 1 MHz apart, the receiver on row 0 and keys on rows 1 (rkey 9 = 999)
+   and 2 (rkey 9 = 777): Next lands on row 1, Previous on row 2. With @p scan_owned the -Y scan runs it; otherwise no
+   scan does and trunking is off. Frequencies of their own per case: the legacy legs' caches outlive the runtime. */
+static int
+setup_walk_list(dsd_opts* opts, dsd_state* state, int scan_owned, long int base_hz) {
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {} /* and the drops' reports with it */
+    opts->scanner_mode = scan_owned ? 1 : 0;
+    opts->trunk_enable = 0;
+    mark_scan_list_imported(opts);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    opts->rtlsdr_center_freq = (uint32_t)base_hz;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    for (int i = 0; i < 3; i++) {
+        state->trunk_lcn_freq[i] = base_hz + (long int)i * 1000000L;
+    }
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 1;
+    dsd_state_lcn_on_air_note(state, 0);
+    g_rtl_last_applied_hz = (uint32_t)base_hz;
+    if (set_untyped_row_key(state, 1U, 999ULL) != 0 || set_untyped_row_key(state, 2U, 777ULL) != 0) {
+        return -1;
+    }
+    dsd_app_frontend_runtime_start(opts, state);
+    return 0;
+}
+
+static void
+teardown_walk_list(dsd_opts* opts, dsd_state* state) {
+    dsd_app_frontend_runtime_stop();
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rigctl_setfreq_ok = 0;
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    free_test_runtime(opts, state);
+}
+
+/* Press Next (@p dir 1) or Previous (-1) through the command queue, as a frontend's key does. Returns the drain's
+   count. */
+static int
+press_walk(dsd_opts* opts, dsd_state* state, int dir) {
+    state->ui_msg[0] = '\0';
+    if (dsd_app_command_action(dir < 0 ? DSD_APP_CMD_CHANNEL_CYCLE_PREV : DSD_APP_CMD_CHANNEL_CYCLE) <= 0) {
+        return 0;
+    }
+    return dsd_app_drain_cmds(opts, state);
+}
+
+/* Press in direction @p dir with the RTL tune timing out: the controller keeps it outstanding. */
+static int
+press_walk_into_a_timeout(dsd_opts* opts, dsd_state* state, int dir) {
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    const int drained = press_walk(opts, state, dir);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    return drained;
+}
+
+/* Nothing of row 0 has moved: the cursor past it, it is the row heard, no row is left to retry, no row's keys are
+   installed, and no boundary ran since @p carrier_seq. */
+static int
+expect_walk_left_alone(const char* what, const char* step, const dsd_state* state, uint32_t carrier_seq) {
+    char label[96];
+    DSD_SNPRINTF(label, sizeof label, "%s %s", what, step);
+    int rc = expect_case(label, "the cursor stays", state->lcn_freq_roll == 1);
+    rc |= expect_case(label, "row 0 is still the row heard", dsd_state_lcn_heard_row(state) == 0);
+    rc |= expect_case(label, "no row to retry", dsd_state_lcn_back_retry_row(state) < 0);
+    rc |= expect_case(label, "no row keys", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    rc |= expect_case(label, "no boundary", state->carrier_seq == carrier_seq);
+    return rc;
+}
+
+/* A refused @p row, as the walk in direction @p dir passes it (issue #666): going forward the cursor moves past it,
+   going back the cursor stays and the row is the one the next Previous retries. Either way row 0 is still the row
+   heard and no row's keys are installed. */
+static int
+expect_walk_refused(const char* what, const dsd_state* state, int dir, int row) {
+    int rc = expect_case(what, "row 0 is still the row heard", dsd_state_lcn_heard_row(state) == 0);
+    rc |= expect_case(what, "no row keys", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    if (dir > 0) {
+        rc |= expect_case(what, "Next passes the row", state->lcn_freq_roll == row + 1);
+        rc |= expect_case(what, "no row to retry", dsd_state_lcn_back_retry_row(state) < 0);
+    } else {
+        rc |= expect_case(what, "Previous keeps the cursor", state->lcn_freq_roll == 1);
+        rc |= expect_case(what, "and retries the row", dsd_state_lcn_back_retry_row(state) == row);
+    }
+    return rc;
+}
+
+enum { WALK_LANDS = 0, WALK_FAILS_LATE = 1, WALK_DROPPED = 2, WALK_OUTCOMES = 3 };
+
+/* One walk in direction @p dir, owned by the -Y scan or not (@p scan_owned), whose RTL tune times out and then ends as
+   @p outcome. */
+static int
+walk_timeout_case(int dir, int scan_owned, int outcome) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const outcome_names[] = {"lands", "fails late", "dropped"};
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "walk %s %s %s", dir > 0 ? "next" : "prev", scan_owned ? "-Y" : "no-scan",
+                 outcome_names[outcome]);
+    const long int base_hz = 930012500L + (long int)(((dir > 0 ? 0 : 1) * 2 + scan_owned) * 3 + outcome) * 3000000L;
+    if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const int row = dir > 0 ? 1 : 2;
+    const uint32_t row_hz = (uint32_t)(base_hz + (long int)row * 1000000L);
+    const uint32_t carrier_seq = state->carrier_seq;
+    int rc = expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    rc |= expect_case(what, "the row is tuned", g_rtl_tune_freq == row_hz && g_retune_in_flight.active);
+    rc |= expect_walk_left_alone(what, "pending", state, carrier_seq);
+    rc |= expect_case(what, "no completion yet",
+                      dsd_engine_manual_tune_settled_ready() == 0
+                          && dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE);
+    rc |= expect_walk_left_alone(what, "after an empty poll", state, carrier_seq);
+
+    if (outcome == WALK_LANDS) {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing ends a synced reception", dsd_engine_manual_tune_settled_ready() == 1);
+        rc |= expect_case(what, "the landing is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+        rc |= expect_case(what, "the row commits",
+                          state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+        rc |= expect_case(what, "the call boundary runs", state->carrier_seq != carrier_seq);
+        if (scan_owned) {
+            rc |= expect_case(what, "the -Y row's keys install",
+                              state->rkey_array[9] == (dir > 0 ? 999ULL : 777ULL) && state->scan_keys_active_set == 1);
+        } else {
+            /* B-1: row keys take effect only under -Y. */
+            rc |= expect_case(what, "no scan, no row keys",
+                              state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+        }
+        rc |= expect_case(what, "the centre is the row's", opts->rtlsdr_center_freq == row_hz);
+    } else if (outcome == WALK_FAILS_LATE) {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the failure ends a synced reception", dsd_engine_manual_tune_settled_ready() == 1);
+        rc |= expect_case(what, "the failure is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+        rc |= expect_walk_refused(what, state, dir, row);
+        rc |= expect_case(what, "no boundary", state->carrier_seq == carrier_seq);
+        rc |= expect_case(what, "the centre goes back", opts->rtlsdr_center_freq == (uint32_t)base_hz);
+        rc |= expect_case(what, "no toast", state->ui_msg[0] == '\0');
+    } else {
+        dsd_engine_manual_tune_supersede(state);
+        rc |= expect_case(what, "the drop is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_DROPPED);
+        rc |= expect_walk_left_alone(what, "dropped", state, carrier_seq);
+        /* Its tune landing after the drop names nothing: what dropped it decides the receiver. */
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "a late landing after the drop is not taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE);
+        rc |= expect_walk_left_alone(what, "after the dropped tune landed", state, carrier_seq);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_waits_for_its_tune(void) {
+    int rc = 0;
+    for (int dir = 1; dir >= -1; dir -= 2) {
+        for (int scan_owned = 0; scan_owned <= 1; scan_owned++) {
+            for (int outcome = 0; outcome < WALK_OUTCOMES; outcome++) {
+                rc |= walk_timeout_case(dir, scan_owned, outcome);
+            }
+        }
+    }
+    return rc;
+}
+
+/* A walk the -Y scan owns tunes every configured front end, as the scan's step does: rigctl first, then RTL. The RTL
+   leg refused at once (@p late 0), or timed out and failed later (1), after rigctl moved: the receiver left row 0, so
+   the outgoing boundary runs and the tone heard there goes at once; the row is refused as the walk refuses one, in its
+   direction. */
+static int
+walk_partial_move_case(int dir, int late) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "walk %s -Y rigctl moved, RTL %s", dir > 0 ? "next" : "prev",
+                 late ? "fails late" : "refused");
+    const long int base_hz = 1100012500L + (long int)((dir > 0 ? 0 : 1) * 2 + late) * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    seed_rx_tone_publication(state, 1318);
+    const uint32_t tone_generation = state->analog_rx.generation;
+    const int row = dir > 0 ? 1 : 2;
+    const long int row_hz = base_hz + (long int)row * 1000000L;
+    const uint32_t carrier_seq = state->carrier_seq;
+    int rc = 0;
+    if (late) {
+        rc |= expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    } else {
+        g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+        (void)press_walk(opts, state, dir);
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    }
+    rc |= expect_case(what, "rigctl moved", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == row_hz);
+    rc |= expect_case(what, "then RTL was asked", g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)row_hz);
+    rc |= expect_case(what, "the outgoing boundary ran once", state->carrier_seq == carrier_seq + 1U);
+    rc |= expect_case(what, "the tone went", rx_tone_publication_cleared(state, tone_generation));
+    if (late) {
+        rc |= expect_walk_left_alone(what, "pending", state, carrier_seq + 1U);
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the failure is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+        rc |= expect_case(what, "no second boundary", state->carrier_seq == carrier_seq + 1U);
+    }
+    rc |= expect_walk_refused(what, state, dir, row);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_scan_owned_walk_tunes_both_front_ends(void) {
+    int rc = 0;
+    for (int dir = 1; dir >= -1; dir -= 2) {
+        for (int late = 0; late <= 1; late++) {
+            rc |= walk_partial_move_case(dir, late);
+        }
+    }
+    return rc;
+}
+
+/* A second press while the first walk's tune is still pending goes on from the row that tune went to, in the second
+   press's direction, so quick presses and key auto-repeat keep advancing. The first tune's record, superseded by the
+   second, settles nothing: its own late completion is not taken, and the second landing commits its row. */
+static int
+walk_press_while_pending_case(int dir, int scan_owned) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "walk %s %s twice while pending", dir > 0 ? "next" : "prev",
+                 scan_owned ? "-Y" : "no-scan");
+    const long int base_hz = 1140012500L + (long int)((dir > 0 ? 0 : 1) * 2 + scan_owned) * 3000000L;
+    if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    /* From row 0: Next goes to row 1, then row 2; Previous to row 2, then row 1. */
+    const int first = dir > 0 ? 1 : 2;
+    const int second = dir > 0 ? 2 : 1;
+    int rc = expect_case(what, "the first press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    rc |= expect_case(what, "the first press tunes its row",
+                      g_rtl_tune_freq == (uint32_t)(base_hz + (long int)first * 1000000L));
+    rc |= expect_case(what, "the second press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    if (g_rtl_tune_freq != (uint32_t)(base_hz + (long int)second * 1000000L)) {
+        DSD_FPRINTF(stderr, "%s: the second press tuned %u Hz (want row %d)\n", what, g_rtl_tune_freq, second);
+    }
+    rc |= expect_case(what, "the second press goes on from the pending row",
+                      g_rtl_tune_calls == 2 && g_rtl_tune_freq == (uint32_t)(base_hz + (long int)second * 1000000L));
+    rc |= expect_walk_left_alone(what, "both pending", state, state->carrier_seq);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the second landing is taken",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_case(what, "the second row commits",
+                      state->lcn_freq_roll == second + 1 && dsd_state_lcn_heard_row(state) == second);
+    rc |= expect_case(what, "the first record settles nothing",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_NONE
+                          && state->lcn_freq_roll == second + 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_press_while_pending_steps_on(void) {
+    int rc = 0;
+    for (int dir = 1; dir >= -1; dir -= 2) {
+        for (int scan_owned = 0; scan_owned <= 1; scan_owned++) {
+            rc |= walk_press_while_pending_case(dir, scan_owned);
+        }
+    }
+    return rc;
+}
+
+/* A press while the -Y timed step's own tune is still pending goes on from the row that step went to, in the press's
+   direction, as after a pending walk: the cursor waits for the step's landing, so the press would otherwise pick the
+   step's row again. The press's tune supersedes the step's, and its landing commits its own row. */
+static int
+walk_press_while_a_step_is_pending_case(int dir) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = dir > 0 ? "walk next while a step is pending" : "walk prev while a step is pending";
+    const long int base_hz = 1200012500L + (dir > 0 ? 0L : 3000000L);
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    /* The timed step goes on from the cursor (row 1) and its tune times out. */
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    int rc = expect_case(what, "the step's row 1 is pending",
+                         g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L)
+                             && g_retune_in_flight.active && state->lcn_freq_roll == 1);
+    /* From row 1: Next goes to row 2, Previous to row 0. */
+    const int row = dir > 0 ? 2 : 0;
+    rc |= expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    if (g_rtl_tune_freq != (uint32_t)(base_hz + (long int)row * 1000000L)) {
+        DSD_FPRINTF(stderr, "%s: the press tuned %u Hz (want row %d)\n", what, g_rtl_tune_freq, row);
+    }
+    rc |= expect_case(what, "the press goes on from the step's row",
+                      g_rtl_tune_calls == 2 && g_rtl_tune_freq == (uint32_t)(base_hz + (long int)row * 1000000L));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    int polled = DSD_MANUAL_TUNE_NONE;
+    for (int i = 0; i < 4; i++) {
+        const int p = dsd_engine_scan_untyped_poll(opts, state);
+        if (p == DSD_MANUAL_TUNE_LANDED) {
+            polled = p;
+        }
+    }
+    rc |= expect_case(what, "the press's row commits",
+                      polled == DSD_MANUAL_TUNE_LANDED && state->lcn_freq_roll == row + 1
+                          && dsd_state_lcn_heard_row(state) == row);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_press_while_a_step_is_pending_steps_on(void) {
+    return walk_press_while_a_step_is_pending_case(1) | walk_press_while_a_step_is_pending_case(-1);
+}
+
+/* While a walk the -Y scan owns waits on its tune, the timed step does not fire, even when it is due, so it never
+   supersedes the walk (a Previous would turn into a forward step). Once the walk settles (a landing, or a late failure)
+   the rotation goes on at its own time. */
+static int
+walk_holds_the_timed_step_case(int dir) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = dir > 0 ? "walk next -Y holds the timed step" : "walk prev -Y holds the timed step";
+    const long int base_hz = 1160012500L + (dir > 0 ? 0L : 3000000L);
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const int row = dir > 0 ? 1 : 2;
+    int rc = expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, dir) == 1);
+    const int calls = g_rtl_tune_calls;
+    state->last_cc_sync_time = time(NULL) - 11; /* the timed step is due */
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the due step waits for the walk", g_rtl_tune_calls == calls && state->lcn_freq_roll == 1);
+    if (dir > 0) {
+        /* The front end refuses the row late: Next passes it, and the rotation is free again. */
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the late failure is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED
+                              && state->lcn_freq_roll == row + 1);
+    } else {
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "Previous lands its own row",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
+                              && state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the rotation goes on once the walk settled", g_rtl_tune_calls == calls + 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_walk_holds_the_timed_step(void) {
+    return walk_holds_the_timed_step_case(1) | walk_holds_the_timed_step_case(-1);
+}
+
+/* A walk's landing after its list stopped being the one walked. One the -Y scan owned, after a stop of that scan
+   (restarted before the landing): only the TUNE boundary runs for the move, and no row commits. One off any scan, after
+   the list was reloaded: the calls end, and no row of the new list is named. */
+static int
+test_walk_landing_after_the_list_changed(void) {
+    int rc = 0;
+    for (int scan_owned = 0; scan_owned <= 1; scan_owned++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        const char* what = scan_owned ? "walk -Y landing after a stop" : "walk no-scan landing after a reload";
+        const long int base_hz = 1180012500L + (long int)scan_owned * 3000000L;
+        if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+            teardown_walk_list(opts, state);
+            return 1;
+        }
+        rc |= expect_case(what, "the press is applied", press_walk_into_a_timeout(opts, state, 1) == 1);
+        if (scan_owned) {
+            (void)dsd_engine_channel_scan_leave(opts,
+                                                state); /* `y` stops the scan; it starts again before the landing */
+        } else {
+            rc |= expect_case(what, "the list is reloaded",
+                              import_scan_list(opts, state, "1,1190012500\n2,1191012500\n3,1192012500\n") == 0
+                                  && state->lcn_freq_count == 3);
+        }
+        const dsd_call_observation heard = {.protocol = DSD_SYNC_ANALOG, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+        rc |= expect_case(what, "a call is heard", dsd_call_state_observe(state, &heard, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        const int roll = state->lcn_freq_roll;
+        const int heard_row = dsd_state_lcn_heard_row(state);
+        const uint32_t carrier_seq = state->carrier_seq;
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing is taken",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+        rc |= expect_case(what, "one boundary runs for the move", state->carrier_seq == carrier_seq + 1U);
+        dsd_call_snapshot call;
+        rc |= expect_case(what, "the call ended",
+                          dsd_call_state_get(state, 0U, &call) > 0 && call.phase != DSD_CALL_PHASE_ACTIVE);
+        rc |= expect_case(what, "no row is named",
+                          state->lcn_freq_roll == roll && dsd_state_lcn_heard_row(state) == heard_row
+                              && state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+        teardown_walk_list(opts, state);
+    }
+    return rc;
+}
+
+/* A walk's landing in the middle of a reception ends it, so at most the frame in flight decodes under the row left;
+   the outer pass then commits the row (here a walk off any scan, whose row has a name). */
+static int
+test_walk_landing_ends_a_synced_reception(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_walk_list(opts, state, 0, 1130012500L) != 0 || dsd_state_trunk_lcn_name_set(state, 0U, "ALPHA") != 0
+        || dsd_state_trunk_lcn_name_set(state, 1U, "BRAVO") != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    rc |= expect_true("walk-mid-reception-pending",
+                      press_walk_into_a_timeout(opts, state, 1) == 1 && g_retune_in_flight.active);
+    run_synced_frames(opts, state, 6, 1);
+    if (g_frame_count != 2) {
+        DSD_FPRINTF(stderr, "walk mid-reception: %d frames decoded in the reception the landing came in (want 2)\n",
+                    g_frame_count);
+    }
+    rc |= expect_true("walk-mid-reception-ends-at-the-landing", g_frame_count == 2 && state->synctype == DSD_SYNC_NONE);
+    rc |= expect_true("walk-mid-reception-before-landing", g_frame_roll[1] == 1);
+    rc |= expect_true("walk-mid-reception-outer-pass-commits",
+                      dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED && state->lcn_freq_roll == 2
+                          && dsd_state_lcn_heard_row(state) == 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* --- Issue #644: the -Y scan's stop, start and held avoid, driven through the command queue. --- */
+
+/* The history row of talkgroup @p tg's call, NULL with none. */
+static const Event_History*
+history_row_of(const dsd_state* state, uint32_t tg) {
+    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[i];
+        if (row->target_id == tg && row->channel_label_resolved) {
+            return row;
+        }
+    }
+    return NULL;
+}
+
+/* Whether talkgroup @p tg's call has a history row with the tuner owner stamps @p scan_member and @p operator_tuned. */
+static int
+history_stamps_are(const dsd_state* state, uint32_t tg, int scan_member, int operator_tuned) {
+    const Event_History* row = history_row_of(state, tg);
+    return row != NULL && row->scan_member == (uint8_t)scan_member && row->operator_tuned == (uint8_t)operator_tuned;
+}
+
+/* Post the action @p id and drain, as a frontend's key does. Returns the drain's count. */
+static int
+press_action(dsd_opts* opts, dsd_state* state, int id) {
+    state->ui_msg[0] = '\0';
+    if (dsd_app_command_action(id) <= 0) {
+        return 0;
+    }
+    return dsd_app_drain_cmds(opts, state);
+}
+
+static int
+slot0_call_active(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+/* The walk list of setup_walk_list() with its rows named ALPHA, BRAVO and CHARLIE. */
+static int
+setup_named_walk_list(dsd_opts* opts, dsd_state* state, int scan_owned, long int base_hz) {
+    static const char* const k_names[] = {"ALPHA", "BRAVO", "CHARLIE"};
+    if (setup_walk_list(opts, state, scan_owned, base_hz) != 0) {
+        return -1;
+    }
+    for (size_t row = 0; row < 3U; row++) {
+        if (dsd_state_trunk_lcn_name_set(state, row, k_names[row]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* B-3: `y` stopping a running untyped -Y list ended no call: the leave found no scan object or scope, and the stop had
+   cleared the scanner flag before it, so a call heard on row BRAVO (keyed) went on past the stop, and was named after
+   no row once it ended. It ends at the stop, named BRAVO and a scan member, before the row's keys leave. */
+static int
+y_stop_running_case(void) {
+    const char* what = "y stop of a running untyped list";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1210012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO, keyed",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1
+                             && state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5401U) == 0);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    rc |= expect_case(what, "the scanner stops", opts->scanner_mode == 0 && state->lcn_scan_paused == 0U);
+    rc |= expect_case(what, "the call ended at the stop", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, 5401U), "BRAVO");
+    rc |= expect_case(what, "as a scan member", history_stamps_are(state, 5401U, 1, 0));
+    rc |= expect_case(what, "then the row keys left", state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* B-3: a stop over a paused list (trunking turned on here) still ends no call of the manual session. */
+static int
+y_stop_paused_case(void) {
+    const char* what = "stop of a paused untyped list";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1220012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
+    rc |= expect_case(what, "the release pauses the scan",
+                      press_action(opts, state, DSD_APP_CMD_TUNER_RELEASE) == 1 && state->lcn_scan_paused == 1U);
+    rc |= expect_case(what, "a manual call is heard", open_unrendered_call(state, 5402U) == 0);
+    rc |= expect_case(what, "trunking on is queued",
+                      dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_case(what, "trunking on is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the pause ended", state->lcn_scan_paused == 0U && opts->trunk_enable == 1);
+    rc |= expect_case(what, "the manual call goes on", slot0_call_active(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* B-3: a walk's tune still pending at the stop: its landing names no row of the list the stop left (the session
+   moved), whose row and keys stay as the stop left them; the move only runs its boundary. */
+static int
+y_stop_walk_pending_case(void) {
+    const char* what = "y stop over a pending walk";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1230012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "the walk is pending",
+                         press_walk_into_a_timeout(opts, state, 1) == 1 && g_retune_in_flight.active);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    const uint32_t carrier_seq = state->carrier_seq;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |=
+        expect_case(what, "the landing is taken", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_case(what, "one boundary for the move", state->carrier_seq == carrier_seq + 1U);
+    rc |= expect_case(what, "no row is named",
+                      opts->scanner_mode == 0 && state->lcn_freq_roll == 1 && dsd_state_lcn_heard_row(state) == 0
+                          && state->rkey_array[9] == 0ULL && state->scan_keys_active_set == 0);
+    rc |= expect_live_label(what, opts, state, "");
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_y_stop_ends_the_untyped_scans_calls(void) {
+    return y_stop_running_case() | y_stop_paused_case() | y_stop_walk_pending_case();
+}
+
+/* B-4: `y` starting a stopped -Y scan after a manual tune left operator_tuned 1, so the scan's calls were filed as the
+   operator's (history "Exploring", Qt an Explore session). The operator's call ends at the start as the operator's;
+   the tuner is the scan's from then on, and the next call is a scan member, not operator tuned. */
+static int
+test_y_start_gives_the_tuner_to_the_scan(void) {
+    const char* what = "y start after a manual tune";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 0, 1240012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc =
+        expect_case(what, "the tune is queued",
+                    dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 1245012500U) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_case(what, "the tune is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the tuner is the operator's", state->operator_tuned == 1U && opts->scanner_mode == 0);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5501U) == 0);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    rc |= expect_case(what, "the scan owns the tuner", opts->scanner_mode == 1 && state->operator_tuned == 0U);
+    rc |= expect_case(what, "the operator's call ended at the start", !slot0_call_active(state));
+    rc |= expect_case(what, "as the operator's", history_stamps_are(state, 5501U, 0, 1));
+    rc |= expect_case(what, "the next call is heard", open_unrendered_call(state, 5502U) == 0);
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
+    rc |= expect_case(what, "the scan's call is a scan member", history_stamps_are(state, 5502U, 1, 0));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int poll_until_landed(dsd_opts* opts, dsd_state* state);
+
+/* How the walk a `y` start found pending ends (test_y_start_adopts_a_pending_walk()). */
+enum {
+    YSTART_WALK_LANDS = 0,
+    YSTART_WALK_FAILS_LATE,
+    YSTART_WALK_ON_A_TYPED_LIST,
+    YSTART_WALK_ROW_REWRITTEN,
+    YSTART_WALK_LANDS_UNDER_A_CONFIG,
+    YSTART_TYPED_WALK_UNDER_A_CONFIG,
+    YSTART_WALK_CASES
+};
+
+/* Issue #644: a held untyped list stopped with `y` on BRAVO, a walk off the scan to CHARLIE still waiting on its tune,
+   and `y` again. The start takes the walk over as the scan's own, with no tune of its own: the walk's landing commits
+   CHARLIE as a walk of the scan's does, the hold carried there, and its late failure passes CHARLIE, the receiver
+   still on BRAVO, held. Either way the receiver, the row heard and the hold agree. A walk the scan cannot take over (a
+   typed list, whose rows land with settings a walk never tuned, or a row rewritten since) refuses the start, which
+   changes nothing: the walk settles as one off the scan, and a start after it runs. A config that turns the scanner on
+   takes the walk over as `y` does; one it cannot take (a typed list's) lets the ordinary hold kept across the stop go,
+   so the running scan is unheld and its next timed step tunes a row of its own. */
+static int
+y_start_over_a_pending_walk_case(int c) {
+    static const char* const k_what[] = {"y start over a pending walk that lands",
+                                         "y start over a pending walk that fails",
+                                         "y start over a pending walk on a typed list",
+                                         "y start over a pending walk to a row rewritten",
+                                         "config turning the scanner on over a pending walk",
+                                         "config turning the scanner on over a pending walk on a typed list"};
+    const char* what = k_what[c];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1700012500L + (long int)c * 5000000L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    const uint32_t charlie_hz = (uint32_t)(base_hz + 2000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1);
+    g_rtl_last_applied_hz = bravo_hz;
+    state->lcn_scan_hold = 1U;
+    rc |= expect_case(what, "y stops the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0);
+    rc |= expect_case(what, "the hold stays", state->lcn_scan_hold == 1U);
+    if (c == YSTART_WALK_ON_A_TYPED_LIST || c == YSTART_TYPED_WALK_UNDER_A_CONFIG) {
+        for (size_t row = 0; row < 3U; row++) {
+            rc |= expect_case(what, "the row is typed", dsd_channel_mode_set(state, row, DSD_SCAN_MODE_NFM) == 0);
+        }
+    }
+    rc |= expect_case(what, "Next off the scan to CHARLIE waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1 && dsd_engine_manual_tune_noted());
+    if (c == YSTART_WALK_ROW_REWRITTEN) {
+        state->trunk_lcn_freq[2] = base_hz + 3000000L;
+    }
+    const int tunes = g_rtl_tune_calls;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    if (c == YSTART_WALK_LANDS_UNDER_A_CONFIG || c == YSTART_TYPED_WALK_UNDER_A_CONFIG) {
+        static dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        cfg.trunk_scanner = 1;
+        rc |= expect_case(what, "the config is applied",
+                          dsd_app_command_apply_config(&cfg) > 0 && dsd_app_drain_cmds(opts, state) == 1);
+    } else {
+        (void)press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the start tunes nothing", g_rtl_tune_calls == tunes);
+    if (c == YSTART_WALK_ON_A_TYPED_LIST || c == YSTART_WALK_ROW_REWRITTEN) {
+        rc |=
+            expect_case(what, "the start is refused, the walk still pending",
+                        opts->scanner_mode == 0 && dsd_engine_manual_tune_noted()
+                            && strcmp(state->ui_msg, "Scanner not started: channel change still pending; retry") == 0);
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        (void)poll_until_landed(opts, state);
+        rc |= expect_case(what, "a start after the walk runs",
+                          press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1);
+        teardown_walk_list(opts, state);
+        return rc;
+    }
+    if (c == YSTART_TYPED_WALK_UNDER_A_CONFIG) {
+        rc |= expect_case(what, "the scan runs unheld, the walk still off the scan",
+                          opts->scanner_mode == 1 && state->lcn_scan_hold == 0U
+                              && dsd_engine_manual_tune_operator_walk_noted());
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        (void)poll_until_landed(opts, state);
+        const int before_step = g_rtl_tune_calls;
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+        rc |= expect_case(what, "the next timed step tunes a row", g_rtl_tune_calls > before_step);
+        teardown_walk_list(opts, state);
+        return rc;
+    }
+    rc |= expect_case(what, "the scan runs, the walk its own",
+                      opts->scanner_mode == 1 && dsd_engine_manual_tune_noted()
+                          && !dsd_engine_manual_tune_operator_walk_noted());
+    if (c == YSTART_WALK_LANDS || c == YSTART_WALK_LANDS_UNDER_A_CONFIG) {
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the walk lands", poll_until_landed(opts, state));
+        rc |= expect_case(what, "the receiver, the row heard and the hold agree on CHARLIE",
+                          opts->rtlsdr_center_freq == charlie_hz && dsd_state_lcn_heard_row(state) == 2
+                              && state->lcn_freq_roll == 3 && state->lcn_scan_hold == 1U);
+        rc |= expect_case(what, "with CHARLIE's keys", state->rkey_array[9] == 777ULL);
+    } else {
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+        for (int i = 0; i < 4; i++) {
+            (void)dsd_engine_scan_untyped_poll(opts, state);
+        }
+        rc |= expect_case(what, "the receiver, the row heard and the hold agree on BRAVO",
+                          opts->rtlsdr_center_freq == bravo_hz && dsd_state_lcn_heard_row(state) == 1
+                              && state->lcn_scan_hold == 1U);
+    }
+    rc |= expect_case(what, "the tuner is free again", !dsd_engine_manual_tune_operator_walk_noted());
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: `y` stops a running untyped list held on BRAVO, the receiver on BRAVO. With @p tuned_away a frequency
+   typed by hand that is no row moves the receiver off it: the start after it lets the ordinary hold kept across the
+   stop go, since it would hold a row the receiver is not on, and the scan's next timed step tunes a row. Without it
+   the receiver is still on BRAVO, and the start keeps the hold there. */
+static int
+y_start_keeps_a_hold_only_where_the_receiver_is_case(int tuned_away) {
+    const char* what = tuned_away ? "y start with a hold, the receiver tuned away" : "y start with a hold, on its row";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1750012500L + (long int)tuned_away * 5000000L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_last_applied_hz = bravo_hz;
+    int rc = expect_case(what, "Next lands on BRAVO",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1
+                             && opts->rtlsdr_center_freq == bravo_hz);
+    state->lcn_scan_hold = 1U;
+    rc |= expect_case(what, "y stops the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0);
+    if (tuned_away) {
+        const uint32_t elsewhere = (uint32_t)(base_hz + 3500000L);
+        g_rtl_last_applied_hz = elsewhere;
+        rc |= expect_case(what, "a frequency is typed",
+                          dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, elsewhere) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                              && dsd_app_drain_cmds(opts, state) == 1 && opts->rtlsdr_center_freq == elsewhere);
+    }
+    rc |= expect_case(what, "y starts the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1);
+    if (!tuned_away) {
+        rc |= expect_case(what, "the hold stays on BRAVO",
+                          state->lcn_scan_hold == 1U && dsd_state_lcn_heard_row(state) == 1);
+        teardown_walk_list(opts, state);
+        return rc;
+    }
+    rc |= expect_case(what, "the scan starts unheld", state->lcn_scan_hold == 0U);
+    const int tunes = g_rtl_tune_calls;
+    state->last_cc_sync_time = time(NULL) - 60;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the next timed step tunes a row", g_rtl_tune_calls > tunes);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* The row of the untyped -Y step's own tune a new request may join, -1 with none (one read of the record). */
+static int
+pending_step_row(const dsd_state* state) {
+    dsd_engine_manual_tune_pending_view view;
+    dsd_engine_manual_tune_pending_read(state, &view);
+    return view.joinable && view.step ? view.row : -1;
+}
+
+/* The ID of the tune noted when a new request may join it, else 0 (one read of the record). */
+static uint64_t
+joinable_pending_id(const dsd_state* state) {
+    dsd_engine_manual_tune_pending_view view;
+    dsd_engine_manual_tune_pending_read(state, &view);
+    return view.joinable ? view.id : 0U;
+}
+
+/* The radio stream stops and reopens, as a restart does (svc_rtl_restart_locked()): the scans note what may still land,
+   then the stop moves the stream session and fails the request it had queued, and the new stream opens on the same
+   source, its centre @p reopen_hz (0: the cached centre, where the stream reopens); the scans are told it opened, and
+   the poll then takes what that left. */
+static void
+reopen_the_stream_on(dsd_opts* opts, dsd_state* state, uint32_t reopen_hz) {
+    state->carrier_source_key = 1U; /* the running stream's source, which the restart keeps */
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    if (reopen_hz != 0U) {
+        opts->rtlsdr_center_freq = reopen_hz;
+    }
+    dsd_engine_manual_tune_stream_reopened(opts, state, 1);
+    dsd_engine_channel_scan_stream_reopened(opts, state, 1);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+}
+
+static void
+reopen_the_stream(dsd_opts* opts, dsd_state* state) {
+    reopen_the_stream_on(opts, state, 0U);
+}
+
+static int expect_untyped_entry_held(const char* what, const dsd_state* state, int row);
+
+/* The receiver, the row heard and the cursor all on walk-list row @p row, nothing noted, and no tune made since
+   @p tunes. */
+static int
+expect_reopen_landed_on(const char* what, const dsd_opts* opts, const dsd_state* state, int row, int tunes) {
+    int rc = expect_case(what, "the tune landed at the reopen, with no tune of its own",
+                         !dsd_engine_manual_tune_noted() && g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the receiver and the row heard agree on its row",
+                      row >= 0 && row < state->lcn_freq_count && dsd_state_lcn_heard_row(state) == row
+                          && opts->rtlsdr_center_freq == (uint32_t)state->trunk_lcn_freq[row]
+                          && state->lcn_freq_roll == row + 1);
+    return rc;
+}
+
+/* Issue #644: a restart while a scan tune is pending, whose timeout cached its target as the centre, so the new stream
+   opens there: the tune landed at the reopen, and the scan lands its row by its own path. Held by `Y` while the timed
+   step's tune is pending (@p adopted 0), or by a hold kept across a `y` stop over a walk the start took as its own (1),
+   the hold moves with the row: the receiver, the row heard and the hold agree after the reopen, with no tune made. */
+static int
+reopen_over_a_pending_scan_tune_case(int adopted) {
+    const char* what = adopted ? "a reopen over an adopted walk" : "a reopen over a held pending timed step";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1760012500L + (long int)adopted * 5000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = 0;
+    if (adopted) {
+        g_rtl_last_applied_hz = (uint32_t)(base_hz + 1000000L);
+        rc |= expect_case(what, "Next lands on BRAVO",
+                          press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1);
+        state->lcn_scan_hold = 1U;
+        rc |= expect_case(what, "y stops the scan",
+                          press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0);
+        rc |= expect_case(what, "Next off the scan to CHARLIE waits on its tune",
+                          press_walk_into_a_timeout(opts, state, 1) == 1);
+        rc |= expect_case(what, "y starts the scan over it",
+                          press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1
+                              && !dsd_engine_manual_tune_operator_walk_noted());
+    } else {
+        g_rtl_timeout_outstanding = 1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+        g_rtl_timeout_outstanding = 0;
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        rc |= expect_case(what, "the timed step's tune is pending", pending_step_row(state) == 1);
+        rc |= expect_case(what, "Y holds the scan",
+                          press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    }
+    const int row = dsd_engine_manual_tune_pending_row(state, NULL);
+    rc |= expect_case(what, "the pending row is the one the centre names",
+                      row >= 0 && row < state->lcn_freq_count
+                          && opts->rtlsdr_center_freq == (uint32_t)state->trunk_lcn_freq[row]);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream(opts, state);
+    rc |= expect_reopen_landed_on(what, opts, state, row, tunes);
+    rc |= expect_case(what, "the hold moved with it", state->lcn_scan_hold == 1U && opts->scanner_mode == 1);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a tune still pending replaced by another before a restart: the new stream opens on the second tune's
+   target, which its timeout cached, so that one landed at the reopen; the first, replaced, names nothing. Off any scan
+   (@p resume 0), Next to BRAVO and then to CHARLIE, both waiting, from ALPHA: CHARLIE is the row heard. On a paused
+   list (1), a resume to BRAVO replaced by a resume-at of CHARLIE, from the manual frequency: the scan resumes on
+   CHARLIE and holds it, marked an entry hold. */
+static int
+reopen_over_a_replaced_tune_case(int resume) {
+    const char* what =
+        resume ? "a reopen over a resume-at that replaced a resume" : "a reopen over a walk that replaced a walk";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1770012500L + (long int)resume * 5000000L;
+    if (setup_named_walk_list(opts, state, resume, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = 0;
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    if (resume) {
+        (void)dsd_engine_channel_scan_pause(opts, state, 0);
+        opts->rtlsdr_center_freq = (uint32_t)(base_hz + 4500000L); /* the operator's manual frequency */
+        rc |= expect_case(what, "a resume to BRAVO waits",
+                          dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+        rc |= expect_case(what, "a resume-at of CHARLIE replaces it",
+                          dsd_engine_channel_scan_resume_at(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    } else {
+        rc |= expect_case(what, "Next to BRAVO waits", press_walk(opts, state, 1) == 1);
+        rc |= expect_case(what, "Next to CHARLIE replaces it", press_walk(opts, state, 1) == 1);
+    }
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "CHARLIE's tune is pending",
+                      dsd_engine_manual_tune_noted() && opts->rtlsdr_center_freq == (uint32_t)(base_hz + 2000000L));
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream(opts, state);
+    rc |= expect_reopen_landed_on(what, opts, state, 2, tunes);
+    if (resume) {
+        rc |= expect_case(what, "the scan resumed", state->lcn_scan_paused == 0U && opts->scanner_mode == 1);
+        rc |= expect_untyped_entry_held(what, state, 2);
+    }
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a running untyped list stopped by `y` on ALPHA, a manual tune off the list, `y` again, then Next to BRAVO
+   timing out and a restart before it lands: the new stream opens on BRAVO, which the timeout cached, so BRAVO landed
+   at the reopen. The receiver, the row heard and the cursor agree on BRAVO, and no hold names any other row. */
+static int
+test_reopen_after_a_manual_tune_and_a_restart_of_the_scan(void) {
+    const char* what = "a reopen over Next after a manual tune and y";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1790012500L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "y stops the scan on ALPHA",
+                         press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 0
+                             && dsd_state_lcn_heard_row(state) == 0);
+    const uint32_t manual_hz = (uint32_t)(base_hz + 4500000L);
+    g_rtl_last_applied_hz = manual_hz;
+    rc |= expect_case(what, "a manual tune off the list",
+                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, manual_hz) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                          && dsd_app_drain_cmds(opts, state) == 1 && opts->rtlsdr_center_freq == manual_hz);
+    rc |= expect_case(what, "y starts the scan",
+                      press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1 && opts->scanner_mode == 1);
+    rc |= expect_case(what, "Next to BRAVO waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream(opts, state);
+    rc |= expect_reopen_landed_on(what, opts, state, 1, tunes);
+    rc |=
+        expect_case(what, "no hold on another row", state->lcn_scan_hold == 0U || dsd_state_lcn_heard_row(state) == 1);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: Next off any scan from ALPHA to BRAVO times out, its landing comes before the decoder's poll, and a
+   restart follows: the new stream opens on BRAVO, so BRAVO landed. Next again before any poll goes on from BRAVO to
+   CHARLIE, which times out, and a second restart opens on CHARLIE: CHARLIE landed. After each step the receiver and
+   the row heard agree. */
+static int
+test_reopens_over_walks_queued_across_restarts(void) {
+    const char* what = "walks queued across two restarts";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1795012500L;
+    if (setup_named_walk_list(opts, state, 0, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune", press_walk_into_a_timeout(opts, state, 1) == 1);
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
+    state->carrier_source_key = 1U;
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    dsd_engine_manual_tune_stream_reopened(opts, state, 1);
+    rc |= expect_case(what, "BRAVO landed at the reopen, the row still to commit",
+                      dsd_engine_manual_tune_pending_row(state, NULL) == 1
+                          && opts->rtlsdr_center_freq == (uint32_t)(base_hz + 1000000L));
+    rc |= expect_case(what, "Next goes on from BRAVO to CHARLIE, which waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 2);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream(opts, state);
+    rc |= expect_reopen_landed_on(what, opts, state, 2, tunes);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a restart while Next off any scan to BRAVO waits on its tune, whose new stream opens somewhere else (a
+   centre set since): the tune is dropped as before, nothing lands, and no centre is put back: the stream stays where
+   it opened, and ALPHA is still the row heard. */
+static int
+test_reopen_elsewhere_drops_the_tune(void) {
+    const char* what = "a reopen on another centre";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1797012500L;
+    if (setup_named_walk_list(opts, state, 0, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune", press_walk_into_a_timeout(opts, state, 1) == 1);
+    const uint32_t elsewhere = (uint32_t)(base_hz + 4500000L);
+    const int tunes = g_rtl_tune_calls;
+    reopen_the_stream_on(opts, state, elsewhere);
+    rc |= expect_case(what, "the tune is dropped, with no tune made",
+                      !dsd_engine_manual_tune_noted() && g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "nothing landed, nothing put back",
+                      dsd_state_lcn_heard_row(state) == 0 && opts->rtlsdr_center_freq == elsewhere);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a Next or Previous walk off any scan still waiting on its tune when its session ends, and a new session
+   in the same process: the session's start forgets that walk, reporting nothing, so it neither owns the tuner nor
+   defers the new session's first tune: a trunk scan started held on a trunked target (--trunk-scan-hold) parks it and
+   holds it. */
+static int
+test_session_start_forgets_a_pending_walk(void) {
+    const char* what = "a session started after one that left a walk pending";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "held-trunk-scan-");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    int rc = expect_case(what, "the targets file", fp != NULL);
+    if (fp) {
+        DSD_FPRINTF(fp, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
+                        "fire,nfm-conventional,154430000,,250,250,,\n"
+                        "county,p25-trunk,851012500,,250,,,\n");
+        (void)fclose(fp);
+    }
+    /* The earlier session's walk, its tune never polled. */
+    dsd_engine_manual_tune_note_lcn_cycle(state, RTL_STREAM_TUNE_ID_MANUAL_BIT | 0x6441U, 943112500U, 942612500U, 1, 1,
+                                          0);
+    rc |= expect_case(what, "the walk owns the tuner", dsd_engine_manual_tune_operator_walk_noted());
+    dsd_engine_manual_tune_session_reset(state);
+    rc |= expect_case(what, "the new session's start forgets it",
+                      !dsd_engine_manual_tune_operator_walk_noted() && !dsd_engine_manual_tune_noted()
+                          && dsd_engine_manual_tune_poll(opts, state) == DSD_MANUAL_TUNE_NONE);
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", "county");
+    char err[256] = {0};
+    rc |=
+        expect_case(what, "the held trunk scan starts", dsd_engine_trunk_scan_init(opts, state, err, sizeof err) == 0);
+    rc |= expect_case(what, "the trunked target is parked and held",
+                      g_rtl_tune_freq == 851012500U && dsd_engine_trunk_scan_target_confirmed(state, 1)
+                          && state->trunk_scan_hold == 1U && state->trunk_scan_entry_hold == 1U
+                          && opts->trunk_scan_hold_id[0] == '\0');
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    state->rtl_ctx = NULL;
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_y_start_adopts_a_pending_walk(void) {
+    int rc = 0;
+    for (int c = 0; c < YSTART_WALK_CASES; c++) {
+        rc |= y_start_over_a_pending_walk_case(c);
+    }
+    rc |= y_start_keeps_a_hold_only_where_the_receiver_is_case(1)
+          | y_start_keeps_a_hold_only_where_the_receiver_is_case(0);
+    rc |= reopen_over_a_pending_scan_tune_case(0) | reopen_over_a_pending_scan_tune_case(1);
+    rc |= reopen_over_a_replaced_tune_case(0) | reopen_over_a_replaced_tune_case(1);
+    rc |= test_reopen_after_a_manual_tune_and_a_restart_of_the_scan();
+    rc |= test_reopens_over_walks_queued_across_restarts();
+    rc |= test_reopen_elsewhere_drops_the_tune();
+    return rc;
+}
+
+/* A running untyped list left by something other than `y`, its call heard on keyed row BRAVO. A config that turns the
+   scanner off (@p map_clear 0) took the scanner flag down while staging its own keys and policy, before its scope
+   leave, so the call went on, named after no row; a channel-map clear (1) emptied the map before its leave, so the
+   leave found no list and ended nothing. Both end the call under BRAVO now, as a scan member. */
+static int
+running_list_left_case(int map_clear) {
+    const char* what = map_clear ? "channel-map clear of a running untyped list" : "config turning the scanner off";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1300012500L + (long int)map_clear * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const uint32_t tg = 5601U + (uint32_t)map_clear;
+    int rc = expect_case(what, "Next lands on BRAVO, keyed",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1
+                             && state->rkey_array[9] == 999ULL);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, tg) == 0);
+    if (map_clear) {
+        rc |= expect_case(what, "the clear is applied",
+                          press_action(opts, state, DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR) == 1
+                              && state->lcn_freq_count == 0);
+    } else {
+        static dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_trunking = 1;
+        rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+        rc |= expect_case(what, "the config is applied", dsd_app_drain_cmds(opts, state) == 1);
+        rc |= expect_case(what, "the scanner is off", opts->scanner_mode == 0);
+    }
+    rc |= expect_case(what, "the call ended", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, tg), "BRAVO");
+    rc |= expect_case(what, "as a scan member", history_stamps_are(state, tg, 1, 0));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* A config that turns a running typed list off ends its call under the row (ALPHA, its scope and keys) before the
+   command suspends the scope and stages the config. The scope leave after the command ended it, with the scanner flag
+   already down, so it was named after no row. */
+static int
+typed_list_left_by_a_config_case(void) {
+    const char* what = "config turning a typed list off";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 2;
+    int rc = 0;
+    static const char* const k_names[] = {"ALPHA", "BRAVO"};
+    for (int row = 0; row < 2; row++) {
+        state->trunk_lcn_freq[row] = 1320012500L + (long int)row * 1000000L;
+        rc |= expect_case(what, "typed named row",
+                          dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0
+                              && dsd_state_trunk_lcn_name_set(state, (size_t)row, k_names[row]) == 0);
+    }
+    dsd_app_frontend_runtime_start(opts, state);
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "row ALPHA lands", dsd_engine_channel_scan_on_air_row(state) == 0);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5603U) == 0);
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_case(what, "the config is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the scanner is off", opts->scanner_mode == 0);
+    rc |= expect_case(what, "the call ended", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, 5603U), "ALPHA");
+    rc |= expect_case(what, "as a scan member", history_stamps_are(state, 5603U, 1, 0));
+    dsd_app_frontend_runtime_stop();
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A `y` start with no channel map of the user's own leaves the tuner the operator's (the scan cannot move). Once a map
+   arrives (here an import) and the scan first lands a row, the tuner is the scan's: the operator's call ended at that
+   step as the operator's, and the scan's calls are scan members, not the operator's. The flag stayed 1 until a resume
+   or a new session, so every call the scan heard was filed as "Exploring". */
+static int
+test_first_row_landing_takes_the_tuner(void) {
+    const char* what = "first row landing after a start with no map";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 0, 1330012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    opts->chan_in_file[0] = '\0';
+    int rc =
+        expect_case(what, "the tune is queued",
+                    dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 1335012500U) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_case(what, "the tune is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "y is applied", press_action(opts, state, DSD_APP_CMD_SCANNER_TOGGLE) == 1);
+    rc |= expect_case(what, "no map: the tuner stays the operator's",
+                      opts->scanner_mode == 1 && state->operator_tuned == 1U);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5701U) == 0);
+    rc |= expect_case(what, "a map is imported",
+                      import_scan_list(opts, state, "1,1336012500\n2,1337012500\n") == 0
+                          && opts->chan_in_file[0] != '\0' && opts->scanner_mode == 1);
+    untyped_step_now(opts, state);
+    rc |= expect_case(what, "the step lands a row", dsd_state_lcn_heard_row(state) >= 0);
+    rc |= expect_case(what, "the tuner is the scan's", state->operator_tuned == 0U);
+    rc |= expect_case(what, "the operator's call ended as the operator's",
+                      !slot0_call_active(state) && history_row_of(state, 5701U) != NULL
+                          && history_row_of(state, 5701U)->operator_tuned == 1U);
+    rc |= expect_case(what, "the next call is heard", open_unrendered_call(state, 5702U) == 0);
+    dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
+    rc |= expect_case(what, "the scan's call is a scan member", history_stamps_are(state, 5702U, 1, 0));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* A config that would turn -Y off but is refused (an invalid Airspy serial, cfg_prepare_runtime_apply()) changes
+   nothing: the running list's call goes on and the scan runs. Ending the calls before the config is validated would
+   split the call on a refused config. @p typed: a typed list (NXDN48 rows) rather than the untyped walk list. */
+static int
+refused_config_case(int typed) {
+    const char* what = typed ? "refused config over a typed list" : "refused config over an untyped list";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (setup_named_walk_list(opts, state, 1, 1340012500L + (long int)typed * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    if (typed) {
+        for (int row = 0; row < 3; row++) {
+            rc |= expect_case(what, "typed row", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0);
+        }
+        state->last_cc_sync_time = time(NULL) - 11;
+        noCarrier(opts, state);
+        rc |= expect_case(what, "a typed row lands", dsd_engine_channel_scan_on_air_row(state) >= 0);
+    } else {
+        rc |= expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
+    }
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, 5801U) == 0);
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_AIRSPY;
+    cfg.airspy_invalid = 1;
+    rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_case(what, "the config is drained", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the scan still runs", opts->scanner_mode == 1);
+    rc |= expect_case(what, "the call goes on", slot0_call_active(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_refused_config_leaves_the_scan_alone(void) {
+    return refused_config_case(0) | refused_config_case(1);
+}
+
+/* Writes a group file naming talkgroup @p tg @p name into @p path (DSD_TEST_PATH_MAX). Returns 0 once written. */
+static int
+write_group_file(char* path, uint32_t tg, const char* name) {
+    const int fd = dsd_test_mkstemp(path, DSD_TEST_PATH_MAX, "scan-config-groups-");
+    if (fd < 0) {
+        return -1;
+    }
+    dsd_close(fd);
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (fp == NULL) {
+        (void)remove(path);
+        return -1;
+    }
+    DSD_FPRINTF(fp, "id,mode,name\n%u,A,%s\n", (unsigned)tg, name);
+    (void)fclose(fp);
+    return 0;
+}
+
+/* The group name talkgroup @p tg's call was filed under ("?" with no row). */
+static const char*
+history_group_name_of(const dsd_state* state, uint32_t tg) {
+    const Event_History* row = history_row_of(state, tg);
+    return row != NULL ? row->t_name : "?";
+}
+
+/* A config that turns -Y off and names a different group file ends the running untyped list's call under the group
+   list it was heard with (OLD), then installs the config's (NEW). Ending the call after the new list is installed would
+   file it under NEW. */
+static int
+test_config_stopping_the_scan_ends_its_calls_under_the_old_groups(void) {
+    const char* what = "config stopping -Y with a new group file";
+    const uint32_t tg = 5901U;
+    char old_groups[DSD_TEST_PATH_MAX];
+    char new_groups[DSD_TEST_PATH_MAX];
+    if (write_group_file(old_groups, tg, "OLD") != 0) {
+        return 1;
+    }
+    if (write_group_file(new_groups, tg, "NEW") != 0) {
+        (void)remove(old_groups);
+        return 1;
+    }
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        (void)remove(old_groups);
+        (void)remove(new_groups);
+        return 1;
+    }
+    int rc = 0;
+    if (setup_named_walk_list(opts, state, 1, 1350012500L) != 0) {
+        teardown_walk_list(opts, state);
+        (void)remove(old_groups);
+        (void)remove(new_groups);
+        return 1;
+    }
+    rc |= expect_case(what, "the old groups are imported", svc_import_group_list(opts, state, old_groups) == 0);
+    rc |= expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
+    rc |= expect_case(what, "a call is heard", open_unrendered_call(state, tg) == 0);
+    static dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunking = 1;
+    DSD_SNPRINTF(cfg.trunk_group_csv, sizeof cfg.trunk_group_csv, "%s", new_groups);
+    rc |= expect_case(what, "the config is queued", dsd_app_command_apply_config(&cfg) > 0);
+    rc |= expect_case(what, "the config is applied", dsd_app_drain_cmds(opts, state) == 1);
+    rc |= expect_case(what, "the scanner is off", opts->scanner_mode == 0);
+    rc |= expect_case(what, "the call ended", !slot0_call_active(state));
+    rc |= expect_label(what, history_label_of(state, tg), "BRAVO");
+    rc |= expect_label(what, history_group_name_of(state, tg), "OLD");
+    char mode[8];
+    char name[32];
+    rc |= expect_case(what, "the new groups are in force",
+                      strcmp(opts->group_in_file, new_groups) == 0
+                          && dsd_tg_policy_lookup_group_label(state, tg, mode, sizeof mode, name, sizeof name)
+                          && strcmp(name, "NEW") == 0);
+    teardown_walk_list(opts, state);
+    (void)remove(old_groups);
+    (void)remove(new_groups);
+    return rc;
+}
+
+static int
+test_running_list_left_by_a_config_or_a_map_clear(void) {
+    return running_list_left_case(0) | running_list_left_case(1) | typed_list_left_by_a_config_case();
+}
+
+enum { HELD_AVOID_REFUSED = 0, HELD_AVOID_FAILS_LATE = 1, HELD_AVOID_PUT_BACK = 2 };
+
+/* Put avoided @p row back, as the avoided channel list does (DSD_APP_CMD_SCAN_AVOID_REMOVE). */
+static int
+put_back_row(dsd_opts* opts, dsd_state* state, int row) {
+    dsd_app_scan_avoid_remove_payload id;
+    DSD_MEMSET(&id, 0, sizeof id);
+    dsd_app_scan_avoid_list list;
+    if (dsd_app_scan_avoid_list_build(opts, state, &list) != 0) {
+        return -1;
+    }
+    for (size_t i = 0; i < list.count; i++) {
+        if (list.entries[i].identity.kind == DSD_APP_SCAN_AVOID_KIND_LCN && list.entries[i].identity.row == row) {
+            id = list.entries[i].identity;
+        }
+    }
+    dsd_app_scan_avoid_list_free(&list);
+    if (id.kind != DSD_APP_SCAN_AVOID_KIND_LCN
+        || dsd_app_command_scan_avoid_remove(&id) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        return -1;
+    }
+    return dsd_app_drain_cmds(opts, state) == 1 ? 0 : -1;
+}
+
+/* B-5: `b` on a held -Y scan avoids row 0 and steps; the step to row 1 is refused at once (@p how REFUSED), or times
+   out and fails late (FAILS_LATE). The hold stopped the timed step, so the scan sat on the avoided row for good, a
+   second `b` finding it already avoided. At the next due pass it steps on (to row 2, the refused row 1 passed) and the
+   hold stays, keeping row 2. A row put back before that pass (PUT_BACK) is held where it is. */
+static int
+held_avoid_case(int how) {
+    static const char* const names[] = {"refused", "fails late", "put back"};
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "held avoid, step %s", names[how]);
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1250012500L + (long int)how * 3000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "the hold is on",
+                         press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    if (how == HELD_AVOID_FAILS_LATE) {
+        g_rtl_timeout_outstanding = 1;
+        g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+        rc |= expect_case(what, "b is applied", press_action(opts, state, DSD_APP_CMD_SCAN_AVOID) == 1);
+        g_rtl_timeout_outstanding = 0;
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+        land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        rc |= expect_case(what, "the step fails late",
+                          dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    } else {
+        g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+        rc |= expect_case(what, "b is applied", press_action(opts, state, DSD_APP_CMD_SCAN_AVOID) == 1);
+        g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    }
+    rc |= expect_case(what, "held on avoided row 0, row 1 passed",
+                      dsd_state_trunk_lcn_avoid_get(state, 0U) && dsd_engine_channel_scan_on_air_row(state) == 0
+                          && state->lcn_freq_roll == 2 && state->lcn_scan_hold == 1U);
+    if (how == HELD_AVOID_PUT_BACK) {
+        rc |= expect_case(what, "row 0 is put back",
+                          put_back_row(opts, state, 0) == 0 && !dsd_state_trunk_lcn_avoid_get(state, 0U));
+    }
+    g_rtl_tune_calls = 0;
+    untyped_step_now(opts, state);
+    if (how == HELD_AVOID_PUT_BACK) {
+        rc |= expect_case(what, "the hold keeps row 0",
+                          g_rtl_tune_calls == 0 && dsd_state_lcn_heard_row(state) == 0 && state->lcn_scan_hold == 1U);
+    } else {
+        const uint32_t row2_hz = (uint32_t)(base_hz + 2000000L);
+        rc |= expect_case(what, "the next pass steps to row 2", g_rtl_tune_calls == 1 && g_rtl_tune_freq == row2_hz);
+        rc |= expect_case(what, "row 2 lands, keyed",
+                          dsd_state_lcn_heard_row(state) == 2 && state->lcn_freq_roll == 3
+                              && state->rkey_array[9] == 777ULL);
+        rc |= expect_case(what, "the hold stays", state->lcn_scan_hold == 1U);
+        g_rtl_tune_calls = 0;
+        untyped_step_now(opts, state);
+        rc |= expect_case(what, "and keeps row 2", g_rtl_tune_calls == 0 && dsd_state_lcn_heard_row(state) == 2);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_held_scan_steps_off_an_avoided_row(void) {
+    return held_avoid_case(HELD_AVOID_REFUSED) | held_avoid_case(HELD_AVOID_FAILS_LATE)
+           | held_avoid_case(HELD_AVOID_PUT_BACK);
+}
+
+/* --- Issue #644: avoidance outranks the carrier. A -Y scan, held or not, sitting on a row the operator avoided leaves
+   it while a carrier still holds sync: the frame loop yields at once, and the no-carrier step takes the departure, at
+   the step cadence. It used to stay for as long as the carrier lasted (and, held, for good). --- */
+
+/* A carrier on the row on air: the hangtime anchor is fresh, so no rule but the departure would step, and the hunt
+   finds @p syncs more frames after the first. Returns the frames decoded before the loop yielded. */
+static int
+carrier_frames(dsd_opts* opts, dsd_state* state, int syncs) {
+    state->last_cc_sync_time = time(NULL);
+    run_synced_frames(opts, state, syncs, -1);
+    return g_frame_count;
+}
+
+/* `b` on the untyped walk list (row 0 on air), its step to row 1 refused at once: the scan sits on avoided row 0,
+   the cursor past row 1; @p held with the operator hold on. */
+static int
+sit_on_an_avoided_row(dsd_opts* opts, dsd_state* state, int held, const char* what) {
+    int rc = 0;
+    if (held) {
+        rc |= expect_case(what, "the hold is on",
+                          press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_case(what, "b is applied", press_action(opts, state, DSD_APP_CMD_SCAN_AVOID) == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "on avoided row 0",
+                      dsd_engine_channel_scan_on_avoided_row(state) && dsd_engine_channel_scan_on_air_row(state) == 0
+                          && state->lcn_freq_roll == 2);
+    return rc;
+}
+
+/* Held (@p held 1) or not, an untyped scan on an avoided row with a carrier: the first frame yields, the no-carrier
+   step lands row 2 (row 1 passed), a hold stays and keeps it, and the carrier there decodes through. */
+static int
+untyped_departure_case(int held) {
+    const char* what = held ? "held untyped departure under a carrier" : "unheld untyped departure under a carrier";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1270012500L + (long int)held * 3000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = sit_on_an_avoided_row(opts, state, held, what);
+    rc |= expect_case(what, "the carrier yields at its first frame", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the step takes row 2",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 2000000L)
+                          && dsd_state_lcn_heard_row(state) == 2 && state->rkey_array[9] == 777ULL);
+    rc |= expect_case(what, "the hold is as it was", state->lcn_scan_hold == (uint8_t)held);
+    rc |= expect_case(what, "the carrier on row 2 decodes through", carrier_frames(opts, state, 20) == 21);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Nowhere to go: every step refused (the row tried is passed, so the next try is another row), and then every other
+   row avoided. The departure retries at the step cadence, never on every frame, and with nothing to land on the
+   carrier is not cut at all; the look that found nowhere to go moves the cadence on, as a step does, so the rows are
+   not counted again on every frame. A row put back is left for at the next cadence. */
+static int
+departure_nowhere_to_go_case(void) {
+    const char* what = "departure with nowhere to go";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1280012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = sit_on_an_avoided_row(opts, state, 1, what);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_case(what, "the carrier yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "one refused try", g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) == 0);
+    for (int pass = 0; pass < 3; pass++) {
+        rc |=
+            expect_case(what, "within the cadence the carrier decodes through", carrier_frames(opts, state, 20) == 21);
+        noCarrier(opts, state);
+    }
+    rc |= expect_case(what, "and no step retries", g_rtl_tune_calls == 1);
+    /* The cadence ran out: one more try. */
+    state->lcn_avoid_depart_m -= 60.0;
+    rc |= expect_case(what, "the next departure yields", carrier_frames(opts, state, 20) == 1);
+    noCarrier(opts, state);
+    rc |= expect_case(what, "one more try", g_rtl_tune_calls == 2);
+    /* Every other row avoided: nowhere to go, so the carrier is never cut, cadence or not. */
+    rc |= expect_case(what, "rows 1 and 2 avoided",
+                      dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0
+                          && dsd_state_trunk_lcn_avoid_set(state, 2U, 1) == 0);
+    state->lcn_avoid_depart_m = 0.0;
+    const double looked_m = dsd_decode_now_mono_s();
+    rc |= expect_case(what, "nothing to land on: no yield", carrier_frames(opts, state, 20) == 21);
+    rc |= expect_case(what, "nowhere to go waits the cadence", state->lcn_avoid_depart_m >= looked_m + 1.0);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    /* Row 1 put back: the departure takes it at the next cadence. */
+    rc |= expect_case(what, "row 1 put back", dsd_state_trunk_lcn_avoid_set(state, 1U, 0) == 0);
+    state->lcn_avoid_depart_m -= 60.0;
+    rc |= expect_case(what, "the put-back row's departure yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the step takes row 1",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)(1280012500L + 1000000L)
+                          && dsd_state_lcn_heard_row(state) == 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* No carrier at all: the dwell stays expired, so every pass finds the step due. A held scan on its avoided row whose
+   steps are all refused retries at the step cadence, not on every pass. */
+static int
+departure_without_a_carrier_case(void) {
+    const char* what = "departure without a carrier";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1285012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = sit_on_an_avoided_row(opts, state, 1, what);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    g_rtl_tune_calls = 0;
+    for (int pass = 0; pass < 4; pass++) {
+        untyped_step_now(opts, state);
+    }
+    rc |= expect_case(what, "one refused try in the cadence",
+                      g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) == 0);
+    /* The cadence ran out: one more try. */
+    state->lcn_avoid_depart_m -= 60.0;
+    untyped_step_now(opts, state);
+    untyped_step_now(opts, state);
+    rc |= expect_case(what, "one more try after it", g_rtl_tune_calls == 2);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* A held typed list (three NXDN48 rows) on a row the operator avoided, with a carrier: the frame loop yields, the
+   typed step lands the next row, and the hold stays. */
+static int
+typed_departure_case(void) {
+    const char* what = "held typed departure under a carrier";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 3;
+    int rc = 0;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = 1290012500L + (long int)row * 1000000L;
+        rc |= expect_case(what, "typed row", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "row 0 lands", dsd_engine_channel_scan_on_air_row(state) == 0 && state->lcn_freq_roll == 1);
+    state->lcn_scan_hold = 1U;
+    /* `b` whose step was refused: the row on air is avoided and the hold stands. */
+    rc |= expect_case(what, "row 0 avoided", dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
+    rc |= expect_case(what, "the carrier yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the typed step lands row 1",
+                      g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) == 1
+                          && state->lcn_freq_roll == 2);
+    rc |= expect_case(what, "the hold stays", state->lcn_scan_hold == 1U);
+    rc |= expect_case(what, "and keeps row 1", carrier_frames(opts, state, 20) == 21);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #644: an NXDN trunk on a rigctl peer, tuned to a voice channel whose hangtime ran out, with a Next walk off any
+   scan still waiting on its tune: the walk owns the tuner until it settles, so the no-carrier return to the control
+   channel waits, and a state machine's own retunes (a DMR return, a control-channel or voice-channel tune) are
+   deferred, tuning nothing. The operator's own return to the control channel replaces the walk. Once the walk is gone
+   the hangtime return goes as before. */
+static int
+test_pending_walk_owns_the_tuner_against_trunk_recovery(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "a pending walk against trunk recovery";
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+    g_rigctl_setfreq_ok = 1;
+    const long cc = 942162500L; /* a frequency no other case uses: engine.c caches the last rigctl tune */
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = cc;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_vc_sync_time = 0;
+    dsd_engine_manual_tune_note_lcn_cycle(state, 0x644U, 943012500U, 942512500U, 1, 1, 0);
+    g_rigctl_setfreq_calls = 0;
+    noCarrier(opts, state);
+    int rc = expect_case(what, "the hangtime return waits",
+                         g_rigctl_setfreq_calls == 0 && opts->trunk_is_tuned == 1 && dsd_engine_manual_tune_noted());
+    dmr_sm_ctx_t ctx;
+    dmr_sm_init_ctx(&ctx, opts, state);
+    rc |= expect_case(what, "a DMR return is deferred",
+                      dmr_sm_return_to_cc(&ctx, opts, state, cc) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_case(what, "a control-channel tune is deferred",
+                      dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0, NULL) == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_case(what, "a voice-channel tune is deferred",
+                      dsd_trunk_tuning_hook_tune_to_freq(opts, state, 943512500L, 0, NULL)
+                          == DSD_TRUNK_TUNE_RESULT_DEFERRED);
+    rc |= expect_case(what, "nothing tuned", g_rigctl_setfreq_calls == 0 && dsd_trunk_tuning_pending_request() == 0U);
+    /* The walk gone: the hangtime return goes. */
+    dsd_engine_manual_tune_supersede(state);
+    noCarrier(opts, state);
+    rc |=
+        expect_case(what, "then the hangtime return tunes", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* What a state machine's return to the control channel came to when it ran inside a walk's late settling. */
+static int g_settling_return_calls;
+static dsd_trunk_tune_result g_settling_return_result;
+
+/* A walk's settling (dsd_channel_walk_settle_hook_set()) that lets a state machine's return run first, as a watchdog
+   tick between the completion's consumption and the walk's handoff would. */
+static void
+settle_after_a_trunk_return(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t requested_hz,
+                            uint64_t list_rev, int landed) {
+    (void)row;
+    (void)dir;
+    (void)requested_hz;
+    (void)list_rev;
+    (void)landed;
+    g_settling_return_calls++;
+    g_settling_return_result = dsd_trunk_tuning_hook_return_to_cc(opts, state, NULL);
+}
+
+/* Issue #644: a walk off any scan whose tune lands late owns the tuner until its settling (the row and the state
+   machines' handoff) is done, not only until its completion is taken: a state machine's return in between is still
+   deferred, tuning nothing. After the settling the tuner is free again. */
+static int
+test_walk_owns_the_tuner_through_its_settling(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "a late walk's settling against trunk recovery";
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    const dsd_channel_walk_settle_fn previous = dsd_channel_walk_settle_hook_get();
+    dsd_channel_walk_settle_hook_set(settle_after_a_trunk_return);
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = 942362500L;
+    state->p25_cc_freq = 942362500L;
+    const uint64_t id = 0x647U;
+    dsd_engine_manual_tune_note_lcn_cycle(state, id, 943212500U, 942712500U, 1, 1, 0);
+    dsd_engine_manual_tune_completion(id, RTL_STREAM_TUNE_OK);
+    g_settling_return_calls = 0;
+    g_settling_return_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_rigctl_setfreq_calls = 0;
+    int rc =
+        expect_case(what, "the landing is taken", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED);
+    rc |= expect_case(what, "the return inside the settling is deferred",
+                      g_settling_return_calls == 1 && g_settling_return_result == DSD_TRUNK_TUNE_RESULT_DEFERRED
+                          && g_rigctl_setfreq_calls == 0);
+    rc |= expect_case(what, "the tuner is free after it", !dsd_engine_manual_tune_operator_walk_noted());
+    dsd_channel_walk_settle_hook_set(previous);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Issue #644: the operator's return to the control channel (a P25 trunk's, through the control-channel tune) while a
+   walk off any scan waits on its tune replaces the walk and tunes. */
+static int
+return_to_cc_over_a_pending_walk_case(int refused) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = refused ? "Return to CC refused over a pending walk" : "Return to CC over a pending walk";
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                                        .tune_to_cc_request = dsd_engine_trunk_tune_to_cc_request,
+                                                        .return_to_cc_request = dsd_engine_return_to_cc_request});
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    opts->frame_p25p1 = 1;
+    g_rigctl_setfreq_ok = refused ? 0 : 1;
+    const long cc = 942262500L;
+    opts->trunk_enable = 1;
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = cc;
+    state->p25_cc_is_tdma = 0;
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    dsd_engine_manual_tune_note_lcn_cycle(state, 0x645U, 943112500U, 942612500U, 1, 1, 0);
+    g_rigctl_setfreq_calls = 0;
+    dsd_app_frontend_runtime_start(opts, state);
+    (void)press_action(opts, state, DSD_APP_CMD_RETURN_CC);
+    int rc = 0;
+    if (refused) {
+        /* Refused with nothing moved, the tune decides nothing: the walk stands, and owns the tuner again. */
+        rc |= expect_case(what, "the walk stands",
+                          dsd_engine_manual_tune_noted() && dsd_engine_manual_tune_operator_walk_noted());
+    } else {
+        rc |= expect_case(what, "the control channel is tuned",
+                          g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+        rc |= expect_case(what, "the walk is replaced", !dsd_engine_manual_tune_noted());
+    }
+    dsd_engine_manual_tune_supersede(state);
+    while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
+    dsd_app_frontend_runtime_stop();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+    g_rigctl_setfreq_ok = 0;
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_return_to_cc_replaces_a_pending_walk(void) {
+    return return_to_cc_over_a_pending_walk_case(0) | return_to_cc_over_a_pending_walk_case(1);
+}
+
+/* Issue #644: a held typed list on a rigctl peer and an RTL input, a go-to whose rigctl leg refuses before anything
+   moved: the row on air, its hold and its frames stand; the refused tune keeps no frame gate closed. */
+static int
+test_typed_goto_refused_by_rigctl_keeps_the_frames(void) {
+    const char* what = "typed go-to refused by the rigctl leg";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 3;
+    int rc = 0;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = 1300012500L + (long int)row * 1000000L;
+        rc |= expect_case(what, "typed row", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NXDN48) == 0);
+    }
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "row 0 lands", dsd_engine_channel_scan_row_confirmed(state, 0));
+    state->lcn_scan_hold = 1U;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 0;
+    g_rtl_tune_calls = 0;
+    rc |= expect_case(what, "the go-to is refused",
+                      dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_REFUSED);
+    rc |= expect_case(what, "nothing tuned, row 0 still on air and held",
+                      g_rtl_tune_calls == 0 && dsd_engine_channel_scan_row_confirmed(state, 0)
+                          && state->lcn_scan_hold == 1U);
+    rc |= expect_case(what, "no tune gates the frames", dsd_trunk_tuning_pending_request() == 0U);
+    rc |= expect_case(what, "row 0's carrier decodes", carrier_frames(opts, state, 20) == 21);
+    opts->use_rigctl = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+static int
+test_avoided_row_departs_under_a_carrier(void) {
+    return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
+           | departure_without_a_carrier_case() | typed_departure_case();
+}
+
+/* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */
+static int
+expect_untyped_entry_held(const char* what, const dsd_state* state, int row) {
+    int rc =
+        expect_case(what, "held, marked an entry hold", state->lcn_scan_hold == 1U && state->lcn_scan_entry_hold == 1U);
+    rc |= expect_case(what, "the row committed",
+                      state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+    rc |= expect_case(what, "no entry left waiting", !dsd_engine_channel_scan_entry_pending(state));
+    return rc;
+}
+
+/* Nothing holds the scan, and no entry waits. */
+static int
+expect_untyped_unheld(const char* what, const dsd_state* state) {
+    return expect_case(what, "nothing held",
+                       state->lcn_scan_hold == 0U && state->lcn_scan_entry_hold == 0U
+                           && !dsd_engine_channel_scan_entry_pending(state));
+}
+
+/* Poll the manual tunes until one lands; 1 when one did. */
+static int
+poll_until_landed(dsd_opts* opts, dsd_state* state) {
+    int landed = 0;
+    for (int i = 0; i < 4; i++) {
+        landed |= dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED;
+    }
+    return landed;
+}
+
+enum {
+    UGOTO_LANDS = 0,
+    UGOTO_PENDING_LANDS,
+    UGOTO_FAILS_LATE,
+    UGOTO_Y_CANCELS,
+    UGOTO_NEXT_CANCELS,
+    UGOTO_REFUSED,
+    UGOTO_DEFERRED,
+    UGOTO_REFUSED_MOVED,
+    UGOTO_CASES,
+};
+
+/* Ask the walk list's running scan to go to row 2, its tune answering as case @p c scripts. */
+static dsd_scan_goto_result
+untyped_goto_scripted(dsd_opts* opts, dsd_state* state, int c) {
+    static const int k_rtl[] = {
+        RTL_STREAM_TUNE_OK,      RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_TIMEOUT,  RTL_STREAM_TUNE_TIMEOUT,
+        RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_FAILED,  RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_FAILED,
+    };
+    const int timeout = k_rtl[c] == RTL_STREAM_TUNE_TIMEOUT;
+    if (c == UGOTO_REFUSED_MOVED) {
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        g_rigctl_setfreq_ok = 1;
+    }
+    g_rtl_timeout_outstanding = timeout;
+    g_rtl_tune_result = k_rtl[c];
+    const dsd_scan_goto_result result = dsd_engine_channel_scan_goto_row(opts, state, 2);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    return result;
+}
+
+/* What a pending go-to's case @p c does before its tune settles, and how it settles; 0 when it went as it should. */
+static int
+untyped_goto_settle(dsd_opts* opts, dsd_state* state, int c, const char* what) {
+    if (c == UGOTO_Y_CANCELS) {
+        dsd_engine_channel_scan_entry_cancel(state);
+    } else if (c == UGOTO_NEXT_CANCELS && press_walk_into_a_timeout(opts, state, 1) != 1) {
+        /* Next goes on from the go-to's row (issue #644 B-2), and its walk cancels the entry. */
+        return expect_case(what, "Next is applied", 0);
+    }
+    land_outstanding_tunes(c == UGOTO_FAILS_LATE ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+    if (c == UGOTO_FAILS_LATE) {
+        return expect_case(what, "the failure is taken",
+                           dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    }
+    return expect_case(what, "a landing is taken", poll_until_landed(opts, state));
+}
+
+/* Issue #644 D1: a running untyped list's go-to (the row a typed frequency picked) walks to the row as Next does
+   and holds it, marked an entry hold, once it lands: at once, or when its pending tune lands. A late failure is
+   Next's (the cursor past the row) and holds nothing, and so does a go-to cancelled meanwhile (`Y`, Next) whose tune
+   lands after all. A refusal or deferral before any leg moved changes nothing; after rigctl moved, it is Next's. */
+static int
+untyped_goto_case(int c) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const k_names[] = {
+        "lands",        "pending lands", "fails late", "Y cancels",
+        "Next cancels", "refused",       "deferred",   "refused after rigctl moved",
+    };
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "untyped go-to %s", k_names[c]);
+    const long int base_hz = 1500012500L + (long int)c * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    const uint32_t carrier_seq = state->carrier_seq;
+    const dsd_scan_goto_result result = untyped_goto_scripted(opts, state, c);
+    static const dsd_scan_goto_result k_want[] = {
+        DSD_SCAN_GOTO_HOLDING, DSD_SCAN_GOTO_PENDING, DSD_SCAN_GOTO_PENDING,  DSD_SCAN_GOTO_PENDING,
+        DSD_SCAN_GOTO_PENDING, DSD_SCAN_GOTO_REFUSED, DSD_SCAN_GOTO_DEFERRED, DSD_SCAN_GOTO_REFUSED,
+    };
+    int rc = expect_case(what, "the go-to's result", result == k_want[c]);
+    rc |= expect_case(what, "row 2 is tuned", g_rtl_tune_freq == (uint32_t)(base_hz + 2000000L));
+    if (c == UGOTO_LANDS) {
+        rc |= expect_untyped_entry_held(what, state, 2);
+        rc |= expect_case(what, "its keys and boundary",
+                          state->rkey_array[9] == 777ULL && state->carrier_seq != carrier_seq);
+    } else if (result == DSD_SCAN_GOTO_PENDING) {
+        rc |= expect_walk_left_alone(what, "pending", state, carrier_seq);
+        rc |=
+            expect_case(what, "the entry waits", dsd_engine_channel_scan_entry_pending(state) && !state->lcn_scan_hold);
+        rc |= untyped_goto_settle(opts, state, c, what);
+        if (c == UGOTO_PENDING_LANDS) {
+            rc |= expect_untyped_entry_held(what, state, 2);
+        } else if (c == UGOTO_FAILS_LATE) {
+            rc |= expect_walk_refused(what, state, 1, 2);
+            rc |= expect_untyped_unheld(what, state);
+            dsd_scan_entry_failure_t failed;
+            DSD_MEMSET(&failed, 0, sizeof failed);
+            rc |= expect_case(what, "the entry's failure is kept, once",
+                              dsd_engine_scan_entry_take_failure(state, &failed) == 1
+                                  && failed.scanner == DSD_SCAN_ENTRY_CHANNEL && failed.row == 2
+                                  && failed.result == DSD_SCAN_GOTO_REFUSED && strcmp(failed.label, "row 3") == 0
+                                  && dsd_engine_scan_entry_take_failure(state, NULL) == 0);
+        } else {
+            const int row = c == UGOTO_NEXT_CANCELS ? 0 : 2;
+            rc |= expect_case(what, "the row lands as a step's",
+                              state->lcn_freq_roll == row + 1 && dsd_state_lcn_heard_row(state) == row);
+            rc |= expect_untyped_unheld(what, state);
+        }
+    } else if (c == UGOTO_REFUSED_MOVED) {
+        rc |= expect_case(what, "the outgoing boundary ran", state->carrier_seq == carrier_seq + 1U);
+        rc |= expect_walk_refused(what, state, 1, 2);
+        rc |= expect_untyped_unheld(what, state);
+    } else {
+        rc |= expect_walk_left_alone(what, "refused", state, carrier_seq);
+        rc |= expect_untyped_unheld(what, state);
+    }
+    if (c != UGOTO_FAILS_LATE && result == DSD_SCAN_GOTO_PENDING) {
+        rc |= expect_case(what, "a cancel keeps no failure", dsd_engine_scan_entry_take_failure(state, NULL) == 0);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_untyped_goto_outcomes(void) {
+    int rc = 0;
+    for (int c = 0; c < UGOTO_CASES; c++) {
+        rc |= untyped_goto_case(c);
+    }
+    return rc;
+}
+
+/* Issue #644: a go-to of the untyped row confirmed on air needs no tune: the hold only. One whose landing is no longer
+   in force (here a step's refused tune since) is tuned again, though the receiver is still on it. */
+static int
+test_untyped_goto_on_air_holds_only(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped go-to on air";
+    if (setup_walk_list(opts, state, 1, 1530012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "the first go-to lands",
+                         dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING);
+    dsd_engine_channel_scan_entry_release(opts, state);
+    rc |= expect_untyped_unheld(what, state);
+    const int calls = g_rtl_tune_calls;
+    rc |= expect_case(what, "on air: the hold only",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING
+                          && g_rtl_tune_calls == calls);
+    rc |= expect_untyped_entry_held(what, state, 1);
+    dsd_engine_channel_scan_entry_release(opts, state);
+    /* A go-to refused or deferred before any leg moved leaves the receiver on row 1, still confirmed on air. */
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_case(what, "a refused go-to keeps the row on air",
+                      dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_REFUSED
+                          && dsd_engine_channel_scan_row_confirmed(state, 1));
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    rc |= expect_case(what, "a deferred go-to keeps the row on air",
+                      dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_DEFERRED
+                          && dsd_engine_channel_scan_row_confirmed(state, 1));
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_case(what, "a walk is refused",
+                      dsd_engine_channel_scan_walk_row(opts, state, 2, 1) == DSD_SCAN_WALK_REFUSED);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the landing is forgotten", !dsd_engine_channel_scan_row_confirmed(state, 1));
+    rc |= expect_case(what, "so the go-to tunes again",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING
+                          && g_rtl_tune_calls == calls + 4);
+    rc |= expect_untyped_entry_held(what, state, 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+enum {
+    URESUME_LANDS = 0,
+    URESUME_PENDING_LANDS,
+    URESUME_REFUSED,
+    URESUME_DEFERRED,
+    URESUME_CASES,
+};
+
+/* Issue #644 D1: a paused untyped list resumes at the row a typed frequency picked (row 2, not the cursor's row 1)
+   and holds it once it lands, at once or when its pending tune lands; refused or deferred, it stays paused, holding
+   nothing, with the reason on the status line, and a late landing of the refused tune leaves it paused. */
+static int
+untyped_resume_at_case(int c) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const k_names[] = {"lands", "pending lands", "refused", "deferred"};
+    static const int k_rtl[] = {
+        RTL_STREAM_TUNE_OK,
+        RTL_STREAM_TUNE_TIMEOUT,
+        RTL_STREAM_TUNE_FAILED,
+        RTL_STREAM_TUNE_DEFERRED,
+    };
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "untyped resume-at %s", k_names[c]);
+    const long int base_hz = 1560012500L + (long int)c * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    const int pending = c == URESUME_PENDING_LANDS;
+    g_rtl_timeout_outstanding = pending;
+    g_rtl_tune_result = k_rtl[c];
+    const dsd_scan_goto_result result = dsd_engine_channel_scan_resume_at(opts, state, 2);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    int rc = expect_case(what, "row 2 is tuned", g_rtl_tune_freq == (uint32_t)(base_hz + 2000000L));
+    if (pending) {
+        rc |= expect_case(what, "pending", result == DSD_SCAN_GOTO_PENDING && state->lcn_scan_resume_pending == 1U);
+        rc |= expect_case(what, "the entry waits", dsd_engine_channel_scan_entry_pending(state));
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing is taken", poll_until_landed(opts, state));
+    }
+    if (c <= URESUME_PENDING_LANDS) {
+        rc |= expect_case(what, "landed", pending || result == DSD_SCAN_GOTO_HOLDING);
+        rc |= expect_case(what, "the scan runs", opts->scanner_mode == 1 && state->lcn_scan_paused == 0U);
+        rc |= expect_untyped_entry_held(what, state, 2);
+    } else {
+        const int deferred = c == URESUME_DEFERRED;
+        rc |= expect_case(what, "refused", result == (deferred ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED));
+        rc |= expect_case(what, "the scan stays paused",
+                          opts->scanner_mode == 0 && state->lcn_scan_paused == 1U
+                              && state->lcn_scan_resume_pending == 0U);
+        rc |= expect_case(what, "its toast", strstr(state->ui_msg, deferred ? "deferred; retry" : "failed") != NULL);
+        rc |= expect_untyped_unheld(what, state);
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        (void)poll_until_landed(opts, state);
+        rc |= expect_case(what, "and a late landing leaves it paused",
+                          state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
+        rc |= expect_untyped_unheld(what, state);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+enum {
+    UOVER_PENDING = 0,
+    UOVER_DEFERRED,
+    UOVER_RIGCTL_REFUSED,
+    UOVER_RTL_REFUSED,
+    UOVER_RIGCTL_MOVED,
+    UOVER_CASES,
+};
+
+/* The resume-at's legs over a pending resume, as case @p c scripts them: rigctl refused first, or moved, or none. */
+static dsd_scan_goto_result
+untyped_resume_at_over_pending_scripted(dsd_opts* opts, dsd_state* state, int c) {
+    static const int k_rtl[] = {
+        RTL_STREAM_TUNE_TIMEOUT, RTL_STREAM_TUNE_DEFERRED, RTL_STREAM_TUNE_OK,
+        RTL_STREAM_TUNE_FAILED,  RTL_STREAM_TUNE_FAILED,
+    };
+    if (c == UOVER_RIGCTL_REFUSED || c == UOVER_RIGCTL_MOVED) {
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        g_rigctl_setfreq_ok = c == UOVER_RIGCTL_MOVED;
+    }
+    g_rtl_timeout_outstanding = c == UOVER_PENDING;
+    g_rtl_tune_result = k_rtl[c];
+    const dsd_scan_goto_result result = dsd_engine_channel_scan_resume_at(opts, state, 2);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    opts->use_rigctl = 0;
+    return result;
+}
+
+/* Issue #644: a resume-at over a resume still pending (row 1's). Pending, it replaces that
+   resume: the earlier tune's displaced record changes nothing, and the go-to's own landing runs the scan, held. Refused
+   or deferred before any leg moved (an RTL deferral, rigctl refusing first, an RTL refusal), the earlier resume stands
+   and lands, with no hold: an RTL refusal decides nothing about where the receiver goes, so it keeps the earlier
+   resume's tune, which the controller still lands. One after rigctl moved leaves it paused at once. */
+static int
+untyped_resume_at_over_pending_case(int c) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const k_names[] = {
+        "pending", "deferred", "rigctl refused first", "RTL refused", "refused after rigctl moved",
+    };
+    static const dsd_scan_goto_result k_want[] = {
+        DSD_SCAN_GOTO_PENDING, DSD_SCAN_GOTO_DEFERRED, DSD_SCAN_GOTO_REFUSED,
+        DSD_SCAN_GOTO_REFUSED, DSD_SCAN_GOTO_REFUSED,
+    };
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "untyped resume-at over a pending resume, %s", k_names[c]);
+    const long int base_hz = 1580012500L + (long int)c * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "a resume is pending",
+                         dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                             && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L));
+    rc |= expect_case(what, "the go-to's result", untyped_resume_at_over_pending_scripted(opts, state, c) == k_want[c]);
+    if (c == UOVER_DEFERRED || c == UOVER_RIGCTL_REFUSED || c == UOVER_RTL_REFUSED) {
+        rc |= expect_case(what, "the earlier resume stands", state->lcn_scan_resume_pending == 1U);
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "and lands", poll_until_landed(opts, state));
+        rc |=
+            expect_case(what, "the scan runs on row 1",
+                        opts->scanner_mode == 1 && state->lcn_scan_paused == 0U && dsd_state_lcn_heard_row(state) == 1);
+        rc |= expect_untyped_unheld(what, state);
+    } else if (c == UOVER_PENDING) {
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the landing is taken", poll_until_landed(opts, state));
+        rc |= expect_case(what, "the scan runs", opts->scanner_mode == 1 && state->lcn_scan_paused == 0U);
+        rc |= expect_untyped_entry_held(what, state, 2);
+    } else {
+        rc |= expect_case(what, "the earlier resume goes", state->lcn_scan_resume_pending == 0U);
+        rc |= expect_case(what, "the scan stays paused",
+                          opts->scanner_mode == 0 && state->lcn_scan_paused == 1U
+                              && state->lcn_scan_resume_pending == 0U);
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        (void)poll_until_landed(opts, state);
+        rc |= expect_case(what, "a late landing leaves it paused", state->lcn_scan_paused == 1U);
+        rc |= expect_untyped_unheld(what, state);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: `y` resuming a paused untyped list at row 1, its tune still pending, then row 1 typed: the entry waits on
+   that resume's tune, with no second one (here a second one would be deferred), and the resume's landing holds row 1.
+   A pending walk is no resume's tune. */
+static int
+test_untyped_resume_at_joins_the_pending_resume_of_its_row(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped resume-at of the pending resume's row";
+    const long int base_hz = 1680012500L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "a resume to row 1 is pending",
+                         dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING
+                             && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L));
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the go-to waits on the resume's tune",
+                      dsd_engine_channel_scan_resume_at(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "no second tune", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the resume and the entry wait",
+                      state->lcn_scan_resume_pending == 1U && dsd_engine_channel_scan_entry_pending(state));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the resume lands", poll_until_landed(opts, state));
+    rc |= expect_case(what, "the scan runs", opts->scanner_mode == 1 && state->lcn_scan_paused == 0U);
+    rc |= expect_untyped_entry_held(what, state, 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a running untyped list whose timed step's tune to a row is still pending, then that row typed: the entry
+   waits on the step's tune, with no second one (here a second one would be deferred), and the step's landing holds the
+   row. */
+static int
+test_untyped_goto_joins_the_pending_timed_step(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped go-to of the pending timed step's row";
+    if (setup_walk_list(opts, state, 1, 1720012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time = time(NULL) - 60;
+    noCarrier(opts, state);
+    const int row = pending_step_row(state);
+    int rc = expect_case(what, "the timed step's tune is pending", row >= 0);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the go-to waits on the step's tune",
+                      row >= 0 && dsd_engine_channel_scan_goto_row(opts, state, row) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "no second tune", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the entry waits",
+                      dsd_engine_channel_scan_entry_pending(state) && state->lcn_scan_hold == 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the step lands", poll_until_landed(opts, state));
+    rc |= expect_untyped_entry_held(what, state, row);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: an entry joined to the timed step's tune still pending, and the dwell still expired: the next no-carrier
+   pass waits for that tune, as it waits for a walk of the scan's, rather than stepping again (which would cancel the
+   entry, and here would be deferred). The step's landing holds the row; its late failure fails the entry, unheld, and
+   the rotation goes on. */
+static int
+untyped_rotation_waits_for_a_joined_step_case(int fails) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = fails ? "rotation over an entry joined to a timed step that fails"
+                             : "rotation over an entry joined to a timed step that lands";
+    if (setup_walk_list(opts, state, 1, 1725012500L + (long int)fails * 5000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time = time(NULL) - 60;
+    noCarrier(opts, state);
+    const int row = pending_step_row(state);
+    int rc = expect_case(what, "the timed step's tune is pending", row >= 0);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    rc |= expect_case(what, "the go-to waits on the step's tune",
+                      row >= 0 && dsd_engine_channel_scan_goto_row(opts, state, row) == DSD_SCAN_GOTO_PENDING);
+    const int tunes = g_rtl_tune_calls;
+    noCarrier(opts, state);
+    noCarrier(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the rotation tunes nothing", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the entry still waits on the step's tune",
+                      dsd_engine_channel_scan_entry_pending(state) && pending_step_row(state) == row
+                          && state->lcn_scan_hold == 0U);
+    if (fails) {
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+        for (int i = 0; i < 4; i++) {
+            (void)dsd_engine_scan_untyped_poll(opts, state);
+        }
+        rc |= expect_untyped_unheld(what, state);
+        dsd_scan_entry_failure_t failed;
+        rc |= expect_case(what, "the entry's failure is kept",
+                          dsd_engine_scan_entry_take_failure(state, &failed) == 1 && failed.row == row);
+        noCarrier(opts, state);
+        rc |= expect_case(what, "the rotation goes on", g_rtl_tune_calls > tunes);
+    } else {
+        land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+        rc |= expect_case(what, "the step lands", poll_until_landed(opts, state));
+        rc |= expect_untyped_entry_held(what, state, row);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_untyped_rotation_waits_for_a_joined_step(void) {
+    return untyped_rotation_waits_for_a_joined_step_case(0) | untyped_rotation_waits_for_a_joined_step_case(1);
+}
+
+/* Issue #644: a running untyped list on ALPHA, Next to BRAVO still waiting on its tune, then the stream restarts (a
+   gain or bandwidth change) and BRAVO is typed before the decoder's next poll. The stopped stream's tune is dead: the
+   go-to never joins it, but tunes BRAVO afresh, which lands and holds BRAVO, marked an entry hold. */
+static int
+test_goto_never_joins_a_tune_of_a_stopped_stream(void) {
+    const char* what = "a go-to after a restart over a pending walk";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1780012500L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune",
+                         press_walk_into_a_timeout(opts, state, 1) == 1
+                             && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    /* The restart, with the decoder's next poll still to come: the stop moves the stream session and fails the tune. */
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_case(what, "the stopped stream's walk is no row to join",
+                      dsd_engine_manual_tune_pending_row(state, NULL) < 0 && joinable_pending_id(state) == 0U);
+    const int tunes = g_rtl_tune_calls;
+    g_rtl_last_applied_hz = bravo_hz;
+    rc |= expect_case(what, "BRAVO is typed",
+                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, bravo_hz) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                          && dsd_app_drain_cmds(opts, state) == 1);
+    rc |=
+        expect_case(what, "the go-to tunes BRAVO afresh", g_rtl_tune_calls == tunes + 1 && g_rtl_tune_freq == bravo_hz);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_untyped_entry_held(what, state, 1);
+    rc |= expect_case(what, "the receiver is on BRAVO", opts->rtlsdr_center_freq == bravo_hz);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a Next off any scan still waiting on its tune when the stream restarts is dead before the decoder's next
+   poll drops it: it owns the tuner no longer, a `y` start never adopts it, and the next Previous walks from the row
+   heard, not from the dead walk's row. */
+static int
+test_dead_walk_is_never_adopted(void) {
+    const char* what = "a walk off the scan over a restart";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 0, 1785012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune",
+                         press_walk_into_a_timeout(opts, state, 1) == 1 && dsd_engine_manual_tune_operator_walk_noted()
+                             && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    dsd_engine_manual_tune_stream_stopping(opts, state);
+    dsd_engine_channel_scan_stream_stopping(opts, state);
+    g_session_generation_bump++;
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_case(what, "the dead walk owns the tuner no longer", !dsd_engine_manual_tune_operator_walk_noted());
+    rc |= expect_case(what, "nothing adopts it", dsd_engine_manual_tune_adopt_walk(state) == 0);
+    rc |= expect_case(what, "and no walk goes on from its row", dsd_engine_manual_tune_pending_row(state, NULL) < 0);
+    teardown_walk_list(opts, state);
+    g_session_generation_bump = 0U;
+    return rc;
+}
+
+/* Issue #644: a running untyped list on ALPHA, Next to BRAVO still waiting on its tune, which then fails before the
+   decoder's next poll, and BRAVO typed: the failed tune is never joined. The go-to tunes BRAVO afresh, which lands and
+   holds BRAVO, marked an entry hold. */
+static int
+test_goto_never_joins_a_failed_walk(void) {
+    const char* what = "a go-to over a walk that failed";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1787012500L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune",
+                         press_walk_into_a_timeout(opts, state, 1) == 1
+                             && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_case(what, "the failed walk is no row to join",
+                      dsd_engine_manual_tune_pending_row(state, NULL) < 0 && joinable_pending_id(state) == 0U);
+    const int tunes = g_rtl_tune_calls;
+    g_rtl_last_applied_hz = bravo_hz;
+    rc |= expect_case(what, "BRAVO is typed",
+                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, bravo_hz) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                          && dsd_app_drain_cmds(opts, state) == 1);
+    rc |=
+        expect_case(what, "the go-to tunes BRAVO afresh", g_rtl_tune_calls == tunes + 1 && g_rtl_tune_freq == bravo_hz);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_untyped_entry_held(what, state, 1);
+    rc |= expect_case(what, "the receiver is on BRAVO", opts->rtlsdr_center_freq == bravo_hz);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a running untyped list on ALPHA with a rigctl peer beside the radio. A tune of BRAVO times out (a go-to's
+   walk, @p step 0, or the timed step's, 1, BRAVO then avoided), then, with the peer answering, a tune of CHARLIE moves
+   the peer before its RTL leg is deferred. The receiver left BRAVO's way, so BRAVO's tune no longer decides where it
+   is: its landing that comes next commits nothing, and BRAVO's keys are never installed. */
+static int
+moved_deferral_supersedes_case(int step) {
+    const char* what = step ? "a moved deferral over a pending timed step" : "a moved deferral over a pending go-to";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1799012500L + (long int)step * 5000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    if (step) {
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+    } else {
+        (void)dsd_engine_channel_scan_goto_row(opts, state, 1);
+    }
+    g_rtl_timeout_outstanding = 0;
+    int rc = expect_case(what, "BRAVO's tune is pending", dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    const int peer_tunes = g_rigctl_setfreq_calls;
+    if (step) {
+        /* BRAVO avoided meanwhile: the next step goes on to CHARLIE. */
+        rc |= expect_case(what, "BRAVO is avoided", dsd_state_trunk_lcn_avoid_set(state, 1, 1) == 0);
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+    } else {
+        rc |= expect_case(what, "the go-to of CHARLIE is deferred",
+                          dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_DEFERRED);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the peer moved to CHARLIE",
+                      g_rigctl_setfreq_calls > peer_tunes && g_rigctl_setfreq_freq == state->trunk_lcn_freq[2]);
+    rc |= expect_case(what, "BRAVO's tune no longer decides", dsd_engine_manual_tune_pending_row(state, NULL) < 0);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_case(what, "BRAVO never committed",
+                      dsd_state_lcn_heard_row(state) != 1 && state->rkey_array[9] != 999ULL);
+    opts->use_rigctl = 0;
+    g_rigctl_setfreq_ok = 0;
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a paused untyped list resuming at row 1, its tune pending, then row 2 typed: the resume-at's own tune
+   times out, and the controller publishes its failure before the wait returns. The resume follows that tune, failed
+   as it is: the next poll reports the resume's failure, the scan stays paused with nothing waiting, and `y` resumes
+   again. */
+static int
+test_resume_at_whose_tune_failed_at_once(void) {
+    const char* what = "a resume-at whose tune failed before its wait returned";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1803012500L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "a resume is pending",
+                         dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    g_rtl_timeout_failed_first = 1;
+    rc |= expect_case(what, "the resume-at of row 2 waits",
+                      dsd_engine_channel_scan_resume_at(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_timeout_failed_first = 0;
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->ui_msg[0] = '\0';
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_case(what, "the resume's failure is reported",
+                      state->lcn_scan_resume_pending == 0U && state->lcn_scan_paused == 1U && opts->scanner_mode == 0
+                          && strstr(state->ui_msg, "failed") != NULL);
+    rc |= expect_case(what, "nothing waits", !dsd_engine_channel_scan_entry_pending(state));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_scan_untyped_poll(opts, state);
+    rc |= expect_case(what, "y resumes again",
+                      dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED && opts->scanner_mode == 1
+                          && state->lcn_scan_paused == 0U);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a paused untyped list whose resume waits on no tune at all (here its record went without a report): the
+   next poll ends the resume, so the scan stays paused, nothing says it is still resuming, and `y` resumes again. */
+static int
+test_resume_waiting_on_nothing_ends(void) {
+    const char* what = "a resume waiting on no tune";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_walk_list(opts, state, 1, 1806012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "a resume is pending",
+                         dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    dsd_engine_manual_tune_session_reset(NULL);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_scan_untyped_poll(opts, state);
+    rc |= expect_case(what, "the resume ended, the scan paused",
+                      state->lcn_scan_resume_pending == 0U && state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
+    rc |= expect_case(what, "y resumes again",
+                      dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED && opts->scanner_mode == 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a running untyped list held by `Y`, Next to BRAVO waiting on its tune, then BRAVO typed, the controller's
+   failure of that tune coming while the go-to reads the pending tune (here at the decoder's @p read -th read of the
+   stream session from the command on). Whichever read it comes before, the entry is bound to the tune it joined or
+   began, never to none: the tune's failure fails the entry, kept for its toast, and nothing is left waiting. */
+static int
+goto_over_a_walk_failing_mid_join_case(int read) {
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "a go-to joining a walk that fails at read %d", read);
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1808012500L + (long int)read * 100000L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Y holds the scan",
+                         press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    rc |= expect_case(what, "Next to BRAVO waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    g_rtl_last_applied_hz = bravo_hz;
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_fail_in_flight_at_read = read;
+    rc |= expect_case(what, "BRAVO is typed",
+                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, bravo_hz) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                          && dsd_app_drain_cmds(opts, state) == 1);
+    g_fail_in_flight_at_read = 0;
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    rc |= expect_case(what, "an entry waiting is bound to a tune", !intent.active || intent.request != 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_case(what, "nothing is left waiting", !dsd_engine_channel_scan_entry_pending(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a running untyped list with an entry waiting on BRAVO that names no tune, or a tune long gone (here set
+   so directly: a join that once read none): the next poll ends it, its failure kept for the toast, so nothing is left
+   waiting. */
+static int
+untyped_entry_waiting_on_nothing_case(uint64_t request) {
+    const char* what = request ? "an entry waiting on a tune gone" : "an entry waiting on no tune";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1809012500L + (long int)(request != 0U) * 1000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    dsd_engine_scan_entry_intent_set(state, 1, request);
+    int rc = expect_case(what, "the entry waits", dsd_engine_channel_scan_entry_pending(state));
+    (void)dsd_engine_scan_untyped_poll(opts, state);
+    rc |= expect_case(what, "the poll ends it", !dsd_engine_channel_scan_entry_pending(state));
+    dsd_scan_entry_failure_t failed;
+    DSD_MEMSET(&failed, 0, sizeof failed);
+    rc |= expect_case(what, "its failure is kept for the toast",
+                      dsd_engine_scan_entry_take_failure(state, &failed) && failed.row == 1
+                          && failed.result == DSD_SCAN_GOTO_REFUSED && strcmp(failed.label, "BRAVO") == 0);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_untyped_resume_at(void) {
+    int rc = 0;
+    for (int c = 0; c < URESUME_CASES; c++) {
+        rc |= untyped_resume_at_case(c);
+    }
+    for (int c = 0; c < UOVER_CASES; c++) {
+        rc |= untyped_resume_at_over_pending_case(c);
+    }
+    rc |= test_untyped_resume_at_joins_the_pending_resume_of_its_row();
+    rc |= test_untyped_goto_joins_the_pending_timed_step();
+    rc |= test_untyped_rotation_waits_for_a_joined_step();
+    rc |= test_goto_never_joins_a_tune_of_a_stopped_stream();
+    rc |= test_dead_walk_is_never_adopted();
+    rc |= test_goto_never_joins_a_failed_walk();
+    rc |= moved_deferral_supersedes_case(0) | moved_deferral_supersedes_case(1);
+    rc |= test_resume_at_whose_tune_failed_at_once();
+    rc |= test_resume_waiting_on_nothing_ends();
+    for (int read = 1; read <= 8; read++) {
+        rc |= goto_over_a_walk_failing_mid_join_case(read);
+    }
+    rc |=
+        untyped_entry_waiting_on_nothing_case(0U) | untyped_entry_waiting_on_nothing_case(UINT64_C(0x8000000000004444));
+    return rc;
+}
+
+enum {
+    UAGAIN_PENDING = 0,
+    UAGAIN_DEFERRED,
+    UAGAIN_RTL_REFUSED,
+    UAGAIN_RIGCTL_MOVED,
+    UAGAIN_CASES,
+};
+
+/* Issue #644: on a running untyped list, a go-to to row 1 is pending, then a go-to to row 2.
+   Pending, row 2's entry replaces row 1's, and its landing holds row 2. Deferred, or refused at the RTL leg, before any
+   leg moved, row 1's entry and tune stand (a refusal decides nothing about where the receiver goes), and row 1 lands
+   held. Refused after rigctl moved, row 1 is retired and row 2 passed. */
+static int
+untyped_goto_over_a_pending_goto_case(int c) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    static const char* const k_names[] = {"pending", "deferred", "RTL refused", "refused after rigctl moved"};
+    static const int k_rtl[] = {
+        RTL_STREAM_TUNE_TIMEOUT,
+        RTL_STREAM_TUNE_DEFERRED,
+        RTL_STREAM_TUNE_FAILED,
+        RTL_STREAM_TUNE_FAILED,
+    };
+    static const dsd_scan_goto_result k_want[] = {
+        DSD_SCAN_GOTO_PENDING,
+        DSD_SCAN_GOTO_DEFERRED,
+        DSD_SCAN_GOTO_REFUSED,
+        DSD_SCAN_GOTO_REFUSED,
+    };
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "untyped go-to over a pending go-to, %s", k_names[c]);
+    const long int base_hz = 1600012500L + (long int)c * 3000000L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "row 1's go-to is pending",
+                         dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    const uint32_t carrier_seq = state->carrier_seq;
+    if (c == UAGAIN_RIGCTL_MOVED) {
+        opts->use_rigctl = 1;
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+        opts->setmod_bw = 0;
+        g_rigctl_setfreq_ok = 1;
+    }
+    g_rtl_timeout_outstanding = c == UAGAIN_PENDING;
+    g_rtl_tune_result = k_rtl[c];
+    rc |= expect_case(what, "row 2's go-to", dsd_engine_channel_scan_goto_row(opts, state, 2) == k_want[c]);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    opts->use_rigctl = 0;
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    const int landed = poll_until_landed(opts, state);
+    if (c == UAGAIN_PENDING || c == UAGAIN_DEFERRED || c == UAGAIN_RTL_REFUSED) {
+        const int row = c == UAGAIN_PENDING ? 2 : 1;
+        rc |= expect_case(what, "a landing is taken", landed);
+        rc |= expect_untyped_entry_held(what, state, row);
+    } else {
+        rc |= expect_case(what, "no landing is taken", !landed);
+        rc |= expect_case(what, "row 2 is passed after rigctl moved", state->lcn_freq_roll == 3);
+        rc |= expect_case(what, "a boundary after rigctl moved", state->carrier_seq != carrier_seq);
+        rc |= expect_untyped_unheld(what, state);
+    }
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a pause cancels an untyped go-to still waiting on its tune: the tune's late landing holds nothing, and
+   neither does the resume after it. */
+static int
+test_untyped_goto_cancelled_by_a_pause(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped go-to cancelled by a pause";
+    if (setup_walk_list(opts, state, 1, 1620012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "the go-to is pending",
+                         dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    rc |= expect_untyped_unheld(what, state);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    (void)poll_until_landed(opts, state);
+    rc |= expect_case(what, "the late landing leaves the scan paused", state->lcn_scan_paused == 1U);
+    rc |= expect_untyped_unheld(what, state);
+    rc |= expect_case(what, "the resume lands",
+                      dsd_engine_channel_scan_resume(opts, state) == DSD_SCAN_RESUME_LANDED && opts->scanner_mode == 1);
+    rc |= expect_untyped_unheld(what, state);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a go-to replaces an entry hold. From a row an entry holds (@p entry 1), the walk's tune taken takes the
+   hold and its mark, so a tune that fails late leaves the scan unheld; an ordinary hold (@p entry 0) carries over and
+   stays through the late failure, as Next's does. */
+static int
+untyped_goto_replaces_a_hold_case(int entry) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = entry ? "untyped go-to over an entry hold" : "untyped go-to over an ordinary hold";
+    if (setup_walk_list(opts, state, 1, 1640012500L + (long int)entry * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = 0;
+    if (entry) {
+        rc |= expect_case(what, "row 1 is held",
+                          dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_HOLDING);
+        rc |= expect_untyped_entry_held(what, state, 1);
+    } else {
+        state->lcn_scan_hold = 1U;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    rc |= expect_case(what, "row 2's go-to is pending",
+                      dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const uint8_t held = entry ? 0U : 1U;
+    rc |= expect_case(what, "no mark while the tune is pending",
+                      state->lcn_scan_hold == held && state->lcn_scan_entry_hold == 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |=
+        expect_case(what, "the failure is taken", dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_FAILED);
+    rc |= expect_case(what, "the late failure leaves the hold as the go-to left it",
+                      state->lcn_scan_hold == held && state->lcn_scan_entry_hold == 0U
+                          && !dsd_engine_channel_scan_entry_pending(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* The walk list as two channels, each a run of two rows on one frequency: rows 0 and 1, then rows 2 and 3. */
+static void
+make_walk_list_two_runs(dsd_state* state, long int base_hz) {
+    state->trunk_lcn_freq[0] = state->trunk_lcn_freq[1] = base_hz;
+    state->trunk_lcn_freq[2] = state->trunk_lcn_freq[3] = base_hz + 1000000L;
+    state->lcn_freq_count = 4;
+}
+
+/* Issue #644: a Next with nowhere to land (every run's first row avoided, so the walk skips every channel) still acts
+   on the scan, so it cancels an entry waiting on its row's landing: the late landing holds nothing. */
+static int
+test_untyped_next_with_nowhere_to_land_cancels_an_entry(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped Next with nowhere to land";
+    if (setup_walk_list(opts, state, 1, 1660012500L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    make_walk_list_two_runs(state, 1660012500L);
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = expect_case(what, "the go-to of row 2 is pending",
+                         dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_PENDING);
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "both channels avoided",
+                      dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0
+                          && dsd_state_trunk_lcn_avoid_set(state, 2U, 1) == 0);
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "Next is taken", press_walk(opts, state, 1) == 1);
+    rc |= expect_case(what, "Next tunes nothing", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "no entry waits", !dsd_engine_channel_scan_entry_pending(state));
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the go-to's tune lands", poll_until_landed(opts, state));
+    rc |= expect_untyped_unheld(what, state);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644 D4, D5: in an untyped list a run of rows on one frequency is one channel, and its first row stands for it
+   unless another row of it is confirmed on air. With the first row avoided the channel is avoided: the match offers
+   none of its rows, and neither a running scan's go-to nor a paused scan's resume-at tunes one. */
+static int
+test_untyped_goto_refuses_an_avoided_channel(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = "untyped go-to of an avoided channel";
+    const long int base_hz = 1670012500L;
+    if (setup_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    make_walk_list_two_runs(state, base_hz);
+    int rc = expect_case(what, "row 0 avoided", dsd_state_trunk_lcn_avoid_set(state, 0U, 1) == 0);
+    dsd_scan_entry_match_t match;
+    rc |= expect_case(what, "the match offers none of its rows",
+                      dsd_engine_scan_entry_match(opts, state, (uint32_t)base_hz, &match) == 0
+                          && match.reason == DSD_SCAN_ENTRY_AVOIDED);
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the running go-to of row 1 is refused",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_REFUSED);
+    rc |= expect_case(what, "nothing tuned, nothing held", g_rtl_tune_calls == tunes && state->lcn_scan_hold == 0U);
+    (void)dsd_engine_channel_scan_pause(opts, state, 0);
+    rc |= expect_case(what, "the paused resume-at of row 1 is refused",
+                      dsd_engine_channel_scan_resume_at(opts, state, 1) == DSD_SCAN_GOTO_REFUSED);
+    rc |= expect_case(what, "still paused, nothing tuned", state->lcn_scan_paused == 1U && g_rtl_tune_calls == tunes);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a go-to of the row whose walk tune is already in flight in this session -- a second go-to while the
+   first one's tune is pending (@p over_walk 0), or one over Next's walk to that row (@p over_walk 1) -- tunes nothing
+   again: the entry waits on that tune, and its landing holds the row, as the trunk scan's go-to waits on a park in
+   flight. */
+static int
+untyped_goto_waits_on_the_tune_in_flight_case(int over_walk) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = over_walk ? "untyped go-to over Next's tune in flight" : "untyped go-to over its own tune";
+    if (setup_walk_list(opts, state, 1, 1660012500L + (long int)over_walk * 3000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    int rc = 0;
+    if (over_walk) {
+        rc |= expect_case(what, "Next's walk to row 1 is pending",
+                          dsd_engine_channel_scan_walk_row(opts, state, 1, 1) == DSD_SCAN_WALK_PENDING
+                              && !dsd_engine_channel_scan_entry_pending(state));
+    } else {
+        rc |= expect_case(what, "row 1's go-to is pending",
+                          dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    }
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const int tunes = g_rtl_tune_calls;
+    rc |= expect_case(what, "the go-to waits on the tune in flight",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    rc |= expect_case(what, "and so does a second one",
+                      dsd_engine_channel_scan_goto_row(opts, state, 1) == DSD_SCAN_GOTO_PENDING);
+    rc |= expect_case(what, "no second tune", g_rtl_tune_calls == tunes);
+    rc |= expect_case(what, "the entry waits, unheld",
+                      dsd_engine_channel_scan_entry_pending(state) && state->lcn_scan_hold == 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "its landing is taken", poll_until_landed(opts, state));
+    rc |= expect_untyped_entry_held(what, state, 1);
+    rc |= expect_case(what, "still one tune", g_rtl_tune_calls == tunes);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a held running untyped list on BRAVO, Next to CHARLIE still waiting on its tune, then a row tune the RTL
+   leg refuses (@p by_goto: a typed entry's go-to of ALPHA; else Next again). The refused tune decides nothing, so the
+   walk still pending stands: the controller lands it, and its landing commits CHARLIE, the hold carried there, so the
+   receiver, the row heard and the hold agree. */
+static int
+untyped_refusal_keeps_the_pending_walk_case(int by_goto) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const char* what = by_goto ? "a go-to refused over a pending walk" : "Next refused over a pending walk";
+    const long int base_hz = 1730012500L + (long int)by_goto * 5000000L;
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next lands on BRAVO",
+                         press_walk(opts, state, 1) == 1 && dsd_state_lcn_heard_row(state) == 1);
+    g_rtl_last_applied_hz = (uint32_t)(base_hz + 1000000L);
+    state->lcn_scan_hold = 1U;
+    rc |= expect_case(what, "Next to CHARLIE waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 2);
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    if (by_goto) {
+        rc |= expect_case(what, "the go-to of ALPHA is refused",
+                          dsd_engine_channel_scan_goto_row(opts, state, 0) == DSD_SCAN_GOTO_REFUSED);
+    } else {
+        (void)press_walk(opts, state, 1);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the walk is still pending", dsd_engine_manual_tune_pending_row(state, NULL) == 2);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the walk lands", poll_until_landed(opts, state));
+    rc |= expect_case(what, "the receiver, the row heard and the hold agree on CHARLIE",
+                      opts->rtlsdr_center_freq == (uint32_t)(base_hz + 2000000L) && dsd_state_lcn_heard_row(state) == 2
+                          && state->lcn_scan_hold == 1U);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* What the front end refuses over a walk off the scan still pending (test_off_scan_refusal_keeps_the_pending_walk()). */
+enum { OFFSCAN_BY_NEXT = 0, OFFSCAN_BY_ENTRY, OFFSCAN_BY_TAP, OFFSCAN_CASES };
+
+/* Issue #644: off any scan, Next to BRAVO still waiting on its tune, then a tune the front end refuses: Next again (on
+   CHARLIE), a frequency typed by hand, or a spectrum tap. The refused tune decides nothing about where the receiver
+   goes, so the walk still pending stands: its landing makes BRAVO the row heard (the Previous anchor), where the
+   receiver is, as a walk off the scan's landing does. */
+static int
+off_scan_refusal_keeps_the_pending_walk_case(int c) {
+    static const char* const k_what[] = {"Next refused over a pending walk off the scan",
+                                         "an entry refused over a pending walk off the scan",
+                                         "a tap refused over a pending walk off the scan"};
+    const char* what = k_what[c];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1740012500L + (long int)c * 5000000L;
+    if (setup_named_walk_list(opts, state, 0, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Next to BRAVO waits on its tune",
+                         press_walk_into_a_timeout(opts, state, 1) == 1 && dsd_engine_manual_tune_noted());
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    if (c == OFFSCAN_BY_NEXT) {
+        (void)press_walk(opts, state, 1);
+    } else {
+        const uint32_t elsewhere = (uint32_t)(base_hz + 3500000L);
+        rc |= expect_case(what, "the tune is queued",
+                          dsd_app_command_set_u32(
+                              c == OFFSCAN_BY_ENTRY ? DSD_APP_CMD_RTL_SET_FREQ : DSD_APP_CMD_MANUAL_TUNE, elsewhere)
+                              == DSD_APP_COMMAND_SUBMIT_QUEUED);
+        (void)dsd_app_drain_cmds(opts, state);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the walk is still pending", dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_case(what, "the walk lands", poll_until_landed(opts, state));
+    rc |=
+        expect_case(what, "the receiver and the row heard agree on BRAVO",
+                    opts->rtlsdr_center_freq == (uint32_t)(base_hz + 1000000L) && dsd_state_lcn_heard_row(state) == 1);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+static int
+test_off_scan_refusal_keeps_the_pending_walk(void) {
+    int rc = 0;
+    for (int c = 0; c < OFFSCAN_CASES; c++) {
+        rc |= off_scan_refusal_keeps_the_pending_walk_case(c);
+    }
+    return rc;
+}
+
+static int
+test_untyped_goto_over_a_pending_goto(void) {
+    int rc = test_untyped_goto_cancelled_by_a_pause();
+    rc |= untyped_goto_replaces_a_hold_case(1) | untyped_goto_replaces_a_hold_case(0);
+    rc |= test_untyped_next_with_nowhere_to_land_cancels_an_entry();
+    rc |= test_untyped_goto_refuses_an_avoided_channel();
+    for (int c = 0; c < UAGAIN_CASES; c++) {
+        rc |= untyped_goto_over_a_pending_goto_case(c);
+    }
+    rc |= untyped_refusal_keeps_the_pending_walk_case(1) | untyped_refusal_keeps_the_pending_walk_case(0);
+    rc |= test_off_scan_refusal_keeps_the_pending_walk();
+    rc |= untyped_goto_waits_on_the_tune_in_flight_case(0) | untyped_goto_waits_on_the_tune_in_flight_case(1);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -9248,6 +12574,7 @@ main(void) {
     rc |= test_legacy_step_landing_after_a_learned_channel_commits_the_row();
     rc |= test_legacy_step_failure_reconciles_the_cached_centre();
     rc |= test_untyped_find_and_enter_row();
+    rc |= test_untyped_row_confirmed_only_by_its_landing();
     rc |= test_legacy_step_landing_ends_the_reception_on_it();
     rc |= test_legacy_step_landing_after_a_rigctl_move_and_under_a_hold();
     rc |= test_legacy_step_with_no_row_reopens_its_windows();
@@ -9265,6 +12592,31 @@ main(void) {
     rc |= test_untyped_resume_settles_when_a_newer_tune_displaces_its_row();
     rc |= test_running_step_dropped_keeps_the_windows();
     rc |= test_in_place_pause_over_a_step_in_flight_runs_the_boundary_at_its_landing();
+    rc |= test_walk_waits_for_its_tune();
+    rc |= test_scan_owned_walk_tunes_both_front_ends();
+    rc |= test_walk_landing_ends_a_synced_reception();
+    rc |= test_y_stop_ends_the_untyped_scans_calls();
+    rc |= test_y_start_gives_the_tuner_to_the_scan();
+    rc |= test_y_start_adopts_a_pending_walk();
+    rc |= test_session_start_forgets_a_pending_walk();
+    rc |= test_running_list_left_by_a_config_or_a_map_clear();
+    rc |= test_first_row_landing_takes_the_tuner();
+    rc |= test_refused_config_leaves_the_scan_alone();
+    rc |= test_config_stopping_the_scan_ends_its_calls_under_the_old_groups();
+    rc |= test_held_scan_steps_off_an_avoided_row();
+    rc |= test_avoided_row_departs_under_a_carrier();
+    rc |= test_typed_goto_refused_by_rigctl_keeps_the_frames();
+    rc |= test_pending_walk_owns_the_tuner_against_trunk_recovery();
+    rc |= test_return_to_cc_replaces_a_pending_walk();
+    rc |= test_walk_owns_the_tuner_through_its_settling();
+    rc |= test_walk_press_while_pending_steps_on();
+    rc |= test_walk_press_while_a_step_is_pending_steps_on();
+    rc |= test_walk_holds_the_timed_step();
+    rc |= test_walk_landing_after_the_list_changed();
+    rc |= test_untyped_goto_outcomes();
+    rc |= test_untyped_goto_on_air_holds_only();
+    rc |= test_untyped_resume_at();
+    rc |= test_untyped_goto_over_a_pending_goto();
     rc |= test_typed_scan_digital_row_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_digital_target_after_nfm_timed_for_digital();
     rc |= test_trunk_scan_targets_on_a_resampled_chain();

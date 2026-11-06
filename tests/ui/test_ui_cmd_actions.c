@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "../test_support/channel_scan_stubs.h"
 #include "command_dispatch.h"
 #include "services.h"
 
@@ -173,6 +174,19 @@ svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
         state->operator_tuned = 0U;
     }
     return g_trunk_resume_rc;
+}
+
+/* `y` and SCAN_RESUME over an entry (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real one over
+   both scans, issue #644): handled, with nothing else done, while g_entry_continue is set. */
+static int g_entry_continue;
+static int g_entry_continue_calls;
+
+int
+svc_scan_entry_continue(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_entry_continue_calls++;
+    return g_entry_continue;
 }
 
 /* The next-start check (menu_services.c, not linked here; APP_COMMAND_QUEUE drives the real one): passes unless
@@ -874,18 +888,64 @@ test_scanner_toggle_pauses_and_resumes(void) {
     rc |= expect_int("y on a paused list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 2);
     rc |= expect_true("no row: still paused", state.lcn_scan_paused == 1U && opts.scanner_mode == 0);
 
-    /* Not paused: y starts the scanner and stops it. The tuner stays the operator's in the record: only a resume, or a
-       new session, clears that (issue #671 ruling). */
+    /* Not paused: y starts the scanner and stops it. A start after a manual tune gives the tuner to the scan, through
+       the engine's start (issue #644 B-4: it used to keep operator_tuned, so frontends showed a manual session). */
     state.lcn_scan_paused = 0U;
     state.operator_tuned = 1U;
     rc |= expect_int("resume with nothing paused", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("nothing paused toast", strcmp(state.ui_msg, "Not scanning: no paused scan to resume") == 0);
     rc |= expect_int("y starts", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
-    rc |= expect_true("started; operator_tuned kept", opts.scanner_mode == 1 && state.operator_tuned == 1U);
+    rc |= expect_true("started; the tuner is the scan's", opts.scanner_mode == 1 && state.operator_tuned == 0U);
     rc |= expect_int("resume of a running list", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 2);
     rc |= expect_true("running list toast", strcmp(state.ui_msg, "Not paused: the scan is running") == 0);
+    /* The stop leaves the scan while it still runs under its row keys (issue #644 B-3), then the keys and the flag
+       go. */
+    state.scan_keys_active_set = 1;
     rc |= expect_int("y stops", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
-    rc |= expect_int("stopped", opts.scanner_mode, 0);
+    int leave_saw_scanner = -1;
+    int leave_saw_row_keys = -1;
+    dsd_test_channel_scan_leave_seen(&leave_saw_scanner, &leave_saw_row_keys);
+    rc |= expect_true("the stop's leave saw the scan running under its row keys",
+                      leave_saw_scanner == 1 && leave_saw_row_keys == 1);
+    rc |= expect_true("stopped", opts.scanner_mode == 0 && state.scan_keys_active_set == 0);
+    return rc;
+}
+
+/* Issue #644: `y` and SCAN_RESUME ask the entry service first. While it handles them (an entry hold released, or an
+   entry still waiting), neither scan is paused, stopped, started or resumed; once it does not, `y` keeps its
+   meaning. */
+static int
+test_scanner_toggle_continues_an_entry(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    struct dsd_app_command y = {0};
+    y.id = DSD_APP_CMD_SCANNER_TOGGLE;
+    struct dsd_app_command resume = {0};
+    resume.id = DSD_APP_CMD_SCAN_RESUME;
+    g_entry_continue = 1;
+    g_entry_continue_calls = 0;
+
+    opts.trunk_scan_enabled = 1;
+    state.trunk_scan_target_count = 2U;
+    g_trunk_pause_calls = g_trunk_resume_calls = 0;
+    rc |= expect_int("y over a trunk-scan entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_int("resume over a trunk-scan entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 1);
+    rc |= expect_true("the trunk scan is neither paused nor resumed",
+                      g_trunk_pause_calls == 0 && g_trunk_resume_calls == 0 && state.trunk_scan_paused == 0U);
+    opts.trunk_scan_enabled = 0;
+    state.trunk_scan_target_count = 0U;
+
+    opts.scanner_mode = 1;
+    rc |= expect_int("y over a -Y entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_int("resume over a -Y entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &resume), 1);
+    rc |= expect_true("-Y still runs", opts.scanner_mode == 1 && g_entry_continue_calls == 4);
+
+    g_entry_continue = 0;
+    rc |= expect_int("y with no entry", dispatch_one(dsd_app_actions_trunk, &opts, &state, &y), 1);
+    rc |= expect_true("y with no entry stops -Y", opts.scanner_mode == 0 && g_entry_continue_calls == 5);
     return rc;
 }
 
@@ -987,6 +1047,7 @@ main(void) {
     rc |= test_trunk_on_forgets_tetra_moves();
     rc |= test_trunk_ownership_guard();
     rc |= test_scanner_toggle_pauses_and_resumes();
+    rc |= test_scanner_toggle_continues_an_entry();
     rc |= test_scanner_start_held_to_the_next_start();
     rc |= test_trunking_under_a_scan();
     rc |= test_radio_actions();

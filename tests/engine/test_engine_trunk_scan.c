@@ -34,7 +34,9 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -66,6 +68,8 @@
 #include <string.h>
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
+#include "manual_tune_pending.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 #include "test_env.h"
 #include "test_support.h"
@@ -210,6 +214,8 @@ static int g_scan_tune_to_freq_nfm_width_hz = -1;
 static int g_scan_tune_to_freq_analog_demod = -1;
 static int g_scan_tune_to_freq_am_width_hz = -1;
 static int g_scan_tune_to_freq_failures_remaining = 0;
+/* Issue #644: defer the next scan tunes behind another owner's, before any backend moves. */
+static int g_scan_tune_to_freq_deferrals_remaining = 0;
 /* Issue #526: refuse an analog width the published DSP rate cannot fit before any backend moves, as the real
    dsd_engine_scan_tune_to_freq() does, counting each refusal. */
 static int g_scan_tune_refuses_unfit_width = 0;
@@ -512,6 +518,10 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     if (g_scan_tune_to_freq_failures_remaining > 0) {
         g_scan_tune_to_freq_failures_remaining--;
         return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    if (g_scan_tune_to_freq_deferrals_remaining > 0) {
+        g_scan_tune_to_freq_deferrals_remaining--;
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
     }
     if (g_scan_tune_to_freq_pending && out_request_id) {
         g_scan_tune_pending_request = dsd_trunk_tuning_request_begin();
@@ -1928,6 +1938,17 @@ test_target_label_names_the_channel(void) {
     if (strcmp(state.trunk_scan_active_label, "County DMR, east") != 0) {
         DSD_FPRINTF(stderr, "published label '%s', want the target's sanitized label 'County DMR, east'\n",
                     state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+    /* Issue #644 (L1): a paused scan names no target, its label included; the resume publishes it again. */
+    if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0
+        || state.trunk_scan_active_label[0] != '\0') {
+        DSD_FPRINTF(stderr, "paused scan published label '%s'\n", state.trunk_scan_active_label);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_resume_locked(&opts, &state) != 0
+        || strcmp(state.trunk_scan_active_label, "County DMR, east") != 0) {
+        DSD_FPRINTF(stderr, "resumed scan published label '%s'\n", state.trunk_scan_active_label);
         test_rc = 1;
     }
 
@@ -5382,6 +5403,7 @@ failing_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
 
 static int g_counting_tune_to_cc_calls = 0;
 static int g_counting_tune_to_cc_failures_remaining = 0;
+static int g_counting_tune_to_cc_deferrals_remaining = 0;
 static int g_counting_tune_to_cc_ted_sps = 0;
 static long int g_counting_tune_to_cc_freq = 0;
 static long int g_counting_tune_to_cc_parked_freq = 0;
@@ -5399,6 +5421,10 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     if (g_counting_tune_to_cc_failures_remaining > 0) {
         g_counting_tune_to_cc_failures_remaining--;
         return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    if (g_counting_tune_to_cc_deferrals_remaining > 0) {
+        g_counting_tune_to_cc_deferrals_remaining--;
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
     }
     if (state) {
         state->trunk_cc_freq = freq;
@@ -5715,6 +5741,10 @@ test_p25_pending_retune_adopts_sm_retry(void) {
                     (unsigned long long)ctx->cc_tune_request_id, (unsigned long long)retry_request_id);
         test_rc = 1;
     }
+    if (dsd_engine_trunk_scan_target_confirmed(&state, 0)) {
+        DSD_FPRINTF(stderr, "an adopted P25 retry still in flight confirmed its target on air\n");
+        test_rc = 1;
+    }
 
     dsd_trunk_tuning_request_publish(retry_request_id, DSD_TRUNK_TUNE_RESULT_OK);
     (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 2.1, "test-sm-recovery");
@@ -5723,6 +5753,10 @@ test_p25_pending_retune_adopts_sm_retry(void) {
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 1 || ctx->cc_tune_pending) {
         DSD_FPRINTF(stderr, "adopted P25 retry completion advanced scan active=%zu calls=%d pending=%d\n",
                     dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls, ctx->cc_tune_pending);
+        test_rc = 1;
+    }
+    if (!dsd_engine_trunk_scan_target_confirmed(&state, 0)) {
+        DSD_FPRINTF(stderr, "an adopted P25 retry's completion did not confirm its target on air\n");
         test_rc = 1;
     }
 
@@ -5802,6 +5836,11 @@ test_p25_pending_retune_preserves_completed_sm_recovery(void) {
                     ctx->cc_tune_pending);
         test_rc = 1;
     }
+    /* Issue #644: the recovered park is the target's landing. */
+    if (!dsd_engine_trunk_scan_target_confirmed(&state, 0)) {
+        DSD_FPRINTF(stderr, "completed P25 recovery did not confirm its target on air\n");
+        test_rc = 1;
+    }
 
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
@@ -5870,6 +5909,93 @@ test_generic_pending_retune_holds_and_recovers(void) {
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+expect_landing(const char* stage, int ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "confirmed targets: %s failed\n", stage);
+        return 1;
+    }
+    return 0;
+}
+
+/* Which of three targets read as confirmed on air, as "010" (only target 1). */
+static int
+confirmed_targets_are(const char* tag, const dsd_state* state, int t0, int t1, int t2) {
+    const int got0 = dsd_engine_trunk_scan_target_confirmed(state, 0);
+    const int got1 = dsd_engine_trunk_scan_target_confirmed(state, 1);
+    const int got2 = dsd_engine_trunk_scan_target_confirmed(state, 2);
+    if (got0 != t0 || got1 != t1 || got2 != t2) {
+        DSD_FPRINTF(stderr, "%s: confirmed targets %d%d%d (want %d%d%d)\n", tag, got0, got1, got2, t0, t1, t2);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #644: a target is confirmed on air only by its park's completed retune, a trunked target's control-channel
+   park included; a park in flight, a pause, a switch and a rollback onto it each take that away. */
+static int
+test_target_confirmed_only_by_its_park(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,451000000,,250,,\n"
+                             "b,dmr-conventional,452000000,,250,,\n"
+                             "c,dmr-trunk,453000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    char err[256] = {0};
+    trunk_scan_test_set_now(1.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "confirmed targets: init failed: %s\n", err);
+        test_rc = 1;
+    }
+    const uint64_t park = dsd_trunk_tuning_pending_request();
+    test_rc |= confirmed_targets_are("a park in flight", &state, 0, 0, 0);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    trunk_scan_test_set_now(1.1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= confirmed_targets_are("the trunked park completed", &state, 1, 0, 0);
+    /* A trunked target's park names no frequency for an analog call: its control channel is never a call's. */
+    test_rc |= expect_landing("the trunked park names no frequency", dsd_engine_scan_landing_hz(&opts, &state) == 0U);
+
+    test_rc |=
+        expect_landing("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+    test_rc |= confirmed_targets_are("the conventional park completed", &state, 0, 1, 0);
+    test_rc |= expect_landing("the conventional park names its frequency",
+                              dsd_engine_scan_landing_hz(&opts, &state) == 452000000U);
+
+    test_rc |=
+        expect_landing("pauses", dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) == 0);
+    test_rc |= confirmed_targets_are("paused", &state, 0, 0, 0);
+    test_rc |= expect_landing("resumes", dsd_engine_trunk_scan_resume_locked(&opts, &state) == 0);
+    test_rc |= confirmed_targets_are("resumed", &state, 0, 1, 0);
+
+    /* Every retune fails, the fallback onto the target left included: the rollback lands nothing. */
+    g_counting_tune_to_cc_failures_remaining = 8;
+    g_scan_tune_to_freq_failures_remaining = 8;
+    test_rc |= expect_landing("advance refused",
+                              dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 1);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    test_rc |= expect_landing("the rollback stays on b", dsd_engine_trunk_scan_active_index(&state) == 1U);
+    test_rc |= confirmed_targets_are("the rollback", &state, 0, 0, 0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= confirmed_targets_are("no coordinator", &state, 0, 0, 0);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -9771,6 +9897,7 @@ run_with_default_tune_hook(int (*test_fn)(void)) {
     dsd_trunk_tuning_hooks_set(hooks);
     dsd_trunk_tuning_requests_reset();
     g_counting_tune_to_cc_failures_remaining = 0;
+    g_counting_tune_to_cc_deferrals_remaining = 0;
     g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
     int rc = test_fn();
@@ -14243,6 +14370,166 @@ test_nfm_target_refused_width_skipped_quietly(void) {
     return 0;
 }
 
+/* No walk off the scan is ever noted here, so a start takes nothing over (issue #644). */
+int
+dsd_engine_manual_tune_operator_walk_noted(void) {
+    return 0;
+}
+
+int
+dsd_engine_manual_tune_adopt_walk(const dsd_state* state) {
+    (void)state;
+    return 0;
+}
+
+/* The typed-frequency match (scan_entry.c, issue #644) built in: no manual tune is ever noted here. */
+int
+dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
+    (void)state;
+    if (out_scan_walk) {
+        *out_scan_walk = 0;
+    }
+    return -1;
+}
+
+/* The published entry reasons hold @p first and @p second for the two targets; 0 when they do. */
+static int
+expect_entry_reasons(const dsd_state* state, const char* stage, uint8_t first, uint8_t second) {
+    if (state->trunk_scan_entry_reason_count != 2U || !state->trunk_scan_entry_reasons
+        || state->trunk_scan_entry_reasons[0] != first || state->trunk_scan_entry_reasons[1] != second) {
+        DSD_FPRINTF(stderr, "entry reasons %s: count %zu, %d %d; want %u %u\n", stage,
+                    state->trunk_scan_entry_reason_count,
+                    state->trunk_scan_entry_reasons ? state->trunk_scan_entry_reasons[0] : -1,
+                    state->trunk_scan_entry_reasons && state->trunk_scan_entry_reason_count > 1U
+                        ? state->trunk_scan_entry_reasons[1]
+                        : -1,
+                    first, second);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #644: the coordinator publishes whether a frequency typed by hand could pick each target, as the entry match
+ * decides it, so a frontend names the row the engine takes: an nfm target whose 20 kHz the 16 kHz DSP rate cannot
+ * filter reads WIDTH, and follows a width edit that fits, the edit dropped, and a rate raised to fit, each with a new
+ * revision; a paused scan publishes too. */
+static int
+test_entry_reasons_follow_the_rate_and_a_width_edit(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 20000\n"
+                                          "dmr,dmr-conventional,154430000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_scan_dsp_rate_hz = 16000;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "at 16 kHz", DSD_SCAN_ENTRY_WIDTH, DSD_SCAN_ENTRY_OK);
+    uint64_t rev = state.trunk_scan_entry_rev;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.width_hz = 12500;
+    dsd_scan_row_edit_result result;
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_SET, &value, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "a 12.5 kHz edit", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    failed |= state.trunk_scan_entry_rev == rev;
+    rev = state.trunk_scan_entry_rev;
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_RESET, NULL, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    p25_sm_tick_guard_enter();
+    failed |= dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0;
+    p25_sm_tick_guard_leave();
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "the edit dropped, paused", DSD_SCAN_ENTRY_WIDTH, DSD_SCAN_ENTRY_OK);
+    failed |= state.trunk_scan_entry_rev == rev;
+    rev = state.trunk_scan_entry_rev;
+    g_scan_dsp_rate_hz = 48000;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "at 48 kHz", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    failed |= state.trunk_scan_entry_rev == rev;
+    rev = state.trunk_scan_entry_rev;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= state.trunk_scan_entry_rev != rev; /* nothing moved: nothing republished */
+    if (failed) {
+        DSD_FPRINTF(stderr, "entry reasons (%s)\n", err);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return failed;
+}
+
+/* A frequency typed by hand picks an nfm target only when the width it runs fits the published DSP rate (issue #644
+ * D5), the rule by which the rotation skips it at every visit: its effective width, which a session edit sets over the
+ * list's. */
+static int
+test_entry_match_reads_the_targets_effective_width(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n"
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_scan_dsp_rate_hz = 16000;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
+    dsd_scan_entry_match_t match;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 0
+              || match.reason != DSD_SCAN_ENTRY_WIDTH || match.row != 0 || strcmp(match.label, "fire") != 0;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.width_hz = 12500;
+    dsd_scan_row_edit_result result;
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_SET, &value, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 1
+              || match.scanner != DSD_SCAN_ENTRY_TRUNK || match.row != 0 || match.count != 1U || match.trunked != 0;
+    /* At a rate the list's width fits, the edit dropped, it is a pick as listed. */
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_RESET, NULL, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 0;
+    g_scan_dsp_rate_hz = 48000;
+    failed |= dsd_engine_scan_entry_match(&opts, &state, 154430000U, &match) != 1;
+    if (failed) {
+        DSD_FPRINTF(stderr, "entry match on the target's width (%s): scanner=%d reason=%d row=%d count=%u\n", err,
+                    (int)match.scanner, (int)match.reason, match.row, match.count);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return failed;
+}
+
 /* DSD_NEO_CHANNEL_LPF=0 turns off the channel filter every explicit width needs, and the front end refuses such a
  * width at any rate: an nfm target with its own width is named for it once when the scan starts, in the log and on the
  * status line. The scan start passes it over for the next target (issue #697), and the rotation passes it over at
@@ -15594,21 +15881,23 @@ static int
 expect_paused_publication(const dsd_state* state, const char* stage, unsigned count, int gain, unsigned trunk_enable,
                           unsigned hold) {
     if (state->trunk_scan_paused != 1U || state->operator_tuned != 1U || dsd_engine_trunk_scan_paused(state) != 1
-        || state->trunk_scan_active_id[0] != '\0' || state->trunk_scan_active_ordinal != 0U
-        || state->trunk_scan_target_count != count || state->trunk_scan_configured_gain != gain
-        || state->trunk_scan_configured_trunk_enable != trunk_enable || state->trunk_scan_hold != hold
-        || state->trunk_scan_gain_override != 0U || state->trunk_scan_active_avoided != 0U
-        || state->scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_NONE || state->scan_row_session != 0U
-        || state->scan_row_index != -1 || state->scan_timing.reason != (uint8_t)DSD_SCAN_STAY_NONE) {
+        || state->trunk_scan_active_id[0] != '\0' || state->trunk_scan_active_label[0] != '\0'
+        || state->trunk_scan_active_ordinal != 0U || state->trunk_scan_target_count != count
+        || state->trunk_scan_configured_gain != gain || state->trunk_scan_configured_trunk_enable != trunk_enable
+        || state->trunk_scan_hold != hold || state->trunk_scan_gain_override != 0U
+        || state->trunk_scan_active_avoided != 0U || state->scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_NONE
+        || state->scan_row_session != 0U || state->scan_row_index != -1
+        || state->scan_timing.reason != (uint8_t)DSD_SCAN_STAY_NONE) {
         DSD_FPRINTF(stderr,
-                    "paused publication after %s: paused=%u operator=%u id='%s' ordinal=%u count=%u gain=%d trunk=%u "
-                    "hold=%u override=%u row=%u/%u/%d timing=%u\n",
+                    "paused publication after %s: paused=%u operator=%u id='%s' label='%s' ordinal=%u count=%u gain=%d "
+                    "trunk=%u hold=%u override=%u row=%u/%u/%d timing=%u\n",
                     stage, (unsigned)state->trunk_scan_paused, (unsigned)state->operator_tuned,
-                    state->trunk_scan_active_id, (unsigned)state->trunk_scan_active_ordinal,
-                    (unsigned)state->trunk_scan_target_count, (int)state->trunk_scan_configured_gain,
-                    (unsigned)state->trunk_scan_configured_trunk_enable, (unsigned)state->trunk_scan_hold,
-                    (unsigned)state->trunk_scan_gain_override, (unsigned)state->scan_row_scanner,
-                    (unsigned)state->scan_row_session, (int)state->scan_row_index, (unsigned)state->scan_timing.reason);
+                    state->trunk_scan_active_id, state->trunk_scan_active_label,
+                    (unsigned)state->trunk_scan_active_ordinal, (unsigned)state->trunk_scan_target_count,
+                    (int)state->trunk_scan_configured_gain, (unsigned)state->trunk_scan_configured_trunk_enable,
+                    (unsigned)state->trunk_scan_hold, (unsigned)state->trunk_scan_gain_override,
+                    (unsigned)state->scan_row_scanner, (unsigned)state->scan_row_session, (int)state->scan_row_index,
+                    (unsigned)state->scan_timing.reason);
         return 1;
     }
     return 0;
@@ -16184,6 +16473,55 @@ test_refused_resume_stays_paused(void) {
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, keys_path);
     return test_rc;
+}
+
+/* Issue #644 (B-6): a trunked target parks on the control channel it learned, not its CSV seed, so a resume refused
+   there names the frequency it tried: the toast said the seed's. P25 keeps the learned channel in p25_cc_freq, DMR in
+   trunk_cc_freq (trunk_scan_retune_freq()'s two branches); @p body's first target is the trunked one, seeded at
+   851 MHz. */
+static int
+refused_resume_names_the_frequency_tried_case(const char* body, int p25, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path, target_path,
+                              sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    /* The target learned its control channel at 852.5 MHz while parked; the pause saves it. */
+    if (p25) {
+        state.p25_cc_freq = 852500000L;
+    }
+    state.trunk_cc_freq = 852500000L;
+    int test_rc =
+        expect_control_rc(what, dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    state.ui_msg[0] = '\0';
+    g_counting_tune_to_cc_failures_remaining = 1;
+    g_counting_tune_to_cc_freq = 0L;
+    trunk_scan_test_set_now(3.0);
+    test_rc |= expect_control_rc(what, dsd_engine_trunk_scan_resume_locked(&opts, &state), -3);
+    if (g_counting_tune_to_cc_freq != 852500000L) {
+        DSD_FPRINTF(stderr, "%s: the resume tuned %ld Hz, want the learned 852500000\n", what,
+                    g_counting_tune_to_cc_freq);
+        test_rc = 1;
+    }
+    test_rc |= expect_text(what, state.ui_msg, "Scan stays paused: tune to 852.500000 MHz failed");
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+static int
+test_refused_resume_names_the_frequency_tried(void) {
+    static const char k_dmr_body[] = "a,dmr-trunk,851000000,,250,,keyed,hexkeys.csv\n"
+                                     "b,dmr-conventional,461000000,,250,,plain,\n";
+    return refused_resume_names_the_frequency_tried_case(k_pause_keyed_body, 1, "learned p25 cc")
+           | refused_resume_names_the_frequency_tried_case(k_dmr_body, 0, "learned dmr cc");
 }
 
 /* F1: a resume whose preparation fails (no memory for the target's keys) drops the scopes it began and stays paused,
@@ -18252,9 +18590,10 @@ test_lists_tone_rejection_passes_over_a_copy(void) {
             tick_at(&opts, &state, start + (0.10 * tick));
         }
         /* With only the copy there is nowhere to go, so no advance is even tried: each tick asks the question alone
-           (its walk reads the DSP rate once), where an advance would read it again for its own walk. */
-        if (lists == 2 && g_scan_dsp_rate_reads != ticks) {
-            DSD_FPRINTF(stderr, "tone rejection with only a copy: %d rate reads in %d ticks, want one a tick\n",
+           (its walk reads the DSP rate once, beside the one read of the entry reasons' publication), where an advance
+           would read it again for its own walk. */
+        if (lists == 2 && g_scan_dsp_rate_reads != 2 * ticks) {
+            DSD_FPRINTF(stderr, "tone rejection with only a copy: %d rate reads in %d ticks, want two a tick\n",
                         g_scan_dsp_rate_reads, ticks);
             test_rc = 1;
         }
@@ -18327,9 +18666,10 @@ test_due_retry_with_an_alternate_walks_once_a_cooldown(void) {
         opts.trunk_is_tuned = 1;
         tick_at(&opts, &state, 2.35 + (0.05 * tick));
     }
-    if (g_scan_dsp_rate_reads != 1 || g_counting_tune_to_cc_calls != 0) {
+    /* Each tick also reads the rate once for the entry reasons' publication (issue #644): 20 of the reads. */
+    if (g_scan_dsp_rate_reads - 20 != 1 || g_counting_tune_to_cc_calls != 0) {
         DSD_FPRINTF(stderr, "a due retry with an alternate: %d walks and %d tunes in 1 s, want 1 and 0\n",
-                    g_scan_dsp_rate_reads, g_counting_tune_to_cc_calls);
+                    g_scan_dsp_rate_reads - 20, g_counting_tune_to_cc_calls);
         test_rc = 1;
     }
     /* The operator's hold makes the retry in place owed at once: the wait for the rotation does not outlast it. */
@@ -18739,10 +19079,1441 @@ test_failed_park_beside_an_unprepared_alternate_is_retried(void) {
     return run_failed_park_beside_an_unprepared_alternate(250) | run_failed_park_beside_an_unprepared_alternate(300);
 }
 
+/* ---- A frequency typed by hand that is a target (issue #644): the go-to and its entry hold ---------------------- */
+
+static int
+expect_goto_rc(const char* stage, dsd_scan_goto_result got, dsd_scan_goto_result want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "go-to %s answered %d, want %d\n", stage, (int)got, (int)want);
+        return 1;
+    }
+    return 0;
+}
+
+/* Where a go-to left the scan: the target on air, and the hold and its entry mark as published. */
+static int
+expect_goto_entry(const dsd_state* state, const char* stage, size_t active, unsigned hold, unsigned mark) {
+    const size_t got = dsd_engine_trunk_scan_active_index(state);
+    if (got != active || state->trunk_scan_hold != hold || state->trunk_scan_entry_hold != mark) {
+        DSD_FPRINTF(stderr, "go-to %s: on %zu, hold %u, entry %u; want %zu, %u, %u\n", stage, got,
+                    (unsigned)state->trunk_scan_hold, (unsigned)state->trunk_scan_entry_hold, active, hold, mark);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_goto(const char* stage, int ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "go-to: %s failed\n", stage);
+        return 1;
+    }
+    return 0;
+}
+
+/* Whether the scan kept the failure of an entry to target @p index, a refused park, for app-control to name once
+   (dsd_engine_scan_entry_take_failure()); @p index -1 for none kept. Takes it either way. */
+static int
+expect_goto_failure(dsd_state* state, const char* stage, int index) {
+    dsd_scan_entry_failure_t failed;
+    DSD_MEMSET(&failed, 0, sizeof failed);
+    const int took = dsd_engine_scan_entry_take_failure(state, &failed);
+    const int ok = index < 0 ? !took
+                             : took && failed.scanner == DSD_SCAN_ENTRY_TRUNK && failed.row == index
+                                   && failed.result == DSD_SCAN_GOTO_REFUSED && strcmp(failed.label, "b") == 0
+                                   && !dsd_engine_scan_entry_take_failure(state, NULL);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "go-to %s: failure kept %d (target %d \"%s\"), want target %d \"b\"\n", stage, took,
+                    took ? failed.row : -1, took ? failed.label : "", index);
+        return 1;
+    }
+    return 0;
+}
+
+/* A go-to and a release as app-control runs them: inside the P25 SM tick guard, which they never take themselves. */
+static dsd_scan_goto_result
+goto_target(dsd_opts* opts, dsd_state* state, int index, dsd_trunk_scan_goto_report* report) {
+    p25_sm_tick_guard_enter();
+    const dsd_scan_goto_result result = dsd_engine_trunk_scan_goto_locked(opts, state, index, report);
+    p25_sm_tick_guard_leave();
+    return result;
+}
+
+static void
+entry_release(dsd_opts* opts, dsd_state* state) {
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_entry_release_locked(opts, state);
+    p25_sm_tick_guard_leave();
+}
+
+static const char k_goto_body[] = "a,dmr-trunk,451000000,,250,,\n"
+                                  "b,dmr-conventional,452000000,,250,,\n"
+                                  "c,nfm-conventional,154430000,,250,,\n";
+
+static const char k_goto_trunked_body[] = "a,dmr-trunk,451000000,,250,,\n"
+                                          "b,dmr-trunk,452000000,,250,,\n"
+                                          "c,dmr-trunk,453000000,,250,,\n";
+
+/* A running scan goes to a conventional, an analog and a trunked target and holds each, marked an entry hold, once its
+   park landed; a target already on air takes the hold with no tune. A trunked target parks on the control channel it
+   learned, which the report names. Nothing takes the tick guard the caller holds. */
+static int
+test_goto_running_switches_and_holds(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    /* Parked on the trunked target, which learned its control channel away from its CSV seed. */
+    state.trunk_cc_freq = 451500000L;
+    trunk_scan_test_set_now(1.0);
+    const guard_counters guard = guard_counters_now();
+    const int unguarded = g_p25_hangtime_unguarded_reads;
+    dsd_trunk_scan_goto_report report;
+    int test_rc = expect_goto_rc("conventional", goto_target(&opts, &state, 1, &report), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto_entry(&state, "conventional", 1U, 1U, 1U);
+    test_rc |= expect_goto("conventional: park named and on air",
+                           report.park_hz == 452000000L && report.monitor_request == 0 && report.restart_gain == 0
+                               && dsd_engine_trunk_scan_target_confirmed(&state, 1));
+
+    g_scan_tune_watch_hz = 452000000L;
+    const int watched = g_scan_tune_watch_calls;
+    test_rc |= expect_goto_rc("on air", goto_target(&opts, &state, 1, &report), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto("on air: no tune", g_scan_tune_watch_calls == watched && report.park_hz == 452000000L);
+    g_scan_tune_watch_hz = 0;
+
+    test_rc |= expect_goto_rc("analog", goto_target(&opts, &state, 2, &report), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto_entry(&state, "analog", 2U, 1U, 1U);
+    test_rc |= expect_goto("analog: park named", report.park_hz == 154430000L);
+
+    const int calls = g_counting_tune_to_cc_calls;
+    test_rc |= expect_goto_rc("trunked", goto_target(&opts, &state, 0, &report), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto_entry(&state, "trunked", 0U, 1U, 1U);
+    test_rc |= expect_goto("trunked: parked on its learned control channel",
+                           g_counting_tune_to_cc_calls == calls + 1 && g_counting_tune_to_cc_freq == 451500000L
+                               && report.park_hz == 451500000L);
+    /* Four go-tos inside the caller's guard: none tried or waited for it itself, and every read it guards ran under
+       it. */
+    const guard_counters after = guard_counters_now();
+    test_rc |= expect_goto("the go-to leaves the guard to its caller",
+                           after.enter_calls == guard.enter_calls && after.blocking_enters == guard.blocking_enters + 4
+                               && after.leave_calls == guard.leave_calls + 4 && g_p25_tick_guard_depth == 0
+                               && g_p25_hangtime_unguarded_reads == unguarded);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_goto("the shutdown takes the published hold and mark",
+                           state.trunk_scan_hold == 0U && state.trunk_scan_entry_hold == 0U);
+    test_rc |= expect_goto_rc("no coordinator", goto_target(&opts, &state, 0, &report), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto("no coordinator: an empty report", report.park_hz == 0L);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+enum {
+    GOTO_PENDING_LANDS = 0,
+    GOTO_PENDING_FAILS_LATE,
+    GOTO_PENDING_THEN_ADVANCE,
+    GOTO_PENDING_THEN_HOLD,
+    GOTO_PENDING_THEN_PAUSE,
+    GOTO_PENDING_THEN_RELEASE,
+    GOTO_PENDING_REPLACED,
+};
+
+/* What a case does while the go-to's park is in flight, and the target, hold and mark it wants once the park answers.
+ */
+static int
+goto_pending_interrupt(dsd_opts* opts, dsd_state* state, int c, const char* what, size_t* on, unsigned* hold,
+                       unsigned* mark) {
+    int rc = 0;
+    switch (c) {
+        case GOTO_PENDING_THEN_ADVANCE:
+            rc |=
+                expect_control_rc(what, dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+            *on = 2U;
+            *hold = *mark = 0U;
+            break;
+        case GOTO_PENDING_THEN_HOLD:
+            rc |= expect_control_rc(what,
+                                    dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+            *mark = 0U;
+            break;
+        case GOTO_PENDING_THEN_PAUSE:
+            rc |=
+                expect_control_rc(what, dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+            *hold = *mark = 0U;
+            break;
+        case GOTO_PENDING_THEN_RELEASE:
+            entry_release(opts, state);
+            *hold = *mark = 0U;
+            break;
+        default: return 0;
+    }
+    return rc | expect_goto(what, dsd_engine_trunk_scan_entry_pending(state) == 0);
+}
+
+/* A running scan's go-to whose park is in flight: the hold and mark come with its landing, not before; a late failure
+   leaves the scan running unheld on its normal failure path (on to the next target); `L`, `Y`, a pause and a release
+   cancel it, so its late landing holds nothing; a later go-to replaces it. */
+static int
+goto_pending_case(int c, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dsd_trunk_scan_goto_report report;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, &report), DSD_SCAN_GOTO_PENDING);
+    uint64_t park = g_counting_tune_to_cc_last_request_id;
+    test_rc |= expect_goto_entry(&state, what, 1U, 0U, 0U);
+    test_rc |=
+        expect_goto(what, park != 0U && report.park_hz == 452000000L && dsd_engine_trunk_scan_entry_pending(&state) == 1
+                              && !dsd_engine_trunk_scan_target_confirmed(&state, 1));
+    size_t on = c == GOTO_PENDING_FAILS_LATE ? 2U : 1U;
+    unsigned hold = c == GOTO_PENDING_FAILS_LATE ? 0U : 1U;
+    unsigned mark = hold;
+    if (c == GOTO_PENDING_REPLACED) {
+        test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 2, &report), DSD_SCAN_GOTO_PENDING);
+        const uint64_t replaced = park;
+        park = g_counting_tune_to_cc_last_request_id;
+        /* The park let go of answers: it holds nothing, and the new one is still awaited. */
+        dsd_trunk_tuning_request_publish(replaced, DSD_TRUNK_TUNE_RESULT_OK);
+        tick_at(&opts, &state, 1.05);
+        test_rc |= expect_goto_entry(&state, "replaced: the earlier park answered", 2U, 0U, 0U);
+        test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 1);
+        on = 2U;
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    test_rc |= goto_pending_interrupt(&opts, &state, c, what, &on, &hold, &mark);
+    dsd_trunk_tuning_request_publish(park, c == GOTO_PENDING_FAILS_LATE ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                                        : DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, what, on, hold, mark);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    /* Only the entry's own park failing is kept for its toast; a cancel or a replacement keeps none. */
+    test_rc |= expect_goto_failure(&state, what, c == GOTO_PENDING_FAILS_LATE ? 1 : -1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #644: a go-to of trunked target b whose park is pending when the radio stream restarts: the stop fails the park
+   it queued. The new stream opens on the radio source the stopped one ran, on the frequency the park asked for: the
+   park landed there, so the target holds, marked an entry hold, and the scan does not move on. With @p elsewhere the
+   new stream opens on another centre: the stop's failure stands, as for any late failure. */
+static int
+goto_park_over_a_restart_case(int elsewhere) {
+    const char* what = elsewhere ? "go-to park over a restart elsewhere" : "go-to park over a restart on its frequency";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dsd_trunk_scan_goto_report report;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, &report), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    test_rc |= expect_goto(what, park != 0U && report.park_hz == 452000000L);
+    const int input = opts.audio_in_type;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)(void*)&state;
+    state.carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED); /* the stop fails the park it queued */
+    opts.rtlsdr_center_freq = elsewhere ? 452500000U : 452000000U;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    state.rtl_ctx = NULL;
+    opts.audio_in_type = input;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.1);
+    if (elsewhere) {
+        test_rc |= expect_goto_entry(&state, what, 2U, 0U, 0U);
+        test_rc |= expect_goto_failure(&state, what, 1);
+    } else {
+        test_rc |= expect_goto_entry(&state, what, 1U, 1U, 1U);
+        test_rc |= expect_goto(what, dsd_engine_trunk_scan_target_confirmed(&state, 1));
+        test_rc |= expect_goto_failure(&state, what, -1);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #644: the published target the entry match would take as on air follows the park's confirmation: none while
+   the go-to's park of b is in flight, b once it lands, none again once the scan is paused; each change with a new
+   revision. */
+static int
+test_entry_on_air_follows_the_park(void) {
+    const char* what = "entry on air";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.05);
+    test_rc |= expect_goto("the park in flight is no target on air", state.trunk_scan_entry_on_air == -1);
+    uint64_t rev = state.trunk_scan_entry_rev;
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto("the landed park is on air",
+                           state.trunk_scan_entry_on_air == 1 && state.trunk_scan_entry_rev != rev);
+    rev = state.trunk_scan_entry_rev;
+    p25_sm_tick_guard_enter();
+    test_rc |=
+        expect_goto("the pause", dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) == 0);
+    p25_sm_tick_guard_leave();
+    tick_at(&opts, &state, 1.2);
+    test_rc |= expect_goto("a paused scan has none on air",
+                           state.trunk_scan_entry_on_air == -1 && state.trunk_scan_entry_rev != rev);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #644: a go-to from DMR trunked target a to NXDN48 trunked target b, its park pending when the radio stream
+   restarts on b's frequency. A park puts the target's settings in force before its tune, so the new stream opens on
+   b's (NXDN48 at 2400 sym/s, the profile a restart publishes to it), and the landing at the reopen keeps them, never
+   a's DMR at 4800. */
+static int
+test_goto_park_over_a_restart_runs_the_target_profile(void) {
+    const char* what = "go-to park over a restart across a family";
+    static const char k_body[] = "a,dmr-trunk,451000000,,250,,\n"
+                                 "b,nxdn48-trunk,452000000,,250,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = expect_goto(what, opts.frame_dmr == 1 && opts.frame_nxdn48 == 0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    const int input = opts.audio_in_type;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)(void*)&state;
+    state.carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED); /* the stop fails the park it queued */
+    /* What the restart opens on and publishes: b's settings. */
+    test_rc |= expect_goto("the restart opens on b's profile",
+                           opts.frame_nxdn48 == 1 && opts.frame_dmr == 0
+                               && dsd_scan_mode_effective_profile(&opts, &state).symbol_rate_hz == 2400);
+    opts.rtlsdr_center_freq = 452000000U;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    state.rtl_ctx = NULL;
+    opts.audio_in_type = input;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, what, 1U, 1U, 1U);
+    test_rc |=
+        expect_goto("the landed park runs b's profile",
+                    dsd_engine_trunk_scan_target_confirmed(&state, 1) && opts.frame_nxdn48 == 1 && opts.frame_dmr == 0
+                        && dsd_scan_mode_effective_profile(&opts, &state).symbol_rate_hz == 2400);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #644: a go-to's park of b lands before the next tick, then @p advances Next presses come first, every other
+   target's retune refused. Refused targets cool down, so the presses tune only a few times between two ticks, far
+   fewer than the trunk-tuning ledger keeps: the park's landing is still read at the tick, b is confirmed, and the
+   receiver never moved off it. */
+static int
+park_landing_outlives_refused_advances_case(int advances) {
+    const char* what = "a park's landing after refused advances";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    const int calls = g_counting_tune_to_cc_calls;
+    for (int i = 0; i < advances; i++) {
+        (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    }
+    test_rc |= expect_goto(what, g_counting_tune_to_cc_calls - calls < 8
+                                     && dsd_trunk_tuning_request_status(park, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_target_confirmed(&state, 1)
+                                     && dsd_engine_trunk_scan_active_index(&state) == 1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_park_landing_outlives_refused_advances(void) {
+    return park_landing_outlives_refused_advances_case(8) | park_landing_outlives_refused_advances_case(70);
+}
+
+static int
+test_goto_park_over_a_restart(void) {
+    return goto_park_over_a_restart_case(0) | goto_park_over_a_restart_case(1);
+}
+
+/* A paused scan resumed at its target, the park still in flight, then that target typed: the go-to waits on that park,
+   with no second one, and the park's landing holds the target, marked an entry hold. */
+static int
+test_goto_joins_a_pending_resume_of_its_target(void) {
+    const char* what = "go-to of the target a pending resume parks";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc =
+        expect_control_rc(what, dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    test_rc |= expect_control_rc(what, dsd_engine_trunk_scan_resume_locked(&opts, &state), 1);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    const int calls = g_counting_tune_to_cc_calls;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
+    dsd_trunk_scan_goto_report report;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 0, &report), DSD_SCAN_GOTO_PENDING);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    test_rc |= expect_goto(what, park != 0U && g_counting_tune_to_cc_calls == calls
+                                     && dsd_engine_trunk_scan_entry_pending(&state) == 1);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, what, 0U, 1U, 1U);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_goto_running_pending_outcomes(void) {
+    return goto_pending_case(GOTO_PENDING_LANDS, "pending, lands")
+           | goto_pending_case(GOTO_PENDING_FAILS_LATE, "pending, fails late")
+           | goto_pending_case(GOTO_PENDING_THEN_ADVANCE, "pending, then L")
+           | goto_pending_case(GOTO_PENDING_THEN_HOLD, "pending, then Y")
+           | goto_pending_case(GOTO_PENDING_THEN_PAUSE, "pending, then a pause")
+           | goto_pending_case(GOTO_PENDING_THEN_RELEASE, "pending, then released")
+           | goto_pending_case(GOTO_PENDING_REPLACED, "pending, replaced by a later go-to");
+}
+
+/* A go-to of the target whose park is already in flight waits on that park, with no tune of its own; so does a
+   P25 target whose park failed while its state machine's own control-channel tune recovered it: that recovery is the
+   landing, whether it completed before the coordinator looked or the coordinator adopted its request first. */
+static int
+goto_p25_recovery_case(int adopted, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, "a,p25-trunk,851000000,,250,,\nb,p25-trunk,852000000,,250,,\n", 0, &opts, &state, dir,
+                        sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const int calls = g_counting_tune_to_cc_calls;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    test_rc |= expect_goto("a second go-to waits on the park in flight", g_counting_tune_to_cc_calls == calls);
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (!ctx) {
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED);
+    if (adopted) {
+        const uint64_t retry = dsd_trunk_tuning_request_begin();
+        dsd_trunk_tuning_request_mark_ready(retry);
+        ctx->cc_tune_request_id = retry;
+        ctx->cc_tune_pending = 1;
+        ctx->state = P25_SM_ON_CC;
+        tick_at(&opts, &state, 1.05);
+        test_rc |= expect_goto_entry(&state, "the recovery adopted", 1U, 0U, 0U);
+        test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 1);
+        dsd_trunk_tuning_request_publish(retry, DSD_TRUNK_TUNE_RESULT_OK);
+        (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 1.06, "test-sm-recovery");
+    } else {
+        ctx->cc_tune_pending = 0;
+        ctx->cc_tune_request_id = 0U;
+        ctx->state = P25_SM_ON_CC;
+    }
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, what, 1U, 1U, 1U);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_goto_lands_on_a_p25_recovery(void) {
+    return goto_p25_recovery_case(0, "p25 recovered at once") | goto_p25_recovery_case(1, "p25 recovery adopted");
+}
+
+/* A running scan's go-to whose retune is refused (@p failures 1) or deferred (@p deferrals 1) is rolled back as an
+   advance: the target left is parked again and lands. One whose recovery fails too (@p failures 2) leaves it installed
+   and cooling down, its park retried at the cooldown's end as a failed advance's is. Either way nothing is held, and
+   the target that failed, cooling down, is still a pick. */
+static int
+goto_refused_case(int failures, int deferrals, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = seed_active_call_row(&state, 7U, 8U, 1.0);
+    const int ends = g_explicit_call_ends;
+    g_counting_tune_to_cc_failures_remaining = failures;
+    g_counting_tune_to_cc_deferrals_remaining = deferrals;
+    dsd_trunk_scan_goto_report report;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 2, &report),
+                              deferrals ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_entry(&state, what, 0U, 0U, 0U);
+    test_rc |= expect_published_target(&state, what, "a", 1U, 3U);
+    test_rc |= expect_goto(what, report.park_hz == 453000000L && g_explicit_call_ends == ends + 1
+                                     && dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    const int recovered = failures < 2;
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_target_confirmed(&state, 0) == recovered);
+    if (!recovered) {
+        const int calls = g_counting_tune_to_cc_calls;
+        tick_at(&opts, &state, 2.5);
+        test_rc |= expect_goto("no retry before the cooldown ends", g_counting_tune_to_cc_calls == calls);
+        tick_at(&opts, &state, 3.1);
+        test_rc |=
+            expect_goto("the park left is retried at the cooldown's end",
+                        g_counting_tune_to_cc_calls == calls + 1 && dsd_engine_trunk_scan_target_confirmed(&state, 0));
+    }
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 2, &report), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto_entry(&state, "the target cooling down is still a pick", 2U, 1U, 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_goto_running_refused_rolls_back(void) {
+    return goto_refused_case(1, 0, "refused, recovered") | goto_refused_case(0, 1, "deferred, recovered")
+           | goto_refused_case(2, 0, "refused, recovery refused");
+}
+
+/* A go-to whose preparation fails (no memory for the keyed target's key set) moves nothing: the target on air keeps
+   its hold, mark and landing, and an earlier entry still waiting lands held. */
+static int
+test_goto_preparation_failure_changes_nothing(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(k_pause_keyed_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
+                              target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_scan_tune_to_freq_pending = 1;
+    int test_rc = expect_goto_rc("earlier entry", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    g_scan_tune_to_freq_pending = 0;
+    const uint64_t park = g_scan_tune_pending_request;
+    const int tunes = g_counting_tune_to_cc_calls;
+    dsd_trunk_scan_goto_report report;
+    dsd_key_set_test_alloc_fail_after(0);
+    dsd_scan_goto_result got = goto_target(&opts, &state, 0, &report);
+    dsd_key_set_test_alloc_fail_after(-1);
+    test_rc |= expect_goto_rc("over an earlier entry", got, DSD_SCAN_GOTO_SETUP_FAILED);
+    test_rc |= expect_goto("over an earlier entry: nothing moved",
+                           g_counting_tune_to_cc_calls == tunes && report.park_hz == 851000000L
+                               && dsd_engine_trunk_scan_entry_pending(&state) == 1);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, "the earlier entry lands", 1U, 1U, 1U);
+
+    dsd_key_set_test_alloc_fail_after(0);
+    got = goto_target(&opts, &state, 0, &report);
+    dsd_key_set_test_alloc_fail_after(-1);
+    test_rc |= expect_goto_rc("over a hold", got, DSD_SCAN_GOTO_SETUP_FAILED);
+    test_rc |= expect_goto_entry(&state, "over a hold", 1U, 1U, 1U);
+    test_rc |= expect_goto("over a hold: still on air",
+                           g_counting_tune_to_cc_calls == tunes && dsd_engine_trunk_scan_target_confirmed(&state, 1));
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+/* Only a target the rotation takes is a go-to's: one out of range, in a list that is off, avoided, or skipped at every
+   visit for a width the DSP rate cannot filter is refused with nothing tuned. */
+static int
+test_goto_refuses_a_target_out_of_the_rotation(void) {
+    static const char* const names[] = {"county", "state"};
+    static const char* const bodies[] = {
+        "a,dmr-trunk,451000000,,250,,\nb,dmr-trunk,452000000,,250,,\n",
+        "c,dmr-trunk,453000000,,250,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    const int calls = g_counting_tune_to_cc_calls;
+    int test_rc = expect_goto_rc("below range", goto_target(&opts, &state, -1, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_rc("past range", goto_target(&opts, &state, 3, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_rc("no state", goto_target(&opts, NULL, 0, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_list_rc("state off", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_goto_rc("list off", goto_target(&opts, &state, 2, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_list_rc("state on", list_set(&opts, &state, 2, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_goto("refusals tuned nothing", g_counting_tune_to_cc_calls == calls);
+    test_rc |= expect_control_rc("avoid a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    const int after_avoid = g_counting_tune_to_cc_calls;
+    test_rc |= expect_goto_rc("avoided", goto_target(&opts, &state, 0, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_entry(&state, "avoided", 1U, 0U, 0U);
+    test_rc |= expect_goto("the avoided refusal tuned nothing", g_counting_tune_to_cc_calls == after_avoid);
+    scan_lists_finish(&files, &opts, &state);
+
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "dmr,dmr-conventional,461000000,,250,250,,\n"
+                                          "fire,nfm-conventional,154430000,,250,250,,"
+                                          "--nfm-bandwidth-hz 20000 --squelch-db -50\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_scan_dsp_rate_hz = 16000;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    test_rc |= expect_goto("width fixture", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0);
+    test_rc |= expect_goto_rc("width unfit", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_entry(&state, "width unfit", 0U, 0U, 0U);
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.width_hz = 12500;
+    test_rc |= expect_goto("width edit", dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session,
+                                                                           "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                                           DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+                                             == DSD_SCAN_ROW_EDIT_STORED);
+    test_rc |= expect_goto_rc("width edited to fit", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto_entry(&state, "width edited to fit", 1U, 1U, 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A one-target scan has no `count < 2` shortcut: its park in flight is waited on, and a park that failed late leaves
+   it cooling down where it is, unheld; a go-to then parks it again at once (its cooldown is no bar to a pick), and a
+   refused park leaves it unheld with no recovery to try. */
+static int
+test_goto_single_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    if (scan_visit_init(NULL, "a,dmr-trunk,451000000,,250,,\n", 0, &opts, &state, dir, sizeof dir, target_path,
+                        sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    const uint64_t park = dsd_trunk_tuning_pending_request();
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    int calls = g_counting_tune_to_cc_calls;
+    int test_rc = expect_goto_rc("park in flight", goto_target(&opts, &state, 0, NULL), DSD_SCAN_GOTO_PENDING);
+    test_rc |= expect_goto("park in flight: no tune of its own", park != 0U && g_counting_tune_to_cc_calls == calls);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tick_at(&opts, &state, 0.1);
+    test_rc |= expect_goto_entry(&state, "the park failed late", 0U, 0U, 0U);
+    test_rc |= expect_goto("the park failed late: nothing waits, nothing on air",
+                           dsd_engine_trunk_scan_entry_pending(&state) == 0
+                               && !dsd_engine_trunk_scan_target_confirmed(&state, 0));
+
+    g_counting_tune_to_cc_failures_remaining = 1;
+    test_rc |= expect_goto_rc("refused", goto_target(&opts, &state, 0, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_entry(&state, "refused", 0U, 0U, 0U);
+    test_rc |= expect_goto("refused: one park, no recovery", g_counting_tune_to_cc_calls == calls + 1
+                                                                 && !dsd_engine_trunk_scan_target_confirmed(&state, 0));
+    calls = g_counting_tune_to_cc_calls;
+    test_rc |= expect_goto_rc("parked again", goto_target(&opts, &state, 0, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto_entry(&state, "parked again", 0U, 1U, 1U);
+    test_rc |= expect_goto("parked again at once", g_counting_tune_to_cc_calls == calls + 1);
+    test_rc |= expect_goto_rc("on air", goto_target(&opts, &state, 0, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto("on air: no tune", g_counting_tune_to_cc_calls == calls + 1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Issue #644: a running trunk scan with an entry waiting on target b that names no park, or a park no longer in flight
+   (set so directly): the next tick ends it, its failure kept for the toast, so nothing is left waiting. */
+static int
+goto_entry_waiting_on_nothing_case(uint64_t request) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    (void)dsd_engine_scan_entry_take_failure(&state, NULL);
+    dsd_engine_scan_entry_intent_set_target(&state, 1, 0U, request);
+    int test_rc = expect_goto("the entry is set", dsd_engine_scan_entry_intent_get(&state).active);
+    tick_at(&opts, &state, 1.05);
+    test_rc |= expect_goto("the tick ends it", !dsd_engine_scan_entry_intent_get(&state).active);
+    test_rc |= expect_goto_failure(&state, "waiting on nothing", 1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_goto_entry_waiting_on_nothing(void) {
+    return goto_entry_waiting_on_nothing_case(0U) | goto_entry_waiting_on_nothing_case(UINT64_C(4444));
+}
+
+/* Issue #644: a park whose request already failed (a stream stop fails the one it queued) before the coordinator's next
+   tick is dead: a go-to of its target never waits on it, but parks the target afresh, and that park's landing holds
+   it. */
+static int
+test_goto_never_joins_a_failed_park(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    if (scan_visit_init(NULL, "a,dmr-trunk,451000000,,250,,\n", 0, &opts, &state, dir, sizeof dir, target_path,
+                        sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    const uint64_t park = dsd_trunk_tuning_pending_request();
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const int calls = g_counting_tune_to_cc_calls;
+    int test_rc = expect_goto_rc("over a failed park", goto_target(&opts, &state, 0, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto("over a failed park: parked afresh", park != 0U && g_counting_tune_to_cc_calls == calls + 1);
+    test_rc |= expect_goto_entry(&state, "over a failed park", 0U, 1U, 1U);
+    tick_at(&opts, &state, 0.1);
+    test_rc |= expect_goto_entry(&state, "over a failed park, after a tick", 0U, 1U, 1U);
+    test_rc |= expect_goto_failure(&state, "over a failed park", -1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* The same channel in two lists (issue #697) is two targets, each with its own settings: a go-to of the copy not on
+   air switches to it. */
+static int
+test_goto_a_copy_in_another_list(void) {
+    static const char* const names[] = {"county", "state"};
+    static const char* const bodies[] = {
+        "a,dmr-conventional,461000000,,250,,\n",
+        "a2,dmr-conventional,461000000,,250,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = expect_goto_rc("copy", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_goto_entry(&state, "copy", 1U, 1U, 1U);
+    test_rc |= expect_goto("copy: its own list on air", state.trunk_scan_active_list == 2U
+                                                            && dsd_engine_trunk_scan_target_confirmed(&state, 1)
+                                                            && !dsd_engine_trunk_scan_target_confirmed(&state, 0));
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+enum {
+    GOTO_PAUSED_LANDS = 0,
+    GOTO_PAUSED_PENDING,
+    GOTO_PAUSED_REFUSED,
+    GOTO_PAUSED_UNPREPARED,
+    GOTO_PAUSED_FAILS_LATE,
+    GOTO_PAUSED_DEFERRED,
+};
+
+/* Two keyed targets: the scan pauses at the trunked one, and the go-to resumes at the conventional one. */
+static const char k_goto_paused_body[] = "a,p25-trunk,851000000,,250,,keyed,hexkeys.csv\n"
+                                         "b,dmr-conventional,461000000,,250,,keyed,hexkeys.csv\n";
+
+/* What a paused go-to that stayed paused left: the toast, and the target it paused at is the one a plain resume parks.
+ */
+static int
+expect_goto_stayed_paused(dsd_opts* opts, dsd_state* state, const char* stage, const char* want) {
+    int rc = expect_paused_publication(state, stage, 2U, 0, 0U, 0U);
+    rc |= expect_text(stage, state->ui_msg, want);
+    rc |= expect_control_rc(stage, dsd_engine_trunk_scan_resume_locked(opts, state), 0);
+    rc |= expect_published_target(state, "the plain resume parks the target paused at", "a", 1U, 2U);
+    return rc | expect_goto_entry(state, stage, 0U, 0U, 0U);
+}
+
+/* A paused scan resumes at the target given (issue #644): the scan runs on it, held and marked once its park lands,
+   and while that park is in flight it runs as a resume pending does. A refused park or a failed preparation leaves it
+   paused, with the toast, and the target it paused at is still the one a plain resume parks; a park that fails late
+   leaves it running unheld on its normal failure path, on to the next target. */
+static int
+goto_paused_case(int c, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(k_goto_paused_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
+                              target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    int test_rc =
+        expect_control_rc(what, dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    trunk_scan_test_set_now(1.0);
+    state.ui_msg[0] = '\0';
+    g_scan_tune_to_freq_failures_remaining = c == GOTO_PAUSED_REFUSED ? 1 : 0;
+    g_scan_tune_to_freq_deferrals_remaining = c == GOTO_PAUSED_DEFERRED ? 1 : 0;
+    g_scan_tune_to_freq_pending = c == GOTO_PAUSED_PENDING || c == GOTO_PAUSED_FAILS_LATE;
+    dsd_key_set_test_alloc_fail_after(c == GOTO_PAUSED_UNPREPARED ? 0 : -1);
+    dsd_trunk_scan_goto_report report;
+    const dsd_scan_goto_result got = goto_target(&opts, &state, 1, &report);
+    dsd_key_set_test_alloc_fail_after(-1);
+    g_scan_tune_to_freq_pending = 0;
+    static const dsd_scan_goto_result want[] = {
+        DSD_SCAN_GOTO_HOLDING,      DSD_SCAN_GOTO_PENDING, DSD_SCAN_GOTO_REFUSED,
+        DSD_SCAN_GOTO_SETUP_FAILED, DSD_SCAN_GOTO_PENDING, DSD_SCAN_GOTO_DEFERRED,
+    };
+    test_rc |= expect_goto_rc(what, got, want[c]);
+    test_rc |= expect_goto(what, report.park_hz == 461000000L);
+    if (c == GOTO_PAUSED_REFUSED) {
+        test_rc |= expect_goto_stayed_paused(&opts, &state, what, "Scan stays paused: tune to 461.000000 MHz failed");
+    } else if (c == GOTO_PAUSED_UNPREPARED) {
+        test_rc |= expect_goto_stayed_paused(&opts, &state, what,
+                                             "Scan stays paused: scan channel 461.000000 MHz could not be set up");
+    } else if (c == GOTO_PAUSED_DEFERRED) {
+        test_rc |=
+            expect_goto_stayed_paused(&opts, &state, what, "Scan stays paused: tune to 461.000000 MHz deferred; retry");
+    } else {
+        test_rc |= expect_goto(what, state.trunk_scan_paused == 0U && state.operator_tuned == 0U
+                                         && state.rkey_array[9] == 999ULL);
+        test_rc |= expect_goto_entry(&state, what, 1U, c == GOTO_PAUSED_LANDS, c == GOTO_PAUSED_LANDS);
+    }
+    if (c == GOTO_PAUSED_PENDING || c == GOTO_PAUSED_FAILS_LATE) {
+        test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 1);
+        dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, c == GOTO_PAUSED_PENDING
+                                                                          ? DSD_TRUNK_TUNE_RESULT_OK
+                                                                          : DSD_TRUNK_TUNE_RESULT_FAILED);
+        tick_at(&opts, &state, 1.1);
+        const unsigned held = c == GOTO_PAUSED_PENDING;
+        test_rc |= expect_goto_entry(&state, what, held ? 1U : 0U, held, held);
+        test_rc |= expect_goto(what, state.trunk_scan_paused == 0U && dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    }
+    test_rc |= expect_goto_failure(&state, what, c == GOTO_PAUSED_FAILS_LATE ? 1 : -1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+static int
+test_goto_paused_resumes_at_the_target(void) {
+    return goto_paused_case(GOTO_PAUSED_LANDS, "paused, lands")
+           | goto_paused_case(GOTO_PAUSED_PENDING, "paused, pending")
+           | goto_paused_case(GOTO_PAUSED_REFUSED, "paused, refused")
+           | goto_paused_case(GOTO_PAUSED_UNPREPARED, "paused, not prepared")
+           | goto_paused_case(GOTO_PAUSED_FAILS_LATE, "paused, fails late")
+           | goto_paused_case(GOTO_PAUSED_DEFERRED, "paused, deferred");
+}
+
+/* An entry hold's life (issue #644): `L`, `J`, an avoid's step and a list-off departure keep it, mark and all, on the
+   target they land; `Y` takes both; a pause takes both, while an ordinary hold outlives a pause; a release takes both
+   and gives the target a fresh dwell, after which the scan moves on; a release leaves an ordinary hold alone. */
+static int
+test_entry_hold_lifecycle(void) {
+    static const char* const names[] = {"county", "state"};
+    static const char* const bodies[] = {
+        "a,dmr-trunk,451000000,,250,,\nb,dmr-trunk,452000000,,250,,\n",
+        "c,dmr-trunk,453000000,,250,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = expect_goto_rc("hold b", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |= expect_control_rc("L", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_goto_entry(&state, "L", 2U, 1U, 1U);
+    test_rc |= expect_control_rc("J", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_RETREAT), 0);
+    test_rc |= expect_goto_entry(&state, "J", 1U, 1U, 1U);
+    test_rc |=
+        expect_control_rc("b", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_goto_entry(&state, "b", 2U, 1U, 1U);
+    test_rc |=
+        expect_control_rc("clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+    test_rc |= expect_list_rc("state off", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_goto("the list-off departure keeps the hold and mark",
+                           dsd_engine_trunk_scan_active_index(&state) != 2U && state.trunk_scan_hold == 1U
+                               && state.trunk_scan_entry_hold == 1U);
+    test_rc |= expect_list_rc("state on", list_set(&opts, &state, 2, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |=
+        expect_control_rc("Y", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    test_rc |=
+        expect_goto("Y takes the hold and mark", state.trunk_scan_hold == 0U && state.trunk_scan_entry_hold == 0U);
+
+    test_rc |= expect_goto_rc("hold b again", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_HOLDING);
+    test_rc |=
+        expect_control_rc("pause", dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    test_rc |=
+        expect_goto("a pause takes the entry hold", state.trunk_scan_hold == 0U && state.trunk_scan_entry_hold == 0U);
+    test_rc |= expect_control_rc("resume", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    test_rc |= expect_goto_entry(&state, "resumed", 1U, 0U, 0U);
+    test_rc |=
+        expect_control_rc("Y on", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_control_rc("pause held",
+                                 dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE), 0);
+    test_rc |= expect_goto("an ordinary hold outlives a pause",
+                           state.trunk_scan_hold == 1U && state.trunk_scan_entry_hold == 0U);
+    test_rc |= expect_control_rc("resume held", dsd_engine_trunk_scan_resume_locked(&opts, &state), 0);
+    entry_release(&opts, &state);
+    test_rc |= expect_goto_entry(&state, "a release leaves an ordinary hold", 1U, 1U, 0U);
+    test_rc |=
+        expect_control_rc("Y off", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+
+    test_rc |= expect_goto_rc("hold b on air", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_HOLDING);
+    tick_at(&opts, &state, 5.0);
+    test_rc |= expect_goto_entry(&state, "held past its dwell", 1U, 1U, 1U);
+    entry_release(&opts, &state);
+    test_rc |= expect_goto_entry(&state, "released", 1U, 0U, 0U);
+    tick_at(&opts, &state, 5.1);
+    tick_at(&opts, &state, 5.2);
+    test_rc |= expect_goto_entry(&state, "a fresh dwell after the release", 1U, 0U, 0U);
+    tick_at(&opts, &state, 5.4);
+    test_rc |= expect_goto("the scan continues past the dwell", dsd_engine_trunk_scan_active_index(&state) != 1U);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* A go-to replaces an entry hold (issue #644): from a target an entry holds, the hold and its mark go once the go-to
+   gets past its preparation, and only the new target's confirmed park sets them again, so a park that fails late
+   leaves the scan running unheld, on to the next target. An ordinary hold carries over as `L` carries it: the park
+   that fails late leaves the scan held on that target. */
+static int
+goto_replaces_a_hold_case(int entry, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    int test_rc = 0;
+    if (entry) {
+        test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_HOLDING);
+        test_rc |= expect_goto_entry(&state, what, 1U, 1U, 1U);
+    } else {
+        test_rc |= expect_control_rc(
+            what, dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 2, NULL), DSD_SCAN_GOTO_PENDING);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    const unsigned held = entry ? 0U : 1U;
+    test_rc |= expect_goto_entry(&state, "while the park is in flight", 2U, held, 0U);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, what, entry ? 0U : 2U, held, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A go-to over an entry hold that moves nothing (its preparation fails) leaves that hold and its mark as they were. */
+static int
+test_goto_replaces_an_entry_hold(void) {
+    int test_rc = goto_replaces_a_hold_case(1, "an entry hold, then a go-to that fails late")
+                  | goto_replaces_a_hold_case(0, "an ordinary hold, then a go-to that fails late");
+    char dir[DSD_TEST_PATH_MAX];
+    char keys_path[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (pause_keyed_scan_init(k_pause_keyed_body, &opts, &state, dir, sizeof dir, keys_path, sizeof keys_path,
+                              target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, keys_path);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    test_rc |= expect_goto_rc("hold b", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_HOLDING);
+    dsd_key_set_test_alloc_fail_after(0);
+    const dsd_scan_goto_result got = goto_target(&opts, &state, 0, NULL);
+    dsd_key_set_test_alloc_fail_after(-1);
+    test_rc |= expect_goto_rc("an unprepared go-to over an entry hold", got, DSD_SCAN_GOTO_SETUP_FAILED);
+    test_rc |= expect_goto_entry(&state, "an unprepared go-to over an entry hold", 1U, 1U, 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, keys_path);
+    return test_rc;
+}
+
+/* `L`, `J` and `b` act on the scan, so they cancel an entry still waiting on its park even when they move nothing:
+   here the only other target is cooling down after a failed retune, so the walk tries nothing. The park's landing
+   then holds nothing, and `b` leaves no hold on the target it avoided. */
+static int
+operator_move_cancels_an_entry_case(int op, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, "a,dmr-trunk,451000000,,250,,\nb,dmr-trunk,452000000,,250,,\n", 0, &opts, &state, dir,
+                        sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    /* b's retune and a's recovery both fail: both cool down until 3.0, the receiver installed on a. */
+    g_counting_tune_to_cc_failures_remaining = 2;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_REFUSED);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    trunk_scan_test_set_now(1.1);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    const int calls = g_counting_tune_to_cc_calls;
+    trunk_scan_test_set_now(1.2);
+    (void)dsd_engine_trunk_scan_control(&opts, &state, op);
+    test_rc |=
+        expect_goto(what, dsd_engine_trunk_scan_active_index(&state) == 1U && g_counting_tune_to_cc_calls == calls
+                              && dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.3);
+    test_rc |= expect_goto_entry(&state, what, 1U, 0U, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_operator_moves_cancel_a_pending_entry(void) {
+    return operator_move_cancels_an_entry_case(DSD_TRUNK_SCAN_CONTROL_ADVANCE, "L that moves nothing")
+           | operator_move_cancels_an_entry_case(DSD_TRUNK_SCAN_CONTROL_RETREAT, "J that moves nothing")
+           | operator_move_cancels_an_entry_case(DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE, "b that moves nothing");
+}
+
+/* An earlier entry still waiting, then a go-to refused after its park began: the earlier entry went with the movement,
+   so its park's late answer holds nothing. */
+static int
+test_goto_refused_retires_an_earlier_entry(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc("earlier entry", goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const uint64_t earlier = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_failures_remaining = 1;
+    test_rc |= expect_goto_rc("refused, recovered", goto_target(&opts, &state, 2, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_entry(&state, "refused, recovered", 1U, 0U, 0U);
+    test_rc |= expect_goto("nothing waits", dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    dsd_trunk_tuning_request_publish(earlier, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, "the earlier park's late answer", 1U, 0U, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A go-to refused while an earlier go-to's park is still in flight (issue #644): the coordinator, the label it publishes
+   and the receiver agree on the target that park goes to, whatever comes next. With @p failures 1 the walk's recovery
+   park onto it is taken at once; with 2 that recovery is refused too, and the park still in flight is the one that
+   puts the receiver there. Its late answer then changes nothing that is named. */
+static int
+goto_refused_over_a_pending_park_case(int failures, const char* what) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    const uint64_t pending_park = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_parked_freq = 0;
+    g_counting_tune_to_cc_failures_remaining = failures;
+    test_rc |= expect_goto_rc(what, goto_target(&opts, &state, 2, NULL), DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_goto_entry(&state, what, 1U, 0U, 0U);
+    test_rc |= expect_published_target(&state, what, "b", 2U, 3U);
+    /* The last tune asked is the recovery onto b, taken (1) or refused (2: the park still in flight lands b). */
+    test_rc |= expect_goto(what, g_counting_tune_to_cc_freq == 452000000L
+                                     && g_counting_tune_to_cc_parked_freq == (failures < 2 ? 452000000L : 0L));
+    dsd_trunk_tuning_request_publish(pending_park, DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto_entry(&state, "the park in flight lands", 1U, 0U, 0U);
+    test_rc |= expect_published_target(&state, "the park in flight lands", "b", 2U, 3U);
+    /* The landing confirms b: the recovery's (1) or the park in flight's (2), which the coordinator still awaited. */
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_target_confirmed(&state, 1));
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_goto_refused_over_a_pending_park(void) {
+    return goto_refused_over_a_pending_park_case(1, "refused over a pending park, recovered")
+           | goto_refused_over_a_pending_park_case(2, "refused over a pending park, recovery refused");
+}
+
+/* ---- --trunk-scan-hold (issue #644): a trunk scan that starts parked on one target, held there ---------------- */
+
+static const char* const k_hold_names[] = {"county", "state"};
+static const char* const k_hold_bodies[] = {
+    "a,dmr-trunk,451000000,,250,,\n"
+    "b,dmr-conventional,452000000,,250,,\n",
+    "c,dmr-trunk,453000000,,250,,\n"
+    "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 20000\n",
+};
+
+/* What the last held start logged (hold_scan_start_lists()). */
+static char g_hold_log[4096];
+
+/* Start a scan over the lists @p names / @p bodies (@p count of them; list 2 off where @p second_off) with
+   --trunk-scan-hold @p id, its log kept in g_hold_log. Returns the init's answer, -2 when the files could not be
+   written or the log not captured. */
+static int
+hold_scan_start_lists(scan_list_files* files, const char* const* names, const char* const* bodies, int count,
+                      int second_off, const char* id, dsd_opts* opts, dsd_state* state, char* err, size_t err_sz) {
+    g_hold_log[0] = '\0';
+    if (scan_list_files_write(files, k_squelch_targets_header, names, bodies, count) != 0) {
+        scan_list_files_remove(files);
+        return -2;
+    }
+    reset_scan_opts_state(opts, state);
+    const int off[] = {0, second_off};
+    scan_list_files_to_opts(files, off, opts);
+    DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", id);
+    err[0] = '\0';
+    trunk_scan_test_set_now(0.0);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanhold") != 0) {
+        return -2;
+    }
+    const int rc = dsd_engine_trunk_scan_init(opts, state, err, err_sz);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, g_hold_log, sizeof g_hold_log);
+    return rc;
+}
+
+/* Start a scan over the two lists above (targets a, b | c, fire) with --trunk-scan-hold @p id. */
+static int
+hold_scan_start(scan_list_files* files, int second_off, const char* id, dsd_opts* opts, dsd_state* state, char* err,
+                size_t err_sz) {
+    return hold_scan_start_lists(files, k_hold_names, k_hold_bodies, 2, second_off, id, opts, state, err, err_sz);
+}
+
+/* Whether the held start logged @p want exactly once, and none of the other start lines. */
+static int
+expect_hold_log(const char* stage, const char* want) {
+    static const char* const k_lines[] = {
+        "NOTICE: Trunk scan starts held on target",
+        "NOTICE: Trunk scan starts on target",
+        "WARNING: --trunk-scan-hold:",
+    };
+    int others = 0;
+    for (size_t i = 0; i < sizeof k_lines / sizeof k_lines[0]; i++) {
+        if (strstr(want, k_lines[i]) == NULL) {
+            others += count_text(g_hold_log, k_lines[i]);
+        }
+    }
+    if (count_text(g_hold_log, want) != 1 || others != 0) {
+        DSD_FPRINTF(stderr, "hold start %s: logged %d \"%s\" and %d other start lines\n%s\n", stage,
+                    count_text(g_hold_log, want), want, others, g_hold_log);
+        return 1;
+    }
+    return 0;
+}
+
+/* Whether the start kept the failure of its hold's park, target @p index named @p label coming to @p result, for
+   app-control to name once; @p index -1 for none kept. Takes it either way. */
+static int
+expect_hold_failure(dsd_state* state, const char* stage, int index, const char* label, dsd_scan_goto_result result) {
+    dsd_scan_entry_failure_t failed;
+    DSD_MEMSET(&failed, 0, sizeof failed);
+    const int took = dsd_engine_scan_entry_take_failure(state, &failed);
+    const int ok = index < 0 ? !took
+                             : took && failed.scanner == DSD_SCAN_ENTRY_TRUNK && failed.row == index
+                                   && failed.result == result && strcmp(failed.label, label) == 0
+                                   && !dsd_engine_scan_entry_take_failure(state, NULL);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "hold start %s: failure kept %d (target %d \"%s\" result %d), want target %d \"%s\"\n",
+                    stage, took, took ? failed.row : -1, took ? failed.label : "", took ? (int)failed.result : -1,
+                    index, index < 0 ? "" : label);
+        return 1;
+    }
+    return 0;
+}
+
+/* An id no target has, one whose list starts off and one whose width the DSP rate cannot filter refuse the start,
+   naming the id and why; nothing is left attached. */
+static int
+test_hold_start_refusals(void) {
+    static const struct {
+        const char* id;
+        int second_off;
+        int rate_hz;
+        const char* want;
+    } cases[] = {
+        {"zz", 0, 0, "--trunk-scan-hold: no target in the trunk-scan lists has the id \"zz\""},
+        {"c", 1, 0, "--trunk-scan-hold: target \"c\" is in a list that is off (list 2, state); start that list on"},
+        {
+            "fire",
+            0,
+            16000,
+            "--trunk-scan-hold: target \"fire\"'s width does not fit (NFM 20 kHz does not fit the 16 kHz DSP rate)",
+        },
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        scan_list_files files;
+        char err[256];
+        g_scan_dsp_rate_hz = cases[i].rate_hz;
+        const int rc = hold_scan_start(&files, cases[i].second_off, cases[i].id, &opts, &state, err, sizeof err);
+        if (rc != -1 || strcmp(err, cases[i].want) != 0 || dsd_engine_trunk_scan_active_index(&state) != (size_t)-1
+            || state.trunk_scan_hold != 0U || state.trunk_scan_entry_hold != 0U || opts.trunk_scan_hold_id[0] != '\0') {
+            DSD_FPRINTF(stderr, "hold start refusal %zu: rc=%d err=\"%s\", want \"%s\", nothing attached, id taken\n",
+                        i, rc, err, cases[i].want);
+            test_rc = 1;
+        }
+        g_scan_dsp_rate_hz = 0;
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
+/* The scan starts on the target named, in any list, held and marked an entry hold once its park landed (at once
+   here), as a typed frequency's go-to holds it; the id is taken, once. */
+static int
+test_hold_start_parks_and_holds(void) {
+    static const struct {
+        const char* id;
+        size_t index;
+    } cases[] = {{"c", 2U}, {"b", 1U}};
+
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        scan_list_files files;
+        char err[256];
+        const int rc = hold_scan_start(&files, 0, cases[i].id, &opts, &state, err, sizeof err);
+        test_rc |= expect_goto("hold start: init", rc == 0);
+        test_rc |= expect_goto_entry(&state, cases[i].id, cases[i].index, 1U, 1U);
+        test_rc |=
+            expect_goto("hold start: on air, nothing waits, the id taken",
+                        dsd_engine_trunk_scan_target_confirmed(&state, (int)cases[i].index)
+                            && dsd_engine_trunk_scan_entry_pending(&state) == 0 && opts.trunk_scan_hold_id[0] == '\0');
+        test_rc |= expect_hold_failure(&state, cases[i].id, -1, "", DSD_SCAN_GOTO_REFUSED);
+        char want[128];
+        DSD_SNPRINTF(want, sizeof want, "NOTICE: Trunk scan starts held on target '%s' (--trunk-scan-hold)\n",
+                     cases[i].id);
+        test_rc |= expect_hold_log(cases[i].id, want);
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
+/* A park still in flight: the hold comes with its landing, not before; a park that fails late leaves the scan
+   running unheld on its normal failure path (on to the next target), its failure kept for its toast, once. */
+static int
+hold_start_pending_case(int fails, const char* what) {
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char err[256];
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    const int rc = hold_scan_start(&files, 0, "c", &opts, &state, err, sizeof err);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    int test_rc = expect_goto(what, rc == 0 && park != 0U && opts.trunk_scan_hold_id[0] == '\0');
+    test_rc |= expect_hold_log(
+        what, "NOTICE: Trunk scan starts on target 'c' (--trunk-scan-hold); it holds there once the tune lands\n");
+    test_rc |= expect_goto_entry(&state, what, 2U, 0U, 0U);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 1);
+    dsd_trunk_tuning_request_publish(park, fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+    tick_at(&opts, &state, 0.1);
+    test_rc |= expect_goto_entry(&state, what, fails ? 3U : 2U, fails ? 0U : 1U, fails ? 0U : 1U);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    test_rc |= expect_hold_failure(&state, what, fails ? 2 : -1, "c", DSD_SCAN_GOTO_REFUSED);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+static int
+test_hold_start_pending_outcomes(void) {
+    return hold_start_pending_case(0, "pending, lands") | hold_start_pending_case(1, "pending, fails late");
+}
+
+/* A park refused or deferred at the start: the scan runs on unheld, on to the next target as any failed start park
+   goes, and the failure is kept for its toast, once. */
+static int
+test_hold_start_refused_park_runs_on_unheld(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    for (int deferred = 0; deferred < 2; deferred++) {
+        const char* what = deferred ? "deferred park" : "refused park";
+        scan_list_files files;
+        char err[256];
+        g_counting_tune_to_cc_failures_remaining = deferred ? 0 : 1;
+        g_counting_tune_to_cc_deferrals_remaining = deferred ? 1 : 0;
+        const int rc = hold_scan_start(&files, 0, "c", &opts, &state, err, sizeof err);
+        test_rc |= expect_goto(what, rc == 0 && opts.trunk_scan_hold_id[0] == '\0');
+        test_rc |= expect_goto_entry(&state, what, 3U, 0U, 0U);
+        test_rc |= expect_goto(what, dsd_engine_trunk_scan_entry_pending(&state) == 0);
+        test_rc |= expect_hold_failure(&state, what, 2, "c", deferred ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED);
+        test_rc |= expect_hold_log(what, deferred ? "WARNING: --trunk-scan-hold: the tune to target 'c' was deferred; "
+                                                    "the scan runs on unheld\n"
+                                                  : "WARNING: --trunk-scan-hold: the tune to target 'c' was refused; "
+                                                    "the scan runs on unheld\n");
+        g_counting_tune_to_cc_failures_remaining = 0;
+        g_counting_tune_to_cc_deferrals_remaining = 0;
+        scan_lists_finish(&files, &opts, &state);
+    }
+    return test_rc;
+}
+
+/* A one-target scan whose held start park is refused has nowhere else to go: it stays on that target unheld, and the
+   failure is kept for its toast, once. */
+static int
+test_hold_start_single_target_refused_stays_unheld(void) {
+    static const char* const names[] = {"only"};
+    static const char* const bodies[] = {"solo,dmr-conventional,452000000,,250,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char err[256];
+    g_scan_tune_to_freq_failures_remaining = 1;
+    const int rc = hold_scan_start_lists(&files, names, bodies, 1, 0, "solo", &opts, &state, err, sizeof err);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    int test_rc = expect_goto("one target, refused", rc == 0 && opts.trunk_scan_hold_id[0] == '\0');
+    test_rc |= expect_goto_entry(&state, "one target, refused", 0U, 0U, 0U);
+    test_rc |= expect_goto("one target, refused: nothing waits", dsd_engine_trunk_scan_entry_pending(&state) == 0);
+    test_rc |= expect_hold_failure(&state, "one target, refused", 0, "solo", DSD_SCAN_GOTO_REFUSED);
+    test_rc |= expect_hold_log("one target, refused",
+                               "WARNING: --trunk-scan-hold: the tune to target 'solo' was refused; the scan runs on "
+                               "unheld\n");
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
+    rc |= run_with_default_tune_hook(test_target_confirmed_only_by_its_park);
     rc |= run_with_default_tune_hook(test_parser_skips_a_utf8_bom_before_the_header);
     rc |= run_with_default_tune_hook(test_parser_refuses_an_over_long_header);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
@@ -18960,6 +20731,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_symbol_timing_explicit_follows_the_scope);
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
+    rc |= run_with_default_tune_hook(test_entry_match_reads_the_targets_effective_width);
+    rc |= run_with_default_tune_hook(test_entry_reasons_follow_the_rate_and_a_width_edit);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);
@@ -18996,6 +20769,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_paused_scan_holds_nothing_for_manual_traffic);
     rc |= run_with_default_tune_hook(test_resume_ends_manual_calls_and_waits_for_its_park);
     rc |= run_with_default_tune_hook(test_refused_resume_stays_paused);
+    rc |= run_with_default_tune_hook(test_refused_resume_names_the_frequency_tried);
     rc |= run_with_default_tune_hook(test_resume_preparation_failure_stays_paused);
     rc |= run_with_default_tune_hook(test_shutdown_after_a_pause_saves_no_manual_state);
     /* Issue #672: the avoid list and put back */
@@ -19009,6 +20783,32 @@ main(void) {
     rc |= run_with_default_tune_hook(test_avoid_list_rebuilt_only_at_membership_changes);
     rc |= run_with_default_tune_hook(test_avoid_list_allocation_failure_retries_while_paused);
     rc |= run_with_default_tune_hook(test_controls_publish_timing_only_under_the_guard);
+    rc |= run_with_default_tune_hook(test_goto_running_switches_and_holds);
+    rc |= run_with_default_tune_hook(test_goto_running_pending_outcomes);
+    rc |= run_with_default_tune_hook(test_goto_joins_a_pending_resume_of_its_target);
+    rc |= run_with_default_tune_hook(test_goto_lands_on_a_p25_recovery);
+    rc |= run_with_default_tune_hook(test_goto_running_refused_rolls_back);
+    rc |= run_with_default_tune_hook(test_goto_preparation_failure_changes_nothing);
+    rc |= run_with_default_tune_hook(test_goto_refuses_a_target_out_of_the_rotation);
+    rc |= run_with_default_tune_hook(test_goto_single_target);
+    rc |= run_with_default_tune_hook(test_goto_never_joins_a_failed_park);
+    rc |= run_with_default_tune_hook(test_goto_entry_waiting_on_nothing);
+    rc |= run_with_default_tune_hook(test_goto_park_over_a_restart);
+    rc |= run_with_default_tune_hook(test_park_landing_outlives_refused_advances);
+    rc |= run_with_default_tune_hook(test_goto_park_over_a_restart_runs_the_target_profile);
+    rc |= run_with_default_tune_hook(test_entry_on_air_follows_the_park);
+    rc |= run_with_default_tune_hook(test_goto_a_copy_in_another_list);
+    rc |= run_with_default_tune_hook(test_goto_paused_resumes_at_the_target);
+    rc |= run_with_default_tune_hook(test_entry_hold_lifecycle);
+    rc |= run_with_default_tune_hook(test_goto_replaces_an_entry_hold);
+    rc |= run_with_default_tune_hook(test_operator_moves_cancel_a_pending_entry);
+    rc |= run_with_default_tune_hook(test_goto_refused_retires_an_earlier_entry);
+    rc |= run_with_default_tune_hook(test_goto_refused_over_a_pending_park);
+    rc |= run_with_default_tune_hook(test_hold_start_refusals);
+    rc |= run_with_default_tune_hook(test_hold_start_parks_and_holds);
+    rc |= run_with_default_tune_hook(test_hold_start_pending_outcomes);
+    rc |= run_with_default_tune_hook(test_hold_start_refused_park_runs_on_unheld);
+    rc |= run_with_default_tune_hook(test_hold_start_single_target_refused_stays_unheld);
     return rc;
 }
 
@@ -19043,6 +20843,15 @@ dsd_engine_scan_untyped_enter_row(dsd_opts* opts, dsd_state* state, int row, dou
     (void)row;
     (void)now;
     return DSD_UNTYPED_STEP_FAILED;
+}
+
+/* The -Y go-to's untyped walk (engine.c, issue #644), which no case here reaches: ENGINE_NO_CARRIER_RESET drives it. */
+dsd_scan_goto_result
+dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
+    (void)opts;
+    (void)state;
+    (void)row;
+    return DSD_SCAN_GOTO_REFUSED;
 }
 
 void

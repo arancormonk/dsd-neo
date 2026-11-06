@@ -494,6 +494,8 @@ MetricsModel::clear() {
     m_scanAvoidModel.clear();
     m_scanAvoidsBuilt = false;
     m_scanListModel.clear();
+    m_scanEntryKey = dsd_app_scan_entry_summary{};
+    m_scanTargetEligible.clear();
     publish(cleared);
 }
 
@@ -568,6 +570,8 @@ MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, con
      * the engine loop, so an affordance gated only on the other two offers a tune the scan then undoes. */
     next.tuner_controlled = next.trunking_enabled || next.scanner_mode || running;
     next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
+    /* Issue #644: the view's mark of a hold a frequency entry set, read with the hold it marks, as the API reads it. */
+    next.scan_entry_hold = next.scan_hold && scan.entry_hold != 0U;
     next.scan_target_avoided = trunk_scan && running && snapshot->trunk_scan_active_avoided != 0;
 }
 
@@ -1348,6 +1352,21 @@ MetricsModel::refreshScanLists(View& next, const dsd_opts* opts_snapshot, const 
         next.scan_rotation_count = snapshot->trunk_scan_rotation_count;
     }
     m_scanListModel.refresh(lists);
+    /* Issue #644: the engine's own answer to which target a frequency typed by hand picks, rebuilt only when the
+       coordinator republished it (a rate, an edit, an avoid or a list switched). */
+    dsd_app_scan_entry_summary entries{};
+    (void)dsd_app_scan_entry_summary_get(opts_snapshot, snapshot, &entries);
+    if (entries.revision != m_scanEntryKey.revision || entries.count != m_scanEntryKey.count) {
+        m_scanEntryKey = entries;
+        QVariantList eligible;
+        eligible.reserve(static_cast<qsizetype>(entries.count));
+        for (size_t i = 0; i < entries.count; ++i) {
+            eligible.append(dsd_app_scan_entry_eligible(opts_snapshot, snapshot, i) == 1);
+        }
+        m_scanTargetEligible = eligible;
+    }
+    next.scan_target_eligible = m_scanTargetEligible;
+    next.scan_target_on_air = static_cast<int>(entries.on_air);
 }
 
 /*

@@ -31,6 +31,11 @@ Item {
     // defaulted to the safe answer so the screen is inert wherever it is loaded
     // without one.
     property bool exploring: false
+    // Issue #644: what the channel tuned to can be started as, with its own
+    // settings (Main's listenActions), and the ask; Main starts the one there
+    // is, or opens the menu of several.
+    property var listenActions: []
+    signal listenRequested
     // Whether the session was started as a scan list. Its spectrum watches like
     // a saved system's, but the scan owning the tuner is the only thing in the
     // way of a typed frequency (issue #671).
@@ -1227,6 +1232,21 @@ Item {
                         commands.setTrunking(true);
                     }
                 }
+
+                // Issue #644: the channel the title names, with its own
+                // settings: its scan list held on it, or its saved system.
+                OutlineButton {
+                    objectName: "spectrumListenWithSettings"
+                    width: Math.min(parent.width, implicitWidth)
+                    height: Math.max(Math.max(48, Theme.fontSize(14) + 24), implicitHeight)
+                    text: Util.listenText(screen.listenActions)
+                    accessibleName: Util.listenAccessibleName(screen.listenActions)
+                    visible: screen.listenActions.length > 0
+                    onClicked: {
+                        screen.stopSweep();
+                        screen.listenRequested();
+                    }
+                }
             }
         }
 
@@ -1443,12 +1463,14 @@ Item {
             }
         }
 
-        // What Tune costs while a scan has the tuner, said before it is paid.
+        // What Tune costs while a scan has the tuner, said before it is paid. A
+        // frequency that is one of the scan's entries holds it there instead,
+        // with the entry's settings (issue #644).
         ReadableText {
             objectName: "spectrumGoToScanNote"
             width: parent.width
             visible: screen.scanOwnsTuner
-            text: qsTr("Tuning pauses the scan until you resume it.")
+            text: qsTr("Tuning pauses the scan. A frequency in the scan's list moves the scan there and holds it, with that entry's settings.")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)
             color: Theme.textSecondary

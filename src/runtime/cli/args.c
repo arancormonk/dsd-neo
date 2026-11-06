@@ -496,10 +496,36 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
     return 0;
 }
 
+/* A hold names a target of the trunk scan's lists, which the command line or a config must give: say why none runs.
+   An option of this command line turned off the scan a config enabled, the config's lists are off, or there are no
+   lists. */
+static void
+cli_refuse_trunk_scan_hold_without_scan(const dsd_opts* opts, int* out_exit_rc) {
+    if (opts->trunk_scan_off_by_cli) {
+        LOG_ERROR("--trunk-scan-hold needs a trunk scan: an option on this command line (such as -T, -Y or -i) turned "
+                  "off the config's trunk scan; drop it, or give --trunk-scan <targets.csv>\n");
+    } else if (opts->trunk_scan_list_count > 0) {
+        LOG_ERROR(
+            "--trunk-scan-hold needs a trunk scan: the config's [trunk_scan] lists are off (enabled = false); set "
+            "enabled = true, or give --trunk-scan <targets.csv>\n");
+    } else {
+        LOG_ERROR("--trunk-scan-hold needs a trunk scan: give --trunk-scan <targets.csv>, or a config with "
+                  "[trunk_scan] lists\n");
+    }
+    cli_set_exit_rc(out_exit_rc, 1);
+}
+
 static int
 cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, int chan_csv_cli_seen,
                                      int p25_bandplan_cli_seen, int config_one_shot_cli_seen, int* out_exit_rc) {
-    if (!opts || !opts->trunk_scan_enabled || config_one_shot_cli_seen) {
+    if (!opts || config_one_shot_cli_seen) {
+        return DSD_PARSE_CONTINUE;
+    }
+    if (opts->trunk_scan_hold_id[0] != '\0' && !opts->trunk_scan_enabled) {
+        cli_refuse_trunk_scan_hold_without_scan(opts, out_exit_rc);
+        return DSD_PARSE_ERROR;
+    }
+    if (!opts->trunk_scan_enabled) {
         return DSD_PARSE_CONTINUE;
     }
     if (opts->scanner_mode == 1) {
@@ -1067,6 +1093,22 @@ cli_add_trunk_scan_list(dsd_opts* opts, const char* option_name, const char* pat
     opts->trunk_scan_enabled = 1;
     *trunk_scan_cli_seen = 1;
     opts->trunk_cli_seen = 1;
+    return 1;
+}
+
+/* --trunk-scan-hold (issue #644): the id of the target a trunk scan starts held on. Which target it names, and
+   whether the scan can hold it, waits for the lists to load (dsd_engine_trunk_scan_init()). */
+static int
+cli_set_trunk_scan_hold(dsd_opts* opts, const char* id, int* out_exit_rc) {
+    if (id == NULL || id[0] == '\0') {
+        LOG_ERROR("--trunk-scan-hold requires a target id\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (!cli_value_fits("--trunk-scan-hold", "target id", id, sizeof opts->trunk_scan_hold_id, out_exit_rc)) {
+        return 0;
+    }
+    DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", id);
     return 1;
 }
 
@@ -1697,6 +1739,18 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (strncmp(argv[i], "--trunk-scan-off=", 17) == 0) {                                                          \
             if (!cli_add_trunk_scan_list(opts, "--trunk-scan-off", argv[i] + 17, 1, &trunk_scan_cli_seen,              \
                                          out_exit_rc)) {                                                               \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--trunk-scan-hold") == 0) {                                                               \
+            if (!cli_set_trunk_scan_hold(opts, i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL, out_exit_rc)) {        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--trunk-scan-hold=", 18) == 0) {                                                         \
+            if (!cli_set_trunk_scan_hold(opts, argv[i] + 18, out_exit_rc)) {                                           \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \

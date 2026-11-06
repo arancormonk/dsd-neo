@@ -86,6 +86,28 @@ main(void) {
     state->lcn_scan_resume_pending = 1U;
     expect_view("trunk scan ignores -Y flags", opts, state, DSD_APP_SCAN_KIND_TRUNK, 0, 1, 0, 3, 1, "paused");
 
+    /* Issue #644: the entry hold of the scan in force, and only of it: a typed frequency's hold, which `y`
+       continues. A -Y mark left under a trunk scan, or with no scan, reads as none. */
+    state->trunk_scan_paused = 0U;
+    state->lcn_scan_resume_pending = 0U;
+    state->trunk_scan_entry_hold = 1U;
+    DSD_MEMSET(&v, 0, sizeof v);
+    assert(dsd_app_scan_state_view_get(opts, state, &v) == 0 && v.entry_hold == 1U);
+    state->trunk_scan_entry_hold = 0U;
+    state->lcn_scan_entry_hold = 1U;
+    assert(dsd_app_scan_state_view_get(opts, state, &v) == 0 && v.entry_hold == 0U);
+    opts->trunk_scan_enabled = 0;
+    opts->scanner_mode = 1;
+    assert(dsd_app_scan_state_view_get(opts, state, &v) == 0 && v.entry_hold == 1U);
+    state->trunk_scan_entry_hold = 1U;
+    state->lcn_scan_entry_hold = 0U;
+    assert(dsd_app_scan_state_view_get(opts, state, &v) == 0 && v.entry_hold == 0U);
+    opts->scanner_mode = 0;
+    state->lcn_scan_entry_hold = 1U;
+    assert(dsd_app_scan_state_view_get(opts, state, &v) == 0 && v.kind == 0U && v.entry_hold == 0U);
+    state->lcn_scan_entry_hold = 0U;
+    state->trunk_scan_entry_hold = 0U;
+
     assert(strcmp(dsd_app_scan_kind_name(DSD_APP_SCAN_KIND_NONE), "none") == 0);
     assert(strcmp(dsd_app_scan_kind_name(DSD_APP_SCAN_KIND_CHANNEL), "channel") == 0);
     assert(strcmp(dsd_app_scan_kind_name(DSD_APP_SCAN_KIND_TRUNK), "trunk") == 0);

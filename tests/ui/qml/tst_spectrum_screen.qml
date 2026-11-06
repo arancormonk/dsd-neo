@@ -400,7 +400,9 @@ Item {
 
                 sheet.open(851015625)
                 verify(note.visible, "Tune did not say it pauses the scan")
-                compare(note.text, "Tuning pauses the scan until you resume it.")
+                compare(note.text,
+                        "Tuning pauses the scan. A frequency in the scan's list moves the scan there and holds it, "
+                        + "with that entry's settings.")
                 findChild(screen, "spectrumGoToField").text = "154.0000"
                 findChild(screen, "spectrumGoToConfirm").clicked()
                 verify(!sheet.visible)

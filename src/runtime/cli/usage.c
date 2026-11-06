@@ -519,6 +519,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 Repeat it to scan several target lists in one session (at most 8, in order).\n");
     printf("      --trunk-scan-off <targets.csv>  Load a target list that starts switched off.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
+    printf("      --trunk-scan-hold <target-id>  Start the trunk scan on that target and hold it there, as typing\n");
+    printf("                 its frequency does; y continues the scan. Refused for an id no target has, or a target\n");
+    printf("                 in a list that starts off or whose width does not fit.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
     printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold\n");
     printf("                 and the analog (nfm/am-conventional) carrier tail (250..600000, default 1200).\n");

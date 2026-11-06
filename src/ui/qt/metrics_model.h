@@ -31,6 +31,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/p25_metrics.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/received_identity.h>
@@ -226,6 +227,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanTargetOrdinal READ scanTargetOrdinal NOTIFY controlChanged)
     Q_PROPERTY(int scanTargetCount READ scanTargetCount NOTIFY controlChanged)
     Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
+    /* Issue #644: the hold is the one a frequency entry set (`y` continues the scan); always with scanHold. */
+    Q_PROPERTY(bool scanEntryHold READ scanEntryHold NOTIFY controlChanged)
     Q_PROPERTY(bool scanTargetAvoided READ scanTargetAvoided NOTIFY controlChanged)
     /* Issue #697: the session's trunk-scan lists (the app-control scan list view over the held snapshot). The count of
        lists, the list of the target on air (1-based, 0 for none) and whether it is switched off, and the target's
@@ -234,6 +237,13 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int scanListCount READ scanListCount NOTIFY controlChanged)
     Q_PROPERTY(int scanActiveList READ scanActiveList NOTIFY controlChanged)
     Q_PROPERTY(bool scanActiveListOff READ scanActiveListOff NOTIFY controlChanged)
+    /* Issue #644: whether a frequency typed by hand could pick each --trunk-scan target now, one bool per target in the
+       coordinator's order (the lists in order, each in its file's order), as the engine publishes it
+       (dsd_app_scan_entry_eligible()); empty with no trunk scan or before it publishes. */
+    Q_PROPERTY(QVariantList scanTargetEligible READ scanTargetEligible NOTIFY controlChanged)
+    /* Issue #644: the target, in the same order, the entry match would take as on air (parked, its park landed, not
+       paused), -1 for none. */
+    Q_PROPERTY(int scanTargetOnAir READ scanTargetOnAir NOTIFY controlChanged)
     Q_PROPERTY(int scanRotationOrdinal READ scanRotationOrdinal NOTIFY controlChanged)
     Q_PROPERTY(int scanRotationCount READ scanRotationCount NOTIFY controlChanged)
     Q_PROPERTY(dsd_qt::ScanListToggleModel* scanListModel READ scanListModel CONSTANT)
@@ -1550,6 +1560,12 @@ class MetricsModel : public QObject {
         return m_view.scan_hold;
     }
 
+    /** @brief Whether that hold is the one a frequency entry set (the scan-state view's entry_hold, issue #644). */
+    bool
+    scanEntryHold() const {
+        return m_view.scan_entry_hold;
+    }
+
     /** @brief Active trunk-scan identity, copied from the held snapshot. */
     QString
     scanTargetId() const {
@@ -1584,6 +1600,16 @@ class MetricsModel : public QObject {
     bool
     scanActiveListOff() const {
         return m_view.scan_active_list_off;
+    }
+
+    QVariantList
+    scanTargetEligible() const {
+        return m_view.scan_target_eligible;
+    }
+
+    int
+    scanTargetOnAir() const {
+        return m_view.scan_target_on_air;
     }
 
     int
@@ -2360,6 +2386,8 @@ class MetricsModel : public QObject {
         int scan_list_count = 0;
         int scan_active_list = 0;
         bool scan_active_list_off = false;
+        QVariantList scan_target_eligible;
+        int scan_target_on_air = -1;
         int scan_rotation_ordinal = 0;
         int scan_rotation_count = 0;
         int scan_kind = 0;
@@ -2428,6 +2456,7 @@ class MetricsModel : public QObject {
         bool scan_resumable = false;
         bool operator_tuned = false;
         bool scan_hold = false;
+        bool scan_entry_hold = false;
         bool scan_target_avoided = false;
         /* Issue #672: a cleared model has no store, which the view reads as whole and empty. */
         bool scan_avoids_available = true;
@@ -2506,6 +2535,8 @@ class MetricsModel : public QObject {
         scanListsEquals(const View& other) const {
             return scan_list_count == other.scan_list_count && scan_active_list == other.scan_active_list
                    && scan_active_list_off == other.scan_active_list_off
+                   && scan_target_eligible == other.scan_target_eligible
+                   && scan_target_on_air == other.scan_target_on_air
                    && scan_rotation_ordinal == other.scan_rotation_ordinal
                    && scan_rotation_count == other.scan_rotation_count;
         }
@@ -2517,7 +2548,7 @@ class MetricsModel : public QObject {
             return options_known == other.options_known && scan_target_id == other.scan_target_id
                    && scan_target_label == other.scan_target_label && scan_target_ordinal == other.scan_target_ordinal
                    && scan_target_count == other.scan_target_count && scan_rotation_active == other.scan_rotation_active
-                   && scanListsEquals(other) && scan_hold == other.scan_hold
+                   && scanListsEquals(other) && scan_hold == other.scan_hold && scan_entry_hold == other.scan_entry_hold
                    && scan_target_avoided == other.scan_target_avoided && scan_kind == other.scan_kind
                    && scan_paused == other.scan_paused && scan_resumable == other.scan_resumable
                    && scan_entry_count == other.scan_entry_count && operator_tuned == other.operator_tuned;
@@ -2776,6 +2807,9 @@ class MetricsModel : public QObject {
     ScanListToggleModel m_scanListModel;
     dsd_app_scan_avoid_summary m_scanAvoidsBuiltKey{};
     bool m_scanAvoidsBuilt = false;
+    /* Issue #644: the targets' published eligibility, rebuilt only when its summary (revision, count) moved. */
+    dsd_app_scan_entry_summary m_scanEntryKey{};
+    QVariantList m_scanTargetEligible;
 #ifdef DSD_NEO_TEST_HOOKS
     int m_failScanAvoidBuilds = 0;
 #endif

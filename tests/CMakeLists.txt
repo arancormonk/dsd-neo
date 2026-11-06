@@ -2848,6 +2848,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
+    # A typed frequency's go-to names its outcome (issue #644); the engine side is stubbed.
+    ${PROJECT_SOURCE_DIR}/src/app_control/scan_entry_toast.c
     # The width and -B services ask a rigctl peer through the follow (issue #621); the engine side is stubbed.
     ${PROJECT_SOURCE_DIR}/src/app_control/rigctl_passband.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
@@ -5295,6 +5297,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+            # Issue #644: the known-frequency index Main offers Listen with its settings from.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/known_frequency_index.cpp
             # Issue #782: whether a screen reader is on, as views read it.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
@@ -8188,6 +8192,8 @@ add_executable(
     test_support/scan_group_stubs.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # The typed-frequency match, which reads a row's effective width (issue #644).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/core/util/channel_label.c
     # A refused resume leaves a manual rigctl request the session's (issue #671).
@@ -8259,6 +8265,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     # A target restore unlinks the call recordings waiting for their rows (issue #708).
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
@@ -8346,6 +8354,19 @@ add_test(
     NAME ENGINE_TRUNK_SCAN_PAUSE
     COMMAND dsd-neo_test_engine_trunk_scan_pause
 )
+
+# The row a frequency typed by hand picks (issue #644): the match over a -Y list and a real trunk-scan coordinator,
+# every reason a row on the frequency is no pick, and rows that share a frequency.
+add_executable(dsd-neo_test_engine_scan_entry engine/test_engine_scan_entry.c)
+target_include_directories(
+    dsd-neo_test_engine_scan_entry
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+)
+target_link_libraries(
+    dsd-neo_test_engine_scan_entry
+    PRIVATE dsd-neo_engine ${LIBS} dsd-neo_test_support
+)
+add_test(NAME ENGINE_SCAN_ENTRY COMMAND dsd-neo_test_engine_scan_entry)
 
 # A snapshot publication a P25 watchdog tick put off reaches the frontends while the input is silent: the hunt's sliced
 # UDP wait leaves for it once the tick has left the guard, and the control pump publishes it (issue #671).
@@ -8479,6 +8500,8 @@ add_executable(
     engine/test_engine_channel_scan_squelch_gate.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
+    # The row confirmed on air, which a typed frequency's go-to reads (issue #644).
+    ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
 )
 target_include_directories(
@@ -9046,6 +9069,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             "LINKER:--wrap=dsd_trunk_tuning_hook_tune_to_cc"
             "LINKER:--wrap=io_control_set_freq_tagged"
+            "LINKER:--wrap=io_control_set_rtl_freq_tagged"
             "LINKER:--wrap=dsd_frame_sync_reset_mod_state"
             "LINKER:--wrap=dsd_engine_manual_tune_supersede"
             "LINKER:--wrap=dsd_engine_legacy_tune_caches_forget"

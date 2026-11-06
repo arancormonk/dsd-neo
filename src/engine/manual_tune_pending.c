@@ -15,6 +15,7 @@
  * no longer counts. An untyped -Y step's record that a newer tune displaces keeps its drop for the poll as well.
  */
 
+#include <dsd-neo/core/channel_mode.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -31,6 +32,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include "manual_tune_pending.h"
+#include "scan_landing.h"
 
 typedef struct {
     uint64_t id;
@@ -40,6 +42,8 @@ typedef struct {
     int row;
     uint32_t scan_session;
     uint64_t list_rev;
+    int dir;
+    int scan_owned;
     uint32_t session_generation;
 } dsd_manual_tune_record;
 
@@ -57,6 +61,30 @@ static int g_displaced_unreported;
 /* The record the last poll that settled one took. */
 static dsd_manual_tune_settled g_settled;
 static atomic_int g_record_pending = MANUAL_TUNE_NONE_NOTED;
+/* Whether the record noted last is a Next or Previous walk off any scan: stored before the record reads as noted, and
+   read with it from any thread (dsd_engine_manual_tune_operator_walk_noted()). */
+static atomic_int g_record_walk_off_scan;
+/* The stream session the record noted last was asked of: stored before the record reads as noted, and read with it from
+   any thread (manual_tune_record_live()). */
+static atomic_uint g_record_generation;
+
+/* The record a stream stop found still able to land (dsd_engine_manual_tune_stream_stopping(), issue #644), and the
+   source of the stream that stopped: the reopen that follows decides whether it landed there
+   (dsd_engine_manual_tune_stream_reopened()). */
+static struct {
+    uint64_t id;
+    uint64_t source_key;
+} g_stop_note;
+
+/* The record landed at a reopen: its next poll takes it as landed, whatever the stop that dropped it published. */
+static int g_record_landed_at_reopen;
+/* A walk off any scan whose completion a poll took, landed or failed, whose settling (its row and the state machines'
+   handoff, dsd_engine_scan_untyped_poll()) has not finished: it still owns the tuner until
+   dsd_engine_manual_tune_walk_settled(). */
+static atomic_int g_walk_settling;
+/* The operator's own control-channel tune runs while a walk off any scan is pending
+   (dsd_engine_manual_tune_walk_yields()): the walk does not defer it. */
+static atomic_int g_walk_yields;
 /* A RadioReference import's tune (dsd_engine_manual_tune_note_rr_import(), issue #803): the toast its late failure
    posts, the one its landing posts, and the import's own toast, the only one its landing or drop replaces. Kept for
    the import noted last; a record of another kind never reads them. g_rr_owner_took_over says the tune that dropped
@@ -80,26 +108,69 @@ typedef enum {
     MANUAL_TUNE_RR_QUIET, /* its owner's own tune took over */
 } manual_tune_rr_outcome;
 
-/* The last few manual-tune completions, each (ID count << 32) | (uint32_t)result, 0 for an empty slot. Not one slot:
-   an older tune that finishes late (one in flight before a newer one queued) would overwrite the completion the record
-   awaits, which then never comes again (issue #671). A completion can also arrive before its record is noted, so the
-   slots are not filtered by the record either. Eight outlast any run of tunes between a note and its poll. */
+/* Manual-tune completions, each (ID count << 32) | (uint32_t)result, 0 for none. The one the noted record awaits is
+   kept in a slot of its own (g_awaited_completion, for g_awaited_id), which nothing else writes (issue #644): any
+   number of other completions can come before the poll (a refused Next is answered too) without losing it. A
+   completion that comes before its record is noted, or for a tune no record awaits, goes to the last few slots
+   instead, which the note looks in (an older tune finishing late never hides the one awaited, issue #671); the note
+   follows its tune at once, so only a completion in that gap can be pushed out of them, and the record whose
+   completion is nowhere once the controller no longer holds its tune then fails (manual_tune_record_released()). A note
+   and a completion never cross: both take g_completion_lock. */
 enum { MANUAL_TUNE_COMPLETION_SLOTS = 8 };
 
-static dsd_atomic_u64 g_completions[MANUAL_TUNE_COMPLETION_SLOTS];
-static atomic_uint g_completion_next;
+static atomic_int g_completion_lock = 0;
+static uint64_t g_completions[MANUAL_TUNE_COMPLETION_SLOTS];
+static unsigned int g_completion_next;
+static uint64_t g_awaited_id;
+static uint64_t g_awaited_completion;
 
-/* The completion for @p id in the slots, in @p packed: 1 when one came, 0 otherwise. */
-static int
-manual_tune_completion_for(uint64_t id, uint64_t* packed) {
+static void
+manual_tune_completions_lock(void) {
+    int expected = 0;
+    while (!atomic_compare_exchange_strong(&g_completion_lock, &expected, 1)) {
+        expected = 0;
+    }
+}
+
+static void
+manual_tune_completions_unlock(void) {
+    atomic_store(&g_completion_lock, 0);
+}
+
+/* The completion for @p id among the last few slots (the lock held), 0 for none. */
+static uint64_t
+manual_tune_slot_for_locked(uint64_t id) {
     for (int i = 0; i < MANUAL_TUNE_COMPLETION_SLOTS; i++) {
-        const uint64_t slot = dsd_atomic_u64_load_acquire(&g_completions[i]);
-        if (slot != 0U && (uint32_t)(slot >> 32) == (uint32_t)id) {
-            *packed = slot;
-            return 1;
+        if (g_completions[i] != 0U && (uint32_t)(g_completions[i] >> 32) == (uint32_t)id) {
+            return g_completions[i];
         }
     }
-    return 0;
+    return 0U;
+}
+
+/* The completion for @p id, the awaited one's own slot first, in @p packed: 1 when one came, 0 otherwise. */
+static int
+manual_tune_completion_for(uint64_t id, uint64_t* packed) {
+    manual_tune_completions_lock();
+    uint64_t found = id != 0U && id == g_awaited_id ? g_awaited_completion : 0U;
+    if (found == 0U) {
+        found = manual_tune_slot_for_locked(id);
+    }
+    manual_tune_completions_unlock();
+    if (found == 0U) {
+        return 0;
+    }
+    *packed = found;
+    return 1;
+}
+
+/* From now on the completion for @p id is the awaited one: taken from the slots when it came already. */
+static void
+manual_tune_await(uint64_t id) {
+    manual_tune_completions_lock();
+    g_awaited_id = id;
+    g_awaited_completion = manual_tune_slot_for_locked(id);
+    manual_tune_completions_unlock();
 }
 
 static uint32_t
@@ -124,34 +195,129 @@ manual_tune_applied_after_failure(void) {
     return g_record.prior_applied_hz;
 }
 
-void
-dsd_engine_manual_tune_completion(uint64_t id, int result) {
-    const uint64_t packed = ((uint64_t)(uint32_t)id << 32) | (uint64_t)(uint32_t)result;
-    const unsigned int slot = atomic_fetch_add(&g_completion_next, 1U) % MANUAL_TUNE_COMPLETION_SLOTS;
-    dsd_atomic_u64_store_release(&g_completions[slot], packed);
+/* Whether a tune is noted and its stream still runs: one asked of a stream that has since stopped is dead, its drop
+   only waiting for the next poll, so nothing joins, adopts or walks on from it. */
+static int
+manual_tune_record_live(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED
+           && atomic_load(&g_record_generation) == manual_tune_session_generation();
+}
+
+/* The noted record's completion once the controller no longer holds its tune (queued, in flight or being answered),
+   in @p packed: it has answered it then, so the completion found after that read is its answer, and none found means
+   it was lost, which reads as a failure (issue #644). Read in that order: the controller's answer is out before it
+   lets the tune go. 0 while the controller still holds it, or once its stream stopped (the poll's drop). */
+static int
+manual_tune_record_released(uint64_t* packed) {
+#ifdef USE_RADIO
+    if (g_record.session_generation != manual_tune_session_generation()
+        || rtl_stream_manual_tune_unanswered(g_record.id)) {
+        return 0;
+    }
+    if (!manual_tune_completion_for(g_record.id, packed)) {
+        *packed = ((uint64_t)(uint32_t)g_record.id << 32) | (uint64_t)(uint32_t)RTL_STREAM_TUNE_FAILED;
+    }
+    return 1;
+#else
+    (void)packed;
+    return 0;
+#endif
+}
+
+/* The noted record's completion in @p packed: a landing at a reopen, else the one that came, else a failure once it is
+   lost (manual_tune_record_released()), so a record never waits for good. 1 when one came. */
+static int
+manual_tune_record_completion(uint64_t* packed) {
+    if (g_record_landed_at_reopen) {
+        *packed = ((uint64_t)(uint32_t)g_record.id << 32) | (uint64_t)(uint32_t)RTL_STREAM_TUNE_OK;
+        return 1;
+    }
+    if (manual_tune_completion_for(g_record.id, packed)) {
+        return 1;
+    }
+    return manual_tune_record_released(packed);
+}
+
+/* Whether the live record (manual_tune_record_live()) may still land: no completion came for it, or one that landed. A
+   tune whose failure or drop came, its report only waiting for the next poll, is never joined: whoever asks tunes
+   afresh. Decoder thread. */
+static int
+manual_tune_record_joinable(void) {
+    if (!manual_tune_record_live()) {
+        return 0;
+    }
+    uint64_t packed = 0U;
+    return !manual_tune_record_completion(&packed) || (int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK;
 }
 
 void
-dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
-                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t list_rev) {
+dsd_engine_manual_tune_completion(uint64_t id, int result) {
+    const uint64_t packed = ((uint64_t)(uint32_t)id << 32) | (uint64_t)(uint32_t)result;
+    manual_tune_completions_lock();
+    if (id != 0U && id == g_awaited_id) {
+        g_awaited_completion = packed;
+    } else {
+        g_completions[g_completion_next % MANUAL_TUNE_COMPLETION_SLOTS] = packed;
+        g_completion_next++;
+    }
+    manual_tune_completions_unlock();
+}
+
+/* Note @p record (its id, kind and what it was for) in place of any tune noted before it. */
+static void
+manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
     if (atomic_load(&g_record_pending) != MANUAL_TUNE_NONE_NOTED && g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP) {
         g_displaced = g_record;
         g_displaced_unreported = 1;
     }
     dsd_engine_manual_tune_supersede(state);
-    if (id == 0U) {
+    if (record->id == 0U) {
         return;
     }
-    g_record.id = id;
-    g_record.kind = kind;
-    g_record.requested_hz = requested_hz;
-    g_record.prior_applied_hz = prior_applied_hz;
-    g_record.row = row;
-    g_record.scan_session = scan_session;
-    g_record.list_rev = list_rev;
+    g_record = *record;
+    manual_tune_await(record->id);
+    g_record_landed_at_reopen = 0;
     g_record.session_generation = manual_tune_session_generation();
+    atomic_store(&g_record_generation, g_record.session_generation);
     atomic_store(&g_rr_owner_took_over, 0);
+    atomic_store(&g_record_walk_off_scan, record->kind == DSD_MANUAL_TUNE_LCN_CYCLE && !record->scan_owned);
     atomic_store(&g_record_pending, MANUAL_TUNE_NOTED);
+}
+
+void
+dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id, uint32_t requested_hz,
+                                    uint32_t prior_applied_hz, int row, uint32_t scan_session, uint64_t list_rev) {
+    const dsd_manual_tune_record record = {
+        .id = id,
+        .kind = kind,
+        .requested_hz = requested_hz,
+        .prior_applied_hz = prior_applied_hz,
+        .row = row,
+        .scan_session = scan_session,
+        .list_rev = list_rev,
+    };
+    manual_tune_note(state, &record);
+}
+
+void
+dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32_t requested_hz, uint32_t prior_applied_hz,
+                                      int row, int dir, int scan_owned) {
+    if (id == 0U) {
+        /* Nothing was queued, so nothing decides the receiver: an older tune noted stays. */
+        return;
+    }
+    const dsd_manual_tune_record record = {
+        .id = id,
+        .kind = DSD_MANUAL_TUNE_LCN_CYCLE,
+        .requested_hz = requested_hz,
+        .prior_applied_hz = prior_applied_hz,
+        .row = row,
+        .scan_session = state ? state->lcn_scan_session : 0U,
+        .list_rev = state ? state->lcn_list_rev : 0U,
+        .dir = dir < 0 ? -1 : 1,
+        .scan_owned = scan_owned ? 1 : 0,
+    };
+    manual_tune_note(state, &record);
 }
 
 void
@@ -195,12 +361,17 @@ manual_tune_keep_settled(const dsd_manual_tune_record* record) {
     g_settled.row = record->row;
     g_settled.scan_session = record->scan_session;
     g_settled.list_rev = record->list_rev;
+    g_settled.dir = record->dir;
+    g_settled.scan_owned = record->scan_owned;
+    g_settled.id = record->id;
 }
 
 /* The record goes, and what it was stays for its owner. */
 static void
 manual_tune_settle(void) {
     atomic_store(&g_record_pending, MANUAL_TUNE_NONE_NOTED);
+    g_record_landed_at_reopen = 0;
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
     manual_tune_keep_settled(&g_record);
 }
 
@@ -277,7 +448,7 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     /* The completion before the session: a stop moves the session before it fails the request it queued, so a failure
        read here that a stop made is always seen with the stop's session, and never toasted as a failed tune. */
     uint64_t packed = 0U;
-    const int completed = manual_tune_completion_for(g_record.id, &packed);
+    const int completed = manual_tune_record_completion(&packed);
     if (g_record.session_generation != manual_tune_session_generation()) {
         /* The stream it was asked of stopped: a stop fails its queued request, and the next stream opens on the
            frequency the decoder holds. */
@@ -288,8 +459,18 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
     if (!completed) {
         return DSD_MANUAL_TUNE_NONE;
     }
+    /* Set before the record goes, so the walk's ownership has no gap before its settling. */
+    if ((int32_t)(uint32_t)packed != RTL_STREAM_TUNE_SUPERSEDED && atomic_load(&g_record_walk_off_scan) != 0) {
+        atomic_store(&g_walk_settling, 1);
+    }
     manual_tune_settle();
     if ((int32_t)(uint32_t)packed == RTL_STREAM_TUNE_OK) {
+        /* The controller applied this tune, and no tune it took since replaced the record: its target is where the
+           receiver is, which a later tune's refusal may have put back over the one cached when this one timed out (a
+           -Y scan's row tune outlives a refusal, issue #644). */
+        if (opts && g_record.requested_hz != 0U) {
+            opts->rtlsdr_center_freq = g_record.requested_hz;
+        }
         manual_tune_rr_report(state, MANUAL_TUNE_RR_LANDED);
         return DSD_MANUAL_TUNE_LANDED;
     }
@@ -350,6 +531,136 @@ dsd_engine_manual_tune_noted(void) {
     return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED;
 }
 
+void
+dsd_engine_manual_tune_rebind_session(uint64_t id, uint32_t session) {
+    if (id != 0U && atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && g_record.id == id) {
+        g_record.scan_session = session;
+    }
+}
+
+uint64_t
+dsd_engine_manual_tune_noted_id(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED ? g_record.id : 0U;
+}
+
+void
+dsd_engine_manual_tune_pending_read(const dsd_state* state, dsd_engine_manual_tune_pending_view* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->row = -1;
+    out->id = dsd_engine_manual_tune_noted_id();
+    if (out->id == 0U) {
+        return;
+    }
+    /* The one read of the completion slots: whatever comes after it is the next view's. */
+    out->joinable = manual_tune_record_joinable();
+    if (!state || (g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE && g_record.kind != DSD_MANUAL_TUNE_UNTYPED_STEP)
+        || g_record.scan_session != state->lcn_scan_session || g_record.list_rev != state->lcn_list_rev) {
+        return;
+    }
+    out->row = g_record.row;
+    out->scan_walk = g_record.kind == DSD_MANUAL_TUNE_LCN_CYCLE && g_record.scan_owned;
+    out->step = g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP;
+}
+
+int
+dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
+    dsd_engine_manual_tune_pending_view view;
+    dsd_engine_manual_tune_pending_read(state, &view);
+    const int joinable = view.joinable && view.row >= 0;
+    if (out_scan_walk) {
+        *out_scan_walk = joinable && view.scan_walk;
+    }
+    return joinable ? view.row : -1;
+}
+
+int
+dsd_engine_manual_tune_operator_walk_noted(void) {
+    return atomic_load(&g_walk_yields) == 0
+           && ((manual_tune_record_live() && atomic_load(&g_record_walk_off_scan) != 0)
+               || atomic_load(&g_walk_settling) != 0);
+}
+
+void
+dsd_engine_manual_tune_walk_yields(int yields) {
+    atomic_store(&g_walk_yields, yields ? 1 : 0);
+}
+
+void
+dsd_engine_manual_tune_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
+    if (!opts || !state || !manual_tune_record_joinable() || g_record.requested_hz == 0U) {
+        return;
+    }
+    g_stop_note.id = g_record.id;
+    g_stop_note.source_key = state->carrier_source_key;
+}
+
+void
+dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    const uint64_t id = g_stop_note.id;
+    const uint64_t source_key = g_stop_note.source_key;
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
+    if (!opened || id == 0U || atomic_load(&g_record_pending) != MANUAL_TUNE_NOTED || g_record.id != id
+        || !dsd_engine_stream_reopened_on(opts, state, source_key, g_record.requested_hz)) {
+        return;
+    }
+    /* The new stream opened on the tune's target: the receiver is there, so the tune landed, in this stream. */
+    g_record.session_generation = manual_tune_session_generation();
+    atomic_store(&g_record_generation, g_record.session_generation);
+    g_record_landed_at_reopen = 1;
+}
+
+void
+dsd_engine_manual_tune_session_reset(dsd_state* state) {
+    /* The record and everything beside it are process-wide, as the controller is, but a session's: a tune an earlier
+       session left noted, whose completion it never took, must not own this session's tuner or report a drop here. */
+    atomic_store(&g_record_pending, MANUAL_TUNE_NONE_NOTED);
+    DSD_MEMSET(&g_record, 0, sizeof g_record);
+    DSD_MEMSET(&g_displaced, 0, sizeof g_displaced);
+    g_displaced_unreported = 0;
+    DSD_MEMSET(&g_settled, 0, sizeof g_settled);
+    atomic_store(&g_record_walk_off_scan, 0);
+    atomic_store(&g_record_generation, 0U);
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
+    g_record_landed_at_reopen = 0;
+    atomic_store(&g_walk_settling, 0);
+    atomic_store(&g_walk_yields, 0);
+    atomic_store(&g_rr_owner_took_over, 0);
+    g_rr_failure_text[0] = '\0';
+    g_rr_landed_text[0] = '\0';
+    g_rr_own_toast[0] = '\0';
+    manual_tune_completions_lock();
+    for (int i = 0; i < MANUAL_TUNE_COMPLETION_SLOTS; i++) {
+        g_completions[i] = 0U;
+    }
+    g_awaited_id = 0U;
+    g_awaited_completion = 0U;
+    manual_tune_completions_unlock();
+    if (state) {
+        dsd_engine_scan_entry_intent_cancel(state);
+        (void)dsd_engine_scan_entry_failure_take(state, NULL);
+    }
+}
+
+int
+dsd_engine_manual_tune_adopt_walk(const dsd_state* state) {
+    if (!state || !manual_tune_record_live() || g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE || g_record.scan_owned
+        || dsd_channel_modes_present(state) || g_record.list_rev != state->lcn_list_rev || g_record.row < 0
+        || g_record.row >= state->lcn_freq_count
+        || *dsd_state_trunk_lcn_slot_const(state, g_record.row) != (long int)g_record.requested_hz) {
+        return 0;
+    }
+    g_record.scan_owned = 1;
+    g_record.scan_session = state->lcn_scan_session;
+    atomic_store(&g_record_walk_off_scan, 0);
+    return 1;
+}
+
+void
+dsd_engine_manual_tune_walk_settled(void) {
+    atomic_store(&g_walk_settling, 0);
+}
+
 /* A RadioReference import's record that the next poll reports at once, before its completion: dropped by a tune that
    is announced (or after it landed), or its stream's session ended. Ending the reception then costs nothing (the
    receiver moved, or its stream went), and the outcome is posted while the import's toast is still up. */
@@ -380,10 +691,11 @@ dsd_engine_manual_tune_settled_ready(void) {
         return 0;
     }
     uint64_t packed = 0U;
-    if (!manual_tune_completion_for(g_record.id, &packed)) {
+    if (!manual_tune_record_completion(&packed)) {
         return 0;
     }
-    /* A RadioReference import's landing is reported, so the reception it ends hands its toast to the outer pass. */
+    /* A row's landing (a step's, a walk's) commits it, so a frame decoded after it is not named after the row left; a
+       RadioReference import's landing is reported, so the reception it ends hands its toast to the outer pass. */
     return (int32_t)(uint32_t)packed != RTL_STREAM_TUNE_OK || g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP
-           || g_record.kind == DSD_MANUAL_TUNE_RR_IMPORT;
+           || g_record.kind == DSD_MANUAL_TUNE_LCN_CYCLE || g_record.kind == DSD_MANUAL_TUNE_RR_IMPORT;
 }

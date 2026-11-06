@@ -504,6 +504,11 @@ audit_freq_row(const NcMenuItem* root, size_t n) {
         } else if (it->on_select != act_set_freq || it->label_fn != lbl_input_freq
                    || it->is_enabled != input_freq_offered) {
             fail("root/input", it->id, "the frequency row runs another handler, label or predicate");
+        } else if (!it->help || !strstr(it->help, "y resumes") || !strstr(it->help, "y continues")) {
+            /* A frequency entry either pauses a running scan or, on a frequency in its list, holds it (issue #644):
+               the help names the key that ends each. */
+            fail("root/input", it->id,
+                 "the frequency row's help does not say how a pause resumes and a hold continues");
         }
     }
     int count = 0;

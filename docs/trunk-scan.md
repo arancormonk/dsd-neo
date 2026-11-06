@@ -146,6 +146,17 @@ dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan ~/radio/security.csv --trunk
   --trunk-scan-off ~/radio/municipality.csv -G ~/radio/group.csv --frontend terminal
 ```
 
+To start on one target and stay there, give its `id` with `--trunk-scan-hold`. The scan parks that target first and
+holds it, as typing its frequency does, once the park lands; `y` continues the scan from it. An id no target has, a
+target in a list that starts off and one whose width does not fit the input refuse the start; a park that fails leaves
+the scan running unheld, named once on the status line. The option is never saved. Details:
+[cli.md](cli.md#trunking--scanning).
+
+```sh
+dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan ~/radio/trunk_scan_targets.csv --trunk-scan-hold county-p25 \
+  --frontend terminal
+```
+
 Optional timing controls:
 
 ```sh
@@ -427,23 +438,44 @@ During scanning:
   rules take only the targets of the lists that are on, and a list can be switched on or off while the scan runs; see
   [Several lists](#several-lists).
 - **Pausing for a frequency you choose.** A frequency you tune by hand wins over the scan and pauses it: the terminal's
-  frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`. `y` (and the
-  API's `scanner_toggle`) pauses it where it is without tuning, and so do Qt/Android **Explore from here** and the API's
-  `tuner_release`. A pause ends the parked target's calls under its name, saves the target as a hop away would, and puts
-  back the configured decoder, modulation and gain with trunking off; the receiver stays on your frequency (`Applied:
-  frequency -> 154.000000 MHz; scan paused`). A tune that is refused or deferred changes nothing, and the scan keeps
-  running. While paused the Trunk Scan row reads `| Trunk Scan: PAUSED (y resumes)` with no target or Scan Timing row,
-  nothing rotates, and calls heard are the operator's (Qt/Android history files them under **Exploring**). Another
-  frequency entry, a spectrum tap or a drag only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first`
-  (putting avoided targets back, one from the list or all with "Clear avoids", still works: it never tunes), and `t`
-  stays refused as during the scan (`Trunk scan: each target sets its own trunking`). A per-target edit made while
-  paused waits for that target's next visit.
+  frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`, unless it is a
+  target's frequency (next item). `y` (and the API's `scanner_toggle`) pauses it where it is without tuning, and so do
+  Qt/Android **Explore from here** and the API's `tuner_release`. A pause ends the parked target's calls under its name,
+  saves the target as a hop away would, and puts back the configured decoder, modulation and gain with trunking off; the
+  receiver stays on your frequency (`Applied: frequency -> 154.000000 MHz; scan paused`). A tune that is refused or
+  deferred changes nothing, and the scan keeps running. While paused the Trunk Scan row reads
+  `| Trunk Scan: PAUSED (y resumes)` with no target or Scan Timing row, nothing rotates, and calls heard are the
+  operator's (Qt/Android history files them under **Exploring**). Another frequency entry (not a target's), a spectrum
+  tap or a drag only tunes; `Y`, `b`, `J` and `L` answer `Scan paused: resume it first` (putting avoided targets back,
+  one from the list or all with "Clear avoids", still works: it never tunes), and `t` stays refused as during the scan
+  (`Trunk scan: each target sets its own trunking`). A per-target edit made while paused waits for that target's next
+  visit.
+- **Typing a target's frequency** (issue #644). A frequency entry (`=`, Qt/Android **Go to**, the API's `rtl_set_freq`)
+  that is exactly a target's `frequency_hz` does not pause the scan: the scan goes to that target and holds it there,
+  with everything the target sets (type, options, keys, modulation, gain), as on any visit. A running scan moves to it;
+  a paused one resumes at it. If the scan is already on that target it only holds it. A trunked target parks as at any
+  visit, on its learned control channel first, so the receiver may end up on another frequency than the one typed. The
+  status line says `Holding: #3 County Fire` (`, trunked: following its control channel 851.012500 MHz` for a trunked
+  target), or `Going to #3 County Fire: waiting for the tune` until the park lands, and names the target if the park
+  fails. With several targets on the frequency (one per type, or a copy in another list), the one on air wins, else the
+  first by list number, then file order; the message adds `(1 of 2)`, and `L` and `J` reach the others. The Trunk Scan
+  row reads `HOLD (y continues)`: `y` (the API's `scanner_toggle` or `scan_resume`) lets the hold go and the scan
+  carries on from that target; `Y` and Qt/Android **Hold** let it go too. `L`, `J` and `b` keep the hold on the target
+  they move to, and any pause ends it. A target that is avoided, whose list is off or whose width the input cannot take
+  is not gone to: the entry pauses the scan as above, and its message ends with the reason (`; #3 County Fire is
+  avoided`). Only a typed frequency does this: a spectrum tap, a drag and **Explore from here** keep the configured
+  settings. To hear a target's frequency with the configured settings, pause the scan in place while it is on that
+  target with `y` (a first `y` lets a typed frequency's hold go, a second pauses). After the radio stream restarts (a
+  reconnect, a config that reopens the input), the scan is not sure of the target on air until its next park, so typing
+  that target's frequency parks it again, which ends a call in progress.
 - **Resuming.** `y`, Qt/Android **Resume scan** or the API's `scan_resume` resumes on the target the scan left, with a
-  fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were. A resume whose
-  retune is refused, or whose target cannot be set up again, leaves the scan paused and says why. A trunk scan cannot be
-  stopped while the decoder runs, so a paused one, with everything it learned and every session edit, lasts until the
-  decoder stops. A save made while it is paused still writes `[trunk_scan] enabled = true` and the configured
-  `[trunking] enabled`, so the next start runs the scan from its first target.
+  fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were, except a hold
+  that typing a target's frequency set, which the pause ended. A resume whose retune is refused, or whose target cannot
+  be set up again, leaves the scan paused and says why, naming the frequency it tried (a trunked target's learned
+  control channel); one the radio could not take yet says `Scan stays paused: tune to ... MHz deferred; retry`. A trunk
+  scan cannot be stopped while the decoder runs, so a paused one, with everything it learned and every session edit,
+  lasts until the decoder stops. A save made while it is paused still writes `[trunk_scan] enabled = true` and the
+  configured `[trunking] enabled`, so the next start runs the scan from its first target.
 - A non-empty target `modulation` value overrides global CLI/config modulation locks and `DSD_NEO_CQPSK` for that
   target only, including when the front end comes back from an analog target to it. DMR and NXDN targets always run the
   FSK discriminator, `DSD_NEO_CQPSK=1` or not.
@@ -1082,7 +1114,10 @@ hold as checked; Prev steps back one target and the scan carries on forward from
 Clear is in the "Signal & site" readings. Target identity clears with the other live
 metrics on lifecycle transitions. While the scan is paused (see [Runtime Behavior](#runtime-behavior)) the header reads
 `SCAN PAUSED · 3 targets`, **Resume scan** takes the place of Hold, Avoid, Prev and Next, and Spectrum tunes as
-Explore does until the resume.
+Explore does until the resume. Spectrum **Go to** on a target's frequency, running or paused, moves the scan to that
+target and holds it ([Typing a target's frequency](#runtime-behavior)); Hold shows that hold too, and releases it. In
+Explore, a frequency that is a scan list's entry offers **Listen with its settings**, which starts that list held on
+the entry (`--trunk-scan-hold`); see `android/README.md`.
 
 Generated CSVs can contain direct keys and are owner-readable/writable only. They
 are internal session inputs, not exports; removing a list removes its generated

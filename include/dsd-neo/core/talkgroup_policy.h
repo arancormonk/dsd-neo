@@ -485,16 +485,17 @@ int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state)
 /**
  * Decoder-thread owned, reference-counted policy context. References preserve row-local
  * aliases and lockouts across scan visits. Frontend snapshots still deep-copy their
- * effective context. Ownership protocol: every dsd_tg_policy_retain()/dsd_tg_policy_load()
- * result is one reference the caller must eventually dsd_tg_policy_release(); the state's
- * own extension slot holds its own reference, so installing a store never transfers the
- * caller's.
+ * effective context. Ownership protocol: every dsd_tg_policy_retain()/dsd_tg_policy_load()/
+ * dsd_tg_policy_load_group_file() result is one reference the caller must eventually
+ * dsd_tg_policy_release(); the state's own extension slot holds its own reference, so
+ * installing a store never transfers the caller's.
  * Stores observable by a running P25 watchdog may only be replaced or edited (every
- * replacement or edit: reload_group_file, clear, install, restore, the table editors,
- * the session-avoid and call-skip ledgers) with the P25 SM tick guard held by the
- * caller: release-time audio flushes read
+ * replacement or edit: reload_group_file, adopt_group_file, clear, install, restore, the
+ * table editors, the session-avoid and call-skip ledgers) with the P25 SM tick guard held
+ * by the caller: release-time audio flushes read
  * policy under that guard. These functions are non-acquiring. Detached construction
- * (dsd_tg_policy_load, snapshot copies) and pre-start/post-stop lifecycle work are exceptions.
+ * (dsd_tg_policy_load, dsd_tg_policy_load_group_file, snapshot copies) and
+ * pre-start/post-stop lifecycle work are exceptions.
  */
 typedef struct dsd_tg_policy_store dsd_tg_policy_store;
 /** Take one reference on the state's effective context. NULL (no context) represents an
@@ -522,6 +523,16 @@ void dsd_tg_policy_restore(dsd_state* state, dsd_tg_policy_store* store);
  * Returns 0 on success, -1 otherwise.
  */
 int dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out);
+/**
+ * dsd_tg_policy_reload_group_file() in two steps, for a caller that must know the file loads before it changes
+ * anything. The load reads and checks @p path as a reload does and touches no state: on success `*out` is overwritten
+ * with a new reference to a detached store (0), on failure it is untouched (-1). The adopt then makes that store the
+ * state's policy as a reload does: its generations advance past the current context's and the calls being followed
+ * carry over. The state takes its own reference, the caller keeps and releases theirs; a store is adopted once, never
+ * one already installed. Adopting cannot fail; NULL arguments do nothing. Same guard rule as a reload.
+ */
+int dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out);
+void dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded);
 
 #ifdef __cplusplus
 }

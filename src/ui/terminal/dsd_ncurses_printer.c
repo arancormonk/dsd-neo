@@ -1181,6 +1181,20 @@ ui_row_flag_field(ui_row* row, int on, const char* word) {
     ui_row_field(row, " %-*s", (int)strlen(word), on ? word : "");
 }
 
+/* HOLD, and for a hold a typed frequency set (issue #644) the key that continues the scan, as the paused row names the
+   one that resumes it. The hint is one field, so a cut never splits it; it lengthens the row while the hold lasts, and
+   a `Y` hold keeps the room HOLD always has. @p kind is the scan whose row this is: the shared view names the entry
+   hold of the scan in force, which under --trunk-scan is never the -Y row's. */
+static void
+ui_row_scan_hold_field(ui_row* row, const dsd_opts* opts, const dsd_state* state, int held, dsd_app_scan_kind kind) {
+    dsd_app_scan_state_view view;
+    if (held && dsd_app_scan_state_view_get(opts, state, &view) == 0 && view.kind == (uint8_t)kind && view.entry_hold) {
+        ui_row_field(row, " HOLD (%c continues)", DSD_KEY_SCANNER_TOGGLE);
+    } else {
+        ui_row_flag_field(row, held, "HOLD");
+    }
+}
+
 /* How many entries `b` took out of the rotation: a noun count about the list, not a verdict on the channel on air, so it
    closes the row (PR #463 feedback), after the name; nothing follows it, and it changes only when the operator avoids
    or clears. Same word as the "Clear avoids" menu row and the Qt SCAN AVOIDS badge. */
@@ -1245,10 +1259,11 @@ ui_row_trunk_scan_outside_field(ui_row* row, const dsd_state* state, int several
 }
 
 /* Which of the rotating --trunk-scan targets the receiver is parked on (issue #669 order): the position, the voice
-   gate, HOLD and why the target on air is outside the rotation, each in a room that is always there, then the
-   target's id and, with two or more lists, its list's name, the fields of operator-chosen length, and the avoid count.
-   A narrow row drops whole fields from the end: the count, then the list's name, then the id. The park frequency has
-   no snapshot field of its own; the protocol header lines already carry the frequency being decoded. */
+   gate, HOLD and why the target on air is outside the rotation, each in a room that is always there (a typed
+   frequency's hold lengthens HOLD's), then the target's id and, with two or more lists, its list's name, the fields of
+   operator-chosen length, and the avoid count. A narrow row drops whole fields from the end: the count, then the
+   list's name, then the id. The park frequency has no snapshot field of its own; the protocol header lines already
+   carry the frequency being decoded. */
 static void
 ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_scan_enabled != 1 || state->trunk_scan_active_id[0] == '\0') {
@@ -1263,7 +1278,7 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
     ui_row_scan_voice_gate_field(&row, opts, state);
     // The target on air first: an operator hold, a receiver parked on a target the operator
     // avoided because every alternate failed to retune, or one whose list was switched off.
-    ui_row_flag_field(&row, state->trunk_scan_hold, "HOLD");
+    ui_row_scan_hold_field(&row, opts, state, state->trunk_scan_hold, DSD_APP_SCAN_KIND_TRUNK);
     ui_row_trunk_scan_outside_field(&row, state, several, several && lists.active_list_off);
     ui_row_field(&row, " Target: %s", state->trunk_scan_active_id);
     if (several && lists.active_list != 0U) {
@@ -1369,8 +1384,9 @@ ui_render_scan_timing_row(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* The -Y Scan Mode row (issue #669 order): the frequency on air, the voice gate and HOLD, each in a room that is
-   always there, then the hangtime setting, the row's name, the one field of operator-chosen length, and the list's avoid
-   count. A named channel still fits 80 columns. */
+   always there (a typed frequency's hold lengthens HOLD's), then the hangtime setting, the row's name, the one field of
+   operator-chosen length, and the list's avoid count. A named channel still fits 80 columns, except beside the hold a
+   typed frequency set. */
 static void
 ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
     ui_row row;
@@ -1392,7 +1408,7 @@ ui_render_scan_mode_row(const dsd_opts* opts, const dsd_state* state) {
     }
     ui_row_scan_voice_gate_field(&row, opts, state);
     // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.
-    ui_row_flag_field(&row, state->lcn_scan_hold, "HOLD");
+    ui_row_scan_hold_field(&row, opts, state, state->lcn_scan_hold, DSD_APP_SCAN_KIND_CHANNEL);
     char hang[32];
     (void)dsd_number_text(hang, sizeof hang, opts->trunk_hangtime, 0, 2, 0);
     ui_row_field(&row, " Hangtime: %s sec", hang); // default aligned to OP25 (2.0s) unless overridden

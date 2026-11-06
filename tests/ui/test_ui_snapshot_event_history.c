@@ -130,12 +130,15 @@ assert_render_fields(const dsd_state* snap) {
     assert(dsd_state_trunk_lcn_avoid_get(snap, 1U) == 1);
     assert(dsd_state_trunk_lcn_avoid_get(snap, 0U) == 0);
     assert(snap->lcn_scan_hold == 1U);
+    /* The entry holds (issue #644) ride beside the holds they mark. */
+    assert(snap->lcn_scan_entry_hold == 1U);
     assert(snap->lcn_avoid_count == 1U);
     /* The scan list's position records (issue #666) ride the range that carries the list, beside its cursor. */
     assert(snap->lcn_freq_roll == 2);
     assert(snap->lcn_on_air_row == 0 && snap->lcn_on_air_freq == 851012500L);
     assert(snap->lcn_back_retry_row == 1 && snap->lcn_back_retry_freq == 851025000L);
     assert(snap->trunk_scan_hold == 1U);
+    assert(snap->trunk_scan_entry_hold == 1U);
     assert(snap->trunk_scan_active_avoided == 1U);
     assert(snap->trunk_scan_avoided_count == 3U);
     /* The scan timing publication rides the same inline range. The renderer differences
@@ -247,6 +250,7 @@ free_session_state(dsd_state* st) {
     dsd_state_ext_free_all(st);
     dsd_state_trunk_lcn_free(st);
     dsd_state_trunk_scan_avoids_free(st);
+    dsd_state_trunk_scan_entry_reasons_free(st);
     free(st);
 }
 
@@ -458,6 +462,32 @@ test_trunk_scan_avoids_gated_copy(void) {
     free_session_state(st);
 }
 
+/* Issue #644: the trunk-scan targets' published entry reasons reach the snapshot as their own copy, and again only
+   when their revision moved. */
+static void
+test_trunk_scan_entry_reasons_gated_copy(void) {
+    dsd_state* st = new_session_state();
+    const uint8_t first[] = {0U, 4U, 0U};
+    assert(dsd_state_trunk_scan_entry_reasons_set(st, first, 3U) == 0);
+    st->trunk_scan_entry_rev = dsd_state_rev_next();
+    dsd_app_telemetry_publish_snapshot(st);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert(snap->trunk_scan_entry_reason_count == 3U && snap->trunk_scan_entry_reasons != NULL);
+    assert(snap->trunk_scan_entry_reasons != st->trunk_scan_entry_reasons);
+    assert(memcmp(snap->trunk_scan_entry_reasons, first, sizeof first) == 0);
+    assert(snap->trunk_scan_entry_rev == st->trunk_scan_entry_rev);
+    /* Unstamped: not copied. Stamped: copied. */
+    st->trunk_scan_entry_reasons[1] = 0U;
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert(snap->trunk_scan_entry_reasons[1] == 4U);
+    st->trunk_scan_entry_rev = dsd_state_rev_next();
+    dsd_app_telemetry_publish_snapshot(st);
+    snap = dsd_app_get_latest_snapshot();
+    assert(snap->trunk_scan_entry_reasons[1] == 0U);
+    free_session_state(st);
+}
+
 static void
 assert_chan_map_holds(const dsd_state* snap, uint16_t channel, long int freq) {
     assert(snap->trunk_chan_map_used_count == 1U);
@@ -629,7 +659,9 @@ main(void) {
     state->trunk_scan_target_count = 5U;
     assert(dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0);
     state->lcn_scan_hold = 1U;
+    state->lcn_scan_entry_hold = 1U;
     state->trunk_scan_hold = 1U;
+    state->trunk_scan_entry_hold = 1U;
     state->trunk_scan_active_avoided = 1U;
     state->trunk_scan_avoided_count = 3U;
     state->scan_timing.reason = (uint8_t)DSD_SCAN_STAY_IDLE_DWELL;
@@ -917,6 +949,7 @@ main(void) {
     test_publish_puts_off_while_a_tick_holds_the_guard(state);
     test_scan_list_completeness_across_hops();
     test_trunk_scan_avoids_gated_copy();
+    test_trunk_scan_entry_reasons_gated_copy();
     test_chan_map_gate_keys_on_the_session();
     test_history_copy_keys_on_the_ring_instance();
 

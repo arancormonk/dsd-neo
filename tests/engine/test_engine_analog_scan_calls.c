@@ -447,7 +447,7 @@ test_landing_taken_once(void) {
         return;
     }
     feed(opts, state, kShortBlocks);
-    dsd_engine_scan_landing_note_row(state, 963012500L);
+    dsd_engine_scan_landing_note_row(state, 0, 963012500L);
     opts->scanner_mode = 1;
     feed(opts, state, kShortBlocks);
     expect("landing once: the reception qualified", dsd_engine_analog_call_active(state));

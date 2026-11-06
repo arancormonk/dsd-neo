@@ -20,6 +20,8 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h> // IWYU pragma: keep (dsd_squelch_setting in svc_rtl_set_sql_setting())
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -292,8 +294,13 @@ int svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, c
  * @return 1 when advice was written to @p out, 0 when there is none, -1 on a NULL or empty buffer.
  */
 int svc_tetra_rate_advice(const dsd_opts* opts, const dsd_state* state, int brief, char* out, size_t out_size);
-/** @brief Import a group list CSV into runtime state. */
+/** @brief Import a group list CSV into runtime state; a failure keeps the live list and its path. */
 int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
+/** svc_import_group_list() in two steps, for a caller that must know the file loads before it changes anything: the
+ * load changes nothing (0 with a new reference in @p out to release, -1 untouched); the install makes @p loaded the
+ * live list, saved to @p path, and cannot fail (dsd_tg_policy_load_group_file(), dsd_tg_policy_adopt_group_file()). */
+int svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out);
+void svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_tg_policy_store* loaded);
 /** Adopt a nonempty source alias CSV; failure preserves the live list and path. */
 int svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path);
 /**
@@ -727,6 +734,70 @@ int svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_
                                     dsd_trunk_scan_leave_report* out);
 /** @brief dsd_engine_trunk_scan_resume_ex_locked(), a refused retune's return to the monitor recorded as a pause's. */
 int svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out);
+
+/**
+ * @brief dsd_engine_trunk_scan_goto_locked() with what a resume-at that stayed paused asked of the receiver recorded
+ * for the command drain (issue #644): its return to the configured monitor (@p out->monitor_request), as
+ * svc_trunk_scan_resume_and_record() records a refused resume's (issue #578). The caller holds the P25 SM tick guard
+ * and settles @p out->restart_gain (svc_scan_goto_entry()). @p out must not be NULL.
+ */
+dsd_scan_goto_result svc_trunk_scan_goto_and_record(dsd_opts* opts, dsd_state* state, int index,
+                                                    dsd_trunk_scan_goto_report* out);
+
+/**
+ * @brief Send the scan in force to the row a frequency typed by hand picked (@p match, from
+ * dsd_engine_scan_entry_match()) and hold it there, marked an entry hold (issue #644 D1).
+ *
+ * Takes the P25 SM tick guard (the frequency entry is not a guarded command) around the go-to: a running -Y scan's
+ * dsd_engine_channel_scan_goto_row(), a paused one's (or one with a resume pending)
+ * dsd_engine_channel_scan_resume_at(), a trunk scan's dsd_engine_trunk_scan_goto_locked(), running or paused. A
+ * trunk-scan resume-at that stays paused has its return to the configured monitor recorded (issue #578) and reopens
+ * the stream on the configured gain when the target ran its own, as a refused resume does; a -Y resume-at's undo
+ * records its own through the pause hook. The scan's own tune moves the receiver, both legs where the scan uses both,
+ * and its landing applies the row's settings. The outcome goes on the status line (svc_scan_entry_toast_outcome()); a
+ * failure the scan kept from within the call is dropped, since that toast names it. Decoder thread only.
+ *
+ * @return The go-to's dsd_scan_goto_result; DSD_SCAN_GOTO_REFUSED for NULL arguments or no row matched.
+ */
+int svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match_t* match);
+
+/**
+ * @brief `y` or DSD_APP_CMD_SCAN_RESUME over an entry (issue #644 D1): a running scan's entry hold is released, so the
+ * scan continues from the row (dsd_engine_channel_scan_entry_release(), dsd_engine_trunk_scan_entry_release_locked()),
+ * and an entry still waiting on its tune is left to land, with that said. The caller holds the P25 SM tick guard (both
+ * are guarded commands). Decoder thread only.
+ *
+ * @return 1 when it handled the command (released, or still waiting), with the toast set; 0 when no running scan has
+ * an entry hold or an entry waiting, and the command keeps its own meaning (a trunk scan pauses, -Y stops).
+ */
+int svc_scan_entry_continue(dsd_opts* opts, dsd_state* state);
+
+/* "#65535 " and a 63-byte label or id, terminated. */
+#define DSD_TRUNK_SCAN_TOAST_NAME_SIZE 80
+
+/** @brief A --trunk-scan target as every toast names it (issue #672, #644): "#<ordinal> <label>", the list position and
+ * label column the avoided channel list shows, or the id when the target has no label. The id alone names nothing on
+ * Android, whose target ids are entry UIDs. An ordinal of 0 (none known) leaves the position out. Returns @p out. */
+const char* svc_trunk_scan_toast_name(uint32_t ordinal, const char* label, const char* id, char* out, size_t out_size);
+
+/** @brief Put what a go-to of @p match came to (@p result, @p park_hz from its report, 0 for -Y) on the status line
+ * (issue #644): Holding, waiting for the tune, or the failure, with the row's name. A HOLDING with @p engine_toasted
+ * (the call itself put a text there) leaves that text. A PENDING outcome is remembered in the state's own slot
+ * (DSD_STATE_EXT_APP_SCAN_ENTRY) for svc_scan_entry_settle(). */
+void svc_scan_entry_toast_outcome(dsd_state* state, const dsd_scan_entry_match_t* match, dsd_scan_goto_result result,
+                                  long park_hz, int engine_toasted);
+/** @brief Once per command drain (issue #644): name an entry's late failure the scan kept, once, by the name the scan
+ * recorded (dsd_engine_scan_entry_take_failure()), so an entry no toast began is named too; or the hold of an entry
+ * that was waiting and has landed. */
+void svc_scan_entry_settle(dsd_state* state);
+/** @brief `Scan continues`: `y` released an entry hold (issue #644). */
+void svc_scan_entry_toast_continues(dsd_state* state);
+/** @brief The entry waiting still waits on its tune (issue #644): `y` says so, naming its row. */
+void svc_scan_entry_toast_waiting(dsd_state* state);
+/** @brief Append to the toast in dsd_state::ui_msg why an entry on a row's frequency stayed a plain tune (@p match with
+ * no row chosen and an AVOIDED, LIST_OFF or WIDTH reason, issue #644 D5): the row named as the entry toasts name it
+ * (a trunk-scan target while @p opts runs one) when that fits, else as "that row" or "that target". */
+void svc_scan_entry_toast_reason(const dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match_t* match);
 
 /** @brief Tune receiver frequency (Hz), RTL or a rigctl peer, on every build; caller owns trunking and call bookkeeping. */
 /* A tune the user asked for. An accepted one is a carrier boundary (dsd_engine_carrier_boundary(), issue #575); the

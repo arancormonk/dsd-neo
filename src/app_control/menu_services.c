@@ -30,6 +30,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/io/rtl_device.h>
@@ -52,6 +53,7 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/tetra_rate.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <limits.h>
 #include <math.h>
 #include <sndfile.h>
@@ -770,8 +772,9 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
     dsd_state_lcn_nav_reset(dst);
-    // The scan hold indexes rows that no longer exist, as the avoids did.
+    // The scan hold indexes rows that no longer exist, as the avoids did; an entry hold's mark goes with it.
     dst->lcn_scan_hold = 0;
+    dst->lcn_scan_entry_hold = 0;
     // The visit the per-visit cap was measuring belonged to a row that no longer exists.
     dst->scan_visit_since_m = -1.0;
     dst->scan_visit_roll_seen = 0;
@@ -826,8 +829,7 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // Import into throwaway heap state (dsd_state is multi-megabyte) so a
     // failed import leaves the live map untouched. The allocation is large and
     // this runs on the decoder thread, but it happens once per user import
-    // rather than per frame, and it is the same validate-then-swap shape
-    // dsd_tg_policy_reload_group_file() uses for the same reason.
+    // rather than per frame.
     dsd_state* imported = (dsd_state*)calloc(1, sizeof(*imported));
     if (!imported) {
         DSD_MEMCPY(opts->chan_in_file, old_path, sizeof(old_path));
@@ -913,6 +915,10 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_scan_enabled == 1) {
         return -1;
     }
+    // Clearing the map leaves -Y: first, while the map is still the scan's, so a running list's calls end under the
+    // row heard and its keys (issue #644), then the foreground keyring goes back to the globals.
+    (void)svc_leave_channel_scan(opts, state);
+    dsd_scan_keys_leave(state);
     opts->chan_in_file[0] = '\0';
     opts->next_start.pending &= ~(uint32_t)DSD_NEXT_START_CHANNEL_MAP;
     DSD_MEMSET(state->trunk_chan_map, 0, sizeof state->trunk_chan_map);
@@ -920,15 +926,13 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     state->trunk_chan_map_used_count = 0;
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
     // Releases the per-row name, avoid and key stores along with the scan-list heap tail.
-    // Clearing the map leaves -Y: hand the foreground keyring back to the globals first.
-    (void)svc_leave_channel_scan(opts, state);
-    dsd_scan_keys_leave(state);
     dsd_state_trunk_lcn_replace_begin(state);
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
     dsd_state_lcn_nav_reset(state);
     state->lcn_scan_hold = 0;
+    state->lcn_scan_entry_hold = 0;
     // Nothing left to visit, so the per-visit cap has nothing to measure from.
     state->scan_visit_since_m = -1.0;
     state->scan_visit_roll_seen = 0;
@@ -993,20 +997,32 @@ svc_clear_src_list(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
-    if (!opts || !state || !path || !*path || strlen(path) >= sizeof opts->group_in_file) {
+svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out) {
+    if (!opts || !path || !*path || !out || strlen(path) >= sizeof opts->group_in_file) {
         return -1;
     }
-    char previous[sizeof opts->group_in_file];
-    DSD_MEMCPY(previous, opts->group_in_file, sizeof previous);
-    DSD_STRNCPY(opts->group_in_file, path, sizeof opts->group_in_file - 1);
-    opts->group_in_file[sizeof opts->group_in_file - 1] = '\0';
-    const int rc = dsd_tg_policy_reload_group_file(opts, state);
-    if (rc != 0) {
-        // Keep the retained table paired with its original save destination after a failed import.
-        DSD_MEMCPY(opts->group_in_file, previous, sizeof opts->group_in_file);
+    return dsd_tg_policy_load_group_file(path, out);
+}
+
+void
+svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_tg_policy_store* loaded) {
+    if (!opts || !state || !path || !loaded) {
+        return;
     }
-    return rc;
+    // The retained table and its save destination change together.
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    dsd_tg_policy_adopt_group_file(state, loaded);
+}
+
+int
+svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
+    dsd_tg_policy_store* loaded = NULL;
+    if (!state || svc_load_group_list(opts, path, &loaded) != 0) {
+        return -1;
+    }
+    svc_install_group_list(opts, state, path, loaded);
+    dsd_tg_policy_release(loaded);
+    return 0;
 }
 
 int
@@ -1899,6 +1915,12 @@ svc_rtl_restart(dsd_opts* opts, dsd_state* state) {
 static void
 svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) {
     if (state->rtl_ctx) {
+        /* A tune still pending, which the stop drops, lands if a restart's new stream opens on its target (issue
+           #644): the scans note it here, and svc_rtl_restart_locked(), or the recovery after a restart whose start
+           failed (svc_rtl_restart_recovery_locked()), tells them where the stream reopened. */
+        dsd_engine_manual_tune_stream_stopping(opts, state);
+        dsd_engine_channel_scan_stream_stopping(opts, state);
+        dsd_engine_trunk_scan_stream_stopping(opts, state);
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;
@@ -1968,13 +1990,30 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Tell the scans where the stream a restart stopped opened again, if at all (issue #644): a tune the stop dropped lands
+   when the new stream opened on its target, and the note goes either way. */
+static void
+svc_rtl_scans_stream_reopened(const dsd_opts* opts, const dsd_state* state, int rc) {
+    const int opened = rc == 0 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx != NULL;
+    dsd_engine_manual_tune_stream_reopened(opts, state, opened);
+    dsd_engine_channel_scan_stream_reopened(opts, state, opened);
+    dsd_engine_trunk_scan_stream_reopened(opts, state, opened);
+}
+
 int
 svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
     svc_rtl_stop_locked(opts, state);
-    return svc_rtl_start_locked(opts, state);
+    const int rc = svc_rtl_start_locked(opts, state);
+    /* A start that failed leaves the note to the recovery a failed change runs next, whose start may open on the tune's
+       target (it puts back the centre the input ran, which a pending tune's timeout cached as its target). With no
+       recovery, the note dies with the drop: the poll and the service take it, which ends what it names. */
+    if (rc == 0) {
+        svc_rtl_scans_stream_reopened(opts, state, rc);
+    }
+    return rc;
 }
 
 /* Start the replay the options describe at @p at (issue #701): the start's copy of the options carries the checkpoint
@@ -2125,6 +2164,9 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
         put_back_generation = dsd_input_failure_generation();
     }
     const int rc = svc_rtl_start_on_the_profile_that_ran_locked(opts, state);
+    /* The input that ran is back, on the centre it ran: a tune a stop dropped lands if that is its target (issue #644).
+       A stream still running stopped above, and noted its own. */
+    svc_rtl_scans_stream_reopened(opts, state, rc);
     if (rc != 0 && failure_before) {
         dsd_input_failure now;
         dsd_input_failure_get(&now);
@@ -2593,7 +2635,9 @@ svc_rtl_tune_only(dsd_opts* opts, dsd_state* state, uint32_t hz) {
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
     const int rc = io_control_set_freq_tagged(opts, state, hz, &pending_id);
-    if (state && rc != RTL_STREAM_TUNE_DEFERRED) {
+    /* A tune taken decides where the receiver goes, so it replaces a tune still pending; a refused one decides nothing,
+       and that tune stands (issue #644). */
+    if (state && (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT)) {
         dsd_engine_manual_tune_note_pending(state, DSD_MANUAL_TUNE_ENTRY, pending_id, hz, prior_hz, -1, 0U, 0U);
     }
     return rc;
@@ -2701,6 +2745,82 @@ svc_resume_trunk_scan(dsd_opts* opts, dsd_state* state) {
     const int rc = svc_trunk_scan_resume_and_record(opts, state, &report);
     svc_trunk_scan_settle_gain(opts, state, &report);
     return rc;
+}
+
+/* A trunk scan's go-to (issue #644): the target's resume-at, if the scan is paused, records its return to the monitor
+   and reopens on the configured gain as a refused resume does. Under the tick guard the caller holds. */
+static dsd_scan_goto_result
+svc_scan_goto_trunk_target(dsd_opts* opts, dsd_state* state, int index, long* park_hz) {
+    dsd_trunk_scan_goto_report report = {0};
+    const dsd_scan_goto_result result = svc_trunk_scan_goto_and_record(opts, state, index, &report);
+    const dsd_trunk_scan_leave_report left = {
+        .monitor_request = report.monitor_request,
+        .restart_gain = report.restart_gain,
+    };
+    svc_trunk_scan_settle_gain(opts, state, &left);
+    *park_hz = report.park_hz;
+    return result;
+}
+
+int
+svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match_t* match) {
+    if (!opts || !state || !match || match->scanner == DSD_SCAN_ENTRY_NONE) {
+        return DSD_SCAN_GOTO_REFUSED;
+    }
+    char before[sizeof state->ui_msg];
+    DSD_SNPRINTF(before, sizeof before, "%s", state->ui_msg);
+    const time_t before_expire = state->ui_msg_expire;
+    long park_hz = 0;
+    dsd_scan_goto_result result;
+    p25_sm_tick_guard_enter();
+    if (match->scanner == DSD_SCAN_ENTRY_TRUNK) {
+        result = svc_scan_goto_trunk_target(opts, state, match->row, &park_hz);
+    } else if (opts->scanner_mode == 1 && !state->lcn_scan_paused) {
+        result = dsd_engine_channel_scan_goto_row(opts, state, match->row);
+    } else {
+        result = dsd_engine_channel_scan_resume_at(opts, state, match->row);
+    }
+    p25_sm_tick_guard_leave();
+    /* A failure inside the call is the outcome named below, not a late one to name again. */
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    const int engine_toasted = state->ui_msg_expire != before_expire || strcmp(state->ui_msg, before) != 0;
+    svc_scan_entry_toast_outcome(state, match, result, park_hz, engine_toasted);
+    return (int)result;
+}
+
+int
+svc_scan_entry_continue(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        if (!dsd_trunk_scan_owns_tuner(opts, state)) {
+            return 0;
+        }
+        if (state->trunk_scan_entry_hold) {
+            dsd_engine_trunk_scan_entry_release_locked(opts, state);
+            svc_scan_entry_toast_continues(state);
+            return 1;
+        }
+        if (dsd_engine_trunk_scan_entry_pending(state)) {
+            svc_scan_entry_toast_waiting(state);
+            return 1;
+        }
+        return 0;
+    }
+    if (opts->scanner_mode != 1) {
+        return 0;
+    }
+    if (state->lcn_scan_entry_hold) {
+        dsd_engine_channel_scan_entry_release(opts, state);
+        svc_scan_entry_toast_continues(state);
+        return 1;
+    }
+    if (dsd_engine_channel_scan_entry_pending(state)) {
+        svc_scan_entry_toast_waiting(state);
+        return 1;
+    }
+    return 0;
 }
 
 /* The squelch services run on every input: audio input takes a level or the noise squelch (issue #628). */

@@ -5,6 +5,8 @@
 
 #include <dsd-neo/core/csv_import.h>
 
+#include <dsd-neo/core/talkgroup_policy.h>
+
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -19,4 +21,11 @@ int
 csvGroupImport(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     return csvGroupImportPath("", state);
+}
+
+int
+dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
+    (void)path;
+    (void)out;
+    return -1;
 }

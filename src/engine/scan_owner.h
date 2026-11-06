@@ -11,13 +11,38 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-/** The frequency a scan last landed on (issue #667 D9; scan_landing.h): 0 Hz for none. */
+/** The row or target a scan last confirmed it landed on, and its frequency (issue #667 D9, #644; scan_landing.h). */
 typedef struct {
-    uint32_t hz;
-    uint8_t by;       /**< the scan that landed it (DSD_ENGINE_SCAN_LANDING_*) */
-    uint32_t session; /**< -Y: dsd_state::lcn_scan_session at the landing */
-    uint64_t map_seq; /**< -Y: dsd_state::trunk_chan_map_seq at the landing */
+    uint32_t hz;       /**< 0 for none, and for a trunked target, whose park is its control channel */
+    uint8_t by;        /**< the scan that landed it (DSD_ENGINE_SCAN_LANDING_*); NONE for no landing */
+    uint32_t session;  /**< -Y: dsd_state::lcn_scan_session; trunk scan: the coordinator's session */
+    uint64_t map_seq;  /**< -Y: dsd_state::trunk_chan_map_seq at the landing */
+    uint64_t list_rev; /**< -Y: dsd_state::lcn_list_rev at the landing */
+    int index;         /**< the -Y row or trunk-scan target landed */
 } dsd_engine_scan_landing;
+
+/** The -Y row or trunk-scan target a frequency typed by hand went to, whose confirmed landing holds the scan there
+ * (issue #644; scan_landing.h). */
+typedef struct {
+    uint8_t active;    /**< 0: no entry waits on a landing */
+    uint8_t by;        /**< the scan it waits in (DSD_ENGINE_SCAN_LANDING_ROW or _TARGET) */
+    int row;           /**< the -Y row or trunk-scan target gone to */
+    uint32_t session;  /**< -Y: dsd_state::lcn_scan_session of its tune; trunk scan: the coordinator's session */
+    uint64_t list_rev; /**< -Y: dsd_state::lcn_list_rev of its tune */
+    uint64_t request;  /**< its tune: a typed row's first request, kept through its restages; an untyped row's noted
+                            manual tune; a target's park, or the P25 recovery tune it adopted; 0 until the tune is
+                            begun */
+} dsd_engine_scan_entry_intent;
+
+/** An entry whose own tune failed after its go-to returned (issue #644; scan_landing.h): kept until app-control takes
+ * it, once, to name the row in a toast. A cancel (`Y`, `L`, `J`, `b`, another entry, a pause, a stop) records none. */
+typedef struct {
+    uint8_t set;    /**< 0: no failure waits to be taken */
+    uint8_t by;     /**< the scan it failed in (DSD_ENGINE_SCAN_LANDING_ROW or _TARGET) */
+    uint8_t result; /**< the dsd_scan_goto_result it came to: REFUSED, DEFERRED or SETUP_FAILED */
+    int row;        /**< the -Y row or trunk-scan target gone to */
+    char label[64]; /**< its name when it failed: a -Y row's label, else "row N"; a target's label, else its id */
+} dsd_engine_scan_entry_failure;
 
 typedef struct {
     void* trunk;
@@ -25,6 +50,8 @@ typedef struct {
     void* analog_call;
     dsd_state_ext_cleanup_fn trunk_free, search_free, analog_call_free;
     dsd_engine_scan_landing landing;
+    dsd_engine_scan_entry_intent entry;
+    dsd_engine_scan_entry_failure entry_failed;
 } dsd_engine_scan_owner;
 
 static inline void

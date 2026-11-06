@@ -32,6 +32,8 @@ typedef enum {
     DSD_MANUAL_TUNE_ENTRY = 1,
     DSD_MANUAL_TUNE_UNTYPED_STEP = 2,
     DSD_MANUAL_TUNE_RR_IMPORT = 3, /**< A RadioReference import's tune (issue #803). */
+    DSD_MANUAL_TUNE_LCN_CYCLE =
+        4, /**< A Next or Previous walk's tune over a list without modes (`L`/`J`, issue #644). */
 } dsd_manual_tune_kind;
 
 /** dsd_engine_manual_tune_poll() results. */
@@ -57,6 +59,97 @@ enum {
 void dsd_engine_manual_tune_note_pending(dsd_state* state, dsd_manual_tune_kind kind, uint64_t id,
                                          uint32_t requested_hz, uint32_t prior_applied_hz, int row,
                                          uint32_t scan_session, uint64_t list_rev);
+
+/**
+ * @brief Note a Next or Previous walk's tune that timed out with @p id (`L`/`J` over a list without modes, issue #644):
+ * what dsd_engine_manual_tune_note_pending() notes for DSD_MANUAL_TUNE_LCN_CYCLE, with the walk's direction and owner.
+ *
+ * The row, its keys and the call boundary wait for the landing. The record carries the scan session and the list
+ * (dsd_state::lcn_scan_session, dsd_state::lcn_list_rev) the row belongs to now, so a landing after either moved names
+ * no row. Its drop changes nothing (what dropped it decides the receiver), so a newer tune noted over it keeps no
+ * report of it.
+ *
+ * @param state            Decoder state.
+ * @param id               The ID the RTL leg handed back; 0 notes nothing and leaves any older tune noted.
+ * @param requested_hz     The row's frequency.
+ * @param prior_applied_hz The centre in force before the tune.
+ * @param row              The row walked to.
+ * @param dir              The walk's direction: 1 Next, -1 Previous (a late failure passes or retries the row by it).
+ * @param scan_owned       1 when the running -Y scan owns the walk (its landing commits the row as the scan's step
+ *                         does), 0 for a walk off any scan (app-control settles it through the walk hook,
+ *                         <dsd-neo/runtime/channel_scan_hooks.h>).
+ */
+void dsd_engine_manual_tune_note_lcn_cycle(dsd_state* state, uint64_t id, uint32_t requested_hz,
+                                           uint32_t prior_applied_hz, int row, int dir, int scan_owned);
+
+/**
+ * @brief The row a list tune still awaits on @p state's current list and scan session (dsd_state::lcn_list_rev,
+ * dsd_state::lcn_scan_session), or -1 with none: a Next or Previous walk's (DSD_MANUAL_TUNE_LCN_CYCLE) or the untyped
+ * -Y step's (DSD_MANUAL_TUNE_UNTYPED_STEP), noted and not yet settled.
+ *
+ * A press while it is pending goes on from that row in its own direction, so quick presses and key auto-repeat keep
+ * advancing (issue #644), and the -Y timed step waits while a walk the scan owns is pending (it would supersede it).
+ * A tune asked of a stream that has since stopped, or whose failure or drop came already, is none: the next poll
+ * settles it, so nothing goes on from it.
+ *
+ * @param state          Decoder state; NULL reads as none.
+ * @param out_scan_walk  Optional; set to 1 when the tune is a walk the running -Y scan owns, else 0 (a walk off any
+ *                       scan, or the step's own tune).
+ * @return The row, or -1. A flag read and one atomic load while nothing is noted. Decoder thread.
+ */
+int dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk);
+
+/**
+ * @brief The -Y scan starting over a Next or Previous walk off the scan still awaiting its tune takes that walk as its
+ * own (issue #644).
+ *
+ * The record turns into a walk the scan owns, in the current scan session, so its landing commits its row as the scan's
+ * walk does, and its late failure or drop follows that walk's rules; the walk no longer holds the tuner against the
+ * state machines (dsd_engine_manual_tune_operator_walk_noted() reads 0). Only a walk on @p state's current list
+ * (dsd_state::lcn_list_rev) whose row still holds the frequency walked to, and only on a list with no modes (a typed
+ * row lands with settings a walk never tuned). A `y` start (dsd_engine_channel_scan_start()) and a config that turns
+ * the scanner on take it this way. A walk asked of a stream that has since stopped is never taken.
+ *
+ * @return 1 when taken, 0 otherwise (nothing changes). Decoder thread.
+ */
+int dsd_engine_manual_tune_adopt_walk(const dsd_state* state);
+
+/**
+ * @brief The radio stream is about to stop (issue #644). The stop drops the tune noted, whose completion it will not
+ * deliver; a tune that can still land (one live and joinable: no failure or drop came for it) is noted, with the
+ * source of the stream that stops, for the reopen that follows (dsd_engine_manual_tune_stream_reopened()). Nothing
+ * else changes: the centre stays where it is. Decoder thread, before the stream stops.
+ */
+void dsd_engine_manual_tune_stream_stopping(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief The stream a restart stopped opened again (@p opened 1), or did not (0) (issue #644).
+ *
+ * A tune the stop noted, still the record, lands when the new stream opened on the same source, not an I/Q replay,
+ * with @p opts->rtlsdr_center_freq its target: the receiver is there. The record moves to the new stream, and its next
+ * poll takes it as landed, so its owner runs the tune's ordinary landing (a row committed, a walk's row heard, an entry
+ * held, an import's toast). Otherwise the note goes, and the poll drops the record as for any stop. Decoder thread,
+ * right after the restart's start, or, when that start failed, after the start of the recovery that follows it.
+ */
+void dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
+
+/**
+ * @brief The operator's own control-channel tune (app-control's Return to CC, a block transition) runs while a walk off
+ * the scan is pending (issue #644): with @p yields 1 the walk does not defer the engine's trunk tunes
+ * (dsd_engine_manual_tune_operator_walk_noted() reads 0), and with 0, set right after that tune, it does again. The
+ * caller lets go of the walk once its tune is taken; a refusal with nothing moved leaves it. Decoder thread, under the
+ * P25 SM tick guard (a guarded command), so no watchdog tick reads the flag between the two.
+ */
+void dsd_engine_manual_tune_walk_yields(int yields);
+
+/**
+ * @brief A decoder session begins (issue #644): every manual tune still noted from an earlier session in this process
+ * goes, unreported, with what it carried: the record and a displaced step's drop, a walk's ownership of the tuner, a
+ * settling still owed, the control-channel tune's yield, the import's texts and the completions kept. An entry waiting
+ * on such a tune in @p state (may be NULL) is cancelled, and a failure kept for its toast dropped. Before the session's
+ * first tune (the trunk scan's start included), on the decoder thread.
+ */
+void dsd_engine_manual_tune_session_reset(dsd_state* state);
 
 /**
  * @brief Note a RadioReference import's tune that timed out with @p id (issue #803): what
@@ -103,10 +196,13 @@ void dsd_engine_manual_tune_supersede(dsd_state* state);
  * (taken here unless the caller holds it), so a late failure never puts back a centre over a newer watchdog tune's. A record whose stream session has ended (rtl_stream_session_generation())
  * is dropped, and so reported, as one superseded is (dsd_engine_manual_tune_supersede()): the cached centre stays, for
  * the next stream to open on or as the newer tune left it. On a failure, @p opts->rtlsdr_center_freq goes back to the
- * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed.
+ * centre the stream last applied (or the prior one noted), and for an entry a toast names the frequency that failed; on
+ * a landing it is the tune's target, which a later tune's refusal may have put back meanwhile (a -Y scan's own row tune
+ * outlives a refusal, issue #644).
  * A RadioReference import's tune posts every outcome (dsd_engine_manual_tune_note_rr_import()).
- * An untyped -Y step's failure is not toasted: the scan passes the row, as after a step that failed in its wait (issue
- * #666), and the engine's loop settles the row (dsd_engine_scan_untyped_poll()).
+ * An untyped -Y step's failure is not toasted, nor a walk's (DSD_MANUAL_TUNE_LCN_CYCLE): the scan passes the row, as
+ * after a step that failed in its wait (issue #666), and the engine's loop settles the row
+ * (dsd_engine_scan_untyped_poll()).
  *
  * @return DSD_MANUAL_TUNE_NONE, DSD_MANUAL_TUNE_LANDED, DSD_MANUAL_TUNE_FAILED or DSD_MANUAL_TUNE_DROPPED.
  */

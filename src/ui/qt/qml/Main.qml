@@ -237,6 +237,167 @@ Window {
         };
         decoderHost.stop();
     }
+    // Issue #644: what the channel the operator tuned to can be started as,
+    // with its own settings: each scan-list row on it (its list, held on that
+    // row), then each saved system on it, once each. Offered while the session
+    // is the operator's to tune; a channel map's row, a disabled entry or a
+    // draft list's starts nothing, and is not offered. A scan-list session the
+    // operator paused or released (from the moment it reads as exploring, before
+    // the decoder reports the tune) keeps its lists: a row the session would take
+    // is reached in place (the entry's tune, which resumes the scan there and
+    // holds it; sessionRowsAt()), and nothing that would restart the session is
+    // offered.
+    readonly property var listenActions: mainRoot.exploring && decoderHost.sessionActive
+        ? mainRoot.listenActionsAt(metrics.centerFreqHz, metrics.channelBandwidthHz) : []
+    function listenActionsAt(hz, width) {
+        if (typeof knownFrequencies === "undefined" || !(hz > 0))
+            return [];
+        if (mainRoot.sessionScanList)
+            return mainRoot.listenLabels(mainRoot.sessionRowsAt(hz, width));
+        // Read so the actions follow a list or system edited meanwhile.
+        var revision = knownFrequencies.revision;
+        var rows = [], systems = [], seen = {};
+        for (var match of knownFrequencies.tunedMatches(hz, width)) {
+            if (!match.selectable)
+                continue;
+            if (match.source === "system") {
+                var system = savedSystems.getByUid(String(match.systemUid || ""));
+                if (system && system.uid && !seen[system.uid]) {
+                    seen[system.uid] = true;
+                    var avoided = qsTr("Avoided; remove the avoid in its site list to start it");
+                    systems.push({key: "saved", uid: system.uid, name: match.name, protocolLabel: match.protocolLabel,
+                        enabled: !system.avoidSite, description: system.avoidSite ? avoided : ""});
+                }
+            } else {
+                var list = scanLists.getByUid(match.listUid);
+                if (list && list.uid)
+                    rows.push({key: "scan", listUid: match.listUid, targetId: match.targetId, name: match.name,
+                        protocolLabel: match.protocolLabel});
+            }
+        }
+        return mainRoot.listenLabels(rows.concat(systems));
+    }
+    // The targets the scan-list session scans, as it started them: read once,
+    // when its start is accepted, from the target files that start wrote, and
+    // kept with the accepted start (prefs.acceptedStartTargets) for a recreated
+    // Activity, so a list edited, saved or deleted since changes nothing here
+    // (the session still runs what it started with).
+    property var sessionTargets: []
+    function captureSessionTargets() {
+        mainRoot.sessionTargets = mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
+            && typeof scanListStarter !== "undefined"
+            ? knownFrequencies.sessionTargets(mainRoot.sessionLists.map(function (list) {
+                return {uid: list.uid || "", name: list.name || "", path: scanListStarter.sessionCsvPath(list)};
+            })) : [];
+    }
+    // The channels the session's own targets put the tuned frequency @p hz on,
+    // @p width wide: the nearest frequency some target on it covers @p hz at
+    // (its width or the channel's, the narrower). The in-place Listen sends
+    // only that frequency, so it names the row the scan's entry match takes
+    // there (dsd_engine_scan_entry_match()): of the rows the engine says it
+    // could pick now (metrics.scanTargetEligible, published in the session's
+    // target order: a list switched on, not avoided, a width the DSP rate can
+    // filter), the one it takes as on air (metrics.scanTargetOnAir: parked,
+    // its park landed, not paused; published with the rest), else the first
+    // in list order. With none it would take, or nothing published yet,
+    // nothing is offered: the scan would refuse the frequency. One tune per
+    // frequency.
+    function sessionRowsAt(hz, width) {
+        var eligible = metrics.scanTargetEligible || [];
+        var targets = mainRoot.sessionTargets;
+        if (eligible.length !== targets.length)
+            return [];
+        var channel = width > 0 ? width : 12500;
+        var centres = [], nearest = Infinity;
+        for (var target of targets) {
+            var distance = Math.abs(hz - target.frequencyHz);
+            if (distance > Math.min(channel, target.width) / 2)
+                continue;
+            if (distance + 0.5 < nearest) {
+                centres = [];
+                nearest = distance;
+            }
+            if (Math.abs(distance - nearest) < 0.5 && centres.indexOf(target.frequencyHz) < 0)
+                centres.push(target.frequencyHz);
+        }
+        var rows = [];
+        var onAir = metrics.scanTargetOnAir;
+        for (var centre of centres) {
+            var pick = null;
+            for (var i = 0; i < targets.length; ++i) {
+                var row = targets[i];
+                if (row.frequencyHz !== centre || eligible[i] !== true)
+                    continue;
+                if (pick === null || i === onAir)
+                    pick = row;
+            }
+            if (pick !== null)
+                rows.push({key: "tune", hz: centre, name: pick.name, protocolLabel: pick.protocolLabel});
+        }
+        return rows;
+    }
+    // Each action's text and spoken name. Two of one kind that would read the
+    // same say their protocols: "Gate (NXDN96)", "Gate (NXDN48)".
+    function listenLabels(actions) {
+        var counts = {};
+        for (var action of actions)
+            counts[action.key + "/" + action.name] = (counts[action.key + "/" + action.name] || 0) + 1;
+        return actions.map(function (action) {
+            var shown = counts[action.key + "/" + action.name] > 1 && action.protocolLabel
+                ? qsTr("%1 (%2)").arg(action.name).arg(action.protocolLabel) : action.name;
+            var start = qsTr("Start “%1”").arg(shown);
+            return Object.assign(action, {
+                text: action.key === "saved" ? start : shown,
+                accessibleName: action.key === "saved" ? start : qsTr("Listen to %1 with its settings").arg(shown)
+            });
+        });
+    }
+    /**
+     * Listen to @a action, one of listenActions, with its own settings: a
+     * scan-list row starts its list held on that row, for that start only
+     * (startWithMap() options.holdTarget); a saved system starts as itself.
+     * The session on now stops first, as a site restart does, and the start
+     * runs once the decoder is idle. A row of a paused scan-list session's own
+     * lists is the entry's tune instead (RTL_SET_FREQ at the row's frequency):
+     * the scan resumes there and holds it, and the session stays.
+     */
+    function listenWith(action) {
+        if (!action || action.enabled === false)
+            return;
+        if (action.key === "tune") {
+            commands.tuneHz(action.hz);
+            return;
+        }
+        cancelPendingRestart();
+        pendingStart = null;
+        pendingStartRow = -1;
+        pendingStartRemember = true;
+        awaitingUsbAccess = false;
+        pendingRestart = action.key === "saved" ? {
+            uid: action.uid
+        } : {
+            kind: "scan",
+            uid: action.listUid,
+            companions: [],
+            holdTarget: action.targetId
+        };
+        if (decoderHost.sessionState === 0)
+            finishPendingRestart();
+        else
+            decoderHost.stop();
+    }
+    // The tuned channel's action: the one there is at once, else the menu of
+    // them, as they stand when it opens. One that cannot run (an avoided saved
+    // system) opens the menu too, whose row shows it disabled and says why.
+    function requestListen() {
+        var actions = mainRoot.listenActions;
+        if (actions.length === 1 && actions[0].enabled !== false) {
+            mainRoot.listenWith(actions[0]);
+        } else if (actions.length > 0) {
+            listenMenu.actions = actions.slice();
+            listenMenu.visible = true;
+        }
+    }
     function finishPendingRestart() {
         if (!pendingRestart || decoderHost.sessionState !== 0)
             return;
@@ -286,7 +447,7 @@ Window {
             return;
         }
         if (scan)
-            startScanBundle(row, request.companions || []);
+            startScanBundle(row, request.companions || [], request.holdTarget || "");
         else
             startSystem(row);
     }
@@ -387,6 +548,11 @@ Window {
     // Whether the waiting start, once granted, may become where Explore
     // resumes: an Explore-here start keeps false through the permission dialog.
     property bool pendingStartRemember: true
+    // Issue #644: the target the waiting scan-list start holds from the start
+    // (Listen with its settings), for that start only. Set by every wait and
+    // read once by the grant, so a wait dismissed, dropped or replaced by
+    // another start never hands it on.
+    property string pendingStartHold: ""
     // Leaving Signal search abandons the start it asked for: closing the screen
     // (its Back, the system Back, the window), a later Start it refuses, or Stop.
     // The arm is cancelled, so a USB grant still finishing that start would run a
@@ -806,6 +972,8 @@ Window {
             var list = scanLists.getByUid(mainRoot.sessionStartUid);
             if (list && list.uid)
                 mainRoot.sessionSystem = list;
+            // As its start was accepted: its lists may have been deleted since, their target files with them.
+            mainRoot.sessionTargets = prefs.acceptedStartTargets;
         } else if (mainRoot.sessionStartKind === "explore") {
             mainRoot.exploring = true;
             // Where it got to before the recreation is not known here.
@@ -945,6 +1113,8 @@ Window {
             };
             var companionUids = mainRoot.pendingStartCompanions;
             mainRoot.pendingStartCompanions = [];
+            var hold = mainRoot.pendingStartHold;
+            mainRoot.pendingStartHold = "";
             mainRoot.pendingStart = null;
             mainRoot.pendingStartRow = -1;
             mainRoot.pendingStartRemember = true;
@@ -970,7 +1140,7 @@ Window {
                 if (listRow < 0)
                     mainRoot.startError = qsTr("This source was removed. Choose another source.");
                 else
-                    mainRoot.startScanBundle(listRow, companionUids);
+                    mainRoot.startScanBundle(listRow, companionUids, hold);
             } else if (sys) {
                 mainRoot.startWithMap(sys, row, scan, options);
             }
@@ -994,6 +1164,7 @@ Window {
             mainRoot.talkgroupsOpen = false;
             sessionRadio.visible = false;
             sessionMenu.visible = false;
+            listenMenu.visible = false;
             if (mainRoot.sessionDestination.length > 0) {
                 if (mainRoot.failureText.length > 0 && mainRoot.failureText !== mainRoot.dismissedFailure)
                     mainRoot.revealFailure();
@@ -1121,13 +1292,16 @@ Window {
     // Issue #697: the list at @a row and the lists @a companionUids name, in
     // that order, as one session on the first list's receiver, each as it is
     // saved now. A companion removed since is left out; the rest still start.
-    function startScanBundle(row, companionUids) {
+    // Issue #644: @a holdTarget, when given, is the list's target the scan
+    // starts held on, for this start only.
+    function startScanBundle(row, companionUids, holdTarget) {
         cancelPendingRestart();
         var list = scanLists.get(row);
         if (!list || !list.uid)
             return;
         mainRoot.startWithMap(list, row, true, {
-            companions: mainRoot.scanListsByUid(companionUids)
+            companions: mainRoot.scanListsByUid(companionUids),
+            holdTarget: holdTarget || ""
         });
     }
 
@@ -1143,6 +1317,11 @@ Window {
      *
      * @a options.remember (default true) is whether an explore session may
      * become where Explore resumes; it is kept through a USB-access wait.
+     *
+     * @a options.holdTarget (issue #644) is the target a scan starts held on.
+     * It goes to this start only: through a USB-access wait to the grant, and
+     * never into the attempt Retry repeats or anything saved, so a failed or
+     * later start of the list scans it as ever.
      */
     function startWithMap(sys, row, scan, options) {
         cancelPendingRestart();
@@ -1156,6 +1335,7 @@ Window {
         var companionUids = companions.map(function (list) {
             return list.uid;
         });
+        var holdTarget = scan && options && options.holdTarget ? String(options.holdTarget) : "";
         var previousSource = attemptedSource;
         attemptedSource = {
             kind: scan ? "scan" : row < 0 ? "explore" : "saved",
@@ -1179,6 +1359,7 @@ Window {
             mainRoot.pendingScanList = !!scan;
             mainRoot.pendingStartCompanions = companionUids;
             mainRoot.pendingStartRemember = remember;
+            mainRoot.pendingStartHold = holdTarget;
             decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
             return;
         }
@@ -1189,9 +1370,11 @@ Window {
         mainRoot.pendingStartRow = -1;
         mainRoot.pendingStartCompanions = [];
         mainRoot.pendingStartRemember = true;
+        mainRoot.pendingStartHold = "";
         // What the start is, said here and not read off the map: an edited Explore start can carry a saved
         // system's uid, and must not record into that system's call recordings.
-        var built = scan ? scanListStarter.startLists([sys].concat(companions), decoderHost) : sessionArgs.start(sys, decoderHost, row >= 0 ? "saved" : sys.signalSearch ? "search" : "explore");
+        var built = scan ? scanListStarter.startLists([sys].concat(companions), decoderHost, holdTarget)
+            : sessionArgs.start(sys, decoderHost, row >= 0 ? "saved" : sys.signalSearch ? "search" : "explore");
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
             if (scan) {
@@ -1251,6 +1434,8 @@ Window {
         prefs.acceptedStartKind = mainRoot.sessionStartKind;
         prefs.acceptedStartUid = mainRoot.sessionStartUid;
         mainRoot.forgetOperatorHold();
+        mainRoot.captureSessionTargets();
+        prefs.acceptedStartTargets = mainRoot.sessionTargets;
         mainRoot.scanWarnings = scan ? built.warnings.join("\n") : "";
         mainRoot.awaitingSessionInitialized = true;
         mainRoot.sessionReachedRunning = decoderHost.sessionState === 2;
@@ -1632,7 +1817,13 @@ Window {
         // grabs. Otherwise closing an overlay can deliver the same release to
         // "Stop listening" underneath. Session-menu rows keep passive grabs so
         // the sheet can scroll when a drag starts on a destination or Cancel.
-        enabled: opacity > 0.9 && !mainRoot.signalSearchOpen && !mainRoot.wizardOpen && !mainRoot.spectrumOpen && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible && !siteChooser.visible && !sessionMenu.visible && !sessionRadio.visible && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen && !mainRoot.radioReferenceAccountOpen && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings") && mainRoot.sessionDestination.length === 0
+        enabled: opacity > 0.9 && !mainRoot.signalSearchOpen && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
+            && !mainRoot.radioReferenceOpen && !mainRoot.talkgroupsOpen && !talkgroupsScreen.visible
+            && !siteChooser.visible && !sessionMenu.visible && !listenMenu.visible && !sessionRadio.visible
+            && !mainRoot.diagnosticsOpen && !mainRoot.licensesOpen && !mainRoot.callRecordingsOpen
+            && !mainRoot.radioReferenceAccountOpen
+            && !(mainRoot.importsOpen && mainRoot.sessionDestination === "settings")
+            && mainRoot.sessionDestination.length === 0
 
         onOpenSpectrum: {
             spectrumLoader.active = true;
@@ -1640,6 +1831,8 @@ Window {
         }
         onOpenTalkgroups: mainRoot.talkgroupsOpen = true
         onOpenSessionMenu: sessionMenu.open()
+        listenActions: mainRoot.listenActions
+        onListenRequested: mainRoot.requestListen()
     }
 
     // ---- Spectrum (pushed over the monitor) ----
@@ -1665,7 +1858,7 @@ Window {
         // The wizard can now open over a running session ("Save as a system"), and
         // TapHandlers never take exclusive grabs — without this, a tap meant for a
         // wizard field also reaches the spectrum underneath and retunes the radio.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !talkgroupsScreen.visible
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !talkgroupsScreen.visible && !listenMenu.visible
     }
 
     Component {
@@ -1676,6 +1869,8 @@ Window {
             exploring: mainRoot.exploring
             scanList: mainRoot.sessionScanList
             sharedRadioSheet: sessionRadio
+            listenActions: mainRoot.listenActions
+            onListenRequested: mainRoot.requestListen()
 
             onClosed: mainRoot.spectrumOpen = false
             onExploreFromHere: {
@@ -2023,6 +2218,17 @@ Window {
                 wizard.openForEdit(mainRoot.sessionRow);
                 mainRoot.wizardOpen = true;
             }
+        }
+    }
+    // Issue #644: the scan-list rows and saved systems on the tuned channel,
+    // when there are several to listen to with their own settings.
+    ActionMenu {
+        id: listenMenu
+        objectName: "listenMenu"
+        anchors.fill: safeArea
+        title: qsTr("Listen with its settings")
+        onTriggered: function (index) {
+            mainRoot.listenWith(listenMenu.actions[index]);
         }
     }
 

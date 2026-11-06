@@ -21,6 +21,18 @@ scan_state_row_count(int rows) {
     return rows > (int)UINT16_MAX ? (uint16_t)UINT16_MAX : (uint16_t)rows;
 }
 
+/* The -Y scan, running or paused. A resume waiting on its row keeps lcn_scan_paused set (and scanner_mode 0) until the
+   row lands. */
+static void
+scan_state_channel(const dsd_opts* opts, const dsd_state* state, dsd_app_scan_state_view* out) {
+    out->kind = (uint8_t)DSD_APP_SCAN_KIND_CHANNEL;
+    out->running = opts->scanner_mode == 1 ? 1U : 0U;
+    out->paused = out->running ? 0U : 1U;
+    out->resume_pending = (out->paused && state->lcn_scan_resume_pending) ? 1U : 0U;
+    out->target_count = scan_state_row_count(state->lcn_freq_count);
+    out->entry_hold = state->lcn_scan_entry_hold ? 1U : 0U;
+}
+
 int
 dsd_app_scan_state_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_scan_state_view* out) {
     if (out) {
@@ -35,15 +47,11 @@ dsd_app_scan_state_view_get(const dsd_opts* opts, const dsd_state* state, dsd_ap
         out->running = dsd_trunk_scan_owns_tuner(opts, state) ? 1U : 0U;
         out->paused = out->running ? 0U : 1U;
         out->target_count = state->trunk_scan_target_count;
+        out->entry_hold = state->trunk_scan_entry_hold ? 1U : 0U;
         return 0;
     }
-    /* A resume waiting on its row keeps lcn_scan_paused set (and scanner_mode 0) until the row lands. */
     if (opts->scanner_mode == 1 || state->lcn_scan_paused) {
-        out->kind = (uint8_t)DSD_APP_SCAN_KIND_CHANNEL;
-        out->running = opts->scanner_mode == 1 ? 1U : 0U;
-        out->paused = out->running ? 0U : 1U;
-        out->resume_pending = (out->paused && state->lcn_scan_resume_pending) ? 1U : 0U;
-        out->target_count = scan_state_row_count(state->lcn_freq_count);
+        scan_state_channel(opts, state, out);
     }
     return 0;
 }

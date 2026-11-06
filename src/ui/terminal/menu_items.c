@@ -268,8 +268,9 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
      .is_enabled = input_freq_offered,
      .label_fn = lbl_input_freq,
      .help = "Tune in MHz (146.52) or add a unit (Hz, k, M, G); without a unit, 1000000 and above is Hz. A running "
-             "scan pauses on the new frequency; y resumes it. Selects a new CC during P25 trunking. With a rigctl "
-             "peer (-U) the peer is tuned. Offered on radio inputs and with a rigctl peer, not during an I/Q replay.",
+             "scan pauses on the new frequency; y resumes it. A frequency in the scan's list holds the scan on its row "
+             "instead; y continues the scan. Selects a new CC during P25 trunking. With a rigctl peer (-U) the peer "
+             "is tuned. Offered on radio inputs and with a rigctl peer, not during an I/Q replay.",
      .hotkey = "=",
      .on_select = act_set_freq},
     {.id = "input.volume",

@@ -96,9 +96,12 @@ internal object UsbReceiverKind {
         "--iq-replay-rate", "--iq-info",
     )
 
-    /** Long options whose value is free text, taken whatever it starts with: an API token may begin with '-'. `k_free_value_options`. */
+    /**
+     * Long options whose value is free text, taken whatever it starts with: an API token or a target id may begin
+     * with '-'. `k_free_value_options`.
+     */
     private val LONG_FREE_VALUE: Set<String> = setOf(
-        "--api-token", "--api-token-file",
+        "--api-token", "--api-token-file", "--trunk-scan-hold",
     )
 
     /** Long options that take the next argument only when it does not start with '-'. `k_skip_exact_next_nonopt`. */
@@ -117,7 +120,8 @@ internal object UsbReceiverKind {
         "--iq-replay-rate=", "--iq-info=", "--tetra-net=", "--tetra-key=", "--dmr-baofeng-pc5=", "--dmr-csi-ee72=",
         "--dmr-vertex-ks-csv=", "--dmr-tg-key-csv=", "--p25-bandplan=", "--src-csv=", "--p25-bandplan-export=",
         "--dmr-force-algid=", "--m17-signature-public-key=", "--m17-scrambler-key=", "--m17-aes-key=",
-        "--key-profile-ref=", "--config=", "--trunk-scan=", "--trunk-scan-off=", "--trunk-scan-dwell-ms=",
+        "--key-profile-ref=", "--config=", "--trunk-scan=", "--trunk-scan-off=", "--trunk-scan-hold=",
+        "--trunk-scan-dwell-ms=",
         "--trunk-scan-activity-hold-ms=", "--scan-voice-qualify-ms=", "--scan-voice-hold-ms=", "--scan-max-visit-ms=",
         "--nfm-bandwidth-hz=", "--am-bandwidth-hz=", "--squelch=", "--tone-allow=", "--slot-allow=", "--slot-block=",
         "--dcc-allow=", "--dcc-block=", "--ran-allow=", "--ran-block=", "--nac-allow=", "--nac-block=", "--slot-name=",

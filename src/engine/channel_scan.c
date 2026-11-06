@@ -24,6 +24,8 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/manual_tune.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -48,7 +50,9 @@
 
 #include "manual_tune_pending.h"
 #include "scan_analog_internal.h"
+#include "scan_entry_internal.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
 #include "scan_step_untyped.h"
 
 /* One row's session edit (issue #518). */
@@ -132,6 +136,14 @@ typedef struct {
        so the row's failure, at its tune or late, is handled as that step's: going forward the cursor moves past the
        row, going back it stays and the row is the one the next Previous retries (channel_scan_row_refused()). */
     int step_dir;
+    /* The tune the staged row belongs to: the request its first tune began, which a restage of that row keeps (an
+       entry waiting on the row names it, issue #644). */
+    uint64_t attempt;
+    /* The request a stream stop found still able to land, and the source of the stream that stopped
+       (dsd_engine_channel_scan_stream_stopping(), issue #644): the reopen after it decides whether the row is
+       restaged there (dsd_engine_channel_scan_stream_reopened()). */
+    uint64_t stop_request;
+    uint64_t stop_source_key;
 } channel_scan;
 
 static void
@@ -258,6 +270,12 @@ channel_scan_row_is_current(const dsd_opts* opts, const dsd_state* state, const 
            && channel_scan_row_still_listed(state, scan->list_rev, scan->row, scan->row_freq);
 }
 
+/* What a row tune that failed with @p result comes to for an entry waiting on it (issue #644). */
+static dsd_scan_goto_result
+channel_scan_entry_failure(dsd_trunk_tune_result result) {
+    return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
+}
+
 /* End every slot's call and commit it, an NFM call first (dsd_engine_end_calls()). */
 static void
 channel_scan_end_calls(dsd_opts* opts, dsd_state* state) {
@@ -338,6 +356,17 @@ channel_scan_staged_stale(const dsd_opts* opts, const dsd_state* state, const ch
     return scan->familyless_supersedes != dsd_engine_scan_familyless_retune_supersedes(opts);
 }
 
+/* The receiver is on the staged row's frequency but not known to run its receive profile: the row is staged again in a
+   fresh request, the same attempt (channel_scan_start_row()), whose tune carries the row's profile as every row tune
+   does, and it commits only once that tune lands. The receiver has left the carrier already: the row's commit or its
+   end unlanded notes the boundary. */
+static void
+channel_scan_restage(channel_scan* scan) {
+    scan->request = 0;
+    scan->retry = 1;
+    scan->left_carrier = 1;
+}
+
 static int
 channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     /* Row commits run only in conventional scanner mode. Entry into that mode
@@ -351,12 +380,8 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->tuned_list = scan->list_rev;
     scan->tuned_freq = scan->row_freq;
     if (channel_scan_staged_stale(opts, state, scan)) {
-        /* Stage the new effective profile in a fresh request before any frame
-         * can use it. The receiver has left the carrier already: the row's commit
-         * or its end unlanded notes the boundary. */
-        scan->request = 0;
-        scan->retry = 1;
-        scan->left_carrier = 1;
+        /* Stage the new effective profile in a fresh request before any frame can use it. */
+        channel_scan_restage(scan);
         return 0;
     }
     const int outgoing_force = state->M;
@@ -372,6 +397,9 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     }
     state->lcn_freq_roll = scan->row + 1;
     dsd_state_lcn_on_air_note(state, scan->row);
+    /* The scan has the tuner on a row of its own (issue #644): the operator's calls ended above, so a start that found
+       no list, or turned the scanner on over a manual tune, stops filing its calls as the operator's here. */
+    state->operator_tuned = 0U;
     const dsd_scan_row_profile* profile = dsd_channel_profile_get(state, (size_t)scan->row);
     dsd_scan_option_values values_scratch;
     (void)dsd_scan_mode_options(opts, state, channel_scan_row_values(state, scan->row, &values_scratch));
@@ -392,8 +420,10 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     scan->request = 0;
     scan->needs_commit = 0;
     dsd_engine_channel_scan_resume_landed(opts, state);
-    /* The row landed and committed: an analog call on audio input is heard on its frequency (issue #667 D9). */
-    dsd_engine_scan_landing_note_row(state, *dsd_state_trunk_lcn_slot(state, scan->row));
+    /* The row landed and committed: an analog call on audio input is heard on its frequency (issue #667 D9), and an
+       entry waiting on it holds it (issue #644). */
+    dsd_engine_scan_landing_note_row(state, scan->row, *dsd_state_trunk_lcn_slot(state, scan->row));
+    dsd_engine_scan_entry_landed(state, scan->row, scan->attempt);
     return 1;
 }
 
@@ -461,6 +491,26 @@ channel_scan_resume_row_failed(dsd_opts* opts, dsd_state* state, const channel_s
     dsd_engine_channel_scan_resume_failed(opts, state, scan->row_freq, why);
 }
 
+/* What @p scan's request came to; none is a failure. */
+static dsd_trunk_tune_result
+channel_scan_request_result(const channel_scan* scan) {
+    return scan->request ? dsd_trunk_tuning_request_status(scan->request, NULL) : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+/* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
+   longer outstanding (no request, retry or commit of it left), would wait for good: it fails here, kept for its toast,
+   as its attempt's failure would have failed it. */
+static void
+channel_scan_end_entry_waiting_on_nothing(dsd_state* state, const channel_scan* scan) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (!intent.active || intent.by != DSD_ENGINE_SCAN_LANDING_ROW || !dsd_channel_modes_present(state)
+        || (intent.request != 0U && intent.request == scan->attempt
+            && (scan->request || scan->retry || scan->needs_commit))) {
+        return;
+    }
+    dsd_engine_scan_entry_intent_fail(state, DSD_SCAN_GOTO_REFUSED);
+}
+
 int
 dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -470,10 +520,12 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (!scan) {
         return 0;
     }
+    channel_scan_end_entry_waiting_on_nothing(state, scan);
     if (scan->retry) {
         if (!channel_scan_row_is_current(opts, state, scan)) {
             scan->retry = 0;
             channel_scan_note_unlanded_move(opts, state, scan, 0);
+            dsd_engine_scan_entry_intent_drop_request(state, scan->attempt);
         } else if (channel_scan_start_row_owned(opts, state, scan->row) < 0 && state->lcn_scan_resume_pending) {
             channel_scan_resume_row_failed(opts, state, scan, scan->start_failure);
         }
@@ -482,10 +534,12 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (!scan->request) {
         return 0;
     }
-    const dsd_trunk_tune_result result = dsd_trunk_tuning_request_status(scan->request, NULL);
+    const dsd_trunk_tune_result result = channel_scan_request_result(scan);
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         return 1;
     }
+    /* Whatever it came to, a reopen no longer decides it. */
+    scan->stop_request = 0U;
     if (result == DSD_TRUNK_TUNE_RESULT_OK && channel_scan_row_is_current(opts, state, scan)) {
         scan->request = 0;
         (void)channel_scan_commit_owned(opts, state, scan);
@@ -503,6 +557,9 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (channel_scan_row_still_listed(state, scan->list_rev, scan->row, scan->row_freq)) {
         channel_scan_row_refused(state, scan, result);
     }
+    /* An entry waiting on the tune holds nothing: it never landed, and its failure is kept for its toast (issue
+       #644). */
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result), NULL);
     scan->request = 0;
     return 0;
 }
@@ -941,30 +998,23 @@ dsd_engine_channel_scan_on_air_row(const dsd_state* state) {
     return state ? channel_scan_on_air_row(state) : -1;
 }
 
-void
-dsd_engine_channel_scan_note_manual_step(const dsd_opts* opts, dsd_state* state, int row, int landed) {
-    /* scanner_mode 1 is a -Y scan running, which owns the tuner (dsd_channel_scan_owns_tuner()); one paused or with
-       its resume pending is 0. */
-    if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || dsd_channel_modes_present(state)
-        || row < 0 || row >= state->lcn_freq_count) {
-        return;
-    }
-    const long freq = *dsd_state_trunk_lcn_slot(state, row);
-    if (landed && freq != 0) {
-        dsd_engine_scan_landing_note_row(state, freq);
-    } else {
-        dsd_engine_scan_landing_forget(state);
-    }
-}
-
-/* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
- * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
- * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_scan_analog_width_skipped()). */
-static int
-channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
-    if (*dsd_state_trunk_lcn_slot_const(state, row) == 0 || dsd_state_trunk_lcn_avoid_get(state, (size_t)row)) {
+int
+dsd_engine_channel_scan_on_avoided_row(const dsd_state* state) {
+    /* The avoid count first: with nothing avoided, the frame loop's question costs one read. */
+    if (!state || state->lcn_avoid_count == 0U) {
         return 0;
     }
+    const int row = channel_scan_on_air_row(state);
+    return row >= 0 && row < state->lcn_freq_count && dsd_state_trunk_lcn_avoid_get(state, (size_t)row);
+}
+
+int
+dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
+    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state);
+}
+
+int
+dsd_engine_channel_scan_row_width_fits(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
     if (!channel_scan_row_visited_analog(state, row)) {
         return 1;
     }
@@ -972,6 +1022,15 @@ channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row
     const int kind = dsd_scan_mode_analog_kind(dsd_channel_mode_get(state, (size_t)row));
     return !dsd_engine_scan_analog_width_skipped(opts, state, channel_scan_row_values(state, row, &scratch), kind,
                                                  dsp_rate_hz, NULL, 0U);
+}
+
+/* Whether a step can land on @p row: it has a frequency, the operator has not avoided it, and it is not an analog row
+ * skipped at every visit before any backend moves: one whose width, of the kind its demodulator runs, the front end
+ * refuses at @p dsp_rate_hz, or an am row nothing demodulates (dsd_engine_channel_scan_row_width_fits()). */
+static int
+channel_scan_row_reachable(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
+    return *dsd_state_trunk_lcn_slot_const(state, row) != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)row)
+           && dsd_engine_channel_scan_row_width_fits(opts, state, row, dsp_rate_hz);
 }
 
 /* A tone policy as it judges (dsd_analog_tone_policy_configure()): a list policy with a list, else none (OFF and an
@@ -1112,6 +1171,165 @@ dsd_engine_channel_scan_refused_rows(const dsd_opts* opts, const dsd_state* stat
     return refused;
 }
 
+/* What a row start stages in the scan: the row, what it was prepared from and with (its options, its keys, the
+   configured settings and the keyring epoch), and the tune that carries it, with the step it belongs to. A go-to of a
+   row (issue #644) prepares its row in one of these first and swaps it in for the tune, so a preparation that
+   fails, or a tune refused before any backend moved, puts back the row staged before, its tune included. */
+typedef struct {
+    int row;
+    dsd_scan_mode mode;
+    uint64_t list_rev;
+    long row_freq;
+    int row_kind;
+    dsd_scan_settings configured;
+    dsd_scan_key_change keys;
+    uint64_t key_epoch;
+    uint32_t edits_epoch;
+    dsd_scan_option_values values;
+    int has_values;
+    uint32_t family_requests;
+    uint32_t familyless_supersedes;
+    int family_attached;
+    uint64_t request;
+    int retry;
+    int step_dir;
+    uint64_t attempt;
+} channel_scan_staging;
+
+/* Exchange what @p staging holds with what @p scan has staged, the keys moved, not copied. */
+static void
+channel_scan_staging_swap(channel_scan* scan, channel_scan_staging* staging) {
+    channel_scan_staging held;
+    held.row = scan->row;
+    held.mode = scan->mode;
+    held.list_rev = scan->list_rev;
+    held.row_freq = scan->row_freq;
+    held.row_kind = scan->row_kind;
+    held.configured = scan->configured;
+    DSD_MEMCPY(&held.keys, &scan->keys, sizeof(held.keys));
+    held.key_epoch = scan->key_epoch;
+    held.edits_epoch = scan->staged_edits_epoch;
+    held.values = scan->staged_values;
+    held.has_values = scan->staged_has_values;
+    held.family_requests = scan->family_requests;
+    held.familyless_supersedes = scan->familyless_supersedes;
+    held.family_attached = scan->family_attached;
+    held.request = scan->request;
+    held.retry = scan->retry;
+    held.step_dir = scan->step_dir;
+    held.attempt = scan->attempt;
+    scan->row = staging->row;
+    scan->mode = staging->mode;
+    scan->list_rev = staging->list_rev;
+    scan->row_freq = staging->row_freq;
+    scan->row_kind = staging->row_kind;
+    scan->configured = staging->configured;
+    DSD_MEMCPY(&scan->keys, &staging->keys, sizeof(scan->keys));
+    scan->key_epoch = staging->key_epoch;
+    scan->staged_edits_epoch = staging->edits_epoch;
+    scan->staged_values = staging->values;
+    scan->staged_has_values = staging->has_values;
+    scan->family_requests = staging->family_requests;
+    scan->familyless_supersedes = staging->familyless_supersedes;
+    scan->family_attached = staging->family_attached;
+    scan->request = staging->request;
+    scan->retry = staging->retry;
+    scan->step_dir = staging->step_dir;
+    scan->attempt = staging->attempt;
+    DSD_MEMCPY(staging, &held, sizeof(*staging));
+    DSD_SECURE_ZERO(&held, sizeof(held));
+}
+
+/* Free what @p staging still holds (its keys). */
+static void
+channel_scan_staging_clear(channel_scan_staging* staging) {
+    dsd_scan_key_change_clear(&staging->keys);
+}
+
+/* Prepare @p row (on @p freq) into @p out, and the settings its tune runs into @p next, for a step in direction
+   @p step_dir: the scan itself is left alone. -1 when the row's settings, scopes or keys cannot be prepared (@p out
+   then holds nothing to free beyond channel_scan_staging_clear()). */
+static int
+channel_scan_prepare_row(dsd_opts* opts, dsd_state* state, channel_scan* scan, int row, long freq, int step_dir,
+                         channel_scan_staging* out, dsd_scan_settings* next) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    channel_scan_check_rows(opts, state, scan);
+    out->row = row;
+    out->mode = dsd_channel_mode_get(state, (size_t)row);
+    out->list_rev = state->lcn_list_rev;
+    out->row_freq = freq;
+    out->step_dir = step_dir;
+    /* The row's own acquisition options (its analog channel width, a session edit's included) are part of what the
+       tune queues. */
+    dsd_scan_option_values values_scratch;
+    const dsd_scan_option_values* staged = channel_scan_row_values(state, row, &values_scratch);
+    out->edits_epoch = scan->edits_epoch;
+    out->has_values = staged != NULL;
+    if (staged) {
+        out->values = *staged;
+    }
+    if (dsd_scan_mode_prepare(opts, state, out->mode, staged, next) != 0) {
+        return -1;
+    }
+    out->row_kind = next->analog_demod;
+    dsd_scan_mode_configured(opts, state, &out->configured);
+    if (dsd_scan_groups_begin(state)
+        || dsd_scan_key_change_prepare(state, dsd_state_trunk_lcn_keys_get(state, (size_t)row), &out->keys)) {
+        return -1;
+    }
+    out->key_epoch = state->enc_lockout_key_epoch;
+    return 0;
+}
+
+/* Tune the row staged in @p scan with the settings it was prepared with (@p next), noting the family requests its
+   commit checks it against. */
+static dsd_trunk_tune_result
+channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, const dsd_scan_settings* next) {
+    dsd_scan_settings before;
+    dsd_scan_settings_capture(opts, state, &before);
+    dsd_scan_settings_restore(next, opts, state);
+    scan->family_requests = dsd_engine_scan_family_requests(opts);
+    scan->familyless_supersedes = dsd_engine_scan_familyless_retune_supersedes(opts);
+    scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
+    const dsd_trunk_tune_result result =
+        dsd_engine_scan_tune_to_freq(opts, state, scan->row_freq, state->samplesPerSymbol, &scan->request);
+    dsd_scan_settings_restore(&before, opts, state);
+    /* A new attempt is named by its first request; a restage keeps the name. An entry waiting on the row is this
+       attempt's (issue #644). */
+    if (scan->attempt == 0U) {
+        scan->attempt = scan->request;
+    }
+    dsd_engine_scan_entry_intent_bind(state, scan->row, scan->attempt);
+    return result;
+}
+
+/* The staged row's tune answered @p result: commit it (OK), wait for it (PENDING), or end it unlanded. Returns as
+   channel_scan_start_row() does. */
+static int
+channel_scan_tune_outcome(dsd_opts* opts, dsd_state* state, channel_scan* scan, dsd_trunk_tune_result result) {
+    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
+        return channel_scan_commit(opts, state, scan);
+    }
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        /* A rigctl leg that moved ahead of the RTL leg left the carrier whatever the RTL leg's completion says. */
+        if (dsd_engine_scan_tune_moved()) {
+            scan->left_carrier = 1;
+        }
+        return 0;
+    }
+    /* A failed second backend may already have moved the first one. Keep the tune
+     * ledger's frame gate closed until a subsequent successful request recovers.
+     * When the rigctl leg did move the radio, the row ends unlanded on another carrier. */
+    channel_scan_note_unlanded_move(opts, state, scan, dsd_engine_scan_tune_moved());
+    scan->start_failure =
+        result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
+    channel_scan_end_calls(opts, state);
+    channel_scan_row_refused(state, scan, result);
+    dsd_engine_scan_entry_intent_fail_request(state, scan->attempt, channel_scan_entry_failure(result), NULL);
+    scan->request = 0;
+    return -1;
+}
+
 static int
 channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     if (row < 0 || row >= state->lcn_freq_count) {
@@ -1132,64 +1350,21 @@ channel_scan_start_row(dsd_opts* opts, dsd_state* state, int row) {
     if (!scan) {
         return -1;
     }
-    channel_scan_check_rows(opts, state, scan);
     scan->start_failure = DSD_SCAN_RESUME_FAILED_SETUP;
-    scan->row = row;
-    scan->mode = dsd_channel_mode_get(state, (size_t)row);
-    scan->list_rev = state->lcn_list_rev;
-    scan->row_freq = freq;
-    dsd_scan_settings before;
+    channel_scan_staging staging;
     dsd_scan_settings next;
-    dsd_scan_settings_capture(opts, state, &before);
-    /* The row's own acquisition options (its analog channel width, a session edit's included) are part of what the
-       tune queues. */
-    dsd_scan_option_values values_scratch;
-    const dsd_scan_option_values* staged = channel_scan_row_values(state, row, &values_scratch);
-    scan->staged_edits_epoch = scan->edits_epoch;
-    scan->staged_has_values = staged != NULL;
-    if (staged) {
-        scan->staged_values = *staged;
-    }
-    if (dsd_scan_mode_prepare(opts, state, scan->mode, staged, &next) != 0) {
+    /* A failed preparation leaves the row staged before as it was, a completed tune's retry gate included: that tune
+       may already have moved the receiver. */
+    if (channel_scan_prepare_row(opts, state, scan, row, freq, scan->step_dir, &staging, &next) != 0) {
+        channel_scan_staging_clear(&staging);
         return -1;
     }
-    scan->row_kind = next.analog_demod;
-    dsd_scan_mode_configured(opts, state, &scan->configured);
-    if (dsd_scan_groups_begin(state)
-        || dsd_scan_key_change_prepare(state, dsd_state_trunk_lcn_keys_get(state, (size_t)row), &scan->keys)) {
-        return -1;
-    }
-    scan->key_epoch = state->enc_lockout_key_epoch;
-    /* A completed tune may already have moved the receiver. Keep its retry gate
-     * closed through preparation failures; the new request takes over below. */
-    scan->retry = 0;
-    dsd_scan_settings_restore(&next, opts, state);
-    scan->family_requests = dsd_engine_scan_family_requests(opts);
-    scan->familyless_supersedes = dsd_engine_scan_familyless_retune_supersedes(opts);
-    scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
-    const dsd_trunk_tune_result result =
-        dsd_engine_scan_tune_to_freq(opts, state, freq, state->samplesPerSymbol, &scan->request);
-    dsd_scan_settings_restore(&before, opts, state);
-    if (result == DSD_TRUNK_TUNE_RESULT_OK) {
-        return channel_scan_commit(opts, state, scan);
-    }
-    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        /* A rigctl leg that moved ahead of the RTL leg left the carrier whatever the RTL leg's completion says. */
-        if (dsd_engine_scan_tune_moved()) {
-            scan->left_carrier = 1;
-        }
-        return 0;
-    }
-    /* A failed second backend may already have moved the first one. Keep the tune
-     * ledger's frame gate closed until a subsequent successful request recovers.
-     * When the rigctl leg did move the radio, the row ends unlanded on another carrier. */
-    channel_scan_note_unlanded_move(opts, state, scan, dsd_engine_scan_tune_moved());
-    scan->start_failure =
-        result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
-    channel_scan_end_calls(opts, state);
-    channel_scan_row_refused(state, scan, result);
-    scan->request = 0;
-    return -1;
+    /* The new request takes over from whatever was staged before. A retry is the restage of the row staged, the same
+       attempt. */
+    staging.attempt = scan->retry && scan->row == row ? scan->attempt : 0U;
+    channel_scan_staging_swap(scan, &staging);
+    channel_scan_staging_clear(&staging);
+    return channel_scan_tune_outcome(opts, state, scan, channel_scan_tune_staged(opts, state, scan, &next));
 }
 
 /* A step in direction @p dir begins (issue #666): its row's failure is handled as that step's
@@ -1217,6 +1392,8 @@ dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
         (void)dsd_engine_channel_scan_pending(opts, state);
         return 0;
     }
+    /* Another row's tune begins: an entry waiting on a landing is no longer the operator's last word (issue #644). */
+    dsd_engine_scan_entry_intent_cancel(state);
     (void)channel_scan_begin_step(state, 1);
     return channel_scan_start_row(opts, state, channel_scan_next_row(state));
 }
@@ -1258,6 +1435,9 @@ dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int di
     if (!opts || !state || opts->trunk_scan_enabled == 1 || state->lcn_freq_count <= 0) {
         return 0;
     }
+    /* Next and Previous (an avoid's step among them) cancel an entry waiting on its row's landing, whether they step or
+       service the tune outstanding (issue #644). */
+    dsd_engine_scan_entry_intent_cancel(state);
     const channel_scan* scan = channel_scan_get(state);
     if (scan && (scan->request || scan->retry)) {
         return dsd_engine_channel_scan_step(opts, state);
@@ -1388,6 +1568,9 @@ channel_scan_drop_row(channel_scan* scan) {
     scan->family_attached = 0;
     /* The direction of the step the row belonged to goes too: a resume's row is a forward step's (issue #666). */
     scan->step_dir = 0;
+    /* And the attempt it was: a resume's row is a new one (issue #644). */
+    scan->attempt = 0U;
+    scan->stop_request = 0U;
 }
 
 void
@@ -1398,22 +1581,48 @@ dsd_engine_scan_forget_carrier(dsd_opts* opts, dsd_state* state) {
     dsd_state_note_carrier_change(state);
 }
 
+/* Whether an untyped -Y list runs (issue #644 B-3): scanner_mode over a list of the user's own, and nothing typed. Such
+   a list has no scan object and no scope for a leave to find, yet its calls are named after its rows and keyed with
+   their keys. Not a resume still waiting on its row: the calls heard meanwhile are the manual session's, on the manual
+   frequency, which the stop leaves the receiver on. Channels learned over the air are no list: the scan never moved for
+   them. */
+static int
+channel_scan_untyped_runs(const dsd_opts* opts, const dsd_state* state) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && !dsd_channel_modes_present(state)
+           && dsd_state_trunk_lcn_user_list_present(opts, state);
+}
+
+/* At a release no entry waits on a landing any more, and an entry hold goes with the scan it held, while an ordinary
+   hold outlives a stop as it always has (issue #644). */
+static void
+channel_scan_release_entry(dsd_state* state) {
+    dsd_engine_scan_entry_intent_cancel(state);
+    if (state->lcn_scan_entry_hold) {
+        state->lcn_scan_hold = 0U;
+        state->lcn_scan_entry_hold = 0U;
+    }
+}
+
 /* The -Y scan's leave (@p keep 0) and pause (@p keep 1, issue #671). Every end of a scan moves the session, so a row
    tune still pending from it never commits its row afterwards. A pause ends the calls whatever the list (an untyped one
-   has no scope, F3); a leave ends them only where a scan is active, as it always has. A paused list (no resume pending)
-   was already left by its pause, which kept only its list state: its leave drops that and leaves the manual session
-   alone, so a stop over a pause ends no call, resets no acquisition and asks the monitor for nothing. */
+   has no scope); a leave ends them where a scan is active, and where an untyped list runs (issue #644 B-3), while
+   the caller still has its row named and keyed: they end under that row, before the configured keys come back. The
+   untyped list's leave stops there: its rows ran the configured decoder and front end, so nothing else goes back. A
+   paused list (no resume pending) was already left by its pause, which kept only its list state: its leave drops that
+   and leaves the manual session alone, so a stop over a pause ends no call, resets no acquisition and asks the monitor
+   for nothing. */
 static int
 channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     state->lcn_scan_session++;
     /* The scan no longer says where the receiver is (issue #667 D9). */
     dsd_engine_scan_landing_forget(state);
+    channel_scan_release_entry(state);
     channel_scan* scan = channel_scan_get(state);
     const int already_left = !keep && state->lcn_scan_paused && !state->lcn_scan_resume_pending;
     const int active =
         !already_left
         && (scan != NULL || dsd_scan_mode_configured_view(state) != NULL || dsd_scan_mode_updating(state));
-    if (active || keep) {
+    if (active || keep || (!already_left && channel_scan_untyped_runs(opts, state))) {
         channel_scan_end_calls(opts, state);
     }
     if (keep && in_place) {
@@ -1462,10 +1671,140 @@ dsd_engine_channel_scan_pause(dsd_opts* opts, dsd_state* state, int in_place) {
     dsd_scan_keys_leave(state);
     opts->scanner_mode = 0;
     state->lcn_scan_hold = 0U;
+    state->lcn_scan_entry_hold = 0U;
     state->lcn_scan_paused = 1U;
     state->lcn_scan_resume_pending = 0U;
     state->operator_tuned = 1U;
     return monitor_request;
+}
+
+int
+dsd_engine_channel_scan_end_running_calls(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
+        || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        return 0;
+    }
+    channel_scan_end_calls(opts, state);
+    return 1;
+}
+
+/* Why a start or a resume did nothing, or a resume left the scan paused, on the status line every frontend shows, for
+   as long as a tune's failure stays there. */
+static void
+channel_scan_toast_resume(dsd_state* state, const char* text) {
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
+    state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
+}
+
+/* The receiver's centre as the decoder knows it: the RTL front end's cached centre, else the frequency last sent to a
+   rigctl peer; 0 with neither (audio input, which no scan moves). */
+static uint32_t
+channel_scan_receiver_hz(const dsd_opts* opts) {
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+        return opts->rtlsdr_center_freq;
+    }
+    return opts->use_rigctl == 1 ? opts->rigctl_sent_freq_hz : 0U;
+}
+
+/* A start's ordinary hold kept across the stop (issue #644): it holds the row heard, so it stays only while the
+   receiver is there. A walk the start took as its own is the receiver's next row and keeps it (@p adopted); one it
+   could not take (@p walk_left) moves the receiver where the hold would not follow, and a centre on another frequency
+   (a manual tune since the stop) is not the row's: either lets the hold go, so the running scan's next timed step tunes
+   a row of its own. An entry hold never outlives a stop; an unknown centre keeps the hold. */
+static void
+channel_scan_start_settles_hold(const dsd_opts* opts, dsd_state* state, int adopted, int walk_left) {
+    if (!state->lcn_scan_hold || state->lcn_scan_entry_hold || adopted) {
+        return;
+    }
+    if (!walk_left) {
+        const uint32_t hz = channel_scan_receiver_hz(opts);
+        const int row = channel_scan_on_air_row(state);
+        if (hz == 0U
+            || (row >= 0 && row < state->lcn_freq_count && *dsd_state_trunk_lcn_slot_const(state, row) == (long)hz)) {
+            return;
+        }
+    }
+    state->lcn_scan_hold = 0U;
+}
+
+void
+dsd_engine_channel_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    if (!scan) {
+        return;
+    }
+    scan->stop_request = 0U;
+    const dsd_trunk_tune_result result = channel_scan_request_result(scan);
+    if (!opts || scan->row_freq <= 0
+        || (result != DSD_TRUNK_TUNE_RESULT_PENDING && result != DSD_TRUNK_TUNE_RESULT_OK)) {
+        return;
+    }
+    scan->stop_request = scan->request;
+    scan->stop_source_key = state->carrier_source_key;
+}
+
+void
+dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    if (!scan) {
+        return;
+    }
+    const uint64_t request = scan->stop_request;
+    scan->stop_request = 0U;
+    if (!opened || request == 0U || request != scan->request || scan->row_freq <= 0
+        || !dsd_engine_stream_reopened_on(opts, state, scan->stop_source_key, (uint32_t)scan->row_freq)) {
+        return;
+    }
+    /* The new stream opened on the row's frequency: the receiver is there, so the attempt goes on, and the failure the
+       stop published has nothing to roll back. But a restart is a retune boundary: the stream opened on the settings in
+       force before the stop (the row committed last, or the configured ones), not this row's, whose receive profile
+       reaches the front end only with its own tune. So the row is restaged (channel_scan_restage()), and its landing
+       is the ordinary one, the row's whole profile with it. */
+    dsd_trunk_tuning_request_disown(request);
+    channel_scan_restage(scan);
+}
+
+void
+dsd_engine_channel_scan_config_start(const dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        return;
+    }
+    const int walk = dsd_engine_manual_tune_operator_walk_noted();
+    const int adopted = walk && dsd_engine_manual_tune_adopt_walk(state);
+    channel_scan_start_settles_hold(opts, state, adopted, walk && !adopted);
+}
+
+int
+dsd_engine_channel_scan_start(dsd_opts* opts, dsd_state* state) {
+    /* A paused scan resumes instead (dsd_engine_channel_scan_resume()): a start would publish it running beside its
+       pause. */
+    if (!opts || !state || state->lcn_scan_paused || state->lcn_scan_resume_pending) {
+        return -1;
+    }
+    /* With no list of the user's own the scan never moves (channels learned over the air are no list): the receiver
+       stays the operator's, so its calls go on and it stays the operator's tuner, as a stop over such a session ends
+       nothing (channel_scan_untyped_runs()). */
+    const int users_list = dsd_state_trunk_lcn_user_list_present(opts, state);
+    /* A walk off the scan still waiting on its tune would land once the scan owns the tuner, on a row the scan never
+       chose (issue #644): the scan takes it over as its own walk, with no tune of its own, so its landing commits its
+       row and its failure passes it as the scan's walk does. One the scan cannot take (a typed list's, a row rewritten
+       since) refuses the start, which changes nothing: the walk settles off the scan, and a start after it runs. */
+    const int walk = users_list && dsd_engine_manual_tune_operator_walk_noted();
+    const int adopted = walk && dsd_engine_manual_tune_adopt_walk(state);
+    if (walk && !adopted) {
+        channel_scan_toast_resume(state, "Scanner not started: channel change still pending; retry");
+        return -1;
+    }
+    if (users_list) {
+        channel_scan_start_settles_hold(opts, state, adopted, 0);
+        /* The calls heard so far end under what they began with (no row, the operator's tuner after a manual tune):
+           only then does the tuner become the scan's, so what is heard next is the scan's, as a resume's landing
+           does. */
+        channel_scan_end_calls(opts, state);
+        state->operator_tuned = 0U;
+    }
+    opts->scanner_mode = 1;
+    return 0;
 }
 
 void
@@ -1477,14 +1816,6 @@ dsd_engine_channel_scan_resume_landed(dsd_opts* opts, dsd_state* state) {
     state->lcn_scan_paused = 0U;
     state->lcn_scan_resume_pending = 0U;
     state->operator_tuned = 0U;
-}
-
-/* Why a resume left the scan paused, or did nothing, on the status line every frontend shows, for as long as a tune's
-   failure stays there. */
-static void
-channel_scan_toast_resume(dsd_state* state, const char* text) {
-    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
-    state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
 }
 
 void
@@ -1505,8 +1836,25 @@ dsd_engine_scan_toast_resume_failed(dsd_state* state, long freq, int why) {
     channel_scan_toast_resume(state, text);
 }
 
+/* The goto outcome a resume's failure @p why names, for an entry the resume carried (issue #644); HOLDING for an
+   interrupted resume, which a stream reopen ends: no failure of the entry's. */
+static dsd_scan_goto_result
+channel_scan_resume_failure_result(int why) {
+    switch (why) {
+        case DSD_SCAN_RESUME_FAILED_DEFERRED: return DSD_SCAN_GOTO_DEFERRED;
+        case DSD_SCAN_RESUME_FAILED_SETUP: return DSD_SCAN_GOTO_SETUP_FAILED;
+        case DSD_SCAN_RESUME_INTERRUPTED: return DSD_SCAN_GOTO_HOLDING;
+        default: return DSD_SCAN_GOTO_REFUSED;
+    }
+}
+
 void
 dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long freq, int why) {
+    /* A resume-at's entry failed with its resume: kept for its toast before the pause below cancels it (issue #644). */
+    const dsd_scan_goto_result entry_result = channel_scan_resume_failure_result(why);
+    if (entry_result != DSD_SCAN_GOTO_HOLDING) {
+        dsd_engine_scan_entry_intent_fail(state, entry_result);
+    }
     if (dsd_channel_modes_present(state)) {
         /* The pause again, in place of the row attempt: every scope it began is detached and the configured front end
            is asked back, through the pause app-control installed, which records that request for the decoder as an
@@ -1518,7 +1866,9 @@ dsd_engine_channel_scan_resume_failed(dsd_opts* opts, dsd_state* state, long fre
         /* An untyped row holds no scope, and its keys were never installed: the scan only goes back to paused. A
            transmission heard on the manual frequency while the row was outstanding goes on as one call. */
         opts->scanner_mode = 0;
+        dsd_engine_scan_entry_intent_cancel(state);
         state->lcn_scan_hold = 0U;
+        state->lcn_scan_entry_hold = 0U;
         state->lcn_scan_paused = 1U;
         state->lcn_scan_resume_pending = 0U;
         state->operator_tuned = 1U;
@@ -1567,6 +1917,49 @@ channel_scan_resume_untyped_row(dsd_opts* opts, dsd_state* state, int row, int* 
     return result != DSD_UNTYPED_STEP_PENDING;
 }
 
+/* Resume the paused scan on @p row (issue #671), with @p entry an entry waiting on its landing (issue #644): the manual
+   session's calls end, a new scan session begins, and the row is tuned as a step would tune it. Returns a
+   DSD_SCAN_RESUME_* result; @p why says why a REFUSED never landed (DSD_SCAN_RESUME_FAILED_*). */
+static int
+channel_scan_resume_on(dsd_opts* opts, dsd_state* state, int row, int entry, int* why) {
+    /* The manual session's calls end under no row's name, before any row is tuned (F3). */
+    channel_scan_end_calls(opts, state);
+    opts->trunk_enable = 0;
+    dsd_engine_legacy_tune_caches_forget();
+    state->lcn_scan_session++;
+    state->lcn_scan_resume_pending = 1U;
+    if (entry) {
+        dsd_engine_scan_entry_intent_set(state, row, 0U);
+    } else {
+        dsd_engine_scan_entry_intent_cancel(state);
+    }
+    const int kept_roll = state->lcn_freq_roll;
+    const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
+    int refused = 0;
+    *why = DSD_SCAN_RESUME_FAILED_TUNE;
+    if (dsd_channel_modes_present(state)) {
+        refused = channel_scan_start_row_owned(opts, state, row) < 0;
+        channel_scan* scan = channel_scan_get(state); /* the first row of a scan creates it */
+        if (scan) {
+            scan->resume_roll = kept_roll;
+            *why = scan->start_failure;
+        } else {
+            *why = DSD_SCAN_RESUME_FAILED_SETUP;
+        }
+    } else {
+        refused = channel_scan_resume_untyped_row(opts, state, row, why);
+    }
+    if (!state->lcn_scan_resume_pending) {
+        return DSD_SCAN_RESUME_LANDED;
+    }
+    if (!refused) {
+        return DSD_SCAN_RESUME_PENDING;
+    }
+    state->lcn_freq_roll = kept_roll;
+    dsd_engine_channel_scan_resume_failed(opts, state, freq, *why);
+    return DSD_SCAN_RESUME_REFUSED;
+}
+
 int
 dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1592,37 +1985,8 @@ dsd_engine_channel_scan_resume(dsd_opts* opts, dsd_state* state) {
         channel_scan_toast_resume(state, "Scan stays paused: no scan channel to resume on");
         return DSD_SCAN_RESUME_NO_ROW;
     }
-    /* The manual session's calls end under no row's name, before any row is tuned (F3). */
-    channel_scan_end_calls(opts, state);
-    opts->trunk_enable = 0;
-    dsd_engine_legacy_tune_caches_forget();
-    state->lcn_scan_session++;
-    state->lcn_scan_resume_pending = 1U;
-    const int kept_roll = state->lcn_freq_roll;
-    const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
-    int refused = 0;
     int why = DSD_SCAN_RESUME_FAILED_TUNE;
-    if (dsd_channel_modes_present(state)) {
-        refused = channel_scan_start_row_owned(opts, state, row) < 0;
-        channel_scan* scan = channel_scan_get(state); /* the first row of a scan creates it */
-        if (scan) {
-            scan->resume_roll = kept_roll;
-            why = scan->start_failure;
-        } else {
-            why = DSD_SCAN_RESUME_FAILED_SETUP;
-        }
-    } else {
-        refused = channel_scan_resume_untyped_row(opts, state, row, &why);
-    }
-    if (!state->lcn_scan_resume_pending) {
-        return DSD_SCAN_RESUME_LANDED;
-    }
-    if (!refused) {
-        return DSD_SCAN_RESUME_PENDING;
-    }
-    state->lcn_freq_roll = kept_roll;
-    dsd_engine_channel_scan_resume_failed(opts, state, freq, why);
-    return DSD_SCAN_RESUME_REFUSED;
+    return channel_scan_resume_on(opts, state, row, 0, &why);
 }
 
 /* Store @p next as @p row's session edit, dropping the entry once it edits nothing. Returns -1 when it cannot be
@@ -1793,4 +2157,241 @@ dsd_engine_channel_scan_restore_row_edit(dsd_opts* opts, dsd_state* state, uint3
     }
     dsd_scan_row_edit_take_fields(&next, &from, fields);
     return channel_scan_install_edit(opts, state, scan, row, &next, result);
+}
+
+/* Whether @p row is one a go-to takes (issue #644): in the list, and a row a step can land on
+   (channel_scan_row_reachable()). */
+static int
+channel_scan_goto_row_valid(const dsd_opts* opts, const dsd_state* state, int row) {
+    return row >= 0 && row < state->lcn_freq_count
+           && channel_scan_row_reachable(opts, state, row, dsd_engine_scan_dsp_rate_hz(opts, state));
+}
+
+/* Whether untyped row @p row belongs to a channel the operator avoided (issue #644 D4, D5): on a list without modes a
+   run of adjacent rows on one frequency is one channel, which its first row stands for, as the walk and the match take
+   it (an avoided first row skips its run), so a row of that run that is not confirmed on air is no go-to's. */
+static int
+channel_scan_untyped_run_avoided(const dsd_state* state, int row) {
+    if (dsd_channel_modes_present(state)) {
+        return 0;
+    }
+    const long freq = *dsd_state_trunk_lcn_slot_const(state, row);
+    int first = row;
+    while (first > 0 && *dsd_state_trunk_lcn_slot_const(state, first - 1) == freq) {
+        first--;
+    }
+    return dsd_state_trunk_lcn_avoid_get(state, (size_t)first);
+}
+
+/* Whether a -Y scan over a list of the user's own runs: not paused, no resume pending, no trunk scan. */
+static int
+channel_scan_runs_users_list(const dsd_opts* opts, const dsd_state* state) {
+    return opts->scanner_mode == 1 && opts->trunk_scan_enabled != 1 && !state->lcn_scan_paused
+           && !state->lcn_scan_resume_pending && dsd_state_trunk_lcn_user_list_present(opts, state);
+}
+
+/* A typed list's go-to of @p row (issue #644): the row prepared apart and swapped in for its tune. A preparation
+   that fails, or a tune refused or deferred before any backend moved, puts back the row staged before, its tune and
+   an earlier entry (@p retired 0). Once the tune is taken, or a backend moved, the row staged before is retired
+   (@p retired 1), its request let go, and the tune's answer is a forward step's. */
+static dsd_scan_goto_result
+channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired) {
+    *retired = 0;
+    channel_scan* scan = channel_scan_obtain(state);
+    if (!scan) {
+        return DSD_SCAN_GOTO_SETUP_FAILED;
+    }
+    channel_scan_staging staging;
+    dsd_scan_settings next;
+    if (channel_scan_prepare_row(opts, state, scan, row, *dsd_state_trunk_lcn_slot_const(state, row), 1, &staging,
+                                 &next)
+        != 0) {
+        channel_scan_staging_clear(&staging);
+        return DSD_SCAN_GOTO_SETUP_FAILED;
+    }
+    channel_scan_staging_swap(scan, &staging);
+    const dsd_trunk_tune_result result = channel_scan_tune_staged(opts, state, scan, &next);
+    const int taken = result == DSD_TRUNK_TUNE_RESULT_OK || result == DSD_TRUNK_TUNE_RESULT_PENDING;
+    if (!taken && !dsd_engine_scan_tune_moved()) {
+        /* Nothing moved: the row staged before, its tune, an earlier entry and the row confirmed on air stand. The
+           refused request has nothing staged for it any more, so it keeps no frame gate closed (a rigctl leg's
+           refusal on an RTL input leaves it gated, as if the leg might have moved). */
+        channel_scan_staging_swap(scan, &staging);
+        if (staging.request != 0U) {
+            dsd_trunk_tuning_request_disown(staging.request);
+        }
+        channel_scan_staging_clear(&staging);
+        return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
+    }
+    *retired = 1;
+    if (staging.request != 0U) {
+        dsd_trunk_tuning_request_disown(staging.request);
+    }
+    channel_scan_staging_clear(&staging);
+    /* The receiver left the row landed, or will: it is no longer known to be on air (issue #667 D9). The entry is this
+       attempt's, replacing any earlier one, and an entry hold on the row left goes with it. */
+    dsd_engine_scan_landing_forget(state);
+    dsd_engine_scan_entry_hold_replaced(state);
+    dsd_engine_scan_entry_intent_set(state, row, scan->attempt);
+    dsd_state_lcn_back_retry_clear(state);
+    if (channel_scan_tune_outcome(opts, state, scan, result) > 0) {
+        dsd_engine_scan_entry_hold_now(state);
+        return DSD_SCAN_GOTO_HOLDING;
+    }
+    /* A row that landed but restages, or whose settings are retried, is still outstanding, as a step's would be. */
+    if (taken) {
+        return DSD_SCAN_GOTO_PENDING;
+    }
+    return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
+}
+
+/* Whether typed row @p row's tune is already outstanding in this scan (issue #644): the attempt staged for it, by a
+   go-to or a step, still waits on a retry or on a request that may still land, on the list it was staged from. A go-to
+   then waits on that attempt: its landing holds the row, with no second tune, as the trunk scan's go-to waits on a
+   park in flight. A request that already failed (a stream stop fails the one it queued) is dead, its end only waiting
+   for the next service: a go-to tunes afresh over it. */
+static int
+channel_scan_row_in_flight(const dsd_opts* opts, const dsd_state* state, int row) {
+    const channel_scan* scan = channel_scan_get(state);
+    if (!scan || scan->row != row || !channel_scan_row_is_current(opts, state, scan)) {
+        return 0;
+    }
+    if (scan->retry) {
+        return 1;
+    }
+    const dsd_trunk_tune_result result = channel_scan_request_result(scan);
+    return result == DSD_TRUNK_TUNE_RESULT_PENDING || result == DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+dsd_scan_goto_result
+dsd_engine_channel_scan_goto_row(dsd_opts* opts, dsd_state* state, int row) {
+    if (!opts || !state || !channel_scan_runs_users_list(opts, state)
+        || !channel_scan_goto_row_valid(opts, state, row)) {
+        return DSD_SCAN_GOTO_REFUSED;
+    }
+    /* The entry's intent lives in the scan owner: without one no landing could hold the row. */
+    if (!dsd_engine_scan_owner_ensure(state)) {
+        return DSD_SCAN_GOTO_SETUP_FAILED;
+    }
+    if (dsd_engine_channel_scan_row_confirmed(state, row)) {
+        /* On air already: the hold only. */
+        dsd_engine_scan_entry_hold_now(state);
+        return DSD_SCAN_GOTO_HOLDING;
+    }
+    if (!dsd_channel_modes_present(state)) {
+        return channel_scan_untyped_run_avoided(state, row) ? DSD_SCAN_GOTO_REFUSED
+                                                            : dsd_engine_scan_untyped_goto_row(opts, state, row);
+    }
+    if (channel_scan_row_in_flight(opts, state, row)) {
+        /* An entry hold on the row left goes, as at any go-to; the attempt's landing sets it again. */
+        dsd_engine_scan_entry_hold_replaced(state);
+        dsd_engine_scan_entry_intent_set(state, row, channel_scan_get(state)->attempt);
+        return DSD_SCAN_GOTO_PENDING;
+    }
+    int retired = 0;
+    return channel_scan_goto_typed(opts, state, row, &retired);
+}
+
+/* What a resume's DSD_SCAN_RESUME_* @p result, with @p why for a refusal, is to a go-to. */
+static dsd_scan_goto_result
+channel_scan_goto_of_resume(int result, int why) {
+    switch (result) {
+        case DSD_SCAN_RESUME_LANDED: return DSD_SCAN_GOTO_HOLDING;
+        case DSD_SCAN_RESUME_PENDING: return DSD_SCAN_GOTO_PENDING;
+        default: break;
+    }
+    if (why == DSD_SCAN_RESUME_FAILED_DEFERRED) {
+        return DSD_SCAN_GOTO_DEFERRED;
+    }
+    return why == DSD_SCAN_RESUME_FAILED_SETUP ? DSD_SCAN_GOTO_SETUP_FAILED : DSD_SCAN_GOTO_REFUSED;
+}
+
+/* A resume-at over a typed resume still pending: the go-to's row staged apart, under the resume's ownership. A
+   refusal after a backend moved retired that resume too, so the scan stays paused, its cursor back where the resume
+   found its row. A resume whose tune is for that row already is the entry's: it waits on that tune, with no second
+   one, and the resume's landing holds the row. */
+static dsd_scan_goto_result
+channel_scan_resume_at_typed_pending(dsd_opts* opts, dsd_state* state, int row) {
+    if (channel_scan_row_in_flight(opts, state, row)) {
+        dsd_engine_scan_entry_intent_set(state, row, channel_scan_get(state)->attempt);
+        return DSD_SCAN_GOTO_PENDING;
+    }
+    const int owned = channel_scan_resume_owns(opts, state);
+    int retired = 0;
+    const dsd_scan_goto_result result = channel_scan_goto_typed(opts, state, row, &retired);
+    channel_scan_resume_disowns(opts, state, owned);
+    const channel_scan* scan = channel_scan_get(state);
+    if (retired && scan && state->lcn_scan_resume_pending
+        && (result == DSD_SCAN_GOTO_REFUSED || result == DSD_SCAN_GOTO_DEFERRED)) {
+        channel_scan_resume_row_failed(opts, state, scan, scan->start_failure);
+    }
+    return result;
+}
+
+dsd_scan_goto_result
+dsd_engine_channel_scan_resume_at(dsd_opts* opts, dsd_state* state, int row) {
+    if (!opts || !state || opts->trunk_scan_enabled == 1 || !state->lcn_scan_paused
+        || !dsd_state_trunk_lcn_user_list_present(opts, state) || !channel_scan_goto_row_valid(opts, state, row)
+        || channel_scan_untyped_run_avoided(state, row)) {
+        return DSD_SCAN_GOTO_REFUSED;
+    }
+    if (!dsd_engine_scan_owner_ensure(state)) {
+        return DSD_SCAN_GOTO_SETUP_FAILED;
+    }
+    if (state->lcn_scan_resume_pending) {
+        /* An untyped resume still pending is the untyped go-to's to replace (engine.c). */
+        return dsd_channel_modes_present(state) ? channel_scan_resume_at_typed_pending(opts, state, row)
+                                                : dsd_engine_scan_untyped_goto_row(opts, state, row);
+    }
+    int why = DSD_SCAN_RESUME_FAILED_TUNE;
+    const int resumed = channel_scan_resume_on(opts, state, row, 1, &why);
+    const dsd_scan_goto_result result = channel_scan_goto_of_resume(resumed, why);
+    if (result == DSD_SCAN_GOTO_HOLDING) {
+        /* Landed within this call (an untyped row's landing names no tune an entry waits on). */
+        dsd_engine_scan_entry_hold_now(state);
+    }
+    return result;
+}
+
+void
+dsd_engine_channel_scan_entry_release(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    if (!state) {
+        return;
+    }
+    dsd_engine_scan_entry_intent_cancel(state);
+    if (!state->lcn_scan_entry_hold) {
+        return;
+    }
+    state->lcn_scan_hold = 0U;
+    state->lcn_scan_entry_hold = 0U;
+    /* The rotation left its windows alone while held: the row gets a full hangtime from now, as at `Y` off. */
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    state->scan_visit_since_m = state->last_cc_sync_time_m;
+    state->scan_visit_roll_seen = state->lcn_freq_roll;
+    state->scan_visit_rearm_pending = 0U;
+}
+
+void
+dsd_engine_channel_scan_entry_cancel(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dsd_engine_scan_entry_intent_cancel(state);
+    state->lcn_scan_entry_hold = 0U;
+}
+
+void
+dsd_engine_channel_scan_entry_supersede(dsd_state* state) {
+    dsd_engine_scan_entry_intent_cancel(state);
+}
+
+int
+dsd_engine_channel_scan_entry_pending(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    return intent.active && dsd_engine_scan_entry_intent_is(state, intent.row);
 }

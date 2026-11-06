@@ -100,6 +100,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
+#include "known_frequency_index.h"
 #include "p25_network_model.h" // WP-F2
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -3832,8 +3833,9 @@ class Setup : public QObject {
 
     /**
      * @brief Issue #672: make the avoid list (the real ScanAvoidListModel `metrics.scanAvoidModel` is) the entries
-     * @p entries, each {key, label}, in order, as MetricsModel hands it a new list: by key, so a row whose key stays
-     * keeps its delegate. The readings beside it (scanAvoidCount and the rest) are the case's to set.
+     * @p entries, each {key, label} and an optional targetId (issue #644), in order, as MetricsModel hands it a new
+     * list: by key, so a row whose key stays keeps its delegate. The readings beside it (scanAvoidCount and the rest)
+     * are the case's to set.
      */
     Q_INVOKABLE void
     setScanAvoids(const QVariantList& entries) {
@@ -3845,6 +3847,8 @@ class Setup : public QObject {
             const QVariantMap entry = value.toMap();
             dsd_qt::ScanAvoidListModel::Entry row{entry.value("key").toString(), entry.value("label").toString(), {}};
             row.identity.kind = DSD_APP_SCAN_AVOID_KIND_TRUNK_SCAN;
+            const QByteArray target = entry.value("targetId").toString().toUtf8();
+            DSD_SNPRINTF(row.identity.target_id, sizeof row.identity.target_id, "%s", target.constData());
             next.append(row);
         }
         m_scan_avoid_model->apply(std::move(next));
@@ -4309,6 +4313,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("acceptedStartCompanions")] = QStringList();
         prefs[QStringLiteral("acceptedStartKind")] = QString();
         prefs[QStringLiteral("acceptedStartUid")] = QString();
+        /* Issue #644: the accepted scan session's targets, none before a start. */
+        prefs[QStringLiteral("acceptedStartTargets")] = QVariantList();
         prefs[QStringLiteral("lastLat")] = 0.0;
         prefs[QStringLiteral("lastLon")] = 0.0;
         prefs[QStringLiteral("lastFixAt")] = 0;
@@ -4468,6 +4474,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("operatorTuned")] = false;
         metrics[QStringLiteral("optionsKnown")] = false;
         metrics[QStringLiteral("scanHold")] = false;
+        metrics[QStringLiteral("scanEntryHold")] = false;
         metrics[QStringLiteral("scanTargetId")] = QString();
         metrics[QStringLiteral("scanTargetLabel")] = QString();
         metrics[QStringLiteral("scanTargetOrdinal")] = 0;
@@ -4483,6 +4490,9 @@ class Setup : public QObject {
         metrics[QStringLiteral("scanListCount")] = 0;
         metrics[QStringLiteral("scanActiveList")] = 0;
         metrics[QStringLiteral("scanActiveListOff")] = false;
+        /* Issue #644: the engine publishes none until a trunk scan runs. */
+        metrics[QStringLiteral("scanTargetEligible")] = QVariantList();
+        metrics[QStringLiteral("scanTargetOnAir")] = -1;
         metrics[QStringLiteral("scanRotationOrdinal")] = 0;
         metrics[QStringLiteral("scanRotationCount")] = 0;
         m_scan_list_model = new dsd_qt::ScanListToggleModel(engine);
@@ -4818,6 +4828,9 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("uiController"), controller);
         ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
         ctx->setContextProperty(QStringLiteral("scanLists"), scan_lists);
+        // Issue #644: the production index over them, so Main offers what a case saves on the tuned channel.
+        ctx->setContextProperty(QStringLiteral("knownFrequencies"),
+                                new dsd_qt::KnownFrequencyIndex(saved_systems, scan_lists, engine));
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);

@@ -974,9 +974,10 @@ encode_scan_lists(dsd_json_writer* w, const dsd_app_scan_list_view* view) {
     (void)dsd_json_arr_end(w);
 }
 
-/* The operator's hold on the row or target on air (scan_hold_toggle), and the trunk scan's position as every frontend
-   shows it (issue #697): the target on air's place among the targets of the lists switched on (null while its list
-   is off, or none is on air) and their count, avoided targets included. */
+/* The operator's hold on the row or target on air (scan_hold_toggle), and whether it is an entry hold, the hold a
+   frequency typed by hand set, which scanner_toggle and scan_resume continue (issue #644); then the trunk scan's
+   position as every frontend shows it (issue #697): the target on air's place among the targets of the lists switched
+   on (null while its list is off, or none is on air) and their count, avoided targets included. */
 static void
 encode_scan_position(dsd_json_writer* w, const dsd_app_scan_state_view* scan, const dsd_state* state) {
     const int trunk = scan->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK;
@@ -987,6 +988,7 @@ encode_scan_position(dsd_json_writer* w, const dsd_app_scan_state_view* scan, co
         hold = state->lcn_scan_hold;
     }
     (void)dsd_json_kv_bool(w, "hold", hold != 0U);
+    (void)dsd_json_kv_bool(w, "entry_hold", hold != 0U && scan->entry_hold != 0U);
     const unsigned int ordinal = trunk ? state->trunk_scan_rotation_ordinal : 0U;
     (void)(ordinal != 0U ? dsd_json_kv_u64(w, "ordinal", ordinal) : dsd_json_kv_null(w, "ordinal"));
     (void)dsd_json_kv_u64(w, "count", trunk ? state->trunk_scan_rotation_count : 0U);

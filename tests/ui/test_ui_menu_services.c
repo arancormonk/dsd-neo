@@ -33,6 +33,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/control.h>
@@ -464,10 +465,16 @@ dsd_source_alias_clear(dsd_state* state) {
 }
 
 int
-dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
-    (void)opts;
-    (void)state;
+dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
+    (void)path;
+    (void)out;
     return -1;
+}
+
+void
+dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded) {
+    (void)state;
+    (void)loaded;
 }
 
 /* Counts calls rather than returning a canned value: what svc_clear_group_list()
@@ -660,11 +667,69 @@ note_rtl_lifecycle_call(void) {
     }
 }
 
+/* Issue #644: the scans told a stream stops (they note a pending tune) and the stop count each saw; then told where it
+   reopened, with the start count then and what each was told. */
+static int g_scan_stream_stopping_calls = 0;
+static int g_scan_stream_stopping_before_stop = 0;
+static int g_scan_stream_reopened_calls = 0;
+static int g_scan_stream_reopened_after_starts = 0;
+static int g_scan_stream_reopened_opened = -1;
+
+void
+dsd_engine_manual_tune_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_scan_stream_stopping_calls++;
+}
+
+void
+dsd_engine_channel_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_scan_stream_stopping_calls++;
+}
+
+static void
+note_scan_stream_reopened(int opened) {
+    g_scan_stream_reopened_calls++;
+    g_scan_stream_reopened_after_starts = g_rtl_start_calls;
+    g_scan_stream_reopened_opened = opened;
+}
+
+void
+dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    (void)opts;
+    (void)state;
+    note_scan_stream_reopened(opened);
+}
+
+void
+dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    (void)opts;
+    (void)state;
+    note_scan_stream_reopened(opened);
+}
+
+void
+dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_scan_stream_stopping_calls++;
+}
+
+void
+dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    (void)opts;
+    (void)state;
+    note_scan_stream_reopened(opened);
+}
+
 int
 rtl_stream_stop(RtlSdrContext* ctx) {
     (void)ctx;
     note_rtl_lifecycle_call();
     g_rtl_stop_calls++;
+    g_scan_stream_stopping_before_stop = g_scan_stream_stopping_calls;
     return 0;
 }
 
@@ -920,6 +985,11 @@ svc_trunk_scan_pause_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan
 int
 svc_trunk_scan_resume_and_record(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_leave_report* out) {
     return dsd_engine_trunk_scan_resume_ex_locked(opts, state, out);
+}
+
+dsd_scan_goto_result
+svc_trunk_scan_goto_and_record(dsd_opts* opts, dsd_state* state, int index, dsd_trunk_scan_goto_report* out) {
+    return dsd_engine_trunk_scan_goto_locked(opts, state, index, out);
 }
 
 static int
@@ -1356,8 +1426,8 @@ test_rtl_restart_quiesces_p25_retunes(void) {
 }
 
 /* Issue #671: a frequency entry's tune that timed out is noted with the ID it handed back, the frequency asked for and
-   the centre cached before the tune; any other result that reached the tuner notes nothing pending (ID 0), which
-   supersedes an older record; a deferred tune never reached it and leaves the record alone. */
+   the centre cached before the tune; one applied notes nothing pending (ID 0), which supersedes an older record; a
+   refused or deferred tune decides nothing about where the receiver goes and leaves the record alone (issue #644). */
 static int
 test_tune_notes_a_timed_out_tune(void) {
     static dsd_opts opts;
@@ -1379,15 +1449,17 @@ test_tune_notes_a_timed_out_tune(void) {
     rc |= expect_int("and the centre before the tune", g_note_pending_prior_hz == 851000000U, 1);
     rc |= expect_int("with no row", g_note_pending_row, -1);
 
-    const int done[] = {RTL_STREAM_TUNE_OK, RTL_STREAM_TUNE_FAILED};
-    for (size_t i = 0; i < sizeof done / sizeof done[0]; i++) {
-        g_note_pending_calls = 0;
-        g_note_pending_id = UINT64_MAX;
-        g_io_control_set_freq_result = done[i];
-        (void)svc_rtl_set_freq(&opts, &state, 855000000U);
-        rc |= expect_int("a tune that reached the tuner supersedes", g_note_pending_calls, 1);
-        rc |= expect_int("with nothing pending", g_note_pending_id == 0U, 1);
-    }
+    g_note_pending_calls = 0;
+    g_note_pending_id = UINT64_MAX;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_OK;
+    (void)svc_rtl_set_freq(&opts, &state, 855000000U);
+    rc |= expect_int("a tune applied supersedes", g_note_pending_calls, 1);
+    rc |= expect_int("with nothing pending", g_note_pending_id == 0U, 1);
+
+    g_note_pending_calls = 0;
+    g_io_control_set_freq_result = RTL_STREAM_TUNE_FAILED;
+    rc |= expect_int("refused tune", svc_rtl_set_freq(&opts, &state, 856000000U), RTL_STREAM_TUNE_FAILED);
+    rc |= expect_int("a refused tune leaves the record", g_note_pending_calls, 0);
 
     g_note_pending_calls = 0;
     g_io_control_set_freq_result = RTL_STREAM_TUNE_DEFERRED;
@@ -1427,13 +1499,41 @@ test_tune_and_start_run_the_carrier_boundary(void) {
 
     reset_rtl_restart_stubs();
     g_stream_source_notes = 0;
+    g_scan_stream_reopened_calls = 0;
+    g_scan_stream_reopened_opened = -1;
     rc |= expect_int("failed start", svc_rtl_restart(&opts, &state), -1);
     rc |= expect_int("a failed start notes no source", g_stream_source_notes, 0);
+    /* Issue #644: a failed start tells the scans nothing: the recovery a failed change runs next decides, once its
+       own start ran (its stream opened, or nothing did). */
+    rc |= expect_int("a failed start leaves the scans' note", g_scan_stream_reopened_calls, 0);
+    rc |= expect_int("the recovery's failed start", svc_rtl_restart_recovery_locked(&opts, &state, 0, NULL, NULL), -1);
+    rc |= expect_int("tells the scans after its start", g_scan_stream_reopened_calls, 3);
+    rc |= expect_int("that nothing opened", g_scan_stream_reopened_opened, 0);
     g_rtl_create_result = 0;
     g_rtl_start_result = 0;
     rc |= expect_int("started stream", svc_rtl_restart(&opts, &state), 0);
     rc |= expect_int("a start notes its source", g_stream_source_notes, 1);
     rc |= expect_int("under the restart's guard", g_stream_source_guarded, 1);
+    /* Issue #644: a restart of a running stream tells the scans before it stops, so they note a pending tune, and once
+       the new stream started, so a tune it reopened on lands. */
+    g_scan_stream_stopping_calls = 0;
+    g_scan_stream_stopping_before_stop = -1;
+    g_scan_stream_reopened_calls = 0;
+    g_scan_stream_reopened_opened = -1;
+    const int starts = g_rtl_start_calls;
+    rc |= expect_int("restarted stream", svc_rtl_restart(&opts, &state), 0);
+    rc |= expect_int("the scans are told before the stop", g_scan_stream_stopping_before_stop, 3);
+    rc |= expect_int("and after the start", g_scan_stream_reopened_calls, 3);
+    rc |= expect_int("once the stream started", g_scan_stream_reopened_after_starts, starts + 1);
+    rc |= expect_int("that it opened", g_scan_stream_reopened_opened, 1);
+    /* A recovery whose start opens the input again tells them it opened, once its stream started. */
+    g_scan_stream_reopened_calls = 0;
+    g_scan_stream_reopened_opened = -1;
+    const int recovery_starts = g_rtl_start_calls;
+    rc |= expect_int("recovered stream", svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, NULL), 0);
+    rc |= expect_int("the scans are told after the recovery's start", g_scan_stream_reopened_calls, 3);
+    rc |= expect_int("once its stream started", g_scan_stream_reopened_after_starts, recovery_starts + 1);
+    rc |= expect_int("that it opened again", g_scan_stream_reopened_opened, 1);
     state.rtl_ctx = NULL;
     reset_rtl_restart_stubs();
     return rc;
@@ -2477,8 +2577,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     // only the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
     state.dmr_lcn_trust[201] = 2;
     state.lcn_freq_roll = 1;
-    // Session avoids and the scan hold index the rows being replaced, so they go too.
+    // Session avoids and the scan hold index the rows being replaced, so they go too, an entry hold's mark included.
     state.lcn_scan_hold = 1;
+    state.lcn_scan_entry_hold = 1;
     rc |= expect_int("adopt: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1), 0);
     g_chan_import_count = 1;
     g_chan_import_chan[0] = 401;
@@ -2488,6 +2589,7 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("adopt clears stale lcn trust", (int)state.dmr_lcn_trust[201], 0);
     rc |= expect_int("adopt restarts the lcn roll", state.lcn_freq_roll, 0);
     rc |= expect_int("adopt releases the scan hold", state.lcn_scan_hold, 0);
+    rc |= expect_int("adopt releases the entry mark", state.lcn_scan_entry_hold, 0);
     rc |= expect_int("adopt drops session avoids", (int)state.lcn_avoid_count, 0);
     rc |= expect_int("adopt releases the avoid store", (int)(state.trunk_lcn_avoid == NULL), 1);
     // A named file after a nameless one repopulates the store the nameless one released.
@@ -2564,6 +2666,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     state.dmr_lcn_trust[101] = 2;
     state.lcn_freq_roll = 1;
     state.lcn_scan_hold = 1;
+    state.lcn_scan_entry_hold = 1;
     rc |= expect_int("clear: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 1U, 1), 0);
     const unsigned int seq_before = state.trunk_chan_map_seq;
 
@@ -2577,6 +2680,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     // The names belong to the rows that just went away, so they go with them.
     rc |= expect_int("chan map clear releases the name store", (int)(state.trunk_lcn_name == NULL), 1);
     rc |= expect_int("chan map clear releases the scan hold", state.lcn_scan_hold, 0);
+    rc |= expect_int("chan map clear releases the entry mark", state.lcn_scan_entry_hold, 0);
     rc |= expect_int("chan map clear drops session avoids", (int)state.lcn_avoid_count, 0);
     rc |= expect_int("chan map clear releases the avoid store", (int)(state.trunk_lcn_avoid == NULL), 1);
     // Provenance goes with the map for the same reason it does on an adopt: a

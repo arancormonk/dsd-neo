@@ -1088,6 +1088,15 @@ struct dsd_state {
     dsd_trunk_scan_avoid_entry* trunk_scan_avoids;
     size_t trunk_scan_avoid_count;
     size_t trunk_scan_avoid_capacity;
+    /* Whether a frequency typed by hand could pick each --trunk-scan target (issue #644): one dsd_scan_entry_reason
+     * byte per target, in the coordinator's target order (lists in order, each in its file's order), as
+     * trunk_scan_entry_reason() decides it; trunk_scan_entry_reason_count entries in a heap store of
+     * trunk_scan_entry_reason_capacity. Only the coordinator fills it, stamping trunk_scan_entry_rev when a byte or the
+     * count changes; its detach, initState() and freeState() release it. Never inside a UI_SNAPSHOT_COPY_RANGE, as the
+     * stores above. */
+    uint8_t* trunk_scan_entry_reasons;
+    size_t trunk_scan_entry_reason_count;
+    size_t trunk_scan_entry_reason_capacity;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -2540,6 +2549,10 @@ struct dsd_state {
      * status line and is maintained by dsd_state_trunk_lcn_avoid_set()/_clear(). The
      * trunk_scan_* trio is written by the trunk-scan coordinator, which owns the truth. */
     uint8_t lcn_scan_hold; /**< 1 = -Y rotation held on the row on air */
+    /* The -Y hold is an entry hold (issue #644): a frequency typed by hand picked the row on air, and `y` continues the
+       scan rather than stopping it. Set only with lcn_scan_hold, on the confirmed landing of the row picked; never
+       saved. */
+    uint8_t lcn_scan_entry_hold;
     /* A -Y scan the operator paused (issue #671): its list, cursor, avoids and session edits are kept while
      * scanner_mode is 0, so the receiver stays where the operator put it until a resume
      * (dsd_engine_channel_scan_pause(), _resume()). lcn_scan_resume_pending: a resume's row tune timed out; until it
@@ -2551,6 +2564,9 @@ struct dsd_state {
     uint8_t operator_tuned;
     uint16_t lcn_avoid_count; /**< Avoided -Y rows within lcn_freq_count */
     uint8_t trunk_scan_hold;  /**< 1 = --trunk-scan dwell paused on the active target */
+    /* The --trunk-scan hold is an entry hold (issue #644), as lcn_scan_entry_hold is for -Y: set with trunk_scan_hold
+       on the confirmed park of the target a typed frequency picked; never saved. */
+    uint8_t trunk_scan_entry_hold;
     /* A --trunk-scan the operator paused (issue #671): the coordinator keeps its targets, snapshots, avoids, session
      * edits and hold, but no target is on air and nothing it owns tunes or decodes, until a resume re-parks the target
      * it left (dsd_engine_trunk_scan_pause_locked(), _resume_locked()). dsd_opts::trunk_scan_enabled stays 1 (the
@@ -2619,6 +2635,13 @@ struct dsd_state {
     uint64_t lcn_avoid_rev;
     size_t lcn_avoid_total;
     uint64_t trunk_scan_avoid_rev;
+    /* Moves whenever trunk_scan_entry_reasons changes, and at its release (issue #644); what the snapshot's copy keys
+       on. */
+    uint64_t trunk_scan_entry_rev;
+    /* The target the entry match would take as on air (dsd_engine_trunk_scan_target_confirmed(), issue #644): its
+       index in trunk_scan_entry_reasons' order, -1 for none (paused, or the park not landed). Published with the
+       reasons, under the same trunk_scan_entry_rev. */
+    int32_t trunk_scan_entry_on_air;
     uint32_t trunk_scan_session;
     uint8_t trunk_scan_avoids_ok;
     uint8_t scan_avoids_complete;
@@ -2645,6 +2668,11 @@ struct dsd_state {
     double scan_visit_since_m;
     int scan_visit_roll_seen;
     uint8_t scan_visit_rearm_pending; /**< resume a suspended visit at the next eligible tick */
+    /* The earliest monotonic instant a -Y scan sitting on a row the operator avoided tries to step off it again (issue
+     * #644): the departure goes ahead of the row's carrier and an operator hold, but at the step cadence (-t, at least
+     * 1 s), so a step refused, or one still in flight, is not retried on every frame
+     * (dsd_engine_channel_scan_departure_due()). 0.0 until the first departure. */
+    double lcn_avoid_depart_m;
     /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */
@@ -3101,6 +3129,21 @@ int dsd_state_trunk_scan_avoids_set(dsd_state* state, const dsd_trunk_scan_avoid
 
 /** Free the published trunk-scan avoid list and zero its pointer, count and capacity. Stamps nothing. */
 void dsd_state_trunk_scan_avoids_free(dsd_state* state);
+
+/**
+ * Ensure the published trunk-scan entry reasons (dsd_state::trunk_scan_entry_reasons) can hold @p count bytes. Returns
+ * 0, or -1 on a NULL state or a failed allocation (the store and its count kept). Stamps nothing.
+ */
+int dsd_state_trunk_scan_entry_reasons_reserve(dsd_state* state, size_t count);
+
+/**
+ * Replace the published trunk-scan entry reasons with a copy of @p count bytes (@p reasons may be NULL when @p count is
+ * 0). On a failed allocation the store is left empty and -1 returned; -1 too for a NULL state. Stamps nothing.
+ */
+int dsd_state_trunk_scan_entry_reasons_set(dsd_state* state, const uint8_t* reasons, size_t count);
+
+/** Free the published trunk-scan entry reasons and zero their pointer, count and capacity. Stamps nothing. */
+void dsd_state_trunk_scan_entry_reasons_free(dsd_state* state);
 
 #ifdef DSD_NEO_TEST_HOOKS
 /* Let the next N allocations of the scan-list reserve helpers (the LCN tail, name, avoid and trunk-scan avoid stores)

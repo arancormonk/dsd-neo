@@ -15,46 +15,28 @@
 #include <QSet>
 #include <QStringList>
 #include <QTextStream>
+#include <QVector>
 #include <Qt>
 #include <algorithm>
 #include <cmath>
+#include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/core/channel_label.h>
+#include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
+#include <new>
 #include <stdint.h>
 #include <utility>
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
 #include "scan_entry_name.h"
 #include "scan_lists_model.h"
+#include "session_args.h"
 
 namespace dsd_qt {
 static double knownWidth(const QString& mode, const QString& options, double inherited = 12500);
-
-static QStringList
-csvFields(const QString& line) {
-    QStringList result;
-    QString field;
-    bool quoted = false;
-    for (qsizetype i = 0; i < line.size(); ++i) {
-        QChar ch = line[i];
-        if (ch == QLatin1Char('"')) {
-            if (quoted && i + 1 < line.size() && line[i + 1] == ch) {
-                field += ch;
-                ++i;
-            } else {
-                quoted = !quoted;
-            }
-        } else if (ch == QLatin1Char(',') && !quoted) {
-            result.append(field.trimmed());
-            field.clear();
-        } else {
-            field += ch;
-        }
-    }
-    if (quoted) {
-        return {};
-    }
-    result.append(field.trimmed());
-    return result;
-}
 
 static qint64
 parseFrequency(QString value, bool mhz) {
@@ -69,6 +51,11 @@ parseFrequency(QString value, bool mhz) {
         f *= 1e6;
     }
     return ok && std::isfinite(f) && f > 0 && f <= UINT32_MAX ? (qint64)std::llround(f) : 0;
+}
+
+QByteArray
+runtimeFilePath(const QString& path) {
+    return path.toUtf8();
 }
 
 KnownFrequencyIndex::KnownFrequencyIndex(SavedSystemsModel* systems, ScanListsModel* lists, QObject* parent)
@@ -88,8 +75,44 @@ KnownFrequencyIndex::KnownFrequencyIndex(SavedSystemsModel* systems, ScanListsMo
     rebuild();
 }
 
+namespace {
+/* What a match is (issue #644): the fields KnownFrequencyIndex's class comment lists beside its name. */
+QVariantMap
+matchIdentity(const QString& source, const QString& listUid, const QString& targetId, bool selectable) {
+    return {{QStringLiteral("source"), source},
+            {QStringLiteral("listUid"), listUid},
+            {QStringLiteral("targetId"), targetId},
+            {QStringLiteral("selectable"), selectable}};
+}
+
+QVariantMap
+matchValue(const QString& name, qint64 hz, const QVariant& systemUid, const QVariantMap& identity) {
+    QVariantMap value = identity;
+    value.insert(QStringLiteral("name"), name);
+    value.insert(QStringLiteral("frequencyHz"), hz);
+    value.insert(QStringLiteral("systemUid"), systemUid);
+    return value;
+}
+
+/* @p identity with the label of @p protocol (a scan-list protocol id), which tells two matches of one name apart;
+   none for no protocol (a saved system that auto-detects). */
+QVariantMap
+withProtocol(QVariantMap identity, const QString& protocol) {
+    identity.insert(QStringLiteral("protocolLabel"),
+                    protocol.isEmpty() ? QString() : scan_entry_protocol_label(protocol));
+    return identity;
+}
+
+/* A channel map's row under @p identity's list, if any: it names the channel and starts nothing. */
+QVariantMap
+channelMapIdentity(const QVariantMap& identity) {
+    return matchIdentity(QStringLiteral("channelMap"), identity.value(QStringLiteral("listUid")).toString(), QString(),
+                         false);
+}
+} // namespace
+
 void
-KnownFrequencyIndex::add(const QVariantMap& s, const QString& label) {
+KnownFrequencyIndex::add(const QVariantMap& s, const QString& label, const QVariantMap& identity) {
     /* A saved system's mode is its decode flag, as the session builder and the rest of the app read it
        (decode_flag_names_am() in session_args.cpp); a decoder chosen only through its extra arguments is not read. A
        scan-list entry names its protocol. */
@@ -107,50 +130,431 @@ KnownFrequencyIndex::add(const QVariantMap& s, const QString& label) {
     }
     qint64 hz = parseFrequency(s.value(QStringLiteral("freqMhz")).toString(), true);
     if (hz) {
-        m_entries.append({hz,
-                          width,
-                          {{QStringLiteral("name"), label},
-                           {QStringLiteral("frequencyHz"), hz},
-                           {QStringLiteral("systemUid"), s.value(QStringLiteral("uid"))}}});
+        m_entries.append({hz, width, matchValue(label, hz, s.value(QStringLiteral("uid")), identity)});
     }
     /* The system's channel map lists its channels: a row that names no mode or bandwidth of its own has its width. */
-    addCsv(s.value(QStringLiteral("chanCsvPath")).toString(), s, label, width);
+    addCsv(s.value(QStringLiteral("chanCsvPath")).toString(), s, label, width, channelMapIdentity(identity));
 }
 
 namespace {
 struct CsvColumns {
-    int frequency = 1, name = -1, mode = -1, options = -1, channels = -1, label = -1;
+    int frequency = 1, name = -1, mode = -1, options = -1, channels = -1, label = -1, id = -1;
 };
 
-static CsvColumns
-csvColumns(const QStringList& fields) {
+/* A row's own name: a target CSV's `label`, which names the target as its calls are named (issue #782), else its name
+   or id column, shown without the blanks around it (an id keeps those inside its quotes). */
+static QString
+rowName(const QStringList& fields, const CsvColumns& columns) {
+    const QString labelled = fields.value(columns.label);
+    return (labelled.isEmpty() ? fields.value(columns.name) : labelled).trimmed();
+}
+
+/* Cell @p cell as the engine's scan_unquote() reads it: trimmed of blanks (C isspace()), then one pair of surrounding
+   quotes taken off, so the blanks inside them stay. */
+QString
+engineUnquote(QString cell) {
+    const auto blank = [](QChar ch) {
+        return ch == QLatin1Char(' ') || (ch >= QLatin1Char('\t') && ch <= QLatin1Char('\r'));
+    };
+    while (!cell.isEmpty() && blank(cell.front())) {
+        cell.remove(0, 1);
+    }
+    while (!cell.isEmpty() && blank(cell.back())) {
+        cell.chop(1);
+    }
+    if (cell.size() >= 2 && cell.front() == QLatin1Char('"') && cell.back() == QLatin1Char('"')) {
+        cell = cell.mid(1, cell.size() - 2);
+    }
+    return cell;
+}
+
+/* Cell @p column of @p line as the engine reads a target's id (trunk_scan.c: the line split at commas outside quotes,
+   then engineUnquote()): the id the session names the target by. Empty for no such column or cell. */
+QString
+engineTargetId(const QString& line, int column) {
+    int at = 0;
+    qsizetype start = 0;
+    bool quoted = false;
+    for (qsizetype i = 0; column >= 0 && i <= line.size(); ++i) {
+        const bool end = i == line.size();
+        if (!end && line[i] == QLatin1Char('"')) {
+            quoted = !quoted;
+        } else if (end || (line[i] == QLatin1Char(',') && !quoted)) {
+            if (at++ == column) {
+                return engineUnquote(line.mid(start, i - start));
+            }
+            start = i + 1;
+        }
+    }
+    return {};
+}
+
+/* Which of the engine's loaders a CSV is read as (issue #644): a trunk-scan target list (dsd_trunk_scan_load_targets_csv(),
+   trunk_scan.c) or a channel map (chan_import_stats(), dsd_import.c). */
+enum class EngineCsvGrammar { Targets, ChannelMap };
+
+/* The target loader's row buffer (line[4096]: a longer row refuses the file), and the channel map reader's (1 MiB, the
+   newline and terminator included). Neither loader caps its rows; the index keeps at most kStoredRowMax of one file's,
+   reading the rest only for what refuses the file. */
+constexpr qsizetype kEngineTargetRowMax = 4095;
+constexpr qsizetype kEngineChannelRowMax = 1048574;
+constexpr qsizetype kStoredRowMax = 100000;
+
+struct EngineCsvRow {
+    QString line;
+    QStringList fields;
+    qint64 hz = 0;
+};
+
+struct EngineCsv {
     CsvColumns columns;
-    for (int i = 0; i < fields.size(); ++i) {
-        const QString name = fields[i].toLower();
-        if (name == QStringLiteral("frequency") || name == QStringLiteral("freq") || name == QStringLiteral("freq_hz")
-            || name == QStringLiteral("frequency_hz")) {
-            columns.frequency = i;
-        } else if (name == QStringLiteral("name") || name == QStringLiteral("id")) {
+    QVector<EngineCsvRow> rows;
+};
+
+/* Every cell of @p line as the engine's target loader splits it (dsd_trunk_scan_split_csv_fields(): at commas outside
+   quotes), each as it stands. */
+QStringList
+engineRawCells(const QString& line) {
+    QStringList cells;
+    qsizetype start = 0;
+    bool quoted = false;
+    for (qsizetype i = 0; i <= line.size(); ++i) {
+        const bool end = i == line.size();
+        if (!end && line[i] == QLatin1Char('"')) {
+            quoted = !quoted;
+        } else if (end || (line[i] == QLatin1Char(',') && !quoted)) {
+            cells.append(line.mid(start, i - start));
+            start = i + 1;
+        }
+    }
+    return cells;
+}
+
+/* Every cell of @p line as the engine's target loader splits and unquotes it (engineTargetId()). */
+QStringList
+engineCells(const QString& line) {
+    QStringList cells = engineRawCells(line);
+    std::transform(cells.begin(), cells.end(), cells.begin(), engineUnquote);
+    return cells;
+}
+
+/* C isspace() over @p text's ends, as scan_trim() and trim_ws() trim. */
+QString
+engineTrim(QString text) {
+    const auto blank = [](QChar ch) {
+        return ch == QLatin1Char(' ') || (ch >= QLatin1Char('\t') && ch <= QLatin1Char('\r'));
+    };
+    while (!text.isEmpty() && blank(text.front())) {
+        text.remove(0, 1);
+    }
+    while (!text.isEmpty() && blank(text.back())) {
+        text.chop(1);
+    }
+    return text;
+}
+
+/* @p cell as a decimal frequency in [@p min_hz, @p max_hz], digits only once trimmed (scan_parse_u32_decimal(),
+   parse_dec_long_strict()); 0 for anything else. */
+qint64
+engineHz(const QString& cell, qint64 min_hz, qint64 max_hz) {
+    const QString digits = engineTrim(cell);
+    if (digits.isEmpty()) {
+        return 0;
+    }
+    if (std::any_of(digits.cbegin(), digits.cend(),
+                    [](QChar ch) { return ch < QLatin1Char('0') || ch > QLatin1Char('9'); })) {
+        return 0;
+    }
+    bool ok = false;
+    const qint64 hz = digits.toLongLong(&ok, 10);
+    return ok && hz >= min_hz && hz <= max_hz ? hz : 0;
+}
+
+/* A channel map's frequency cell as parse_dec_long_strict() reads it: strtol(), so blanks around it and one sign
+   directly before its digits (none between them), in [100000, 2147483647] (csv_chan_freq_plausible()); 0 for anything
+   else. */
+qint64
+engineChannelHz(const QString& cell) {
+    QString text = engineTrim(cell);
+    if (text.startsWith(QLatin1Char('+'))) {
+        text.remove(0, 1);
+        if (text.isEmpty() || text.front() < QLatin1Char('0') || text.front() > QLatin1Char('9')) {
+            return 0;
+        }
+    } else if (text.startsWith(QLatin1Char('-'))) {
+        return 0;
+    }
+    return engineHz(text, 100000, 2147483647LL);
+}
+
+/* @p name as the loaders keep a row's name or label (dsd_channel_label_sanitize()): trimmed, control characters as
+   spaces, cut to the label size without splitting a character. */
+QString
+engineLabel(const QString& name) {
+    const QByteArray bytes = name.toUtf8();
+    char out[DSD_CHANNEL_LABEL_SIZE];
+    dsd_channel_label_sanitize(bytes.constData(), out, sizeof out);
+    return QString::fromUtf8(out);
+}
+
+/* Whether @p cell, trimmed, is wrapped in double quotes (scan_field_wrapped(), chan_import_options()). */
+bool
+engineWrapped(const QString& cell) {
+    const QString trimmed = engineTrim(cell);
+    return trimmed.size() >= 2 && trimmed.front() == QLatin1Char('"') && trimmed.back() == QLatin1Char('"');
+}
+
+/* An options cell as its loader hands it to dsd_scan_options_parse_cell() (issue #637): @p legacy as the loader has
+   always read it (a target's without one pair of outer quotes, a channel map's as split); when the cell was wrapped
+   in double quotes, @p content its inside. A cell that reads as a spreadsheet's quoting reads as its content, each
+   doubled quote as one; any other as @p legacy. */
+QString
+engineOptionsText(const QString& legacy, const QString& content, bool wrapped) {
+    if (!wrapped) {
+        return legacy;
+    }
+    const QByteArray legacyBytes = legacy.toUtf8();
+    const QByteArray contentBytes = content.toUtf8();
+    if (dsd_scan_options_cell_csv_quoted(legacyBytes.constData(), contentBytes.constData(),
+                                         static_cast<size_t>(contentBytes.size()))
+        == 0) {
+        return legacy;
+    }
+    QString text = content;
+    return text.replace(QStringLiteral("\"\""), QStringLiteral("\""));
+}
+
+/* A target's label cell, unquoted (@p cell), as scan_csv_unescape_doubled_quotes() reads one that was @p wrapped:
+   each doubled quote as one, when every quote in it is doubled; otherwise as it is. */
+QString
+engineLabelText(const QString& cell, bool wrapped) {
+    if (!wrapped) {
+        return cell;
+    }
+    for (qsizetype i = 0; i < cell.size(); ++i) {
+        if (cell[i] == QLatin1Char('"')) {
+            if (i + 1 >= cell.size() || cell[i + 1] != QLatin1Char('"')) {
+                return cell;
+            }
+            ++i;
+        }
+    }
+    QString text = cell;
+    return text.replace(QStringLiteral("\"\""), QStringLiteral("\""));
+}
+
+/* The target loader's header, row 1 (scan_read_target_csv_header()): its first seven cells, unquoted, are exactly
+   id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes, and later cells are named columns, compared without
+   ASCII case. False when the engine refuses it. */
+bool
+engineTargetHeader(const QString& line, CsvColumns* columns) {
+    static const char* const required[] = {"id",   "type", "frequency_hz", "chan_csv", "dwell_ms", "activity_hold_ms",
+                                           "notes"};
+    const QStringList names = engineCells(line);
+    if (names.size() < 7) {
+        return false;
+    }
+    for (int i = 0; i < 7; ++i) {
+        if (names[i] != QLatin1String(required[i])) {
+            return false;
+        }
+    }
+    *columns = CsvColumns{};
+    columns->id = columns->name = 0;
+    columns->mode = 1;
+    columns->frequency = 2;
+    columns->channels = 3;
+    for (int i = 7; i < names.size(); ++i) {
+        const QString name = names[i].toLower();
+        if (name == QLatin1String("options") || name == QLatin1String("relevant_cli_switches")) {
+            columns->options = i;
+        } else if (name == QLatin1String("label")) {
+            columns->label = i;
+        }
+    }
+    return true;
+}
+
+/* The channel map reader's header, row 1 (chan_parse_header()): column 0 is the channel key and column 1 the frequency
+   whatever they are called; from the third on, name, mode and options (relevant_CLI_switches) are found by name,
+   without ASCII case. */
+CsvColumns
+engineChannelHeader(const QString& line) {
+    CsvColumns columns;
+    columns.frequency = 1;
+    const QStringList cells = line.split(QLatin1Char(','));
+    for (int i = 2; i < cells.size(); ++i) {
+        const QString name = engineTrim(cells[i]).toLower();
+        if (name == QLatin1String("name") && columns.name < 0) {
             columns.name = i;
-        } else if (name == QStringLiteral("mode") || name == QStringLiteral("type")) {
+        } else if (name == QLatin1String("mode")) {
             columns.mode = i;
-        } else if (name == QStringLiteral("options") || name == QStringLiteral("relevant_cli_switches")) {
+        } else if (name == QLatin1String("options") || name == QLatin1String("relevant_cli_switches")) {
             columns.options = i;
-        } else if (name == QStringLiteral("chan_csv")) {
-            columns.channels = i;
-        } else if (name == QStringLiteral("label")) {
-            columns.label = i;
         }
     }
     return columns;
 }
 
-/* A row's own name: a target CSV's `label`, which names the target as its calls are named (issue #782), else its name
-   or id column. */
-static QString
-rowName(const QStringList& fields, const CsvColumns& columns) {
-    const QString labelled = fields.value(columns.label);
-    return labelled.isEmpty() ? fields.value(columns.name) : labelled;
+/* A target row's cells as the target loader reads them: split outside quotes and unquoted (scan_unquote()), the options
+   cell as dsd_scan_options_parse_cell() reads it and the label as scan_parse_target_label() does. */
+QStringList
+engineTargetFields(const QString& line, const CsvColumns& columns) {
+    const QStringList raw = engineRawCells(line);
+    QStringList fields = raw;
+    std::transform(fields.begin(), fields.end(), fields.begin(), engineUnquote);
+    if (columns.options >= 0 && columns.options < fields.size()) {
+        const QString& text = fields[columns.options];
+        fields[columns.options] = engineOptionsText(text, text, engineWrapped(raw[columns.options]));
+    }
+    if (columns.label >= 0 && columns.label < fields.size()) {
+        fields[columns.label] = engineLabel(engineLabelText(fields[columns.label], engineWrapped(raw[columns.label])));
+    }
+    return fields;
+}
+
+/* A channel map row's cells as chan_import_row() reads them: split at every comma, trimmed, the options cell as
+   chan_import_options() hands it to dsd_scan_options_parse_cell(). */
+QStringList
+engineChannelFields(const QString& line, const CsvColumns& columns) {
+    const QStringList raw = line.split(QLatin1Char(','));
+    QStringList fields = raw;
+    std::transform(fields.begin(), fields.end(), fields.begin(), engineTrim);
+    if (columns.options >= 0 && columns.options < fields.size()) {
+        const QString trimmed = fields[columns.options];
+        const bool wrapped = engineWrapped(trimmed);
+        fields[columns.options] =
+            engineOptionsText(raw[columns.options], wrapped ? trimmed.mid(1, trimmed.size() - 2) : QString(), wrapped);
+    }
+    if (columns.name >= 0 && columns.name < fields.size()) {
+        fields[columns.name] = engineLabel(raw[columns.name]);
+    }
+    return fields;
+}
+
+/* A target CSV's line as the target loader ends it: at its first carriage return (strcspn(line, "\r\n")). */
+QString
+engineTargetLine(const QString& raw) {
+    const qsizetype cr = raw.indexOf(QLatin1Char('\r'));
+    return cr < 0 ? raw : raw.left(cr);
+}
+
+/* One data row of @p grammar into @p out, or false when the engine refuses the whole file for it. A row the engine
+   loads no frequency for is left out, and so is every row once kStoredRowMax are kept: such a row is only checked for
+   what refuses the file. */
+bool
+engineCsvRow(EngineCsvGrammar grammar, const QString& raw, EngineCsv* out) {
+    const bool store = out->rows.size() < kStoredRowMax;
+    if (grammar == EngineCsvGrammar::Targets) {
+        if (raw.size() > kEngineTargetRowMax) {
+            return false;
+        }
+        const QString line = engineTrim(engineTargetLine(raw));
+        if (!store || line.isEmpty()) {
+            return true;
+        }
+        const qint64 hz = engineHz(engineTargetId(line, out->columns.frequency), 1, UINT32_MAX);
+        if (hz) {
+            out->rows.append({line, engineTargetFields(line, out->columns), hz});
+        }
+        return true;
+    }
+    if (raw.toUtf8().size() > kEngineChannelRowMax + 1) {
+        return false;
+    }
+    if (!store || engineTrim(raw).isEmpty()) {
+        return true;
+    }
+    const QStringList fields = engineChannelFields(raw, out->columns);
+    const qint64 hz = engineChannelHz(fields.value(1));
+    if (hz && dsd_csv_channel_has_slot(fields.value(0).toUtf8().constData())) {
+        out->rows.append({QString(), fields, hz});
+    }
+    return true;
+}
+
+/* Whether the engine's own loader for @p grammar takes the file at @p path whole: a target list as the trunk scan loads
+   it (dsd_app_trunk_scan_validate_targets_csv(): every row's id, type, frequency, options and the rest, duplicates and
+   the header's columns), a channel map as the -Y map import does (dsd_csv_validate_chan_file(): its modes, options and
+   key columns). A file it refuses gives the index nothing, as it gives the session nothing. */
+bool
+engineAccepts(const QString& path, EngineCsvGrammar grammar) {
+    const QByteArray local = runtimeFilePath(path);
+    if (grammar == EngineCsvGrammar::Targets) {
+        char err[256];
+        return dsd_app_trunk_scan_validate_targets_csv(local.constData(), nullptr, err, sizeof err) == 0;
+    }
+    dsd_csv_validation counts;
+    return dsd_csv_validate_chan_file(local.constData(), &counts) == 0;
+}
+
+/* readEngineCsv()'s reading of @p text into @p out; false when the engine refuses the file. */
+bool
+readEngineCsvRows(QTextStream& text, EngineCsvGrammar grammar, EngineCsv* out) {
+    if (text.atEnd()) {
+        return false;
+    }
+    const QString header = text.readLine(kEngineChannelRowMax + 1);
+    if (grammar == EngineCsvGrammar::Targets) {
+        if (header.size() > kEngineTargetRowMax || !engineTargetHeader(engineTargetLine(header), &out->columns)) {
+            return false;
+        }
+    } else {
+        out->columns = engineChannelHeader(header);
+    }
+    while (!text.atEnd()) {
+        if (!engineCsvRow(grammar, text.readLine(kEngineChannelRowMax + 1), out)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The rows of the CSV at @p path as the engine's @p grammar loader reads them (issue #644): its header is row 1 and
+   nothing is a comment (a `#` row is data), a blank row is skipped, and the caps and refusals are the engine's: a file
+   it refuses (a bad target header, a row past its buffer) gives no rows. At most kStoredRowMax rows are kept, and a
+   file too large to hold gives none. False when the file cannot be read or is refused. */
+bool
+readEngineCsv(const QString& path, EngineCsvGrammar grammar, EngineCsv* out) {
+    if (!engineAccepts(path, grammar)) {
+        return false;
+    }
+    /* Read as bytes, not in text mode, which drops every carriage return: a target line ends at its first one, as the
+       loader ends it (engineTargetLine()); readLine() still takes a line's own "\r\n" off. */
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    QTextStream text(&f);
+    bool read = false;
+    try {
+        read = readEngineCsvRows(text, grammar, out);
+    } catch (const std::bad_alloc&) {
+        read = false;
+    }
+    if (!read) {
+        out->rows.clear();
+    }
+    return read;
+}
+
+/* A row's identity: a target CSV's row is the target its `id` names (@p line's id cell as the engine reads it),
+   startable when a held start can name it (session_args_scan_hold_id_valid()) and the file's list can start; a channel
+   map's row is what the file's identity says. */
+QVariantMap
+rowIdentity(const QString& line, const QStringList& fields, const CsvColumns& columns, const QVariantMap& identity) {
+    if (identity.value(QStringLiteral("source")).toString() != QLatin1String("scanTarget")) {
+        return identity;
+    }
+    QVariantMap row = identity;
+    const QString id = engineTargetId(line, columns.id);
+    row.insert(QStringLiteral("targetId"), id);
+    row.insert(QStringLiteral("selectable"),
+               identity.value(QStringLiteral("selectable")).toBool() && session_args_scan_hold_id_valid(id));
+    // A target's type is its protocol and its kind: "nxdn48-conventional".
+    row.insert(QStringLiteral("protocolLabel"),
+               scan_entry_protocol_label(fields.value(columns.mode).section(QLatin1Char('-'), 0, 0).toLower()));
+    return row;
 }
 } // namespace
 
@@ -223,55 +627,155 @@ knownWidth(const QString& mode, const QString& options, double inherited) {
     return option.isEmpty() ? modeWidth(mode) : optionWidth(options, option, modeWidth(mode));
 }
 
+/* A CSV row's width from its @p mode (a target's type or a channel map's mode) and its @p options cell, @p inherited
+   when it names no mode. An analog row's own width is the one the engine's options parser reads from the cell
+   (dsd_scan_options_parse(), its kind's --nfm-bandwidth-hz or --am-bandwidth-hz); any other row runs its mode's
+   channel. */
+static double
+csvRowWidth(const QString& mode, const QString& options, double inherited) {
+    if (mode.isEmpty()) {
+        return inherited;
+    }
+    const double width = modeWidth(mode);
+    dsd_scan_mode scan = DSD_SCAN_MODE_INHERIT;
+    const QString lower = mode.toLower();
+    if (lower == QLatin1String("nfm-conventional")) {
+        scan = DSD_SCAN_MODE_NFM;
+    } else if (lower == QLatin1String("am-conventional")) {
+        scan = DSD_SCAN_MODE_AM;
+    } else if (dsd_scan_mode_parse(mode.toUtf8().constData(), &scan) != 0) {
+        return width;
+    }
+    const int kind = dsd_scan_mode_analog_kind(scan);
+    if (kind < 0 || options.isEmpty()) {
+        return width;
+    }
+    dsd_scan_options parsed;
+    DSD_MEMSET(&parsed, 0, sizeof parsed);
+    char error[192];
+    const int rc = dsd_scan_options_parse(options.toUtf8().constData(), static_cast<unsigned int>(scan), 1, &parsed,
+                                          error, sizeof error);
+    const int hz =
+        rc == 0 && (parsed.values.present & DSD_SCAN_OPT_BANDWIDTH) != 0U && parsed.values.channel_bw_kind == kind
+            ? parsed.values.channel_bw_hz
+            : 0;
+    DSD_SECURE_ZERO(&parsed, sizeof parsed);
+    return hz > 0 ? hz : width;
+}
+
 void
-KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QString& label, double width, int depth) {
+KnownFrequencyIndex::addCsv(const QString& path, const QVariantMap& s, const QString& label, double width,
+                            const QVariantMap& identity, int depth) {
     if (path.isEmpty()) {
         return;
     }
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    const bool targets = identity.value(QStringLiteral("source")).toString() == QLatin1String("scanTarget");
+    /* Watched once readable, whatever its content: a file empty or refused now that is put right rebuilds the index. */
+    const QFileInfo info(path);
+    if (!info.isFile() || !info.isReadable()) {
         return;
     }
-    const QString directory = QFileInfo(path).absolutePath();
+    const QString directory = info.absolutePath();
     if (!m_files.directories().contains(directory)) {
         m_files.addPath(directory);
     }
     if (!m_files.files().contains(path)) {
         m_files.addPath(path);
     }
-    QTextStream text(&f);
-    CsvColumns columns;
-    bool first = true;
-    int rows = 0;
-    while (!text.atEnd() && ++rows <= 100000 && m_entries.size() < 200000) {
-        QString line = text.readLine(1048576).trimmed();
-        if (line.startsWith(QLatin1Char('#')) || line.isEmpty()) {
-            continue;
+    EngineCsv csv;
+    if (!readEngineCsv(path, targets ? EngineCsvGrammar::Targets : EngineCsvGrammar::ChannelMap, &csv)) {
+        return;
+    }
+    const CsvColumns& columns = csv.columns;
+    for (const EngineCsvRow& row : csv.rows) {
+        if (m_entries.size() >= 200000) {
+            break;
         }
-        const auto fields = csvFields(line);
-        if (first) {
-            columns = csvColumns(fields);
-            first = false;
-        }
-        qint64 hz = parseFrequency(fields.value(columns.frequency), false);
-        if (!hz) {
-            continue;
-        }
+        const QStringList& fields = row.fields;
         QString name = label;
         const QString channel = rowName(fields, columns);
         if (!channel.isEmpty()) {
             name += QStringLiteral(" / ") + channel;
         }
-        const double rowWidth = knownWidth(fields.value(columns.mode), fields.value(columns.options), width);
-        m_entries.append({hz,
-                          rowWidth,
-                          {{QStringLiteral("name"), name},
-                           {QStringLiteral("frequencyHz"), hz},
-                           {QStringLiteral("systemUid"), s.value(QStringLiteral("uid"))}}});
-        if (depth == 0 && !fields.value(columns.channels).isEmpty()) {
-            addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, rowWidth, depth + 1);
+        const double rowWidth = csvRowWidth(fields.value(columns.mode), fields.value(columns.options), width);
+        m_entries.append({row.hz, rowWidth,
+                          matchValue(name, row.hz, s.value(QStringLiteral("uid")),
+                                     rowIdentity(row.line, fields, columns, identity))});
+        if (depth == 0 && targets && !fields.value(columns.channels).isEmpty()) {
+            addCsv(QDir(directory).filePath(fields[columns.channels]), s, name, rowWidth, channelMapIdentity(identity),
+                   depth + 1);
         }
     }
+}
+
+void
+KnownFrequencyIndex::addListEntry(const QVariantMap& entry, const QString& listName, const QString& listUid,
+                                  bool startable) {
+    // A disabled entry is no target of the list's session.
+    const QString uid = entry.value(QStringLiteral("uid")).toString();
+    const bool selectable =
+        startable && entry.value(QStringLiteral("enabled"), true).toBool() && session_args_scan_hold_id_valid(uid);
+    QVariantMap s = entry;
+    QString protocol = entry.value(QStringLiteral("protocol")).toString();
+    if (entry.value(QStringLiteral("kind")).toString() == QStringLiteral("system")) {
+        /* An entry for a saved system is a target of the list too, the entry's uid its id: the system's frequency,
+           width and protocol (its decode flag). The system's channel map is indexed once, under the system. */
+        s = m_systems ? m_systems->getByUid(entry.value(QStringLiteral("systemUid")).toString()) : QVariantMap();
+        if (s.isEmpty()) {
+            return;
+        }
+        s.remove(QStringLiteral("chanCsvPath"));
+        s.insert(QStringLiteral("uid"), uid);
+        protocol = scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString());
+    }
+    add(s,
+        listName + QStringLiteral(" / ")
+            + scan_entry_name(s.value(QStringLiteral("name")).toString(), protocol,
+                              s.value(QStringLiteral("freqMhz")).toString()),
+        withProtocol(matchIdentity(QStringLiteral("scanEntry"), listUid, uid, selectable), protocol));
+}
+
+namespace {
+/* The target rows of the session CSV at @p path, list @p number (@p listUid, named @p listName), appended to @p out: as
+   the engine loaded them (readEngineCsv()), so every target the session runs, and none it refused. */
+void
+appendSessionTargets(const QString& path, int number, const QString& listUid, const QString& listName,
+                     QVariantList* out) {
+    EngineCsv csv;
+    if (path.isEmpty() || !readEngineCsv(path, EngineCsvGrammar::Targets, &csv)) {
+        return;
+    }
+    const CsvColumns& columns = csv.columns;
+    for (const EngineCsvRow& row : csv.rows) {
+        const QString id = engineTargetId(row.line, columns.id);
+        if (id.isEmpty()) {
+            continue;
+        }
+        const QString mode = row.fields.value(columns.mode);
+        out->append(QVariantMap{
+            {QStringLiteral("listNumber"), number},
+            {QStringLiteral("listUid"), listUid},
+            {QStringLiteral("targetId"), id},
+            {QStringLiteral("frequencyHz"), row.hz},
+            {QStringLiteral("width"), csvRowWidth(mode, row.fields.value(columns.options), 12500)},
+            {QStringLiteral("name"), listName + QStringLiteral(" / ") + rowName(row.fields, columns)},
+            {QStringLiteral("protocolLabel"),
+             scan_entry_protocol_label(mode.section(QLatin1Char('-'), 0, 0).toLower())},
+        });
+    }
+}
+} // namespace
+
+QVariantList
+KnownFrequencyIndex::sessionTargets(const QVariantList& lists) const {
+    QVariantList out;
+    for (qsizetype i = 0; i < lists.size(); ++i) {
+        const QVariantMap list = lists.at(i).toMap();
+        appendSessionTargets(list.value(QStringLiteral("path")).toString(), static_cast<int>(i) + 1,
+                             list.value(QStringLiteral("uid")).toString(),
+                             list.value(QStringLiteral("name")).toString(), &out);
+    }
+    return out;
 }
 
 void
@@ -281,25 +785,26 @@ KnownFrequencyIndex::rebuild() {
         for (int i = 0; i < m_systems->count(); ++i) {
             auto s = m_systems->get(i);
             // Issue #782: an unnamed system by its protocol and frequency, as the scan list and its targets name it.
-            add(s, scan_entry_name(s.value(QStringLiteral("name")).toString(),
-                                   scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
-                                   s.value(QStringLiteral("freqMhz")).toString()));
+            add(s,
+                scan_entry_name(s.value(QStringLiteral("name")).toString(),
+                                scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
+                                s.value(QStringLiteral("freqMhz")).toString()),
+                withProtocol(matchIdentity(QStringLiteral("system"), QString(), QString(), true),
+                             scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString())));
         }
     }
     if (m_lists) {
         for (int i = 0; i < m_lists->count(); ++i) {
             auto list = m_lists->get(i);
             QString name = list.value(QStringLiteral("name")).toString();
+            // A draft list cannot start, so none of its rows can be started with its settings.
+            const bool startable = !list.value(QStringLiteral("isDraft")).toBool();
+            const QString listUid = list.value(QStringLiteral("uid")).toString();
             for (const QVariant& value : list.value(QStringLiteral("entries")).toList()) {
-                auto s = value.toMap();
-                if (s.value(QStringLiteral("kind")).toString() != QStringLiteral("system")) {
-                    add(s, name + QStringLiteral(" / ")
-                               + scan_entry_name(s.value(QStringLiteral("name")).toString(),
-                                                 s.value(QStringLiteral("protocol")).toString(),
-                                                 s.value(QStringLiteral("freqMhz")).toString()));
-                }
+                addListEntry(value.toMap(), name, listUid, startable);
             }
-            addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500);
+            addCsv(list.value(QStringLiteral("targetsCsvPath")).toString(), list, name, 12500,
+                   matchIdentity(QStringLiteral("scanTarget"), listUid, QString(), startable));
         }
     }
     std::sort(m_entries.begin(), m_entries.end(), [](const Entry& a, const Entry& b) { return a.hz < b.hz; });
@@ -330,8 +835,13 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
             nearest = distance;
         }
         if (std::abs(distance - nearest) < 0.5) {
-            QString key = entry.value.value(QStringLiteral("systemUid")).toString() + QLatin1Char('/')
-                          + entry.value.value(QStringLiteral("name")).toString() + QString::number(entry.hz);
+            // Two rows of one list on one frequency under one name are two targets, each its own id; rows of two
+            // lists stay apart too, even under one name with one entry uid.
+            QString key = entry.value.value(QStringLiteral("listUid")).toString() + QLatin1Char('/')
+                          + entry.value.value(QStringLiteral("systemUid")).toString() + QLatin1Char('/')
+                          + entry.value.value(QStringLiteral("name")).toString() + QString::number(entry.hz)
+                          + QLatin1Char('/') + entry.value.value(QStringLiteral("source")).toString() + QLatin1Char('/')
+                          + entry.value.value(QStringLiteral("targetId")).toString();
             if (!seen.contains(key)) {
                 result.append(entry.value);
                 seen.insert(key);
@@ -341,13 +851,25 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
     return result;
 }
 
+QVariantList
+KnownFrequencyIndex::tunedMatches(double frequency, double channelWidth) const {
+    return lookup(frequency, std::isfinite(channelWidth) && channelWidth > 0 ? channelWidth : 12500);
+}
+
 QStringList
-KnownFrequencyIndex::tunedNames(double frequency, double channelWidth) const {
+KnownFrequencyIndex::matchNames(const QVariantList& matches) {
     QStringList names;
-    for (const QVariant& match :
-         lookup(frequency, std::isfinite(channelWidth) && channelWidth > 0 ? channelWidth : 12500)) {
-        names.append(match.toMap().value(QStringLiteral("name")).toString());
+    for (const QVariant& match : matches) {
+        const QString name = match.toMap().value(QStringLiteral("name")).toString();
+        if (!names.contains(name)) {
+            names.append(name);
+        }
     }
     return names;
+}
+
+QStringList
+KnownFrequencyIndex::tunedNames(double frequency, double channelWidth) const {
+    return matchNames(tunedMatches(frequency, channelWidth));
 }
 } // namespace dsd_qt

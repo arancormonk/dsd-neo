@@ -407,6 +407,8 @@ init_opts_trunking_and_filter_defaults(dsd_opts* opts) {
     opts->trunk_scan_enabled = 0;
     DSD_MEMSET(opts->trunk_scan_lists, 0, sizeof opts->trunk_scan_lists);
     opts->trunk_scan_list_count = 0;
+    opts->trunk_scan_hold_id[0] = '\0';
+    opts->trunk_scan_off_by_cli = 0;
     opts->trunk_scan_idle_dwell_ms = 3000;
     opts->trunk_scan_activity_hold_ms = 1200;
     opts->scan_voice_only = 0;
@@ -1181,6 +1183,9 @@ init_state_p25p1_nid_learning(dsd_state* state) {
 static void
 init_state_scan_avoid_identity(dsd_state* state) {
     dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_trunk_scan_entry_reasons_free(state);
+    state->trunk_scan_entry_rev = 0;
+    state->trunk_scan_entry_on_air = -1;
     state->state_instance = dsd_state_rev_next();
     state->lcn_list_rev = dsd_state_rev_next();
     state->lcn_avoid_rev = dsd_state_rev_next();
@@ -1200,11 +1205,13 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_active_ordinal = 0;
     state->trunk_scan_target_count = 0;
     state->lcn_scan_hold = 0;
+    state->lcn_scan_entry_hold = 0;
     state->lcn_scan_paused = 0;
     state->lcn_scan_resume_pending = 0;
     state->operator_tuned = 0;
     state->lcn_avoid_count = 0;
     state->trunk_scan_hold = 0;
+    state->trunk_scan_entry_hold = 0;
     state->trunk_scan_paused = 0;
     state->trunk_scan_active_avoided = 0;
     state->trunk_scan_avoided_count = 0;
@@ -1236,6 +1243,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->scan_visit_since_m = -1.0;
     state->scan_visit_roll_seen = 0;
     state->scan_visit_rearm_pending = 0U;
+    state->lcn_avoid_depart_m = 0.0;
     DSD_MEMSET(&state->scan_timing, 0, sizeof(state->scan_timing));
     state->scan_timing.started_m = -1.0;
     state->scan_timing.deadline_m = -1.0;
@@ -1595,6 +1603,7 @@ freeState(dsd_state* state) {
     dsd_state_ext_free_all(state);
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_trunk_scan_entry_reasons_free(state);
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {

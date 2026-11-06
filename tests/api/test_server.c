@@ -514,20 +514,23 @@ test_feed(void) {
         const char* want;
     } k_scan[] = {
         {0, 0, 0U, 0U, 1U,
-         "\"scan\":{\"kind\":\"none\",\"state\":\"off\",\"targets\":0,\"hold\":false,\"ordinal\":null,\"count\":0,"
-         "\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+         "\"scan\":{\"kind\":\"none\",\"state\":\"off\",\"targets\":0,\"hold\":false,\"entry_hold\":false,"
+         "\"ordinal\":null,\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
         {1, 0, 0U, 0U, 0U,
-         "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3,\"hold\":false,\"ordinal\":null,"
-         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+         "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3,\"hold\":false,\"entry_hold\":false,"
+         "\"ordinal\":null,\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
         {1, 0, 0U, 0U, 1U,
-         "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3,\"hold\":true,\"ordinal\":null,"
-         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+         "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3,\"hold\":true,\"entry_hold\":false,"
+         "\"ordinal\":null,\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+        {1, 0, 0U, 0U, 2U,
+         "\"scan\":{\"kind\":\"channel\",\"state\":\"running\",\"targets\":3,\"hold\":true,\"entry_hold\":true,"
+         "\"ordinal\":null,\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
         {0, 0, 1U, 0U, 0U,
-         "\"scan\":{\"kind\":\"channel\",\"state\":\"paused\",\"targets\":3,\"hold\":false,\"ordinal\":null,"
-         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+         "\"scan\":{\"kind\":\"channel\",\"state\":\"paused\",\"targets\":3,\"hold\":false,\"entry_hold\":false,"
+         "\"ordinal\":null,\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
         {0, 1, 0U, 1U, 1U,
-         "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":2,\"hold\":false,\"ordinal\":null,"
-         "\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
+         "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":2,\"hold\":false,\"entry_hold\":false,"
+         "\"ordinal\":null,\"count\":0,\"session\":0,\"lists_seq\":0,\"list\":null,\"lists\":[]}"},
     };
 
     state->lcn_freq_count = 3;
@@ -537,7 +540,9 @@ test_feed(void) {
         opts->trunk_scan_enabled = k_scan[i].trunk_scan;
         state->lcn_scan_paused = k_scan[i].lcn_paused;
         state->trunk_scan_paused = k_scan[i].trunk_paused;
-        state->lcn_scan_hold = k_scan[i].lcn_hold;
+        /* 2: an entry hold (issue #644), the hold a frequency typed by hand set, which `y` continues. */
+        state->lcn_scan_hold = k_scan[i].lcn_hold ? 1U : 0U;
+        state->lcn_scan_entry_hold = k_scan[i].lcn_hold == 2U ? 1U : 0U;
         int scan_seen = 0;
         for (int attempt = 0; attempt < 30 && !scan_seen; attempt++) {
             dsd_telemetry_publish_both_and_redraw(opts, state);
@@ -553,6 +558,7 @@ test_feed(void) {
     state->lcn_scan_paused = 0U;
     state->trunk_scan_paused = 0U;
     state->lcn_scan_hold = 0U;
+    state->lcn_scan_entry_hold = 0U;
     state->lcn_freq_count = 0;
     state->trunk_scan_target_count = 0U;
 
@@ -1666,17 +1672,20 @@ scan_lists_status(avoid_rig* rig) {
     state->trunk_scan_list_count = 0U;
     state->trunk_scan_target_count = 0U;
     set_scan_position(state, 0U, 0U, 0U, 0U, 0U);
-    await_status(rig,
-                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":0,\"hold\":false,\"ordinal\":null,"
-                 "\"count\":0,\"session\":41,\"lists_seq\":6,\"list\":null,\"lists\":[]}");
+    await_status(rig, "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":0,\"hold\":false,"
+                      "\"entry_hold\":false,\"ordinal\":null,\"count\":0,\"session\":41,\"lists_seq\":6,\"list\":null,"
+                      "\"lists\":[]}");
 
     state->trunk_scan_list_count = 1U;
     state->trunk_scan_target_count = 3U;
     set_scan_list(state, 1, "security", 1U, 3U);
     set_scan_position(state, 1U, 0U, 2U, 3U, 1U);
-    await_status(rig, "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":3,\"hold\":true,\"ordinal\":2,"
-                      "\"count\":3,\"session\":41,\"lists_seq\":7,\"list\":1,\"lists\":[{\"number\":1,\"name\":"
-                      "\"security\",\"enabled\":1,\"targets\":3,\"has_active\":true}]}");
+    state->trunk_scan_entry_hold = 1U; /* the hold a typed frequency set (issue #644) */
+    await_status(rig,
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":3,\"hold\":true,"
+                 "\"entry_hold\":true,\"ordinal\":2,\"count\":3,\"session\":41,\"lists_seq\":7,\"list\":1,"
+                 "\"lists\":[{\"number\":1,\"name\":\"security\",\"enabled\":1,\"targets\":3,\"has_active\":true}]}");
+    state->trunk_scan_entry_hold = 0U;
 
     static const char k_three[] = "\"lists\":[{\"number\":1,\"name\":\"security\",\"enabled\":1,\"targets\":3,"
                                   "\"has_active\":%s},{\"number\":2,\"name\":\"hospital\",\"enabled\":0,\"targets\":2,"
@@ -1691,16 +1700,16 @@ scan_lists_status(avoid_rig* rig) {
     set_scan_position(state, 2U, 1U, 0U, 4U, 1U);
     DSD_SNPRINTF(lists, sizeof lists, k_three, "false", "true", "false");
     DSD_SNPRINTF(want, sizeof want,
-                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":6,\"hold\":true,\"ordinal\":null,"
-                 "\"count\":4,\"session\":41,\"lists_seq\":8,\"list\":2,%s",
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":6,\"hold\":true,"
+                 "\"entry_hold\":false,\"ordinal\":null,\"count\":4,\"session\":41,\"lists_seq\":8,\"list\":2,%s",
                  lists);
     await_status(rig, want);
 
     set_scan_position(state, 3U, 0U, 4U, 4U, 0U);
     DSD_SNPRINTF(lists, sizeof lists, k_three, "false", "false", "true");
     DSD_SNPRINTF(want, sizeof want,
-                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":6,\"hold\":false,\"ordinal\":4,"
-                 "\"count\":4,\"session\":41,\"lists_seq\":9,\"list\":3,%s",
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":6,\"hold\":false,"
+                 "\"entry_hold\":false,\"ordinal\":4,\"count\":4,\"session\":41,\"lists_seq\":9,\"list\":3,%s",
                  lists);
     await_status(rig, want);
 
@@ -1709,8 +1718,8 @@ scan_lists_status(avoid_rig* rig) {
     set_scan_position(state, 0U, 0U, 0U, 4U, 1U);
     DSD_SNPRINTF(lists, sizeof lists, k_three, "false", "false", "false");
     DSD_SNPRINTF(want, sizeof want,
-                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":6,\"hold\":true,\"ordinal\":null,"
-                 "\"count\":4,\"session\":41,\"lists_seq\":10,\"list\":null,%s",
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"paused\",\"targets\":6,\"hold\":true,"
+                 "\"entry_hold\":false,\"ordinal\":null,\"count\":4,\"session\":41,\"lists_seq\":10,\"list\":null,%s",
                  lists);
     await_status(rig, want);
     state->trunk_scan_paused = 0U;

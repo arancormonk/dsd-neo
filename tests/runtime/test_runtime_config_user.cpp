@@ -1679,6 +1679,53 @@ test_snapshot_scanner_saves_a_paused_scan(void) {
     return rc;
 }
 
+/* Issue #644: a -Y scan held on a row, an entry hold or not, saves exactly as the same scan unheld: the hold and
+   its entry mark are the session's, never the configuration's. */
+static int
+test_snapshot_never_saves_a_scan_hold(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static char unheld[16384];
+    static char held[16384];
+    reset_opts_and_state(opts, state);
+    opts.scanner_mode = 1;
+    state.lcn_freq_count = 3;
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, unheld, sizeof unheld) != 0) {
+        return 1;
+    }
+    state.lcn_scan_hold = 1U;
+    state.lcn_scan_entry_hold = 1U;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, held, sizeof held) != 0) {
+        return 1;
+    }
+    if (strcmp(unheld, held) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an entry-held -Y scan saves differently from an unheld one\n");
+        return 1;
+    }
+    /* The trunk scan's hold and entry mark neither: the config save, the exit autosave and the shutdown a hangup runs
+       all write this snapshot. */
+    reset_opts_and_state(opts, state);
+    opts.trunk_scan_enabled = 1;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, unheld, sizeof unheld) != 0) {
+        return 1;
+    }
+    state.trunk_scan_hold = 1U;
+    state.trunk_scan_entry_hold = 1U;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, held, sizeof held) != 0) {
+        return 1;
+    }
+    if (strcmp(unheld, held) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an entry-held trunk scan saves differently from an unheld one\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* Issue #671 (N1): what a config apply left for the next start is what a save writes, field by field; with nothing
    waiting the running values are. */
 static int
@@ -5648,6 +5695,7 @@ main(void) {
     rc |= test_snapshot_names_switched_inputs();
     rc |= test_snapshot_trunking_reads_the_trunk_scan_configured_value();
     rc |= test_snapshot_scanner_saves_a_paused_scan();
+    rc |= test_snapshot_never_saves_a_scan_hold();
     rc |= test_snapshot_writes_the_next_start();
     rc |= test_check_trunk_scan_startable();
     rc |= test_snapshot_roundtrip_soapy_args();

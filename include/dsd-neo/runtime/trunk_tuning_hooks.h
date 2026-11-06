@@ -177,6 +177,16 @@ void dsd_trunk_tuning_request_complete(uint64_t request_id, dsd_trunk_tune_resul
  */
 void dsd_trunk_tuning_request_disown(uint64_t request_id);
 
+/**
+ * @brief The radio stream a restart reopened is on the frequency @p request_id asked for (issue #644): the request
+ * landed, whatever the stop published for it.
+ *
+ * A request still in flight, or failed and not yet rolled back, finishes as a success (OK, completed now): the tuning
+ * generation advances as for any landing, older unresolved failures retire, and every reader of its status (the trunk
+ * scan, the state machines awaiting it) takes the landing. One already finished is left as it is.
+ */
+void dsd_trunk_tuning_request_land_at_reopen(uint64_t request_id);
+
 /** @brief Return the newest unresolved request ID (in flight or awaiting recovery), or zero when ready. */
 uint64_t dsd_trunk_tuning_pending_request(void);
 

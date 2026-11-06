@@ -2601,6 +2601,115 @@ test_trunk_scan_list_fields(void) {
     g_unicode_stub = 1;
 }
 
+/* Issue #644: a hold a typed frequency set reads `HOLD (y continues)` in the HOLD field of both running rows, as the
+   paused row names the key that resumes it, while a `Y` hold reads `HOLD` in its room as before. The hint is one field:
+   at 80 columns the cut takes whole fields after it, never part of it. */
+static void
+test_scan_entry_hold_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+    g_stub_max_x = 200;
+
+    /* -Y: the entry hold, then a Y hold, then an entry mark the scan holds nothing under. */
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+    state.trunk_lcn_freq[1] = 462037500;
+    state.scan_avoids_complete = 1;
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    state.lcn_scan_hold = 1;
+    state.lcn_scan_entry_hold = 1;
+    reset_printw_capture();
+    ui_render_scan_mode_row(&opts, &state);
+    assert_capture_equals(
+        "| Scan Mode: Frequency:  462.012500 MHz HOLD (y continues) Hangtime: 2.00 sec Channel: Marion\n");
+    state.lcn_scan_entry_hold = 0;
+    reset_printw_capture();
+    ui_render_scan_mode_row(&opts, &state);
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec Channel: Marion\n");
+    state.lcn_scan_hold = 0;
+    state.lcn_scan_entry_hold = 1;
+    reset_printw_capture();
+    ui_render_scan_mode_row(&opts, &state);
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz      Hangtime: 2.00 sec Channel: Marion\n");
+
+    /* 80 columns: whole fields go after the hint, never part of it. The golden names the ASCII marker ("..."), which
+       the writer draws where the terminal takes no UTF-8 (a platform answer), and whose three cells leave no room for
+       the hangtime either; the one-cell "…" of a UTF-8 terminal keeps it. */
+    g_stub_max_x = 80;
+    state.lcn_scan_hold = 1;
+    g_unicode_stub = 0;
+    reset_printw_capture();
+    ui_render_scan_mode_row(&opts, &state);
+    assert_capture_equals("| Scan Mode: Frequency:  462.012500 MHz HOLD (y continues)...\n");
+    g_unicode_stub = 1;
+    g_stub_max_x = 200;
+
+    /* --trunk-scan: the entry hold widens the HOLD field; [avoided] and the target follow it. */
+    opts.scanner_mode = 0;
+    state.lcn_scan_hold = 0;
+    state.lcn_scan_entry_hold = 0;
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    state.trunk_scan_rotation_ordinal = 3;
+    state.trunk_scan_rotation_count = 6;
+    state.trunk_scan_hold = 1;
+    state.trunk_scan_entry_hold = 1;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (3/6) HOLD (y continues)           Target: county-p25\n");
+    state.trunk_scan_active_avoided = 1;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (3/6) HOLD (y continues) [avoided] Target: county-p25\n");
+    state.trunk_scan_active_avoided = 0;
+    state.trunk_scan_entry_hold = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (3/6) HOLD           Target: county-p25\n");
+
+    /* Both scanners on: the trunk scan owns the entry, so the -Y row's own HOLD stays plain. */
+    opts.scanner_mode = 1;
+    state.lcn_scan_hold = 1;
+    state.lcn_scan_entry_hold = 1;
+    state.trunk_scan_entry_hold = 1;
+    reset_printw_capture();
+    ui_render_running_scan_rows(&opts, &state);
+    assert_capture_contains("| Scan Mode: Frequency:  462.012500 MHz HOLD Hangtime: 2.00 sec\n");
+    assert_capture_contains("| Trunk Scan: (3/6) HOLD (y continues)           Target: county-p25\n");
+    opts.scanner_mode = 0;
+    state.lcn_scan_hold = 0;
+    state.lcn_scan_entry_hold = 0;
+
+    /* 80 columns with two lists: the list's name is the one field the cut takes. */
+    g_stub_max_x = 80;
+    g_unicode_stub = 0;
+    static const char* const names[] = {"security", "municipality"};
+    for (int i = 0; i < 2; i++) {
+        DSD_SNPRINTF(state.trunk_scan_lists[i].name, sizeof(state.trunk_scan_lists[i].name), "%s", names[i]);
+        state.trunk_scan_lists[i].enabled = 1;
+        state.trunk_scan_lists[i].targets = 2;
+    }
+    state.trunk_scan_list_count = 2;
+    state.trunk_scan_session = 7;
+    state.trunk_scan_active_list = 2;
+    state.trunk_scan_rotation_ordinal = 4;
+    state.trunk_scan_rotation_count = 4;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "public-works");
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan: (4/4) HOLD (y continues)            Target: public-works...\n");
+
+    g_stub_max_x = 80;
+    reset_lcn_name_stub();
+    g_unicode_stub = 1;
+}
+
 static void
 test_call_info_channel_line_rendering(void) {
     static dsd_opts opts;
@@ -5110,6 +5219,7 @@ main(void) {
     test_scan_voice_gate_status_rendering();
     test_trunk_scan_status_row_rendering();
     test_trunk_scan_list_fields();
+    test_scan_entry_hold_rows();
     test_scan_timing_row_phrases();
     test_scan_timing_row_clamps_expired_timers();
     test_scan_timing_row_visit_cap();
