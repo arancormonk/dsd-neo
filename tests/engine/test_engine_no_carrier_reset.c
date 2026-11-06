@@ -10166,6 +10166,63 @@ test_goto_never_joins_a_failed_walk(void) {
     return rc;
 }
 
+/* Issue #644: a running untyped list on ALPHA with a rigctl peer beside the radio. A tune of BRAVO times out (a go-to's
+   walk, @p step 0, or the timed step's, 1, BRAVO then avoided), then, with the peer answering, a tune of CHARLIE moves
+   the peer before its RTL leg is deferred. The receiver left BRAVO's way, so BRAVO's tune no longer decides where it
+   is: its landing that comes next commits nothing, and BRAVO's keys are never installed. */
+static int
+moved_deferral_supersedes_case(int step) {
+    const char* what = step ? "a moved deferral over a pending timed step" : "a moved deferral over a pending go-to";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1799012500L + (long int)step * 5000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    if (step) {
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+    } else {
+        (void)dsd_engine_channel_scan_goto_row(opts, state, 1);
+    }
+    g_rtl_timeout_outstanding = 0;
+    int rc = expect_case(what, "BRAVO's tune is pending", dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
+    const int peer_tunes = g_rigctl_setfreq_calls;
+    if (step) {
+        /* BRAVO avoided meanwhile: the next step goes on to CHARLIE. */
+        rc |= expect_case(what, "BRAVO is avoided", dsd_state_trunk_lcn_avoid_set(state, 1, 1) == 0);
+        state->last_cc_sync_time = time(NULL) - 60;
+        noCarrier(opts, state);
+    } else {
+        rc |= expect_case(what, "the go-to of CHARLIE is deferred",
+                          dsd_engine_channel_scan_goto_row(opts, state, 2) == DSD_SCAN_GOTO_DEFERRED);
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "the peer moved to CHARLIE",
+                      g_rigctl_setfreq_calls > peer_tunes && g_rigctl_setfreq_freq == state->trunk_lcn_freq[2]);
+    rc |= expect_case(what, "BRAVO's tune no longer decides", dsd_engine_manual_tune_pending_row(state, NULL) < 0);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_OK);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_case(what, "BRAVO never committed",
+                      dsd_state_lcn_heard_row(state) != 1 && state->rkey_array[9] != 999ULL);
+    opts->use_rigctl = 0;
+    g_rigctl_setfreq_ok = 0;
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_resume_at(void) {
     int rc = 0;
@@ -10181,6 +10238,7 @@ test_untyped_resume_at(void) {
     rc |= test_goto_never_joins_a_tune_of_a_stopped_stream();
     rc |= test_dead_walk_is_never_adopted();
     rc |= test_goto_never_joins_a_failed_walk();
+    rc |= moved_deferral_supersedes_case(0) | moved_deferral_supersedes_case(1);
     return rc;
 }
 

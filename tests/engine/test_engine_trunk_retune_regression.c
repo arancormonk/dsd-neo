@@ -1562,6 +1562,28 @@ test_backend_tune_updates_center_freq_cache(void) {
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
     g_trunk_scan_active_p25_class = 0;
     g_trunk_scan_target_count = 0;
+
+    /* A conventional scan's tune with a rigctl peer beside the radio (issue #644): once the peer moved, an RTL leg that
+       is deferred, as one refused, leaves a manual tune still pending deciding nothing. */
+    opts->scanner_mode = 1;
+    opts->trunk_scan_enabled = 0;
+    opts->use_rigctl = 1;
+    g_setfreq_result = true;
+    for (int refused = 0; refused <= 1; refused++) {
+        g_rtl_tune_result = refused ? RTL_STREAM_TUNE_FAILED : RTL_STREAM_TUNE_DEFERRED;
+        supersedes = g_manual_tune_supersedes;
+        assert(dsd_engine_scan_tune_to_freq(opts, state, 462000000 + refused * 12500, 20, NULL)
+               == (refused ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_DEFERRED));
+        if (g_manual_tune_supersedes != supersedes + 1) {
+            DSD_FPRINTF(stderr, "moved %s: %d supersedes (want 1)\n", refused ? "refusal" : "deferral",
+                        g_manual_tune_supersedes - supersedes);
+        }
+        assert(g_manual_tune_supersedes == supersedes + 1);
+    }
+    opts->scanner_mode = 0;
+    opts->use_rigctl = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rtl_stream_clear_pending_retune_profile();
 #endif
     opts->audio_in_type = AUDIO_IN_PULSE;
     opts->use_rigctl = 1;

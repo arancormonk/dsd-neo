@@ -1405,18 +1405,20 @@ no_carrier_tune_rtl_if_needed(dsd_opts* opts, dsd_state* state, uint32_t rf, uin
     }
     uint64_t pending_id = 0U;
     const int tune_result = io_control_set_rtl_freq_tagged(opts, state, rf, &pending_id);
-    if (tune_result == RTL_STREAM_TUNE_DEFERRED) {
-        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
-    }
+    const int refused = tune_result == RTL_STREAM_TUNE_FAILED || tune_result == RTL_STREAM_TUNE_DEFERRED;
     if (tune_result == RTL_STREAM_TUNE_TIMEOUT && out_pending_id) {
         *out_pending_id = pending_id;
-    } else if (tune_result != RTL_STREAM_TUNE_FAILED || !nothing_moved) {
+    } else if (!refused || !nothing_moved) {
         /* A scan step's or a control-channel return's: its owner's own, which continues a RadioReference import that
-           turned it on (issue #803). A refusal with no other leg having moved the receiver (@p nothing_moved) decides
-           nothing about where it goes, so a tune still pending stands (issue #644): the controller may still land it,
-           or already did, and its outcome settles what it was for. */
+           turned it on (issue #803). A refusal or deferral with no other leg having moved the receiver
+           (@p nothing_moved) decides nothing about where it goes, so a tune still pending stands (issue #644): the
+           controller may still land it, or already did, and its outcome settles what it was for. Once another leg
+           moved, it no longer does. */
         dsd_engine_manual_tune_owner_takes_over();
         dsd_engine_manual_tune_supersede(state);
+    }
+    if (tune_result == RTL_STREAM_TUNE_DEFERRED) {
+        return DSD_TRUNK_TUNE_RESULT_DEFERRED;
     }
     if (tune_result != RTL_STREAM_TUNE_OK) {
         /* The receiver may land the request later, or stayed wherever it was: the cache vouches for neither. */
@@ -1458,19 +1460,20 @@ untyped_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, long int freq, i
 /* The RTL leg of a Next or Previous walk the -Y scan owns (issue #644): the operator's own tune, so it reaches the
  * front end whatever the legacy leg last sent. Any answer but a deferral leaves the legacy caches vouching for nothing,
  * as the step's leg treats them, and one the controller took decides where the receiver goes, so it supersedes a noted
- * manual tune; a refusal supersedes it only after the rigctl leg @p moved the receiver (issue #644). One that timed
- * out is noted as the walk's (DSD_MANUAL_TUNE_LCN_CYCLE), with its row and direction @p dir. Results as
+ * manual tune; a refusal or a deferral supersedes it only after the rigctl leg @p moved the receiver (issue #644). One
+ * that timed out is noted as the walk's (DSD_MANUAL_TUNE_LCN_CYCLE), with its row and direction @p dir. Results as
  * untyped_tune_row_rtl()'s. Without RTL support io_control refuses every tune. */
 static int
 walk_tune_row_rtl(dsd_opts* opts, dsd_state* state, int row, int dir, uint32_t hz, int moved) {
     const uint32_t prior_hz = opts->rtlsdr_center_freq;
     uint64_t pending_id = 0U;
     const int result = io_control_set_rtl_freq_tagged(opts, state, hz, &pending_id);
-    if (result == RTL_STREAM_TUNE_DEFERRED) {
-        return DSD_UNTYPED_STEP_DEFERRED;
-    }
+    /* A deferral or refusal after the rigctl leg moved the receiver leaves a pending tune deciding nothing. */
     if (result == RTL_STREAM_TUNE_OK || result == RTL_STREAM_TUNE_TIMEOUT || moved) {
         dsd_engine_manual_tune_supersede(state);
+    }
+    if (result == RTL_STREAM_TUNE_DEFERRED) {
+        return DSD_UNTYPED_STEP_DEFERRED;
     }
     dsd_engine_legacy_tune_caches_forget();
     if (result == RTL_STREAM_TUNE_TIMEOUT) {

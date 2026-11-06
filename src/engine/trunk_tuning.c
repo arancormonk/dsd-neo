@@ -848,12 +848,11 @@ dsd_engine_tune_rtl(dsd_opts* opts, dsd_state* state, long int freq, uint64_t re
     }
     const int rc = request_id != 0U ? rtl_stream_tune_tagged(state->rtl_ctx, (uint32_t)freq, request_id)
                                     : rtl_stream_tune(state->rtl_ctx, (uint32_t)freq);
-    if (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT
-        || (rc != RTL_STREAM_TUNE_DEFERRED && s_backend_rigctl_moved)) {
+    if (rc == RTL_STREAM_TUNE_OK || rc == RTL_STREAM_TUNE_TIMEOUT || s_backend_rigctl_moved) {
         /* This tune now decides where the receiver goes, not a manual tune still pending (issue #671). It is an owner's
-           own: after a RadioReference import that turned trunking on, its continuation (issue #803). A refusal with
-           no rigctl leg having moved decides nothing about where the receiver goes, so a tune still pending stands
-           (issue #644). */
+           own: after a RadioReference import that turned trunking on, its continuation (issue #803). A refusal or a
+           deferral with no rigctl leg having moved decides nothing about where the receiver goes, so a tune still
+           pending stands (issue #644); once the rigctl leg moved, it no longer does. */
         dsd_engine_manual_tune_owner_takes_over();
         dsd_engine_manual_tune_supersede(state);
     }
