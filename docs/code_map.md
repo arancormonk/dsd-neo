@@ -10124,14 +10124,21 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   or file changes; Signal search, Spectrum and Live Exploring look up labels without
   reading files during rendering. It reads each CSV with the grammar of the engine loader
   that reads the same file (`readEngineCsv()`, issue #644): a target list as
-  `dsd_trunk_scan_load_targets_csv()` (the exact seven-column header on row 1, fixed id,
-  type, frequency and chan_csv columns, label and options by name, a 4095-character row
-  limit that refuses the file, quoted cells), a channel map as `chan_import_stats()`
-  (header row 1, column 0 the channel key, `dsd_csv_channel_has_slot()`, column 1 the
-  frequency, names from the third column on, plain commas, the 1 MiB row limit). In both
-  a blank row is skipped and nothing is a comment, so a `#desk` target is one; a file
-  the engine refuses gives no rows, and a session's own targets
-  (`KnownFrequencyIndex::sessionTargets()`) are read the same way. Cells read as their
+  `dsd_trunk_scan_load_targets_csv()` (the exact seven-column header on row 1 after a
+  UTF-8 byte order mark, fixed id, type, frequency and chan_csv columns, label and options,
+  or `relevant_CLI_switches`, by name without case, a line ended at its first carriage
+  return, quoted cells), a channel map as `chan_import_stats()` (header row 1, column 0 the
+  channel key, `dsd_csv_channel_has_slot()`, column 1 the frequency as `strtol()` takes it,
+  names from the third column on, plain commas). In both a blank row is skipped and nothing
+  is a comment, so a `#desk` target is one. Whether a file is taken at all is the engine's
+  own loader's answer (`engineAccepts()`: `dsd_app_trunk_scan_validate_targets_csv()`,
+  `dsd_csv_validate_chan_file()`), so a duplicated id, an unknown type or mode, a short
+  row, an options cell it cannot parse or a header naming a column twice gives no rows, as
+  it gives the session none; a session's own targets (`KnownFrequencyIndex::sessionTargets()`)
+  are read the same way. A file is watched, with its directory, as soon as it is readable,
+  before it is parsed, so one put right rebuilds the index. Names and labels show as the
+  loaders keep them (`dsd_channel_label_sanitize()`), and a row's own analog width is the
+  one `dsd_scan_options_parse()` reads from its options (`csvRowWidth()`). Cells read as their
   loaders read them: a target's split outside quotes with one pair of outer quotes off
   (`scan_unquote()`), its label's doubled quotes as one (`scan_csv_unescape_doubled_quotes()`),
   and an options cell of either file as `dsd_scan_options_parse_cell()` reads it (a

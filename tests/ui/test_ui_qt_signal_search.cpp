@@ -24,6 +24,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QVariant>
 #include <QVariantList>
@@ -583,10 +584,160 @@ testKnownFrequencyRowCap(const QString& dir) {
     assert(index.tunedMatches(100000000 + 12500LL * 100004, 12500).isEmpty());
 }
 
+/* A scan list over the target CSV @p path, named @p name. */
+static void
+addTargetList(dsd_qt::ScanListsModel* lists, const QString& name, const QString& path) {
+    assert(lists->add({{QStringLiteral("name"), name},
+                       {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                       {QStringLiteral("targetsCsvPath"), path}}));
+}
+
+/* A trunked saved system named @p name whose channel map is @p path. */
+static void
+addMapSystem(dsd_qt::SavedSystemsModel* systems, const QString& name, const QString& path) {
+    assert(systems->add({{QStringLiteral("name"), name},
+                         {QStringLiteral("freqMhz"), QStringLiteral("99.5000")},
+                         {QStringLiteral("trunking"), true},
+                         {QStringLiteral("chanCsvPath"), path}}));
+}
+
+/* Spin the event loop until @p index rebuilds past @p revision, at most five seconds; whether it did. */
+static bool
+waitForRebuild(const dsd_qt::KnownFrequencyIndex& index, qulonglong revision) {
+    for (int i = 0; i < 500 && index.revision() == revision; ++i) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(10);
+    }
+    return index.revision() != revision;
+}
+
+static const char kTargetHeader[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes";
+
+/* Issue #644: a target CSV and a channel map that do not parse when the index is built (an empty file, a bad header)
+   are still watched, with their directory, so fixing them rebuilds the index and their rows appear. */
+static void
+testKnownFrequencyWatchesUnparsedFiles(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString targets = QDir(dir).filePath(QStringLiteral("watch-targets.csv"));
+    const QString channels = QDir(dir).filePath(QStringLiteral("watch-channels.csv"));
+    writeFile(targets, "not,a,target,header\n");
+    writeFile(channels, "");
+    addTargetList(&lists, QStringLiteral("Watched"), targets);
+    addMapSystem(&systems, QStringLiteral("WatchedMap"), channels);
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    assert(index.tunedMatches(1457000000, 12500).isEmpty() && index.tunedMatches(1457100000, 12500).isEmpty());
+    qulonglong revision = index.revision();
+    writeFile(targets, (QByteArray(kTargetHeader) + "\nfixed,dmr-conventional,1457000000,,,,\n").constData());
+    assert(waitForRebuild(index, revision));
+    matchNamed(index.tunedMatches(1457000000, 12500), QStringLiteral("Watched / fixed"));
+    revision = index.revision();
+    writeFile(channels, "chan,freq,name\n1,1457100000,Fixed\n");
+    assert(waitForRebuild(index, revision));
+    matchNamed(index.tunedMatches(1457100000, 12500), QStringLiteral("WatchedMap / Fixed"));
+}
+
+/* Issue #644: a target CSV read exactly as the engine's target loader reads it.
+   - The optional columns by any spelling it takes: `relevant_CLI_switches` is the options column, any case, so an NFM
+     row's 25 kHz width counts.
+   - A file it refuses gives no rows: a duplicated id, a duplicated type and frequency, a row under seven fields, an
+     unknown type, an options cell it cannot parse, a header that names an optional column twice.
+   - A UTF-8 byte order mark before the header is skipped; a carriage return ends the line where it stands.
+   - The label is shown as the loader keeps it, a control character as a space.
+   - A row's width is the one its options set as the engine's options parser reads them. */
+static void
+testKnownFrequencyTargetParity(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString alias = QDir(dir).filePath(QStringLiteral("parity-alias.csv"));
+    writeFile(alias, (QByteArray(kTargetHeader)
+                      + ",Relevant_CLI_Switches\n"
+                        "wide,nfm-conventional,1455000000,,,,,--nfm-bandwidth-hz 25000\n")
+                         .constData());
+    addTargetList(&lists, QStringLiteral("Alias"), alias);
+    const char* const refused[] = {
+        "a,dmr-conventional,1458000000,,,,\na,dmr-conventional,1458012500,,,,\n",
+        "a,dmr-conventional,1458025000,,,,\nb,dmr-conventional,1458025000,,,,\n",
+        "a,dmr-conventional,1458037500,,,\n",
+        "a,fm-conventional,1458050000,,,,\n",
+        "a,nfm-conventional,1458062500,,,,,--nfm-bandwidth-hz 6000\n",
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; ++i) {
+        const QString path = QDir(dir).filePath(QStringLiteral("parity-refused-%1.csv").arg(i));
+        const QByteArray header = QByteArray(kTargetHeader) + (i == 4 ? ",options\n" : "\n");
+        writeFile(path, (header + refused[i]).constData());
+        addTargetList(&lists, QStringLiteral("Refused"), path);
+    }
+    const QString twice = QDir(dir).filePath(QStringLiteral("parity-twice.csv"));
+    writeFile(twice, (QByteArray(kTargetHeader) + ",label,LABEL\na,dmr-conventional,1458075000,,,,,A,B\n").constData());
+    addTargetList(&lists, QStringLiteral("Refused"), twice);
+    const QString bom = QDir(dir).filePath(QStringLiteral("parity-bom.csv"));
+    writeFile(
+        bom,
+        (QByteArray("\xEF\xBB\xBF") + kTargetHeader + ",label\nbom,dmr-conventional,1458100000,,,,,Bom\n").constData());
+    addTargetList(&lists, QStringLiteral("Bom"), bom);
+    const QString cr = QDir(dir).filePath(QStringLiteral("parity-cr.csv"));
+    writeFile(cr, (QByteArray(kTargetHeader) + ",label\ncr,dmr-conventional,1458112500,,,,\r,Cut\n").constData());
+    addTargetList(&lists, QStringLiteral("Cr"), cr);
+    const QString control = QDir(dir).filePath(QStringLiteral("parity-control.csv"));
+    writeFile(control, (QByteArray(kTargetHeader)
+                        + ",label\nctl,dmr-conventional,1458125000,,,,,Tow\x01"
+                          "er\n")
+                           .constData());
+    addTargetList(&lists, QStringLiteral("Control"), control);
+    const QString quoted = QDir(dir).filePath(QStringLiteral("parity-width.csv"));
+    writeFile(quoted,
+              (QByteArray(kTargetHeader) + ",options\nsq,nfm-conventional,1458200000,,,,,--nfm-bandwidth-hz '20000'\n")
+                  .constData());
+    addTargetList(&lists, QStringLiteral("Width"), quoted);
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    matchNamed(index.tunedMatches(1455010000, 25000), QStringLiteral("Alias / wide"));
+    for (qint64 hz :
+         {1458000000LL, 1458012500LL, 1458025000LL, 1458037500LL, 1458050000LL, 1458062500LL, 1458075000LL}) {
+        assert(index.tunedMatches(hz, 12500).isEmpty());
+    }
+    matchNamed(index.tunedMatches(1458100000, 12500), QStringLiteral("Bom / Bom"));
+    matchNamed(index.tunedMatches(1458112500, 12500), QStringLiteral("Cr / cr"));
+    matchNamed(index.tunedMatches(1458125000, 12500), QStringLiteral("Control / Tow er"));
+    // The options parser groups a single-quoted argument: a 20 kHz channel, so a signal 9 kHz off is still on it.
+    matchNamed(index.tunedMatches(1458209000, 20000), QStringLiteral("Width / sq"));
+}
+
+/* Issue #644: a channel map read exactly as the -Y map loader reads it. Its frequency is a whole number of Hz, a sign
+   allowed as strtol() takes it, and no MHz or decimal form; a file it refuses gives no rows (a header naming `mode`
+   twice, an unknown mode, an options cell it cannot parse); a name is shown as the loader keeps it. */
+static void
+testKnownFrequencyChannelParity(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString forms = QDir(dir).filePath(QStringLiteral("parity-map-forms.csv"));
+    writeFile(
+        forms,
+        "chan,freq,name\n1,+1459000000,Signed\n2,1459012500.5,Decimal\n3,1459.025M,Mhz\n4,1459037500,Tab\x01Name\n");
+    addMapSystem(&systems, QStringLiteral("Forms"), forms);
+    const char* const refused[] = {
+        "chan,freq,mode,mode\n1,1459100000,dmr,dmr\n",
+        "chan,freq,mode\n1,1459112500,fm\n",
+        "chan,freq,mode,options\n1,1459125000,nfm,--nfm-bandwidth-hz 6000\n",
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; ++i) {
+        const QString path = QDir(dir).filePath(QStringLiteral("parity-map-refused-%1.csv").arg(i));
+        writeFile(path, refused[i]);
+        addMapSystem(&systems, QStringLiteral("RefusedMap"), path);
+    }
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    matchNamed(index.tunedMatches(1459000000, 12500), QStringLiteral("Forms / Signed"));
+    assert(index.tunedMatches(1459012500, 12500).isEmpty());
+    assert(index.tunedMatches(1459025000, 12500).isEmpty());
+    matchNamed(index.tunedMatches(1459037500, 12500), QStringLiteral("Forms / Tab Name"));
+    for (qint64 hz : {1459100000LL, 1459112500LL, 1459125000LL}) {
+        assert(index.tunedMatches(hz, 12500).isEmpty());
+    }
+}
+
 /* Issue #644: every match says what it is, so a frontend can start it with its own settings. A saved system's own
    frequency and a scan list's row (an entry by its uid, a target CSV row by its id) can be started; a channel map's row
-   (a saved system's, or a trunked target's), a disabled entry, a draft list's entry and a target row with no id only
-   name the channel. */
+   (a saved system's, or a trunked target's), a disabled entry and a draft list's entry only name the channel. */
 static void
 testKnownFrequencyIdentity(const QString& dir) {
     dsd_qt::SavedSystemsModel systems;
@@ -618,8 +769,15 @@ testKnownFrequencyIdentity(const QString& dir) {
                        "tower,am-conventional,483300000,,,,,Tower\n"
                        "trunk,dmr-trunk,484100000,identity-channels.csv,,,,\n"
                        "nxdn-a,nxdn-conventional,485000000,,,,,Gate\n"
-                       "nxdn-b,nxdn48-conventional,485000000,,,,,Gate\n"
+                       "nxdn-b,nxdn48-conventional,485000000,,,,,Gate\n");
+    /* A row with no id makes the target loader refuse its whole file, so no row of it is a match at all. */
+    const QString unnamed = QDir(dir).filePath(QStringLiteral("identity-unnamed.csv"));
+    writeFile(unnamed, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                       "named,dmr-conventional,486100000,,,,,Named\n"
                        ",dmr-conventional,486000000,,,,,Unnamed\n");
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Unnamed")},
+                      {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                      {QStringLiteral("targetsCsvPath"), unnamed}}));
     assert(lists.add({{QStringLiteral("name"), QStringLiteral("Imported")},
                       {QStringLiteral("targetSource"), QStringLiteral("csv")},
                       {QStringLiteral("targetsCsvPath"), targets}}));
@@ -652,8 +810,7 @@ testKnownFrequencyIdentity(const QString& dir) {
     assert(mapped.size() == 2);
     assertIdentity(matchNamed(mapped, QStringLiteral("Imported / trunk")), "channelMap", imported, QString(), 481000000,
                    false);
-    assertIdentity(matchNamed(index.tunedMatches(486000000, 12500), QStringLiteral("Imported / Unnamed")), "scanTarget",
-                   imported, QString(), 486000000, false);
+    assert(index.tunedMatches(486000000, 12500).isEmpty() && index.tunedMatches(486100000, 12500).isEmpty());
     // Two targets on one frequency under one label are two rows, each its own id; the name line says the name once.
     const auto gate = index.tunedMatches(485000000, 12500);
     assert(gate.size() == 2);
@@ -1213,6 +1370,9 @@ main(int argc, char** argv) {
     testKnownFrequencyEngineGrammar(temp.path());
     testKnownFrequencyQuotedCells(temp.path());
     testKnownFrequencyRowCap(temp.path());
+    testKnownFrequencyWatchesUnparsedFiles(temp.path());
+    testKnownFrequencyTargetParity(temp.path());
+    testKnownFrequencyChannelParity(temp.path());
     return 0;
 }
 

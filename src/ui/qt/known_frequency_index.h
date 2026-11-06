@@ -32,7 +32,8 @@ class ScanListsModel;
  * - `listUid`: the scan list a scanEntry, a scanTarget or a target's channelMap row belongs to, else empty;
  * - `targetId`: the id the list's session names the row by (the entry's uid, the CSV row's `id`), else empty;
  * - `selectable`: whether the match can be started with its own settings: a saved system, or a scan list's row that
- *   becomes a target when the list starts (an enabled entry of a list that is no draft, a CSV row with an id). A
+ *   becomes a target when the list starts (an enabled entry of a list that is no draft, a row of a target CSV the
+ *   engine's loader takes, every row of which has an id). A
  *   channel map's row only names the channel;
  * - `protocolLabel`: the protocol of a saved system, an entry or a target as the scan list editor names it ("NXDN48"),
  *   which tells two matches of one name apart; empty for a channel map's row and a saved system with no decode flag.
