@@ -290,34 +290,41 @@ Window {
                 return {uid: list.uid || "", name: list.name || "", path: scanListStarter.sessionCsvPath(list)};
             })) : [];
     }
-    // The session's own targets on the channel at @p hz, @p width wide, that
-    // the paused or released scan would take now: on a list switched on, and
-    // not avoided. The nearest only, one tune per frequency (the scan picks
-    // among its rows on it).
+    // The channels the session's own targets put the tuned frequency @p hz on,
+    // @p width wide: the nearest frequency some target on it covers @p hz at
+    // (its width or the channel's, the narrower). The in-place Listen sends
+    // only that frequency, so it names the row the scan's entry match takes
+    // there (dsd_engine_scan_entry_match()): the first in list order that the
+    // paused or released scan would take now, on a list switched on and not
+    // avoided (a paused scan has no row confirmed on air to prefer). With none
+    // it would take, nothing is offered: the scan would refuse the frequency.
+    // One tune per frequency.
     function sessionRowsAt(hz, width) {
         var lists = metrics.scanListModel, avoids = metrics.scanAvoidModel;
         // Read so the rows follow a list switched, or a target avoided or put back.
         var listsOn = lists.listsOn, avoidCount = metrics.scanAvoidCount;
         var channel = width > 0 ? width : 12500;
-        var near = [], nearest = Infinity;
+        var centres = [], nearest = Infinity;
         for (var target of mainRoot.sessionTargets) {
             var distance = Math.abs(hz - target.frequencyHz);
-            if (distance > Math.min(channel, target.width) / 2 || lists.listSwitchedOff(target.listNumber)
-                || avoids.avoidsTarget(target.targetId))
+            if (distance > Math.min(channel, target.width) / 2)
                 continue;
             if (distance + 0.5 < nearest) {
-                near = [];
+                centres = [];
                 nearest = distance;
             }
-            if (Math.abs(distance - nearest) < 0.5)
-                near.push(target);
+            if (Math.abs(distance - nearest) < 0.5 && centres.indexOf(target.frequencyHz) < 0)
+                centres.push(target.frequencyHz);
         }
-        var rows = [], seen = {};
-        for (var row of near) {
-            if (seen[row.frequencyHz])
-                continue;
-            seen[row.frequencyHz] = true;
-            rows.push({key: "tune", hz: row.frequencyHz, name: row.name, protocolLabel: row.protocolLabel});
+        var rows = [];
+        for (var centre of centres) {
+            for (var row of mainRoot.sessionTargets) {
+                if (row.frequencyHz !== centre || lists.listSwitchedOff(row.listNumber)
+                    || avoids.avoidsTarget(row.targetId))
+                    continue;
+                rows.push({key: "tune", hz: centre, name: row.name, protocolLabel: row.protocolLabel});
+                break;
+            }
         }
         return rows;
     }

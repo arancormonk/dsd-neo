@@ -1339,6 +1339,33 @@ Item {
             }
         }
 
+        // Two of the session's targets on one frequency, an NXDN48 row and a P25 row, paused 4 kHz above it: the
+        // tuned frequency is that channel, since the P25 row's 12.5 kHz covers it, but the in-place Listen sends only
+        // the frequency, and the scan takes the first row on it it would take, in list order. The action names that
+        // row: NXDN48 when its list comes first, P25 when the order is the other way round.
+        function test_a_paused_scan_list_names_the_row_its_scan_takes_data() {
+            return [{tag: "NXDN48 first", first: "nxdn48", second: "p25", named: "Security / Gate", label: "NXDN48"},
+                    {tag: "P25 first", first: "p25", second: "nxdn48", named: "Security / Gate", label: "P25"}];
+        }
+        function test_a_paused_scan_list_names_the_row_its_scan_takes(data) {
+            scanLists.add({name: "Security", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Gate", protocol: data.first, freqMhz: "851.0125", enabled: true}]});
+            var security = scanLists.get(scanLists.count - 1);
+            scanLists.add({name: "Hospital", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Lobby", protocol: data.second, freqMhz: "851.0125", enabled: true}]});
+            var hospital = scanLists.get(scanLists.count - 1);
+            try {
+                pauseBundleOn(security, hospital, 851016500);
+                compare(app.listenActions.length, 1);
+                compare(app.listenActions[0].hz, 851012500);
+                compare(app.listenActions[0].name, data.named);
+                compare(app.listenActions[0].protocolLabel, data.label);
+                compare(app.listenActions[0].accessibleName, "Listen to " + data.named + " with its settings");
+            } finally {
+                endPausedBundle([security.uid, hospital.uid]);
+            }
+        }
+
         // The session's own targets are the ones it started with, taken when its start was accepted: deleting its
         // saved lists while it runs (which removes their generated target files), then pausing it, changes nothing the
         // paused session reaches in place.

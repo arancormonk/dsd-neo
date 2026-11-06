@@ -11308,7 +11308,11 @@ Qt Quick frontend (`src/ui/qt`):
     operator paused or released (`sessionScanList` while exploring, from before the decoder reports the tune) keeps its
     lists: a target that session would take now is `key: "tune"`, one per frequency (`sessionRowsAt()`, the nearest
     only), which `listenWith()` sends as `CommandBridge::tuneHz()` at the row's own frequency (`RTL_SET_FREQ`: the
-    engine resumes the scan at that row and holds it, the session, its companions and avoids kept), and rows of other
+    engine resumes the scan at that row and holds it, the session, its companions and avoids kept). Since the command
+    names only the frequency, a target's width decides only whether the tuned frequency is that channel (some target
+    on it covers the offset), and the action names the row the engine's entry match takes there: the first in list
+    order on a list switched on and not avoided (a paused scan has no row on air to prefer; none such offers
+    nothing). The width a row's DSP rate cannot run is not checked here (Qt has no such snapshot field). Rows of other
     lists and saved systems, which would restart the session, are not offered. Its targets are the session's own, as it
     started them (`sessionTargets`, taken once by `captureSessionTargets()` when the start is accepted:
     `KnownFrequencyIndex::sessionTargets()` reads the target CSV each list's start wrote,
