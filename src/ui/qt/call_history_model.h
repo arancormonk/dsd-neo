@@ -237,6 +237,15 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     Q_INVOKABLE QVariantList recordingsForUid(qint64 uid) const;
 
     /**
+     * @brief The uid of the row that holds the ring fragment @p fragment now, or 0 when none does (never logged,
+     * trimmed, cleared).
+     *
+     * Issue #809: a Signal search recording names its call by fragment; the row it merged into is the one found. A
+     * double because QML reads it as a JS number, which holds every uid this model hands out exactly.
+     */
+    Q_INVOKABLE double uidForFragment(const QString& fragment) const;
+
+    /**
      * @brief The details of the row that has @p uid (its UidRole as text; QML passes the number) now, or an empty map.
      *
      * One key per role the detail sheet shows, by the role names (uid, name, when, systemName, systemUid, channel, tg,

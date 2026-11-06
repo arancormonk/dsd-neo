@@ -10124,7 +10124,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `slot` and `crypt` through; the panel's two-line detail (`detailText()`) reads site,
   access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
   the whole text as its accessible name and description, and a history row shows site and
-  crypt under its verdict. `keepValues()` makes every space but the one after a `·`
+  crypt under its verdict. `hitMap()` also gives `recordingKey` (issue #809), `"<session>:<hit>"`
+  formatted in C++ from the two `uint64_t`s, never through a JS number: the recording store's
+  key for the detection's recordings (`recordingCountForDetection()`, `recordingsForDetection()`);
+  `UI_QT_SIGNAL_SEARCH` checks a session above 2^53. The QML fakes mirror that store and
+  History surface (`qml_test_context.h`: `RecordingsFake::setDetectionRecordings()` seeds a
+  detection and moves `revision` with `revisionChanged()`; `CallLogStore` has
+  `uidForFragment()`, `setFragmentRow()` and `trimRow()`), and `tst_context_fixture.qml` checks
+  the screen's reads. `keepValues()` makes every space but the one after a `·`
   non-breaking, so wrapped details break only between values. Its
   liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
@@ -10881,7 +10888,9 @@ Qt Quick frontend (`src/ui/qt`):
     `fr`): `call_history_fragment_key()` (`call_recording_provider.h`), `<16 uppercase hex ring instance>:<slot>:<push
     stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
     add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
-    clear. Rows older builds wrote have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a
+    clear. `uidForFragment()` (issue #809: a Signal search recording names its call by fragment) reads it: the uid of
+    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared; a double,
+    which QML reads exactly. Rows older builds wrote have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a
     `CallRecordingProvider` (the call recording store; none, and so no recordings, until one is set with
     `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings changed through
     `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the store knows before

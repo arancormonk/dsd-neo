@@ -34,7 +34,9 @@
  * recording roles come from the recording provider by those fragments and follow its change
  * news (a recording known before its row, one added later, one deleted). A save that fails,
  * in either store, keeps the log owed, is retried on a growing delay without another change,
- * reports once, and a restart after a half-written save logs nothing twice (B6). */
+ * reports once, and a restart after a half-written save logs nothing twice (B6).
+ * Issue #809: uidForFragment() finds the row holding a fragment, through a merge and a reload, and none once the row
+ * is trimmed or the log cleared. */
 
 #include <QByteArray>
 #include <QChar>
@@ -4247,6 +4249,56 @@ test_fragments_follow_merges_reloads_and_trims(void) {
     expect("a cleared row's fragment reaches no row", changed.isEmpty());
 }
 
+/* Issue #809: a Signal search recording names its call by fragment, and uidForFragment() finds the row holding it: the
+ * row it merged into, across a reload, and none (0) once its row is trimmed or the log cleared. */
+void
+test_uid_for_fragment(void) {
+    resetStorage();
+    RingFixture ring;
+    const time_t when = 1754701500;
+    QString first;
+    QString second;
+    qint64 uid = 0;
+    {
+        CallHistoryModel model;
+        ring.commit(0, 22101, 611, when, when + 4);
+        first = newest_fragment(ring, 0);
+        model.refresh(ring.state);
+        uid = uid_at(model, 0);
+        expect("a fragment finds its row", uid > 0 && qRound64(model.uidForFragment(first)) == uid);
+        ring.commit(1, 22101, 611, when + 3, when + 9);
+        second = newest_fragment(ring, 1);
+        model.refresh(ring.state);
+        expect("the fragment merges", model.count() == 1);
+        expect("a fragment merged into a row finds that row",
+               qRound64(model.uidForFragment(second)) == uid && qRound64(model.uidForFragment(first)) == uid);
+        expect("a fragment no row holds finds none",
+               qRound64(model.uidForFragment(QStringLiteral("0000000000000000:0:1"))) == 0
+                   && qRound64(model.uidForFragment(QString())) == 0);
+        model.startSaveForTest();
+        model.waitForSaveForTest();
+    }
+    {
+        CallHistoryModel restored;
+        expect("a reload keeps the lookup", qRound64(restored.uidForFragment(second)) == uid);
+    }
+
+    resetStorage();
+    RingFixture busy;
+    CallHistoryModel full;
+    busy.commit(0, 9999, 1, 1754600000 - 100, 1754600000 - 96);
+    const QString oldest = newest_fragment(busy, 0);
+    full.refresh(busy.state);
+    expect("the oldest call has a row", qRound64(full.uidForFragment(oldest)) > 0);
+    fill_live_session(full, busy, 4, 30000);
+    expect("the oldest row is trimmed", full.count() == 1000 && rows_in_tg_range(full, 9999, 9999) == 0);
+    expect("a trimmed row's fragment finds none", qRound64(full.uidForFragment(oldest)) == 0);
+    const QString kept = newest_fragment(busy, 0);
+    expect("a kept row's fragment finds it", full.rowForUid(qRound64(full.uidForFragment(kept))) >= 0);
+    full.clearAll();
+    expect("a cleared row's fragment finds none", qRound64(full.uidForFragment(kept)) == 0);
+}
+
 /* The recording roles come from the provider by fragment: none without one; a recording the store knew before its
  * row arrived shows when the row does; one added or deleted later reaches its row through the change news. */
 void
@@ -4649,6 +4701,7 @@ main(int argc, char** argv) {
     test_analog_roles_and_persistence();
     test_rows_have_stable_uids();
     test_fragments_follow_merges_reloads_and_trims();
+    test_uid_for_fragment();
     test_recording_roles_follow_the_provider();
     test_failed_save_is_kept_and_retried();
     test_restart_after_a_half_written_save();

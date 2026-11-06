@@ -1698,6 +1698,47 @@ class CallLogStore : public QAbstractListModel {
         return row >= 0 ? m_rows.at(row).recordings : QVariantList();
     }
 
+    /**
+     * @brief CallHistoryModel::uidForFragment(): the uid of the row holding @p fragment now, or 0 when none does (never
+     * held, or its row trimmed or cleared).
+     */
+    Q_INVOKABLE double
+    uidForFragment(const QString& fragment) const {
+        const qint64 uid = m_fragmentUids.value(fragment);
+        return rowForUid(uid) >= 0 ? static_cast<double>(uid) : 0.0;
+    }
+
+    /**
+     * @brief The row with @p uid holds @p fragment from now on, as a fragment logged, folded into that row or merged
+     * into it from another does: dataChanged on that row. False when no row has @p uid.
+     */
+    Q_INVOKABLE bool
+    setFragmentRow(const QString& fragment, qint64 uid) {
+        const int row = rowForUid(uid);
+        if (row < 0) {
+            return false;
+        }
+        m_fragmentUids.insert(fragment, uid);
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx);
+        return true;
+    }
+
+    /** @brief Trim the row with @p uid from the log, as CallHistoryModel::trimToCapacity() does: a row removal. */
+    Q_INVOKABLE bool
+    trimRow(qint64 uid) {
+        const int row = rowForUid(uid);
+        if (row < 0) {
+            return false;
+        }
+        beginRemoveRows(QModelIndex(), row, row);
+        m_rows.removeAt(row);
+        endRemoveRows();
+        Q_EMIT countChanged();
+        Q_EMIT rowPositionsChanged();
+        return true;
+    }
+
     /** @brief CallHistoryModel::recordFor(): the detail sheet's keys for the row with @p uid now, or an empty map. */
     Q_INVOKABLE QVariantMap
     recordFor(const QString& uid) const {
@@ -2058,6 +2099,8 @@ class CallLogStore : public QAbstractListModel {
     }
 
     QList<StoreRow> m_rows;
+    /* uidForFragment()'s index; an entry whose row is gone resolves to none, as the model's trim and clear make it. */
+    QHash<QString, qint64> m_fragmentUids;
     QString m_systemName = QStringLiteral("Test Site");
     QVariantMap m_channelNames;
     QString m_sessionUid = QStringLiteral("test-system");
@@ -2225,6 +2268,10 @@ class ReadingMap : public QQmlPropertyMap {
  *
  * The selections hand back what a case set with setSelection(): its count, size and paths, under a new selection
  * number each time (0 when the count is 0, as the store answers a selection that matched nothing).
+ *
+ * Issue #809: a detection's recordings are what a case seeded with setDetectionRecordings(), each map completed with
+ * the store's keys; every seeding moves `revision` and emits revisionChanged(), as the store does. That signal is
+ * declared here: a property map's own change signals are not reachable by name, so `onRevisionChanged` would miss.
  */
 class RecordingsFake : public QQmlPropertyMap {
     Q_OBJECT
@@ -2241,16 +2288,40 @@ class RecordingsFake : public QQmlPropertyMap {
                 {QStringLiteral("freeBytes"), -1},      {QStringLiteral("lowSpace"), false},
                 {QStringLiteral("removedByLimit"), 0},  {QStringLiteral("deletesWaiting"), 0},
                 {QStringLiteral("deleteFailures"), 0},  {QStringLiteral("lastDeleteError"), QString()},
-                {QStringLiteral("limitMb"), 1000}};
+                {QStringLiteral("limitMb"), 1000},      {QStringLiteral("revision"), 0.0}};
+    }
+
+    /** @brief A recordingsForDetection() map with every key the store gives, each at a blank value. */
+    static QVariantMap
+    detectionEntry() {
+        return {{QStringLiteral("id"), QString()},
+                {QStringLiteral("path"), QString()},
+                {QStringLiteral("fileName"), QString()},
+                {QStringLiteral("folderUid"), QString()},
+                {QStringLiteral("start"), qint64{0}},
+                {QStringLiteral("durationMs"), qint64{0}},
+                {QStringLiteral("rate"), 0},
+                {QStringLiteral("bytes"), qint64{0}},
+                {QStringLiteral("failed"), false},
+                {QStringLiteral("available"), true},
+                {QStringLiteral("system"), QString()},
+                {QStringLiteral("target"), QString()},
+                {QStringLiteral("source"), QString()},
+                {QStringLiteral("fragment"), QString()}};
     }
 
     Q_INVOKABLE void
     reset() {
+        const bool moved = value(QStringLiteral("revision")).toDouble() > 0.0;
         const QVariantMap values = rest();
         for (auto it = values.cbegin(); it != values.cend(); ++it) {
             insert(it.key(), it.value());
         }
         m_calls.clear();
+        m_detections.clear();
+        if (moved) {
+            Q_EMIT revisionChanged();
+        }
         m_selectionCount = 0;
         m_selectionBytes = 0;
         m_selectionPaths.clear();
@@ -2327,6 +2398,43 @@ class RecordingsFake : public QQmlPropertyMap {
         return m_calls;
     }
 
+    /** @brief RecordingStore::recordingCountForDetection(): how many recordings the detection @p key has. */
+    Q_INVOKABLE int
+    recordingCountForDetection(const QString& key) const {
+        return static_cast<int>(m_detections.value(key).size());
+    }
+
+    /** @brief RecordingStore::recordingsForDetection(): the detection @p key's recordings, as seeded (newest first). */
+    Q_INVOKABLE QVariantList
+    recordingsForDetection(const QString& key) const {
+        return m_detections.value(key);
+    }
+
+    /**
+     * @brief The detection @p key's recordings from now on, newest first: each of @p recordings' maps over
+     * detectionEntry(), so a case names only the keys it reads. An empty list leaves the detection none. Moves
+     * `revision`, as a journal change does.
+     */
+    Q_INVOKABLE void
+    setDetectionRecordings(const QString& key, const QVariantList& recordings) {
+        QVariantList entries;
+        for (const QVariant& recording : recordings) {
+            QVariantMap entry = detectionEntry();
+            const QVariantMap given = recording.toMap();
+            for (auto it = given.cbegin(); it != given.cend(); ++it) {
+                entry.insert(it.key(), it.value());
+            }
+            entries.append(entry);
+        }
+        if (entries.isEmpty()) {
+            m_detections.remove(key);
+        } else {
+            m_detections.insert(key, entries);
+        }
+        insert(QStringLiteral("revision"), value(QStringLiteral("revision")).toDouble() + 1.0);
+        Q_EMIT revisionChanged();
+    }
+
     Q_INVOKABLE void
     emitLimitReached(int count) {
         Q_EMIT limitReached(count);
@@ -2336,6 +2444,7 @@ class RecordingsFake : public QQmlPropertyMap {
     void changed();
     void limitMbChanged();
     void limitReached(int count);
+    void revisionChanged();
 
   private:
     void
@@ -2361,6 +2470,7 @@ class RecordingsFake : public QQmlPropertyMap {
     }
 
     QVariantList m_calls;
+    QHash<QString, QVariantList> m_detections;
     int m_selectionCount = 0;
     qint64 m_selectionBytes = 0;
     QStringList m_selectionPaths;

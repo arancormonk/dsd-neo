@@ -543,6 +543,8 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
     const QStringList labels = KnownFrequencyIndex::matchNames(matches);
     return {{QStringLiteral("session"), QString::number(h.session_id)},
             {QStringLiteral("id"), QString::number(h.hit_id)},
+            /* The recording journal's `search` key for this detection, from the integers (issue #809). */
+            {QStringLiteral("recordingKey"), QStringLiteral("%1:%2").arg(h.session_id).arg(h.hit_id)},
             {QStringLiteral("frequency"), h.frequency_hz},
             {QStringLiteral("freqMHz"), QString::number(h.frequency_hz / 1e6, 'f', 6)},
             {QStringLiteral("width"), h.bandwidth_hz},
