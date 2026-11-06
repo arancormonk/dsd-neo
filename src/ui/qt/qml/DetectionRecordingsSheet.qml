@@ -17,7 +17,8 @@ import "Util.js" as Util
 // then, only while the sheet is open. The selection follows its recording by
 // id; when that recording leaves (deleted, or trimmed by the storage limit) the
 // row that takes its place is selected, the next older one, or the one before
-// it (newer) when it was the oldest, and the sheet closes when none is left. A recording whose storage is away stays listed and says so.
+// it (newer) when it was the oldest, and the sheet closes when none is left. A
+// recording whose storage is away stays listed and says so.
 ModalSheet {
     id: sheet
     objectName: "detectionRecordingsSheet"

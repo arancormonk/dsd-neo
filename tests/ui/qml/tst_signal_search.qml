@@ -1477,9 +1477,8 @@ Item {
         // The selected recording deleted (here or from the Recordings screen):
         // the row that takes its place is selected (the next older one), and
         // focus moves to it if it was on the list; the oldest gone hands it to
-        // the one before it (newer). Deleting says only
-        // the audio goes, for a recording with no History row and one whose row
-        // History trimmed (B3).
+        // the one before it (newer). Deleting says only the audio goes, for a
+        // recording with no History row and one whose row History trimmed (B3).
         function test_sheet_selected_recording_deleted_selects_next_older() {
             var uid = callHistory.pushWithRecordings([]);
             verify(callHistory.setFragmentRow("F:7:2", uid));
@@ -1727,7 +1726,6 @@ Item {
             wait(100);
             var detail = findChild(loader.item, "searchHistoryDetail");
             verify(detail.mapToItem(row, 0, 0).x + detail.width <= row.width + 0.5);
-            grabImage(root).save("/tmp/dsd-signal-search-recordings-row-360-1.6x-" + data.tag + ".png");
             // The row that kept none, with Record calls off: the hint comes last.
             findChildren(loader.item, "searchHistoryActions")[1].activate();
             var menu = findChild(loader.item, "searchDetectionMenu");
@@ -1736,16 +1734,13 @@ Item {
             verify(hint.visible && hint.lineCount >= 2, "the hint wraps");
             verify(hint.mapToItem(menu, 0, 0).x + hint.width <= menu.width, "inside the menu");
             wait(50);
-            grabImage(root).save("/tmp/dsd-signal-search-recordings-menu-off-360-1.6x-" + data.tag + ".png");
             menu.cancel();
             findChild(loader.item, "searchHistoryActions").activate();
             wait(50);
-            grabImage(root).save("/tmp/dsd-signal-search-recordings-menu-360-1.6x-" + data.tag + ".png");
             menuItem("searchActionRecordings").activate();
             var sheet = recordingsSheet();
             waitForRendering(sheet);
             wait(50);
-            grabImage(root).save("/tmp/dsd-signal-search-recordings-sheet-360-1.6x-" + data.tag + ".png");
             var panel = findChild(sheet, "modalSheetScroll");
             var inside = function (item) {
                 var p = item.mapToItem(panel, 0, 0);
@@ -1784,7 +1779,6 @@ Item {
                 verify(item.height >= Ui.Theme.minimumTouchSize && item.width >= Ui.Theme.minimumTouchSize, control + " keeps its target");
             }
             verify(revealInSheet(sheet, findChild(sheet, "detectionRecordingsClose")), "the sheet scrolls to Close");
-            grabImage(root).save("/tmp/dsd-signal-search-recordings-sheet-360-1.6x-end-" + data.tag + ".png");
             Ui.Theme.fontScale = 1.0;
             sheet.visible = false;
             wait(0);
@@ -1793,7 +1787,6 @@ Item {
             waitForRendering(sheet);
             recordingRow("b").activate();
             wait(50);
-            grabImage(root).save("/tmp/dsd-signal-search-recordings-sheet-360-1x-" + data.tag + ".png");
             sheet.visible = false;
             scroll.contentY = 0;
             model.history = [];
