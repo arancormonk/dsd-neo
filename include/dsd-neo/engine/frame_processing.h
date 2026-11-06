@@ -116,8 +116,9 @@ typedef enum {
  * run_manual_retune_guarded() took the guard), a config apply and a RadioReference import (1, guarded commands), the
  * engine's input switch and stream gap (0), the scan steps and the replay hook. Exempt, and never routed here: retunes
  * within a system under trunking, trunk-scan target switches, and retunes an external controller makes over the RTL
- * UDP port. The first two close the recordings no call owns themselves (the trunk follow, both control-channel returns
- * and trunk_scan_switch_to()); the last is invisible to the decoder, so a recording can span it. Decoder thread. */
+ * UDP port. The first two close the recordings no call owns themselves (every accepted trunk tune that moves the
+ * receiver, the direct control-channel return and trunk_scan_switch_to()); the last is invisible to the decoder, so a
+ * recording can span it. Decoder thread. */
 void dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_boundary_kind kind, int guard_held);
 
 /** The stream the decoder read was replaced (an input switch, a radio row's stream taking over, a config reopen, the

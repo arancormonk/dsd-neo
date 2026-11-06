@@ -2497,30 +2497,45 @@ check_rxid_watchdog_tunes(dsd_opts* opts, dsd_state* state) {
     dsd_engine_set_decoder_thread(1);
 }
 
-/* A trunk follow and a return to the control channel are carrier departures that run no carrier boundary: each closes
-   the recordings no call owns once the tuner took it (issue #809 B4), the return after its release ended the voice
-   channel's calls. A refused or deferred tune moved nothing, and a return that retunes nothing (no control channel
-   known) leaves the receiver where it is: none closes anything. */
+/* A trunk follow, a control-channel tune (a hunt's probe, a settle, a protocol's own return) and a return to the control
+   channel are carrier departures that run no carrier boundary: each closes the recordings no call owns once the tuner
+   took it (issue #809 B4); the return closes them again after its release ended the voice channel's calls. A refused
+   tune moved nothing, a tune to the frequency the tuner is on (a grant on a DMR composite control channel) moves
+   nothing, and a return that retunes nothing (no control channel known) leaves the receiver where it is: none closes
+   anything. */
 static void
 check_departures_close_orphaned_recordings(dsd_opts* opts, dsd_state* state) {
     g_orphan_flush_calls = 0;
     opts->trunk_is_tuned = 0;
+    opts->rtlsdr_center_freq = 851000000U;
     g_setfreq_result = false;
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853037500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
     assert(g_orphan_flush_calls == 0);
     g_setfreq_result = true;
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853037500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 1 && opts->rtlsdr_center_freq == 853037500U);
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853037500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(g_orphan_flush_calls == 1);
+
+    g_setfreq_result = false;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    assert(g_orphan_flush_calls == 1);
+    g_setfreq_result = true;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 2);
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 851062500, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_orphan_flush_calls == 2);
 
     opts->trunk_enable = 1;
     state->p25_cc_freq = 851000000;
+    opts->rtlsdr_center_freq = 853037500U;
     opts->trunk_is_tuned = 1;
     g_setfreq_result = false;
     assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
-    assert(g_orphan_flush_calls == 1);
+    assert(g_orphan_flush_calls == 2);
     g_setfreq_result = true;
     assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(g_orphan_flush_calls == 2 && opts->trunk_is_tuned == 0);
+    assert(g_orphan_flush_calls == 4 && opts->trunk_is_tuned == 0);
 
     const long int cc = state->p25_cc_freq;
     const long int trunk_cc = state->trunk_cc_freq;
@@ -2528,7 +2543,7 @@ check_departures_close_orphaned_recordings(dsd_opts* opts, dsd_state* state) {
     state->trunk_cc_freq = 0;
     opts->trunk_is_tuned = 1;
     assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(g_orphan_flush_calls == 2 && opts->trunk_is_tuned == 0);
+    assert(g_orphan_flush_calls == 4 && opts->trunk_is_tuned == 0);
     state->p25_cc_freq = cc;
     state->trunk_cc_freq = trunk_cc;
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);

@@ -1314,16 +1314,8 @@ wav_journal_identity(char* out, size_t out_size, const char* text, uint32_t id) 
 /* The segment's length and rate from libsndfile, read before the close finalizes it; 0 when unknown. */
 static void
 wav_segment_length(SNDFILE* wav_file, int64_t* duration_ms, int* rate) {
-    *duration_ms = 0;
-    *rate = 0;
-    SF_INFO info;
-    DSD_MEMSET(&info, 0, sizeof info);
-    if (wav_file == NULL || sf_command(wav_file, SFC_GET_CURRENT_SF_INFO, &info, (int)sizeof info) != 0
-        || info.samplerate <= 0 || info.frames < 0) {
-        return;
-    }
-    *rate = info.samplerate;
-    *duration_ms = (int64_t)info.frames * 1000 / info.samplerate;
+    int64_t frames = 0;
+    *duration_ms = wav_segment_info(wav_file, &frames, rate) ? frames * 1000 / *rate : 0;
 }
 
 /* The published recording, in the journal (issue #708). */

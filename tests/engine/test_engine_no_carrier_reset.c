@@ -1367,7 +1367,8 @@ test_direct_cc_return_closes_an_orphaned_recording(void) {
 }
 
 /* The return through the trunk tuning hooks (dsd_engine_return_to_cc_request()) closes what the voice channel left with
-   no call, once the tuner took the return; a refused return moved nothing and closes nothing. */
+   no call, once the tuner took the return; a refused return moved nothing and closes nothing. So does a control-channel
+   tune of a protocol's own. */
 static int
 test_trunk_cc_return_closes_an_orphaned_recording(void) {
     dsd_opts* opts = NULL;
@@ -1394,6 +1395,11 @@ test_trunk_cc_return_closes_an_orphaned_recording(void) {
     long long ms = -9;
     rc |= expect_true("closes slot 2's audio", recording_rig_published(&rec, 1, &ms) == 1 && ms == 80);
     rc |= expect_true("and leaves the empty slot 1 file", recording_rig_published(&rec, 0, NULL) == 0);
+    /* A control-channel tune of its own (a hunt's probe, a settle, a protocol's return) leaves its carrier too. */
+    recording_rig_frames(opts, state, 1, 2);
+    rc |= expect_true("a hunt's probe",
+                      dsd_engine_trunk_tune_to_cc_request(opts, state, 942212500L, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("closes what the carrier left", recording_rig_published(&rec, 1, &ms) == 2 && ms == 40);
     g_rigctl_setfreq_ok = 0;
     recording_rig_close(opts, &rec);
     free_test_runtime(opts, state);
@@ -1401,7 +1407,7 @@ test_trunk_cc_return_closes_an_orphaned_recording(void) {
 }
 
 /* A trunk follow to a voice channel closes only audio no call owns: the call active on the other slot keeps its
-   recording, which its own end publishes whole. */
+   recording, which its own end publishes whole. A grant on the carrier the receiver is on closes nothing. */
 static int
 test_trunk_follow_closes_only_orphaned_recordings(void) {
     dsd_opts* opts = NULL;
@@ -1437,6 +1443,11 @@ test_trunk_follow_closes_only_orphaned_recordings(void) {
     long long ms = -9;
     rc |= expect_true("closes slot 2's audio", recording_rig_published(&rec, 1, &ms) == 1 && ms == 60);
     rc |= expect_true("not the active call's", recording_rig_published(&rec, 0, NULL) == 0);
+    /* A grant on the carrier the receiver is on (a DMR composite control channel's) moves nothing. */
+    recording_rig_frames(opts, state, 1, 2);
+    rc |= expect_true("a grant on the same carrier",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, vc, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= expect_true("closes nothing", recording_rig_published(&rec, 1, NULL) == 1);
     recording_rig_frames(opts, state, 0, 5);
     (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
     dsd_event_sync_slot(opts, state, 0U);

@@ -1729,21 +1729,30 @@ suite runs under this compiler.
     write `unlink`. A departure already ends the outgoing target's calls, which resolves most entries before the restore
     runs. A recording never linked stays unattributed; so does one whose `pending` and `link` straddle a crash.
   - Carrier departures (issue #809 B4): a per-call recording never carries audio from two carriers, except a call that
-    continues across a move as one call (a TETRA reallocation keeps its epoch). A slot file can hold audio no call owns
-    (TETRA speech decoded before its signalling admits an anonymous call: the record gate allows a slot with no active
-    call), which no commit would close. `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each slot file
-    that holds frames (`dsd_wav_segment_frames()`, libsndfile's count) while its slot has no active canonical call,
-    publishes it as no row's recording without an rdio-scanner export (nothing names it, as on the drop path) and
-    reopens it through the commit's own rotation (`watchdog_event_rotate_slot_wav()`). An empty file, `-P` off, a static
-    WAV and an active call's file (its commit closes it) are left alone. Every departure the decoder makes runs it after
-    ending its calls: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`),
-    a trunk-scan target switch (`trunk_scan_switch_to()`, after either branch ends the outgoing calls), the trunk return
-    to the control channel (`engine_return_to_cc_request_once()`, after the release, when it retuned), the direct
-    no-carrier return (`no_carrier_finish_cc_return()`, when the return was accepted) and the trunk follow to a voice
-    channel (`engine_trunk_tune_to_freq_request_once()`, once the tune is taken: only audio no call owns, so the granted
-    or reallocated call keeps its file). Retunes an external controller makes over the RTL UDP port are invisible to
-    the decoder: a recording can span one (limit). One `sf_command()` per open slot file per departure; nothing on the
-    write path.
+    continues across a move as one call (a TETRA reallocation keeps its epoch). A slot file can hold audio no active
+    call owns (TETRA speech decoded before its signalling admits an anonymous call: the record gate allows a slot with
+    no active call), which no commit would close. `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each
+    slot file that holds frames (`dsd_wav_segment_frames()`, libsndfile's count, read through `wav_segment_info()` as a
+    close reads its length) while its slot has no active canonical call, publishes it without an rdio-scanner export and
+    reopens it through the commit's own rotation (`watchdog_event_rotate_slot_wav()`). It is published pending on the
+    slot's ended epoch whose row has yet to commit (a held drop verdict; `dsd_call_state_pending_row_epoch()`, the rule
+    `close_and_publish_call_wav()` follows), so the commit links it and a drop unlinks it; with no such epoch, as no
+    row's (nothing names it, as on the drop path). An empty file, `-P` off, a static WAV and an active call's file (its
+    commit closes it) are left alone. Every departure the decoder makes runs it, after ending its calls where it ends
+    them: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`); a
+    trunk-scan target switch (`trunk_scan_switch_to()` through `trunk_scan_leave_carrier()`, after either branch ends
+    the outgoing calls; a park that saves no target, a retry's after a failed park, ends a call heard since on the
+    carrier the receiver was left on first); the direct no-carrier return (`no_carrier_finish_cc_return()`, when the
+    return was accepted); and every accepted trunk tune that moves the receiver (`dsd_engine_tune_leaves_carrier()` in
+    `trunk_tuning.c`): the follow to a voice channel (`engine_trunk_tune_to_freq_request_once()`: only audio no call
+    owns, so the granted or reallocated call keeps its file), every control-channel tune
+    (`engine_trunk_tune_to_cc_request_once()`: a hunt's probe, a settle, a protocol's own return such as NXDN DISC,
+    EDACS EOT or the DMR SLCO tune; a DMR XPT or Capacity Plus control channel carries voice) and the return to the
+    control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
+    trunk tune to the frequency the tuner is on (`opts->rtlsdr_center_freq` before the tune; a grant on a DMR composite
+    control channel) moves nothing and closes nothing. Retunes an external controller makes over the RTL UDP port are
+    invisible to the decoder: a recording can span one (limit). One `sf_command()` per open slot file per departure;
+    nothing on the write path.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
     analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
@@ -1813,11 +1822,13 @@ suite runs under this compiler.
   journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
   path forms, the process token, the Signal search visit on a commit, an NFM call, both DMR slots, the pending closers,
   the session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a
-  zero id; the orphan close at a tune (both slots, the two halves' lengths, the visit it names), not of an empty file,
-  a static WAV, an active call's file or across a stream gap, and at a trunk-scan dwell hop and operator advance; the
-  write and pending-list seams in `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan
-  close at the direct and trunk control-channel returns and the trunk follow, none at a refused one), `TETRA_CALLS`
-  (a reallocation keeps one recording),
+  zero id; the orphan close at a tune (both slots, the two halves' lengths, the visit it names, a held epoch's pending
+  and unlinked at its drop), not of an empty file, a static WAV, an active call's file or across a stream gap, at a
+  trunk-scan dwell hop and operator advance, and a retry park ending the call heard since a failed park; the write and
+  pending-list seams in `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at
+  the direct and trunk control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused
+  one or a grant on the carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each
+  trunk tune's and switch's close, counted), `TETRA_CALLS` (a reallocation keeps one recording),
   `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
   `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
   (`--wav-journal`).
@@ -8611,14 +8622,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`dsd_analog_rx_reset()`: the received tone, the tone policy's verdict, the monitor's audio chain and converter;
   issue #667 A3), whether or not the stream's generation moved with the gap. The codes, the received identity, the
   followed voice channel, trunk-scan ownership and a recording no call owns stay; the hangtime and visit timers decide
-  as after a fade. It takes the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its tick guard and before any
-  scan or trunk tick; a gap found in the hunt is consumed first in the next outer pass. A pending scan tune (which
-  makes `noCarrier()` return early) never skips it. An older symbol cache is dropped when a direct reader has already
-  acknowledged its gap, without moving the consumed count backwards. A capture's `MUTE` alone (samples dropped, as a
-  driver overflow leaves them) is no stream gap, live or replayed. Tests: `ENGINE_STREAM_GAP` (the analog side on a
-  replay's clock and a live input's: a toned call's row, the next reception's own tone or none, two short receptions
-  that stay candidates), `DECODE_IQ_ANALOG_STREAM_GAP_*` (a recorded USB recovery across two joined captures, fast
-  and paced).
+  as after a fade. It takes the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its
+  tick guard and before any scan or trunk tick; a gap found in the hunt is consumed first in the next outer pass. A
+  pending scan tune (which makes `noCarrier()` return early) never skips it. An older symbol cache is dropped when a
+  direct reader has already acknowledged its gap, without moving the consumed count backwards. A capture's `MUTE` alone
+  (samples dropped, as a driver overflow leaves them) is no stream gap, live or replayed. Tests: `ENGINE_STREAM_GAP`
+  (the analog side on a replay's clock and a live input's: a toned call's row, the next reception's own tone or none,
+  two short receptions that stay candidates), `DECODE_IQ_ANALOG_STREAM_GAP_*` (a recorded USB recovery across two joined
+  captures, fast and paced).
 
   The carrier count guards every decoder that reads more of the air after a unit is whole and before it decodes or
   publishes that unit: a replay read that adopts a recorded retune runs the boundary inside such a read, and the unit

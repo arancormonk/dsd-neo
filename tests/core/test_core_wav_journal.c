@@ -1025,10 +1025,15 @@ current_frequency(const dsd_opts* opts) {
     return g_frequency;
 }
 
+static int g_tune_refused; /* the stand-in tuner refuses every tune */
+
 static dsd_trunk_tune_result
 tune(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t request_id) {
     (void)sps;
     (void)request_id;
+    if (g_tune_refused) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     g_frequency = freq;
     opts->rtlsdr_center_freq = (uint32_t)freq;
     state->trunk_cc_freq = freq;
@@ -2611,6 +2616,41 @@ test_orphan_flush_skips_active_call(void) {
     return rc;
 }
 
+/* An ended epoch whose row is held back (an identity-less call that faded: its drop verdict waits out the reacquisition
+   window) still owns its audio: the departure closes the file pending on that epoch, as a WAV stop would, and the
+   drop that follows unlinks it rather than leaving it no row's from the start. */
+static int
+test_orphan_flush_held_epoch_is_pending(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_held");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN);
+    const uint64_t epoch = call_epoch(&r);
+    voice_frames(&r, 0, 3);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    end_call(&r, DSD_CALL_END_SYNC_LOSS);
+    reload(&r);
+    rc |= expect_int("the faded epoch's row is held", count_records(&g_j, "publish"), 0);
+    dsd_event_flush_orphan_recordings(r.opts, r.state);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("its audio closed", pub && strcmp(field_s(pub, "id"), id) == 0);
+    rc |= expect_true("pending on its epoch, not exported", pub && strcmp(field_s(pub, "pending"), "true") == 0
+                                                                && strcmp(field_s(pub, "rdio"), "false") == 0);
+    rc |= expect_int("the epoch", pub ? field_ll(pub, "epoch") : -9, (long long)epoch);
+    /* Past the hold: the row is dropped, and the recording it waited for is unlinked. */
+    clock_at(g_now_s + 2);
+    dsd_event_sync_slot(r.opts, r.state, 0);
+    clock_at(g_now_s + 2);
+    dsd_event_sync_slot(r.opts, r.state, 0);
+    reload(&r);
+    rc |= expect_int("the drop unlinks it", count_for_id(&g_j, "unlink", id), 1);
+    rc |= expect_int("and links nothing", count_records(&g_j, "link"), 0);
+    rig_close(&r);
+    return rc;
+}
+
 /* A stream gap leaves the receiver on its carrier: audio no call owns stays in its file across it. */
 static int
 test_stream_gap_keeps_orphan(void) {
@@ -2658,16 +2698,13 @@ test_orphan_flush_names_the_visit(void) {
 
 /* Trunk scan, two P25 targets at 851 and 852 MHz on a stand-in tuner. */
 static int
-scan_rig_start(rig* r) {
+scan_rig_start_with(rig* r, const char* csv) {
     char targets[DSD_TEST_PATH_MAX * 2];
     (void)dsd_test_path_join(targets, sizeof targets, r->dir, "targets.csv");
     FILE* f = dsd_fopen_private(targets, "wb");
     if (!f) {
         return 1;
     }
-    const char* csv = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
-                      "a,p25-trunk,851000000,,250,250,\n"
-                      "b,p25-trunk,852000000,,250,250,\n";
     const int wrote = fwrite(csv, 1, strlen(csv), f) == strlen(csv);
     int rc = expect_true("targets written", fclose(f) == 0 && wrote);
     r->opts->audio_in_type = AUDIO_IN_RTL;
@@ -2685,6 +2722,13 @@ scan_rig_start(rig* r) {
     return rc;
 }
 
+static int
+scan_rig_start(rig* r) {
+    return scan_rig_start_with(r, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                  "a,p25-trunk,851000000,,250,250,\n"
+                                  "b,p25-trunk,852000000,,250,250,\n");
+}
+
 static void
 scan_rig_stop(rig* r) {
     dsd_engine_trunk_scan_shutdown(r->opts, r->state);
@@ -2692,6 +2736,7 @@ scan_rig_stop(rig* r) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
     dsd_trunk_tuning_requests_reset();
+    g_tune_refused = 0;
 }
 
 /* A trunk-scan target switch moves the tuner without the carrier boundary: the dwell's rotation (the switch ends the
@@ -2719,6 +2764,35 @@ test_trunk_scan_switch_flushes_orphans(void) {
     reload(&r);
     rc |= expect_int("b's audio closed at the advance", count_records(&g_j, "publish"), 2);
     rc |= expect_orphan("b's audio", record(&g_j, "publish", 1), 0, 80);
+    scan_rig_stop(&r);
+    rig_close(&r);
+    return rc;
+}
+
+/* A park that failed leaves the receiver where it was, and a call can be heard there before the retry's park: the retry
+   leaves that carrier, so the call ends with it and its recording closes under its own row, rather than the target's
+   restored state taking the slot from under it with the call's audio still in the file. */
+static int
+test_trunk_scan_retry_park_ends_the_call_left(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_scan_retry");
+    g_tune_refused = 1;
+    rc |= scan_rig_start_with(&r, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                                  "a,p25-trunk,851000000,,250,250,\n");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 500U, 50U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 5);
+    g_tune_refused = 0;
+    trunk_scan_test_set_now(2.5);
+    dsd_engine_trunk_scan_tick(r.opts, r.state);
+    rc |= expect_int("the retry parked", (long long)g_frequency, 851000000);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("the call's recording closed at the retry", pub && strcmp(field_s(pub, "id"), id) == 0);
+    rc |= expect_int("whole", pub ? field_ll(pub, "duration_ms") : -9, 100);
+    rc |= expect_true("under its row", pub && field_ll(pub, "row") > 0);
     scan_rig_stop(&r);
     rig_close(&r);
     return rc;
@@ -2772,9 +2846,11 @@ main(void) {
     rc |= test_orphan_flush_both_slots();
     rc |= test_orphan_flush_skips_empty();
     rc |= test_orphan_flush_skips_active_call();
+    rc |= test_orphan_flush_held_epoch_is_pending();
     rc |= test_stream_gap_keeps_orphan();
     rc |= test_orphan_flush_names_the_visit();
     rc |= test_trunk_scan_switch_flushes_orphans();
+    rc |= test_trunk_scan_retry_park_ends_the_call_left();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

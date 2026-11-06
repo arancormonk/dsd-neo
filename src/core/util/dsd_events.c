@@ -572,10 +572,13 @@ dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
             || watchdog_event_slot_call_active(state, slot)) {
             continue;
         }
-        /* No call owns the audio, so no row claims it and, as on the drop path, it is not exported. */
-        const dsd_wav_owner none = {DSD_WAV_OWNER_NONE, slot, 0U, 0U};
+        /* No active call owns the audio. An ended epoch whose row has yet to commit (a held drop verdict) claims it as
+           pending, as close_and_publish_call_wav() does, so the row's commit links it and a drop unlinks it; otherwise
+           no row does. Neither is exported, as on the drop path. */
+        const uint64_t epoch = dsd_call_state_pending_row_epoch(state, slot);
+        const dsd_wav_owner owner = {epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE, slot, 0U, epoch};
         const Event_History_I* event_struct = state->event_history_s ? &state->event_history_s[slot] : NULL;
-        watchdog_event_rotate_slot_wav(opts, event_struct, slot, 0, &none);
+        watchdog_event_rotate_slot_wav(opts, event_struct, slot, 0, &owner);
     }
 }
 

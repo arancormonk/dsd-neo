@@ -1061,6 +1061,17 @@ dsd_engine_log_queued_ted_override(const dsd_opts* opts, const dsd_state* state,
 }
 #endif
 
+/* After an accepted tune from @p from_hz to @p freq: when the tune moved the receiver off its carrier, the per-call audio
+   no call owns closes, so the next carrier's never joins it (issue #809 B4). Only that: a call the move carries over as
+   one (a TETRA reallocation) is active, and its recording closes at its own commit. A tune to the carrier the receiver
+   is on (a grant on a DMR composite control channel) moves nothing and closes nothing. */
+static void
+dsd_engine_tune_leaves_carrier(dsd_opts* opts, dsd_state* state, uint32_t from_hz, long int freq) {
+    if ((long int)from_hz != freq) {
+        dsd_event_flush_orphan_recordings(opts, state);
+    }
+}
+
 /**
  * @brief Return to the P25 control channel, draining audio and resetting state.
  *
@@ -1084,6 +1095,7 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     // explicit CC when available; otherwise fall back to any tracked CC.
     // Avoid sending a zero/unknown frequency to the tuner which can wedge the
     // pipeline at DC and delay CC hunting.
+    const uint32_t from_hz = opts->rtlsdr_center_freq;
     const long int cc = dsd_engine_resolve_cc_freq(state);
     const int trunk_enabled = (opts->trunk_enable == 1);
     const int retunes = trunk_enabled && cc != 0;
@@ -1097,9 +1109,8 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
 
     dsd_engine_release_tuned_call_state(opts, state);
     if (retunes) {
-        /* The release ended the voice channel's calls; what the receiver holds of it that no call owns closes too, so
-           the control channel's audio never joins it (issue #809 B4). */
-        dsd_event_flush_orphan_recordings(opts, state);
+        /* The release ended the voice channel's calls before the receiver's audio of it closes. */
+        dsd_engine_tune_leaves_carrier(opts, state, from_hz, cc);
     }
 
     /* Keep symbol timing aligned with the current control-channel mode. A return that retuned nothing leaves a chain
@@ -1159,6 +1170,7 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    const uint32_t from_hz = opts->rtlsdr_center_freq;
 #ifdef USE_RADIO
     /* Captured before the comparison below ends, so a failed tune puts the front end back with the comparison. */
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
@@ -1227,10 +1239,7 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
 
     dsd_engine_update_vc_tune_state(opts, state, freq);
-    /* The receiver left its carrier: audio no call owns closes, so the voice channel's never joins it (issue #809 B4).
-       Only that: a call the move carries over as one (a TETRA reallocation) is active, and its recording closes at its
-       own commit. A refused tune moved nothing and closes nothing. */
-    dsd_event_flush_orphan_recordings(opts, state);
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
     return result;
 }
 
@@ -1269,6 +1278,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    const uint32_t from_hz = opts->rtlsdr_center_freq;
 #ifndef USE_RADIO
     (void)ted_sps;
 #else
@@ -1309,6 +1319,9 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
     dsd_engine_rxid_trunk_tune(state);
     state->last_cc_sync_time = dsd_decode_time();
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    /* A hunt's probe, a settle, a protocol's own return: each leaves its carrier, which may carry voice (a DMR XPT or
+       Capacity Plus control channel is a voice repeater). */
+    dsd_engine_tune_leaves_carrier(opts, state, from_hz, freq);
     return result;
 }
 
