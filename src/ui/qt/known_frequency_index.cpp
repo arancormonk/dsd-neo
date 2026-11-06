@@ -33,6 +33,7 @@
 #include "saved_systems_model.h"
 #include "scan_entry_name.h"
 #include "scan_lists_model.h"
+#include "session_args.h"
 
 namespace dsd_qt {
 static double knownWidth(const QString& mode, const QString& options, double inherited = 12500);
@@ -538,7 +539,8 @@ readEngineCsv(const QString& path, EngineCsvGrammar grammar, EngineCsv* out) {
 }
 
 /* A row's identity: a target CSV's row is the target its `id` names (@p line's id cell as the engine reads it),
-   startable when it has one and the file's list can start; a channel map's row is what the file's identity says. */
+   startable when a held start can name it (session_args_scan_hold_id_valid()) and the file's list can start; a channel
+   map's row is what the file's identity says. */
 QVariantMap
 rowIdentity(const QString& line, const QStringList& fields, const CsvColumns& columns, const QVariantMap& identity) {
     if (identity.value(QStringLiteral("source")).toString() != QLatin1String("scanTarget")) {
@@ -547,7 +549,8 @@ rowIdentity(const QString& line, const QStringList& fields, const CsvColumns& co
     QVariantMap row = identity;
     const QString id = engineTargetId(line, columns.id);
     row.insert(QStringLiteral("targetId"), id);
-    row.insert(QStringLiteral("selectable"), identity.value(QStringLiteral("selectable")).toBool() && !id.isEmpty());
+    row.insert(QStringLiteral("selectable"),
+               identity.value(QStringLiteral("selectable")).toBool() && session_args_scan_hold_id_valid(id));
     // A target's type is its protocol and its kind: "nxdn48-conventional".
     row.insert(QStringLiteral("protocolLabel"),
                scan_entry_protocol_label(fields.value(columns.mode).section(QLatin1Char('-'), 0, 0).toLower()));
@@ -710,7 +713,8 @@ KnownFrequencyIndex::addListEntry(const QVariantMap& entry, const QString& listN
                                   bool startable) {
     // A disabled entry is no target of the list's session.
     const QString uid = entry.value(QStringLiteral("uid")).toString();
-    const bool selectable = startable && entry.value(QStringLiteral("enabled"), true).toBool() && !uid.isEmpty();
+    const bool selectable =
+        startable && entry.value(QStringLiteral("enabled"), true).toBool() && session_args_scan_hold_id_valid(uid);
     QVariantMap s = entry;
     QString protocol = entry.value(QStringLiteral("protocol")).toString();
     if (entry.value(QStringLiteral("kind")).toString() == QStringLiteral("system")) {

@@ -10195,8 +10195,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   (`addListEntry()`); `scanTarget`, a row of a list's target CSV; `channelMap`, a row of a saved system's or a trunked
   target's channel map), `listUid`, `targetId` (the entry's uid or the CSV row's `id` as the engine reads it, blanks
   inside its quotes kept (`engineTargetId()`), the id the list's session names the target by), `frequencyHz` (the row's
-  own frequency) and `selectable` (a saved system, an enabled entry of a list that is no draft, a CSV row with an id; a
-  channel map's row only names the channel), and `protocolLabel` (the scan list editor's protocol name, from an entry's
+  own frequency) and `selectable` (a saved system; an enabled entry of a list that is no draft, or a CSV row, whose id a
+  held start can name, `session_args_scan_hold_id_valid()`: no control character and under 64 bytes, so Listen
+  never stops a session for a start that `session_args_with_scan_hold()` then refuses; a channel map's row only names
+  the channel), and `protocolLabel` (the scan list editor's protocol name, from an entry's
   protocol, a target's type or a saved system's decode flag). Rows of one list on one frequency under one name stay
   apart by id; `tunedNames()` and Signal search's `knownNames` say each name once (`matchNames()`, `UI_QT_SIGNAL_SEARCH`
   `testKnownFrequencyIdentity()`). Saving uses an immutable hit snapshot, including its original source settings and

@@ -93,6 +93,13 @@ QStringList session_args_scan_build_lists(const QVariantMap& list, const QString
  */
 QStringList session_args_with_scan_hold(const QStringList& args, const QString& targetId);
 
+/**
+ * @brief Whether a held start can name target @p targetId (issue #644): not empty, no control character, and fewer
+ * bytes than dsd_opts::trunk_scan_hold_id holds. session_args_with_scan_hold() takes exactly these, so a frontend
+ * offers a held start only for a target this accepts.
+ */
+bool session_args_scan_hold_id_valid(const QString& targetId);
+
 /** @brief The engine's default trunk-scan dwell and activity hold, in ms: what a list's 0 runs at. */
 constexpr int SessionArgsScanDwellDefaultMs = 3000;
 constexpr int SessionArgsScanHoldDefaultMs = 1200;

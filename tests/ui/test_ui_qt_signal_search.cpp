@@ -442,7 +442,7 @@ assertIdentity(const QVariantMap& match, const char* source, const QString& list
 /* Issue #644: a target CSV row's id is what the engine loads, so a held start or an in-place go-to names a target the
    session has: the cell trimmed, then one pair of surrounding quotes taken off, which keeps the blanks inside them
    (" fire " is the id " fire "). The name shown is the trimmed text. The saved index and a session's own targets read
-   it alike. */
+   it alike. An id a held start cannot name is not selectable. */
 static void
 testKnownFrequencyEngineIds(const QString& dir) {
     dsd_qt::SavedSystemsModel systems;
@@ -450,7 +450,8 @@ testKnownFrequencyEngineIds(const QString& dir) {
     const QString targets = QDir(dir).filePath(QStringLiteral("engine-id-targets.csv"));
     writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
                        "\" fire \",nfm-conventional,487000000,,,,,Fire\n"
-                       "  \" pump\"  ,dmr-conventional,488000000,,,,,\n");
+                       "  \" pump\"  ,dmr-conventional,488000000,,,,,\n"
+                       "ta\tb,dmr-conventional,489000000,,,,,Tab\n");
     assert(lists.add({{QStringLiteral("name"), QStringLiteral("Spaced")},
                       {QStringLiteral("targetSource"), QStringLiteral("csv")},
                       {QStringLiteral("targetsCsvPath"), targets}}));
@@ -460,9 +461,13 @@ testKnownFrequencyEngineIds(const QString& dir) {
                    spaced, QStringLiteral(" fire "), 487000000, true);
     assertIdentity(matchNamed(index.tunedMatches(488000000, 12500), QStringLiteral("Spaced / pump")), "scanTarget",
                    spaced, QStringLiteral(" pump"), 488000000, true);
+    // The engine loads an id with a tab in it, but a held start cannot name it (session_args_scan_hold_id_valid()):
+    // the row names its channel and offers no start that would stop the session and then fail.
+    assertIdentity(matchNamed(index.tunedMatches(489000000, 12500), QStringLiteral("Spaced / Tab")), "scanTarget",
+                   spaced, QStringLiteral("ta\tb"), 489000000, false);
     const QVariantList session =
         index.sessionTargets({QVariantMap{{"uid", spaced}, {"name", QStringLiteral("Spaced")}, {"path", targets}}});
-    assert(session.size() == 2);
+    assert(session.size() == 3);
     assert(session.at(0).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral(" fire "));
     assert(session.at(0).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / Fire"));
     assert(session.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral(" pump"));

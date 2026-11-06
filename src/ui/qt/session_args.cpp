@@ -616,14 +616,18 @@ session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqM
     return args;
 }
 
-QStringList
-session_args_with_scan_hold(const QStringList& args, const QString& targetId) {
+bool
+session_args_scan_hold_id_valid(const QString& targetId) {
     const QByteArray id = targetId.toUtf8();
     const bool control =
         std::any_of(targetId.cbegin(), targetId.cend(), [](QChar ch) { return ch.category() == QChar::Other_Control; });
+    return !id.isEmpty() && id.size() < static_cast<qsizetype>(sizeof(dsd_opts::trunk_scan_hold_id)) && !control;
+}
+
+QStringList
+session_args_with_scan_hold(const QStringList& args, const QString& targetId) {
     const qsizetype list = args.lastIndexOf(QStringLiteral("--trunk-scan"));
-    if (id.isEmpty() || id.size() >= static_cast<qsizetype>(sizeof(dsd_opts::trunk_scan_hold_id)) || control || list < 0
-        || list + 1 >= args.size()) {
+    if (!session_args_scan_hold_id_valid(targetId) || list < 0 || list + 1 >= args.size()) {
         return {};
     }
     QStringList held = args;

@@ -2045,10 +2045,13 @@ test_scan_hold_option(void) {
     const QString longest(63, QLatin1Char('a'));
     expect("an id of the most bytes the decoder keeps is held",
            !dsd_qt::session_args_with_scan_hold(args, longest).isEmpty());
-    for (const QString& bad : {QString(), longest + QLatin1Char('a'), QStringLiteral("er\ndesk"),
-                               QString::fromUtf8("\xc3\xa9") + QString(62, QLatin1Char('a'))}) {
+    expect("an id of the most bytes the decoder keeps is valid", dsd_qt::session_args_scan_hold_id_valid(longest));
+    for (const QString& bad :
+         {QString(), longest + QLatin1Char('a'), QStringLiteral("er\ndesk"), QStringLiteral("er\tdesk"),
+          QString::fromUtf8("\xc3\xa9") + QString(62, QLatin1Char('a'))}) {
         expect("an id the decoder cannot take refuses the argv",
                dsd_qt::session_args_with_scan_hold(args, bad).isEmpty());
+        expect("an id the decoder cannot take is not valid", !dsd_qt::session_args_scan_hold_id_valid(bad));
     }
     expect("an argv with no scan list refuses a hold",
            dsd_qt::session_args_with_scan_hold(session_args_build(usb_system(), SessionArgPrefs(), nullptr),
