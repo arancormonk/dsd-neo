@@ -1796,8 +1796,8 @@ suite runs under this compiler.
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
   journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
   path forms, the process token, the Signal search visit on a commit, an NFM call, both DMR slots, the pending closers,
-  the session's final closes and the real carrier boundary that leaves a visit, and none outside a visit; the write
-  and pending-list seams in `src/core/file/wav_journal_test_support.h`),
+  the session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a
+  zero id; the write and pending-list seams in `src/core/file/wav_journal_test_support.h`),
   `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
   `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
   (`--wav-journal`).

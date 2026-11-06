@@ -2342,7 +2342,8 @@ test_pending_closer_names_visit(void) {
     return rc;
 }
 
-/* Outside a visit no record carries the key: a digital commit, an NFM call and a pending closer. */
+/* Outside a visit no record carries the key: a digital commit, an NFM call and a pending closer. Nor does a record
+   whose visit has a zero id, which a reader would reject: the writer never writes one. */
 static int
 test_no_visit_no_key(void) {
     rig r;
@@ -2360,9 +2361,22 @@ test_no_visit_no_key(void) {
     submit(&r, DSD_APP_CMD_WAV_STOP);
     end_call(&r, DSD_CALL_END_EXPLICIT);
     reload(&r);
-    rc |= expect_int("an NFM, a commit and a pending publish", count_records(&g_j, "publish"), 3);
+    static const uint64_t zero_half[2][2] = {{0U, 5U}, {5U, 0U}};
+    for (int i = 0; i < 2; i++) {
+        wav_journal_publish_record rec;
+        DSD_MEMSET(&rec, 0, sizeof rec);
+        rec.path = r.journal;
+        rec.owner.kind = DSD_WAV_OWNER_NONE;
+        rec.owner.slot = DSD_WAV_OWNER_SLOT_UNKNOWN;
+        rec.has_search = 1;
+        rec.search_session = zero_half[i][0];
+        rec.search_hit = zero_half[i][1];
+        wav_journal_publish(&rec);
+    }
+    reload(&r);
+    rc |= expect_int("an NFM, a commit, a pending publish and two zero-id visits", count_records(&g_j, "publish"), 5);
     for (int i = 0; i < g_j.count; i++) {
-        rc |= expect_true("no record names a visit", strstr(g_j.line[i], "search") == NULL);
+        rc |= expect_true("no record names a visit", strstr(g_j.line[i], "\"search\":") == NULL);
     }
     rig_close(&r);
     return rc;
@@ -2370,11 +2384,12 @@ test_no_visit_no_key(void) {
 
 /* A decoder session that ends during a visit (a Stop from the app) ends the search's hit and keeps the tag, and the
    teardown's final closes publish under it (dsd_engine_cleanup(): dsd_engine_finalize_calls() ends the analog call and
-   the slots as a sync loss, dsd_engine_cleanup_close_wavs() publishes the slot files; ENGINE_LIFECYCLE_FINALIZE pins
-   the tag through the real teardown). Here the same steps run in that order: an NFM call on slot 1 and a DMR call on
+   the slots as a sync loss, dsd_engine_cleanup_close_wavs() publishes the slot files). The hit's end and the tag kept
+   through the real teardown are pinned by ENGINE_SIGNAL_SEARCH and ENGINE_LIFECYCLE_FINALIZE, which run the search;
+   here the final closes run in the teardown's order under the kept tag: an NFM call on slot 1 and a DMR call on
    slot 2, both talking when the session ends. */
 static int
-test_publish_after_hit_end_keeps_visit(void) {
+test_session_final_closes_keep_visit(void) {
     rig r;
     int rc = rig_open(&r, "dsdneo_journal_visit_end");
     setup_nfm(r.opts, r.state);
@@ -2478,7 +2493,7 @@ main(void) {
     rc |= test_both_slots_tagged();
     rc |= test_pending_closer_names_visit();
     rc |= test_no_visit_no_key();
-    rc |= test_publish_after_hit_end_keeps_visit();
+    rc |= test_session_final_closes_keep_visit();
     rc |= test_departure_boundary_tags_departing_visit();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");

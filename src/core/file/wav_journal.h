@@ -34,7 +34,7 @@ typedef struct {
     const char* system;  /* the row's system string */
     const char* target;  /* the row's target, as shown */
     const char* source;  /* the row's source, as shown */
-    int has_search;      /* received on a Signal search visit (issue #809): the two ids below name it, both non-zero */
+    int has_search; /* received on a Signal search visit (issue #809): the two ids below name it (a zero id: no key) */
     uint64_t search_session;
     uint64_t search_hit;
 } wav_journal_publish_record;

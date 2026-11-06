@@ -573,10 +573,10 @@ dsd_wav_journal_unlink_pending(void) {
 /* --- Records. --- */
 
 /* `search`, only for a recording received on a Signal search visit (issue #809): "<session>:<hit>" in decimal, a string
-   so both ids survive a reader that parses doubles. */
+   so both ids survive a reader that parses doubles. Both ids are non-zero, as a reader requires. */
 static void
 line_search_visit(wav_journal_line* l, const wav_journal_publish_record* rec) {
-    if (!rec->has_search) {
+    if (!rec->has_search || rec->search_session == 0U || rec->search_hit == 0U) {
         return;
     }
     char visit[48];
