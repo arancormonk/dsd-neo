@@ -2789,6 +2789,71 @@ test_detection_order_newest_first(void) {
                && first.value("fragment").toString() == fragment(2));
 }
 
+/* Storage that comes back has each folder read again, slice by slice. Until the read is complete, the GUI reads the
+ * folder as it was indexed: a query between two slices (a delivery queued earlier that the GUI handles then) never finds
+ * a detection's or a History row's recordings gone, so an open detection list does not close on its own, and a listed
+ * recording can still be played. */
+void
+test_queries_between_rebuild_slices(void) {
+    const QString key = QStringLiteral("13:17");
+    const QString pendingId = QStringLiteral("0000000000000095-1");
+    const QString keyedId = QStringLiteral("0000000000000095-2");
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    // A pending recording first and its link last, many recordings of no detection between, and the detection's other
+    // recording after them: every slice but the last leaves something of the folder unread.
+    QByteArray journal;
+    make_file(folder + QStringLiteral("/p.wav"), 1000);
+    journal.append(with_search(publish_line(pendingId, QStringLiteral("p.wav"), 1754724000, -1, true), key));
+    for (int i = 0; i < 400; i++) {
+        const QString file = QStringLiteral("n%1.wav").arg(i);
+        make_file(folder + QLatin1Char('/') + file, 1000);
+        journal.append(publish_line(QStringLiteral("0000000000000095-%1").arg(100 + i), file, 1754724100 + i, -1));
+    }
+    make_file(folder + QStringLiteral("/k.wav"), 1000);
+    journal.append(with_search(publish_line(keyedId, QStringLiteral("k.wav"), 1754724010, 1), key));
+    journal.append(link_line(pendingId, 2));
+    append(journal_of(folder), journal);
+    s.pass();
+    const QStringList listed = ids_of(s.store.recordingsForDetection(key));
+    expect("between slices: the detection's two recordings", listed == QStringList{keyedId, pendingId});
+    const auto whole = [&s, &key, &listed, &pendingId, &keyedId]() {
+        return ids_of(s.store.recordingsForDetection(key)) == listed && s.store.recordingCountForDetection(key) == 2
+               && s.store.hasRecordingForFragments({fragment(1)}) && s.store.hasRecordingForFragments({fragment(2)})
+               && ids_of(s.store.recordingsForFragments({fragment(1), fragment(2)})) == QStringList{pendingId, keyedId};
+    };
+    expect("between slices: indexed whole", whole());
+
+    expect("between slices: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    expect("between slices: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+    int slices = 0;
+    int partial = 0;
+    int unplayable = 0;
+    s.store.setSliceHookForTest([&](const QString& path) {
+        if (path != folder) {
+            return;
+        }
+        slices++;
+        partial += whole() ? 0 : 1;
+        const int selection = s.store.selectRecordings({keyedId}).value(QStringLiteral("selection")).toInt();
+        if (selection > 0) {
+            s.store.releaseSelection(selection);
+        } else {
+            unplayable++;
+        }
+    });
+    s.pass();
+    s.store.setSliceHookForTest({});
+    expect("between slices: read again slice by slice", slices >= 3);
+    expect("between slices: every query read the folder whole", partial == 0);
+    expect("between slices: the listed recording could be played", unplayable == 0);
+    expect("between slices: read again, whole", whole());
+}
+
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
  * changes while every summary figure stays the same, a later publication with nothing new before the GUI took the
  * first, and a change of availability alone. */
@@ -2959,6 +3024,7 @@ main(int argc, char** argv) {
     test_detection_index();
     test_detection_root_away_keeps_membership();
     test_detection_order_newest_first();
+    test_queries_between_rebuild_slices();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
 

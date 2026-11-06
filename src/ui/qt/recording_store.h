@@ -290,6 +290,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after a folder's new journal lines are read, before their files are looked
      * at; before start(). Test hook. */
     void setTailHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief Call @p hook on the worker after each slice of a folder's journal is applied, with the lock released;
+     * before start() or between passes. Test hook. */
+    void setSliceHookForTest(std::function<void(const QString& folder)> hook);
 #endif
 
   Q_SIGNALS:
@@ -329,6 +332,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         /* The Signal search detection it was heard on; empty for none. */
         QString search;
         quint64 order = 0U;
+    };
+
+    /* A folder as the index held it before a read of it again (loadFolder() with replace), which drops its entries and
+     * rebuilds them a slice at a time: until the read is complete, the GUI's reads take the folder from here, never from
+     * the half-rebuilt index (an open detection list would close itself, a History row lose its recordings). */
+    struct CommittedFolder {
+        QHash<QString, Entry> entries;
+        QHash<QString, QStringList> byFragment;
+        QHash<QString, QStringList> bySearch;
+        QHash<QString, QString> byPath;
     };
 
     struct Folder {
@@ -440,7 +453,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void installRootTableLocked(int root, QList<Folder>& table, Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
     void loadPendingFolders(Pass* pass);
-    /* Read a folder whole: its folder.json, its files and its journal. @p replace drops what the index held for it. */
+    /* Read a folder whole: its folder.json, its files and its journal. @p replace drops what the index held for it,
+     * which the GUI's reads keep seeing until the read is complete. */
     void loadFolder(const QString& path, int root, bool replace, Pass* pass);
     /* The files of the folder at @p path: plain ones into @p files, and an earlier process's temp files as unfinished
      * recordings. */
@@ -461,6 +475,15 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void noteQueryChangeLocked(Pass* pass);
     void removeEntryLocked(const QString& id, Pass* pass);
     void removeFolderEntriesLocked(const QString& folder, Pass* pass);
+    /* Keep what the index holds of @p folder for the GUI's reads until commitFolderLocked(). */
+    void holdCommittedFolderLocked(const QString& folder);
+    /* The read of @p folder again is complete: the GUI reads it from the index again. */
+    void commitFolderLocked(const QString& folder, Pass* pass);
+    /* The GUI's reads, under the lock: the entry with @p id, the id indexed at @p path, and the entries indexed under
+     * @p key (a fragment, or with @p bySearch a detection), each a folder being read again giving what it held. */
+    const Entry* readerEntryLocked(const QString& id) const;
+    QString readerIdForPathLocked(const QString& path) const;
+    QList<const Entry*> readerEntriesLocked(const QString& key, bool bySearch) const;
     bool folderAvailableLocked(const QString& folder) const;
     QString folderUidLocked(const QString& folder) const;
     bool liveTemp(const QString& path) const;
@@ -541,6 +564,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * keeps an entry, and so its detection. */
     QHash<QString, QStringList> m_bySearch;
     QHash<QString, QString> m_byPath;
+    /* Folder path -> what it held, for each folder being read again (CommittedFolder). */
+    QHash<QString, CommittedFolder> m_committed;
     QSet<QString> m_active;
     /* Every journal held: until the host's state is known, and while a session no starter began here is active. */
     bool m_allActive = true;
@@ -606,6 +631,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::function<void(const QString&)> m_folderLoadHook;
     std::function<void(const QString&)> m_rootReadHook;
     std::function<void(const QString&)> m_tailHook;
+    std::function<void(const QString&)> m_sliceHook;
     int m_removedByLimit = 0;
     int m_deleteFailures = 0;
     QString m_lastDeleteError;

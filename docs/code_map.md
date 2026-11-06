@@ -11201,9 +11201,14 @@ Qt Quick frontend (`src/ui/qt`):
     when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage
     may refuse it). History reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History
     read in before each slice of 128 records of a whole-folder read, each recheck and each delete, and sums (usage,
-    limit, compaction) are taken on shared copies outside the lock. Changes reach the GUI as one queued delivery at a
-    time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a paused GUI thread
-    never collects more than one.
+    limit, compaction) are taken on shared copies outside the lock. A folder read again (storage back, a journal
+    replaced) drops its entries and rebuilds them slice by slice, so the GUI's reads (`recordingsForFragments()`,
+    `hasRecordingForFragments()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it
+    from a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
+    (`commitFolderLocked()`, which moves the revision): a delivery the GUI handles between two slices never finds a
+    History row's or a detection's recordings gone (an open detection list closed itself). Changes reach the GUI as one
+    queued delivery at a time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a
+    paused GUI thread never collects more than one.
   - Signal search detections (issue #809): `m_bySearch` maps a journal `search` key (`<session>:<hit>`) to the ids
     heard on that detection. It changes only in `insertEntryLocked()` and `removeEntryLocked()`, the one path every
     removal takes (a delete, the limit, a file gone, a folder read again, replaced or gone, a path a later publish
@@ -11218,8 +11223,9 @@ Qt Quick frontend (`src/ui/qt`):
     publication can only carry a newer generation, so coalesced deliveries never lose one, and `changed()`, which
     follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
     start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
-    `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`, `test_revision_coalesced_passes`,
-    `test_detection_from_c_writer`).
+    `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`,
+    `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook),
+    `test_revision_coalesced_passes`, `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
     (`setPlayingPath()`) or a selection (`selectForExport()`, `selectRecordings()`, until `releaseSelection()`) holds
