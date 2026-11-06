@@ -1489,8 +1489,11 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     g_scan_stream_reopened_opened = -1;
     rc |= expect_int("failed start", svc_rtl_restart(&opts, &state), -1);
     rc |= expect_int("a failed start notes no source", g_stream_source_notes, 0);
-    /* Issue #644: the scans are told a failed start opened nothing, so a tune its stop dropped lands nowhere. */
-    rc |= expect_int("the scans are told after a failed start", g_scan_stream_reopened_calls, 2);
+    /* Issue #644: a failed start tells the scans nothing: the recovery a failed change runs next decides, once its
+       own start ran (its stream opened, or nothing did). */
+    rc |= expect_int("a failed start leaves the scans' note", g_scan_stream_reopened_calls, 0);
+    rc |= expect_int("the recovery's failed start", svc_rtl_restart_recovery_locked(&opts, &state, 0, NULL, NULL), -1);
+    rc |= expect_int("tells the scans after its start", g_scan_stream_reopened_calls, 2);
     rc |= expect_int("that nothing opened", g_scan_stream_reopened_opened, 0);
     g_rtl_create_result = 0;
     g_rtl_start_result = 0;
@@ -1509,6 +1512,14 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     rc |= expect_int("and after the start", g_scan_stream_reopened_calls, 2);
     rc |= expect_int("once the stream started", g_scan_stream_reopened_after_starts, starts + 1);
     rc |= expect_int("that it opened", g_scan_stream_reopened_opened, 1);
+    /* A recovery whose start opens the input again tells them it opened, once its stream started. */
+    g_scan_stream_reopened_calls = 0;
+    g_scan_stream_reopened_opened = -1;
+    const int recovery_starts = g_rtl_start_calls;
+    rc |= expect_int("recovered stream", svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, NULL), 0);
+    rc |= expect_int("the scans are told after the recovery's start", g_scan_stream_reopened_calls, 2);
+    rc |= expect_int("once its stream started", g_scan_stream_reopened_after_starts, recovery_starts + 1);
+    rc |= expect_int("that it opened again", g_scan_stream_reopened_opened, 1);
     state.rtl_ctx = NULL;
     reset_rtl_restart_stubs();
     return rc;

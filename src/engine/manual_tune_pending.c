@@ -296,6 +296,7 @@ static void
 manual_tune_settle(void) {
     atomic_store(&g_record_pending, MANUAL_TUNE_NONE_NOTED);
     g_record_landed_at_reopen = 0;
+    DSD_MEMSET(&g_stop_note, 0, sizeof g_stop_note);
     manual_tune_keep_settled(&g_record);
 }
 

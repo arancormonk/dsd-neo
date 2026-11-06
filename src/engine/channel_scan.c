@@ -522,6 +522,8 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
         return 1;
     }
+    /* Whatever it came to, a reopen no longer decides it. */
+    scan->stop_request = 0U;
     if (result == DSD_TRUNK_TUNE_RESULT_OK && channel_scan_row_is_current(opts, state, scan)) {
         scan->request = 0;
         (void)channel_scan_commit_owned(opts, state, scan);

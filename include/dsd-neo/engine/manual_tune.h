@@ -129,7 +129,7 @@ void dsd_engine_manual_tune_stream_stopping(const dsd_opts* opts, const dsd_stat
  * with @p opts->rtlsdr_center_freq its target: the receiver is there. The record moves to the new stream, and its next
  * poll takes it as landed, so its owner runs the tune's ordinary landing (a row committed, a walk's row heard, an entry
  * held, an import's toast). Otherwise the note goes, and the poll drops the record as for any stop. Decoder thread,
- * right after the restart's start.
+ * right after the restart's start, or, when that start failed, after the start of the recovery that follows it.
  */
 void dsd_engine_manual_tune_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
 

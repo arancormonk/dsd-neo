@@ -1916,7 +1916,8 @@ static void
 svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) {
     if (state->rtl_ctx) {
         /* A tune still pending, which the stop drops, lands if a restart's new stream opens on its target (issue
-           #644): the scans note it here, and svc_rtl_restart_locked() tells them where the stream reopened. */
+           #644): the scans note it here, and svc_rtl_restart_locked(), or the recovery after a restart whose start
+           failed (svc_rtl_restart_recovery_locked()), tells them where the stream reopened. */
         dsd_engine_manual_tune_stream_stopping(opts, state);
         dsd_engine_channel_scan_stream_stopping(opts, state);
         rtl_stream_stop(state->rtl_ctx);
@@ -1988,6 +1989,15 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Tell the scans where the stream a restart stopped opened again, if at all (issue #644): a tune the stop dropped lands
+   when the new stream opened on its target, and the note goes either way. */
+static void
+svc_rtl_scans_stream_reopened(const dsd_opts* opts, const dsd_state* state, int rc) {
+    const int opened = rc == 0 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx != NULL;
+    dsd_engine_manual_tune_stream_reopened(opts, state, opened);
+    dsd_engine_channel_scan_stream_reopened(opts, state, opened);
+}
+
 int
 svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1995,9 +2005,12 @@ svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
     }
     svc_rtl_stop_locked(opts, state);
     const int rc = svc_rtl_start_locked(opts, state);
-    const int opened = rc == 0 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx != NULL;
-    dsd_engine_manual_tune_stream_reopened(opts, state, opened);
-    dsd_engine_channel_scan_stream_reopened(opts, state, opened);
+    /* A start that failed leaves the note to the recovery a failed change runs next, whose start may open on the tune's
+       target (it puts back the centre the input ran, which a pending tune's timeout cached as its target). With no
+       recovery, the note dies with the drop: the poll and the service take it, which ends what it names. */
+    if (rc == 0) {
+        svc_rtl_scans_stream_reopened(opts, state, rc);
+    }
     return rc;
 }
 
@@ -2149,6 +2162,9 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
         put_back_generation = dsd_input_failure_generation();
     }
     const int rc = svc_rtl_start_on_the_profile_that_ran_locked(opts, state);
+    /* The input that ran is back, on the centre it ran: a tune a stop dropped lands if that is its target (issue #644).
+       A stream still running stopped above, and noted its own. */
+    svc_rtl_scans_stream_reopened(opts, state, rc);
     if (rc != 0 && failure_before) {
         dsd_input_failure now;
         dsd_input_failure_get(&now);

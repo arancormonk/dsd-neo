@@ -103,7 +103,7 @@ void dsd_engine_channel_scan_stream_stopping(const dsd_opts* opts, const dsd_sta
  * frequency: the next service takes its request as landed whatever the stop published, so the row commits by its own
  * path (its settings, a resume's resume, an entry's hold), or, gone out of date, notes the move as any landing does.
  * Otherwise the note goes, and the stop's failure ends the attempt as before. Decoder thread, right after the restart's
- * start. */
+ * start, or, when that start failed, after the start of the recovery that follows it. */
 void dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
 
 /** A config turns a stopped -Y scanner on over a list of the user's own (issue #644), before scanner_mode is set: a walk

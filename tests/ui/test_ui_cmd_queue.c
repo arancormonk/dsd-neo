@@ -18034,14 +18034,17 @@ test_pending_resume_taken_back(int typed, int taker) {
 /* Issue #644: the same -Y resume, its row tune timed out, then an explicit stream restart whose new stream opens on the
    source the stopped one ran, on the row's frequency, which the timeout cached: the row landed at the reopen. The
    engine loop's next pass lands it by the resume's own path: the scan runs on the row, unpaused, the tuner the scan's,
-   and nothing says the resume failed or was interrupted. */
+   and nothing says the resume failed or was interrupted. With @p recovery the restart's start fails, and the recovery
+   that starts the input again (svc_rtl_restart_recovery_locked(), as a failed change's rollback runs it) opens on the
+   row's frequency: the row landed at that reopen the same way. */
 static int
-test_pending_resume_lands_at_a_restart(int typed) {
+test_pending_resume_lands_at_a_restart(int typed, int recovery) {
     static dsd_opts opts;
     static dsd_state state;
     static void* fake_ctx[2];
     char label[64];
-    DSD_SNPRINTF(label, sizeof label, "%s pending resume, restart on its row", typed ? "typed" : "untyped");
+    DSD_SNPRINTF(label, sizeof label, "%s pending resume, %s on its row", typed ? "typed" : "untyped",
+                 recovery ? "recovery" : "restart");
     int rc = 0;
     if (typed) {
         rc |= init_scan_row_on_analog(&opts, &state, (RtlSdrContext*)fake_ctx, DSD_ANALOG_DEMOD_FM, 0,
@@ -18071,7 +18074,20 @@ test_pending_resume_lands_at_a_restart(int typed) {
     if (typed) {
         g_fake_stop_fails_request = row_request;
     }
-    rc |= drain_pending_taker(&opts, &state, PENDING_TAKEN_BY_REOPEN, label);
+    if (recovery) {
+        reset_config_rtl_wrap();
+        state.ui_msg[0] = '\0';
+        rc |= expect_int(label, post_empty(DSD_APP_CMD_RTL_RESTART), DSD_APP_COMMAND_SUBMIT_QUEUED);
+        rc |= expect_int(label, dsd_app_drain_cmds(&opts, &state), 1);
+        rc |= expect_str(label, state.ui_msg, "Failed: RTL stream restart");
+        g_config_rtl_open_ok = 1;
+        p25_sm_tick_guard_enter();
+        rc |= expect_int(label, svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, NULL), 0);
+        p25_sm_tick_guard_leave();
+        rc |= expect_int(label, state.rtl_ctx == (RtlSdrContext*)g_config_rtl_ctx, 1);
+    } else {
+        rc |= drain_pending_taker(&opts, &state, PENDING_TAKEN_BY_REOPEN, label);
+    }
     if (typed) {
         (void)dsd_engine_channel_scan_pending(&opts, &state);
     } else {
@@ -18176,7 +18192,7 @@ test_pending_resume_taken_back_by_tap_search_and_reopen(void) {
         for (int taker = PENDING_TAKEN_BY_TAP; taker <= PENDING_TAKEN_BY_REOPEN; taker++) {
             rc |= test_pending_resume_taken_back(typed, taker);
         }
-        rc |= test_pending_resume_lands_at_a_restart(typed);
+        rc |= test_pending_resume_lands_at_a_restart(typed, 0) | test_pending_resume_lands_at_a_restart(typed, 1);
     }
     return rc;
 }

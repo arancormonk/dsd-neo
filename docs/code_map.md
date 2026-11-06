@@ -3524,7 +3524,9 @@ RadioReference apply's, an owner tune's, the step's and a walk's. Only a refusal
 every stop (`svc_rtl_stop_ex_locked()`) the scans note a tune that can still land (the manual record, live and
 joinable, `dsd_engine_manual_tune_stream_stopping()`; a typed row's request still pending or landed and not yet
 serviced, `dsd_engine_channel_scan_stream_stopping()`), with the stopped stream's source
-(`dsd_state::carrier_source_key`). Right after the restart's start, `dsd_engine_manual_tune_stream_reopened()` and
+(`dsd_state::carrier_source_key`). Right after the restart's start (`svc_rtl_scans_stream_reopened()`; a start that
+failed leaves the note to the recovery a failed change runs next, `svc_rtl_restart_recovery_locked()`, which puts back
+the centre the input ran and decides after its own start), `dsd_engine_manual_tune_stream_reopened()` and
 `dsd_engine_channel_scan_stream_reopened()` check `dsd_engine_stream_reopened_on()`: the stream opened, the input is the
 radio, not an I/Q replay, on the same noted source, and the centre is the tune's target (a timeout cached it there).
 Then the receiver is on the target: the manual record moves to the new stream and its next poll takes it as landed
@@ -3533,12 +3535,12 @@ Then the receiver is on the target: the manual record moves to the new stream an
 then lands by its owner's ordinary path: a walk's or step's row commits with its boundary and keys, a walk off any scan
 becomes the row heard, a typed row installs its settings, a resume resumes, an entry's intent holds the row. A landing
 gone out of date (list or session moved) notes the move as any late landing does. Otherwise (another centre, another
-source, an I/Q replay, a start that failed, or a stop no restart follows: a switch away from the radio, a recovery
-restart, a replay re-plan, the session's end) the note goes and the drop stands, as for any stop: the poll drops the
-record and the service ends the typed attempt with the stop's failure. Nothing puts a centre back. The session's start
-clears the note with the record. A trunk scan needs none: its coordinator names the target whose park is pending
-(`trunk_scan_switch_to()` publishes it before the retune), which the reopened stream opens on; the poll reads the
-completion before the session, so a stop's failure is never toasted. A dropped record is reported once
+source, an I/Q replay, a recovery that opened nothing, or a stop no restart follows: a switch away from the radio, a
+replay re-plan, the session's end) the note goes and the drop stands, as for any stop: the poll drops the record and
+the service ends the typed attempt with the stop's failure, each of which also lets the note go. Nothing puts a centre
+back. The session's start clears the note with the record. A trunk scan needs none: its coordinator names the target
+whose park is pending (`trunk_scan_switch_to()` publishes it before the retune), which the reopened stream opens on; the
+poll reads the completion before the session, so a stop's failure is never toasted. A dropped record is reported once
 (`DSD_MANUAL_TUNE_DROPPED`, with what the tune was for in `dsd_engine_manual_tune_last_settled()`), so its owner settles
 what it was waiting on (an untyped resume, below); a newer tune noted in its place owns the receiver, and the older drop
 goes unreported. The record is process-wide, as the controller and its callback are. Every session's start clears it,
