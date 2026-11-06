@@ -16,8 +16,8 @@ import "Util.js" as Util
 // change to its recordings moves `recordings.revision`: the list is read again
 // then, only while the sheet is open. The selection follows its recording by
 // id; when that recording leaves (deleted, or trimmed by the storage limit) the
-// next one listed is selected, else the one before it, and the sheet closes
-// when none is left. A recording whose storage is away stays listed and says so.
+// row that takes its place is selected, the next older one, or the one before
+// it (newer) when it was the oldest, and the sheet closes when none is left. A recording whose storage is away stays listed and says so.
 ModalSheet {
     id: sheet
     objectName: "detectionRecordingsSheet"
@@ -64,7 +64,9 @@ ModalSheet {
     }
     /** Who the call was, as the recording names it: a number reads as the
      * screen's "Target"/"Source" do, then the system (an analog recording's
-     * mode). A recording that names nothing has no call details. */
+     * mode). A recording that names none of them says so of itself: History
+     * may still hold its call (Call details), so the line speaks only of what
+     * was recorded with it. */
     function identityLine(recording) {
         var number = /^[0-9]+$/;
         var target = String(recording.target || "");
@@ -73,7 +75,7 @@ ModalSheet {
             String(recording.system || "")].filter(function (part) {
             return part.length > 0;
         });
-        return parts.length > 0 ? parts.join(" · ") : qsTr("No call details");
+        return parts.length > 0 ? parts.join(" · ") : qsTr("No target or source recorded");
     }
     function rowLine(recording) {
         return [timeLine(recording), identityLine(recording)].concat(recording.available === false ? [qsTr("Storage not available")] : []).join("\n");
@@ -86,8 +88,9 @@ ModalSheet {
         return -1;
     }
     /** The recording the selection passes to when the selected one left
-     * @p before for @p ids: the next one listed after it that is still there,
-     * else the nearest one before it, else (nothing selected yet) the newest. */
+     * @p before for @p ids, by place in the list (newest first): the one now in
+     * its place, the next older one still there, else the nearest newer one
+     * when it was the oldest, else (nothing selected yet) the newest. */
     function successor(before, ids) {
         var at = indexOfId(before, selectedId);
         for (var i = at + 1; at >= 0 && i < before.length; i++) {
@@ -188,11 +191,15 @@ ModalSheet {
 
     FontMetrics { id: identityMetrics; font.family: Theme.sans; font.pixelSize: Theme.fontSize(13) }
     /** @p text wrapped only between its values, as the search screen's
-     * details are (SignalSearchScreen.keepValues()): a value no wider than
-     * @p width keeps its spaces whole, so no line starts with a separator. */
+     * details are (SignalSearchScreen.keepValues()): a value that fits @p width
+     * with the separator it carries keeps its spaces whole, so no line starts
+     * with a separator. One that does not keeps its spaces and wraps at its
+     * words: kept whole, the line would break inside it, before its separator. */
     function keepValues(text, width) {
-        return text.split(" · ").map(function (value) {
-            return identityMetrics.advanceWidth(value) > width ? value : value.replace(/ /g, "\u00a0");
+        var values = text.split(" · ");
+        return values.map(function (value, i) {
+            var carried = i + 1 < values.length ? value + " ·" : value;
+            return identityMetrics.advanceWidth(carried) > width ? value : value.replace(/ /g, "\u00a0");
         }).join("\u00a0· ");
     }
 
@@ -266,8 +273,11 @@ ModalSheet {
                 // turn; until then it is not drawn and reads as nothing.
                 opacity: index >= 0 && index < rows.shown ? 1 : 0
                 radius: Theme.radiusButton
+                // Selected: the checked look of an OutlineButton, a heavier
+                // border and the play mark History rows carry, so it shows
+                // without its colour too.
                 color: selected || (tap.pressed && live) ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
-                border.width: 1
+                border.width: selected ? 2 : 1
                 border.color: selected ? Theme.cyan : Theme.controlBorder
                 activeFocusOnTab: (navigationAllowed && visible && live) || activeFocus
                 Accessible.role: Accessible.Button
@@ -288,14 +298,26 @@ ModalSheet {
                     id: tap
                     onTapped: row.activate()
                 }
+                PlayGlyph {
+                    id: selectedMark
+                    objectName: "detectionRecordingSelectedMark"
+                    visible: row.selected
+                    anchors.right: parent.right
+                    anchors.rightMargin: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                // The row's words are read in its own name (`lines`), so these
+                // stay out of the tree. Their width leaves the play mark's room
+                // on every row, so selecting one moves no text.
                 Column {
                     id: texts
                     x: 14
-                    width: parent.width - 28
+                    width: parent.width - 28 - selectedMark.implicitWidth - 10
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 3
                     Text {
                         objectName: "detectionRecordingTime"
+                        Accessible.ignored: true
                         width: parent.width
                         text: row.lines[0]
                         textFormat: Text.PlainText
@@ -307,6 +329,7 @@ ModalSheet {
                     // What the air delivered (aliases), so plain text.
                     Text {
                         objectName: "detectionRecordingIdentity"
+                        Accessible.ignored: true
                         width: parent.width
                         text: {
                             var font = identityMetrics.font;
@@ -320,6 +343,7 @@ ModalSheet {
                     }
                     Text {
                         objectName: "detectionRecordingAway"
+                        Accessible.ignored: true
                         width: parent.width
                         visible: row.lines.length > 2
                         text: row.lines.length > 2 ? row.lines[2] : ""

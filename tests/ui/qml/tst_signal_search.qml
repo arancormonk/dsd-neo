@@ -1125,19 +1125,21 @@ Item {
         // Each detection row offers what can be done with it, by state: saved
         // systems it matched (an avoided one disabled, saying why), avoiding it
         // this session only while one runs, and the permanent avoid both ways.
+        // With Record calls off (the app's default) and no recordings kept, a
+        // disabled Recordings comes last (issue #809).
         function test_history_menu_per_state_data() {
             var matched = [{systemUid: "uid-a"}, {systemUid: "uid-a"}, {systemUid: "uid-b"}, {systemUid: "gone"}];
             return [
                 {tag: "unmatched, searching", hit: {}, session: true, avoided: false,
-                    want: ["Play recordings (disabled)", "Explore here", "Save as system", "Avoid this session", "Avoid permanently"]},
+                    want: ["Explore here", "Save as system", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]},
                 {tag: "matched, searching", hit: {matches: matched}, session: true, avoided: false,
-                    want: ["Play recordings (disabled)", "Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Avoid this session", "Avoid permanently"]},
+                    want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]},
                 {tag: "no session", hit: {}, session: false, avoided: false,
-                    want: ["Play recordings (disabled)", "Explore here", "Save as system", "Avoid permanently"]},
+                    want: ["Explore here", "Save as system", "Avoid permanently", "Recordings (disabled)"]},
                 {tag: "permanently avoided", hit: {}, session: true, avoided: true,
-                    want: ["Play recordings (disabled)", "Explore here", "Save as system", "Avoid this session", "Remove permanent avoid"]},
+                    want: ["Explore here", "Save as system", "Avoid this session", "Remove permanent avoid", "Recordings (disabled)"]},
                 {tag: "permanently avoided, no session", hit: {matches: matched}, session: false, avoided: true,
-                    want: ["Play recordings (disabled)", "Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Remove permanent avoid"]},
+                    want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Remove permanent avoid", "Recordings (disabled)"]},
                 // Issue #809: with Record calls on, a detection that kept no recordings offers none.
                 {tag: "recording, none kept", hit: {}, session: true, avoided: false, record: true,
                     want: ["Explore here", "Save as system", "Avoid this session", "Avoid permanently"]}
@@ -1162,7 +1164,7 @@ Item {
             compare(menu.title, "462.5750 MHz");
             compare(menuTexts(), data.want);
             if (data.hit.matches) {
-                compare(findChild(menu, "actionMenuDescription3").text, "Avoided; remove the avoid in its site list to start it");
+                compare(findChild(menu, "actionMenuDescription2").text, "Avoided; remove the avoid in its site list to start it");
                 verify(!menuItem("searchActionStart1").enabled);
             }
             verify(!findChild(screen, "searchStartPause").enabled || !findChild(screen, "searchStartPause").parent.enabled, "the screen under the menu takes no taps");
@@ -1370,16 +1372,18 @@ Item {
             compare(detail.Accessible.name, "DMR · confirmed · ended");
             model.history = [];
         }
-        // The recordings come first among a row's actions when it kept any. With
-        // none while Record calls is off, the action stays, disabled, saying
-        // why; with Record calls on, a detection that kept none offers nothing.
-        // The Now panel's More only leaves for the detection.
+        // A row that kept recordings offers them first among its actions; the
+        // action opens them and plays nothing by itself. With none while Record
+        // calls is off, it is offered last, disabled, saying why; with Record
+        // calls on, a detection that kept none offers nothing. The Now panel's
+        // More only leaves for the detection.
         function test_play_recordings_action_per_state_data() {
-            return [{tag: "kept, recording off", count: 2, record: false, first: "Play recordings (2)", enabled: true, description: ""},
-                {tag: "kept, recording on", count: 2, record: true, first: "Play recordings (2)", enabled: true, description: ""},
-                {tag: "none, recording off", count: 0, record: false, first: "Play recordings", enabled: false,
-                    description: "Record calls is off. Turn it on in Settings to keep the audio of later detections."},
-                {tag: "none, recording on", count: 0, record: true, first: "Explore here", enabled: true, description: ""}];
+            var rest = ["Explore here", "Save as system", "Avoid this session", "Avoid permanently"];
+            var hint = "Record calls is off. Turn it on in Settings to keep the audio of later detections.";
+            return [{tag: "kept, recording off", count: 2, record: false, want: ["Recordings (2)"].concat(rest), at: 0, enabled: true, description: ""},
+                {tag: "kept, recording on", count: 2, record: true, want: ["Recordings (2)"].concat(rest), at: 0, enabled: true, description: ""},
+                {tag: "none, recording off", count: 0, record: false, want: rest.concat(["Recordings (disabled)"]), at: 4, enabled: false, description: hint},
+                {tag: "none, recording on", count: 0, record: true, want: rest, at: -1}];
         }
         function test_play_recordings_action_per_state(data) {
             testContext.setPrefs("recordCalls", data.record);
@@ -1391,20 +1395,26 @@ Item {
             wait(0);
             findChild(loader.item, "searchHistoryActions").activate();
             var menu = findChild(loader.item, "searchDetectionMenu");
-            compare(menu.actions[0].text, data.first);
-            compare(menu.actions[0].enabled !== false, data.enabled);
-            compare(menu.actions.filter(function (a) { return a.key === "recordings"; }).length, data.first === "Explore here" ? 0 : 1);
-            if (data.first !== "Explore here") {
+            compare(menuTexts(), data.want);
+            compare(menu.actions.findIndex(function (a) { return a.key === "recordings"; }), data.at);
+            if (data.at >= 0) {
                 var action = menuItem("searchActionRecordings");
                 compare(action.enabled, data.enabled);
-                compare(findChild(menu, "actionMenuDescription0").text, data.description);
-                compare(action.accessibleName, data.description.length ? "Play recordings. " + data.description : data.first);
-                if (!data.enabled) {
+                compare(findChild(menu, "actionMenuDescription" + data.at).text, data.description);
+                compare(action.accessibleName, data.description.length ? "Recordings. " + data.description : "Recordings (2)");
+                if (data.enabled) {
+                    action.activate();
+                    verify(recordingsSheet().visible, "it opens the recordings");
+                    compare(testContext.hostCalls().length, 0, "and plays nothing by itself");
+                    recordingsSheet().visible = false;
+                } else {
                     action.activate();
                     verify(menu.visible && !recordingsSheet().visible, "a disabled action does nothing");
+                    menu.cancel();
                 }
+            } else {
+                menu.cancel();
             }
-            menu.cancel();
             // The Now panel's detection: only leaving for it.
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {recordingKey: "17:40"})});
             findChild(loader.item, "searchMore").clicked();
@@ -1425,8 +1435,11 @@ Item {
             var time = function (start) { return Qt.formatDateTime(new Date(start * 1000), "hh:mm:ss"); };
             compare(rows[0].line, time(1700000300) + " · 0:42\nTarget 1234 · Source 5678 · DMR · CC 1");
             compare(rows[1].line, time(1700000200) + " · 0:03\nFire Dispatch · NFM");
-            compare(rows[2].line, time(1700000100) + " · 0:01\nNo call details");
+            compare(rows[2].line, time(1700000100) + " · 0:01\nNo target or source recorded");
             verify(rows[0].selected && !rows[1].selected && !rows[2].selected, "the newest is selected");
+            // Shown without colour too: a heavier border and the play mark.
+            var marked = function (row) { return findChild(row, "detectionRecordingSelectedMark").visible && row.border.width === 2; };
+            verify(marked(rows[0]) && !findChild(rows[1], "detectionRecordingSelectedMark").visible && rows[1].border.width === 1);
             compare(rows[0].Accessible.name, time(1700000300) + " · 0:42, Target 1234 · Source 5678 · DMR · CC 1, selected");
             compare(rows[1].Accessible.name, time(1700000200) + " · 0:03, Fire Dispatch · NFM");
             for (var row of rows)
@@ -1443,6 +1456,7 @@ Item {
             // Another row: selected, and played in its place.
             sheetTap(rows[1]);
             verify(rows[1].selected && !rows[0].selected);
+            verify(marked(rows[1]) && !marked(rows[0]), "the mark follows the selection");
             compare(rows[1].Accessible.name, time(1700000200) + " · 0:03, Fire Dispatch · NFM, selected");
             compare(player.part.id, "b");
             compare(lastHostCall().name, "playRecording");
@@ -1461,11 +1475,12 @@ Item {
             model.history = [];
         }
         // The selected recording deleted (here or from the Recordings screen):
-        // the next one listed is selected, and focus moves to it if it was on the
-        // list; the oldest gone hands it to the one before it. Deleting says only
+        // the row that takes its place is selected (the next older one), and
+        // focus moves to it if it was on the list; the oldest gone hands it to
+        // the one before it (newer). Deleting says only
         // the audio goes, for a recording with no History row and one whose row
         // History trimmed (B3).
-        function test_sheet_selected_recording_deleted() {
+        function test_sheet_selected_recording_deleted_selects_next_older() {
             var uid = callHistory.pushWithRecordings([]);
             verify(callHistory.setFragmentRow("F:7:2", uid));
             var sheet = openRecordings([rec("c", 1700000300, 4000), rec("b", 1700000200, 3000, {fragment: "F:7:2"}), rec("a", 1700000100, 2000)]);
@@ -1487,7 +1502,7 @@ Item {
             compare(calls[calls.length - 1].id, "b");
             // The store drops it.
             recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("a", 1700000100, 2000)]);
-            compare(sheet.selectedId, "a", "the next one listed");
+            compare(sheet.selectedId, "a", "the next older one, in its place");
             verify(recordingRow("a").selected);
             compare(player.part.id, "a");
             tryVerify(function () { return recordingRow("a").activeFocus; }, 1000, "focus moves to it");
@@ -1556,7 +1571,7 @@ Item {
             wait(0);
             compare(findChild(loader.item, "searchHistoryDetail").fullText, "RF only · ended\n50 recordings");
             findChild(loader.item, "searchHistoryActions").activate();
-            compare(menuTexts()[0], "Play recordings (50)");
+            compare(menuTexts()[0], "Recordings (50)");
             menuItem("searchActionRecordings").activate();
             var sheet = recordingsSheet();
             waitForRendering(sheet);
@@ -1581,12 +1596,18 @@ Item {
             var sheet = openRecordings([rec("b", 1700000200, 3000, {fragment: "F:3:1"}), rec("a", 1700000100, 2000)]);
             var details = findChild(sheet, "detectionCallDetails");
             var revision = recordings.revision;
+            var identity = findChild(recordingRow("b"), "detectionRecordingIdentity");
             verify(!details.visible, "no row holds it yet");
+            // The recording names no target or source: its line says only that,
+            // which stays true with or without the History row Call details opens.
+            compare(identity.text, "No\u00a0target\u00a0or\u00a0source\u00a0recorded");
             var uid = callHistory.pushWithRecordings([]);
             verify(!details.visible);
             verify(callHistory.setFragmentRow("F:3:1", uid));
             verify(details.visible, "adopted late");
             compare(sheet.detailsUid, uid);
+            compare(identity.text, "No\u00a0target\u00a0or\u00a0source\u00a0recorded");
+            verify(identity.text.indexOf("details") < 0, "never contradicts Call details");
             var other = callHistory.pushWithRecordings([]);
             verify(callHistory.setFragmentRow("F:3:1", other));
             compare(sheet.detailsUid, other, "merged into another row");
@@ -1639,8 +1660,53 @@ Item {
             sheet.visible = false;
             model.history = [];
         }
+        // The first characters of each line @p words wrap to at @p width in
+        // @p text's font, read from a TextEdit laid out the same way (a Text gives
+        // no line's characters), and how many lines that is.
+        function renderedLineStarts(text, words, width) {
+            var mirror = Qt.createQmlObject("import QtQuick; TextEdit { readOnly: true; visible: false; textFormat: TextEdit.PlainText }", root);
+            mirror.width = width;
+            mirror.font = text.font;
+            mirror.wrapMode = text.wrapMode;
+            mirror.text = words;
+            var starts = [];
+            var lastY = -1;
+            for (var i = 0; i < mirror.length; ++i) {
+                var y = mirror.positionToRectangle(i).y;
+                if (y > lastY + 0.5) {
+                    starts.push(mirror.getText(i, Math.min(mirror.length, i + 2)));
+                    lastY = y;
+                }
+            }
+            var lines = mirror.lineCount;
+            mirror.destroy();
+            return {starts: starts, lines: lines};
+        }
+        // A Recent detections row's details wrap only between values, at every
+        // width from the narrowest row (360 dp, the largest text) up: a value that
+        // fits alone but not with its separator wraps at its words, as one kept
+        // whole would break before its separator and start a line with it.
+        function test_history_detail_never_starts_a_line_with_a_separator() {
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            var words = "TIII Small · Net 12 · Site 3 · SYS 1183 · ALG 21 · KID 0001 · Northern District Fire Dispatch · Engine 42 Officer";
+            model.history = [historyHit({confirmed: true, protocol: "DMR", site: words})];
+            wait(0);
+            var detail = findChild(loader.item, "searchHistoryDetail");
+            var metrics = Qt.createQmlObject("import QtQuick; FontMetrics {}", root);
+            metrics.font = detail.font;
+            for (var w = Math.floor(detail.width); w < detail.width + 160; w += 1) {
+                var drawn = renderedLineStarts(detail, loader.item.keepValues(words, w, metrics), w).starts;
+                for (var start of drawn)
+                    verify(start.trim().charAt(0) !== "·", "at " + w + " px a drawn line starts with a separator: " + JSON.stringify(drawn));
+            }
+            metrics.destroy();
+            model.history = [];
+        }
         // Largest text on a 360 dp phone: the rows wrap inside the sheet, every
-        // control keeps a 48 dp target, and the sheet scrolls to its end.
+        // control keeps a 48 dp target, and the sheet scrolls to its end. The
+        // row's menu with Record calls off and nothing kept shows the disabled
+        // Recordings and its hint last.
         function test_sheet_large_text_360_data() {
             return [{tag: "dark", appearance: 2}, {tag: "light", appearance: 1}];
         }
@@ -1662,6 +1728,16 @@ Item {
             var detail = findChild(loader.item, "searchHistoryDetail");
             verify(detail.mapToItem(row, 0, 0).x + detail.width <= row.width + 0.5);
             grabImage(root).save("/tmp/dsd-signal-search-recordings-row-360-1.6x-" + data.tag + ".png");
+            // The row that kept none, with Record calls off: the hint comes last.
+            findChildren(loader.item, "searchHistoryActions")[1].activate();
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            compare(menuTexts()[menu.actions.length - 1], "Recordings (disabled)");
+            var hint = findChild(menu, "actionMenuDescription" + (menu.actions.length - 1));
+            verify(hint.visible && hint.lineCount >= 2, "the hint wraps");
+            verify(hint.mapToItem(menu, 0, 0).x + hint.width <= menu.width, "inside the menu");
+            wait(50);
+            grabImage(root).save("/tmp/dsd-signal-search-recordings-menu-off-360-1.6x-" + data.tag + ".png");
+            menu.cancel();
             findChild(loader.item, "searchHistoryActions").activate();
             wait(50);
             grabImage(root).save("/tmp/dsd-signal-search-recordings-menu-360-1.6x-" + data.tag + ".png");
@@ -1678,14 +1754,28 @@ Item {
             for (var r of recordingRows()) {
                 verify(inside(r), r.key + " stays inside the sheet");
                 verify(r.height >= Ui.Theme.minimumTouchSize);
-                var identity = findChild(recordingRow("c"), "detectionRecordingIdentity");
-            verify(!/ ·/.test(identity.text), "no wrapped line starts with a separator");
-            compare(identity.text.replace(/\u00a0/g, " "), "Northern District Fire Dispatch · Engine 42 Officer · DMR · TIII Small · Net 12 · Site 3");
-            for (var name of ["detectionRecordingTime", "detectionRecordingIdentity"]) {
+                for (var name of ["detectionRecordingTime", "detectionRecordingIdentity", "detectionRecordingAway"]) {
                     var text = findChild(r, name);
+                    if (!text.visible)
+                        continue;
                     verify(text.mapToItem(r, 0, 0).x + text.width <= r.width + 0.5, r.key + " " + name + " inside its row");
                     verify(text.mapToItem(r, 0, 0).y + text.height <= r.height + 0.5, r.key + " " + name + " inside its row");
                 }
+            }
+            verify(findChild(recordingRow("a"), "detectionRecordingAway").visible, "the away line is among those checked");
+            // Values wrap whole: no drawn line of the longest identity starts with a
+            // separator, here (the narrowest a row gets: 360 dp at the largest
+            // text) and at every width up to 160 px wider, where some break falls
+            // next to each separator.
+            var identity = findChild(recordingRow("c"), "detectionRecordingIdentity");
+            var words = "Northern District Fire Dispatch · Engine 42 Officer · DMR · TIII Small · Net 12 · Site 3";
+            compare(identity.text.replace(/\u00a0/g, " "), words);
+            verify(identity.lineCount > 1, "it wraps at this size");
+            compare(renderedLineStarts(identity, identity.text, identity.width).lines, identity.lineCount, "the mirror wraps as the row does");
+            for (var w = identity.width; w < identity.width + 160; w += 1) {
+                var drawn = renderedLineStarts(identity, recordingsSheet().keepValues(words, w), w).starts;
+                for (var start of drawn)
+                    verify(start.trim().charAt(0) !== "·", "at " + w + " px a drawn line starts with a separator: " + JSON.stringify(drawn));
             }
             for (var control of ["recordingPlayButton", "recordingSave", "recordingDelete", "detectionCallDetails", "detectionRecordingsClose"]) {
                 var item = findChild(sheet, control);
@@ -1701,6 +1791,7 @@ Item {
             findChild(loader.item, "searchHistoryActions").activate();
             menuItem("searchActionRecordings").activate();
             waitForRendering(sheet);
+            recordingRow("b").activate();
             wait(50);
             grabImage(root).save("/tmp/dsd-signal-search-recordings-sheet-360-1x-" + data.tag + ".png");
             sheet.visible = false;

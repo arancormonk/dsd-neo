@@ -125,23 +125,25 @@ While a search runs, the screen is laid out for what is on the air now:
   A matched system whose site is avoided is listed but cannot start: remove the
   avoid in its site list first.
 - A row whose detection kept call recordings says how many under its details
-  (**3 recordings**), and its actions start with **Play recordings (3)**. That
-  opens the detection's recordings: the player under the frequency plays the
-  one selected (the newest when it opens), and the list below it shows each
-  recording newest first with its start time and length, then the call it names
-  (**Target 1234 · Source 5678**, **NFM**), or **No call details** when it names
-  none, such as audio no call owned. Tap a recording to select and play it.
-  **Call details** opens the selected recording's History details while History
-  still holds its call; their Hold is not offered, as a search takes no receiver
-  command, and Back returns to the search. The list follows the recordings: a
-  recording deleted or removed by the storage limit leaves it and the next one
-  is selected, the sheet closes when none is left, and a recording on storage
-  that is away stays listed and says so. Delete removes only the audio; History
-  and the detection are unchanged. With **Record calls** off, a row that kept no
-  recordings shows **Play recordings** disabled, saying that turning it on in
-  Settings keeps the audio of later detections. With it on, a detection that
-  kept none (nothing was decoded on it, as for an RF-only detection) offers no
-  recordings action.
+  (**3 recordings**), and its actions start with **Recordings (3)**. That opens
+  the detection's recordings without playing any: the player under the
+  frequency is on the one selected (the newest when it opens), and the list
+  below it shows each recording newest first with its start time and length,
+  then the call it names (**Target 1234 · Source 5678**, **NFM**), or **No
+  target or source recorded** when it names none, such as audio no call owned.
+  The selected one has a heavier border and a play mark. Tap a recording to
+  select and play it. **Call details** opens the selected recording's History
+  details while History still holds its call; their Hold is not offered, as a
+  search takes no receiver command, and Back returns to the search. The list
+  follows the recordings: when the selected one is deleted or removed by the
+  storage limit, the one that takes its place (the next older) is selected, or
+  the one before it when it was the oldest; the sheet closes when none is left,
+  and a recording on storage that is away stays listed and says so. Delete
+  removes only the audio; History and the detection are unchanged. With
+  **Record calls** off, a row that kept no recordings ends its actions with
+  **Recordings** disabled, saying that turning it on in Settings keeps the
+  audio of later detections. With it on, a detection that kept none (nothing
+  was decoded on it, as for an RF-only detection) offers no recordings action.
 - **Search ranges · 3 enabled** is collapsed; tap it to show the ranges. While
   paused, or before a search starts, the ranges are always shown with their
   edit controls. A range list opened by hand stays open until you leave the

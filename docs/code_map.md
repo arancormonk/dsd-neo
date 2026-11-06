@@ -10132,27 +10132,37 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   History surface (`qml_test_context.h`: `RecordingsFake::setDetectionRecordings()` seeds a
   detection and moves `revision` with `revisionChanged()`; `CallLogStore` has
   `uidForFragment()`, `setFragmentRow()` and `trimRow()`), and `tst_context_fixture.qml` checks
-  the screen's and `DetectionRecordingsSheet.qml`'s reads. A history row's detail adds "N recordings"
-  (`recordingCount()`, which reads `recordings.revision` so the row follows the store) to its text
-  and accessible name, and its actions start with "Play recordings (N)" (`recordingActions()`, rows
-  only, not the Now panel's More); with none kept and `prefs.recordCalls` off the action is there,
-  disabled, with the Settings hint as its description, and with Record calls on it is absent (an
-  RF-only detection). The row's detail `Text` is a gated `StaticText` (named only while
-  `Navigation.allows()` it: B2). The action opens `DetectionRecordingsSheet.qml` (a `ModalSheet`):
-  title "%1 MHz", one `CallRecordingPlayer` bound to `[selected]` (reset on open,
+  the screen's and `DetectionRecordingsSheet.qml`'s reads. A history row's detail adds "N
+  recordings" (`recordingCount()`, which reads `recordings.revision` so the row follows the
+  store) to its text and accessible name, and its actions start with "Recordings (N)"
+  (`recordingsAction()`, rows only, not the Now panel's More; it opens the recordings and plays
+  nothing, so TalkBack announcing the sheet is not talked over); with none kept and
+  `prefs.recordCalls` off a disabled "Recordings" ends the actions with the Settings hint as its
+  description (`recordingsHint()`), and with Record calls on there is none (an RF-only
+  detection). The row's detail `Text` is a gated `StaticText` (named only while
+  `Navigation.allows()` it: B2). The action opens `DetectionRecordingsSheet.qml` (a
+  `ModalSheet`): title "%1 MHz", one `CallRecordingPlayer` bound to `[selected]` (reset on open,
   `stopOwnPlayback()` on close), Call details, then the list under a `MicroLabel` count, newest
   first, a `StableRows` row per recording keyed by id (line 1 time · length, line 2 target ·
-  source · system or "No call details", "Storage not available" when away; "selected" in the
-  name). The list is bound only while visible and re-read on each `revision`; the selection is
-  kept by id, passes to the next one listed (else the one before it) when its recording leaves,
-  taking the focus if the list had it (an owned `Timer`), and an emptied list closes the sheet
-  (an owned `Timer`: a close inside the list's change is a binding loop). A row tap selects and
-  plays, as a part's chip does. Call details shows while `callHistory.uidForFragment(fragment)`
-  is above 0, resolved again on History `dataChanged`, `rowPositionsChanged`, `modelReset` and
-  `rowsRemoved` while open and on the click, which closes the sheet (its playback stops) and has
-  the screen open its own `HistoryDetailSheet` (`searchCallDetails`, `showHold: false`). Both
-  sheets join `menuOpen` (`tst_signal_search.qml`, `tst_a11y_text_reach.qml`). `keepValues()`
-  makes every space but the one after a `·` non-breaking, so wrapped details break only between values. Its
+  source · system or "No target or source recorded", which stays true whether or not History
+  holds the call, "Storage not available" when away; its `Text`s are read in the row's name;
+  selected: a 2 px border and `PlayGlyph`, and "selected" in the name). The list is bound only
+  while visible and re-read on each `revision`; the selection is kept by id and, when its
+  recording leaves, passes by place: to the row that takes its place (the next older), else the
+  one before it, taking the focus if the list had it (an owned `Timer`); an emptied list closes
+  the sheet (an owned `Timer`: a close inside the list's change is a binding loop). A row tap
+  selects and plays, as a part's chip does. Call details shows while
+  `callHistory.uidForFragment(fragment)` is above 0, resolved again on History `dataChanged`,
+  `rowPositionsChanged`, `modelReset` and `rowsRemoved` while open and on the click, which closes
+  the sheet (its playback stops) and has the screen open its own `HistoryDetailSheet`
+  (`searchCallDetails`, `showHold: false`). Both sheets join `menuOpen` (`tst_signal_search.qml`,
+  `tst_a11y_text_reach.qml`). `keepValues()` (the screen's, and the sheet's for its identity
+  line) makes every space but the one after a `·` non-breaking, so wrapped details break only
+  between values; a value that does not fit the width with the separator it carries keeps its
+  spaces and wraps at its words, since kept whole the line would break inside it, before its
+  separator (issue #809; `test_history_detail_never_starts_a_line_with_a_separator`,
+  `test_sheet_large_text_360` read each drawn line through a `TextEdit` mirror across widths).
+  Its
   liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
   Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
@@ -11111,8 +11121,9 @@ Qt Quick frontend (`src/ui/qt`):
     their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal search
     detection, so "the call stays in History" would not hold (issue #809 B3). `DetectionRecordingsSheet.qml` (Signal
     search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows Listening
-    (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it
-    for a row added listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS`
+    (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from
+    what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows `saveFailing`. Tests:
+    `UI_QT_QML_CALL_LISTS`
     (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`,
     `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
