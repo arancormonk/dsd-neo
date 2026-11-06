@@ -11345,11 +11345,8 @@ Qt Quick frontend (`src/ui/qt`):
     `ScanListStarter::sessionCsvPath()`, the one file in the list's folder, else the imported file it ran from; kept
     with the accepted start, `AppPrefs::acceptedStartTargets` (device-local JSON), which a recreated Activity that
     adopts the session reads back instead of the files; a list saved or deleted since, which removes its file, changes
-    nothing, the saved index being for Explore), less those on a list shown off
-    (`ScanListToggleModel::listSwitchedOff()`, the #697 publication) or avoided (`ScanAvoidListModel::avoidsTarget()`,
-    the #672 publication). A documented limit: the frontend does not check a target's effective width, which the
-    engine's match does (D5), so a target whose width the input cannot take is still offered, and its entry is then a
-    plain tune that pauses the scan with the reason (`; <name>'s width does not fit`). The Monitor shows the row names
+    nothing, the saved index being for Explore). A target on a list switched off, avoided, or whose width the input
+    cannot take is left out by the published reasons above, not by a check of the frontend's own. The Monitor shows the row names
     and one `OutlineButton` in its live strip (`monitorListen`, a part of `stripHeight`), the Spectrum one more button
     in its tuning controls (`spectrumListenWithSettings`); both read `Util.listenText()`/`listenAccessibleName()`:
     "Start “Name”" for a saved system alone, else "Listen with its settings". `requestListen()` runs the one action, or
