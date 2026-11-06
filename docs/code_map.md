@@ -11134,28 +11134,27 @@ Qt Quick frontend (`src/ui/qt`):
     in it, changed or not, or a session the host reports, wakes one at once), and tail each journal from its byte
     cursor, complete lines only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name
     inside the folder; a `search` only as `<session>:<hit>`, each 1 to 20 digits with no leading zero, non-zero and at
-    most `UINT64_MAX`, else the recording is kept with none). A journal shorter than the cursor was replaced and is
-    read again; a folder whose folder.json is gone leaves the index. The index keeps {id -> path, start, duration, fragment, detection, folder, flags, size}: a `publish` of a
-    file that is not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment
-    (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. One
-    path has one owner, the newest publish in journal order: a journal not yet compacted can still name a recording
-    deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated), and the later publish
-    evicts that id, its fragment and its size (`insertEntryLocked()`). Decided limit: a delete of the old id that runs
-    after the later file is written but before its publish is read can remove the later file; the reuse already needs
-    the same second, talkgroup and source and a repeat of a 16-bit random suffix, so the store does not compare file
-    identity before an unlink. Temp
-    files (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are
-    unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
-    journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
-    `publish` per live recording, its `search` written back only when it had one, the cursor then at its end) once it
-    holds more than twice as many lines as live recordings, only while no session uses the folder (nor one that never
-    ran, above), and only when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is
-    best-effort (FUSE-backed storage may refuse it). History
-    reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History read in before each slice
-    of 128 records of a whole-folder read, each recheck and each delete, and sums (usage, limit, compaction) are taken
-    on shared copies outside the lock. Changes reach the GUI as one queued delivery at a time (`changed()`,
-    `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a paused GUI thread never collects more
-    than one.
+    most `UINT64_MAX`, else the recording is kept with none). A journal shorter than the cursor was replaced and is read
+    again; a folder whose folder.json is gone leaves the index. The index keeps {id -> path, start, duration, fragment,
+    detection, folder, flags, size}: a `publish` of a file that is not a regular file on disk is not indexed (deleted),
+    a `link` gives a pending recording its fragment (`call_history_fragment_key()` of the record's instance, slot and
+    row), an `unlink` leaves it unattributed. One path has one owner, the newest publish in journal order: a journal not
+    yet compacted can still name a recording deleted since whose final name a later one reused (an I/Q replay's 16-bit
+    suffix repeated), and the later publish evicts that id, its fragment and its size (`insertEntryLocked()`). Decided
+    limit: a delete of the old id that runs after the later file is written but before its publish is read can remove
+    the later file; the reuse already needs the same second, talkgroup and source and a repeat of a 16-bit random
+    suffix, so the store does not compare file identity before an unlink. Temp files
+    (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are unfinished
+    recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the journal never
+    named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one `publish` per live
+    recording, its `search` written back only when it had one, the cursor then at its end) once it holds more than twice
+    as many lines as live recordings, only while no session uses the folder (nor one that never ran, above), and only
+    when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage
+    may refuse it). History reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History
+    read in before each slice of 128 records of a whole-folder read, each recheck and each delete, and sums (usage,
+    limit, compaction) are taken on shared copies outside the lock. Changes reach the GUI as one queued delivery at a
+    time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a paused GUI thread
+    never collects more than one.
   - Signal search detections (issue #809): `m_bySearch` maps a journal `search` key (`<session>:<hit>`) to the ids
     heard on that detection. It changes only in `insertEntryLocked()` and `removeEntryLocked()`, the one path every
     removal takes (a delete, the limit, a file gone, a folder read again, replaced or gone, a path a later publish

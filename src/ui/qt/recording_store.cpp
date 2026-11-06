@@ -654,7 +654,9 @@ RecordingStore::installRootTableLocked(int root, QList<Folder>& table, Pass* pas
     }
     m_rootAvailable[root] = true;
     pass->rebuilt = true;
-    noteQueryChangeLocked(pass); // what it kept indexed reads as there again
+    // What it kept indexed reads as there again. Today the read of its folders later in this pass replaces every entry
+    // it kept, which moves the generation too; the rule is kept here so it does not rest on that read.
+    noteQueryChangeLocked(pass);
 }
 
 void

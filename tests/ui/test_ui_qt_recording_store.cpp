@@ -2568,9 +2568,11 @@ expect_search_key_parse(void) {
     expect("search key: a leading zero, a sign, spaces",
            parsed_search(QStringLiteral("01:2")).isEmpty() && parsed_search(QStringLiteral("+1:2")).isEmpty()
                && parsed_search(QStringLiteral(" 1:2")).isEmpty() && parsed_search(QStringLiteral("1:2 ")).isEmpty());
-    expect("search key: one part, three parts, empty",
+    expect("search key: one part, three parts, an empty part, empty",
            parsed_search(QStringLiteral("12")).isEmpty() && parsed_search(QStringLiteral("1:2:3")).isEmpty()
-               && parsed_search(QStringLiteral(":2")).isEmpty() && parsed_search(QStringLiteral("")).isEmpty());
+               && parsed_search(QStringLiteral(":2")).isEmpty() && parsed_search(QStringLiteral(":5")).isEmpty()
+               && parsed_search(QStringLiteral("1:")).isEmpty() && parsed_search(QStringLiteral(":")).isEmpty()
+               && parsed_search(QStringLiteral("")).isEmpty());
     expect("search key: 21 digits", parsed_search(QStringLiteral("100000000000000000000:1")).isEmpty()
                                         && parsed_search(QStringLiteral("1:100000000000000000000")).isEmpty());
     expect("search key: past UINT64_MAX", parsed_search(QStringLiteral("18446744073709551616:1")).isEmpty()
