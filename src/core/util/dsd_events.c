@@ -2125,10 +2125,11 @@ watchdog_event_ctx_wall_anchored(const watchdog_event_current_ctx* ctx) {
     return ctx->protocol == DSD_SYNC_ANALOG && ctx->start_wall > 0.0;
 }
 
-// The row's start and end stamps, outside --playfiles (which keeps the stamp the file reader gave the row).
+// The row's start and end stamps, outside --playfiles (which keeps the stamp the file reader gave the row), from the
+// render's one decode-clock reading @p now_wall.
 static void
-watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_current_ctx* ctx, time_t now) {
-    item->event_time = now;
+watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_current_ctx* ctx, double now_wall) {
+    item->event_time = (time_t)floor(now_wall);
     if (watchdog_event_ctx_wall_anchored(ctx)) {
         // Both from the fractional anchor, the end from the full sum before it is truncated: a call that began at
         // x.9 and ran 0.6 s ends in the next second, which start + (time_t)elapsed would put a second early.
@@ -2139,14 +2140,14 @@ watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_curr
         return;
     }
     if (ctx->call_elapsed_valid) {
-        // Stamped once, on the epoch's first render: re-deriving it every pass
-        // from two independently truncated clocks makes the stamp jitter by a
-        // second between renders, and the committed value is whatever the last
-        // render happened to say. The retire/commit paths clear the staged row
-        // between epochs and the caller drops another epoch's, so a nonzero
-        // stamp here is always this epoch's own.
+        // The second the call began: the render's reading less the elapsed time, floored once. Flooring the two apart
+        // (floor(now) - floor(elapsed)) files a call that began at 99.95 s and was first rendered at 100.02 s in
+        // second 100. Stamped once, on the epoch's first render: the elapsed time runs to the call's last update, not
+        // to the render, so a later render would file it later, and the committed value is whatever the last render
+        // happened to say. The retire/commit paths clear the staged row between epochs and the caller drops another
+        // epoch's, so a nonzero stamp here is always this epoch's own.
         if (item->event_start_time == 0) {
-            item->event_start_time = now - (time_t)ctx->call_elapsed_s;
+            item->event_start_time = (time_t)floor(now_wall - ctx->call_elapsed_s);
         }
         // Anchored to the fixed start plus the canonical epoch's own elapsed, so
         // event_time - event_start_time is exactly the epoch's elapsed on every
@@ -2158,7 +2159,7 @@ watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_curr
 
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
-                                   const watchdog_event_current_ctx* ctx, time_t now, int staged_is_own) {
+                                   const watchdog_event_current_ctx* ctx, double now_wall, int staged_is_own) {
     item->write = 0;
     item->crc_invalid = ctx->crc_invalid;
     dsd_event_history_item_set_metadata(
@@ -2203,7 +2204,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
         item->event_start_time = 0;
     }
     if (opts->playfiles == 0) {
-        watchdog_event_current_stamp_item(item, ctx, now);
+        watchdog_event_current_stamp_item(item, ctx, now_wall);
     }
 
     DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);
@@ -3199,8 +3200,10 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
-    const time_t now = dsd_decode_time();
-    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
+    // One reading for the row's stamps and its text, so the start, the end and the prefix agree on the second.
+    const double now_wall = dsd_decode_now_realtime_s();
+    const time_t now = (time_t)floor(now_wall);
+    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now_wall, staged_is_own);
     char timestr[9];
     char datestr[11];
     const time_t text_time = watchdog_event_text_time(opts, call, &candidate, now);

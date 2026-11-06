@@ -165,6 +165,9 @@ typedef struct {
     uint8_t stream_export;
     uint32_t policy_target_id;
     int export_call;
+    // The start the journal's publish line takes for this recording: what wav_close_and_publish() (dsd_file.c) passes
+    // it, from the same row and open time the rdio-scanner sidecar is written from.
+    time_t journal_start;
     char sidecar[1024];
 } close_wav_capture;
 
@@ -264,6 +267,7 @@ close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char
         capture->stream_export = event_struct->Event_History_Items[0].stream_blocked == 0U;
         capture->policy_target_id = event_struct->Event_History_Items[0].policy_target_id;
         capture->export_call = export_call;
+        capture->journal_start = dsd_rdio_recording_start(&event_struct->Event_History_Items[0], opened, 0);
         capture->sidecar[0] = '\0';
         if (export_call && capture->stream_export != 0U && opts != NULL && g_close_wav_export_dir[0] != '\0') {
             close_wav_export_sidecar(opts, event_struct, opened, index, capture);
@@ -6225,6 +6229,85 @@ test_merged_history_duration_runs_on_the_decode_clock(void) {
     return rc;
 }
 
+// A decode instant in whole and part seconds, on the TEST clock.
+static void
+decode_clock_at_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(ms * 1000000ULL);
+}
+
+// A digital row's start is the second its call began: the render's clock less the call's elapsed time, floored once
+// from one reading. A call that began at 99.95 s and was first rendered at 100.02 s began in second 99; flooring the
+// render's second and the elapsed time apart (100 - 0) filed it a second late, in History, in the journal's start and
+// in the rdio-scanner sidecar alike. The end stays the start plus the truncated elapsed time, the stamp is taken once
+// per epoch, and a reacquired segment merged into the row leaves the first segment's start in place.
+static int
+test_digital_start_floors_once(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+    g_open_wav_result = &wav_sentinel;
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_start")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the start-floor test\n");
+        return 1;
+    }
+    // The slot's recording was opened at an earlier call's rotation.
+    dsd_decode_clock_use_test(95000000000ULL);
+    opts.wav_out_open_time = dsd_decode_time();
+
+    // The call's first frame is heard at 99.95 s; the slot first renders it 70 ms later, at 100.02 s.
+    decode_clock_at_ms(99950U);
+    int rc = expect_int("call begins", observe_unstamped_call(&state, 100U, 200U), 1);
+    decode_clock_at_ms(100020U);
+    rc |= expect_int("call continues", continue_unstamped_call(&state, 100U, 200U), 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* staged = &event_history[0].Event_History_Items[0];
+    rc |= expect_u64("first render files the call in the second it began", (uint64_t)staged->event_start_time, 99U);
+    rc |= expect_u64("first render ends it at start + truncated elapsed", (uint64_t)staged->event_time, 99U);
+
+    // A later render whose own derivation would land in second 101 (101.5 s less the 70 ms the call has run) keeps the
+    // epoch's stamp.
+    decode_clock_at_ms(101500U);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_u64("the start is stamped once per epoch", (uint64_t)staged->event_start_time, 99U);
+
+    // The call fades at 102.40 s, 2.45 s after it began: the end is the start plus the truncated 2 s.
+    decode_clock_at_ms(102400U);
+    rc |= expect_int("call fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const Event_History* row = &event_history[0].Event_History_Items[1];
+    rc |= expect_u64("committed row keeps the start", (uint64_t)row->event_start_time, 99U);
+    rc |= expect_u64("committed duration is the truncated elapsed", (uint64_t)(row->event_time - row->event_start_time),
+                     2U);
+    rc |= expect_int("the fade closes the recording", g_close_wav_capture_count, 1);
+    rc |= expect_u64("journal start is the call's start", (uint64_t)g_close_wav_captures[0].journal_start, 99U);
+    rc |= expect_close_sidecar("rdio start_time is the call's start", &g_close_wav_captures[0], 100U, 99);
+
+    // A quarter second later the transmission resumes for 1.6 s and merges into the row, which keeps its start; the
+    // segment's own recording is filed at the segment's.
+    decode_clock_at_ms(102650U);
+    rc |= expect_int("segment reacquires the transmission", observe_unstamped_call(&state, 0U, 0U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    decode_clock_at_ms(104250U);
+    rc |= expect_int("segment fades", dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("segment merges into the transmission's row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_u64("merged row keeps the first segment's start", (uint64_t)row->event_start_time, 99U);
+    rc |= expect_int("segment closes its own recording", g_close_wav_capture_count, 2);
+    rc |= expect_u64("segment's journal start is its own", (uint64_t)g_close_wav_captures[1].journal_start, 102U);
+    rc |= expect_close_sidecar("segment's rdio start_time is its own", &g_close_wav_captures[1], 100U, 102);
+
+    dsd_decode_clock_use_system();
+    (void)dsd_test_rmdir(g_close_wav_export_dir);
+    g_close_wav_export_dir[0] = '\0';
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // commit_rev is the committed-rows-only change counter frontends gate their ring rescans on:
 // staged-row renders must leave it alone, while commits, merges and late enrichment advance it.
 static int
@@ -9407,6 +9490,7 @@ main(void) {
     rc |= test_merged_row_end_stamp_advances();
     rc |= test_merged_row_start_stamp_is_frozen();
     rc |= test_merged_history_duration_runs_on_the_decode_clock();
+    rc |= test_digital_start_floors_once();
     rc |= test_commit_rev_tracks_committed_rows_only();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
     rc |= test_end_reason_upgrade_is_one_directional();

@@ -1945,8 +1945,12 @@ suite runs under this compiler.
 - Analog stamps (issue #667). An analog row whose call has a `start_wall` is stamped from it on every render
   (`watchdog_event_current_stamp_item()`): `event_start_time = floor(start_wall)` and
   `event_time = floor(start_wall + elapsed)`, the end from the full sum, so 1000.9 s + 0.6 s ends in 1001 where
-  `start + (time_t)elapsed` gave 1000. Without one it is stamped as every row is (the first render's clock minus the
-  elapsed, then start + elapsed). An ended analog row's text prefix is its `event_time`, not the render's clock
+  `start + (time_t)elapsed` gave 1000. Without one it is stamped as every row is: on the epoch's first render,
+  `event_start_time = floor(dsd_decode_now_realtime_s() - elapsed)` from the render's one decode-clock reading, then
+  `event_time = start + (time_t)elapsed` on every render. Floored once, not as `floor(now) - floor(elapsed)`, which
+  filed a call heard from 99.95 s and first rendered at 100.02 s in second 100 (issue #809 B1). The row's prefix
+  is the same reading's second, and the journal's `start` and the rdio-scanner `start_time` take the row's start (or
+  the later WAV open) (`CORE_CALL_ALERT_HISTORY` `test_digital_start_floors_once`). An ended analog row's text prefix is its `event_time`, not the render's clock
   (`watchdog_event_text_time()`), so a commit an input stall delayed still reads when the call ended (A2). Digital rows
   ignore `start_wall`, keep the render's clock in their prefix, and `--playfiles` keeps the stamp the file reader gave
   the row: the visible-prefix contract merges preserve. Tests: `CORE_RECEIVE` (`test_analog_seeded_begin`,
