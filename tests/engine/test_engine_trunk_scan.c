@@ -19449,6 +19449,49 @@ test_goto_park_over_a_restart_runs_the_target_profile(void) {
     return test_rc;
 }
 
+/* Issue #644: a go-to's park of b lands before the next tick, then @p advances Next presses come first, every other
+   target's retune refused. Refused targets cool down, so the presses tune only a few times between two ticks, far
+   fewer than the trunk-tuning ledger keeps: the park's landing is still read at the tick, b is confirmed, and the
+   receiver never moved off it. */
+static int
+park_landing_outlives_refused_advances_case(int advances) {
+    const char* what = "a park's landing after refused advances";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, NULL), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    const int calls = g_counting_tune_to_cc_calls;
+    for (int i = 0; i < advances; i++) {
+        (void)dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    }
+    test_rc |= expect_goto(what, g_counting_tune_to_cc_calls - calls < 8
+                                     && dsd_trunk_tuning_request_status(park, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.1);
+    test_rc |= expect_goto(what, dsd_engine_trunk_scan_target_confirmed(&state, 1)
+                                     && dsd_engine_trunk_scan_active_index(&state) == 1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_park_landing_outlives_refused_advances(void) {
+    return park_landing_outlives_refused_advances_case(8) | park_landing_outlives_refused_advances_case(70);
+}
+
 static int
 test_goto_park_over_a_restart(void) {
     return goto_park_over_a_restart_case(0) | goto_park_over_a_restart_case(1);
@@ -20751,6 +20794,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_never_joins_a_failed_park);
     rc |= run_with_default_tune_hook(test_goto_entry_waiting_on_nothing);
     rc |= run_with_default_tune_hook(test_goto_park_over_a_restart);
+    rc |= run_with_default_tune_hook(test_park_landing_outlives_refused_advances);
     rc |= run_with_default_tune_hook(test_goto_park_over_a_restart_runs_the_target_profile);
     rc |= run_with_default_tune_hook(test_entry_on_air_follows_the_park);
     rc |= run_with_default_tune_hook(test_goto_a_copy_in_another_list);

@@ -108,26 +108,69 @@ typedef enum {
     MANUAL_TUNE_RR_QUIET, /* its owner's own tune took over */
 } manual_tune_rr_outcome;
 
-/* The last few manual-tune completions, each (ID count << 32) | (uint32_t)result, 0 for an empty slot. Not one slot:
-   an older tune that finishes late (one in flight before a newer one queued) would overwrite the completion the record
-   awaits, which then never comes again (issue #671). A completion can also arrive before its record is noted, so the
-   slots are not filtered by the record either. Eight outlast any run of tunes between a note and its poll. */
+/* Manual-tune completions, each (ID count << 32) | (uint32_t)result, 0 for none. The one the noted record awaits is
+   kept in a slot of its own (g_awaited_completion, for g_awaited_id), which nothing else writes (issue #644): any
+   number of other completions can come before the poll (a refused Next is answered too) without losing it. A
+   completion that comes before its record is noted, or for a tune no record awaits, goes to the last few slots
+   instead, which the note looks in (an older tune finishing late never hides the one awaited, issue #671); the note
+   follows its tune at once, so only a completion in that gap can be pushed out of them, and the record whose
+   completion is nowhere once the controller no longer holds its tune then fails (manual_tune_record_released()). A note
+   and a completion never cross: both take g_completion_lock. */
 enum { MANUAL_TUNE_COMPLETION_SLOTS = 8 };
 
-static dsd_atomic_u64 g_completions[MANUAL_TUNE_COMPLETION_SLOTS];
-static atomic_uint g_completion_next;
+static atomic_int g_completion_lock = 0;
+static uint64_t g_completions[MANUAL_TUNE_COMPLETION_SLOTS];
+static unsigned int g_completion_next;
+static uint64_t g_awaited_id;
+static uint64_t g_awaited_completion;
 
-/* The completion for @p id in the slots, in @p packed: 1 when one came, 0 otherwise. */
-static int
-manual_tune_completion_for(uint64_t id, uint64_t* packed) {
+static void
+manual_tune_completions_lock(void) {
+    int expected = 0;
+    while (!atomic_compare_exchange_strong(&g_completion_lock, &expected, 1)) {
+        expected = 0;
+    }
+}
+
+static void
+manual_tune_completions_unlock(void) {
+    atomic_store(&g_completion_lock, 0);
+}
+
+/* The completion for @p id among the last few slots (the lock held), 0 for none. */
+static uint64_t
+manual_tune_slot_for_locked(uint64_t id) {
     for (int i = 0; i < MANUAL_TUNE_COMPLETION_SLOTS; i++) {
-        const uint64_t slot = dsd_atomic_u64_load_acquire(&g_completions[i]);
-        if (slot != 0U && (uint32_t)(slot >> 32) == (uint32_t)id) {
-            *packed = slot;
-            return 1;
+        if (g_completions[i] != 0U && (uint32_t)(g_completions[i] >> 32) == (uint32_t)id) {
+            return g_completions[i];
         }
     }
-    return 0;
+    return 0U;
+}
+
+/* The completion for @p id, the awaited one's own slot first, in @p packed: 1 when one came, 0 otherwise. */
+static int
+manual_tune_completion_for(uint64_t id, uint64_t* packed) {
+    manual_tune_completions_lock();
+    uint64_t found = id != 0U && id == g_awaited_id ? g_awaited_completion : 0U;
+    if (found == 0U) {
+        found = manual_tune_slot_for_locked(id);
+    }
+    manual_tune_completions_unlock();
+    if (found == 0U) {
+        return 0;
+    }
+    *packed = found;
+    return 1;
+}
+
+/* From now on the completion for @p id is the awaited one: taken from the slots when it came already. */
+static void
+manual_tune_await(uint64_t id) {
+    manual_tune_completions_lock();
+    g_awaited_id = id;
+    g_awaited_completion = manual_tune_slot_for_locked(id);
+    manual_tune_completions_unlock();
 }
 
 static uint32_t
@@ -160,14 +203,39 @@ manual_tune_record_live(void) {
            && atomic_load(&g_record_generation) == manual_tune_session_generation();
 }
 
-/* The noted record's completion in @p packed: a landing at a reopen, else the one in the slots. 1 when one came. */
+/* The noted record's completion once the controller no longer holds its tune (queued, in flight or being answered),
+   in @p packed: it has answered it then, so the completion found after that read is its answer, and none found means
+   it was lost, which reads as a failure (issue #644). Read in that order: the controller's answer is out before it
+   lets the tune go. 0 while the controller still holds it, or once its stream stopped (the poll's drop). */
+static int
+manual_tune_record_released(uint64_t* packed) {
+#ifdef USE_RADIO
+    if (g_record.session_generation != manual_tune_session_generation()
+        || rtl_stream_manual_tune_unanswered(g_record.id)) {
+        return 0;
+    }
+    if (!manual_tune_completion_for(g_record.id, packed)) {
+        *packed = ((uint64_t)(uint32_t)g_record.id << 32) | (uint64_t)(uint32_t)RTL_STREAM_TUNE_FAILED;
+    }
+    return 1;
+#else
+    (void)packed;
+    return 0;
+#endif
+}
+
+/* The noted record's completion in @p packed: a landing at a reopen, else the one that came, else a failure once it is
+   lost (manual_tune_record_released()), so a record never waits for good. 1 when one came. */
 static int
 manual_tune_record_completion(uint64_t* packed) {
     if (g_record_landed_at_reopen) {
         *packed = ((uint64_t)(uint32_t)g_record.id << 32) | (uint64_t)(uint32_t)RTL_STREAM_TUNE_OK;
         return 1;
     }
-    return manual_tune_completion_for(g_record.id, packed);
+    if (manual_tune_completion_for(g_record.id, packed)) {
+        return 1;
+    }
+    return manual_tune_record_released(packed);
 }
 
 /* Whether the live record (manual_tune_record_live()) may still land: no completion came for it, or one that landed. A
@@ -185,8 +253,14 @@ manual_tune_record_joinable(void) {
 void
 dsd_engine_manual_tune_completion(uint64_t id, int result) {
     const uint64_t packed = ((uint64_t)(uint32_t)id << 32) | (uint64_t)(uint32_t)result;
-    const unsigned int slot = atomic_fetch_add(&g_completion_next, 1U) % MANUAL_TUNE_COMPLETION_SLOTS;
-    dsd_atomic_u64_store_release(&g_completions[slot], packed);
+    manual_tune_completions_lock();
+    if (id != 0U && id == g_awaited_id) {
+        g_awaited_completion = packed;
+    } else {
+        g_completions[g_completion_next % MANUAL_TUNE_COMPLETION_SLOTS] = packed;
+        g_completion_next++;
+    }
+    manual_tune_completions_unlock();
 }
 
 /* Note @p record (its id, kind and what it was for) in place of any tune noted before it. */
@@ -201,6 +275,7 @@ manual_tune_note(dsd_state* state, const dsd_manual_tune_record* record) {
         return;
     }
     g_record = *record;
+    manual_tune_await(record->id);
     g_record_landed_at_reopen = 0;
     g_record.session_generation = manual_tune_session_generation();
     atomic_store(&g_record_generation, g_record.session_generation);
@@ -554,9 +629,13 @@ dsd_engine_manual_tune_session_reset(dsd_state* state) {
     g_rr_failure_text[0] = '\0';
     g_rr_landed_text[0] = '\0';
     g_rr_own_toast[0] = '\0';
+    manual_tune_completions_lock();
     for (int i = 0; i < MANUAL_TUNE_COMPLETION_SLOTS; i++) {
-        dsd_atomic_u64_store_release(&g_completions[i], 0U);
+        g_completions[i] = 0U;
     }
+    g_awaited_id = 0U;
+    g_awaited_completion = 0U;
+    manual_tune_completions_unlock();
     if (state) {
         dsd_engine_scan_entry_intent_cancel(state);
         (void)dsd_engine_scan_entry_failure_take(state, NULL);

@@ -1695,6 +1695,9 @@ static int g_manual_leg_calls;
 static uint32_t g_manual_leg_hz;
 /* The ID the last timed-out tune handed back (issue #644), for a case to land or fail it later. */
 static uint64_t g_manual_leg_pending_id;
+/* Whether a refused tune is answered under an ID of its own, as the controller answers every tune it took (issue
+   #644): a case that counts on how many completions arrive sets it. */
+static int g_manual_leg_refusals_complete;
 
 static int
 manual_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pending_id) {
@@ -1713,6 +1716,10 @@ manual_leg(dsd_opts* opts, const dsd_state* state, uint32_t hz, uint64_t* out_pe
     if (result == RTL_STREAM_TUNE_TIMEOUT && out_pending_id) {
         g_manual_leg_pending_id = RTL_STREAM_TUNE_ID_MANUAL_BIT | (uint64_t)++g_fake_manual_id_seq;
         *out_pending_id = g_manual_leg_pending_id;
+    }
+    if (result == RTL_STREAM_TUNE_FAILED && g_manual_leg_refusals_complete) {
+        dsd_engine_manual_tune_completion(RTL_STREAM_TUNE_ID_MANUAL_BIT | (uint64_t)++g_fake_manual_id_seq,
+                                          RTL_STREAM_TUNE_FAILED);
     }
     return result;
 }
@@ -25956,6 +25963,75 @@ test_channel_scan_entry_holds_the_row(void) {
 }
 
 /*
+ * Issue #644: an RTL-only untyped -Y list [870 west, 872 fire-dispatch (its own key), 874 x16]. A frequency entry of
+ * 872 sends the scan there; its walk tune times out, then lands before the decoder polls it. @p nexts Next presses
+ * follow, each refused with nothing moved (every 874 row), and each refusal answered under its own ID, as the
+ * controller answers every tune it took: more answers than the completion slots hold. The record still waits on the
+ * go-to's tune and keeps its landing: the next poll lands fire-dispatch with its name and key, and the scan, which
+ * the presses left unheld, is free to rotate again.
+ */
+static int
+entry_landing_outlives_refused_nexts_case(int nexts) {
+    enum { ROWS = 18 };
+
+    long rows[ROWS];
+    rows[0] = 870000000L;
+    rows[1] = 872000000L;
+    for (int i = 2; i < ROWS; i++) {
+        rows[i] = 874000000L;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    static void* fake_ctx[2];
+    char label[64];
+    DSD_SNPRINTF(label, sizeof label, "entry landing after %d refused Nexts", nexts);
+    init_manual_walk_context(&opts, &state, rows, ROWS);
+    state.rtl_ctx = (RtlSdrContext*)fake_ctx;
+    int rc = expect_int(label, dsd_state_trunk_lcn_name_set(&state, 1U, "fire-dispatch"), 0);
+    rc |= expect_int(label, set_row_key(&state, 1U, 4242ULL), 0);
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    manual_leg_script(874000000U, RTL_STREAM_TUNE_FAILED);
+    rc |= drain_waiting_entry(&opts, &state, 872000000U, "Going to fire-dispatch: waiting for the tune", label);
+    const uint64_t goto_id = g_manual_leg_pending_id;
+    dsd_engine_manual_tune_completion(goto_id, RTL_STREAM_TUNE_OK); /* lands before the decoder polls it */
+    g_manual_leg_refusals_complete = 1;
+    const int calls = g_manual_leg_calls;
+    for (int i = 0; i < nexts; i++) {
+        rc |= expect_int(label, dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    }
+    (void)dsd_app_drain_cmds(&opts, &state);
+    g_manual_leg_refusals_complete = 0;
+    rc |= expect_int(label, g_manual_leg_calls - calls == nexts && g_manual_leg_hz == 874000000U, 1);
+    rc |= expect_int(label, dsd_engine_manual_tune_noted_id() == goto_id, 1);
+
+    rc |= expect_int(label, dsd_engine_scan_untyped_poll(&opts, &state), DSD_MANUAL_TUNE_LANDED);
+    state.ui_msg[0] = '\0';
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int(label,
+                     dsd_state_lcn_heard_row(&state) == 1 && opts.rtlsdr_center_freq == 872000000U
+                         && state.rkey_array[9] == 4242ULL && dsd_engine_manual_tune_noted_id() == 0U
+                         && !dsd_engine_manual_tune_operator_walk_noted(),
+                     1);
+    char name[64];
+    (void)dsd_channel_label_current(&opts, &state, name, sizeof name);
+    rc |= expect_str(label, name, "fire-dispatch");
+    /* The Next presses cancelled the entry (as L and J always do), so the row lands unheld, and nothing holds the
+       tuner from the running scan's next timed step. */
+    rc |= expect_int(label, opts.scanner_mode == 1 && state.lcn_scan_hold == 0U && state.lcn_scan_entry_hold == 0U, 1);
+
+    dsd_app_command_test_set_tune_leg(NULL);
+    disarm_manual_leg();
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    return rc;
+}
+
+static int
+test_entry_landing_outlives_refused_nexts(void) {
+    return entry_landing_outlives_refused_nexts_case(8) | entry_landing_outlives_refused_nexts_case(16);
+}
+
+/*
  * Issue #644: the entry an entry toast waits on is each state's own. State A waits on "north", row 2 of its list, as
  * its go-to's toast left it. State B goes to its own row 2, "east", with no toast (as a scan started on a held target
  * would), and that walk fails late: B's drain names "east", the name B's scan recorded, not A's "north"; A's entry
@@ -27989,6 +28065,7 @@ main(void) {
     rc |= test_trunk_scan_entry_on_a_list_that_is_off();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_channel_scan_entry_holds_the_row();
+    rc |= test_entry_landing_outlives_refused_nexts();
     rc |= test_scan_entry_names_each_state();
 #endif
     rc |= test_config_trunking_under_a_trunk_scan_is_the_configured_setting();

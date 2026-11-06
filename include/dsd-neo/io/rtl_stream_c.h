@@ -183,6 +183,18 @@ int rtl_stream_tune(RtlSdrContext* ctx, uint32_t center_freq_hz);
  */
 int rtl_stream_tune_tagged(RtlSdrContext* ctx, uint32_t center_freq_hz, uint64_t request_id);
 
+/**
+ * @brief Whether the controller may still answer the manual tune tagged @p token (issue #644).
+ *
+ * 1 while the tune is queued, taken and not yet answered, or let go of (displaced or cancelled) with its answer not yet
+ * published, and for a tag this stream's controller never took; 0 once it took the tune and has published its
+ * completion. Lock-free; a 0 means the completion has already reached the completion callback.
+ *
+ * @param token A manual tune's tag (RTL_STREAM_TUNE_ID_MANUAL_BIT set); 0 answers 0.
+ * @return 1 when its completion may still come, 0 when it has come.
+ */
+int rtl_stream_manual_tune_unanswered(uint64_t token);
+
 /** Nonblocking tagged tuning on the active radio; 0 queued, 1 deferred, negative refused.
  * A ticket uses the existing completion ledger and never replaces the callback registration.
  * Poll returns 1 with a terminal result, 0 while pending, -1 after source shutdown.

@@ -278,6 +278,16 @@ struct controller_state {
     uint32_t manual_retune_freq = 0U;
     uint64_t manual_retune_token = 0U;
     RtlRetuneProfile manual_retune_profile{};
+    /* The manual tunes this controller took and has not answered yet (issue #644), which
+     * rtl_stream_manual_tune_unanswered() reads without hop_m: the queued one's tag (manual_retune_token's copy), the
+     * tag of the one taken until its completion is published, how many tags let go of without running (displaced by a
+     * newer request, or cancelled by a stop) are still being answered, and the highest tag count it took this stream.
+     * Each changes under hop_m, except the in-flight tag's clear and the count's decrement, which follow the
+     * completion they wait for: a tag leaves these only once its answer is out. */
+    std::atomic<uint64_t> unanswered_queued_token{0U};
+    std::atomic<uint64_t> unanswered_in_flight_token{0U};
+    std::atomic<uint32_t> unanswered_letting_go{0U};
+    std::atomic<uint32_t> taken_token_count_max{0U};
     /* The receive family of the manual retune the controller has taken (-1: none, or none that lands on its target)
      * and the live family requests counted when that family was attached (RtlRetuneProfile::family_request_count).
      * Set when controller_wait_for_retune_work() takes the retune and cleared once controller_apply_reconfigure() has
@@ -7330,6 +7340,8 @@ controller_take_manual_retune_locked(struct controller_state* s, ControllerRetun
     work->manual_profile = s->manual_retune_profile;
     s->manual_retune_freq = 0U;
     s->manual_retune_token = 0U;
+    s->unanswered_in_flight_token.store(work->manual_token);
+    s->unanswered_queued_token.store(0U);
     rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     /* In flight from here until controller_process_manual_retune() has landed it. A profile left for another
        target by a coalesced retune never applies (rtl_stream_apply_retune_profile()), so it carries no family. */
@@ -7532,6 +7544,8 @@ controller_finish_manual_retune(struct controller_state* s, const ControllerRetu
         drain_output_on_retune();
     }
     rtl_stream_publish_tune_completion(work->manual_token, result);
+    uint64_t answered = work->manual_token;
+    (void)s->unanswered_in_flight_token.compare_exchange_strong(answered, 0U);
     controller_signal_manual_retune_complete(s, result);
 }
 
@@ -7550,6 +7564,8 @@ controller_detach_queued_manual_retune(struct controller_state* s) {
         cancelled.token = s->manual_retune_token;
         s->manual_retune_freq = 0U;
         s->manual_retune_token = 0U;
+        s->unanswered_letting_go.fetch_add(1U);
+        s->unanswered_queued_token.store(0U);
         rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     }
     dsd_mutex_unlock(&s->hop_m);
@@ -7577,6 +7593,7 @@ controller_finish_cancelled_manual_retune(struct controller_state* s, const Cont
                   next_completion_id);
     }
     rtl_stream_publish_tune_completion(cancelled->token, RTL_STREAM_TUNE_FAILED);
+    s->unanswered_letting_go.fetch_sub(1U);
     controller_signal_manual_retune_complete(s, RTL_STREAM_TUNE_FAILED);
 }
 
@@ -7917,6 +7934,10 @@ controller_init(struct controller_state* s) {
     s->manual_retune_pending.store(0);
     s->manual_retune_freq = 0;
     s->manual_retune_token = 0U;
+    s->unanswered_queued_token.store(0U);
+    s->unanswered_in_flight_token.store(0U);
+    s->unanswered_letting_go.store(0U);
+    s->taken_token_count_max.store(0U);
     rtl_stream_clear_retune_profile(&s->manual_retune_profile);
     s->retune_in_flight_family = -1;
     s->retune_in_flight_family_requests = 0U;
@@ -8027,6 +8048,19 @@ manual_retune_admitted(const struct controller_state* s, uint64_t caller_token) 
     return !(g_stream && !g_stream->controller_thread_started.load(std::memory_order_acquire));
 }
 
+/* @p token is the queued manual retune's tag from now on (hop_m held; issue #644): a manual tune's is counted as taken,
+   and a manual tag it displaces (@p displaced) is being let go of until its answer is out. */
+static void
+controller_note_queued_token_locked(struct controller_state* s, uint64_t token, uint64_t displaced) {
+    if ((displaced & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U) {
+        s->unanswered_letting_go.fetch_add(1U);
+    }
+    if ((token & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U && (uint32_t)token > s->taken_token_count_max.load()) {
+        s->taken_token_count_max.store((uint32_t)token);
+    }
+    s->unanswered_queued_token.store(token);
+}
+
 static uint32_t
 schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target_freq_hz, uint64_t caller_token = 0U) {
     if (!s || !manual_retune_admitted(s, caller_token)) {
@@ -8057,12 +8091,14 @@ schedule_manual_retune_on_controller(struct controller_state* s, uint32_t target
     }
     /* Update/override target frequency even when coalescing into an existing pending retune. */
     s->manual_retune_freq = target_freq_hz;
+    controller_note_queued_token_locked(s, caller_token, displaced);
     s->manual_retune_token = caller_token;
     (void)rtl_stream_take_pending_retune_profile(&s->manual_retune_profile, request_id, target_freq_hz);
     dsd_cond_signal(&s->hop);
     dsd_mutex_unlock(&s->hop_m);
     if ((displaced & RTL_STREAM_TUNE_ID_MANUAL_BIT) != 0U) {
         rtl_stream_publish_tune_completion(displaced, RTL_STREAM_TUNE_SUPERSEDED);
+        s->unanswered_letting_go.fetch_sub(1U);
     }
     return request_id;
 }
@@ -10964,6 +11000,20 @@ rtl_stream_output_generation(void) {
 extern "C" uint32_t
 rtl_stream_session_generation(void) {
     return g_rtl_session_generation.load(std::memory_order_acquire);
+}
+
+extern "C" int
+rtl_stream_manual_tune_unanswered(uint64_t token) {
+    if (token == 0U) {
+        return 0;
+    }
+    /* Read in the order the tag moves through them, each move made before the one it leaves (the in-flight tag before
+       the queued one is cleared, the count before a queued tag is replaced): a tag found in none was answered. */
+    if (controller.unanswered_queued_token.load() == token || controller.unanswered_in_flight_token.load() == token
+        || controller.unanswered_letting_go.load() != 0U) {
+        return 1;
+    }
+    return (uint32_t)token > controller.taken_token_count_max.load() ? 1 : 0;
 }
 
 extern "C" uint64_t

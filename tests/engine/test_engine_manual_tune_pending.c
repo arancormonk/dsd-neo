@@ -460,6 +460,58 @@ test_older_completion_keeps_the_awaited_one(fixture* f) {
     fixture_end();
 }
 
+/* Issue #644: entry A times out, then lands before the decoder polls it, and @p others refused tunes complete before
+   that poll (each answered, as the controller answers every tune it took), more than the completion slots hold. The
+   completion the record awaits is never lost: the poll lands A. */
+static void
+awaited_completion_outlives_the_slots_case(fixture* f, int others) {
+    fixture_begin(f);
+    const uint64_t id = enter_frequency(f, ENTRY_A_HZ);
+    take_request(id, ENTRY_A_HZ);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, ENTRY_A_HZ) == 0);
+    for (int i = 0; i < others; i++) {
+        dsd_engine_manual_tune_completion(RTL_STREAM_TUNE_ID_MANUAL_BIT | (0x7000U + (uint64_t)i),
+                                          RTL_STREAM_TUNE_FAILED);
+    }
+    const int polled = dsd_engine_manual_tune_poll(f->opts, f->state);
+    if (polled != DSD_MANUAL_TUNE_LANDED) {
+        DSD_FPRINTF(stderr, "after %d other completions the poll gave %d, want LANDED\n", others, polled);
+    }
+    assert(polled == DSD_MANUAL_TUNE_LANDED);
+    fixture_end();
+}
+
+static void
+test_awaited_completion_outlives_the_slots(fixture* f) {
+    awaited_completion_outlives_the_slots_case(f, 8);
+    awaited_completion_outlives_the_slots_case(f, 16);
+}
+
+/* Issue #644: entry A's tune is taken and answered, but its completion never reaches the decoder (as if lost). The
+   controller holds A no more, and nothing findable says what became of it: the next poll settles it as failed, with its
+   toast, and puts back the centre the controller applied, rather than wait for good. While A is still queued or in
+   flight the poll waits. */
+static void
+test_lost_completion_settles_failed(fixture* f) {
+    fixture_begin(f);
+    const uint64_t id = enter_frequency(f, ENTRY_A_HZ);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE); /* queued */
+    take_request(id, ENTRY_A_HZ);
+    assert(dsd_engine_manual_tune_poll(f->opts, f->state) == DSD_MANUAL_TUNE_NONE); /* in flight */
+    rtl_stream_register_tune_completion_callback(NULL, NULL);
+    assert(rtl_stream_test_manual_tune_standin_finish(RTL_STREAM_TUNE_OK, APPLIED_HZ) == 0);
+    dsd_engine_trunk_tuning_hooks_install();
+    f->state->ui_msg[0] = '\0';
+    const int polled = dsd_engine_manual_tune_poll(f->opts, f->state);
+    if (polled != DSD_MANUAL_TUNE_FAILED) {
+        DSD_FPRINTF(stderr, "a lost completion polled %d, want FAILED\n", polled);
+    }
+    assert(polled == DSD_MANUAL_TUNE_FAILED);
+    assert(toast_is(f->state, "Failed: frequency -> 853.000000 MHz"));
+    assert(f->opts->rtlsdr_center_freq == APPLIED_HZ);
+    fixture_end();
+}
+
 static void
 test_settled_ready_names_what_the_poll_acts_on(fixture* f) {
     fixture_begin(f);
@@ -734,6 +786,8 @@ main(void) {
     test_superseded_record_reports_its_drop(&f);
     test_untagged_takeover_reports_the_drop(&f);
     test_older_completion_keeps_the_awaited_one(&f);
+    test_awaited_completion_outlives_the_slots(&f);
+    test_lost_completion_settles_failed(&f);
     test_displaced_step_reports_its_drop(&f);
     test_settled_ready_names_what_the_poll_acts_on(&f);
     test_walk_records_what_settles_it(&f);
