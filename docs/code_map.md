@@ -11310,9 +11310,15 @@ Qt Quick frontend (`src/ui/qt`):
     only), which `listenWith()` sends as `CommandBridge::tuneHz()` at the row's own frequency (`RTL_SET_FREQ`: the
     engine resumes the scan at that row and holds it, the session, its companions and avoids kept). Since the command
     names only the frequency, a target's width decides only whether the tuned frequency is that channel (some target
-    on it covers the offset), and the action names the row the engine's entry match takes there: the first in list
-    order on a list switched on and not avoided (a paused scan has no row on air to prefer; none such offers
-    nothing). The width a row's DSP rate cannot run is not checked here (Qt has no such snapshot field). Rows of other
+    on it covers the offset), and the action names the row the engine's entry match takes there, by the engine's own
+    answer: the coordinator publishes one `dsd_scan_entry_reason` byte per target in its target order
+    (`dsd_state::trunk_scan_entry_reasons`, `trunk_scan_publish_entry_reasons()`: decided again when the DSP rate, a
+    list, an avoid or a session edit moved, and once a second for a configured width, stamped
+    `trunk_scan_entry_rev` only when a byte changed; copied to the snapshot by that revision), which
+    `dsd_app_scan_entry_eligible()` reads and `MetricsModel::scanTargetEligible` carries. Of the eligible rows on the
+    frequency the one on air while the rotation still runs (`scanTargetId`) is named, else the first in list order;
+    with none, or nothing published yet, nothing is offered. A `-Y` channel map's rows are never a Listen action
+    (they only name the channel), so nothing there needs it. Rows of other
     lists and saved systems, which would restart the session, are not offered. Its targets are the session's own, as it
     started them (`sessionTargets`, taken once by `captureSessionTargets()` when the start is accepted:
     `KnownFrequencyIndex::sessionTargets()` reads the target CSV each list's start wrote,

@@ -205,6 +205,29 @@ test_eight_lists(dsd_opts* opts, dsd_state* state) {
     expect_entries("count past the cap", &v, "1 *2 *3 *4 *5 *6 *7 [*8]");
 }
 
+/* Issue #644: which targets a frequency typed by hand could pick, as the coordinator published it: read while the scan
+   in force is a trunk scan, one answer per target, past the count none; with no trunk scan, nothing. */
+static void
+test_entry_eligibility(dsd_opts* opts, dsd_state* state) {
+    seed_lists(opts, state, 2);
+    const uint8_t reasons[] = {0U, 4U, 1U};
+    assert(dsd_state_trunk_scan_entry_reasons_set(state, reasons, 3U) == 0);
+    state->trunk_scan_entry_rev = 77U;
+    dsd_app_scan_entry_summary summary;
+    DSD_MEMSET(&summary, 0xA5, sizeof summary);
+    assert(dsd_app_scan_entry_summary_get(opts, state, &summary) == 0);
+    assert(summary.count == 3U && summary.revision == 77U);
+    assert(dsd_app_scan_entry_eligible(opts, state, 0U) == 1);
+    assert(dsd_app_scan_entry_eligible(opts, state, 1U) == 0);
+    assert(dsd_app_scan_entry_eligible(opts, state, 2U) == 0);
+    assert(dsd_app_scan_entry_eligible(opts, state, 3U) == -1);
+    opts->trunk_scan_enabled = 0;
+    assert(dsd_app_scan_entry_summary_get(opts, state, &summary) == 0 && summary.count == 0U);
+    assert(dsd_app_scan_entry_eligible(opts, state, 0U) == -1);
+    assert(dsd_app_scan_entry_summary_get(NULL, state, &summary) == -1);
+    dsd_state_trunk_scan_entry_reasons_free(state);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
@@ -216,6 +239,7 @@ main(void) {
     test_three_lists(opts, state);
     test_toggleable(opts, state);
     test_eight_lists(opts, state);
+    test_entry_eligibility(opts, state);
     free(state);
     free(opts);
     printf("APP_CONTROL_SCAN_LIST_VIEW: OK\n");

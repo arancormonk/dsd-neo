@@ -294,18 +294,22 @@ Window {
     // @p width wide: the nearest frequency some target on it covers @p hz at
     // (its width or the channel's, the narrower). The in-place Listen sends
     // only that frequency, so it names the row the scan's entry match takes
-    // there (dsd_engine_scan_entry_match()): the first in list order that the
-    // paused or released scan would take now, on a list switched on and not
-    // avoided (a paused scan has no row confirmed on air to prefer). With none
-    // it would take, nothing is offered: the scan would refuse the frequency.
-    // One tune per frequency.
+    // there (dsd_engine_scan_entry_match()): of the rows the engine says it
+    // could pick now (metrics.scanTargetEligible, published in the session's
+    // target order: a list switched on, not avoided, a width the DSP rate can
+    // filter), the one on air while the rotation still runs (the target it
+    // publishes, metrics.scanTargetId; a paused scan has none), else the first
+    // in list order. With none it would take, or nothing published yet,
+    // nothing is offered: the scan would refuse the frequency. One tune per
+    // frequency.
     function sessionRowsAt(hz, width) {
-        var lists = metrics.scanListModel, avoids = metrics.scanAvoidModel;
-        // Read so the rows follow a list switched, or a target avoided or put back.
-        var listsOn = lists.listsOn, avoidCount = metrics.scanAvoidCount;
+        var eligible = metrics.scanTargetEligible || [];
+        var targets = mainRoot.sessionTargets;
+        if (eligible.length !== targets.length)
+            return [];
         var channel = width > 0 ? width : 12500;
         var centres = [], nearest = Infinity;
-        for (var target of mainRoot.sessionTargets) {
+        for (var target of targets) {
             var distance = Math.abs(hz - target.frequencyHz);
             if (distance > Math.min(channel, target.width) / 2)
                 continue;
@@ -317,14 +321,18 @@ Window {
                 centres.push(target.frequencyHz);
         }
         var rows = [];
+        var onAir = metrics.scanRotationActive ? String(metrics.scanTargetId || "") : "";
         for (var centre of centres) {
-            for (var row of mainRoot.sessionTargets) {
-                if (row.frequencyHz !== centre || lists.listSwitchedOff(row.listNumber)
-                    || avoids.avoidsTarget(row.targetId))
+            var pick = null;
+            for (var i = 0; i < targets.length; ++i) {
+                var row = targets[i];
+                if (row.frequencyHz !== centre || eligible[i] !== true)
                     continue;
-                rows.push({key: "tune", hz: centre, name: row.name, protocolLabel: row.protocolLabel});
-                break;
+                if (pick === null || (onAir !== "" && row.targetId === onAir))
+                    pick = row;
             }
+            if (pick !== null)
+                rows.push({key: "tune", hz: centre, name: pick.name, protocolLabel: pick.protocolLabel});
         }
         return rows;
     }

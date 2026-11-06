@@ -21,6 +21,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -61,6 +62,23 @@ typedef struct {
  * @return 0, or -1 for NULL arguments.
  */
 int dsd_app_scan_list_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_scan_list_view* out);
+
+/** @brief Which --trunk-scan targets a frequency typed by hand could pick now (issue #644), as the engine's entry match
+ * decides it and the coordinator publishes it: one answer per target in the coordinator's target order (the lists in
+ * order, each in its file's order), so a frontend names the row the scan will take without deciding it again. */
+typedef struct {
+    uint64_t revision; /**< dsd_state::trunk_scan_entry_rev: moves whenever an answer or the count changes. */
+    size_t count;      /**< Targets answered; 0 with no trunk scan, or before the coordinator first publishes. */
+} dsd_app_scan_entry_summary;
+
+/** @brief Fill @p out from decoder state or a frontend snapshot pair (a few loads, no walk). Zeroes @p out first.
+ * @return 0, or -1 for NULL arguments. */
+int dsd_app_scan_entry_summary_get(const dsd_opts* opts, const dsd_state* state, dsd_app_scan_entry_summary* out);
+
+/** @brief Whether target @p index (0-based, the coordinator's order) could be picked: 1 when it is eligible (on a list
+ * switched on, not avoided, its width fitting the published DSP rate), 0 when it is not, -1 for an index past the
+ * published count or with no trunk scan. */
+int dsd_app_scan_entry_eligible(const dsd_opts* opts, const dsd_state* state, size_t index);
 
 #ifdef __cplusplus
 }

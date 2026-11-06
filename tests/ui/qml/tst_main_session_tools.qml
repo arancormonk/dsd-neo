@@ -1223,6 +1223,7 @@ Item {
                 testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
                                         scanRotationActive: false, scanPaused: true, scanResumable: true,
                                         tunerControlled: false, centerFreqHz: 852014000, channelBandwidthHz: 12500});
+                publishAllEligible();
                 tryVerify(function () { return app.operatorHolds && app.exploring; });
                 var button = listenButton();
                 tryVerify(function () { return button.visible; });
@@ -1265,6 +1266,7 @@ Item {
                 testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
                                         scanRotationActive: false, scanPaused: true, scanResumable: true,
                                         tunerControlled: false, centerFreqHz: 852014000, channelBandwidthHz: 12500});
+                publishAllEligible();
                 tryVerify(function () { return app.operatorHolds && app.exploring; });
                 var button = listenButton();
                 tryVerify(function () { return button.visible; });
@@ -1302,10 +1304,17 @@ Item {
             testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
                                     scanRotationActive: false, scanPaused: true, scanResumable: true,
                                     tunerControlled: false, centerFreqHz: hz, channelBandwidthHz: 12500});
+            publishAllEligible();
             tryVerify(function () { return app.operatorHolds && app.exploring; });
+        }
+        // The engine's published answer (issue #644): every target of the session a frequency typed by hand could
+        // pick, one per target in the session's order.
+        function publishAllEligible() {
+            testContext.setMetric("scanTargetEligible", app.sessionTargets.map(function () { return true; }));
         }
         function endPausedBundle(uids) {
             endExplore();
+            testContext.setMetric("scanTargetEligible", []);
             testContext.resetScanLists();
             testContext.setScanAvoids([]);
             testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
@@ -1322,18 +1331,25 @@ Item {
             var desk = hospital.entries[0].uid;
             try {
                 pauseBundleOn(security, hospital, 852012500);
+                // The engine publishes each change with the target's eligibility, which alone decides here.
                 testContext.setScanLists({paused: true, lists: [{name: "Security", on: true, targets: 1},
                                                                 {name: "Hospital", on: false, targets: 1}]});
+                testContext.setMetric("scanTargetEligible", [true, false]);
                 compare(app.listenActions.length, 0, "a list switched off");
                 testContext.setScanLists({paused: true, lists: [{name: "Security", on: true, targets: 1},
                                                                 {name: "Hospital", on: true, targets: 1}]});
+                testContext.setMetric("scanTargetEligible", [true, true]);
                 compare(app.listenActions.length, 1, "the list switched back on");
                 testContext.setScanAvoids([{key: "trunk:7:" + desk, label: "ER desk", targetId: desk}]);
                 testContext.setMetric("scanAvoidCount", 1);
+                testContext.setMetric("scanTargetEligible", [true, false]);
                 compare(app.listenActions.length, 0, "an avoided target");
                 testContext.setScanAvoids([]);
                 testContext.setMetric("scanAvoidCount", 0);
+                testContext.setMetric("scanTargetEligible", [true, true]);
                 compare(app.listenActions.length, 1, "the target put back");
+                testContext.setMetric("scanTargetEligible", []);
+                compare(app.listenActions.length, 0, "nothing published");
             } finally {
                 endPausedBundle([security.uid, hospital.uid]);
             }
@@ -1366,6 +1382,31 @@ Item {
             }
         }
 
+        // Issue #644: an NFM row the engine passes over for its width (here a 25 kHz row the DSP rate cannot filter,
+        // as the engine publishes it) and a P25 row on one frequency: the in-place Listen names the P25 row, the one
+        // the scan resumes and holds at that frequency; once the rate fits the NFM row it names that one.
+        function test_a_paused_scan_list_names_the_row_the_engine_takes() {
+            scanLists.add({name: "Security", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Wide", protocol: "nfm", freqMhz: "851.0125", enabled: true}]});
+            var security = scanLists.get(scanLists.count - 1);
+            scanLists.add({name: "Hospital", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Lobby", protocol: "p25", freqMhz: "851.0125", enabled: true}]});
+            var hospital = scanLists.get(scanLists.count - 1);
+            try {
+                pauseBundleOn(security, hospital, 851012500);
+                compare(app.sessionTargets.length, 2);
+                testContext.setMetric("scanTargetEligible", [false, true]);
+                compare(app.listenActions.length, 1);
+                compare(app.listenActions[0].name, "Hospital / Lobby");
+                compare(app.listenActions[0].accessibleName, "Listen to Hospital / Lobby with its settings");
+                testContext.setMetric("scanTargetEligible", [true, true]);
+                compare(app.listenActions.length, 1);
+                compare(app.listenActions[0].name, "Security / Wide");
+            } finally {
+                endPausedBundle([security.uid, hospital.uid]);
+            }
+        }
+
         // The session's own targets are the ones it started with, taken when its start was accepted: deleting its
         // saved lists while it runs (which removes their generated target files), then pausing it, changes nothing the
         // paused session reaches in place.
@@ -1380,6 +1421,7 @@ Item {
                 testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
                                         scanRotationActive: false, scanPaused: true, scanResumable: true,
                                         tunerControlled: false, centerFreqHz: 851012500, channelBandwidthHz: 12500});
+                publishAllEligible();
                 tryVerify(function () { return app.operatorHolds && app.exploring; });
                 compare(app.listenActions.length, 1, "the session's own row");
                 compare(app.listenActions[0].key, "tune");
@@ -1411,6 +1453,7 @@ Item {
                 testContext.setMetrics({optionsKnown: true, operatorTuned: true, scanKind: 2,
                                         scanRotationActive: false, scanPaused: true, scanResumable: true,
                                         tunerControlled: false, centerFreqHz: 851012500, channelBandwidthHz: 12500});
+                publishAllEligible();
                 tryVerify(function () { return app.operatorHolds && app.exploring; });
                 compare(app.listenActions.length, 1, "the session's own row");
                 compare(app.listenActions[0].key, "tune");
@@ -1460,6 +1503,7 @@ Item {
                 testContext.setMetrics({optionsKnown: true, operatorTuned: false, scanKind: 2,
                                         scanRotationActive: true, scanPaused: false, tunerControlled: false,
                                         centerFreqHz: 851012500, channelBandwidthHz: 12500});
+                publishAllEligible();
                 app.exploring = true;
                 verify(!app.operatorHolds);
                 verify(app.sessionScanList);

@@ -389,6 +389,16 @@ typedef struct {
     size_t stop_target;
     uint32_t stop_hz;
     uint64_t stop_source_key;
+    /* What the published entry reasons (dsd_state::trunk_scan_entry_reasons, issue #644) were last decided from: the
+       DSP rate, the lists, the avoids and the session edits (edit_seq moves at every edit installed), and when they
+       are next decided again whatever moved (a configured width, which nothing here counts, reaches them then). */
+    uint32_t edit_seq;
+    int entry_decided;
+    int entry_rate_hz;
+    uint32_t entry_lists_seq;
+    uint64_t entry_avoid_rev;
+    uint32_t entry_edit_seq;
+    double entry_recheck_s;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -2401,6 +2411,8 @@ trunk_scan_clear_published_target(dsd_state* state) {
     dsd_state_trunk_scan_avoids_free(state);
     state->trunk_scan_avoids_ok = 1U;
     state->trunk_scan_avoid_rev = dsd_state_rev_next();
+    dsd_state_trunk_scan_entry_reasons_free(state);
+    state->trunk_scan_entry_rev = dsd_state_rev_next();
 }
 
 static size_t
@@ -4773,6 +4785,8 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     trunk_scan_publish_timing(opts, state, coord, now_m);
 }
 
+static void trunk_scan_publish_entry_reasons(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord);
+
 void
 dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
@@ -4784,6 +4798,8 @@ dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
     if (coord->avoids_publish_retry) {
         trunk_scan_publish_avoids(state, coord);
     }
+    /* Paused too: what a frequency typed by hand would pick is a paused scan's question most of all. */
+    trunk_scan_publish_entry_reasons(opts, state, coord);
     /* A paused scan rotates nothing and publishes nothing else until a resume. */
     if (coord->paused) {
         return;
@@ -6144,6 +6160,45 @@ trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_
     return trunk_scan_target_width_skipped(opts, state, rt, rate_hz) ? DSD_SCAN_ENTRY_WIDTH : DSD_SCAN_ENTRY_OK;
 }
 
+/* Publish whether a frequency typed by hand could pick each target (dsd_state::trunk_scan_entry_reasons, issue #644),
+   as trunk_scan_entry_reason() decides it, so a frontend names the row the engine takes without deciding it again.
+   Decided again only when the DSP rate, the lists, the avoids or a session edit moved, or once a second (for what no
+   counter here follows: a configured width); stamped trunk_scan_entry_rev only when a byte or the count changed. */
+static void
+trunk_scan_publish_entry_reasons(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const double now_s = dsd_realtime_mono_s();
+    if (coord->entry_decided && coord->entry_rate_hz == rate_hz && coord->entry_lists_seq == coord->lists_seq
+        && coord->entry_avoid_rev == state->trunk_scan_avoid_rev && coord->entry_edit_seq == coord->edit_seq
+        && now_s < coord->entry_recheck_s) {
+        return;
+    }
+    coord->entry_decided = 1;
+    coord->entry_rate_hz = rate_hz;
+    coord->entry_lists_seq = coord->lists_seq;
+    coord->entry_avoid_rev = state->trunk_scan_avoid_rev;
+    coord->entry_edit_seq = coord->edit_seq;
+    coord->entry_recheck_s = now_s + 1.0;
+    int changed = state->trunk_scan_entry_reason_count != coord->count;
+    if (changed && dsd_state_trunk_scan_entry_reasons_reserve(state, coord->count) != 0) {
+        state->trunk_scan_entry_reason_count = 0;
+        state->trunk_scan_entry_rev = dsd_state_rev_next();
+        coord->entry_decided = 0;
+        return;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        const uint8_t reason = (uint8_t)trunk_scan_entry_reason(opts, state, coord, &coord->targets[i], rate_hz);
+        if (changed || state->trunk_scan_entry_reasons[i] != reason) {
+            state->trunk_scan_entry_reasons[i] = reason;
+            changed = 1;
+        }
+    }
+    if (changed) {
+        state->trunk_scan_entry_reason_count = coord->count;
+        state->trunk_scan_entry_rev = dsd_state_rev_next();
+    }
+}
+
 void
 dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, uint32_t hz,
                                  dsd_scan_entry_tally* tally) {
@@ -6610,6 +6665,7 @@ trunk_scan_install_edit(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
                         const dsd_scan_row_edit* next, dsd_scan_row_edit_result* out) {
     dsd_trunk_scan_target_runtime* rt = &coord->targets[index];
     out->previous = rt->edit;
+    coord->edit_seq++;
     /* A paused scan has no target on air: the edit, or its rollback, waits for the target's next visit. */
     if (index != coord->active || coord->paused) {
         rt->edit = *next;

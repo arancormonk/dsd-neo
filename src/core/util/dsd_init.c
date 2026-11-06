@@ -1183,6 +1183,8 @@ init_state_p25p1_nid_learning(dsd_state* state) {
 static void
 init_state_scan_avoid_identity(dsd_state* state) {
     dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_trunk_scan_entry_reasons_free(state);
+    state->trunk_scan_entry_rev = 0;
     state->state_instance = dsd_state_rev_next();
     state->lcn_list_rev = dsd_state_rev_next();
     state->lcn_avoid_rev = dsd_state_rev_next();
@@ -1600,6 +1602,7 @@ freeState(dsd_state* state) {
     dsd_state_ext_free_all(state);
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_trunk_scan_entry_reasons_free(state);
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {

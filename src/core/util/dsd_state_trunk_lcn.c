@@ -521,6 +521,54 @@ dsd_state_trunk_scan_avoids_free(dsd_state* state) {
 }
 
 int
+dsd_state_trunk_scan_entry_reasons_reserve(dsd_state* state, size_t count) {
+    if (!state) {
+        return -1;
+    }
+    if (count <= state->trunk_scan_entry_reason_capacity) {
+        return 0;
+    }
+    const size_t capacity = trunk_lcn_grown_capacity(state->trunk_scan_entry_reason_capacity, count, sizeof(uint8_t));
+    if (!capacity) {
+        return -1;
+    }
+    uint8_t* reasons = (uint8_t*)trunk_lcn_realloc(state->trunk_scan_entry_reasons, capacity);
+    if (!reasons) {
+        return -1;
+    }
+    state->trunk_scan_entry_reasons = reasons;
+    state->trunk_scan_entry_reason_capacity = capacity;
+    return 0;
+}
+
+int
+dsd_state_trunk_scan_entry_reasons_set(dsd_state* state, const uint8_t* reasons, size_t count) {
+    if (!state || (count > 0U && !reasons)) {
+        return -1;
+    }
+    if (dsd_state_trunk_scan_entry_reasons_reserve(state, count) != 0) {
+        state->trunk_scan_entry_reason_count = 0;
+        return -1;
+    }
+    if (count > 0U) {
+        DSD_MEMCPY(state->trunk_scan_entry_reasons, reasons, count);
+    }
+    state->trunk_scan_entry_reason_count = count;
+    return 0;
+}
+
+void
+dsd_state_trunk_scan_entry_reasons_free(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    free(state->trunk_scan_entry_reasons);
+    state->trunk_scan_entry_reasons = NULL;
+    state->trunk_scan_entry_reason_count = 0;
+    state->trunk_scan_entry_reason_capacity = 0;
+}
+
+int
 dsd_state_trunk_lcn_usable_count(const dsd_state* state) {
     if (!state || state->lcn_freq_count <= 0) {
         return 0;

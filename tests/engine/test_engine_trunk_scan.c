@@ -14392,6 +14392,89 @@ dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
     return -1;
 }
 
+/* The published entry reasons hold @p first and @p second for the two targets; 0 when they do. */
+static int
+expect_entry_reasons(const dsd_state* state, const char* stage, uint8_t first, uint8_t second) {
+    if (state->trunk_scan_entry_reason_count != 2U || !state->trunk_scan_entry_reasons
+        || state->trunk_scan_entry_reasons[0] != first || state->trunk_scan_entry_reasons[1] != second) {
+        DSD_FPRINTF(stderr, "entry reasons %s: count %zu, %d %d; want %u %u\n", stage,
+                    state->trunk_scan_entry_reason_count,
+                    state->trunk_scan_entry_reasons ? state->trunk_scan_entry_reasons[0] : -1,
+                    state->trunk_scan_entry_reasons && state->trunk_scan_entry_reason_count > 1U
+                        ? state->trunk_scan_entry_reasons[1]
+                        : -1,
+                    first, second);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #644: the coordinator publishes whether a frequency typed by hand could pick each target, as the entry match
+ * decides it, so a frontend names the row the engine takes: an nfm target whose 20 kHz the 16 kHz DSP rate cannot
+ * filter reads WIDTH, and follows a width edit that fits, the edit dropped, and a rate raised to fit, each with a new
+ * revision; a paused scan publishes too. */
+static int
+test_entry_reasons_follow_the_rate_and_a_width_edit(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "fire,nfm-conventional,154430000,,250,250,,--nfm-bandwidth-hz 20000\n"
+                                          "dmr,dmr-conventional,154430000,,250,250,,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    g_scan_dsp_rate_hz = 16000;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int failed = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "at 16 kHz", DSD_SCAN_ENTRY_WIDTH, DSD_SCAN_ENTRY_OK);
+    uint64_t rev = state.trunk_scan_entry_rev;
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.width_hz = 12500;
+    dsd_scan_row_edit_result result;
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_SET, &value, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "a 12.5 kHz edit", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    failed |= state.trunk_scan_entry_rev == rev;
+    rev = state.trunk_scan_entry_rev;
+    failed |= dsd_engine_trunk_scan_edit_target(&opts, &state, state.scan_row_session, "fire", DSD_SCAN_ROW_FIELD_WIDTH,
+                                                DSD_SCAN_ROW_EDIT_RESET, NULL, &result)
+              != DSD_SCAN_ROW_EDIT_STORED;
+    p25_sm_tick_guard_enter();
+    failed |= dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0;
+    p25_sm_tick_guard_leave();
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "the edit dropped, paused", DSD_SCAN_ENTRY_WIDTH, DSD_SCAN_ENTRY_OK);
+    failed |= state.trunk_scan_entry_rev == rev;
+    rev = state.trunk_scan_entry_rev;
+    g_scan_dsp_rate_hz = 48000;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= expect_entry_reasons(&state, "at 48 kHz", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    failed |= state.trunk_scan_entry_rev == rev;
+    rev = state.trunk_scan_entry_rev;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    failed |= state.trunk_scan_entry_rev != rev; /* nothing moved: nothing republished */
+    if (failed) {
+        DSD_FPRINTF(stderr, "entry reasons (%s)\n", err);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return failed;
+}
+
 /* A frequency typed by hand picks an nfm target only when the width it runs fits the published DSP rate (issue #644
  * D5), the rule by which the rotation skips it at every visit: its effective width, which a session edit sets over the
  * list's. */
@@ -18507,9 +18590,10 @@ test_lists_tone_rejection_passes_over_a_copy(void) {
             tick_at(&opts, &state, start + (0.10 * tick));
         }
         /* With only the copy there is nowhere to go, so no advance is even tried: each tick asks the question alone
-           (its walk reads the DSP rate once), where an advance would read it again for its own walk. */
-        if (lists == 2 && g_scan_dsp_rate_reads != ticks) {
-            DSD_FPRINTF(stderr, "tone rejection with only a copy: %d rate reads in %d ticks, want one a tick\n",
+           (its walk reads the DSP rate once, beside the one read of the entry reasons' publication), where an advance
+           would read it again for its own walk. */
+        if (lists == 2 && g_scan_dsp_rate_reads != 2 * ticks) {
+            DSD_FPRINTF(stderr, "tone rejection with only a copy: %d rate reads in %d ticks, want two a tick\n",
                         g_scan_dsp_rate_reads, ticks);
             test_rc = 1;
         }
@@ -18582,9 +18666,10 @@ test_due_retry_with_an_alternate_walks_once_a_cooldown(void) {
         opts.trunk_is_tuned = 1;
         tick_at(&opts, &state, 2.35 + (0.05 * tick));
     }
-    if (g_scan_dsp_rate_reads != 1 || g_counting_tune_to_cc_calls != 0) {
+    /* Each tick also reads the rate once for the entry reasons' publication (issue #644): 20 of the reads. */
+    if (g_scan_dsp_rate_reads - 20 != 1 || g_counting_tune_to_cc_calls != 0) {
         DSD_FPRINTF(stderr, "a due retry with an alternate: %d walks and %d tunes in 1 s, want 1 and 0\n",
-                    g_scan_dsp_rate_reads, g_counting_tune_to_cc_calls);
+                    g_scan_dsp_rate_reads - 20, g_counting_tune_to_cc_calls);
         test_rc = 1;
     }
     /* The operator's hold makes the retry in place owed at once: the wait for the rotation does not outlast it. */
@@ -20512,6 +20597,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_width_rechecked_when_the_dsp_rate_changes);
     rc |= run_with_default_tune_hook(test_nfm_target_refused_width_skipped_quietly);
     rc |= run_with_default_tune_hook(test_entry_match_reads_the_targets_effective_width);
+    rc |= run_with_default_tune_hook(test_entry_reasons_follow_the_rate_and_a_width_edit);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
     rc |= run_with_default_tune_hook(test_nfm_target_configured_width_held_to_the_dsp_rate);
     rc |= run_with_default_tune_hook(test_nfm_target_status_counts_every_skipped_target);

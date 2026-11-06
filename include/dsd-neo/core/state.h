@@ -1088,6 +1088,15 @@ struct dsd_state {
     dsd_trunk_scan_avoid_entry* trunk_scan_avoids;
     size_t trunk_scan_avoid_count;
     size_t trunk_scan_avoid_capacity;
+    /* Whether a frequency typed by hand could pick each --trunk-scan target (issue #644): one dsd_scan_entry_reason
+     * byte per target, in the coordinator's target order (lists in order, each in its file's order), as
+     * trunk_scan_entry_reason() decides it; trunk_scan_entry_reason_count entries in a heap store of
+     * trunk_scan_entry_reason_capacity. Only the coordinator fills it, stamping trunk_scan_entry_rev when a byte or the
+     * count changes; its detach, initState() and freeState() release it. Never inside a UI_SNAPSHOT_COPY_RANGE, as the
+     * stores above. */
+    uint8_t* trunk_scan_entry_reasons;
+    size_t trunk_scan_entry_reason_count;
+    size_t trunk_scan_entry_reason_capacity;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -2626,6 +2635,9 @@ struct dsd_state {
     uint64_t lcn_avoid_rev;
     size_t lcn_avoid_total;
     uint64_t trunk_scan_avoid_rev;
+    /* Moves whenever trunk_scan_entry_reasons changes, and at its release (issue #644); what the snapshot's copy keys
+       on. */
+    uint64_t trunk_scan_entry_rev;
     uint32_t trunk_scan_session;
     uint8_t trunk_scan_avoids_ok;
     uint8_t scan_avoids_complete;
@@ -3113,6 +3125,21 @@ int dsd_state_trunk_scan_avoids_set(dsd_state* state, const dsd_trunk_scan_avoid
 
 /** Free the published trunk-scan avoid list and zero its pointer, count and capacity. Stamps nothing. */
 void dsd_state_trunk_scan_avoids_free(dsd_state* state);
+
+/**
+ * Ensure the published trunk-scan entry reasons (dsd_state::trunk_scan_entry_reasons) can hold @p count bytes. Returns
+ * 0, or -1 on a NULL state or a failed allocation (the store and its count kept). Stamps nothing.
+ */
+int dsd_state_trunk_scan_entry_reasons_reserve(dsd_state* state, size_t count);
+
+/**
+ * Replace the published trunk-scan entry reasons with a copy of @p count bytes (@p reasons may be NULL when @p count is
+ * 0). On a failed allocation the store is left empty and -1 returned; -1 too for a NULL state. Stamps nothing.
+ */
+int dsd_state_trunk_scan_entry_reasons_set(dsd_state* state, const uint8_t* reasons, size_t count);
+
+/** Free the published trunk-scan entry reasons and zero their pointer, count and capacity. Stamps nothing. */
+void dsd_state_trunk_scan_entry_reasons_free(dsd_state* state);
 
 #ifdef DSD_NEO_TEST_HOOKS
 /* Let the next N allocations of the scan-list reserve helpers (the LCN tail, name, avoid and trunk-scan avoid stores)

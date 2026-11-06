@@ -494,6 +494,8 @@ MetricsModel::clear() {
     m_scanAvoidModel.clear();
     m_scanAvoidsBuilt = false;
     m_scanListModel.clear();
+    m_scanEntryKey = dsd_app_scan_entry_summary{};
+    m_scanTargetEligible.clear();
     publish(cleared);
 }
 
@@ -1350,6 +1352,20 @@ MetricsModel::refreshScanLists(View& next, const dsd_opts* opts_snapshot, const 
         next.scan_rotation_count = snapshot->trunk_scan_rotation_count;
     }
     m_scanListModel.refresh(lists);
+    /* Issue #644: the engine's own answer to which target a frequency typed by hand picks, rebuilt only when the
+       coordinator republished it (a rate, an edit, an avoid or a list switched). */
+    dsd_app_scan_entry_summary entries{};
+    (void)dsd_app_scan_entry_summary_get(opts_snapshot, snapshot, &entries);
+    if (entries.revision != m_scanEntryKey.revision || entries.count != m_scanEntryKey.count) {
+        m_scanEntryKey = entries;
+        QVariantList eligible;
+        eligible.reserve(static_cast<qsizetype>(entries.count));
+        for (size_t i = 0; i < entries.count; ++i) {
+            eligible.append(dsd_app_scan_entry_eligible(opts_snapshot, snapshot, i) == 1);
+        }
+        m_scanTargetEligible = eligible;
+    }
+    next.scan_target_eligible = m_scanTargetEligible;
 }
 
 /*
