@@ -1728,6 +1728,22 @@ suite runs under this compiler.
     target restore (`trunk_scan_restore_call_snapshot()`, `dsd_wav_journal_unlink_pending()`) and the journal's close
     write `unlink`. A departure already ends the outgoing target's calls, which resolves most entries before the restore
     runs. A recording never linked stays unattributed; so does one whose `pending` and `link` straddle a crash.
+  - Carrier departures (issue #809 B4): a per-call recording never carries audio from two carriers, except a call that
+    continues across a move as one call (a TETRA reallocation keeps its epoch). A slot file can hold audio no call owns
+    (TETRA speech decoded before its signalling admits an anonymous call: the record gate allows a slot with no active
+    call), which no commit would close. `dsd_event_flush_orphan_recordings()` (`dsd_events.c`) closes each slot file
+    that holds frames (`dsd_wav_segment_frames()`, libsndfile's count) while its slot has no active canonical call,
+    publishes it as no row's recording without an rdio-scanner export (nothing names it, as on the drop path) and
+    reopens it through the commit's own rotation (`watchdog_event_rotate_slot_wav()`). An empty file, `-P` off, a static
+    WAV and an active call's file (its commit closes it) are left alone. Every departure the decoder makes runs it after
+    ending its calls: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`),
+    a trunk-scan target switch (`trunk_scan_switch_to()`, after either branch ends the outgoing calls), the trunk return
+    to the control channel (`engine_return_to_cc_request_once()`, after the release, when it retuned), the direct
+    no-carrier return (`no_carrier_finish_cc_return()`, when the return was accepted) and the trunk follow to a voice
+    channel (`engine_trunk_tune_to_freq_request_once()`, once the tune is taken: only audio no call owns, so the granted
+    or reallocated call keeps its file). Retunes an external controller makes over the RTL UDP port are invisible to
+    the decoder: a recording can span one (limit). One `sf_command()` per open slot file per departure; nothing on the
+    write path.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
     analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later
@@ -1797,7 +1813,11 @@ suite runs under this compiler.
   journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
   path forms, the process token, the Signal search visit on a commit, an NFM call, both DMR slots, the pending closers,
   the session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a
-  zero id; the write and pending-list seams in `src/core/file/wav_journal_test_support.h`),
+  zero id; the orphan close at a tune (both slots, the two halves' lengths, the visit it names), not of an empty file,
+  a static WAV, an active call's file or across a stream gap, and at a trunk-scan dwell hop and operator advance; the
+  write and pending-list seams in `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan
+  close at the direct and trunk control-channel returns and the trunk follow, none at a refused one), `TETRA_CALLS`
+  (a reallocation keeps one recording),
   `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
   `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
   (`--wav-journal`).
@@ -8553,7 +8573,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      release no state machine: conventional scanning and trunking off exclude both recovery ticks, so none follows a
      voice channel, and a replay retune runs inside a sample read, where the guard's holder is not known.
   2. The outgoing calls end, as a hop, and commit (`no_carrier_finalize_canonical_calls()`), while the live codes are
-     still that carrier's.
+     still that carrier's; then the per-call recordings no call owns close (`dsd_event_flush_orphan_recordings()`, see
+     Core, "Recording journal", carrier departures).
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
      its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
      because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
@@ -8589,8 +8610,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   unpublished (`dsd_engine_analog_call_end()`), and analog reception starts over as at a retune
   (`dsd_analog_rx_reset()`: the received tone, the tone policy's verdict, the monitor's audio chain and converter;
   issue #667 A3), whether or not the stream's generation moved with the gap. The codes, the received identity, the
-  followed voice channel and trunk-scan ownership stay; the hangtime and visit timers decide as after a fade. It takes
-  the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its tick guard and before any
+  followed voice channel, trunk-scan ownership and a recording no call owns stay; the hangtime and visit timers decide
+  as after a fade. It takes the tick guard as a tune does. A cut frame unwinds before the boundary runs, outside its tick guard and before any
   scan or trunk tick; a gap found in the hunt is consumed first in the next outer pass. A pending scan tune (which
   makes `noCarrier()` return early) never skips it. An older symbol cache is dropped when a direct reader has already
   acknowledged its gap, without moving the consumed count backwards. A capture's `MUTE` alone (samples dropped, as a
@@ -13528,7 +13549,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   (the NFM reception's included, which lives outside the snapshot) close under its own label and names: the visit cap
   and an operator's advance or avoid release the carrier (`trunk_scan_advance_releasing()`; an operator's departure from
   a park still pending, or one that never landed, is an ordinary one), and every other departure ends the calls in
-  `trunk_scan_switch_to()` and re-saves the rollback snapshot. `dmr_sm_abandon_carrier()` keeps the destination an
+  `trunk_scan_switch_to()` and re-saves the rollback snapshot. The switch then closes the per-call recordings no call
+  owns (issue #809 B4, see Core, "Recording journal"). `dmr_sm_abandon_carrier()` keeps the destination an
   ordinary release would return to (a Cap+ rest channel a voice LC named). `runtime/control_pump.h`
   `dsd_runtime_controls_need_frame_loop()` (installed from `dsd_app_commands_need_frame_loop()`: any queued command but
   those on `k_deferred_commands` (display, audio, keys and decryption, recording, front-end slider tweaks, the runtime

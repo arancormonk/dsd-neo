@@ -41,6 +41,7 @@
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -2451,6 +2452,278 @@ test_departure_boundary_tags_departing_visit(void) {
     return rc;
 }
 
+/* --- Issue #809 B4: a slot file holding audio no call owns is closed at every carrier departure. --- */
+
+/* The journal id slot @p slot (0 or 1) records under now. */
+static void
+slot_id(const rig* r, int slot, char* id, size_t cap) {
+    id_of_temp(slot == 1 ? r->opts->wav_out_fileR : r->opts->wav_out_file, id, cap);
+}
+
+/* @p line is an orphan's publish: slot @p slot, @p duration_ms long, no row's, not pending and not exported. */
+static int
+expect_orphan(const char* what, const char* line, int slot, long long duration_ms) {
+    char tag[160];
+    DSD_SNPRINTF(tag, sizeof tag, "%s: a publish line", what);
+    if (expect_true(tag, line != NULL)) {
+        return 1;
+    }
+    int rc = 0;
+    DSD_SNPRINTF(tag, sizeof tag, "%s: slot", what);
+    rc |= expect_int(tag, field_ll(line, "slot"), slot);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: duration", what);
+    rc |= expect_int(tag, field_ll(line, "duration_ms"), duration_ms);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: no row, not pending, not exported", what);
+    rc |= expect_true(tag, strcmp(field_s(line, "row"), "null") == 0 && strcmp(field_s(line, "pending"), "false") == 0
+                               && strcmp(field_s(line, "rdio"), "false") == 0);
+    return rc;
+}
+
+/* Speech heard with no call (TETRA speech ahead of the signalling that admits a call), a tune, and more of it: the tune
+   closes the first carrier's audio as its own recording, so the two halves never share a file. */
+static int
+test_orphan_audio_split_at_tune_boundary(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_tune");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char first[64];
+    slot_id(&r, 0, first, sizeof first);
+    voice_frames(&r, 0, 10);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    char second[64];
+    slot_id(&r, 0, second, sizeof second);
+    rc |= expect_true("the slot file reopened", r.opts->wav_out_f != NULL && strcmp(first, second) != 0);
+    voice_frames(&r, 0, 5);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_int("two recordings, one per carrier", count_records(&g_j, "publish"), 2);
+    const char* left = record(&g_j, "publish", 0);
+    rc |= expect_orphan("the carrier left", left, 0, 200);
+    rc |= expect_true("is the first segment", left && strcmp(field_s(left, "id"), first) == 0);
+    const char* next = record(&g_j, "publish", 1);
+    rc |= expect_int("the next carrier's half", next ? field_ll(next, "duration_ms") : -9, 100);
+    rc |= expect_true("is the reopened segment", next && strcmp(field_s(next, "id"), second) == 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* Both slots' files hold audio with no call: the tune closes each, and each reopens. */
+static int
+test_orphan_flush_both_slots(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_slots");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char before[2][64];
+    slot_id(&r, 0, before[0], sizeof before[0]);
+    slot_id(&r, 1, before[1], sizeof before[1]);
+    voice_frames(&r, 0, 4);
+    voice_frames(&r, 1, 6);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    reload(&r);
+    rc |= expect_int("one recording per slot", count_records(&g_j, "publish"), 2);
+    for (int slot = 0; slot < 2; slot++) {
+        const char* pub = NULL;
+        for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+            if (strcmp(field_s(pub, "id"), before[slot]) == 0) {
+                break;
+            }
+        }
+        rc |= expect_orphan(slot == 0 ? "slot 1" : "slot 2", pub, slot, slot == 0 ? 80 : 120);
+        char after[64];
+        slot_id(&r, slot, after, sizeof after);
+        rc |= expect_true("the slot file reopened", (slot == 0 ? r.opts->wav_out_f : r.opts->wav_out_fR) != NULL
+                                                        && after[0] != '\0' && strcmp(after, before[slot]) != 0);
+    }
+    rig_close(&r);
+    return rc;
+}
+
+/* Nothing to close: an empty slot file stays open as it is (no discard, no new segment), with -P off nothing opens, and
+   a static WAV (-w), which holds every carrier by design, is never cut. */
+static int
+test_orphan_flush_skips_empty(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_empty");
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= expect_true("-P off: no slot file opened", r.opts->wav_out_f == NULL && r.opts->wav_out_fR == NULL);
+
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char before[2][64];
+    slot_id(&r, 0, before[0], sizeof before[0]);
+    slot_id(&r, 1, before[1], sizeof before[1]);
+    const SNDFILE* files[2] = {r.opts->wav_out_f, r.opts->wav_out_fR};
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    char after[2][64];
+    slot_id(&r, 0, after[0], sizeof after[0]);
+    slot_id(&r, 1, after[1], sizeof after[1]);
+    rc |= expect_true("the empty files stay open", r.opts->wav_out_f == files[0] && r.opts->wav_out_fR == files[1]
+                                                       && strcmp(after[0], before[0]) == 0
+                                                       && strcmp(after[1], before[1]) == 0);
+    reload(&r);
+    rc |= expect_int("nothing published", count_records(&g_j, "publish"), 0);
+    rc |= expect_int("nothing discarded", count_records(&g_j, "discard"), 0);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+
+    char path[DSD_TEST_PATH_MAX * 2];
+    (void)dsd_test_path_join(path, sizeof path, r.dir, "static.wav");
+    r.opts->static_wav_file = 1;
+    r.opts->wav_out_f = open_static_wav_file(path);
+    rc |= expect_true("the static WAV opens", r.opts->wav_out_f != NULL);
+    const SNDFILE* static_wav = r.opts->wav_out_f;
+    voice_frames(&r, 0, 3);
+    dsd_event_flush_orphan_recordings(r.opts, r.state);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= expect_true("the static WAV is never cut", r.opts->wav_out_f == static_wav);
+    reload(&r);
+    rc |= expect_int("and not published", count_records(&g_j, "publish"), 0);
+    rig_close(&r);
+    return rc;
+}
+
+/* A slot whose call is active keeps its file: the call's own commit closes it, whole, under its row. The other slot's
+   audio, which no call owns, is closed. */
+static int
+test_orphan_flush_skips_active_call(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_active");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char call_id[64];
+    slot_id(&r, 0, call_id, sizeof call_id);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 30U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 5);
+    voice_frames(&r, 1, 3);
+    dsd_event_flush_orphan_recordings(r.opts, r.state);
+    char after[64];
+    slot_id(&r, 0, after, sizeof after);
+    rc |= expect_true("the call's file stays open", strcmp(after, call_id) == 0);
+    reload(&r);
+    rc |= expect_int("only the other slot's audio closed", count_records(&g_j, "publish"), 1);
+    rc |= expect_orphan("slot 2", record(&g_j, "publish", 0), 1, 60);
+
+    voice_frames(&r, 0, 5);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 1);
+    rc |= expect_true("the call's commit publishes its file", pub && strcmp(field_s(pub, "id"), call_id) == 0);
+    rc |= expect_int("whole", pub ? field_ll(pub, "duration_ms") : -9, 200);
+    rc |= expect_int("under its row", pub ? field_ll(pub, "row") : -9, (long long)r.state->event_history_s[0].push_seq);
+    rig_close(&r);
+    return rc;
+}
+
+/* A stream gap leaves the receiver on its carrier: audio no call owns stays in its file across it. */
+static int
+test_stream_gap_keeps_orphan(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_gap");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    voice_frames(&r, 0, 5);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    char after[64];
+    slot_id(&r, 0, after, sizeof after);
+    rc |= expect_true("the file stays open", strcmp(after, id) == 0);
+    voice_frames(&r, 0, 5);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_int("one recording", count_records(&g_j, "publish"), 1);
+    rc |= expect_orphan("across the gap", record(&g_j, "publish", 0), 0, 200);
+    rig_close(&r);
+    return rc;
+}
+
+/* An orphan closed by the boundary that leaves a Signal search visit names that visit, as everything the visit
+   received does. */
+static int
+test_orphan_flush_names_the_visit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_visit");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    dsd_signal_search_visit_set(k_visit_session, 15U);
+    voice_frames(&r, 0, 4);
+    dsd_engine_carrier_boundary(r.opts, r.state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_signal_search_visit_clear();
+    voice_frames(&r, 0, 2);
+    submit(&r, DSD_APP_CMD_WAV_STOP);
+    reload(&r);
+    rc |= expect_int("one recording per carrier", count_records(&g_j, "publish"), 2);
+    rc |= expect_orphan("the visit's orphan", record(&g_j, "publish", 0), 0, 80);
+    rc |= expect_visit("the visit's orphan", record(&g_j, "publish", 0), "1730000000000000:15");
+    const char* after = record(&g_j, "publish", 1);
+    rc |= expect_true("audio after the visit names none", after && strstr(after, "\"search\"") == NULL);
+    rig_close(&r);
+    return rc;
+}
+
+/* Trunk scan, two P25 targets at 851 and 852 MHz on a stand-in tuner. */
+static int
+scan_rig_start(rig* r) {
+    char targets[DSD_TEST_PATH_MAX * 2];
+    (void)dsd_test_path_join(targets, sizeof targets, r->dir, "targets.csv");
+    FILE* f = dsd_fopen_private(targets, "wb");
+    if (!f) {
+        return 1;
+    }
+    const char* csv = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
+                      "a,p25-trunk,851000000,,250,250,\n"
+                      "b,p25-trunk,852000000,,250,250,\n";
+    const int wrote = fwrite(csv, 1, strlen(csv), f) == strlen(csv);
+    int rc = expect_true("targets written", fclose(f) == 0 && wrote);
+    r->opts->audio_in_type = AUDIO_IN_RTL;
+    r->opts->use_rigctl = 1;
+    r->opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(r->opts->trunk_scan_lists[0].path, sizeof r->opts->trunk_scan_lists[0].path, "%s", targets);
+    r->opts->trunk_scan_list_count = 1;
+    dsd_trunk_tuning_requests_reset();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = tune, .tune_to_cc_request = tune, .return_to_cc_request = return_to_cc});
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){.get_current_freq_hz = current_frequency});
+    trunk_scan_test_set_now(0.0);
+    char error[256] = {0};
+    rc |= expect_int("scan starts", dsd_engine_trunk_scan_init(r->opts, r->state, error, sizeof error), 0);
+    return rc;
+}
+
+static void
+scan_rig_stop(rig* r) {
+    dsd_engine_trunk_scan_shutdown(r->opts, r->state);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
+    dsd_trunk_tuning_requests_reset();
+}
+
+/* A trunk-scan target switch moves the tuner without the carrier boundary: the dwell's rotation (the switch ends the
+   outgoing target's calls) and an operator's advance (the switch hands the parked carrier back) each close what the
+   carrier left holds with no call. */
+static int
+test_trunk_scan_switch_flushes_orphans(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_scan");
+    rc |= scan_rig_start(&r);
+    rc |= expect_int("on target a", (long long)dsd_engine_trunk_scan_active_index(r.state), 0);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    voice_frames(&r, 0, 6);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(r.opts, r.state);
+    rc |= expect_int("the dwell hopped to b", (long long)dsd_engine_trunk_scan_active_index(r.state), 1);
+    reload(&r);
+    rc |= expect_int("a's audio closed at the hop", count_records(&g_j, "publish"), 1);
+    rc |= expect_orphan("a's audio", record(&g_j, "publish", 0), 0, 120);
+
+    voice_frames(&r, 0, 4);
+    rc |= expect_int("the operator advances",
+                     dsd_engine_trunk_scan_control(r.opts, r.state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    rc |= expect_int("back on a", (long long)dsd_engine_trunk_scan_active_index(r.state), 0);
+    reload(&r);
+    rc |= expect_int("b's audio closed at the advance", count_records(&g_j, "publish"), 2);
+    rc |= expect_orphan("b's audio", record(&g_j, "publish", 1), 0, 80);
+    scan_rig_stop(&r);
+    rig_close(&r);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -2495,6 +2768,13 @@ main(void) {
     rc |= test_no_visit_no_key();
     rc |= test_session_final_closes_keep_visit();
     rc |= test_departure_boundary_tags_departing_visit();
+    rc |= test_orphan_audio_split_at_tune_boundary();
+    rc |= test_orphan_flush_both_slots();
+    rc |= test_orphan_flush_skips_empty();
+    rc |= test_orphan_flush_skips_active_call();
+    rc |= test_stream_gap_keeps_orphan();
+    rc |= test_orphan_flush_names_the_visit();
+    rc |= test_trunk_scan_switch_flushes_orphans();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

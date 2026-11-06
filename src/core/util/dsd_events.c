@@ -509,21 +509,12 @@ watchdog_event_is_data_event(const Event_History* item) {
                && item->subtype == DSD_EVENT_SUBTYPE_DMR_DATA_BURST);
 }
 
+/* Close slot @p slot's per-call file, publish it as @p owner's recording (exported when @p export_recording), and open
+   the next one. A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and
+   a failed open marks the slot for the next one (issue #708). */
 static void
-watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
-                                    int export_recording, const dsd_wav_owner* owner) {
-    if (opts->static_wav_file != 0) {
-        return;
-    }
-
-    /* An NFM call's audio goes to its own recording (engine/analog_call.c), never to a slot file, so its end leaves the
-       slot files alone: rotating them would close, discard and reopen an empty file per call (issue #668). */
-    if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
-        return;
-    }
-
-    /* A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and a failed
-       open marks the slot for the next one (issue #708). */
+watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_recording,
+                               const dsd_wav_owner* owner) {
     if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {
         if (opts->wav_out_f != NULL) {
             opts->wav_out_f =
@@ -545,6 +536,46 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
         opts->wav_out_open_timeR = dsd_decode_time();
         opts->wav_out_reopen = opts->wav_out_fR != NULL ? (opts->wav_out_reopen & ~2) : (opts->wav_out_reopen | 2);
+    }
+}
+
+static void
+watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
+                                    int export_recording, const dsd_wav_owner* owner) {
+    if (opts->static_wav_file != 0) {
+        return;
+    }
+
+    /* An NFM call's audio goes to its own recording (engine/analog_call.c), never to a slot file, so its end leaves the
+       slot files alone: rotating them would close, discard and reopen an empty file per call (issue #668). */
+    if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
+        return;
+    }
+    watchdog_event_rotate_slot_wav(opts, event_struct, slot, export_recording, owner);
+}
+
+static int
+watchdog_event_slot_call_active(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+void
+dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->static_wav_file != 0) {
+        return;
+    }
+    for (uint8_t slot = 0; slot < 2U; slot++) {
+        /* An active call's file is its own and closes at its commit; a call that goes on across the move (a TETRA
+           reallocation) stays one recording. */
+        if (dsd_wav_segment_frames(slot == 0U ? opts->wav_out_f : opts->wav_out_fR) <= 0
+            || watchdog_event_slot_call_active(state, slot)) {
+            continue;
+        }
+        /* No call owns the audio, so no row claims it and, as on the drop path, it is not exported. */
+        const dsd_wav_owner none = {DSD_WAV_OWNER_NONE, slot, 0U, 0U};
+        const Event_History_I* event_struct = state->event_history_s ? &state->event_history_s[slot] : NULL;
+        watchdog_event_rotate_slot_wav(opts, event_struct, slot, 0, &none);
     }
 }
 

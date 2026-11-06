@@ -6,6 +6,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
@@ -1095,6 +1096,11 @@ engine_return_to_cc_request_once(dsd_opts* opts, dsd_state* state, uint64_t requ
     }
 
     dsd_engine_release_tuned_call_state(opts, state);
+    if (retunes) {
+        /* The release ended the voice channel's calls; what the receiver holds of it that no call owns closes too, so
+           the control channel's audio never joins it (issue #809 B4). */
+        dsd_event_flush_orphan_recordings(opts, state);
+    }
 
     /* Keep symbol timing aligned with the current control-channel mode. A return that retuned nothing leaves a chain
        comparison going on the carrier it is on, and the comparison owns the chain and the dwell there: the control
@@ -1221,6 +1227,10 @@ engine_trunk_tune_to_freq_request_once(dsd_opts* opts, dsd_state* state, long in
     dsd_engine_maybe_reset_p25p2_state(opts, state, ted_sps);
 
     dsd_engine_update_vc_tune_state(opts, state, freq);
+    /* The receiver left its carrier: audio no call owns closes, so the voice channel's never joins it (issue #809 B4).
+       Only that: a call the move carries over as one (a TETRA reallocation) is active, and its recording closes at its
+       own commit. A refused tune moved nothing and closes nothing. */
+    dsd_event_flush_orphan_recordings(opts, state);
     return result;
 }
 

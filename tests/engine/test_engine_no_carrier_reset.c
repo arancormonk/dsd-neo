@@ -25,6 +25,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/analog_call.h>
@@ -1232,6 +1233,216 @@ test_direct_return_forgets_the_carried_history(void) {
     rc |= expect_true("the direct return forgets the carried history",
                       state->frame_sync_carry.valid == 0U && state->frame_sync_carry.drops != drops);
     g_rigctl_setfreq_ok = 0;
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* --- Issue #809 B4: the trunked departures close the per-call recordings no call owns. --- */
+
+/* Per-call recording (-P) into a temp folder, with the recording journal there to read what was published. */
+typedef struct {
+    char dir[DSD_TEST_PATH_MAX];
+    char journal[DSD_TEST_PATH_MAX];
+} recording_rig;
+
+static int
+recording_rig_open(dsd_opts* opts, recording_rig* r, const char* prefix) {
+    DSD_MEMSET(r, 0, sizeof(*r));
+    if (!dsd_test_mkdtemp(r->dir, sizeof r->dir, prefix)
+        || dsd_test_path_join(r->journal, sizeof r->journal, r->dir, "calls.jsonl") != 0
+        || dsd_wav_journal_open(r->journal) != 0) {
+        DSD_FPRINTF(stderr, "recording rig %s failed\n", prefix);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->wav_out_dir, sizeof opts->wav_out_dir, "%s", r->dir);
+    opts->dmr_stereo_wav = 1;
+    opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
+    opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
+    return opts->wav_out_f != NULL && opts->wav_out_fR != NULL ? 0 : 1;
+}
+
+static int
+recording_rig_remove_cb(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(path, sizeof path, (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+static void
+recording_rig_close(dsd_opts* opts, recording_rig* r) {
+    opts->wav_out_f = close_wav_file(opts->wav_out_f);
+    opts->wav_out_fR = close_wav_file(opts->wav_out_fR);
+    dsd_wav_journal_close();
+    (void)dsd_dir_list(r->dir, recording_rig_remove_cb, r->dir);
+    (void)dsd_test_rmdir(r->dir);
+}
+
+/* @p frames of decoded voice (20 ms each) into slot @p slot's per-call file. */
+static void
+recording_rig_frames(dsd_opts* opts, dsd_state* state, int slot, int frames) {
+    for (int f = 0; f < frames; f++) {
+        for (int i = 0; i < 160; i++) {
+            state->audio_out_temp_buf[i] = (float)((i % 32) * 512 - 8192);
+        }
+        dsd_write_mono_voice_to_slot_wav(opts, state, slot);
+    }
+}
+
+/* The recordings the journal says were published from slot @p slot, and the last one's duration_ms in @p last_ms. */
+static int
+recording_rig_published(const recording_rig* r, int slot, long long* last_ms) {
+    FILE* f = dsd_fopen_existing_regular_file(r->journal, "rb");
+    if (!f) {
+        return 0;
+    }
+    char slot_key[32];
+    DSD_SNPRINTF(slot_key, sizeof slot_key, "\"slot\":%d,", slot);
+    int n = 0;
+    char line[4096];
+    while (fgets(line, sizeof line, f) != NULL) {
+        const char* ms = strstr(line, "\"duration_ms\":");
+        if (strstr(line, "\"type\":\"publish\"") == NULL || strstr(line, slot_key) == NULL || ms == NULL) {
+            continue;
+        }
+        n++;
+        ms += strlen("\"duration_ms\":");
+        char* end = NULL;
+        const long long value = strtoll(ms, &end, 10);
+        if (last_ms != NULL) {
+            *last_ms = (end != ms && *end == ',') ? value : -1;
+        }
+    }
+    fclose(f);
+    return n;
+}
+
+/* The direct control-channel return (rigctl, no helper) leaves the voice channel: audio its slot file holds with no
+   call closes as its own recording there, so the control channel's never joins it. A pass that returns nowhere leaves
+   it open. */
+static int
+test_direct_cc_return_closes_an_orphaned_recording(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    recording_rig rec;
+    int rc = recording_rig_open(opts, &rec, "dsdneo_b4_direct_return");
+    dsd_trunk_tuning_requests_reset();
+    opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->setmod_bw = 0;
+    opts->frame_nxdn48 = 1;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = 0;
+    g_rigctl_setfreq_ok = 1;
+    const long cc = 942087500L; // a frequency no other case uses: engine.c caches the last rigctl tune across cases
+
+    opts->trunk_enable = 0;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    recording_rig_frames(opts, state, 0, 5);
+    noCarrier(opts, state);
+    rc |= expect_true("a pass with no return keeps the audio open", recording_rig_published(&rec, 0, NULL) == 0);
+
+    opts->trunk_enable = 1;
+    g_rigctl_setfreq_calls = 0;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = cc;
+    state->p25_cc_freq = cc;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_vc_sync_time = 0;
+    recording_rig_frames(opts, state, 0, 5);
+    noCarrier(opts, state);
+    rc |= expect_true("the direct return tuned", g_rigctl_setfreq_calls == 1 && g_rigctl_setfreq_freq == cc);
+    long long ms = -9;
+    rc |= expect_true("the voice channel's audio closed at the return",
+                      recording_rig_published(&rec, 0, &ms) == 1 && ms == 200);
+    rc |= expect_true("and the slot file reopened",
+                      opts->wav_out_f != NULL && dsd_wav_segment_frames(opts->wav_out_f) == 0);
+    g_rigctl_setfreq_ok = 0;
+    recording_rig_close(opts, &rec);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* The return through the trunk tuning hooks (dsd_engine_return_to_cc_request()) closes what the voice channel left with
+   no call, once the tuner took the return; a refused return moved nothing and closes nothing. */
+static int
+test_trunk_cc_return_closes_an_orphaned_recording(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    recording_rig rec;
+    int rc = recording_rig_open(opts, &rec, "dsdneo_b4_trunk_return");
+    dsd_trunk_tuning_requests_reset();
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    state->trunk_cc_freq = 942162500L; // a frequency no other case uses
+    opts->trunk_is_tuned = 1;
+    recording_rig_frames(opts, state, 1, 4);
+
+    g_rigctl_setfreq_ok = 0;
+    rc |= expect_true("a refused return",
+                      dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("closes nothing", recording_rig_published(&rec, 1, NULL) == 0);
+    g_rigctl_setfreq_ok = 1;
+    rc |= expect_true("the return", dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    long long ms = -9;
+    rc |= expect_true("closes slot 2's audio", recording_rig_published(&rec, 1, &ms) == 1 && ms == 80);
+    rc |= expect_true("and leaves the empty slot 1 file", recording_rig_published(&rec, 0, NULL) == 0);
+    g_rigctl_setfreq_ok = 0;
+    recording_rig_close(opts, &rec);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
+/* A trunk follow to a voice channel closes only audio no call owns: the call active on the other slot keeps its
+   recording, which its own end publishes whole. */
+static int
+test_trunk_follow_closes_only_orphaned_recordings(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    recording_rig rec;
+    int rc = recording_rig_open(opts, &rec, "dsdneo_b4_follow");
+    dsd_trunk_tuning_requests_reset();
+    opts->trunk_enable = opts->use_rigctl = 1;
+    opts->audio_in_type = AUDIO_IN_NULL;
+    opts->setmod_bw = 0;
+    const dsd_call_observation call = {.protocol = DSD_SYNC_P25P1_POS,
+                                       .slot = 0U,
+                                       .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                       .ota_target_id = 300U,
+                                       .policy_target_id = 300U,
+                                       .ota_source_id = 30U};
+    (void)dsd_call_state_observe(state, &call, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(opts, state, 0U);
+    recording_rig_frames(opts, state, 0, 5);
+    recording_rig_frames(opts, state, 1, 3);
+    const long vc = 942187500L; // a frequency no other case uses
+
+    g_rigctl_setfreq_ok = 0;
+    rc |= expect_true("a refused follow",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, vc, 0, 0U) == DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= expect_true("closes nothing", recording_rig_published(&rec, 1, NULL) == 0);
+    g_rigctl_setfreq_ok = 1;
+    rc |= expect_true("the follow",
+                      dsd_engine_trunk_tune_to_freq_request(opts, state, vc, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    long long ms = -9;
+    rc |= expect_true("closes slot 2's audio", recording_rig_published(&rec, 1, &ms) == 1 && ms == 60);
+    rc |= expect_true("not the active call's", recording_rig_published(&rec, 0, NULL) == 0);
+    recording_rig_frames(opts, state, 0, 5);
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+    dsd_event_sync_slot(opts, state, 0U);
+    rc |= expect_true("whose end publishes it whole", recording_rig_published(&rec, 0, &ms) == 1 && ms == 200);
+    g_rigctl_setfreq_ok = 0;
+    recording_rig_close(opts, &rec);
     free_test_runtime(opts, state);
     return rc;
 }
@@ -12640,6 +12851,9 @@ main(void) {
     rc |= test_trunk_cache_with_mode_metadata();
     rc |= test_direct_return_after_hook_tune();
     rc |= test_direct_return_forgets_the_carried_history();
+    rc |= test_direct_cc_return_closes_an_orphaned_recording();
+    rc |= test_trunk_cc_return_closes_an_orphaned_recording();
+    rc |= test_trunk_follow_closes_only_orphaned_recordings();
     rc |= test_typed_scan_partial_move_is_a_carrier_boundary();
     rc |= test_typed_scan_async_move_is_a_carrier_boundary();
     rc |= test_typed_step_completes_across_a_learned_channel();

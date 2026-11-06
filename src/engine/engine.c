@@ -2598,6 +2598,10 @@ no_carrier_finish_cc_return(dsd_opts* opts, dsd_state* state, long cc, int accep
             dmr_sm_begin_cc_acquisition(dmr_sm_get_ctx(), opts, state, cc, request_id);
         }
         no_carrier_hand_tetra_over(opts, state, accepted_cc_return);
+        if (accepted_cc_return) {
+            /* The receiver left the voice channel: what it holds of it that no call owns closes too (issue #809 B4). */
+            dsd_event_flush_orphan_recordings(opts, state);
+        }
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
@@ -3520,6 +3524,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_engine_scan_landing_forget(state);
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
+    /* Their commits closed the calls' recordings; audio no call owns is closed too, so the next carrier's never joins it
+       (issue #809 B4). */
+    dsd_event_flush_orphan_recordings(opts, state);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_carrier_decoding(opts, state);
     dsd_engine_forget_untrunked_carrier_state(opts, state);

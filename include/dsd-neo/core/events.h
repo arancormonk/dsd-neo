@@ -203,6 +203,18 @@ int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[
  */
 void dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state);
 /**
+ * Close the per-call recordings no call owns as the receiver leaves its carrier (issue #809 B4).
+ *
+ * For each slot whose per-call WAV holds audio while the slot has no active canonical call (speech heard before any
+ * signalling admitted a call, a TETRA anonymous call's lead-in), the file is closed, published as no row's recording
+ * without an rdio-scanner export (nothing names it, as on the drop path) and reopened, as a commit rotates it. Without
+ * it the next carrier's audio would join the same file. A slot with an active call is left to its own commit, so a
+ * call that continues across the move as one call (a TETRA reallocation) stays one recording. An empty file, per-call
+ * recording off and a static WAV are left alone. Run at every carrier departure, after the departure ended its calls.
+ * Callers must not hold the call-state lock or an event-history transaction.
+ */
+void dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state);
+/**
  * Clear every history row, staged data payload and per-slot commit bookkeeping on both slots.
  *
  * Callers must not hold an event-history transaction: this opens its own. Clearing the rows
