@@ -3191,8 +3191,8 @@ test_scan_avoid_list_chooser(void) {
     rc |= expect_int("identity frequency as shown", p.frequency_hz == 462037500U, 1);
     g_chooser.dispose(g_chooser.user);
 
-    /* A trunk scan's targets, paused (D3): listed and put back by session and id. */
-    dsd_trunk_scan_avoid_entry target;
+    /* A trunk scan's targets, paused (D3): listed and put back by session and id. Static, as the state holding it. */
+    static dsd_trunk_scan_avoid_entry target;
     DSD_MEMSET(&target, 0, sizeof target);
     target.ordinal = 2U;
     target.frequency_hz = 851012500U;

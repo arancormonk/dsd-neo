@@ -24,12 +24,12 @@ typedef void (*ui_chooser_done_fn)(void* user, int selected);
  *
  * The owned variants (ui_prompt_open_string_owned(), ui_chooser_start_owned())
  * take the context with this function and call it exactly once, after the
- * widget has stopped reading anything the context holds (a borrowed title, the
- * item strings and the array of them): after the done-callback returns, or
- * without a callback when the widget is closed, replaced or shut down. A
- * done-callback that hands the context on to another owned widget takes it
- * back first with ui_prompt_take_context() / ui_chooser_take_context(), and the
- * dispose is then the new widget's to call. A start or open handed a context
+ * widget has stopped reading anything the context holds (a prompt's borrowed
+ * title; a chooser copies its title and items as it starts): after the
+ * done-callback returns, or without a callback when the widget is closed,
+ * replaced or shut down. A done-callback that hands the context on to another
+ * owned widget takes it back first with ui_prompt_take_context() /
+ * ui_chooser_take_context(), and the dispose is then the new widget's to call. A start or open handed a context
  * that is already owned - by the callback running now, or by the open widget of
  * the same kind it replaces - takes that ownership over the same way (no
  * dispose then); given no dispose of its own, it disposes with the owner's.
@@ -191,11 +191,15 @@ void ui_help_render(void);
 /**
  * @brief Start a chooser overlay with a list of items.
  *
- * @param title    Title shown in chooser window.
- * @param items    Array of string labels.
+ * The chooser copies the title, the item array and its strings as it starts,
+ * so they need only last the call. The context is kept by pointer until the
+ * callback runs: pass static or heap storage, never a local's address.
+ *
+ * @param title    Title shown in chooser window (copied; NULL shows "Select").
+ * @param items    Array of string labels (copied with their strings).
  * @param count    Number of items in the array.
  * @param on_done  Callback invoked with selected index (or -1 on cancel).
- * @param user_ctx User context passed to callback.
+ * @param user_ctx User context passed to callback (kept by pointer).
  */
 void ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done,
                       void* user_ctx);
@@ -221,7 +225,8 @@ void ui_chooser_start_at(const char* title, const char* const* items, int count,
  * ui_chooser_take_context(); or, with no callback, when the chooser is closed
  * (ui_chooser_close(), shutdown) or replaced by another start (a start handed
  * this same context takes it over instead: see ui_context_dispose_fn). The
- * title, the item array and its strings may all live in the context.
+ * title, the item array and its strings may all live in the context: the
+ * chooser copies them as it starts.
  */
 void ui_chooser_start_owned(const char* title, const char* const* items, int count, int initial_sel,
                             ui_chooser_done_fn on_done, void* user_ctx, ui_context_dispose_fn dispose);

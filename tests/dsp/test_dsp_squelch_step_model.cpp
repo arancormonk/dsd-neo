@@ -318,9 +318,14 @@ test_halfband_recursion(void) {
             const double want = lag < m.hb_lags ? m.r_hb[lag] : 0.0;
             factor_worst = std::fmax(factor_worst, std::fabs(sum - want) / m.r_hb[0]);
         }
-        bool symmetric = true;
+        /* Mirror taps agree to rounding: within 1e-12 of the factor's largest tap. */
+        double factor_peak = 0.0;
         for (int t = 0; t < m.factor_len; t++) {
-            symmetric = symmetric && m.factor[t] == m.factor[m.factor_len - 1 - t];
+            factor_peak = std::fmax(factor_peak, std::fabs(m.factor[t]));
+        }
+        bool symmetric = factor_peak > 0.0;
+        for (int t = 0; t < m.factor_len; t++) {
+            symmetric = symmetric && std::fabs(m.factor[t] - m.factor[m.factor_len - 1 - t]) <= 1e-12 * factor_peak;
         }
         printf("  spectral factor: %d taps, autocorrelation within %.2e of R[0]\n", m.factor_len, factor_worst);
         /* A cut leaving e of the energy out moves the autocorrelation at most 2 sqrt(e) + e of R[0] (1e-6: 2e-3). */

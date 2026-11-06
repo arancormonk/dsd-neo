@@ -192,7 +192,9 @@ main(void) {
     DSD_MEMSET(&g_newer_state, 0, sizeof g_newer_state);
     opts.receive.filters[DSD_RECEIVE_DCC].enabled = 1;
     g_newer_opts.receive.filters[DSD_RECEIVE_DCC].enabled = 1;
-    UiCtx ctx = {.opts = &opts, .state = &state};
+    /* Static: the chooser keeps the menu's context by pointer, as it does the menu's own. */
+    static UiCtx ctx;
+    ctx = (UiCtx){.opts = &opts, .state = &state};
 
     /* The frame's pair seeds the editor; the publication that landed during the activation is not read. */
     act_receive_dcc(&ctx);
@@ -211,7 +213,8 @@ main(void) {
     assert(g_acquisitions == 0);
 
     /* No published options in the frame: nothing to edit, and the editor says so. */
-    UiCtx empty = {.opts = NULL, .state = NULL};
+    static UiCtx empty;
+    empty = (UiCtx){.opts = NULL, .state = NULL};
     g_chooser_calls = 0;
     act_receive_dcc(&empty);
     assert(g_chooser_calls == 0);

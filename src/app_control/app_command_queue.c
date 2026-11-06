@@ -8324,9 +8324,10 @@ apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         ui_set_toast(state, 3, "Not scanning: hold/avoid need -Y or --trunk-scan");
         return 1;
     }
-    switch (op) {
-        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: apply_manual_scan_hold_toggle(state); break;
-        default: apply_manual_scan_avoid(opts, state); break;
+    if (op == DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE) {
+        apply_manual_scan_hold_toggle(state);
+    } else {
+        apply_manual_scan_avoid(opts, state);
     }
     return 1;
 }
