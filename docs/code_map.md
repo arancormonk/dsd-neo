@@ -3715,7 +3715,7 @@ owner exists (the intent lives there): without it they answer `SETUP_FAILED` bef
 the hold itself (`dsd_engine_scan_entry_hold_now()`). A row confirmed on air (`dsd_engine_channel_scan_row_confirmed()`)
 gets the hold only. A row whose tune is already in flight in this scan (a typed row's attempt still waiting on its
 request or a retry, `channel_scan_row_in_flight()`; an untyped row's walk the scan owns, or its timed step's tune, still
-noted, `dsd_engine_manual_tune_pending_row()`, `dsd_engine_manual_tune_pending_step_row()`), whether an earlier go-to, a
+noted, one read of it in `dsd_engine_manual_tune_pending_read()`), whether an earlier go-to, a
 Next or the timed step began it, is not tuned again: the go-to takes an entry hold off the row left, sets the intent on
 that attempt or noted tune and answers `PENDING`, as the trunk scan's go-to waits on a park in flight. A tune that can
 no longer land is never joined: a noted tune asked of a stream that has since stopped (its record's stream session
@@ -3724,7 +3724,13 @@ tuner or walk to adopt (`manual_tune_record_live()`); one whose failure or drop 
 or pending id either (`manual_tune_record_joinable()`; a `y` start still adopts such a walk, whose failure the poll then
 passes by the scan's walk rules); and a typed attempt or a park whose request already failed (a
 stream stop fails the one it queued) is not in flight (`channel_scan_row_in_flight()`, `trunk_scan_park_live()`): the
-go-to, resume-at, walk or `y` start goes on as with nothing pending. Which request a noted record tracks is another
+go-to, resume-at, walk or `y` start goes on as with nothing pending. A join reads the record once
+(`dsd_engine_manual_tune_pending_read()`: its row, whether it may be joined and its ID), since its completion can come
+on the controller's thread between two queries, and names the tune it joined by that read's ID; the trunk go-to waits
+on a park in flight and names it from the same read of `trunk_scan_park_live()`. An entry left waiting on no tune of
+its scan's (none named, or one no longer outstanding) fails at the next poll, service or tick, kept for its toast
+(`untyped_end_entry_waiting_on_nothing()`, `channel_scan_end_entry_waiting_on_nothing()`,
+`trunk_scan_end_entry_waiting_on_nothing()`). Which request a noted record tracks is another
 question (`dsd_engine_manual_tune_noted_id()`, until its poll): an entry bound to the tune its own go-to just noted, and
 a resume-at's session hand-off (`dsd_engine_manual_tune_rebind_session()`), follow that tune even when its failure came
 before its wait returned, so its outcome settles them. An untyped resume left waiting on no record at all ends at the
@@ -3752,7 +3758,7 @@ may still land, as every refusal does; once it lands, the cached centre is its t
 leg moved. A resume-at is today's resume on the row given (`channel_scan_resume_on()`, which the plain resume now calls
 too), so its failures leave the scan paused with the toast and the pause hook's undo. Over a resume still pending whose
 own tune is for the row already (typed: `channel_scan_row_in_flight()`; untyped: the step tune
-`dsd_engine_manual_tune_pending_step_row()` names) it sets the intent on that tune and answers `PENDING` with no second
+`dsd_engine_manual_tune_pending_read()` names) it sets the intent on that tune and answers `PENDING` with no second
 tune, so the resume's landing holds the row; a trunk scan's resume clears `paused` as its park begins, so its go-to
 takes the running scan's park-in-flight join. Otherwise, over a typed resume still pending it is the staged go-to under
 the resume's ownership (a refusal after a backend moved then runs the resume's own failure, cursor back); over an
@@ -3766,7 +3772,7 @@ moved leaves the scan paused. The hold is set only on the row's confirmed landin
 `lcn_scan_session`, `lcn_list_rev` and the request of its tune. For a typed row the request is the row's attempt
 (`channel_scan::attempt`, its first request, which a restage keeps); an intent set before its tune binds to it in
 `channel_scan_tune_staged()`. For an untyped row it is the row's noted manual tune
-(`dsd_engine_manual_tune_pending_id()`, bound in `untyped_enter_tuned_row()`); the settled record carries its `id`. A
+(`dsd_engine_manual_tune_noted_id()`, bound in `untyped_enter_tuned_row()`); the settled record carries its `id`. A
 landing within the go-to's own call holds the row directly. Otherwise `dsd_engine_scan_entry_landed()` runs at both -Y
 landings (`channel_scan_commit()`, `untyped_install_row()`). It sets `lcn_scan_hold` and `lcn_scan_entry_hold` when the
 row, session, list and request are the intent's, and spends the intent at every landing.

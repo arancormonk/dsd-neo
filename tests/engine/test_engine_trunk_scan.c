@@ -19541,6 +19541,31 @@ test_goto_single_target(void) {
     return test_rc;
 }
 
+/* Issue #644: a running trunk scan with an entry waiting on target b that names no park, or a park no longer in flight
+   (set so directly): the next tick ends it, its failure kept for the toast, so nothing is left waiting. */
+static int
+goto_entry_waiting_on_nothing_case(uint64_t request) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    (void)dsd_engine_scan_entry_take_failure(&state, NULL);
+    dsd_engine_scan_entry_intent_set_target(&state, 1, 0U, request);
+    int test_rc = expect_goto("the entry is set", dsd_engine_scan_entry_intent_get(&state).active);
+    tick_at(&opts, &state, 1.05);
+    test_rc |= expect_goto("the tick ends it", !dsd_engine_scan_entry_intent_get(&state).active);
+    test_rc |= expect_goto_failure(&state, "waiting on nothing", 1);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Issue #644: a park whose request already failed (a stream stop fails the one it queued) before the coordinator's next
    tick is dead: a go-to of its target never waits on it, but parks the target afresh, and that park's landing holds
    it. */
@@ -20486,6 +20511,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_refuses_a_target_out_of_the_rotation);
     rc |= run_with_default_tune_hook(test_goto_single_target);
     rc |= run_with_default_tune_hook(test_goto_never_joins_a_failed_park);
+    rc |= goto_entry_waiting_on_nothing_case(0U) | goto_entry_waiting_on_nothing_case(UINT64_C(4444));
     rc |= run_with_default_tune_hook(test_goto_a_copy_in_another_list);
     rc |= run_with_default_tune_hook(test_goto_paused_resumes_at_the_target);
     rc |= run_with_default_tune_hook(test_entry_hold_lifecycle);

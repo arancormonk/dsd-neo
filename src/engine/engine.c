@@ -1707,10 +1707,12 @@ dsd_engine_channel_scan_walk_row(dsd_opts* opts, dsd_state* state, int row, int 
    earlier resume stands. A leg that moved before a refusal or deferral leaves the scan paused. */
 static dsd_scan_goto_result
 untyped_goto_over_a_pending_resume(dsd_opts* opts, dsd_state* state, int row) {
-    if (dsd_engine_manual_tune_pending_step_row(state) == row) {
+    dsd_engine_manual_tune_pending_view pending;
+    dsd_engine_manual_tune_pending_read(state, &pending);
+    if (pending.joinable && pending.step && pending.row == row) {
         /* That resume's own tune is for this row already: the entry waits on it, with no second one, and the resume's
            landing holds the row. */
-        dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_pending_id());
+        dsd_engine_scan_entry_intent_set(state, row, pending.id);
         return DSD_SCAN_GOTO_PENDING;
     }
     const long int freq = *dsd_state_trunk_lcn_slot(state, row);
@@ -1744,12 +1746,13 @@ untyped_goto_over_a_pending_resume(dsd_opts* opts, dsd_state* state, int row) {
    waits on a park in flight, and an entry hold on the row left goes as at any go-to. */
 static dsd_scan_goto_result
 untyped_goto_running(dsd_opts* opts, dsd_state* state, int row) {
-    int scan_walk = 0;
-    const int pending_row = dsd_engine_manual_tune_pending_row(state, &scan_walk);
-    /* The scan's own tune of the row, a walk's or the timed step's, still in flight: the entry waits on it. */
-    if (pending_row == row && (scan_walk || dsd_engine_manual_tune_pending_step_row(state) == row)) {
+    dsd_engine_manual_tune_pending_view pending;
+    dsd_engine_manual_tune_pending_read(state, &pending);
+    /* The scan's own tune of the row, a walk's or the timed step's, still in flight: the entry waits on it, named from
+       the same read that found it joinable. */
+    if (pending.joinable && pending.row == row && (pending.scan_walk || pending.step)) {
         dsd_engine_scan_entry_hold_replaced(state);
-        dsd_engine_scan_entry_intent_set(state, row, dsd_engine_manual_tune_pending_id());
+        dsd_engine_scan_entry_intent_set(state, row, pending.id);
         return DSD_SCAN_GOTO_PENDING;
     }
     int moved = 0;
@@ -1895,11 +1898,24 @@ untyped_end_resume_waiting_on_nothing(dsd_opts* opts, dsd_state* state) {
     dsd_engine_channel_scan_resume_failed(opts, state, freq, DSD_SCAN_RESUME_INTERRUPTED);
 }
 
+/* An entry on an untyped list's row waits on the tune noted for it (issue #644). One naming no tune, or one no longer
+   noted, would wait for good: it fails here, kept for its toast, as its tune's failure would have failed it. */
+static void
+untyped_end_entry_waiting_on_nothing(dsd_state* state) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (!intent.active || intent.by != DSD_ENGINE_SCAN_LANDING_ROW || dsd_channel_modes_present(state)
+        || (intent.request != 0U && intent.request == dsd_engine_manual_tune_noted_id())) {
+        return;
+    }
+    dsd_engine_scan_entry_intent_fail(state, DSD_SCAN_GOTO_REFUSED);
+}
+
 int
 dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
     const int polled = dsd_engine_manual_tune_poll(opts, state);
     if (polled == DSD_MANUAL_TUNE_NONE && opts && state) {
         untyped_end_resume_waiting_on_nothing(opts, state);
+        untyped_end_entry_waiting_on_nothing(state);
     }
     if (polled == DSD_MANUAL_TUNE_NONE || !opts || !state) {
         return polled;
@@ -1954,17 +1970,17 @@ dsd_engine_scan_untyped_poll(dsd_opts* opts, dsd_state* state) {
    failure or a drop leaves them, so the rotation goes on at its own time. */
 static int
 no_carrier_scan_tune_awaited(const dsd_state* state) {
-    int scan_walk = 0;
-    const int row = dsd_engine_manual_tune_pending_row(state, &scan_walk);
-    if (row < 0) {
+    dsd_engine_manual_tune_pending_view pending;
+    dsd_engine_manual_tune_pending_read(state, &pending);
+    if (!pending.joinable || pending.row < 0) {
         return 0;
     }
-    if (scan_walk) {
+    if (pending.scan_walk) {
         return 1;
     }
     const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
-    return dsd_engine_manual_tune_pending_step_row(state) == row && dsd_engine_scan_entry_intent_is(state, row)
-           && intent.request != 0U && intent.request == dsd_engine_manual_tune_pending_id();
+    return pending.step && dsd_engine_scan_entry_intent_is(state, pending.row) && intent.request != 0U
+           && intent.request == pending.id;
 }
 
 int

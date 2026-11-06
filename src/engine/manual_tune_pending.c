@@ -456,11 +456,6 @@ dsd_engine_manual_tune_noted(void) {
     return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED;
 }
 
-uint64_t
-dsd_engine_manual_tune_pending_id(void) {
-    return manual_tune_record_joinable() ? g_record.id : 0U;
-}
-
 void
 dsd_engine_manual_tune_rebind_session(uint64_t id, uint32_t session) {
     if (id != 0U && atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED && g_record.id == id) {
@@ -473,20 +468,34 @@ dsd_engine_manual_tune_noted_id(void) {
     return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED ? g_record.id : 0U;
 }
 
+void
+dsd_engine_manual_tune_pending_read(const dsd_state* state, dsd_engine_manual_tune_pending_view* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->row = -1;
+    out->id = dsd_engine_manual_tune_noted_id();
+    if (out->id == 0U) {
+        return;
+    }
+    /* The one read of the completion slots: whatever comes after it is the next view's. */
+    out->joinable = manual_tune_record_joinable();
+    if (!state || (g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE && g_record.kind != DSD_MANUAL_TUNE_UNTYPED_STEP)
+        || g_record.scan_session != state->lcn_scan_session || g_record.list_rev != state->lcn_list_rev) {
+        return;
+    }
+    out->row = g_record.row;
+    out->scan_walk = g_record.kind == DSD_MANUAL_TUNE_LCN_CYCLE && g_record.scan_owned;
+    out->step = g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP;
+}
+
 int
 dsd_engine_manual_tune_pending_row(const dsd_state* state, int* out_scan_walk) {
+    dsd_engine_manual_tune_pending_view view;
+    dsd_engine_manual_tune_pending_read(state, &view);
+    const int joinable = view.joinable && view.row >= 0;
     if (out_scan_walk) {
-        *out_scan_walk = 0;
+        *out_scan_walk = joinable && view.scan_walk;
     }
-    if (!state || !manual_tune_record_joinable()
-        || (g_record.kind != DSD_MANUAL_TUNE_LCN_CYCLE && g_record.kind != DSD_MANUAL_TUNE_UNTYPED_STEP)
-        || g_record.scan_session != state->lcn_scan_session || g_record.list_rev != state->lcn_list_rev) {
-        return -1;
-    }
-    if (out_scan_walk) {
-        *out_scan_walk = g_record.kind == DSD_MANUAL_TUNE_LCN_CYCLE && g_record.scan_owned;
-    }
-    return g_record.row;
+    return joinable ? view.row : -1;
 }
 
 int
@@ -571,12 +580,6 @@ dsd_engine_manual_tune_adopt_walk(const dsd_state* state) {
 void
 dsd_engine_manual_tune_walk_settled(void) {
     atomic_store(&g_walk_settling, 0);
-}
-
-int
-dsd_engine_manual_tune_pending_step_row(const dsd_state* state) {
-    const int row = dsd_engine_manual_tune_pending_row(state, NULL);
-    return row >= 0 && g_record.kind == DSD_MANUAL_TUNE_UNTYPED_STEP ? row : -1;
 }
 
 /* A RadioReference import's record that the next poll reports at once, before its completion: dropped by a tune that

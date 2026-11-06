@@ -496,6 +496,20 @@ channel_scan_request_result(const channel_scan* scan) {
                                                 : dsd_trunk_tuning_request_status(scan->request, NULL);
 }
 
+/* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
+   longer outstanding (no request, retry or commit of it left), would wait for good: it fails here, kept for its toast,
+   as its attempt's failure would have failed it. */
+static void
+channel_scan_end_entry_waiting_on_nothing(dsd_state* state, const channel_scan* scan) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (!intent.active || intent.by != DSD_ENGINE_SCAN_LANDING_ROW || !dsd_channel_modes_present(state)
+        || (intent.request != 0U && intent.request == scan->attempt
+            && (scan->request || scan->retry || scan->needs_commit))) {
+        return;
+    }
+    dsd_engine_scan_entry_intent_fail(state, DSD_SCAN_GOTO_REFUSED);
+}
+
 int
 dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -505,6 +519,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     if (!scan) {
         return 0;
     }
+    channel_scan_end_entry_waiting_on_nothing(state, scan);
     if (scan->retry) {
         if (!channel_scan_row_is_current(opts, state, scan)) {
             scan->retry = 0;

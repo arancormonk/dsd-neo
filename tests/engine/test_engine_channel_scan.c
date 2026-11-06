@@ -51,6 +51,7 @@
 #include "manual_tune_pending.h"
 #include "scan_analog_internal.h"
 #include "scan_entry_internal.h"
+#include "scan_landing.h"
 #include "scan_step_untyped.h"
 #include "test_env.h"
 
@@ -4186,6 +4187,23 @@ test_typed_goto_never_joins_a_dead_attempt(void) {
     typed_walk_fixture_free(opts, state);
 }
 
+/* Issue #644: a running typed list with an entry waiting on West that names no attempt, or one no longer outstanding
+   (set so directly): the next service ends it, its failure kept for the toast, so nothing is left waiting. */
+static void
+typed_entry_waiting_on_nothing_case(uint64_t request) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    typed_goto_fixture(opts, state);
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    dsd_engine_scan_entry_intent_set(state, 3, request);
+    assert(dsd_engine_channel_scan_entry_pending(state));
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    assert(!dsd_engine_channel_scan_entry_pending(state));
+    assert(entry_failure_taken(state, 3, DSD_SCAN_GOTO_REFUSED));
+    typed_walk_fixture_free(opts, state);
+}
+
 /* A restart (issue #644): the stream stops, the scan noting the attempt that may still land, and the stop fails the
    request @p queued it had queued (0 for none); the new stream then opens on the radio source the stopped one ran, its
    centre @p reopen_hz. */
@@ -4847,6 +4865,8 @@ main(void) {
     test_typed_goto_waits_on_the_tune_in_flight();
     test_typed_goto_joins_the_pending_timed_step();
     test_typed_goto_never_joins_a_dead_attempt();
+    typed_entry_waiting_on_nothing_case(0U);
+    typed_entry_waiting_on_nothing_case(UINT64_C(4444));
     typed_resume_at_after_a_restart_case(0);
     typed_resume_at_after_a_restart_case(1);
     typed_restart_over_a_pending_step_case(0);

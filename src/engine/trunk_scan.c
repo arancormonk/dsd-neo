@@ -4676,8 +4676,32 @@ trunk_scan_service_departure(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_co
     return 1;
 }
 
+/* An entry waits on its target's park in flight (issue #644). One naming no park, or one that is no longer in flight on
+   the target on air in this session, would wait for good: it fails here, kept with the target's name for its toast,
+   as the park's failure would have failed it. */
+static void
+trunk_scan_end_entry_waiting_on_nothing(dsd_state* state, const dsd_trunk_scan_coord* coord) {
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    if (!intent.active || intent.by != DSD_ENGINE_SCAN_LANDING_TARGET || coord->paused) {
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (intent.request != 0U && intent.session == coord->session && intent.row == (int)coord->active && rt->tune_pending
+        && rt->tune_request_id == intent.request) {
+        return;
+    }
+    const char* label = NULL;
+    if (intent.row >= 0 && (size_t)intent.row < coord->count) {
+        const dsd_trunk_scan_target* target = &coord->targets[intent.row].target;
+        label = target->label[0] != '\0' ? target->label : target->id;
+    }
+    dsd_engine_scan_entry_note_failure(state, &intent, DSD_SCAN_GOTO_REFUSED, label);
+    dsd_engine_scan_entry_intent_cancel(state);
+}
+
 static void
 trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
+    trunk_scan_end_entry_waiting_on_nothing(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     if (rt->tune_pending && rt->dmr_ctx.cc_tune_request_id != 0U) {
         /* Resolve the DMR backend deadline even while the initial park keeps
@@ -6200,10 +6224,17 @@ trunk_scan_goto_running(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* 
         coord->hold_active = 0;
         coord->entry_hold = 0;
     }
-    if (!(coord->active == target && trunk_scan_park_live(&coord->targets[target]))) {
+    /* A park of the target in flight that may still land is waited on, named from the one read that found it so: its
+       failure can come on the controller's thread at any time, and an outcome read after it would name no park. */
+    dsd_scan_goto_result result;
+    if (coord->active == target && trunk_scan_park_live(&coord->targets[target])) {
+        dsd_engine_scan_entry_intent_set_target(state, (int)target, coord->session,
+                                                coord->targets[target].tune_request_id);
+        result = DSD_SCAN_GOTO_PENDING;
+    } else {
         (void)trunk_scan_operator_move_locked(opts, state, coord, 1, target);
+        result = trunk_scan_goto_outcome(state, coord, target);
     }
-    const dsd_scan_goto_result result = trunk_scan_goto_outcome(state, coord, target);
     if (entry_held && result == DSD_SCAN_GOTO_SETUP_FAILED) {
         coord->hold_active = 1;
         coord->entry_hold = 1;

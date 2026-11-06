@@ -2062,7 +2062,7 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     rc |= expect_call_phase("pending channel cycle keeps canonical slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
     rc |= expect_int("pending channel cycle supersedes a pending manual tune", g_manual_tune_supersedes, 1);
     rc |= expect_true("pending channel cycle owns the record",
-                      dsd_engine_manual_tune_pending_id() == g_io_control_pending_id);
+                      dsd_engine_manual_tune_noted_id() == g_io_control_pending_id);
     rc |= expect_int("pending channel cycle forgets the legacy tune caches", g_legacy_cache_forgets, 1);
     rc |= expect_true("pending channel cycle is noted",
                       dsd_engine_manual_tune_settled_ready() == 0

@@ -49,16 +49,23 @@ int dsd_engine_manual_tune_settled_ready(void);
    no state machine moves the tuner meanwhile (dsd_engine_tuner_free_for_protocol()). Decoder thread. */
 int dsd_engine_manual_tune_noted(void);
 
-/* The ID of the tune noted and still awaited, or 0 with none (one asked of a stream that has since stopped, or whose
-   failure or drop came already, is none): what an entry waiting on that tune's -Y row names (issue #644). Decoder
-   thread. */
-uint64_t dsd_engine_manual_tune_pending_id(void);
-
 /* The ID of the tune noted, until a poll takes it, whatever its completion already said or its stream: which request
-   the record tracks, for what follows its own outcome (an entry bound to it, a resume rebound to it, issue #644), as
-   against dsd_engine_manual_tune_pending_id(), which says whether a new request may join it. 0 with none. Decoder
-   thread. */
+   the record tracks, for what follows its own outcome (an entry bound to it, a resume rebound to it, issue #644);
+   whether a new request may join it is dsd_engine_manual_tune_pending_read()'s. 0 with none. Decoder thread. */
 uint64_t dsd_engine_manual_tune_noted_id(void);
+
+/* The tune noted, read once for a join (issue #644): its completion can come on the controller's thread between two
+   separate queries, so a caller that checks and then names the tune reads both from one view. */
+typedef struct {
+    int row;       /* its -Y row on @p state's current list and scan session (a walk's or the step's), else -1 */
+    int scan_walk; /* a walk the running -Y scan owns */
+    int step;      /* the untyped -Y step's own tune (a timed step's or a resume's) */
+    int joinable;  /* whether a new request may join it: live, and no failure or drop came for it */
+    uint64_t id;   /* which request it is (dsd_engine_manual_tune_noted_id()), 0 with none */
+} dsd_engine_manual_tune_pending_view;
+
+/* Fill @p out with one read of the tune noted. Decoder thread. */
+void dsd_engine_manual_tune_pending_read(const dsd_state* state, dsd_engine_manual_tune_pending_view* out);
 
 /* Whether a Next or Previous walk off any scan (DSD_MANUAL_TUNE_LCN_CYCLE, not the -Y scan's own) is noted and its
    completion still awaited, or its landing or late failure was taken and its settling has not finished: the
@@ -70,10 +77,6 @@ int dsd_engine_manual_tune_operator_walk_noted(void);
 /* The settling of a walk whose completion a poll took (its row, its handoffs) is done: the walk no longer owns the
    tuner. Decoder thread, after dsd_engine_manual_tune_poll() returned for it. */
 void dsd_engine_manual_tune_walk_settled(void);
-
-/* The row the untyped -Y step's own tune (DSD_MANUAL_TUNE_UNTYPED_STEP: a timed step's or a resume's) still awaits on
-   @p state's current list and scan session, or -1 with none (a walk's is not one). Decoder thread. */
-int dsd_engine_manual_tune_pending_step_row(const dsd_state* state);
 
 /* The tune noted as @p id, still awaited, now belongs to -Y scan session @p session: a resume-at that replaced a
    resume still pending moved the session after its own tune was noted, so the resume it replaced, whatever its tune

@@ -94,6 +94,7 @@
 #include "../../src/app_control/services.h"
 #include "manual_tune_pending.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
 #include "scan_step_untyped.h"
 #endif
 
@@ -812,8 +813,18 @@ static uint32_t g_session_generation_bump = 0U;
 uint32_t __real_rtl_stream_session_generation(void);
 uint32_t __wrap_rtl_stream_session_generation(void);
 
+/* The controller's failure of the tune in flight, published at the stream-session read this many reads from now (0:
+   none): a completion that comes between two of the decoder's reads of the record (issue #644). */
+static int g_fail_in_flight_at_read = 0;
+
 uint32_t
 __wrap_rtl_stream_session_generation(void) {
+    if (g_fail_in_flight_at_read > 0) {
+        g_fail_in_flight_at_read--;
+        if (g_fail_in_flight_at_read == 0) {
+            land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
+        }
+    }
     return __real_rtl_stream_session_generation() + g_session_generation_bump;
 }
 
@@ -8462,6 +8473,22 @@ y_start_keeps_a_hold_only_where_the_receiver_is_case(int tuned_away) {
     return rc;
 }
 
+/* The row of the untyped -Y step's own tune a new request may join, -1 with none (one read of the record). */
+static int
+pending_step_row(const dsd_state* state) {
+    dsd_engine_manual_tune_pending_view view;
+    dsd_engine_manual_tune_pending_read(state, &view);
+    return view.joinable && view.step ? view.row : -1;
+}
+
+/* The ID of the tune noted when a new request may join it, else 0 (one read of the record). */
+static uint64_t
+joinable_pending_id(const dsd_state* state) {
+    dsd_engine_manual_tune_pending_view view;
+    dsd_engine_manual_tune_pending_read(state, &view);
+    return view.joinable ? view.id : 0U;
+}
+
 /* The radio stream stops and reopens, as a restart does (svc_rtl_restart_locked()): the scans note what may still land,
    then the stop moves the stream session and fails the request it had queued, and the new stream opens on the same
    source, its centre @p reopen_hz (0: the cached centre, where the stream reopens); the scans are told it opened, and
@@ -8540,8 +8567,7 @@ reopen_over_a_pending_scan_tune_case(int adopted) {
         noCarrier(opts, state);
         g_rtl_timeout_outstanding = 0;
         g_rtl_tune_result = RTL_STREAM_TUNE_OK;
-        rc |=
-            expect_case(what, "the timed step's tune is pending", dsd_engine_manual_tune_pending_step_row(state) == 1);
+        rc |= expect_case(what, "the timed step's tune is pending", pending_step_row(state) == 1);
         rc |= expect_case(what, "Y holds the scan",
                           press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
     }
@@ -9982,7 +10008,7 @@ test_untyped_goto_joins_the_pending_timed_step(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     state->last_cc_sync_time = time(NULL) - 60;
     noCarrier(opts, state);
-    const int row = dsd_engine_manual_tune_pending_step_row(state);
+    const int row = pending_step_row(state);
     int rc = expect_case(what, "the timed step's tune is pending", row >= 0);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
@@ -10021,7 +10047,7 @@ untyped_rotation_waits_for_a_joined_step_case(int fails) {
     g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
     state->last_cc_sync_time = time(NULL) - 60;
     noCarrier(opts, state);
-    const int row = dsd_engine_manual_tune_pending_step_row(state);
+    const int row = pending_step_row(state);
     int rc = expect_case(what, "the timed step's tune is pending", row >= 0);
     g_rtl_timeout_outstanding = 0;
     g_rtl_tune_result = RTL_STREAM_TUNE_DEFERRED;
@@ -10033,8 +10059,8 @@ untyped_rotation_waits_for_a_joined_step_case(int fails) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     rc |= expect_case(what, "the rotation tunes nothing", g_rtl_tune_calls == tunes);
     rc |= expect_case(what, "the entry still waits on the step's tune",
-                      dsd_engine_channel_scan_entry_pending(state)
-                          && dsd_engine_manual_tune_pending_step_row(state) == row && state->lcn_scan_hold == 0U);
+                      dsd_engine_channel_scan_entry_pending(state) && pending_step_row(state) == row
+                          && state->lcn_scan_hold == 0U);
     if (fails) {
         land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
         for (int i = 0; i < 4; i++) {
@@ -10086,7 +10112,7 @@ test_goto_never_joins_a_tune_of_a_stopped_stream(void) {
     g_session_generation_bump++;
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
     rc |= expect_case(what, "the stopped stream's walk is no row to join",
-                      dsd_engine_manual_tune_pending_row(state, NULL) < 0 && dsd_engine_manual_tune_pending_id() == 0U);
+                      dsd_engine_manual_tune_pending_row(state, NULL) < 0 && joinable_pending_id(state) == 0U);
     const int tunes = g_rtl_tune_calls;
     g_rtl_last_applied_hz = bravo_hz;
     rc |= expect_case(what, "BRAVO is typed",
@@ -10156,7 +10182,7 @@ test_goto_never_joins_a_failed_walk(void) {
                              && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_FAILED);
     rc |= expect_case(what, "the failed walk is no row to join",
-                      dsd_engine_manual_tune_pending_row(state, NULL) < 0 && dsd_engine_manual_tune_pending_id() == 0U);
+                      dsd_engine_manual_tune_pending_row(state, NULL) < 0 && joinable_pending_id(state) == 0U);
     const int tunes = g_rtl_tune_calls;
     g_rtl_last_applied_hz = bravo_hz;
     rc |= expect_case(what, "BRAVO is typed",
@@ -10307,6 +10333,80 @@ test_resume_waiting_on_nothing_ends(void) {
     return rc;
 }
 
+/* Issue #644: a running untyped list held by `Y`, Next to BRAVO waiting on its tune, then BRAVO typed, the controller's
+   failure of that tune coming while the go-to reads the pending tune (here at the decoder's @p read -th read of the
+   stream session from the command on). Whichever read it comes before, the entry is bound to the tune it joined or
+   began, never to none: the tune's failure fails the entry, kept for its toast, and nothing is left waiting. */
+static int
+goto_over_a_walk_failing_mid_join_case(int read) {
+    char what[96];
+    DSD_SNPRINTF(what, sizeof what, "a go-to joining a walk that fails at read %d", read);
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const long int base_hz = 1808012500L + (long int)read * 100000L;
+    const uint32_t bravo_hz = (uint32_t)(base_hz + 1000000L);
+    if (setup_named_walk_list(opts, state, 1, base_hz) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    int rc = expect_case(what, "Y holds the scan",
+                         press_action(opts, state, DSD_APP_CMD_SCAN_HOLD_TOGGLE) == 1 && state->lcn_scan_hold == 1U);
+    rc |= expect_case(what, "Next to BRAVO waits on its tune",
+                      press_walk_into_a_timeout(opts, state, 1) == 1
+                          && dsd_engine_manual_tune_pending_row(state, NULL) == 1);
+    g_rtl_last_applied_hz = bravo_hz;
+    g_rtl_timeout_outstanding = 1;
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    g_fail_in_flight_at_read = read;
+    rc |= expect_case(what, "BRAVO is typed",
+                      dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, bravo_hz) == DSD_APP_COMMAND_SUBMIT_QUEUED
+                          && dsd_app_drain_cmds(opts, state) == 1);
+    g_fail_in_flight_at_read = 0;
+    g_rtl_timeout_outstanding = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    const dsd_engine_scan_entry_intent intent = dsd_engine_scan_entry_intent_get(state);
+    rc |= expect_case(what, "an entry waiting is bound to a tune", !intent.active || intent.request != 0U);
+    land_outstanding_tunes(DSD_TRUNK_TUNE_RESULT_FAILED);
+    for (int i = 0; i < 4; i++) {
+        (void)dsd_engine_scan_untyped_poll(opts, state);
+    }
+    rc |= expect_case(what, "nothing is left waiting", !dsd_engine_channel_scan_entry_pending(state));
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
+/* Issue #644: a running untyped list with an entry waiting on BRAVO that names no tune, or a tune long gone (here set
+   so directly: a join that once read none): the next poll ends it, its failure kept for the toast, so nothing is left
+   waiting. */
+static int
+untyped_entry_waiting_on_nothing_case(uint64_t request) {
+    const char* what = request ? "an entry waiting on a tune gone" : "an entry waiting on no tune";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    if (setup_named_walk_list(opts, state, 1, 1809012500L + (long int)(request != 0U) * 1000000L) != 0) {
+        teardown_walk_list(opts, state);
+        return 1;
+    }
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    dsd_engine_scan_entry_intent_set(state, 1, request);
+    int rc = expect_case(what, "the entry waits", dsd_engine_channel_scan_entry_pending(state));
+    (void)dsd_engine_scan_untyped_poll(opts, state);
+    rc |= expect_case(what, "the poll ends it", !dsd_engine_channel_scan_entry_pending(state));
+    dsd_scan_entry_failure_t failed;
+    DSD_MEMSET(&failed, 0, sizeof failed);
+    rc |= expect_case(what, "its failure is kept for the toast",
+                      dsd_engine_scan_entry_take_failure(state, &failed) && failed.row == 1
+                          && failed.result == DSD_SCAN_GOTO_REFUSED && strcmp(failed.label, "BRAVO") == 0);
+    teardown_walk_list(opts, state);
+    return rc;
+}
+
 static int
 test_untyped_resume_at(void) {
     int rc = 0;
@@ -10325,6 +10425,11 @@ test_untyped_resume_at(void) {
     rc |= moved_deferral_supersedes_case(0) | moved_deferral_supersedes_case(1);
     rc |= test_resume_at_whose_tune_failed_at_once();
     rc |= test_resume_waiting_on_nothing_ends();
+    for (int read = 1; read <= 8; read++) {
+        rc |= goto_over_a_walk_failing_mid_join_case(read);
+    }
+    rc |=
+        untyped_entry_waiting_on_nothing_case(0U) | untyped_entry_waiting_on_nothing_case(UINT64_C(0x8000000000004444));
     return rc;
 }
 
