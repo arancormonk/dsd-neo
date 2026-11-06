@@ -284,6 +284,19 @@ void dsd_engine_trunk_scan_entry_release_locked(const dsd_opts* opts, dsd_state*
  * this scan session and nothing has cancelled the entry. 0 without a coordinator. Decoder thread. */
 int dsd_engine_trunk_scan_entry_pending(const dsd_state* state);
 
+/** The radio stream is about to stop (issue #644). The stop fails the park it queued; a park of the target on air that
+ * can still land is noted, with the frequency it asked for and the source of the stream that stops, for the reopen that
+ * follows (dsd_engine_trunk_scan_stream_reopened()). Nothing else changes. Decoder thread, under the P25 SM tick
+ * guard, before the stream stops. */
+void dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state);
+
+/** The stream a restart stopped opened again (@p opened 1), or did not (0), the restart's or the recovery's after it
+ * (issue #644). The park the stop noted, still the coordinator's, lands when the new stream opened on the same source,
+ * not an I/Q replay, with the centre the frequency it asked for: its request is completed as landed whatever the stop
+ * published (dsd_trunk_tuning_request_land_at_reopen()), so the next tick takes it as any landing, an entry waiting on
+ * it held. Otherwise the note goes, and the stop's failure stands. Decoder thread, under the P25 SM tick guard. */
+void dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened);
+
 /** @brief Whether a trunk-scan coordinator exists and is paused (issue #671). */
 int dsd_engine_trunk_scan_paused(const dsd_state* state);
 

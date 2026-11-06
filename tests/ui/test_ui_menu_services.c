@@ -710,6 +710,20 @@ dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* s
     note_scan_stream_reopened(opened);
 }
 
+void
+dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_scan_stream_stopping_calls++;
+}
+
+void
+dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    (void)opts;
+    (void)state;
+    note_scan_stream_reopened(opened);
+}
+
 int
 rtl_stream_stop(RtlSdrContext* ctx) {
     (void)ctx;
@@ -1493,7 +1507,7 @@ test_tune_and_start_run_the_carrier_boundary(void) {
        own start ran (its stream opened, or nothing did). */
     rc |= expect_int("a failed start leaves the scans' note", g_scan_stream_reopened_calls, 0);
     rc |= expect_int("the recovery's failed start", svc_rtl_restart_recovery_locked(&opts, &state, 0, NULL, NULL), -1);
-    rc |= expect_int("tells the scans after its start", g_scan_stream_reopened_calls, 2);
+    rc |= expect_int("tells the scans after its start", g_scan_stream_reopened_calls, 3);
     rc |= expect_int("that nothing opened", g_scan_stream_reopened_opened, 0);
     g_rtl_create_result = 0;
     g_rtl_start_result = 0;
@@ -1508,8 +1522,8 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     g_scan_stream_reopened_opened = -1;
     const int starts = g_rtl_start_calls;
     rc |= expect_int("restarted stream", svc_rtl_restart(&opts, &state), 0);
-    rc |= expect_int("the scans are told before the stop", g_scan_stream_stopping_before_stop, 2);
-    rc |= expect_int("and after the start", g_scan_stream_reopened_calls, 2);
+    rc |= expect_int("the scans are told before the stop", g_scan_stream_stopping_before_stop, 3);
+    rc |= expect_int("and after the start", g_scan_stream_reopened_calls, 3);
     rc |= expect_int("once the stream started", g_scan_stream_reopened_after_starts, starts + 1);
     rc |= expect_int("that it opened", g_scan_stream_reopened_opened, 1);
     /* A recovery whose start opens the input again tells them it opened, once its stream started. */
@@ -1517,7 +1531,7 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     g_scan_stream_reopened_opened = -1;
     const int recovery_starts = g_rtl_start_calls;
     rc |= expect_int("recovered stream", svc_rtl_restart_recovery_locked(&opts, &state, 1, NULL, NULL), 0);
-    rc |= expect_int("the scans are told after the recovery's start", g_scan_stream_reopened_calls, 2);
+    rc |= expect_int("the scans are told after the recovery's start", g_scan_stream_reopened_calls, 3);
     rc |= expect_int("once its stream started", g_scan_stream_reopened_after_starts, recovery_starts + 1);
     rc |= expect_int("that it opened again", g_scan_stream_reopened_opened, 1);
     state.rtl_ctx = NULL;

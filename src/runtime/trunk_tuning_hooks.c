@@ -369,6 +369,27 @@ dsd_trunk_tuning_request_disown(uint64_t request_id) {
     dsd_trunk_tuning_requests_unlock();
 }
 
+void
+dsd_trunk_tuning_request_land_at_reopen(uint64_t request_id) {
+    if (request_id == 0U) {
+        return;
+    }
+    dsd_trunk_tuning_requests_lock();
+    dsd_trunk_tuning_request_record* record = dsd_trunk_tuning_request_find_locked(request_id);
+    if (record
+        && (record->state == DSD_TRUNK_TUNING_REQUEST_PENDING
+            || record->state == DSD_TRUNK_TUNING_REQUEST_FAILED_GATED)) {
+        /* A failure not rolled back still holds its unresolved count, as a request in flight does. */
+        record->state = DSD_TRUNK_TUNING_REQUEST_PENDING;
+        record->result = DSD_TRUNK_TUNE_RESULT_OK;
+        record->completed_m_ns = dsd_decode_now_mono_ns();
+        record->backend_complete = 1;
+        record->owner_ready = 1;
+        dsd_trunk_tuning_finish_success_locked(record);
+    }
+    dsd_trunk_tuning_requests_unlock();
+}
+
 uint64_t
 dsd_trunk_tuning_pending_request(void) {
     uint64_t newest_request_id = 0U;

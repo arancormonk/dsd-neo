@@ -19222,6 +19222,61 @@ goto_pending_case(int c, const char* what) {
     return test_rc;
 }
 
+/* Issue #644: a go-to of trunked target b whose park is pending when the radio stream restarts: the stop fails the park
+   it queued. The new stream opens on the radio source the stopped one ran, on the frequency the park asked for: the
+   park landed there, so the target holds, marked an entry hold, and the scan does not move on. With @p elsewhere the
+   new stream opens on another centre: the stop's failure stands, as for any late failure. */
+static int
+goto_park_over_a_restart_case(int elsewhere) {
+    const char* what = elsewhere ? "go-to park over a restart elsewhere" : "go-to park over a restart on its frequency";
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_visit_init(NULL, k_goto_trunked_body, 0, &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    trunk_scan_test_set_now(1.0);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dsd_trunk_scan_goto_report report;
+    int test_rc = expect_goto_rc(what, goto_target(&opts, &state, 1, &report), DSD_SCAN_GOTO_PENDING);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    test_rc |= expect_goto(what, park != 0U && report.park_hz == 452000000L);
+    const int input = opts.audio_in_type;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)(void*)&state;
+    state.carrier_source_key = 1U;
+    p25_sm_tick_guard_enter();
+    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_FAILED); /* the stop fails the park it queued */
+    opts.rtlsdr_center_freq = elsewhere ? 452500000U : 452000000U;
+    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    p25_sm_tick_guard_leave();
+    state.rtl_ctx = NULL;
+    opts.audio_in_type = input;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tick_at(&opts, &state, 1.1);
+    if (elsewhere) {
+        test_rc |= expect_goto_entry(&state, what, 2U, 0U, 0U);
+        test_rc |= expect_goto_failure(&state, what, 1);
+    } else {
+        test_rc |= expect_goto_entry(&state, what, 1U, 1U, 1U);
+        test_rc |= expect_goto(what, dsd_engine_trunk_scan_target_confirmed(&state, 1));
+        test_rc |= expect_goto_failure(&state, what, -1);
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_goto_park_over_a_restart(void) {
+    return goto_park_over_a_restart_case(0) | goto_park_over_a_restart_case(1);
+}
+
 /* A paused scan resumed at its target, the park still in flight, then that target typed: the go-to waits on that park,
    with no second one, and the park's landing holds the target, marked an entry hold. */
 static int
@@ -19564,6 +19619,11 @@ goto_entry_waiting_on_nothing_case(uint64_t request) {
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
+}
+
+static int
+test_goto_entry_waiting_on_nothing(void) {
+    return goto_entry_waiting_on_nothing_case(0U) | goto_entry_waiting_on_nothing_case(UINT64_C(4444));
 }
 
 /* Issue #644: a park whose request already failed (a stream stop fails the one it queued) before the coordinator's next
@@ -20511,7 +20571,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_goto_refuses_a_target_out_of_the_rotation);
     rc |= run_with_default_tune_hook(test_goto_single_target);
     rc |= run_with_default_tune_hook(test_goto_never_joins_a_failed_park);
-    rc |= goto_entry_waiting_on_nothing_case(0U) | goto_entry_waiting_on_nothing_case(UINT64_C(4444));
+    rc |= run_with_default_tune_hook(test_goto_entry_waiting_on_nothing);
+    rc |= run_with_default_tune_hook(test_goto_park_over_a_restart);
     rc |= run_with_default_tune_hook(test_goto_a_copy_in_another_list);
     rc |= run_with_default_tune_hook(test_goto_paused_resumes_at_the_target);
     rc |= run_with_default_tune_hook(test_entry_hold_lifecycle);

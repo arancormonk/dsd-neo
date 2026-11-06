@@ -270,6 +270,9 @@ typedef struct {
     double last_allowed_activity_m;
     uint64_t tune_request_id;
     int tune_pending;
+    /* The frequency the park in flight asked the tuner for (trunk_scan_retune_freq() at its retune), 0 when unknown (a
+       P25 recovery tune adopted): where a stream reopened after a stop lands it (issue #644). */
+    uint32_t tune_hz;
     /* The analog demodulator and width an analog target's last retune queued with its profile (issue #526). */
     int tune_analog_kind;
     int tune_analog_width_hz;
@@ -380,6 +383,12 @@ typedef struct {
        and whether the tuner deferred it: a resume or a go-to that fails names it (issue #644 B-6, D3). */
     long int park_tried_hz;
     int park_tried_deferred;
+    /* The park a stream stop found still able to land (dsd_engine_trunk_scan_stream_stopping(), issue #644): its
+       request, target, the frequency it asked for and the stopped stream's source, for the reopen that follows. */
+    uint64_t stop_request;
+    size_t stop_target;
+    uint32_t stop_hz;
+    uint64_t stop_source_key;
 } dsd_trunk_scan_coord;
 
 static dsd_trunk_scan_coord* g_trunk_scan_coord;
@@ -3230,6 +3239,8 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, const dsd_trunk
          * next tick. Track the same request here so dwell still restarts. */
         rt->tune_request_id = tune_request_id;
         rt->tune_pending = 1;
+        const long int hz = trunk_scan_retune_freq(state, &rt->target);
+        rt->tune_hz = hz > 0 && (unsigned long)hz <= UINT32_MAX ? (uint32_t)hz : 0U;
         return;
     }
     rt->tune_request_id = 0U;
@@ -4099,6 +4110,7 @@ trunk_scan_reconcile_p25_retune_recovery(dsd_trunk_scan_target_runtime* rt, uint
         if (sm_request_id > failed_request_id) {
             rt->tune_request_id = sm_request_id;
             rt->tune_pending = 1;
+            rt->tune_hz = 0U; /* the recovery's own tune: its frequency is the state machine's */
             LOG_INFO("Trunk scan target '%s' adopted P25 recovery retune request %llu\n", rt->target.id,
                      (unsigned long long)sm_request_id);
             return 0;
@@ -6764,4 +6776,45 @@ dsd_engine_trunk_scan_restore_target_edit(dsd_opts* opts, dsd_state* state, uint
     const int rc = trunk_scan_restore_edit_locked(opts, state, session, target_id, fields, edit, out);
     p25_sm_tick_guard_leave();
     return rc;
+}
+
+void
+dsd_engine_trunk_scan_stream_stopping(const dsd_opts* opts, const dsd_state* state) {
+    dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
+    if (!coord) {
+        return;
+    }
+    coord->stop_request = 0U;
+    if (!opts || coord->paused || coord->active >= coord->count) {
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (!trunk_scan_park_live(rt) || rt->tune_hz == 0U) {
+        return;
+    }
+    coord->stop_request = rt->tune_request_id;
+    coord->stop_target = coord->active;
+    coord->stop_hz = rt->tune_hz;
+    coord->stop_source_key = state->carrier_source_key;
+}
+
+void
+dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state* state, int opened) {
+    dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
+    if (!coord) {
+        return;
+    }
+    const uint64_t request = coord->stop_request;
+    coord->stop_request = 0U;
+    if (!opened || request == 0U || coord->paused || coord->active != coord->stop_target
+        || coord->active >= coord->count) {
+        return;
+    }
+    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (!rt->tune_pending || rt->tune_request_id != request
+        || !dsd_engine_stream_reopened_on(opts, state, coord->stop_source_key, coord->stop_hz)) {
+        return;
+    }
+    /* The new stream opened on the frequency the park asked for: the receiver is there, so the park landed. */
+    dsd_trunk_tuning_request_land_at_reopen(request);
 }

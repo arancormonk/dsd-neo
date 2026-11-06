@@ -1920,6 +1920,7 @@ svc_rtl_stop_ex_locked(dsd_opts* opts, dsd_state* state, int keep_replay_clock) 
            failed (svc_rtl_restart_recovery_locked()), tells them where the stream reopened. */
         dsd_engine_manual_tune_stream_stopping(opts, state);
         dsd_engine_channel_scan_stream_stopping(opts, state);
+        dsd_engine_trunk_scan_stream_stopping(opts, state);
         rtl_stream_stop(state->rtl_ctx);
         rtl_stream_destroy(state->rtl_ctx);
         state->rtl_ctx = NULL;
@@ -1996,6 +1997,7 @@ svc_rtl_scans_stream_reopened(const dsd_opts* opts, const dsd_state* state, int 
     const int opened = rc == 0 && opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx != NULL;
     dsd_engine_manual_tune_stream_reopened(opts, state, opened);
     dsd_engine_channel_scan_stream_reopened(opts, state, opened);
+    dsd_engine_trunk_scan_stream_reopened(opts, state, opened);
 }
 
 int
