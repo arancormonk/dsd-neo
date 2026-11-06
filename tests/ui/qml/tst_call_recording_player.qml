@@ -72,6 +72,12 @@ Item {
             mouseClick(target, target.width / 2, target.height / 2);
         }
 
+        // A status line with nothing to say: its line kept in the layout, empty
+        // and not read.
+        function silent(status) {
+            return status.text === "" && status.Accessible.ignored && status.height > 0;
+        }
+
         function init() {
             verify(sheet() !== null);
             testContext.resetHostPlayback();
@@ -102,7 +108,7 @@ Item {
             verify(block.visible);
             compare(item("recordingHeader").text, "Call recording");
             compare(item("recordingTime").text, "0:00 / 0:12");
-            verify(!item("recordingStatus").visible, "a recording at rest says nothing more");
+            verify(silent(item("recordingStatus")), "a recording at rest says nothing more");
             verify(!item("recordingProblem").visible);
             // The bar sits with the time it shows, not apart under the row.
             var time = item("recordingTime").mapToItem(sheet(), 0, 0);
@@ -121,7 +127,7 @@ Item {
 
             testContext.publishPlayback(pathA, 2, 3000, 12000, "");
             compare(item("recordingTime").text, "0:03 / 0:12");
-            verify(!item("recordingStatus").visible);
+            verify(silent(item("recordingStatus")));
             compare(item("recordingPlayButton").accessibleName, "Pause recording");
 
             tap("recordingPlayButton");
@@ -131,6 +137,35 @@ Item {
             compare(item("recordingPlayButton").accessibleName, "Resume recording");
             tap("recordingPlayButton");
             compare(lastHostCall().name, "resumePlayback");
+        }
+
+        // The player is as tall stopped, opening, playing, paused and stopped
+        // again: its status line keeps its place empty, so a sheet centred on
+        // its content never moves under the finger at a tap.
+        function test_height_steady_across_states() {
+            openWith([rec("t-1", pathA, 12000)]);
+            var block = item("historyRecording");
+            var status = item("recordingStatus");
+            waitForRendering(sheet());
+            var height = block.height;
+            verify(silent(status), "stopped");
+            tap("recordingPlayButton");
+            compare(status.text, "Opening…");
+            verify(!status.Accessible.ignored, "a status is read");
+            waitForRendering(sheet());
+            compare(block.height, height, "opening");
+            testContext.publishPlayback(pathA, 2, 3000, 12000, "");
+            verify(silent(status));
+            waitForRendering(sheet());
+            compare(block.height, height, "playing");
+            tap("recordingPlayButton");
+            compare(status.text, "Paused");
+            waitForRendering(sheet());
+            compare(block.height, height, "paused");
+            testContext.publishPlayback(pathA, 0, 0, 12000, "");
+            verify(silent(status));
+            waitForRendering(sheet());
+            compare(block.height, height, "stopped again");
         }
 
         // D10: the host pauses a recording when the app leaves the foreground; the block says so.
@@ -205,7 +240,7 @@ Item {
             testContext.publishPlayback(pathA, 4, 0, 0, data.error);
             verify(item("historyRecording").visible);
             compare(item("recordingProblem").text, data.text, "a sentence, under the player");
-            verify(!item("recordingStatus").visible, "nothing crammed beside the time");
+            verify(silent(item("recordingStatus")), "nothing crammed beside the time");
             compare(item("recordingProblem").width, item("historyRecording").width);
             tap("recordingPlayButton");
             compare(lastHostCall().name, "playRecording", "a play that failed can be tried again");

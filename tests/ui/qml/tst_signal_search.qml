@@ -1635,11 +1635,13 @@ Item {
             verify(details.enabled);
             recordingRow("a").activate();
             verify(details.visible && !details.enabled);
-            // Once it plays (the player's "Opening…" line gone), the list is where
-            // it was with Call details enabled.
-            testContext.publishPlayback("/rec/Explore/a.wav", 2, 0, 2000, "");
+            // Neither while it opens (the player says "Opening…") nor once it plays.
+            compare(findChild(sheet, "recordingStatus").text, "Opening…");
             waitForRendering(sheet);
             compare(list.mapToItem(sheet, 0, 0).y, listY, "selecting another recording moves no row");
+            testContext.publishPlayback("/rec/Explore/a.wav", 2, 0, 2000, "");
+            waitForRendering(sheet);
+            compare(list.mapToItem(sheet, 0, 0).y, listY, "nor its playback starting");
             sheet.visible = false;
             model.history = [];
         }

@@ -11120,7 +11120,10 @@ Qt Quick frontend (`src/ui/qt`):
     and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording`
     is true (History, Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows
     its row by uid (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold:
-    play/pause, position and seek, the parts (the one shown kept on its recording by path) with a Play all parts action
+    play/pause, position and seek with a status line ("Opening…", "Paused") whose line stays laid out, empty and
+    unread, when there is none, so the block is as tall stopped, opening, playing and paused and a sheet centred on
+    its content does not move at a tap (`test_height_steady_across_states`), the parts (the one shown kept on its
+    recording by path) with a Play all parts action
     (the host keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a
     stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part
     the host reports "missing" leaves the block at once, until the store lists it as away (its storage went): from then

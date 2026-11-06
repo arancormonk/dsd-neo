@@ -504,11 +504,16 @@ Column {
                 }
             }
 
+            // "Opening…" or "Paused". Its line is kept, empty, while there is
+            // none, so the player is as tall stopped, opening, playing and
+            // paused: a sheet centred on its content (History's, a detection's
+            // recordings) would otherwise move under the finger at a tap. An
+            // empty line is not read.
             Text {
                 id: recordingStatusText
                 objectName: "recordingStatus"
                 width: parent.width
-                visible: text.length > 0
+                height: Math.max(implicitHeight, statusLine.height)
                 text: player.statusText()
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
@@ -516,7 +521,11 @@ Column {
                 color: Theme.textSubdued
                 Accessible.role: Accessible.StaticText
                 Accessible.name: text
-                Accessible.ignored: !Navigation.allows(recordingStatusText) || !visible
+                Accessible.ignored: !Navigation.allows(recordingStatusText) || !visible || text.length === 0
+                FontMetrics {
+                    id: statusLine
+                    font: recordingStatusText.font
+                }
             }
         }
     }
