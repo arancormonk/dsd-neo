@@ -533,6 +533,56 @@ testKnownFrequencyEngineGrammar(const QString& dir) {
     matchNamed(index.tunedMatches(454200000, 12500), QStringLiteral("Metro / Hex"));
 }
 
+/* Issue #644: an options cell a spreadsheet wrapped in double quotes reads as its loader reads it
+   (dsd_scan_options_parse_cell()): a channel map's `"--nfm-bandwidth-hz 8000"` and a target's both give an 8 kHz
+   channel, so a signal 5 kHz away is not that channel; a target's quoted type and its spreadsheet-quoted label read as
+   the target loader reads them. */
+static void
+testKnownFrequencyQuotedCells(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString channels = QDir(dir).filePath(QStringLiteral("quoted-channels.csv"));
+    writeFile(channels, "chan,freq,name,mode,options\n1,455000000,Quoted,nfm,\"--nfm-bandwidth-hz 8000\"\n");
+    assert(systems.add({{QStringLiteral("name"), QStringLiteral("Quoted")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("455.9000")},
+                        {QStringLiteral("trunking"), true},
+                        {QStringLiteral("chanCsvPath"), channels}}));
+    const QString targets = QDir(dir).filePath(QStringLiteral("quoted-targets.csv"));
+    writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options,label\n"
+                       "fire,\"nfm-conventional\",456000000,,,,,\"--nfm-bandwidth-hz 8000\",\"Tower \"\"A\"\"\"\n");
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Quotes")},
+                      {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                      {QStringLiteral("targetsCsvPath"), targets}}));
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    matchNamed(index.tunedMatches(455000000, 12500), QStringLiteral("Quoted / Quoted"));
+    assert(index.tunedMatches(455005000, 12500).isEmpty());
+    matchNamed(index.tunedMatches(456000000, 12500), QStringLiteral("Quotes / Tower \"A\""));
+    assert(index.tunedMatches(456005000, 12500).isEmpty());
+}
+
+/* Issue #644: a channel map far past the rows the index keeps from one file: the first 100000 rows are indexed and
+   none after them, so a huge map neither grows the index nor the reader without bound. */
+static void
+testKnownFrequencyRowCap(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString channels = QDir(dir).filePath(QStringLiteral("huge-channels.csv"));
+    QByteArray text = "chan,freq,name\n";
+    for (int i = 0; i < 100005; ++i) {
+        text.append("1," + QByteArray::number(100000000LL + 12500LL * i) + ",C" + QByteArray::number(i) + '\n');
+    }
+    writeFile(channels, text.constData());
+    assert(systems.add({{QStringLiteral("name"), QStringLiteral("Huge")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("99.0000")},
+                        {QStringLiteral("trunking"), true},
+                        {QStringLiteral("chanCsvPath"), channels}}));
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    matchNamed(index.tunedMatches(100000000, 12500), QStringLiteral("Huge / C0"));
+    matchNamed(index.tunedMatches(100000000 + 12500LL * 99999, 12500), QStringLiteral("Huge / C99999"));
+    assert(index.tunedMatches(100000000 + 12500LL * 100000, 12500).isEmpty());
+    assert(index.tunedMatches(100000000 + 12500LL * 100004, 12500).isEmpty());
+}
+
 /* Issue #644: every match says what it is, so a frontend can start it with its own settings. A saved system's own
    frequency and a scan list's row (an entry by its uid, a target CSV row by its id) can be started; a channel map's row
    (a saved system's, or a trunked target's), a disabled entry, a draft list's entry and a target row with no id only
@@ -1161,6 +1211,8 @@ main(int argc, char** argv) {
     testKnownFrequencyIdentity(temp.path());
     testKnownFrequencyEngineIds(temp.path());
     testKnownFrequencyEngineGrammar(temp.path());
+    testKnownFrequencyQuotedCells(temp.path());
+    testKnownFrequencyRowCap(temp.path());
     return 0;
 }
 

@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <cmath>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/runtime/scan_options.h>
+#include <new>
 #include <stdint.h>
 #include <utility>
 #include "known_frequency_index.h"
@@ -29,34 +31,6 @@
 
 namespace dsd_qt {
 static double knownWidth(const QString& mode, const QString& options, double inherited = 12500);
-
-static QStringList
-csvFields(const QString& line) {
-    QStringList result;
-    QString field;
-    bool quoted = false;
-    for (qsizetype i = 0; i < line.size(); ++i) {
-        QChar ch = line[i];
-        if (ch == QLatin1Char('"')) {
-            if (quoted && i + 1 < line.size() && line[i + 1] == ch) {
-                field += ch;
-                ++i;
-            } else {
-                quoted = !quoted;
-            }
-        } else if (ch == QLatin1Char(',') && !quoted) {
-            result.append(field.trimmed());
-            field.clear();
-        } else {
-            field += ch;
-        }
-    }
-    if (quoted) {
-        return {};
-    }
-    result.append(field.trimmed());
-    return result;
-}
 
 static qint64
 parseFrequency(QString value, bool mhz) {
@@ -157,11 +131,11 @@ struct CsvColumns {
 };
 
 /* A row's own name: a target CSV's `label`, which names the target as its calls are named (issue #782), else its name
-   or id column. */
+   or id column, shown without the blanks around it (an id keeps those inside its quotes). */
 static QString
 rowName(const QStringList& fields, const CsvColumns& columns) {
     const QString labelled = fields.value(columns.label);
-    return labelled.isEmpty() ? fields.value(columns.name) : labelled;
+    return (labelled.isEmpty() ? fields.value(columns.name) : labelled).trimmed();
 }
 
 /* Cell @p cell as the engine's scan_unquote() reads it: trimmed of blanks (C isspace()), then one pair of surrounding
@@ -209,9 +183,11 @@ engineTargetId(const QString& line, int column) {
 enum class EngineCsvGrammar { Targets, ChannelMap };
 
 /* The target loader's row buffer (line[4096]: a longer row refuses the file), and the channel map reader's (1 MiB, the
-   newline and terminator included). */
+   newline and terminator included). Neither loader caps its rows; the index keeps at most kStoredRowMax of one file's,
+   reading the rest only for what refuses the file. */
 constexpr qsizetype kEngineTargetRowMax = 4095;
 constexpr qsizetype kEngineChannelRowMax = 1048574;
+constexpr qsizetype kStoredRowMax = 100000;
 
 struct EngineCsvRow {
     QString line;
@@ -224,9 +200,10 @@ struct EngineCsv {
     QVector<EngineCsvRow> rows;
 };
 
-/* Every cell of @p line as the engine's target loader splits and unquotes it (engineTargetId()). */
+/* Every cell of @p line as the engine's target loader splits it (dsd_trunk_scan_split_csv_fields(): at commas outside
+   quotes), each as it stands. */
 QStringList
-engineCells(const QString& line) {
+engineRawCells(const QString& line) {
     QStringList cells;
     qsizetype start = 0;
     bool quoted = false;
@@ -235,10 +212,18 @@ engineCells(const QString& line) {
         if (!end && line[i] == QLatin1Char('"')) {
             quoted = !quoted;
         } else if (end || (line[i] == QLatin1Char(',') && !quoted)) {
-            cells.append(engineUnquote(line.mid(start, i - start)));
+            cells.append(line.mid(start, i - start));
             start = i + 1;
         }
     }
+    return cells;
+}
+
+/* Every cell of @p line as the engine's target loader splits and unquotes it (engineTargetId()). */
+QStringList
+engineCells(const QString& line) {
+    QStringList cells = engineRawCells(line);
+    std::transform(cells.begin(), cells.end(), cells.begin(), engineUnquote);
     return cells;
 }
 
@@ -272,6 +257,52 @@ engineHz(const QString& cell, qint64 min_hz, qint64 max_hz) {
     bool ok = false;
     const qint64 hz = digits.toLongLong(&ok, 10);
     return ok && hz >= min_hz && hz <= max_hz ? hz : 0;
+}
+
+/* Whether @p cell, trimmed, is wrapped in double quotes (scan_field_wrapped(), chan_import_options()). */
+bool
+engineWrapped(const QString& cell) {
+    const QString trimmed = engineTrim(cell);
+    return trimmed.size() >= 2 && trimmed.front() == QLatin1Char('"') && trimmed.back() == QLatin1Char('"');
+}
+
+/* An options cell as its loader hands it to dsd_scan_options_parse_cell() (issue #637): @p legacy as the loader has
+   always read it (a target's without one pair of outer quotes, a channel map's as split); when the cell was wrapped
+   in double quotes, @p content its inside. A cell that reads as a spreadsheet's quoting reads as its content, each
+   doubled quote as one; any other as @p legacy. */
+QString
+engineOptionsText(const QString& legacy, const QString& content, bool wrapped) {
+    if (!wrapped) {
+        return legacy;
+    }
+    const QByteArray legacyBytes = legacy.toUtf8();
+    const QByteArray contentBytes = content.toUtf8();
+    if (dsd_scan_options_cell_csv_quoted(legacyBytes.constData(), contentBytes.constData(),
+                                         static_cast<size_t>(contentBytes.size()))
+        == 0) {
+        return legacy;
+    }
+    QString text = content;
+    return text.replace(QStringLiteral("\"\""), QStringLiteral("\""));
+}
+
+/* A target's label cell, unquoted (@p cell), as scan_csv_unescape_doubled_quotes() reads one that was @p wrapped:
+   each doubled quote as one, when every quote in it is doubled; otherwise as it is. */
+QString
+engineLabelText(const QString& cell, bool wrapped) {
+    if (!wrapped) {
+        return cell;
+    }
+    for (qsizetype i = 0; i < cell.size(); ++i) {
+        if (cell[i] == QLatin1Char('"')) {
+            if (i + 1 >= cell.size() || cell[i + 1] != QLatin1Char('"')) {
+                return cell;
+            }
+            ++i;
+        }
+    }
+    QString text = cell;
+    return text.replace(QStringLiteral("\"\""), QStringLiteral("\""));
 }
 
 /* The target loader's header, row 1 (scan_read_target_csv_header()): its first seven cells, unquoted, are exactly
@@ -327,51 +358,76 @@ engineChannelHeader(const QString& line) {
     return columns;
 }
 
+/* A target row's cells as the target loader reads them: split outside quotes and unquoted (scan_unquote()), the options
+   cell as dsd_scan_options_parse_cell() reads it and the label as scan_parse_target_label() does. */
+QStringList
+engineTargetFields(const QString& line, const CsvColumns& columns) {
+    const QStringList raw = engineRawCells(line);
+    QStringList fields = raw;
+    std::transform(fields.begin(), fields.end(), fields.begin(), engineUnquote);
+    if (columns.options >= 0 && columns.options < fields.size()) {
+        const QString& text = fields[columns.options];
+        fields[columns.options] = engineOptionsText(text, text, engineWrapped(raw[columns.options]));
+    }
+    if (columns.label >= 0 && columns.label < fields.size()) {
+        fields[columns.label] = engineLabelText(fields[columns.label], engineWrapped(raw[columns.label]));
+    }
+    return fields;
+}
+
+/* A channel map row's cells as chan_import_row() reads them: split at every comma, trimmed, the options cell as
+   chan_import_options() hands it to dsd_scan_options_parse_cell(). */
+QStringList
+engineChannelFields(const QString& line, const CsvColumns& columns) {
+    const QStringList raw = line.split(QLatin1Char(','));
+    QStringList fields = raw;
+    std::transform(fields.begin(), fields.end(), fields.begin(), engineTrim);
+    if (columns.options >= 0 && columns.options < fields.size()) {
+        const QString trimmed = fields[columns.options];
+        const bool wrapped = engineWrapped(trimmed);
+        fields[columns.options] =
+            engineOptionsText(raw[columns.options], wrapped ? trimmed.mid(1, trimmed.size() - 2) : QString(), wrapped);
+    }
+    return fields;
+}
+
 /* One data row of @p grammar into @p out, or false when the engine refuses the whole file for it. A row the engine
-   loads no frequency for is left out. */
+   loads no frequency for is left out, and so is every row once kStoredRowMax are kept: such a row is only checked for
+   what refuses the file. */
 bool
 engineCsvRow(EngineCsvGrammar grammar, const QString& raw, EngineCsv* out) {
+    const bool store = out->rows.size() < kStoredRowMax;
     if (grammar == EngineCsvGrammar::Targets) {
         if (raw.size() > kEngineTargetRowMax) {
             return false;
         }
         const QString line = engineTrim(raw);
-        if (line.isEmpty()) {
+        if (!store || line.isEmpty()) {
             return true;
         }
-        const QStringList fields = csvFields(line);
         const qint64 hz = engineHz(engineTargetId(line, out->columns.frequency), 1, UINT32_MAX);
         if (hz) {
-            out->rows.append({line, fields, hz});
+            out->rows.append({line, engineTargetFields(line, out->columns), hz});
         }
         return true;
     }
     if (raw.toUtf8().size() > kEngineChannelRowMax) {
         return false;
     }
-    if (engineTrim(raw).isEmpty()) {
+    if (!store || engineTrim(raw).isEmpty()) {
         return true;
     }
-    QStringList fields = raw.split(QLatin1Char(','));
-    std::transform(fields.begin(), fields.end(), fields.begin(), engineTrim);
+    const QStringList fields = engineChannelFields(raw, out->columns);
     const qint64 hz = engineHz(fields.value(1), 100000, 2147483647LL);
     if (hz && dsd_csv_channel_has_slot(fields.value(0).toUtf8().constData())) {
-        out->rows.append({raw, fields, hz});
+        out->rows.append({QString(), fields, hz});
     }
     return true;
 }
 
-/* The rows of the CSV at @p path as the engine's @p grammar loader reads them (issue #644): its header is row 1 and
-   nothing is a comment (a `#` row is data), a blank row is skipped, and the caps and refusals are the engine's: a file
-   it refuses (a bad target header, a row past its buffer) gives no rows. False when the file cannot be read or is
-   refused. */
+/* readEngineCsv()'s reading of @p text into @p out; false when the engine refuses the file. */
 bool
-readEngineCsv(const QString& path, EngineCsvGrammar grammar, EngineCsv* out) {
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return false;
-    }
-    QTextStream text(&f);
+readEngineCsvRows(QTextStream& text, EngineCsvGrammar grammar, EngineCsv* out) {
     if (text.atEnd()) {
         return false;
     }
@@ -385,11 +441,33 @@ readEngineCsv(const QString& path, EngineCsvGrammar grammar, EngineCsv* out) {
     }
     while (!text.atEnd()) {
         if (!engineCsvRow(grammar, text.readLine(kEngineChannelRowMax + 1), out)) {
-            out->rows.clear();
             return false;
         }
     }
     return true;
+}
+
+/* The rows of the CSV at @p path as the engine's @p grammar loader reads them (issue #644): its header is row 1 and
+   nothing is a comment (a `#` row is data), a blank row is skipped, and the caps and refusals are the engine's: a file
+   it refuses (a bad target header, a row past its buffer) gives no rows. At most kStoredRowMax rows are kept, and a
+   file too large to hold gives none. False when the file cannot be read or is refused. */
+bool
+readEngineCsv(const QString& path, EngineCsvGrammar grammar, EngineCsv* out) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
+    }
+    QTextStream text(&f);
+    bool read = false;
+    try {
+        read = readEngineCsvRows(text, grammar, out);
+    } catch (const std::bad_alloc&) {
+        read = false;
+    }
+    if (!read) {
+        out->rows.clear();
+    }
+    return read;
 }
 
 /* A row's identity: a target CSV's row is the target its `id` names (@p line's id cell as the engine reads it),
