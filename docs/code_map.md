@@ -10125,7 +10125,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
   the whole text as its accessible name and description, and a history row shows site and
   crypt under its verdict. `hitMap()` also gives `recordingKey` (issue #809), `"<session>:<hit>"`
-  formatted in C++ from the two `uint64_t`s, never through a JS number: the recording store's
+  formatted in C++ from the two `uint64_t`s, never through a JS number, and empty while either
+  is 0 (the live hit with no detection current): the recording store's
   key for the detection's recordings (`recordingCountForDetection()`, `recordingsForDetection()`);
   `UI_QT_SIGNAL_SEARCH` checks a session above 2^53. The QML fakes mirror that store and
   History surface (`qml_test_context.h`: `RecordingsFake::setDetectionRecordings()` seeds a
@@ -10889,12 +10890,12 @@ Qt Quick frontend (`src/ui/qt`):
     stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
     add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
     clear. `uidForFragment()` (issue #809: a Signal search recording names its call by fragment) reads it: the uid of
-    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared; a double,
-    which QML reads exactly. Rows older builds wrote have no fragments, and no recordings. The `recordings` and `hasRecording` roles ask a
-    `CallRecordingProvider` (the call recording store; none, and so no recordings, until one is set with
-    `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings changed through
-    `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the store knows before
-    its row exists shows when the row arrives.
+    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared; a
+    double, which QML reads exactly. Rows older builds wrote have no fragments, and no recordings. The `recordings` and
+    `hasRecording` roles ask a `CallRecordingProvider` (the call recording store; none, and so no recordings, until one
+    is set with `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings
+    changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
+    store knows before its row exists shows when the row arrives.
   - Background capture (issue #708, B1; `call_history_tap.{h,cpp}`): Qt pauses the GUI thread on Android in the
     background, the UI tick was the ring's only reader, and the ring keeps 254 committed rows a slot, so a busy system
     overwrote calls History never saw. When the application turns Suspended or Hidden, after `saveNow()`, the model

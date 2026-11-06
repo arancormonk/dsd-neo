@@ -29,12 +29,13 @@ TestCase {
         recordings.reset();
         callHistory.clearAll();
         revisionSpy.clear();
+        var base = recordings.revision;
         compare(recordings.recordingCountForDetection("17:4"), 0);
         compare(recordings.recordingsForDetection("17:4").length, 0);
 
         recordings.setDetectionRecordings("17:4", [{"id": "b", "fragment": "F:0:2"}, {"id": "a", "start": 5}]);
         compare(revisionSpy.count, 1, "a seeding moves the revision");
-        compare(recordings.revision, 1);
+        compare(recordings.revision, base + 1);
         compare(recordings.recordingCountForDetection("17:4"), 2);
         compare(recordings.recordingCountForDetection("17:5"), 0);
         var list = recordings.recordingsForDetection("17:4");
@@ -61,8 +62,12 @@ TestCase {
         compare(callHistory.uidForFragment("F:0:3"), 0, "the log cleared");
         verify(!callHistory.setFragmentRow("F:0:3", uid));
         recordings.reset();
-        compare(revisionSpy.count, 3, "a reset back to rest moves it too");
-        compare(recordings.revision, 0);
+        compare(revisionSpy.count, 2, "a reset with nothing seeded leaves it");
+        recordings.setDetectionRecordings("17:9", [{"id": "c"}]);
+        recordings.reset();
+        compare(revisionSpy.count, 4, "a reset that drops seeded recordings moves it on");
+        compare(recordings.revision, base + 4, "never back");
+        compare(recordings.recordingCountForDetection("17:9"), 0);
     }
 
     function test_01_the_fixture_carries_every_reading_the_screens_read() {

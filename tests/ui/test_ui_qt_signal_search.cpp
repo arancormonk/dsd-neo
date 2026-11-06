@@ -440,7 +440,8 @@ assertIdentity(const QVariantMap& match, const char* source, const QString& list
 }
 
 /* Issue #809: a detection names its recordings by "<session>:<hit>", the key the recording journal stores, written
-   from the integers: a session id above 2^53 (a JS number's exact range) keeps every digit, live and in history. */
+   from the integers: a session id above 2^53 (a JS number's exact range) keeps every digit, live and in history. A
+   zero id, which the journal never names (the live hit with no detection current), gives no key. */
 static void
 testRecordingKey() {
     const struct {
@@ -450,6 +451,8 @@ testRecordingKey() {
     } cases[] = {
         {1730000000000000ULL, 7, "1730000000000000:7"},
         {9007199254740993ULL, 18446744073709551615ULL, "9007199254740993:18446744073709551615"},
+        {1730000000000000ULL, 0, ""},
+        {0, 7, ""},
     };
 
     dsd_qt::SignalSearchModel search(nullptr, nullptr);
@@ -468,8 +471,23 @@ testRecordingKey() {
         const QString key = QString::fromLatin1(c.key);
         assert(search.status().value(QStringLiteral("hit")).toMap().value(QStringLiteral("recordingKey")).toString()
                == key);
-        assert(search.history().front().toMap().value(QStringLiteral("recordingKey")).toString() == key);
+        // History keeps only a real detection; a zero id is checked on the live hit alone.
+        assert(key.isEmpty()
+               || search.history().front().toMap().value(QStringLiteral("recordingKey")).toString() == key);
     }
+    // A status with no detection current maps an all-zero hit.
+    dsd_signal_search_status idle{};
+    idle.session_id = 1730000000000000ULL;
+    idle.revision = ++revision;
+    idle.phase = DSD_SEARCH_LISTENING;
+    dsd_app_signal_search_publish(&idle, nullptr, nullptr);
+    search.refresh();
+    assert(search.status()
+               .value(QStringLiteral("hit"))
+               .toMap()
+               .value(QStringLiteral("recordingKey"))
+               .toString()
+               .isEmpty());
 }
 
 /* Issue #644: two lists under one name, each with an entry of one uid on one frequency, are two Listen choices, each

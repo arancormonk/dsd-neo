@@ -2270,7 +2270,8 @@ class ReadingMap : public QQmlPropertyMap {
  * number each time (0 when the count is 0, as the store answers a selection that matched nothing).
  *
  * Issue #809: a detection's recordings are what a case seeded with setDetectionRecordings(), each map completed with
- * the store's keys; every seeding moves `revision` and emits revisionChanged(), as the store does. That signal is
+ * the store's keys; every seeding, and a reset that drops seeded ones, moves `revision` up and emits
+ * revisionChanged(), as the store does. That signal is
  * declared here: a property map's own change signals are not reachable by name, so `onRevisionChanged` would miss.
  */
 class RecordingsFake : public QQmlPropertyMap {
@@ -2312,15 +2313,16 @@ class RecordingsFake : public QQmlPropertyMap {
 
     Q_INVOKABLE void
     reset() {
-        const bool moved = value(QStringLiteral("revision")).toDouble() > 0.0;
+        /* The revision only rises, as the store's does: a reset that drops seeded recordings moves it on. */
+        const double revision = value(QStringLiteral("revision")).toDouble();
         const QVariantMap values = rest();
         for (auto it = values.cbegin(); it != values.cend(); ++it) {
-            insert(it.key(), it.value());
+            insert(it.key(), it.key() == QLatin1String("revision") ? QVariant(revision) : it.value());
         }
         m_calls.clear();
-        m_detections.clear();
-        if (moved) {
-            Q_EMIT revisionChanged();
+        if (!m_detections.isEmpty()) {
+            m_detections.clear();
+            bumpRevision();
         }
         m_selectionCount = 0;
         m_selectionBytes = 0;
@@ -2431,8 +2433,7 @@ class RecordingsFake : public QQmlPropertyMap {
         } else {
             m_detections.insert(key, entries);
         }
-        insert(QStringLiteral("revision"), value(QStringLiteral("revision")).toDouble() + 1.0);
-        Q_EMIT revisionChanged();
+        bumpRevision();
     }
 
     Q_INVOKABLE void
@@ -2451,6 +2452,12 @@ class RecordingsFake : public QQmlPropertyMap {
     note(const QString& name, QVariantMap args) {
         args.insert(QStringLiteral("name"), name);
         m_calls.append(args);
+    }
+
+    void
+    bumpRevision() {
+        insert(QStringLiteral("revision"), value(QStringLiteral("revision")).toDouble() + 1.0);
+        Q_EMIT revisionChanged();
     }
 
     QVariantMap
