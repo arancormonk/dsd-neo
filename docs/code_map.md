@@ -11133,10 +11133,10 @@ Qt Quick frontend (`src/ui/qt`):
     every second while a folder is in use, else on request or once a minute (a folder turning in use, at a session start
     in it, changed or not, or a session the host reports, wakes one at once), and tail each journal from its byte
     cursor, complete lines only (`recording_journal_parse()`: version 1, a `publish` file only as a plain relative name
-    inside the folder). A
-    journal shorter than the cursor was replaced and is read again; a folder whose folder.json is gone leaves the
-    index. The index keeps {id -> path, start, duration, fragment, folder, flags, size}: a `publish` of a file that is
-    not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment
+    inside the folder; a `search` only as `<session>:<hit>`, each 1 to 20 digits with no leading zero, non-zero and at
+    most `UINT64_MAX`, else the recording is kept with none). A journal shorter than the cursor was replaced and is
+    read again; a folder whose folder.json is gone leaves the index. The index keeps {id -> path, start, duration, fragment, detection, folder, flags, size}: a `publish` of a
+    file that is not a regular file on disk is not indexed (deleted), a `link` gives a pending recording its fragment
     (`call_history_fragment_key()` of the record's instance, slot and row), an `unlink` leaves it unattributed. One
     path has one owner, the newest publish in journal order: a journal not yet compacted can still name a recording
     deleted since whose final name a later one reused (an I/Q replay's 16-bit suffix repeated), and the later publish
@@ -11147,13 +11147,31 @@ Qt Quick frontend (`src/ui/qt`):
     files (`TEMP_<date>_<time>_<token>_<seq>`) whose token is not this process's (`dsd_wav_temp_token_text()`) are
     unfinished recordings: counted, deletable, never exported; this process's are never indexed or touched. Files the
     journal never named are never managed. A folder's journal is compacted (rewritten through QSaveFile with one
-    `publish` per live recording, the cursor then at its end) once it holds more than twice as many lines as live
-    recordings, only while no session uses the folder (nor one that never ran, above), and only when nothing but a torn
-    line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage may refuse it). History
+    `publish` per live recording, its `search` written back only when it had one, the cursor then at its end) once it
+    holds more than twice as many lines as live recordings, only while no session uses the folder (nor one that never
+    ran, above), and only when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is
+    best-effort (FUSE-backed storage may refuse it). History
     reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History read in before each slice
     of 128 records of a whole-folder read, each recheck and each delete, and sums (usage, limit, compaction) are taken
     on shared copies outside the lock. Changes reach the GUI as one queued delivery at a time (`changed()`,
-    `recordingFragmentsChanged()`, `limitReached()`), so a paused GUI thread never collects more than one.
+    `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a paused GUI thread never collects more
+    than one.
+  - Signal search detections (issue #809): `m_bySearch` maps a journal `search` key (`<session>:<hit>`) to the ids
+    heard on that detection. It changes only in `insertEntryLocked()` and `removeEntryLocked()`, the one path every
+    removal takes (a delete, the limit, a file gone, a folder read again, replaced or gone, a path a later publish
+    reuses), never in `unindexFragmentLocked()`, which a `link` also calls while the recording stays; storage going away
+    removes nothing, so a recording there stays listed, its map's `available` false, and plays again when the storage
+    is back. QML reads it under the reader lock: `recordingCountForDetection(key)` (a lookup) and
+    `recordingsForDetection(key)` (newest first: start, then publish order; the History maps plus `system`, `target`,
+    `source` and `fragment`). `revision` (a double, so QML reads it exactly) is the worker's `m_generation`, bumped
+    under the lock by `noteQueryChangeLocked()` at every change a query can see (an entry inserted or removed, a link
+    that changes its fragment, a size a recheck reads again, a root marked away or read again); `publish()` copies the
+    current generation to the outbox with the summary, and `deliver()` emits `revisionChanged()` when it moved. A later
+    publication can only carry a newer generation, so coalesced deliveries never lose one, and `changed()`, which
+    follows the totals, can stay quiet while `revision` moves (one recording replaced by another of the same size and
+    start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
+    `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`, `test_revision_coalesced_passes`,
+    `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
     (`setPlayingPath()`) or a selection (`selectForExport()`, `selectRecordings()`, until `releaseSelection()`) holds

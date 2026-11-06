@@ -49,6 +49,29 @@ plain_relative_name(const QString& file) {
     });
 }
 
+/* One id of a search key: 1 to 20 digits without a leading zero, at most UINT64_MAX. */
+bool
+is_search_id(QStringView text) {
+    if (text.size() > 20 || !is_digits(text) || text.front() == QLatin1Char('0')) {
+        return false;
+    }
+    bool ok = false;
+    (void)text.toULongLong(&ok, 10);
+    return ok;
+}
+
+/* `<session>:<hit>` as the decoder writes it, else empty: an older build's line, or one edited by hand, names no
+ * detection. */
+QString
+search_key(const QJsonValue& value) {
+    QString key = value.toString();
+    const qsizetype colon = key.indexOf(QLatin1Char(':'));
+    if (colon < 0 || !is_search_id(QStringView(key).left(colon)) || !is_search_id(QStringView(key).mid(colon + 1))) {
+        return QString();
+    }
+    return key;
+}
+
 /* A non-negative JSON integer, else @p fallback. */
 qint64
 integer_or(const QJsonValue& value, qint64 fallback) {
@@ -94,6 +117,7 @@ read_publish(const QJsonObject& object, RecordingJournalRecord* record) {
     record->system = object.value(QLatin1String("system")).toString();
     record->target = object.value(QLatin1String("target")).toString();
     record->source = object.value(QLatin1String("source")).toString();
+    record->search = search_key(object.value(QLatin1String("search")));
     return true;
 }
 
@@ -192,6 +216,9 @@ recording_journal_publish_line(const RecordingJournalRecord& record) {
     object.insert(QLatin1String("system"), record.system);
     object.insert(QLatin1String("target"), record.target);
     object.insert(QLatin1String("source"), record.source);
+    if (!record.search.isEmpty()) {
+        object.insert(QLatin1String("search"), record.search);
+    }
     QByteArray line = QJsonDocument(object).toJson(QJsonDocument::Compact);
     line.append('\n');
     return line;

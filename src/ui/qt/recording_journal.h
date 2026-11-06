@@ -47,6 +47,9 @@ struct RecordingJournalRecord {
     QString system;
     QString target;
     QString source;
+    /* publish: the Signal search detection it was heard on, `<session>:<hit>` (two non-zero decimal u64s, no leading
+     * zero); empty when the record names none or names it malformed. */
+    QString search;
 };
 
 /**
@@ -59,7 +62,8 @@ struct RecordingJournalRecord {
  */
 bool recording_journal_parse(const QByteArray& line, RecordingJournalRecord* out);
 
-/** @brief A `publish` line (with its newline) for @p record, as a compaction writes it back: never pending. */
+/** @brief A `publish` line (with its newline) for @p record, as a compaction writes it back: never pending, and with a
+ * `search` only when the record has one. */
 QByteArray recording_journal_publish_line(const RecordingJournalRecord& record);
 
 /**
