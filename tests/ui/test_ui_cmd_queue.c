@@ -24565,16 +24565,8 @@ expect_refused_for_the_next_start(dsd_opts* opts, dsd_state* state, const dsdneo
     return rc | bad;
 }
 
-/*
- * Issue #671 (B1): what a config leaves for the next start is held to startup's own rules (the composed-config check
- * --validate-config runs: no global channel map or P25 band plan beside a trunk scan, and a list for it). A config
- * whose next start those rules would refuse is refused whole, with their reason, before anything changes: a band plan
- * or a channel map under a running trunk scan, and a trunk scan turned on over the global map or band plan a session
- * runs, a file valid on its own loaded as terminal Config > Load loads it included. Before this, each was kept for the
- * next start, so the save wrote a config the next start refused.
- */
 static int
-test_config_refuses_what_the_next_start_refuses(void) {
+config_refuses_trunk_scan_beside_a_map_or_plan(void) {
     static dsd_opts opts;
     static dsd_state state;
     static dsdneoUserConfig cfg;
@@ -24627,6 +24619,17 @@ test_config_refuses_what_the_next_start_refuses(void) {
                                                 map ? "trunk scan on over a global map" : "trunk scan on over a plan");
         freeState(&state);
     }
+    return rc;
+}
+
+static int
+config_refuses_a_trunk_scan_load_or_no_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig before;
+    static const char k_map_why[] = "trunking.chan_csv cannot be combined with trunk_scan.enabled";
+    int rc = 0;
 
     /* A trunk scan without its list. */
     init_test_context(&opts, &state);
@@ -24660,19 +24663,16 @@ test_config_refuses_what_the_next_start_refuses(void) {
     freeState(&state);
     (void)remove(path);
     (void)dsd_test_rmdir(dir);
+    return rc;
+}
 
-    /* A trunk scan turned on over a session with no global map or plan is kept for the next start. */
-    init_test_context(&opts, &state);
-    DSD_MEMSET(&cfg, 0, sizeof cfg);
-    cfg.has_trunk_scan = 1;
-    cfg.trunk_scan_enabled = 1;
-    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
-    cfg.trunk_scan_list_count = 1;
-    static dsdneoUserConfig saved;
-    rc |= apply_then_save(&opts, &state, &cfg, &saved, "trunk scan on, nothing global");
-    rc |= expect_int("trunk scan on, nothing global: waits", saved.trunk_scan_enabled, 1);
-    rc |= expect_int("trunk scan on, nothing global: restart", dsd_app_command_test_last_restart_required(), 1);
-    freeState(&state);
+static int
+config_refuses_trunk_scan_beside_the_scanner(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig before;
+    int rc = 0;
 
     /* Round 4: the -Y scanner beside a trunk scan, which startup refuses as well. A config that names both (trunking
        off), and a trunk scan turned on in a session running -Y, whose save writes the scanner on. */
@@ -24732,6 +24732,28 @@ test_config_refuses_what_the_next_start_refuses(void) {
         opts.scanner_mode = 0;
         freeState(&state);
     }
+    return rc;
+}
+
+static int
+config_keeps_a_trunk_scan_the_next_start_takes(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsdneoUserConfig saved;
+    int rc = 0;
+
+    /* A trunk scan turned on over a session with no global map or plan is kept for the next start. */
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_trunk_scan = 1;
+    cfg.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(cfg.trunk_scan_lists[0].path, sizeof cfg.trunk_scan_lists[0].path, "%s", "targets.csv");
+    cfg.trunk_scan_list_count = 1;
+    rc |= apply_then_save(&opts, &state, &cfg, &saved, "trunk scan on, nothing global");
+    rc |= expect_int("trunk scan on, nothing global: waits", saved.trunk_scan_enabled, 1);
+    rc |= expect_int("trunk scan on, nothing global: restart", dsd_app_command_test_last_restart_required(), 1);
+    freeState(&state);
 
     /* Trunking on wins over the scanner, at startup as in staging: that config's trunk scan waits. */
     init_test_context(&opts, &state);
@@ -24748,6 +24770,24 @@ test_config_refuses_what_the_next_start_refuses(void) {
                      saved.trunk_scan_enabled == 1 && saved.trunk_scanner == 0 && saved.trunk_enabled == 1, 1);
     opts.trunk_enable = 0;
     freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #671 (B1): what a config leaves for the next start is held to startup's own rules (the composed-config check
+ * --validate-config runs: no global channel map or P25 band plan beside a trunk scan, and a list for it). A config
+ * whose next start those rules would refuse is refused whole, with their reason, before anything changes: a band plan
+ * or a channel map under a running trunk scan, and a trunk scan turned on over the global map or band plan a session
+ * runs, a file valid on its own loaded as terminal Config > Load loads it included. Before this, each was kept for the
+ * next start, so the save wrote a config the next start refused.
+ */
+static int
+test_config_refuses_what_the_next_start_refuses(void) {
+    int rc = 0;
+    rc |= config_refuses_trunk_scan_beside_a_map_or_plan();
+    rc |= config_refuses_a_trunk_scan_load_or_no_list();
+    rc |= config_refuses_trunk_scan_beside_the_scanner();
+    rc |= config_keeps_a_trunk_scan_the_next_start_takes();
     return rc;
 }
 
