@@ -72,6 +72,12 @@ Item {
             mouseClick(target, target.width / 2, target.height / 2);
         }
 
+        // A status line with nothing to say: its line kept in the layout, empty
+        // and not read.
+        function silent(status) {
+            return status.text === "" && status.Accessible.ignored && status.height > 0;
+        }
+
         function init() {
             verify(sheet() !== null);
             testContext.resetHostPlayback();
@@ -102,7 +108,7 @@ Item {
             verify(block.visible);
             compare(item("recordingHeader").text, "Call recording");
             compare(item("recordingTime").text, "0:00 / 0:12");
-            verify(!item("recordingStatus").visible, "a recording at rest says nothing more");
+            verify(silent(item("recordingStatus")), "a recording at rest says nothing more");
             verify(!item("recordingProblem").visible);
             // The bar sits with the time it shows, not apart under the row.
             var time = item("recordingTime").mapToItem(sheet(), 0, 0);
@@ -121,7 +127,7 @@ Item {
 
             testContext.publishPlayback(pathA, 2, 3000, 12000, "");
             compare(item("recordingTime").text, "0:03 / 0:12");
-            verify(!item("recordingStatus").visible);
+            verify(silent(item("recordingStatus")));
             compare(item("recordingPlayButton").accessibleName, "Pause recording");
 
             tap("recordingPlayButton");
@@ -131,6 +137,35 @@ Item {
             compare(item("recordingPlayButton").accessibleName, "Resume recording");
             tap("recordingPlayButton");
             compare(lastHostCall().name, "resumePlayback");
+        }
+
+        // The player is as tall stopped, opening, playing, paused and stopped
+        // again: its status line keeps its place empty, so a sheet centred on
+        // its content never moves under the finger at a tap.
+        function test_height_steady_across_states() {
+            openWith([rec("t-1", pathA, 12000)]);
+            var block = item("historyRecording");
+            var status = item("recordingStatus");
+            waitForRendering(sheet());
+            var height = block.height;
+            verify(silent(status), "stopped");
+            tap("recordingPlayButton");
+            compare(status.text, "Opening…");
+            verify(!status.Accessible.ignored, "a status is read");
+            waitForRendering(sheet());
+            compare(block.height, height, "opening");
+            testContext.publishPlayback(pathA, 2, 3000, 12000, "");
+            verify(silent(status));
+            waitForRendering(sheet());
+            compare(block.height, height, "playing");
+            tap("recordingPlayButton");
+            compare(status.text, "Paused");
+            waitForRendering(sheet());
+            compare(block.height, height, "paused");
+            testContext.publishPlayback(pathA, 0, 0, 12000, "");
+            verify(silent(status));
+            waitForRendering(sheet());
+            compare(block.height, height, "stopped again");
         }
 
         // D10: the host pauses a recording when the app leaves the foreground; the block says so.
@@ -205,7 +240,7 @@ Item {
             testContext.publishPlayback(pathA, 4, 0, 0, data.error);
             verify(item("historyRecording").visible);
             compare(item("recordingProblem").text, data.text, "a sentence, under the player");
-            verify(!item("recordingStatus").visible, "nothing crammed beside the time");
+            verify(silent(item("recordingStatus")), "nothing crammed beside the time");
             compare(item("recordingProblem").width, item("historyRecording").width);
             tap("recordingPlayButton");
             compare(lastHostCall().name, "playRecording", "a play that failed can be tried again");
@@ -500,12 +535,37 @@ Item {
             tap("recordingDelete");
             var confirm = findChild(sheet(), "recordingDeleteConfirm");
             compare(confirm.title, "Delete this recording?");
-            compare(findChild(confirm, "confirmMessage").text, "The recording is deleted from this phone. The call stays in History.");
+            compare(findChild(confirm, "confirmMessage").text, "Only the audio is deleted. History and detections are unchanged.");
             compare(findChild(confirm, "confirmActionButton").text, "Delete recording");
             findChild(confirm, "confirmCancelButton").activate();
             compare(recordings.calls().length, 0, "nothing is deleted");
         }
 
+        // Issue #809 B3: a single recording's delete takes only its file, whether
+        // or not History has a row for it (here none: never linked), and no
+        // confirmation promises the call stays in History. A host can say it its
+        // own way. A Signal search detection's sheet lists recordings with no row,
+        // and ones whose row History trimmed (tst_signal_search.qml).
+        function test_delete_wording_without_a_row() {
+            var component = Qt.createComponent(uiDir + "/CallRecordingPlayer.qml");
+            compare(component.status, Component.Ready, component.errorString());
+            var host = Qt.createQmlObject("import QtQuick; Item { anchors.fill: parent }", loader);
+            var player = component.createObject(host, {width: 400, dialogParent: host, recordingList: [rec("t-9", pathC, 4000)]});
+            verify(player !== null);
+            tryVerify(function () { return player.visible; });
+            player.askDelete();
+            var confirm = findChild(player, "recordingDeleteConfirm");
+            verify(confirm.visible);
+            compare(findChild(confirm, "confirmMessage").text, "Only the audio is deleted. History and detections are unchanged.");
+            findChild(confirm, "confirmCancelButton").activate();
+            player.deleteMessage = "Only this recording's audio is deleted.";
+            player.askDelete();
+            compare(findChild(confirm, "confirmMessage").text, "Only this recording's audio is deleted.");
+            findChild(confirm, "confirmCancelButton").activate();
+            player.destroy();
+            host.destroy();
+            wait(0);
+        }
         function test_closing_stops_its_own_playback() {
             openWith([rec("t-1", pathA, 12000)]);
             tap("recordingPlayButton");

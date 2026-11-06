@@ -542,7 +542,7 @@ RecordingStore::markRootAwayLocked(int root, Pass* pass) {
         return;
     }
     m_rootAvailable[root] = false;
-    pass->dirty = true;
+    noteQueryChangeLocked(pass); // its recordings read as away
     for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
         if (!it->fragment.isEmpty() && m_folders.value(it->folder).root == root) {
             pass->fragments.insert(it->fragment);
@@ -654,7 +654,9 @@ RecordingStore::installRootTableLocked(int root, QList<Folder>& table, Pass* pas
     }
     m_rootAvailable[root] = true;
     pass->rebuilt = true;
-    pass->dirty = true;
+    // What it kept indexed reads as there again. Today the read of its folders later in this pass replaces every entry
+    // it kept, which moves the generation too; the rule is kept here so it does not rest on that read.
+    noteQueryChangeLocked(pass);
 }
 
 void
@@ -727,6 +729,7 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         if (replace) {
+            holdCommittedFolderLocked(path);
             removeFolderEntriesLocked(path, pass);
         }
         folder.offset = consumed;
@@ -750,6 +753,10 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
         }
     }
     applyRecordsInSlices(folder, records, files, pass);
+    if (replace) {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        commitFolderLocked(path, pass);
+    }
 }
 
 void
@@ -789,10 +796,15 @@ RecordingStore::applyRecordsInSlices(const Folder& folder, const QList<Recording
     // reader the unlock woke would lose it to the next slice, so the next slice waits until the readers are through.
     for (qsizetype begin = 0; begin < records.size() && !stopping(); begin += kApplySlice) {
         yieldToReaders();
-        const std::lock_guard<std::mutex> lock(m_mutex);
-        const qsizetype end = qMin(records.size(), begin + kApplySlice);
-        for (qsizetype i = begin; i < end; i++) {
-            applyRecordLocked(folder, records.at(i), files, pass);
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            const qsizetype end = qMin(records.size(), begin + kApplySlice);
+            for (qsizetype i = begin; i < end; i++) {
+                applyRecordLocked(folder, records.at(i), files, pass);
+            }
+        }
+        if (m_sliceHook) {
+            m_sliceHook(folder.path);
         }
     }
 }
@@ -957,6 +969,7 @@ RecordingStore::applyPublishLocked(const Folder& folder, const RecordingJournalR
     entry.system = record.system;
     entry.target = record.target;
     entry.source = record.source;
+    entry.search = record.search;
     if (entry.hasInstance && entry.slot >= 0 && entry.hasRow) {
         entry.fragment = call_history_fragment_key(entry.instance, entry.slot, entry.row);
     }
@@ -976,6 +989,7 @@ RecordingStore::applyLinkLocked(const RecordingJournalRecord& record, Pass* pass
         it->fragment = fragment;
         m_byFragment[fragment].append(it->id);
         pass->fragments.insert(fragment);
+        noteQueryChangeLocked(pass);
     }
     it->hasInstance = true;
     it->instance = record.instance;
@@ -1007,8 +1021,11 @@ RecordingStore::insertEntryLocked(Entry entry, Pass* pass) {
         m_byFragment[entry.fragment].append(entry.id);
         pass->fragments.insert(entry.fragment);
     }
+    if (!entry.search.isEmpty()) {
+        m_bySearch[entry.search].append(entry.id);
+    }
     m_entries.insert(entry.id, entry);
-    pass->dirty = true;
+    noteQueryChangeLocked(pass);
 }
 
 void
@@ -1027,18 +1044,33 @@ RecordingStore::unindexFragmentLocked(const Entry& entry, Pass* pass) {
 }
 
 void
+RecordingStore::noteQueryChangeLocked(Pass* pass) {
+    m_generation++;
+    pass->dirty = true;
+}
+
+/* Every way a recording leaves the index comes here (a delete, the limit, a file gone, a folder read again or gone, a
+ * path a later publish took), so its detection forgets it here too; a relink keeps it (unindexFragmentLocked()). */
+void
 RecordingStore::removeEntryLocked(const QString& id, Pass* pass) {
     const auto it = m_entries.find(id);
     if (it == m_entries.end()) {
         return;
     }
     unindexFragmentLocked(*it, pass);
+    const auto bySearch = m_bySearch.find(it->search);
+    if (bySearch != m_bySearch.end()) {
+        bySearch->removeAll(id);
+        if (bySearch->isEmpty()) {
+            m_bySearch.erase(bySearch);
+        }
+    }
     const auto byPath = m_byPath.find(it->path);
     if (byPath != m_byPath.end() && byPath.value() == id) {
         m_byPath.erase(byPath);
     }
     m_entries.erase(it);
-    pass->dirty = true;
+    noteQueryChangeLocked(pass);
 }
 
 void
@@ -1052,6 +1084,83 @@ RecordingStore::removeFolderEntriesLocked(const QString& folder, Pass* pass) {
     for (const QString& id : ids) {
         removeEntryLocked(id, pass);
     }
+}
+
+void
+RecordingStore::holdCommittedFolderLocked(const QString& folder) {
+    CommittedFolder committed;
+    for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
+        const Entry& entry = it.value();
+        if (entry.folder != folder) {
+            continue;
+        }
+        committed.entries.insert(entry.id, entry);
+        if (!entry.fragment.isEmpty()) {
+            committed.byFragment[entry.fragment].append(entry.id);
+        }
+        if (!entry.search.isEmpty()) {
+            committed.bySearch[entry.search].append(entry.id);
+        }
+        if (m_byPath.value(entry.path) == entry.id) {
+            committed.byPath.insert(entry.path, entry.id);
+        }
+    }
+    m_committed.insert(folder, committed);
+}
+
+void
+RecordingStore::commitFolderLocked(const QString& folder, Pass* pass) {
+    if (m_committed.remove(folder) > 0) {
+        noteQueryChangeLocked(pass); // the GUI reads what the folder holds now
+    }
+}
+
+const RecordingStore::Entry*
+RecordingStore::readerEntryLocked(const QString& id) const {
+    const auto live = m_entries.constFind(id);
+    if (live != m_entries.cend() && !m_committed.contains(live->folder)) {
+        return &live.value();
+    }
+    for (const CommittedFolder& committed : m_committed) {
+        const auto held = committed.entries.constFind(id);
+        if (held != committed.entries.cend()) {
+            return &held.value();
+        }
+    }
+    return nullptr;
+}
+
+QString
+RecordingStore::readerIdForPathLocked(const QString& path) const {
+    for (const CommittedFolder& committed : m_committed) {
+        const auto held = committed.byPath.constFind(path);
+        if (held != committed.byPath.cend()) {
+            return held.value();
+        }
+    }
+    const QString id = m_byPath.value(path);
+    const auto live = m_entries.constFind(id);
+    return live != m_entries.cend() && !m_committed.contains(live->folder) ? id : QString();
+}
+
+QList<const RecordingStore::Entry*>
+RecordingStore::readerEntriesLocked(const QString& key, bool bySearch) const {
+    QList<const Entry*> found;
+    for (const QString& id : (bySearch ? m_bySearch : m_byFragment).value(key)) {
+        const auto live = m_entries.constFind(id);
+        if (live != m_entries.cend() && !m_committed.contains(live->folder)) {
+            found.append(&live.value());
+        }
+    }
+    for (const CommittedFolder& committed : m_committed) {
+        for (const QString& id : (bySearch ? committed.bySearch : committed.byFragment).value(key)) {
+            const auto held = committed.entries.constFind(id);
+            if (held != committed.entries.cend()) {
+                found.append(&held.value());
+            }
+        }
+    }
+    return found;
 }
 
 bool
@@ -1110,7 +1219,7 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass) {
             if (stat.regular) {
                 if (stat.size != it->bytes) {
                     it->bytes = stat.size;
-                    pass->dirty = true;
+                    noteQueryChangeLocked(pass);
                 }
                 continue;
             }
@@ -1477,6 +1586,7 @@ RecordingStore::journalRecordOf(const Entry& entry) {
     record.system = entry.system;
     record.target = entry.target;
     record.source = entry.source;
+    record.search = entry.search;
     return record;
 }
 
@@ -1677,6 +1787,7 @@ RecordingStore::publish(const Pass& pass) {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_outbox = std::move(summary);
+        m_outGeneration = m_generation;
         if (m_outFragments.isEmpty()) {
             m_outFragments = pass.fragments; // shared, not copied: a rebuild names every fragment
         } else {
@@ -1704,9 +1815,11 @@ void
 RecordingStore::deliver() {
     Summary summary;
     QSet<QString> fragments;
+    quint64 generation = 0U;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         summary = m_outbox;
+        generation = m_outGeneration;
         fragments.swap(m_outFragments);
         m_deliveryQueued = false;
     }
@@ -1720,6 +1833,10 @@ RecordingStore::deliver() {
         QStringList list = fragments.values();
         list.sort();
         Q_EMIT recordingFragmentsChanged(list);
+    }
+    if (generation != m_revision) {
+        m_revision = generation;
+        Q_EMIT revisionChanged();
     }
     if (removed > 0) {
         Q_EMIT limitReached(removed);
@@ -1971,14 +2088,9 @@ RecordingStore::recordingsForFragments(const QStringList& fragments) const {
     const ReaderLock lock(*this);
     QList<const Entry*> found;
     for (const QString& fragment : fragments) {
-        const auto ids = m_byFragment.constFind(fragment);
-        if (ids == m_byFragment.cend()) {
-            continue;
-        }
-        for (const QString& id : *ids) {
-            const auto entry = m_entries.constFind(id);
-            if (entry != m_entries.cend() && !found.contains(&entry.value())) {
-                found.append(&entry.value());
+        for (const Entry* entry : readerEntriesLocked(fragment, false)) {
+            if (!found.contains(entry)) {
+                found.append(entry);
             }
         }
     }
@@ -1995,8 +2107,53 @@ RecordingStore::recordingsForFragments(const QStringList& fragments) const {
 bool
 RecordingStore::hasRecordingForFragments(const QStringList& fragments) const {
     const ReaderLock lock(*this);
-    return std::any_of(fragments.cbegin(), fragments.cend(),
-                       [this](const QString& fragment) { return m_byFragment.contains(fragment); });
+    return std::any_of(fragments.cbegin(), fragments.cend(), [this](const QString& fragment) {
+        return m_committed.isEmpty() ? m_byFragment.contains(fragment)
+                                     : !readerEntriesLocked(fragment, false).isEmpty();
+    });
+}
+
+/* --- Signal search (issue #809). --- */
+
+QVariantMap
+RecordingStore::detectionEntryMap(const Entry& entry) const {
+    QVariantMap map = entryMap(entry);
+    map.insert(QStringLiteral("system"), entry.system);
+    map.insert(QStringLiteral("target"), entry.target);
+    map.insert(QStringLiteral("source"), entry.source);
+    map.insert(QStringLiteral("fragment"), entry.fragment);
+    return map;
+}
+
+int
+RecordingStore::recordingCountForDetection(const QString& key) const {
+    if (key.isEmpty()) {
+        return 0;
+    }
+    const ReaderLock lock(*this);
+    return static_cast<int>(readerEntriesLocked(key, true).size());
+}
+
+QVariantList
+RecordingStore::recordingsForDetection(const QString& key) const {
+    QVariantList list;
+    if (key.isEmpty()) {
+        return list;
+    }
+    const ReaderLock lock(*this);
+    QList<const Entry*> found = readerEntriesLocked(key, true);
+    std::sort(found.begin(), found.end(), [](const Entry* a, const Entry* b) {
+        return a->start != b->start ? a->start > b->start : a->order > b->order;
+    });
+    for (const Entry* entry : std::as_const(found)) {
+        list.append(detectionEntryMap(*entry));
+    }
+    return list;
+}
+
+double
+RecordingStore::revision() const {
+    return static_cast<double>(m_revision);
 }
 
 /* --- QML. --- */
@@ -2217,10 +2374,10 @@ RecordingStore::selectRecordings(const QStringList& ids) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     QList<const Entry*> entries;
     for (const QString& id : ids) {
-        const auto entry = m_entries.constFind(id);
-        if (entry != m_entries.cend() && !entry->unfinished && !m_deleteQueue.contains(id)
-            && folderAvailableLocked(entry->folder) && !entries.contains(&entry.value())) {
-            entries.append(&entry.value());
+        const Entry* entry = readerEntryLocked(id);
+        if (entry != nullptr && !entry->unfinished && !m_deleteQueue.contains(id)
+            && folderAvailableLocked(entry->folder) && !entries.contains(entry)) {
+            entries.append(entry);
         }
     }
     return selectLocked(entries);
@@ -2231,7 +2388,7 @@ RecordingStore::selectPath(const QString& path) {
     QString id;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
-        id = path.isEmpty() ? QString() : m_byPath.value(clean_absolute(path));
+        id = path.isEmpty() ? QString() : readerIdForPathLocked(clean_absolute(path));
     }
     return id.isEmpty() ? 0 : selectRecordings({id}).value(QStringLiteral("selection")).toInt();
 }
@@ -2277,7 +2434,7 @@ RecordingStore::isIndexedPath(const QString& path) const {
         return false;
     }
     const std::lock_guard<std::mutex> lock(m_mutex);
-    return m_byPath.contains(clean_absolute(path));
+    return !readerIdForPathLocked(clean_absolute(path)).isEmpty();
 }
 
 void
@@ -2389,6 +2546,12 @@ void
 RecordingStore::setTailHookForTest(std::function<void(const QString& folder)> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_tailHook = std::move(hook);
+}
+
+void
+RecordingStore::setSliceHookForTest(std::function<void(const QString& folder)> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_sliceHook = std::move(hook);
 }
 #endif
 

@@ -96,6 +96,7 @@ dsd_analog_rx_rejection_ended_now(const dsd_opts* opts, const dsd_state* state) 
  * link. The stubs record which sink each row commit asked for. --- */
 static int g_ensure_analog_calls;
 static int g_forget_carrier_decoding_calls;
+static int g_orphan_flush_calls;
 static int g_ensure_digital_calls;
 static int g_scan_dsp_rate_hz;
 
@@ -3044,11 +3045,16 @@ test_p25_conventional_grant_frequency_isolated_per_target(void) {
     state.p25_conventional_grant_target[0] = state.p25_conventional_grant_target[1] = 0x4567U;
     state.nxdn_part_of_frame = 2;
     g_forget_carrier_decoding_calls = 0;
+    g_orphan_flush_calls = 0;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (g_forget_carrier_decoding_calls != 1 || state.nxdn_part_of_frame != 0) {
         DSD_FPRINTF(stderr, "a target switch kept what the decoders gathered on the carrier left calls=%d part=%d\n",
                     g_forget_carrier_decoding_calls, state.nxdn_part_of_frame);
+        test_rc = 1;
+    }
+    if (g_orphan_flush_calls != 1) {
+        DSD_FPRINTF(stderr, "a target switch closed the recordings no call owns %d times\n", g_orphan_flush_calls);
         test_rc = 1;
     }
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_conventional_grant_freq[0] != 0
@@ -20856,6 +20862,15 @@ dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
 
 void
 dsd_engine_legacy_tune_caches_forget(void) {}
+
+/* The close of the recordings no call owns, which a target switch runs as it leaves the carrier (issue #809 B4):
+   counted. CORE_WAV_JOURNAL runs the real one through the real switch. */
+void
+dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_orphan_flush_calls++;
+}
 
 /* What the decoders gathered on a carrier, which a target switch forgets (issue #575): counted, with a stand-in
    assembly the real function drops (an NXDN SACCH superframe's part). */

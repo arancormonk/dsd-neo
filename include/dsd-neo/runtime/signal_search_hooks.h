@@ -61,6 +61,15 @@ void dsd_signal_search_note_site(const dsd_state* state, const dsd_signal_search
  * record itself. The default is a no-op. */
 void dsd_signal_search_call_set(dsd_signal_search_call_fn fn);
 void dsd_signal_search_note_call(const dsd_state* state, uint8_t slot);
+/** The Signal search visit on the air (issue #809), which the recorder reads at a publish to name the detection a
+ * recording was received on. The engine sets it when a visit's tune lands and clears it right after the closing step
+ * that ends the visit's reception; when the decoder session itself ends, it lasts through the session's final
+ * recording closes and the engine clears it after them. Default clear. Any thread: a reader sees the tag clear or one
+ * whole pair. A pair with a zero half names no detection and clears the tag. */
+void dsd_signal_search_visit_set(uint64_t session_id, uint64_t hit_id);
+void dsd_signal_search_visit_clear(void);
+/** 1 with @p session_id and @p hit_id set while a visit is tagged, else 0 with both 0. Either output may be NULL. */
+int dsd_signal_search_visit_get(uint64_t* session_id, uint64_t* hit_id);
 #ifdef __cplusplus
 }
 #endif

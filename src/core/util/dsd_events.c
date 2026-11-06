@@ -509,21 +509,12 @@ watchdog_event_is_data_event(const Event_History* item) {
                && item->subtype == DSD_EVENT_SUBTYPE_DMR_DATA_BURST);
 }
 
+/* Close slot @p slot's per-call file, publish it as @p owner's recording (exported when @p export_recording), and open
+   the next one. A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and
+   a failed open marks the slot for the next one (issue #708). */
 static void
-watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
-                                    int export_recording, const dsd_wav_owner* owner) {
-    if (opts->static_wav_file != 0) {
-        return;
-    }
-
-    /* An NFM call's audio goes to its own recording (engine/analog_call.c), never to a slot file, so its end leaves the
-       slot files alone: rotating them would close, discard and reopen an empty file per call (issue #668). */
-    if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
-        return;
-    }
-
-    /* A slot whose last open failed (a full disk) opens again here, so the next call records when it can, and a failed
-       open marks the slot for the next one (issue #708). */
+watchdog_event_rotate_slot_wav(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot, int export_recording,
+                               const dsd_wav_owner* owner) {
     if (slot == 0 && (opts->wav_out_f != NULL || (opts->wav_out_reopen & 1))) {
         if (opts->wav_out_f != NULL) {
             opts->wav_out_f =
@@ -546,6 +537,57 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
         opts->wav_out_open_timeR = dsd_decode_time();
         opts->wav_out_reopen = opts->wav_out_fR != NULL ? (opts->wav_out_reopen & ~2) : (opts->wav_out_reopen | 2);
     }
+}
+
+static void
+watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
+                                    int export_recording, const dsd_wav_owner* owner) {
+    if (opts->static_wav_file != 0) {
+        return;
+    }
+
+    /* An NFM call's audio goes to its own recording (engine/analog_call.c), never to a slot file, so its end leaves the
+       slot files alone: rotating them would close, discard and reopen an empty file per call (issue #668). */
+    if (event_struct->Event_History_Items[0].systype == DSD_SYNC_ANALOG) {
+        return;
+    }
+    watchdog_event_rotate_slot_wav(opts, event_struct, slot, export_recording, owner);
+}
+
+/* Under the call-state lock: whether slot @p slot's canonical call is active. */
+static int
+watchdog_event_slot_call_active_locked(const dsd_call_state_ext* ext, uint8_t slot) {
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    return call->epoch != 0U && call->phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+void
+dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || opts->static_wav_file != 0) {
+        return;
+    }
+    /* Under the call-state lock, which every commit holds while it rotates a slot: a flush on the P25 watchdog's thread
+       (a trunk control-channel return) can meet the decoder thread committing the slot's ended call
+       (dsd_event_sync_slot() from noCarrier() or getFrameSync(), outside the tick guard). Judging the file no call's
+       and closing it are one step, so the two never close the same file. */
+    const dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
+    dsd_call_state_ext_lock(ext);
+    for (uint8_t slot = 0; slot < 2U; slot++) {
+        /* An active call's file is its own and closes at its commit; a call that goes on across the move (a TETRA
+           reallocation) stays one recording. */
+        if (dsd_wav_segment_frames(slot == 0U ? opts->wav_out_f : opts->wav_out_fR) <= 0
+            || (ext != NULL && watchdog_event_slot_call_active_locked(ext, slot))) {
+            continue;
+        }
+        /* No active call owns the audio. An ended epoch whose row has yet to commit (a held drop verdict) claims it as
+           pending, as close_and_publish_call_wav() does, so the row's commit links it and a drop unlinks it; otherwise
+           no row does. Neither is exported, as on the drop path. */
+        const uint64_t epoch = dsd_call_state_pending_row_epoch_locked(ext, slot);
+        const dsd_wav_owner owner = {epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE, slot, 0U, epoch};
+        const Event_History_I* event_struct = state->event_history_s ? &state->event_history_s[slot] : NULL;
+        watchdog_event_rotate_slot_wav(opts, event_struct, slot, 0, &owner);
+    }
+    dsd_call_state_ext_unlock(ext);
 }
 
 static void
@@ -2091,10 +2133,20 @@ watchdog_event_ctx_wall_anchored(const watchdog_event_current_ctx* ctx) {
     return ctx->protocol == DSD_SYNC_ANALOG && ctx->start_wall > 0.0;
 }
 
-// The row's start and end stamps, outside --playfiles (which keeps the stamp the file reader gave the row).
+// The whole second a row is stamped and prefixed with: the decode clock's wall reading, floored. Every row builder
+// reads this one clock, so a status or notice row stamped just after a voice row never carries an earlier second (the
+// terminal History orders rows by their prefix, ui_history.c). dsd_decode_time() would not do: live it is time(), the
+// coarse clock, which can read a second behind at a boundary.
+static time_t
+watchdog_event_decode_second(void) {
+    return (time_t)floor(dsd_decode_now_realtime_s());
+}
+
+// The row's start and end stamps, outside --playfiles (which keeps the stamp the file reader gave the row), from the
+// render's one decode-clock reading @p now_wall.
 static void
-watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_current_ctx* ctx, time_t now) {
-    item->event_time = now;
+watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_current_ctx* ctx, double now_wall) {
+    item->event_time = (time_t)floor(now_wall);
     if (watchdog_event_ctx_wall_anchored(ctx)) {
         // Both from the fractional anchor, the end from the full sum before it is truncated: a call that began at
         // x.9 and ran 0.6 s ends in the next second, which start + (time_t)elapsed would put a second early.
@@ -2105,14 +2157,14 @@ watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_curr
         return;
     }
     if (ctx->call_elapsed_valid) {
-        // Stamped once, on the epoch's first render: re-deriving it every pass
-        // from two independently truncated clocks makes the stamp jitter by a
-        // second between renders, and the committed value is whatever the last
-        // render happened to say. The retire/commit paths clear the staged row
-        // between epochs and the caller drops another epoch's, so a nonzero
-        // stamp here is always this epoch's own.
+        // The second the call began: the render's reading less the elapsed time, floored once. Flooring the two apart
+        // (floor(now) - floor(elapsed)) files a call that began at 99.95 s and was first rendered at 100.02 s in
+        // second 100. Stamped once, on the epoch's first render: the elapsed time runs to the call's last update, not
+        // to the render, so a later render would file it later, and the committed value is whatever the last render
+        // happened to say. The retire/commit paths clear the staged row between epochs and the caller drops another
+        // epoch's, so a nonzero stamp here is always this epoch's own.
         if (item->event_start_time == 0) {
-            item->event_start_time = now - (time_t)ctx->call_elapsed_s;
+            item->event_start_time = (time_t)floor(now_wall - ctx->call_elapsed_s);
         }
         // Anchored to the fixed start plus the canonical epoch's own elapsed, so
         // event_time - event_start_time is exactly the epoch's elapsed on every
@@ -2124,7 +2176,7 @@ watchdog_event_current_stamp_item(Event_History* item, const watchdog_event_curr
 
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
-                                   const watchdog_event_current_ctx* ctx, time_t now, int staged_is_own) {
+                                   const watchdog_event_current_ctx* ctx, double now_wall, int staged_is_own) {
     item->write = 0;
     item->crc_invalid = ctx->crc_invalid;
     dsd_event_history_item_set_metadata(
@@ -2169,7 +2221,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
         item->event_start_time = 0;
     }
     if (opts->playfiles == 0) {
-        watchdog_event_current_stamp_item(item, ctx, now);
+        watchdog_event_current_stamp_item(item, ctx, now_wall);
     }
 
     DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);
@@ -2858,8 +2910,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
 // parseable prefix -- a row a protocol staged directly rather than rendering.
 //
 // The displayed string is preferred rather than the stamp because the two are not always the same
-// clock. Every builder renders the prefix from dsd_decode_time() (an ended analog row's from its own
-// event_time, watchdog_event_text_time()), but watchdog_event_current_update_item()
+// clock. Every builder renders the prefix from the render's decode-clock reading (watchdog_event_decode_second(); an
+// ended analog row's from its own event_time, watchdog_event_text_time()), but watchdog_event_current_update_item()
 // only stamps event_time when opts->playfiles == 0; under --playfiles over an sdrtrunk recording it
 // is left as the recording's own timestamp instead (dsd_file.c). Formatting the stamp there would
 // rewrite a committed row's visible date and time to a value none of its siblings use, purely
@@ -3165,8 +3217,10 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
-    const time_t now = dsd_decode_time();
-    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now, staged_is_own);
+    // One reading for the row's stamps and its text, so the start, the end and the prefix agree on the second.
+    const double now_wall = dsd_decode_now_realtime_s();
+    const time_t now = (time_t)floor(now_wall);
+    watchdog_event_current_update_item(opts, state, slot, &candidate, &ctx, now_wall, staged_is_own);
     char timestr[9];
     char datestr[11];
     const time_t text_time = watchdog_event_text_time(opts, call, &candidate, now);
@@ -3871,7 +3925,7 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
     item->source_id = 0;
     item->target_id = 0;
 
-    time_t now = dsd_decode_time();
+    time_t now = watchdog_event_decode_second();
     item->event_time = now;
 
     char timestr[9];
@@ -3966,7 +4020,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         (void)dsd_access_code_current(state, observation->protocol, observation->service_options,
                                       observation->has_service_metadata, &item->access_code_kind, &item->access_code);
     }
-    item->event_time = dsd_decode_time();
+    item->event_time = watchdog_event_decode_second();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
     if (consume_staged_payload) {
@@ -4052,7 +4106,7 @@ dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, con
     item->systype = DSD_SYNC_NONE;
     item->subtype = -1;
     item->gi = -1;
-    item->event_time = dsd_decode_time();
+    item->event_time = watchdog_event_decode_second();
 
     char timestr[9];
     char datestr[11];

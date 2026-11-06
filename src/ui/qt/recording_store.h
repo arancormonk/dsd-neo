@@ -19,7 +19,8 @@
  * before the unlink; never a file the rdio uploader, the player or an export holds; never this process's own temp
  * files), the storage limit (oldest first down to 95%), the free-space warning and journal compaction (only of a folder
  * no session is using). History rows ask it which recordings their fragments have (CallRecordingProvider), and it
- * tells them when that changes (recordingFragmentsChanged()).
+ * tells them when that changes (recordingFragmentsChanged()). Signal search asks it which recordings a detection has
+ * (recordingsForDetection(), issue #809), and re-reads them when `revision` moves.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_RECORDING_STORE_H_
@@ -120,6 +121,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     Q_PROPERTY(int deleteFailures READ deleteFailures NOTIFY changed)
     Q_PROPERTY(QString lastDeleteError READ lastDeleteError NOTIFY changed)
     Q_PROPERTY(int limitMb READ limitMb WRITE setLimitMb NOTIFY limitMbChanged)
+    /* A double so QML reads it exactly well past any count a run reaches (a JS number). */
+    Q_PROPERTY(double revision READ revision NOTIFY revisionChanged)
 
   public:
     /** Storage sizes are decimal, as the phone's own storage screens count them. */
@@ -168,6 +171,22 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
 
     QVariantList recordingsForFragments(const QStringList& fragments) const override;
     bool hasRecordingForFragments(const QStringList& fragments) const override;
+
+    /** @brief How many recordings were heard on the Signal search detection @p key (`<session>:<hit>`, the journal's
+     * `search`), those on storage that is away included. */
+    Q_INVOKABLE int recordingCountForDetection(const QString& key) const;
+    /**
+     * @brief The recordings of the detection @p key, newest first (by start, then by the order they were published):
+     * the maps recordingsForFragments() gives, plus `system`, `target` and `source` as received and the History
+     * `fragment` (empty while it has none). One on storage that is away stays, with `available` false.
+     */
+    Q_INVOKABLE QVariantList recordingsForDetection(const QString& key) const;
+    /**
+     * @brief Moves (GUI thread, with revisionChanged()) whenever what recordingsForDetection() or
+     * recordingsForFragments() returns may have changed: a recording added, removed or linked, its size, and storage
+     * going or coming back. changed() follows the totals only, which such a change can leave equal.
+     */
+    double revision() const;
 
     /** @brief The roots were checked and the folder table read: sessions may start (beginSession() waits for it). */
     bool ready() const;
@@ -271,11 +290,15 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after a folder's new journal lines are read, before their files are looked
      * at; before start(). Test hook. */
     void setTailHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief Call @p hook on the worker after each slice of a folder's journal is applied, with the lock released;
+     * before start() or between passes. Test hook. */
+    void setSliceHookForTest(std::function<void(const QString& folder)> hook);
 #endif
 
   Q_SIGNALS:
     void changed();
     void limitMbChanged();
+    void revisionChanged();
     /** @brief The recordings of these History fragments (call_history_fragment_key()) changed. */
     void recordingFragmentsChanged(const QStringList& fragments);
     /** @brief The storage limit removed @p count recordings, oldest first. */
@@ -306,7 +329,19 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         QString system;
         QString target;
         QString source;
+        /* The Signal search detection it was heard on; empty for none. */
+        QString search;
         quint64 order = 0U;
+    };
+
+    /* A folder as the index held it before a read of it again (loadFolder() with replace), which drops its entries and
+     * rebuilds them a slice at a time: until the read is complete, the GUI's reads take the folder from here, never from
+     * the half-rebuilt index (an open detection list would close itself, a History row lose its recordings). */
+    struct CommittedFolder {
+        QHash<QString, Entry> entries;
+        QHash<QString, QStringList> byFragment;
+        QHash<QString, QStringList> bySearch;
+        QHash<QString, QString> byPath;
     };
 
     struct Folder {
@@ -418,7 +453,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void installRootTableLocked(int root, QList<Folder>& table, Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
     void loadPendingFolders(Pass* pass);
-    /* Read a folder whole: its folder.json, its files and its journal. @p replace drops what the index held for it. */
+    /* Read a folder whole: its folder.json, its files and its journal. @p replace drops what the index held for it,
+     * which the GUI's reads keep seeing until the read is complete. */
     void loadFolder(const QString& path, int root, bool replace, Pass* pass);
     /* The files of the folder at @p path: plain ones into @p files, and an earlier process's temp files as unfinished
      * recordings. */
@@ -435,8 +471,19 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void applyLinkLocked(const RecordingJournalRecord& record, Pass* pass);
     void insertEntryLocked(Entry entry, Pass* pass);
     void unindexFragmentLocked(const Entry& entry, Pass* pass);
+    /* What a query reads changed: the pass delivers, and the revision moves. Under the store's lock. */
+    void noteQueryChangeLocked(Pass* pass);
     void removeEntryLocked(const QString& id, Pass* pass);
     void removeFolderEntriesLocked(const QString& folder, Pass* pass);
+    /* Keep what the index holds of @p folder for the GUI's reads until commitFolderLocked(). */
+    void holdCommittedFolderLocked(const QString& folder);
+    /* The read of @p folder again is complete: the GUI reads it from the index again. */
+    void commitFolderLocked(const QString& folder, Pass* pass);
+    /* The GUI's reads, under the lock: the entry with @p id, the id indexed at @p path, and the entries indexed under
+     * @p key (a fragment, or with @p bySearch a detection), each a folder being read again giving what it held. */
+    const Entry* readerEntryLocked(const QString& id) const;
+    QString readerIdForPathLocked(const QString& path) const;
+    QList<const Entry*> readerEntriesLocked(const QString& key, bool bySearch) const;
     bool folderAvailableLocked(const QString& folder) const;
     QString folderUidLocked(const QString& folder) const;
     bool liveTemp(const QString& path) const;
@@ -488,10 +535,13 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool makeFolderLocked(const QString& path, int root, const QString& kind, const QString& uid, const QString& name);
     QString newFolderLocked(const QString& kind, const QString& uid, const QString& name, const QList<bool>& usable);
     QVariantMap entryMap(const Entry& entry) const;
+    /* entryMap() and what a detection's list shows of a recording. */
+    QVariantMap detectionEntryMap(const Entry& entry) const;
     QVariantMap selectLocked(QList<const Entry*> entries);
 
-    /* GUI thread: the last summary the worker delivered. */
+    /* GUI thread: the last summary the worker delivered, and the generation it came with. */
     Summary m_summary;
+    quint64 m_revision = 0U;
     int m_limitMb = kDefaultLimitMb;
 
     class ReaderLock;
@@ -510,7 +560,12 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QHash<QString, Folder> m_folders;
     QHash<QString, Entry> m_entries;
     QHash<QString, QStringList> m_byFragment;
+    /* Detection key -> ids. Changed only where an entry is inserted or removed, never by a link: storage going away
+     * keeps an entry, and so its detection. */
+    QHash<QString, QStringList> m_bySearch;
     QHash<QString, QString> m_byPath;
+    /* Folder path -> what it held, for each folder being read again (CommittedFolder). */
+    QHash<QString, CommittedFolder> m_committed;
     QSet<QString> m_active;
     /* Every journal held: until the host's state is known, and while a session no starter began here is active. */
     bool m_allActive = true;
@@ -552,9 +607,13 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     quint64 m_nextOrder = 1U;
     int m_compactions = 0;
     qint64 m_rebuildNs = 0;
+    /* Bumped at every change a query can see (noteQueryChangeLocked()). */
+    quint64 m_generation = 0U;
     /* The latest summary and the fragments changed since the GUI last took them; one delivery queued at a time, so a
-     * GUI thread paused in the background never collects more than one. */
+     * GUI thread paused in the background never collects more than one. The generation goes with the latest summary:
+     * a later publication never carries an older one, so coalescing never loses a change. */
     Summary m_outbox;
+    quint64 m_outGeneration = 0U;
     QSet<QString> m_outFragments;
     bool m_deliveryQueued = false;
 
@@ -572,6 +631,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::function<void(const QString&)> m_folderLoadHook;
     std::function<void(const QString&)> m_rootReadHook;
     std::function<void(const QString&)> m_tailHook;
+    std::function<void(const QString&)> m_sliceHook;
     int m_removedByLimit = 0;
     int m_deleteFailures = 0;
     QString m_lastDeleteError;

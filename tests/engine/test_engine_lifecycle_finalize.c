@@ -7,6 +7,9 @@
  * The engine commits the session's last call and publishes it before it calls the frontends' stop hooks, so a
  * frontend that records calls (the control API's event subscribers) gets the final transmission of an orderly
  * shutdown instead of losing it to the cleanup that runs after the hooks.
+ *
+ * A Signal search visit tag (issue #809) lasts through those final closes and is cleared after the last one, and a
+ * session starts with none, whatever an earlier session left.
  */
 
 #include <assert.h>
@@ -18,6 +21,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -39,8 +43,17 @@ count_publish(const dsd_state* state) {
 }
 
 static int
+visit_tagged(uint64_t session, uint64_t hit) {
+    uint64_t tag_session = 0, tag_hit = 0;
+    return dsd_signal_search_visit_get(&tag_session, &tag_hit) == 1 && tag_session == session && tag_hit == hit;
+}
+
+static int
 start_with_active_call(dsd_opts* opts, dsd_state* state, void* context) {
     (void)context;
+    /* The tag an earlier session left is gone; this session's search visit is on the air when the session ends. */
+    assert(dsd_signal_search_visit_get(NULL, NULL) == 0);
+    dsd_signal_search_visit_set(7, 8);
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P1_POS, 0, 123, 456);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.observed_m = 10;
@@ -61,6 +74,8 @@ stop_sees_committed_call(dsd_opts* opts, dsd_state* state, void* context) {
     assert(state->event_history_s[0].push_seq > g_push_at_start);
     assert(state->event_history_s[0].Event_History_Items[1].target_id == 456U);
     assert(g_published_after_commit == 1);
+    /* Nothing cleared the tag before the final closes. */
+    assert(visit_tagged(7, 8));
 }
 
 int
@@ -77,8 +92,11 @@ main(void) {
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){.publish_snapshot = count_publish});
 
     const dsd_engine_lifecycle_hooks hooks = {.start = start_with_active_call, .stop = stop_sees_committed_call};
+    dsd_signal_search_visit_set(5, 6);
     (void)dsd_engine_run_with_lifecycle(opts, state, &hooks);
     assert(g_stop_calls == 1);
+    /* The teardown cleared the tag after the session's last recording close. */
+    assert(dsd_signal_search_visit_get(NULL, NULL) == 0);
 
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
     freeState(state);

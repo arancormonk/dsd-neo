@@ -133,6 +133,13 @@ Item {
                 sheet.open("", "dmr");
             }},
             {file: "DecryptionProfileSelector"},
+            // Issue #809: a detection's recordings, one rowless and one on storage that went away.
+            {file: "DetectionRecordingsSheet", open: function (sheet) {
+                recordings.setDetectionRecordings("17:40", [{id: "b", path: "/rec/Explore/b.wav", start: 1767225600, durationMs: 4000,
+                    target: "Fire Dispatch", source: "2001", system: "NFM"}, {id: "a", path: "/rec/Explore/a.wav", start: 1767225500,
+                    durationMs: 2000, available: false}]);
+                sheet.openFor({recordingKey: "17:40"}, "462.5750");
+            }},
             {file: "DiagnosticsScreen"},
             {file: "DiscardDialog"},
             {file: "EncryptionEditor"},
@@ -394,6 +401,12 @@ Item {
 
         function initTestCase() {
             verify(testContext.accessibilityActive(), "run with DSD_QML_TEST_ACCESSIBILITY=1, or there is no tree");
+        }
+        // A screen built here that calls what the fixture lacks would only warn
+        // (the Monitor's receive policy sheets once read commands.receiveError(),
+        // which CommandRecorder did not have): every such warning fails the case.
+        function init() {
+            failOnWarning(/TypeError/);
         }
         function cleanup() {
             Ui.Navigation.speechPeriodMs = 5000;

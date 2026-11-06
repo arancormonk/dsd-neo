@@ -2511,6 +2511,461 @@ test_limit_follows_the_preference(void) {
     prefs.setRecordingLimitMb(1000);
 }
 
+/* --- Issue #809: recordings by the Signal search detection they were heard on. --- */
+
+/* @p line (a publish line) with its `search` set to @p key: a JSON value, so a test can write a number or a fraction. */
+QByteArray
+with_search(const QByteArray& line, const QJsonValue& key) {
+    QJsonObject o = QJsonDocument::fromJson(line).object();
+    o.insert(QStringLiteral("search"), key);
+    return QJsonDocument(o).toJson(QJsonDocument::Compact) + '\n';
+}
+
+/* A recording published into @p folder, heard on the detection @p key (none when empty). */
+void
+record_heard(const QString& folder, const QString& id, const QString& file, qint64 start, qint64 row,
+             const QString& key, qint64 bytes = 1000) {
+    make_file(folder + QLatin1Char('/') + file, bytes);
+    const QByteArray line = publish_line(id, file, start, row);
+    append(journal_of(folder), key.isEmpty() ? line : with_search(line, key));
+}
+
+/* The search key a publish line parses to; "<invalid>" when the line does not parse at all. */
+QString
+parsed_search(const QJsonValue& key) {
+    dsd_qt::RecordingJournalRecord r;
+    const QByteArray line = publish_line(QStringLiteral("X-1"), QStringLiteral("a.wav"), 1, 1);
+    const QByteArray keyed = key.isUndefined() ? line : with_search(line, key);
+    return dsd_qt::recording_journal_parse(keyed.chopped(1), &r) ? r.search : QStringLiteral("<invalid>");
+}
+
+QStringList
+ids_of(const QVariantList& maps) {
+    QStringList ids;
+    for (const QVariant& map : maps) {
+        ids.append(map.toMap().value(QStringLiteral("id")).toString());
+    }
+    return ids;
+}
+
+double
+revision_of(const RecordingStore& store) {
+    return store.property("revision").toDouble();
+}
+
+/* The key is two non-zero decimal u64s: anything else (an older build's line, a hand edit) is no key, never a reason to
+ * drop the recording. A compaction writes a key back as read and never adds one. */
+void
+expect_search_key_parse(void) {
+    expect("search key: a valid key", parsed_search(QStringLiteral("12:34")) == QStringLiteral("12:34"));
+    expect("search key: missing", parsed_search(QJsonValue(QJsonValue::Undefined)).isEmpty());
+    expect("search key: a zero session", parsed_search(QStringLiteral("0:5")).isEmpty());
+    expect("search key: a zero hit", parsed_search(QStringLiteral("5:0")).isEmpty());
+    expect("search key: a fraction",
+           parsed_search(QStringLiteral("1.5:2")).isEmpty() && parsed_search(QStringLiteral("1:2.0")).isEmpty());
+    expect("search key: negative",
+           parsed_search(QStringLiteral("-1:2")).isEmpty() && parsed_search(QStringLiteral("1:-2")).isEmpty());
+    expect("search key: a leading zero, a sign, spaces",
+           parsed_search(QStringLiteral("01:2")).isEmpty() && parsed_search(QStringLiteral("+1:2")).isEmpty()
+               && parsed_search(QStringLiteral(" 1:2")).isEmpty() && parsed_search(QStringLiteral("1:2 ")).isEmpty());
+    expect("search key: one part, three parts, an empty part, empty",
+           parsed_search(QStringLiteral("12")).isEmpty() && parsed_search(QStringLiteral("1:2:3")).isEmpty()
+               && parsed_search(QStringLiteral(":2")).isEmpty() && parsed_search(QStringLiteral(":5")).isEmpty()
+               && parsed_search(QStringLiteral("1:")).isEmpty() && parsed_search(QStringLiteral(":")).isEmpty()
+               && parsed_search(QStringLiteral("")).isEmpty());
+    expect("search key: 21 digits", parsed_search(QStringLiteral("100000000000000000000:1")).isEmpty()
+                                        && parsed_search(QStringLiteral("1:100000000000000000000")).isEmpty());
+    expect("search key: past UINT64_MAX", parsed_search(QStringLiteral("18446744073709551616:1")).isEmpty()
+                                              && parsed_search(QStringLiteral("1:99999999999999999999")).isEmpty());
+    expect("search key: UINT64_MAX itself", parsed_search(QStringLiteral("18446744073709551615:18446744073709551615"))
+                                                == QStringLiteral("18446744073709551615:18446744073709551615"));
+    expect("search key: a number, not a string", parsed_search(QJsonValue(12)).isEmpty());
+    expect("search key: a bad key keeps the recording", parsed_search(QStringLiteral("0:5")) != "<invalid>");
+
+    dsd_qt::RecordingJournalRecord plain;
+    plain.file = QStringLiteral("a.wav");
+    expect("search key: the writer adds none when there is none",
+           !QJsonDocument::fromJson(dsd_qt::recording_journal_publish_line(plain)).object().contains("search"));
+    plain.search = QStringLiteral("9007199254740993:7");
+    expect("search key: the writer writes it as read",
+           QJsonDocument::fromJson(dsd_qt::recording_journal_publish_line(plain)).object().value("search").toString()
+               == QStringLiteral("9007199254740993:7"));
+}
+
+void
+test_search_key_parse_and_compaction(void) {
+    expect_search_key_parse();
+    Roots roots;
+    QString folder;
+    {
+        Store s(roots.list());
+        folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+        record_heard(folder, QStringLiteral("0000000000000091-1"), QStringLiteral("keyed.wav"), 1754720000, 1,
+                     QStringLiteral("3:4"));
+        record_heard(folder, QStringLiteral("0000000000000091-2"), QStringLiteral("plain.wav"), 1754720010, 2,
+                     QString());
+        record_heard(folder, QStringLiteral("0000000000000091-3"), QStringLiteral("zero.wav"), 1754720020, 3,
+                     QStringLiteral("0:5"));
+        for (int i = 0; i < 4; i++) {
+            record_heard(folder, QStringLiteral("0000000000000091-%1").arg(10 + i), QStringLiteral("x%1.wav").arg(i),
+                         1754720100 + i, 10 + i, QStringLiteral("3:4"));
+        }
+        s.pass();
+        expect("search key: listed by the valid key only",
+               s.store.recordingCountForDetection(QStringLiteral("3:4")) == 5
+                   && s.store.recordingCountForDetection(QStringLiteral("0:5")) == 0);
+        QStringList gone;
+        for (int i = 0; i < 4; i++) {
+            gone.append(QStringLiteral("0000000000000091-%1").arg(10 + i));
+        }
+        s.store.deleteRecordings(gone);
+        s.pass();
+        s.store.endSession();
+        s.pass();
+        expect("search key: the journal is compacted", s.store.compactionsForTest() == 1);
+        QMap<QString, QJsonObject> lines;
+        for (const QByteArray& line : read_all(journal_of(folder)).split('\n')) {
+            const QJsonObject o = QJsonDocument::fromJson(line).object();
+            if (!o.isEmpty()) {
+                lines.insert(o.value("file").toString(), o);
+            }
+        }
+        expect("search key: compaction keeps a key",
+               lines.size() == 3 && lines.value("keyed.wav").value("search").toString() == QStringLiteral("3:4"));
+        expect("search key: compaction never adds one",
+               !lines.value("plain.wav").contains("search") && !lines.value("zero.wav").contains("search"));
+    }
+    Store s(roots.list());
+    expect("search key: a new store reads the rewrite",
+           s.store.recordingCountForDetection(QStringLiteral("3:4")) == 1 && s.store.recordingCount() == 3);
+}
+
+/* The detection index follows every way a recording comes and goes: a publish, a delete, the limit, a file gone behind
+ * the store's back, a folder read again or removed, a path a later publish reuses; a pending recording linked to its
+ * row stays listed. */
+void
+test_detection_index(void) {
+    const QString k1 = QStringLiteral("7:1");
+    const QString k2 = QStringLiteral("7:2");
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    record_heard(folder, QStringLiteral("0000000000000092-1"), QStringLiteral("a.wav"), 1754721000, 1, k1);
+    record_heard(folder, QStringLiteral("0000000000000092-2"), QStringLiteral("b.wav"), 1754721010, 2, k1);
+    record_heard(folder, QStringLiteral("0000000000000092-3"), QStringLiteral("c.wav"), 1754721020, 3, k2);
+    record_heard(folder, QStringLiteral("0000000000000092-4"), QStringLiteral("d.wav"), 1754721030, 4, QString());
+    s.pass();
+    expect("detection index: each detection counts its own",
+           s.store.recordingCountForDetection(k1) == 2 && s.store.recordingCountForDetection(k2) == 1
+               && s.store.recordingCountForDetection(QStringLiteral("9:9")) == 0
+               && s.store.recordingCountForDetection(QString()) == 0
+               && s.store.recordingsForDetection(QString()).isEmpty());
+
+    s.store.deleteRecording(QStringLiteral("0000000000000092-2"));
+    s.pass();
+    expect("detection index: a delete",
+           s.store.recordingCountForDetection(k1) == 1
+               && ids_of(s.store.recordingsForDetection(k1)) == QStringList{QStringLiteral("0000000000000092-1")});
+
+    QFile::remove(folder + QStringLiteral("/c.wav"));
+    s.store.recheckRecordings({QStringLiteral("0000000000000092-3")});
+    s.pass();
+    expect("detection index: a file gone behind the store's back", s.store.recordingCountForDetection(k2) == 0);
+
+    // A pending recording, then its link: listed all along.
+    make_file(folder + QStringLiteral("/p.wav"), 1000);
+    append(journal_of(folder),
+           with_search(
+               publish_line(QStringLiteral("0000000000000092-5"), QStringLiteral("p.wav"), 1754721040, -1, true), k2));
+    s.pass();
+    expect("detection index: a pending recording is listed", s.store.recordingCountForDetection(k2) == 1);
+    append(journal_of(folder), link_line(QStringLiteral("0000000000000092-5"), 5));
+    s.pass();
+    const QVariantMap linked = s.store.recordingsForDetection(k2).value(0).toMap();
+    expect("detection index: linked, it stays listed and names its row",
+           s.store.recordingCountForDetection(k2) == 1 && linked.value("fragment").toString() == fragment(5));
+
+    // A later publish that reuses a path owns it: the earlier id leaves its detection.
+    record_heard(folder, QStringLiteral("0000000000000092-6"), QStringLiteral("a.wav"), 1754721050, 6, k2);
+    s.pass();
+    expect("detection index: a reused path moves to the later detection",
+           s.store.recordingCountForDetection(k1) == 0 && s.store.recordingCountForDetection(k2) == 2);
+
+    // The limit takes the oldest first: here a recording heard long before the rest.
+    const QString old = QStringLiteral("8:1");
+    record_heard(folder, QStringLiteral("0000000000000092-7"), QStringLiteral("old.wav"), 1754720000, 7, old, 600000);
+    s.pass();
+    expect("detection index: an old recording listed", s.store.recordingCountForDetection(old) == 1);
+    s.store.setLimitMb(1);
+    record_heard(folder, QStringLiteral("0000000000000092-8"), QStringLiteral("new.wav"), 1754721060, 8, QString(),
+                 400000);
+    s.pass();
+    expect("detection index: the limit", s.store.removedByLimit() == 1 && s.store.recordingCountForDetection(old) == 0
+                                             && s.store.recordingCountForDetection(k2) == 2);
+    s.store.setLimitMb(0);
+    s.pass();
+
+    // A journal replaced behind the store's back is read again: only what it names now is listed.
+    QFile::remove(journal_of(folder));
+    record_heard(folder, QStringLiteral("0000000000000092-9"), QStringLiteral("e.wav"), 1754721070, 9,
+                 QStringLiteral("8:2"));
+    s.pass();
+    expect("detection index: a folder read again",
+           s.store.recordingCountForDetection(k2) == 0
+               && s.store.recordingCountForDetection(QStringLiteral("8:2")) == 1);
+    expect("detection index: the folder removed", QDir(folder).removeRecursively());
+    s.pass();
+    expect("detection index: a removed folder takes its recordings",
+           s.store.recordingCountForDetection(QStringLiteral("8:2")) == 0);
+}
+
+/* Storage that goes away keeps its recordings listed under their detection, as unavailable, and plays again when it
+ * comes back; the revision moves both times, so an open list reads the change. */
+void
+test_detection_root_away_keeps_membership(void) {
+    const QString key = QStringLiteral("11:22");
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    record_heard(folder, QStringLiteral("0000000000000093-1"), QStringLiteral("a.wav"), 1754722000, 1, key);
+    record_heard(folder, QStringLiteral("0000000000000093-2"), QStringLiteral("b.wav"), 1754722010, 2, key);
+    s.pass();
+    const auto all_available = [&s, &key](bool want) {
+        const QVariantList maps = s.store.recordingsForDetection(key);
+        int matching = 0;
+        for (const QVariant& map : maps) {
+            matching += map.toMap().value("available").toBool() == want ? 1 : 0;
+        }
+        return maps.size() == 2 && matching == 2;
+    };
+    expect("root away: listed and available", all_available(true));
+    double revision = revision_of(s.store);
+
+    expect("root away: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    expect("root away: still listed, unavailable",
+           s.store.recordingCountForDetection(key) == 2 && all_available(false));
+    expect("root away: the revision moved", revision_of(s.store) > revision);
+    revision = revision_of(s.store);
+
+    expect("root away: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+    s.pass();
+    expect("root away: back, available again", s.store.recordingCountForDetection(key) == 2 && all_available(true));
+    expect("root away: the revision moved again", revision_of(s.store) > revision);
+}
+
+/* Newest first: by start, a tie by the order they were published in, latest first; each map carries what the list
+ * shows and the History fragment to open. */
+void
+test_detection_order_newest_first(void) {
+    const QString key = QStringLiteral("5:6");
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    record_heard(folder, QStringLiteral("0000000000000094-1"), QStringLiteral("a.wav"), 1754723100, 1, key);
+    record_heard(folder, QStringLiteral("0000000000000094-2"), QStringLiteral("b.wav"), 1754723300, 2, key);
+    record_heard(folder, QStringLiteral("0000000000000094-3"), QStringLiteral("c.wav"), 1754723200, 3, key);
+    record_heard(folder, QStringLiteral("0000000000000094-4"), QStringLiteral("d.wav"), 1754723200, 4, key);
+    s.pass();
+    const QVariantList maps = s.store.recordingsForDetection(key);
+    expect("order: start desc, then publish order desc",
+           ids_of(maps)
+               == QStringList{QStringLiteral("0000000000000094-2"), QStringLiteral("0000000000000094-4"),
+                              QStringLiteral("0000000000000094-3"), QStringLiteral("0000000000000094-1")});
+    const QVariantMap first = maps.value(0).toMap();
+    expect("order: the map's fields",
+           first.value("path").toString() == folder + QStringLiteral("/b.wav")
+               && first.value("fileName").toString() == QStringLiteral("b.wav")
+               && first.value("start").toLongLong() == 1754723300 && first.value("durationMs").toLongLong() == 4000
+               && first.value("rate").toInt() == 8000 && first.value("bytes").toLongLong() == 1000
+               && first.contains("folderUid") && !first.value("failed").toBool() && first.value("available").toBool()
+               && first.value("system").toString() == QStringLiteral("County")
+               && first.value("target").toString() == QStringLiteral("Fire")
+               && first.value("source").toString() == QStringLiteral("1234")
+               && first.value("fragment").toString() == fragment(2));
+}
+
+/* Storage that comes back has each folder read again, slice by slice. Until the read is complete, the GUI reads the
+ * folder as it was indexed: a query between two slices (a delivery queued earlier that the GUI handles then) never finds
+ * a detection's or a History row's recordings gone, so an open detection list does not close on its own, and a listed
+ * recording can still be played. */
+void
+test_queries_between_rebuild_slices(void) {
+    const QString key = QStringLiteral("13:17");
+    const QString pendingId = QStringLiteral("0000000000000095-1");
+    const QString keyedId = QStringLiteral("0000000000000095-2");
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    // A pending recording first and its link last, many recordings of no detection between, and the detection's other
+    // recording after them: every slice but the last leaves something of the folder unread.
+    QByteArray journal;
+    make_file(folder + QStringLiteral("/p.wav"), 1000);
+    journal.append(with_search(publish_line(pendingId, QStringLiteral("p.wav"), 1754724000, -1, true), key));
+    for (int i = 0; i < 400; i++) {
+        const QString file = QStringLiteral("n%1.wav").arg(i);
+        make_file(folder + QLatin1Char('/') + file, 1000);
+        journal.append(publish_line(QStringLiteral("0000000000000095-%1").arg(100 + i), file, 1754724100 + i, -1));
+    }
+    make_file(folder + QStringLiteral("/k.wav"), 1000);
+    journal.append(with_search(publish_line(keyedId, QStringLiteral("k.wav"), 1754724010, 1), key));
+    journal.append(link_line(pendingId, 2));
+    append(journal_of(folder), journal);
+    s.pass();
+    const QStringList listed = ids_of(s.store.recordingsForDetection(key));
+    expect("between slices: the detection's two recordings", listed == QStringList{keyedId, pendingId});
+    const auto whole = [&s, &key, &listed, &pendingId, &keyedId]() {
+        return ids_of(s.store.recordingsForDetection(key)) == listed && s.store.recordingCountForDetection(key) == 2
+               && s.store.hasRecordingForFragments({fragment(1)}) && s.store.hasRecordingForFragments({fragment(2)})
+               && ids_of(s.store.recordingsForFragments({fragment(1), fragment(2)})) == QStringList{pendingId, keyedId};
+    };
+    expect("between slices: indexed whole", whole());
+
+    expect("between slices: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    expect("between slices: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+    int slices = 0;
+    int partial = 0;
+    int unplayable = 0;
+    s.store.setSliceHookForTest([&](const QString& path) {
+        if (path != folder) {
+            return;
+        }
+        slices++;
+        partial += whole() ? 0 : 1;
+        const int selection = s.store.selectRecordings({keyedId}).value(QStringLiteral("selection")).toInt();
+        if (selection > 0) {
+            s.store.releaseSelection(selection);
+        } else {
+            unplayable++;
+        }
+    });
+    s.pass();
+    s.store.setSliceHookForTest({});
+    expect("between slices: read again slice by slice", slices >= 3);
+    expect("between slices: every query read the folder whole", partial == 0);
+    expect("between slices: the listed recording could be played", unplayable == 0);
+    expect("between slices: read again, whole", whole());
+}
+
+/* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
+ * changes while every summary figure stays the same, a later publication with nothing new before the GUI took the
+ * first, and a change of availability alone. */
+void
+test_revision_coalesced_passes(void) {
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    record_heard(folder, QStringLiteral("0000000000000095-1"), QStringLiteral("a.wav"), 1754724000, 1,
+                 QStringLiteral("1:1"));
+    s.pass();
+    QSignalSpy changed(&s.store, &RecordingStore::changed);
+    QSignalSpy revisions(&s.store, &RecordingStore::revisionChanged);
+    double revision = revision_of(s.store);
+    expect("revision: a number once something was indexed", revision > 0.0);
+
+    // Two passes before the GUI takes either: one recording goes, another of the same size and start comes.
+    s.store.deleteRecording(QStringLiteral("0000000000000095-1"));
+    s.store.waitForPassForTest();
+    record_heard(folder, QStringLiteral("0000000000000095-2"), QStringLiteral("b.wav"), 1754724000, 2,
+                 QStringLiteral("1:2"));
+    s.store.waitForPassForTest();
+    QCoreApplication::processEvents();
+    expect("revision: membership moved, the summary did not",
+           changed.isEmpty() && s.store.recordingCountForDetection(QStringLiteral("1:1")) == 0
+               && s.store.recordingCountForDetection(QStringLiteral("1:2")) == 1);
+    expect("revision: moved, once", revision_of(s.store) > revision && revisions.count() == 1);
+    revision = revision_of(s.store);
+
+    // A publication with nothing new for the index (a delete held by the player) after one that changed it, both before
+    // the GUI takes them.
+    record_heard(folder, QStringLiteral("0000000000000095-3"), QStringLiteral("c.wav"), 1754724010, 3,
+                 QStringLiteral("1:3"));
+    s.store.waitForPassForTest();
+    s.store.setPlayingPath(folder + QStringLiteral("/c.wav"));
+    s.store.deleteRecording(QStringLiteral("0000000000000095-3"));
+    s.store.waitForPassForTest();
+    QCoreApplication::processEvents();
+    expect("revision: the later quiet publication went out", s.store.deletesWaiting() == 1);
+    expect("revision: not lost to it", revision_of(s.store) > revision && revisions.count() == 2);
+    s.store.setPlayingPath(QString());
+    s.pass();
+    revision = revision_of(s.store);
+    revisions.clear();
+
+    // Availability alone: nothing listed changes but whether it plays.
+    expect("revision: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    expect("revision: away moves it", revision_of(s.store) > revision && revisions.count() == 1);
+    revision = revision_of(s.store);
+    expect("revision: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+    s.pass();
+    expect("revision: back moves it", revision_of(s.store) > revision && revisions.count() == 2);
+    revision = revision_of(s.store);
+    s.pass();
+    expect("revision: a pass that changed nothing leaves it",
+           revision_of(s.store) <= revision && revisions.count() == 2);
+}
+
+/* The decoder's own writer names the detection: listed by it, every id exact past 2^53; a recording heard on no visit
+ * is under none. */
+void
+test_detection_from_c_writer(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Search"));
+    const QString canonical = QFileInfo(folder).canonicalFilePath();
+    expect("writer: the journal opens", dsd_wav_journal_open(qPrintable(journal_of(canonical))) == 0);
+    const auto publish = [&canonical](const char* id, const char* name, qint64 start, uint64_t session, uint64_t hit) {
+        make_file(canonical + QLatin1Char('/') + QLatin1String(name), 2000);
+        const QByteArray path = (canonical + QLatin1Char('/') + QLatin1String(name)).toUtf8();
+        const QByteArray dir = canonical.toUtf8();
+        wav_journal_publish_record rec;
+        DSD_MEMSET(&rec, 0, sizeof rec);
+        rec.id = id;
+        rec.path = path.constData();
+        rec.dir = dir.constData();
+        rec.start = start;
+        rec.duration_ms = 3000;
+        rec.rate = 8000;
+        rec.owner.kind = DSD_WAV_OWNER_NONE;
+        rec.owner.slot = DSD_WAV_OWNER_SLOT_UNKNOWN;
+        rec.system = "S";
+        rec.target = "T";
+        rec.source = "R";
+        rec.has_search = session != 0U || hit != 0U ? 1 : 0;
+        rec.search_session = session;
+        rec.search_hit = hit;
+        wav_journal_publish(&rec);
+    };
+    const uint64_t big = std::numeric_limits<uint64_t>::max();
+    publish("0000000000000096-1", "first.wav", 1754725000, 9007199254740993ULL, 3U);
+    publish("0000000000000096-2", "second.wav", 1754725100, 9007199254740993ULL, 3U);
+    publish("0000000000000096-3", "max.wav", 1754725200, big, big);
+    publish("0000000000000096-4", "none.wav", 1754725300, 0U, 0U);
+    s.pass();
+    const QString key = QStringLiteral("9007199254740993:3");
+    expect("writer: every recording indexed", s.store.recordingCount() == 4);
+    expect("writer: listed by its detection, newest first",
+           s.store.recordingCountForDetection(key) == 2
+               && ids_of(s.store.recordingsForDetection(key))
+                      == QStringList{QStringLiteral("0000000000000096-2"), QStringLiteral("0000000000000096-1")});
+    expect("writer: the largest ids",
+           s.store.recordingCountForDetection(QStringLiteral("18446744073709551615:18446744073709551615")) == 1);
+    expect("writer: 2^53 + 1 is not read as 2^53",
+           s.store.recordingCountForDetection(QStringLiteral("9007199254740992:3")) == 0);
+    dsd_wav_journal_close();
+    s.store.endSession();
+}
+
 } // namespace
 
 int
@@ -2565,6 +3020,13 @@ main(int argc, char** argv) {
     test_held_recordings_over_the_limit_go_once_released();
     test_host_surface();
     test_limit_follows_the_preference();
+    test_search_key_parse_and_compaction();
+    test_detection_index();
+    test_detection_root_away_keeps_membership();
+    test_detection_order_newest_first();
+    test_queries_between_rebuild_slices();
+    test_revision_coalesced_passes();
+    test_detection_from_c_writer();
 
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

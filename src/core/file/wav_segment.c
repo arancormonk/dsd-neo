@@ -10,6 +10,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <sndfile.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "wav_segment.h"
 #include "wav_segment_test_support.h"
 
@@ -203,4 +204,26 @@ dsd_wav_segment_write(SNDFILE* file, const short* samples, size_t count, const c
                  "are counted, not logged\n",
                  context, (long long)written, (long long)want);
     }
+}
+
+int
+wav_segment_info(SNDFILE* file, int64_t* frames, int* rate) {
+    *frames = 0;
+    *rate = 0;
+    SF_INFO info = {0};
+    if (file == NULL || sf_command(file, SFC_GET_CURRENT_SF_INFO, &info, (int)sizeof info) != 0 || info.samplerate <= 0
+        || info.frames < 0) {
+        return 0;
+    }
+    *frames = (int64_t)info.frames;
+    *rate = info.samplerate;
+    return 1;
+}
+
+int64_t
+dsd_wav_segment_frames(SNDFILE* file) {
+    int64_t frames = 0;
+    int rate = 0;
+    (void)wav_segment_info(file, &frames, &rate);
+    return frames;
 }

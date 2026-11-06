@@ -1865,6 +1865,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/dstar
 )
+target_link_libraries(dsd-neo_test_dstar_process PRIVATE dsd-neo_platform)
 add_test(NAME DSTAR_PROCESS COMMAND dsd-neo_test_dstar_process)
 
 add_executable(
@@ -1879,6 +1880,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/dstar
 )
+target_link_libraries(dsd-neo_test_dstar_confirm PRIVATE dsd-neo_platform)
 add_test(NAME DSTAR_CONFIRM COMMAND dsd-neo_test_dstar_confirm)
 
 add_executable(
@@ -1923,6 +1925,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/provoice
 )
+target_link_libraries(dsd-neo_test_provoice_process PRIVATE dsd-neo_platform)
 add_test(NAME PROVOICE_PROCESS COMMAND dsd-neo_test_provoice_process)
 
 add_executable(
@@ -1937,6 +1940,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/provoice
 )
+target_link_libraries(dsd-neo_test_provoice_confirm PRIVATE dsd-neo_platform)
 add_test(NAME PROVOICE_CONFIRM COMMAND dsd-neo_test_provoice_confirm)
 
 add_executable(
@@ -1987,6 +1991,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
 )
+target_link_libraries(dsd-neo_test_dpmr_confirm PRIVATE dsd-neo_platform)
 add_test(NAME DPMR_CONFIRM COMMAND dsd-neo_test_dpmr_confirm)
 
 add_executable(
@@ -2005,6 +2010,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
         ${PROJECT_SOURCE_DIR}/src/dsp
 )
+target_link_libraries(dsd-neo_test_dpmr_sync_dispatch PRIVATE dsd-neo_platform)
 add_test(NAME DPMR_SYNC_DISPATCH COMMAND dsd-neo_test_dpmr_sync_dispatch)
 
 add_executable(
@@ -2025,6 +2031,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
 )
+target_link_libraries(dsd-neo_test_dpmr_voice_bridge PRIVATE dsd-neo_platform)
 add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
 
 # Conformance of the CCH pipeline against external reference vectors. Unlike the
@@ -2048,7 +2055,10 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
         ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr/fixtures
 )
-target_link_libraries(dsd-neo_test_dpmr_reference_vectors PRIVATE dsd-neo_fec)
+target_link_libraries(
+    dsd-neo_test_dpmr_reference_vectors
+    PRIVATE dsd-neo_fec dsd-neo_platform
+)
 add_test(
     NAME DPMR_REFERENCE_VECTORS
     COMMAND dsd-neo_test_dpmr_reference_vectors
@@ -6207,6 +6217,50 @@ target_link_libraries(
 add_test(
     NAME RUNTIME_TELEMETRY_HOOKS
     COMMAND dsd-neo_test_runtime_telemetry_hooks
+)
+
+# The Signal search visit tag: set, clear, and whole pairs across threads (issue #809).
+add_executable(
+    dsd-neo_test_runtime_signal_search_visit
+    runtime/test_runtime_signal_search_visit.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_visit
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_visit
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_VISIT
+    COMMAND dsd-neo_test_runtime_signal_search_visit
+)
+
+# The visit tag's lock failing to initialise (issue #809): nothing locked, nothing set, the tag reads clear.
+add_executable(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    runtime/test_runtime_signal_search_visit_init_failure.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    PRIVATE
+        dsd_mutex_init=dsd_test_visit_mutex_init
+        dsd_mutex_lock=dsd_test_visit_mutex_lock
+        dsd_mutex_unlock=dsd_test_visit_mutex_unlock
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_visit_init_failure
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_VISIT_INIT_FAILURE
+    COMMAND dsd-neo_test_runtime_signal_search_visit_init_failure
 )
 
 add_executable(
@@ -11151,6 +11205,7 @@ target_include_directories(
     dsd-neo_test_m17_confirm
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
 )
+target_link_libraries(dsd-neo_test_m17_confirm PRIVATE dsd-neo_platform)
 add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH

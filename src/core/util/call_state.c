@@ -1200,10 +1200,18 @@ dsd_call_state_pending_row_epoch(const dsd_state* state, uint8_t slot) {
         return 0U;
     }
     dsd_call_state_ext_lock(ext);
-    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
-    const uint64_t epoch = lifecycle->ended_committed ? 0U : lifecycle->epoch;
+    const uint64_t epoch = dsd_call_state_pending_row_epoch_locked(ext, slot);
     dsd_call_state_ext_unlock(ext);
     return epoch;
+}
+
+uint64_t
+dsd_call_state_pending_row_epoch_locked(const dsd_call_state_ext* ext, uint8_t slot) {
+    if (!ext || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return 0U;
+    }
+    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    return lifecycle->ended_committed ? 0U : lifecycle->epoch;
 }
 
 int

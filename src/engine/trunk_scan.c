@@ -3500,6 +3500,34 @@ trunk_scan_park_begins(dsd_state* state) {
     dsd_engine_scan_entry_intent_cancel(state);
 }
 
+/* Whether a canonical call is active on either slot: the analog call's included. */
+static int
+trunk_scan_call_active(const dsd_state* state) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The tuner leaves the carrier on air (issue #575), once the switch ended the outgoing target's calls. Their commits
+   closed their recordings; audio no call owns closes too, so the incoming carrier's never joins it (issue #809 B4). The
+   snapshots carry each target's codes and caches; what the decoders gathered on that carrier (confirmation evidence,
+   half-built assemblies such as an NXDN SACCH superframe) is in none of them, and the incoming carrier's pieces would
+   complete it, so it goes. So does the identity it received: the incoming target's carrier names its own. And the
+   dibits the frame sync and the decoders hold buffered from the outgoing carrier head no frame of the incoming one. Nor
+   does the DMR RAS evidence (no target snapshot holds it). */
+static void
+trunk_scan_leave_carrier(dsd_opts* opts, dsd_state* state) {
+    dsd_event_flush_orphan_recordings(opts, state);
+    dsd_engine_forget_carrier_decoding(opts, state);
+    dsd_rxid_reset(state);
+    dmr_ras_reset(state);
+    dsd_state_note_carrier_change(state);
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -3538,17 +3566,14 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
             trunk_scan_save_snapshot(state, &coord->scratch_snapshot);
         }
         trunk_scan_save_target_snapshot(coord, state, outgoing);
+    } else if (trunk_scan_call_active(state)) {
+        /* A park that saves no target (a retry's, after a failed park left the receiver where it was) leaves that
+           carrier too: a call heard there since ends with it, rather than under the restored snapshot, so its
+           recording closes under its own row (issue #809). The start's, a resume's and a walk's later attempts have
+           none left to end. */
+        dsd_engine_end_calls(opts, state, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT, 0);
     }
-    /* The tuner leaves the carrier on air (issue #575). The snapshots carry each target's codes and caches; what the
-       decoders gathered on that carrier (confirmation evidence, half-built assemblies such as an NXDN SACCH superframe)
-       is in none of them, and the incoming carrier's pieces would complete it, so it goes. */
-    dsd_engine_forget_carrier_decoding(opts, state);
-    /* So does the identity it received: the incoming target's carrier names its own. And the dibits the frame sync and
-       the decoders hold buffered from the outgoing carrier head no frame of the incoming one. Nor does the DMR RAS
-       evidence (no target snapshot holds it). */
-    dsd_rxid_reset(state);
-    dmr_ras_reset(state);
-    dsd_state_note_carrier_change(state);
+    trunk_scan_leave_carrier(opts, state);
 
     coord->active = next;
     coord->gain_editable = trunk_scan_gain_editable(opts);

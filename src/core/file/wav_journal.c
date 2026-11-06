@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -571,6 +572,18 @@ dsd_wav_journal_unlink_pending(void) {
 
 /* --- Records. --- */
 
+/* `search`, only for a recording received on a Signal search visit (issue #809): "<session>:<hit>" in decimal, a string
+   so both ids survive a reader that parses doubles. Both ids are non-zero, as a reader requires. */
+static void
+line_search_visit(wav_journal_line* l, const wav_journal_publish_record* rec) {
+    if (!rec->has_search || rec->search_session == 0U || rec->search_hit == 0U) {
+        return;
+    }
+    char visit[48];
+    (void)DSD_SNPRINTF(visit, sizeof visit, "%" PRIu64 ":%" PRIu64, rec->search_session, rec->search_hit);
+    line_key_string(l, "search", visit);
+}
+
 void
 wav_journal_publish(const wav_journal_publish_record* rec) {
     if (!rec || !wav_journal_active()) {
@@ -620,6 +633,7 @@ wav_journal_publish(const wav_journal_publish_record* rec) {
     line_key_string(&l, "system", rec->system);
     line_key_string(&l, "target", rec->target);
     line_key_string(&l, "source", rec->source);
+    line_search_visit(&l, rec);
     line_end_and_write_locked(&l);
     if (pending && wav_journal_active()) {
         pending_add_locked(slot, rec->id, rec->owner.epoch);

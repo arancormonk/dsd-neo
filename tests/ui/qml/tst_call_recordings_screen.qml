@@ -226,9 +226,21 @@ Item {
 
         function test_delete_data() {
             return [
-                {tag: "system", folder: 0, action: "Delete all for this system", title: "Delete recordings of County P25?", message: "842 recordings are deleted from this phone. The calls stay in History.", call: "deleteFolder", uid: "u1"},
-                {tag: "scan", folder: 1, action: "Delete all for this scan list", title: "Delete recordings of Metro scan?", message: "1 recording is deleted from this phone. The calls stay in History.", call: "deleteFolder", uid: "u2"}
+                {tag: "system", folder: 0, action: "Delete all for this system", title: "Delete recordings of County P25?", message: "Only the audio of 842 recordings is deleted. History and detections are unchanged.", call: "deleteFolder", uid: "u1"},
+                {tag: "scan", folder: 1, action: "Delete all for this scan list", title: "Delete recordings of Metro scan?", message: "Only the audio of 1 recording is deleted. History and detections are unchanged.", call: "deleteFolder", uid: "u2"}
             ];
+        }
+        // Issue #809 B3: a bulk delete takes only the files. A recording with no
+        // History row (never linked, or trimmed away) is deleted too, so no
+        // confirmation promises that the calls stay in History.
+        function test_delete_says_only_the_audio_goes() {
+            fill();
+            item("callRecordingsFolder0").activate();
+            menuAction("folderActionDelete");
+            var message = findChild(item("callRecordingsDeleteConfirm"), "confirmMessage").text;
+            verify(message.indexOf("stay in History") < 0, message);
+            verify(message.indexOf("History and detections are unchanged.") > 0, message);
+            findChild(item("callRecordingsDeleteConfirm"), "confirmCancelButton").activate();
         }
         function test_delete(data) {
             fill();
@@ -273,7 +285,7 @@ Item {
             item("callRecordingsDeleteAll").activate();
             compare(confirm.title, "Delete all call recordings?");
             compare(findChild(confirm, "confirmActionButton").text, "Delete all");
-            compare(findChild(confirm, "confirmMessage").text, "5 recordings are deleted from this phone. The calls stay in History.");
+            compare(findChild(confirm, "confirmMessage").text, "Only the audio of 5 recordings is deleted. History and detections are unchanged.");
             findChild(confirm, "confirmCancelButton").activate();
             compare(lastStoreCall().name, "deleteUnfinished", "a cancelled confirmation deletes nothing");
             item("callRecordingsDeleteAll").activate();

@@ -533,6 +533,16 @@ SignalSearchModel::removeSessionAvoid(double frequency) {
     return unavoid((uint32_t)frequency);
 }
 
+/* The recording journal's `search` key for this detection, from the integers (issue #809). The journal never names a
+ * zero id, so neither does this: the live hit with no detection current reads empty, not "0:0". */
+static QString
+recordingKey(const dsd_signal_search_hit& h) {
+    if (h.session_id == 0U || h.hit_id == 0U) {
+        return {};
+    }
+    return QStringLiteral("%1:%2").arg(h.session_id).arg(h.hit_id);
+}
+
 QVariantMap
 SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
     double width = h.bandwidth_hz;
@@ -543,6 +553,7 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
     const QStringList labels = KnownFrequencyIndex::matchNames(matches);
     return {{QStringLiteral("session"), QString::number(h.session_id)},
             {QStringLiteral("id"), QString::number(h.hit_id)},
+            {QStringLiteral("recordingKey"), recordingKey(h)},
             {QStringLiteral("frequency"), h.frequency_hz},
             {QStringLiteral("freqMHz"), QString::number(h.frequency_hz / 1e6, 'f', 6)},
             {QStringLiteral("width"), h.bandwidth_hz},

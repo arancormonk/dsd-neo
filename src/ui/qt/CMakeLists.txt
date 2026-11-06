@@ -92,6 +92,7 @@ qt_add_resources(
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml
+        qml/DetectionRecordingsSheet.qml
         qml/CallRecordingsScreen.qml
         qml/PlexComboBox.qml
         qml/PlexCheckBox.qml

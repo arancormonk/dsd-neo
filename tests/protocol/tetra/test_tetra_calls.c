@@ -10,9 +10,11 @@
 
 #include <assert.h>
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -24,6 +26,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
@@ -35,12 +38,14 @@
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../../test_support/radio_policy_test.h"
+#include "../../test_support/test_support.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
@@ -3065,6 +3070,76 @@ test_followed_reallocation_moves_the_call(void) {
     session_close(&s);
 }
 
+/* The engine closes the per-call recordings no call owns at every carrier departure, a trunk follow included
+ * (dsd_event_flush_orphan_recordings() once the tune is taken, issue #809 B4; ENGINE_NO_CARRIER_RESET pins the call
+ * there). The stand-in tune runs it as the engine's follow does. */
+static dsd_trunk_tune_result
+tune_hook_closing_orphans(dsd_opts* opts, dsd_state* state, long freq, int ted_sps, uint64_t request_id) {
+    const dsd_trunk_tune_result result = tune_hook(opts, state, freq, ted_sps, request_id);
+    if (dsd_trunk_tune_result_is_ok(result)) {
+        dsd_event_flush_orphan_recordings(opts, state);
+    }
+    return result;
+}
+
+/* @p frames of decoded speech (20 ms each) into canonical slot 0's per-call recording. */
+static void
+record_frames(session* s, int frames) {
+    for (int f = 0; f < frames; f++) {
+        for (int i = 0; i < 160; i++) {
+            s->state->audio_out_temp_buf[i] = (float)((i % 32) * 512 - 8192);
+        }
+        dsd_write_mono_voice_to_slot_wav(s->opts, s->state, 0);
+    }
+}
+
+static int
+remove_file_cb(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(path, sizeof path, (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+/* A reallocation moves the followed call across carriers as one call: it stays active through the move, so the
+ * departure's close of the recordings no call owns leaves its recording open, and the speech before and after the move
+ * is one recording. */
+static void
+test_tetra_reallocation_keeps_one_recording(void) {
+    session s = session_open();
+    session_history(&s);
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_tetra_realloc_wav") != NULL);
+    DSD_SNPRINTF(s.opts->wav_out_dir, sizeof s.opts->wav_out_dir, "%s", dir);
+    s.opts->dmr_stereo_wav = 1;
+    s.opts->wav_out_f = open_wav_file(s.opts->wav_out_dir, s.opts->wav_out_file, sizeof s.opts->wav_out_file, 8000, 0);
+    assert(s.opts->wav_out_f != NULL);
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = tune_hook_closing_orphans;
+    hooks.return_to_cc_request = return_hook;
+    dsd_trunk_tuning_hooks_set(hooks);
+
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(followed_call(s.state) == 0x0A && call.phase == DSD_CALL_PHASE_ACTIVE && call.channel == 120U);
+    const uint64_t epoch = call.epoch;
+    const SNDFILE* const recording = s.opts->wav_out_f;
+    record_frames(&s, 5);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 130);
+    call = canonical(s.state);
+    assert(g_tunes == 2 && followed_call(s.state) == 0x0A && call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch
+           && call.channel == 130U);
+    assert(s.opts->wav_out_f == recording && dsd_wav_segment_frames(s.opts->wav_out_f) == 5 * 160LL);
+    record_frames(&s, 5);
+    assert(s.opts->wav_out_f == recording && dsd_wav_segment_frames(s.opts->wav_out_f) == 10 * 160LL);
+
+    s.opts->wav_out_f = close_wav_file(s.opts->wav_out_f);
+    (void)dsd_dir_list(dir, remove_file_cb, dir);
+    (void)dsd_test_rmdir(dir);
+    session_close(&s);
+}
+
 /* A grant of another call takes the receiver from the followed call: while the tune is in flight the call followed
  * before stays the canonical call, on the carrier the receiver is on, and once it completes that call ends as a
  * teardown, as the state machine leaving a call ends it, rather than staying active until the new call publishes. */
@@ -4727,6 +4802,7 @@ main(void) {
     test_anonymous_call_per_timeslot();
     test_record_changes_reach_the_call();
     test_followed_reallocation_moves_the_call();
+    test_tetra_reallocation_keeps_one_recording();
     test_takeover_ends_the_call_left();
     test_followed_record_moved_away();
     test_blocked_call_takes_the_followed_channel();

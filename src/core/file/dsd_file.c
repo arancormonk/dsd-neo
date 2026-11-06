@@ -59,6 +59,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <errno.h>
 #include <limits.h>
 #include <mbelib-neo/mbelib.h>
@@ -1313,16 +1314,8 @@ wav_journal_identity(char* out, size_t out_size, const char* text, uint32_t id) 
 /* The segment's length and rate from libsndfile, read before the close finalizes it; 0 when unknown. */
 static void
 wav_segment_length(SNDFILE* wav_file, int64_t* duration_ms, int* rate) {
-    *duration_ms = 0;
-    *rate = 0;
-    SF_INFO info;
-    DSD_MEMSET(&info, 0, sizeof info);
-    if (wav_file == NULL || sf_command(wav_file, SFC_GET_CURRENT_SF_INFO, &info, (int)sizeof info) != 0
-        || info.samplerate <= 0 || info.frames < 0) {
-        return;
-    }
-    *rate = info.samplerate;
-    *duration_ms = (int64_t)info.frames * 1000 / info.samplerate;
+    int64_t frames = 0;
+    *duration_ms = wav_segment_info(wav_file, &frames, rate) ? frames * 1000 / *rate : 0;
 }
 
 /* The published recording, in the journal (issue #708). */
@@ -1358,6 +1351,9 @@ wav_journal_published(const char* id, const char* path, const char* dir, const E
     rec.system = event_item ? event_item->sysid_string : "";
     rec.target = target;
     rec.source = source;
+    /* The Signal search visit on the air names the detection it was received on (issue #809): the engine keeps the
+       tag until the closing step that ends the visit's reception has published it. */
+    rec.has_search = dsd_signal_search_visit_get(&rec.search_session, &rec.search_hit);
     wav_journal_publish(&rec);
 }
 
