@@ -1749,10 +1749,13 @@ suite runs under this compiler.
     (`engine_trunk_tune_to_cc_request_once()`: a hunt's probe, a settle, a protocol's own return such as NXDN DISC,
     EDACS EOT or the DMR SLCO tune; a DMR XPT or Capacity Plus control channel carries voice) and the return to the
     control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
-    trunk tune to the frequency the tuner is on (`opts->rtlsdr_center_freq` before the tune; a grant on a DMR composite
-    control channel) moves nothing and closes nothing. Retunes an external controller makes over the RTL UDP port are
-    invisible to the decoder: a recording can span one (limit). One `sf_command()` per open slot file per departure;
-    nothing on the write path.
+    trunk tune to the frequency the receiver is on (a grant on a DMR composite control channel) moves nothing and closes
+    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune: on an RTL stream tuned
+    directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since a timed-out tune
+    names its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio where it was;
+    otherwise `opts->rtlsdr_center_freq`, which a rigctl tune sets once done. Retunes an external controller makes over
+    the RTL UDP port are invisible to the decoder: a recording can span one (limit). One `sf_command()` per open slot
+    file per departure; nothing on the write path.
   - Start: `dsd_rdio_recording_start()` (`<dsd-neo/runtime/rdio_export.h>`), the rule the rdio-scanner sidecar uses
     too: the start a recorder stamped itself when it passes one (`close_and_publish_call_wav_ex()`'s `started`: the
     analog call's first sample, issue #668), else the row's `event_start_time`, or the WAV's open stamp when later

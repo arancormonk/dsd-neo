@@ -3524,8 +3524,8 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     dsd_engine_scan_landing_forget(state);
     carrier_boundary_release_followed(opts, state, kind);
     no_carrier_finalize_canonical_calls(opts, state, 1);
-    /* Their commits closed the calls' recordings; audio no call owns is closed too, so the next carrier's never joins it
-       (issue #809 B4). */
+    /* Their commits closed the calls' recordings; audio no call owns is closed too, so the next carrier's never joins
+       it (issue #809 B4). */
     dsd_event_flush_orphan_recordings(opts, state);
     dsd_engine_forget_carrier_codes(state);
     dsd_engine_forget_carrier_decoding(opts, state);

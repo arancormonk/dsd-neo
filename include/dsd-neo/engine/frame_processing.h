@@ -86,9 +86,9 @@ typedef enum {
  *     active, so the release's audio flush plays under the call's talkgroup: the P25 or DMR state machine comes to rest
  *     on its control channel without tuning (the caller's change is the move) and the shared release drops
  *     trunk_is_tuned and the voice channel frequencies (dsd_engine_release_tuned_call_state()).
- *  2. The calls heard on the carrier left end, as a hop, and commit, while the live codes are still that carrier's; then
- *     the per-call recordings no call owns close (dsd_event_flush_orphan_recordings(), issue #809 B4), so the next
- *     carrier's audio never joins one.
+ *  2. The calls heard on the carrier left end, as a hop, and commit, while the live codes are still that carrier's;
+ *     then the per-call recordings no call owns close (dsd_event_flush_orphan_recordings(), issue #809 B4), so the
+ *     next carrier's audio never joins one.
  *  3. The carrier's codes go (dsd_engine_forget_carrier_codes(): p2_cc_verified and the NAC with them, never p2_cc),
  *     with the evidence that vouched for its transmissions: every confirmation gate restarts, as the no-carrier pass
  *     restarts them, so the next carrier proves itself again; and with every multi-frame assembly that can publish an

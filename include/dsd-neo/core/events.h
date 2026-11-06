@@ -209,9 +209,10 @@ void dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state);
  * signalling admitted a call, a TETRA anonymous call's lead-in), the file is closed, published without an rdio-scanner
  * export and reopened, as a commit rotates it: pending on the slot's ended epoch whose row has yet to commit (a held
  * drop verdict), which that row's commit links and a drop unlinks, else as no row's (nothing names it, as on the drop
- * path). Without it the next carrier's audio would join the same file. A slot with an active call is left to its own commit, so a
- * call that continues across the move as one call (a TETRA reallocation) stays one recording. An empty file, per-call
- * recording off and a static WAV are left alone. Run at every carrier departure, after the departure ended its calls.
+ * path). Without it the next carrier's audio would join the same file. A slot with an active call is left to its own
+ * commit, so a call that continues across the move as one call (a TETRA reallocation) stays one recording. An empty
+ * file, per-call recording off and a static WAV are left alone. Run at every carrier departure, after the departure
+ * ended its calls.
  * Callers must not hold the call-state lock or an event-history transaction.
  */
 void dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state);

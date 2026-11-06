@@ -2792,7 +2792,14 @@ test_trunk_scan_retry_park_ends_the_call_left(void) {
     const char* pub = record(&g_j, "publish", 0);
     rc |= expect_true("the call's recording closed at the retry", pub && strcmp(field_s(pub, "id"), id) == 0);
     rc |= expect_int("whole", pub ? field_ll(pub, "duration_ms") : -9, 100);
-    rc |= expect_true("under its row", pub && field_ll(pub, "row") > 0);
+    rc |= expect_int("under its row", pub ? field_ll(pub, "row") : -9, (long long)r.state->event_history_s[0].push_seq);
+    rc |= expect_int("the call committed once", (long long)r.state->event_history_s[0].push_seq, 1);
+    /* Nothing of it closes again: no second publish, link or unlink, now or at the next tick. */
+    trunk_scan_test_set_now(2.6);
+    dsd_engine_trunk_scan_tick(r.opts, r.state);
+    reload(&r);
+    rc |= expect_int("one recording", count_records(&g_j, "publish"), 1);
+    rc |= expect_int("nothing pending to resolve", count_records(&g_j, "link") + count_records(&g_j, "unlink"), 0);
     scan_rig_stop(&r);
     rig_close(&r);
     return rc;
