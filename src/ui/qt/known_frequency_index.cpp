@@ -269,13 +269,17 @@ engineHz(const QString& cell, qint64 min_hz, qint64 max_hz) {
     return ok && hz >= min_hz && hz <= max_hz ? hz : 0;
 }
 
-/* A channel map's frequency cell as parse_dec_long_strict() reads it: strtol(), so blanks around it and one sign before
-   its digits, in [100000, 2147483647] (csv_chan_freq_plausible()); 0 for anything else. */
+/* A channel map's frequency cell as parse_dec_long_strict() reads it: strtol(), so blanks around it and one sign
+   directly before its digits (none between them), in [100000, 2147483647] (csv_chan_freq_plausible()); 0 for anything
+   else. */
 qint64
 engineChannelHz(const QString& cell) {
     QString text = engineTrim(cell);
     if (text.startsWith(QLatin1Char('+'))) {
         text.remove(0, 1);
+        if (text.isEmpty() || text.front() < QLatin1Char('0') || text.front() > QLatin1Char('9')) {
+            return 0;
+        }
     } else if (text.startsWith(QLatin1Char('-'))) {
         return 0;
     }

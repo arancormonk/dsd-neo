@@ -704,7 +704,7 @@ testKnownFrequencyTargetParity(const QString& dir) {
 }
 
 /* Issue #644: a channel map read exactly as the -Y map loader reads it. Its frequency is a whole number of Hz, a sign
-   allowed as strtol() takes it, and no MHz or decimal form; a file it refuses gives no rows (a header naming `mode`
+   allowed as strtol() takes it (blanks before the sign, none after it), and no MHz or decimal form; a file it refuses gives no rows (a header naming `mode`
    twice, an unknown mode, an options cell it cannot parse); a name is shown as the loader keeps it. */
 static void
 testKnownFrequencyChannelParity(const QString& dir) {
@@ -713,7 +713,8 @@ testKnownFrequencyChannelParity(const QString& dir) {
     const QString forms = QDir(dir).filePath(QStringLiteral("parity-map-forms.csv"));
     writeFile(
         forms,
-        "chan,freq,name\n1,+1459000000,Signed\n2,1459012500.5,Decimal\n3,1459.025M,Mhz\n4,1459037500,Tab\x01Name\n");
+        "chan,freq,name\n1,+1459000000,Signed\n2,1459012500.5,Decimal\n3,1459.025M,Mhz\n4,1459037500,Tab\x01Name\n"
+        "5,+ 1459050000,SpacedSign\n6, +1459062500,BlankFirst\n");
     addMapSystem(&systems, QStringLiteral("Forms"), forms);
     const char* const refused[] = {
         "chan,freq,mode,mode\n1,1459100000,dmr,dmr\n",
@@ -730,6 +731,9 @@ testKnownFrequencyChannelParity(const QString& dir) {
     assert(index.tunedMatches(1459012500, 12500).isEmpty());
     assert(index.tunedMatches(1459025000, 12500).isEmpty());
     matchNamed(index.tunedMatches(1459037500, 12500), QStringLiteral("Forms / Tab Name"));
+    // strtol() takes blanks before the sign, never between the sign and its digits.
+    assert(index.tunedMatches(1459050000, 12500).isEmpty());
+    matchNamed(index.tunedMatches(1459062500, 12500), QStringLiteral("Forms / BlankFirst"));
     for (qint64 hz : {1459100000LL, 1459112500LL, 1459125000LL}) {
         assert(index.tunedMatches(hz, 12500).isEmpty());
     }
