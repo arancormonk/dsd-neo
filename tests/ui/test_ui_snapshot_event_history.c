@@ -250,6 +250,7 @@ free_session_state(dsd_state* st) {
     dsd_state_ext_free_all(st);
     dsd_state_trunk_lcn_free(st);
     dsd_state_trunk_scan_avoids_free(st);
+    dsd_state_trunk_scan_entry_reasons_free(st);
     free(st);
 }
 
