@@ -10132,8 +10132,27 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   History surface (`qml_test_context.h`: `RecordingsFake::setDetectionRecordings()` seeds a
   detection and moves `revision` with `revisionChanged()`; `CallLogStore` has
   `uidForFragment()`, `setFragmentRow()` and `trimRow()`), and `tst_context_fixture.qml` checks
-  the screen's reads. `keepValues()` makes every space but the one after a `·`
-  non-breaking, so wrapped details break only between values. Its
+  the screen's and `DetectionRecordingsSheet.qml`'s reads. A history row's detail adds "N recordings"
+  (`recordingCount()`, which reads `recordings.revision` so the row follows the store) to its text
+  and accessible name, and its actions start with "Play recordings (N)" (`recordingActions()`, rows
+  only, not the Now panel's More); with none kept and `prefs.recordCalls` off the action is there,
+  disabled, with the Settings hint as its description, and with Record calls on it is absent (an
+  RF-only detection). The row's detail `Text` is a gated `StaticText` (named only while
+  `Navigation.allows()` it: B2). The action opens `DetectionRecordingsSheet.qml` (a `ModalSheet`):
+  title "%1 MHz", one `CallRecordingPlayer` bound to `[selected]` (reset on open,
+  `stopOwnPlayback()` on close), Call details, then the list under a `MicroLabel` count, newest
+  first, a `StableRows` row per recording keyed by id (line 1 time · length, line 2 target ·
+  source · system or "No call details", "Storage not available" when away; "selected" in the
+  name). The list is bound only while visible and re-read on each `revision`; the selection is
+  kept by id, passes to the next one listed (else the one before it) when its recording leaves,
+  taking the focus if the list had it (an owned `Timer`), and an emptied list closes the sheet
+  (an owned `Timer`: a close inside the list's change is a binding loop). A row tap selects and
+  plays, as a part's chip does. Call details shows while `callHistory.uidForFragment(fragment)`
+  is above 0, resolved again on History `dataChanged`, `rowPositionsChanged`, `modelReset` and
+  `rowsRemoved` while open and on the click, which closes the sheet (its playback stops) and has
+  the screen open its own `HistoryDetailSheet` (`searchCallDetails`, `showHold: false`). Both
+  sheets join `menuOpen` (`tst_signal_search.qml`, `tst_a11y_text_reach.qml`). `keepValues()`
+  makes every space but the one after a `·` non-breaking, so wrapped details break only between values. Its
   liveness cue marks each new `liveSeq`. Each Recent detections row has an `IconButton`
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
   Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
@@ -11087,8 +11106,12 @@ Qt Quick frontend (`src/ui/qt`):
     the host reports "missing" leaves the block at once, until the store lists it as away (its storage went): from then
     on the store's availability speaks for it, so it shows away and plays again once the storage is back, without
     reopening the sheet; closing the sheet stops what it played; a pause the host made in the background (D10) reads as
-    Paused. The talkgroup editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when
-    tuned) and is sent with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it
+    Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted. History and
+    detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say the same of
+    their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal search
+    detection, so "the call stays in History" would not hold (issue #809 B3). `DetectionRecordingsSheet.qml` (Signal
+    search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows Listening
+    (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it
     for a row added listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS`
     (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`,
     `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.

@@ -133,6 +133,13 @@ Item {
                 sheet.open("", "dmr");
             }},
             {file: "DecryptionProfileSelector"},
+            // Issue #809: a detection's recordings, one rowless and one on storage that went away.
+            {file: "DetectionRecordingsSheet", open: function (sheet) {
+                recordings.setDetectionRecordings("17:40", [{id: "b", path: "/rec/Explore/b.wav", start: 1767225600, durationMs: 4000,
+                    target: "Fire Dispatch", source: "2001", system: "NFM"}, {id: "a", path: "/rec/Explore/a.wav", start: 1767225500,
+                    durationMs: 2000, available: false}]);
+                sheet.openFor({recordingKey: "17:40"}, "462.5750");
+            }},
             {file: "DiagnosticsScreen"},
             {file: "DiscardDialog"},
             {file: "EncryptionEditor"},

@@ -124,6 +124,24 @@ While a search runs, the screen is laid out for what is on the air now:
   and **Avoid permanently**, or **Remove permanent avoid** when it already is.
   A matched system whose site is avoided is listed but cannot start: remove the
   avoid in its site list first.
+- A row whose detection kept call recordings says how many under its details
+  (**3 recordings**), and its actions start with **Play recordings (3)**. That
+  opens the detection's recordings: the player under the frequency plays the
+  one selected (the newest when it opens), and the list below it shows each
+  recording newest first with its start time and length, then the call it names
+  (**Target 1234 · Source 5678**, **NFM**), or **No call details** when it names
+  none, such as audio no call owned. Tap a recording to select and play it.
+  **Call details** opens the selected recording's History details while History
+  still holds its call; their Hold is not offered, as a search takes no receiver
+  command, and Back returns to the search. The list follows the recordings: a
+  recording deleted or removed by the storage limit leaves it and the next one
+  is selected, the sheet closes when none is left, and a recording on storage
+  that is away stays listed and says so. Delete removes only the audio; History
+  and the detection are unchanged. With **Record calls** off, a row that kept no
+  recordings shows **Play recordings** disabled, saying that turning it on in
+  Settings keeps the audio of later detections. With it on, a detection that
+  kept none (nothing was decoded on it, as for an RF-only detection) offers no
+  recordings action.
 - **Search ranges · 3 enabled** is collapsed; tap it to show the ranges. While
   paused, or before a search starts, the ranges are always shown with their
   edit controls. A range list opened by hand stays open until you leave the
@@ -300,6 +318,16 @@ do not reach this one. A detection republished with nothing new is not written
 again. Detection history is not part of a backup. History and permanent avoids
 are saved separately, and a failed one stays reported and is retried by later
 saves until it is written.
+
+A recording belongs to a detection through the call recording journal: each
+recording published from audio received on a detection's visit names it there
+(the `search` key; see `docs/code_map.md`, "Recording journal"). The detection
+journal is unchanged. Limits: a recording made before this release, or one whose
+journal an older release compacted, names no detection and is listed under none;
+detection history keeps 1,000 detections and the recordings follow their own
+storage limit, so a recording can outlive its detection's row (it stays in Call
+recordings), and a detection its recordings (the row then shows none); History
+keeps 1,000 calls, so an older recording can still play with no Call details.
 Orderly stop flushes the journal. Ranges and permanent avoids are also stored privately.
 
 Saved-system labels come from a cached index of saved frequencies, referenced

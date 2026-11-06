@@ -79,7 +79,9 @@ Item {
     signal startSavedSystem(string uid)
     // The saved systems a detection's matches name (Main's savedSystems).
     property var systems: typeof savedSystems !== "undefined" ? savedSystems : null
-    readonly property bool menuOpen: detectionMenu.visible
+    // A sheet over the screen: the detection menu, a detection's recordings
+    // (issue #809) or the History details one of them opened.
+    readonly property bool menuOpen: detectionMenu.visible || recordingsSheet.visible || callDetails.visible
     function followSessionSource() {
         var source = sessionSource || {};
         if (!ownedSession || ["usb", "airspy", "rtltcp"].indexOf(source.sourceType) < 0)
@@ -317,10 +319,36 @@ Item {
         }
         return found;
     }
+    /** How many recordings detection @p h kept (issue #809), read again each
+     * time the store's recordings change; 0 for no detection. */
+    function recordingCount(h) {
+        var revision = recordings.revision;
+        var key = String(h.recordingKey || "");
+        return key.length > 0 ? recordings.recordingCountForDetection(key) : 0;
+    }
+    function recordingCountText(count) {
+        return count === 1 ? qsTr("1 recording") : qsTr("%1 recordings").arg(Util.countText(count));
+    }
+    /** A history row's recordings action (issue #809): Play recordings with
+     * their count when it kept any. With none while Record calls is off, the
+     * action stays, disabled, saying how later detections keep their audio.
+     * None with Record calls on means nothing was decoded to record (an RF-only
+     * detection): no action. */
+    function recordingActions(h) {
+        var count = recordingCount(h);
+        if (count > 0)
+            return [{ text: qsTr("Play recordings (%1)").arg(Util.countText(count)), key: "recordings", objectName: "searchActionRecordings" }];
+        if (!prefs.recordCalls)
+            return [{ text: qsTr("Play recordings"), key: "recordings", objectName: "searchActionRecordings", enabled: false,
+                description: qsTr("Record calls is off. Turn it on in Settings to keep the audio of later detections.") }];
+        return [];
+    }
     /** What can be done with detection @p h: leaving for it from the Now
-     * panel's More, or everything from its history row (@p all). */
+     * panel's More, or everything from its history row (@p all), its
+     * recordings first. */
     function detectionActions(h, all) {
-        var items = [{ text: qsTr("Explore here"), key: "explore", objectName: "searchActionExplore" }];
+        var items = all ? recordingActions(h) : [];
+        items.push({ text: qsTr("Explore here"), key: "explore", objectName: "searchActionExplore" });
         var targets = savedTargets(h);
         for (var i = 0; i < targets.length; ++i) {
             var target = targets[i];
@@ -899,17 +927,26 @@ Item {
                             spacing: 5
                             ReadableText { objectName: "searchHistoryReading"; width: parent.width; text: screen.keepValues(modelData.freqMHz + " MHz · " + Util.fixed(modelData.power, 1) + " dBFS"); color: Theme.textPrimary; font.family: Theme.mono; font.pixelSize: Theme.fontSize(15); wrapMode: Text.Wrap }
                             Text {
+                                id: historyDetail
                                 width: parent.width
                                 objectName: "searchHistoryDetail"
                                 // The site and encryption the detection was
-                                // checked with, under its verdict.
+                                // checked with, under its verdict, then how
+                                // many recordings it kept (issue #809).
                                 readonly property string checked: [modelData.site || "", modelData.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ")
-                                readonly property string fullText: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (checked ? "\n" + checked : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "")
+                                readonly property int recordingCount: screen.recordingCount(modelData)
+                                readonly property string fullText: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (checked ? "\n" + checked : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "") + (recordingCount > 0 ? "\n" + screen.recordingCountText(recordingCount) : "")
                                 text: {
                                     var font = historyMetrics.font;
                                     return screen.keepValues(fullText, width, historyMetrics);
                                 }
-                                Accessible.name: fullText.replace(/\n/g, " · ")
+                                // Gated as every node a screen reader reaches
+                                // is (ReadableText): behind an open sheet it
+                                // leaves the tree, and holds no name there.
+                                Accessible.role: Accessible.StaticText
+                                readonly property bool navigationAllowed: Navigation.allows(historyDetail)
+                                Accessible.ignored: !navigationAllowed || !visible
+                                Accessible.name: Accessible.ignored ? "" : fullText.replace(/\n/g, " · ")
                                 color: Theme.textSecondary
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(13)
@@ -981,6 +1018,23 @@ Item {
                 searchModel.avoidPermanently(String(screen.status.session || ""), screen.hitHz(h));
             else if (item.key === "removePermanent")
                 searchModel.removeAvoid(screen.hitHz(h));
+            else if (item.key === "recordings")
+                recordingsSheet.openFor(h, Util.mhzText(screen.hitHz(h)));
         }
+    }
+    // Issue #809: a detection's recordings, from its row's actions. Call
+    // details replaces the sheet with the selected recording's History
+    // details, which close back to this screen; their Hold is hidden, as a
+    // search takes no receiver command.
+    DetectionRecordingsSheet {
+        id: recordingsSheet
+        onCallDetailsRequested: function (record) {
+            callDetails.open(record);
+        }
+    }
+    HistoryDetailSheet {
+        id: callDetails
+        objectName: "searchCallDetails"
+        showHold: false
     }
 }

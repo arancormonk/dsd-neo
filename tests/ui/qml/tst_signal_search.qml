@@ -110,6 +110,17 @@ Item {
             var menu = findChild(loader.item, "searchDetectionMenu");
             if (menu)
                 menu.visible = false;
+            // Issue #809: no recordings, no History, nothing playing, Record calls off (the app's default).
+            for (var name of ["detectionRecordingsSheet", "searchCallDetails"]) {
+                var sheet = findChild(loader.item, name);
+                if (sheet)
+                    sheet.visible = false;
+            }
+            recordings.reset();
+            callHistory.clearAll();
+            testContext.resetHostPlayback();
+            testContext.setPrefs("recordCalls", false);
+            testContext.setPrefs("appearance", 0);
         }
         // The panel is narrower than a phone: the strip beside it is scrim.
         function tapBeside(sheet) {
@@ -1109,7 +1120,7 @@ Item {
             return item;
         }
         function historyHit(extra) {
-            return Object.assign({id: "40", session: "17", freqMHz: "462.575000", frequency: 462575000, power: -40, confirmed: false, ended: true, matches: []}, extra || {});
+            return Object.assign({id: "40", session: "17", freqMHz: "462.575000", frequency: 462575000, power: -40, confirmed: false, ended: true, matches: [], recordingKey: "17:40"}, extra || {});
         }
         // Each detection row offers what can be done with it, by state: saved
         // systems it matched (an avoided one disabled, saying why), avoiding it
@@ -1118,15 +1129,18 @@ Item {
             var matched = [{systemUid: "uid-a"}, {systemUid: "uid-a"}, {systemUid: "uid-b"}, {systemUid: "gone"}];
             return [
                 {tag: "unmatched, searching", hit: {}, session: true, avoided: false,
-                    want: ["Explore here", "Save as system", "Avoid this session", "Avoid permanently"]},
+                    want: ["Play recordings (disabled)", "Explore here", "Save as system", "Avoid this session", "Avoid permanently"]},
                 {tag: "matched, searching", hit: {matches: matched}, session: true, avoided: false,
-                    want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Avoid this session", "Avoid permanently"]},
+                    want: ["Play recordings (disabled)", "Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Avoid this session", "Avoid permanently"]},
                 {tag: "no session", hit: {}, session: false, avoided: false,
-                    want: ["Explore here", "Save as system", "Avoid permanently"]},
+                    want: ["Play recordings (disabled)", "Explore here", "Save as system", "Avoid permanently"]},
                 {tag: "permanently avoided", hit: {}, session: true, avoided: true,
-                    want: ["Explore here", "Save as system", "Avoid this session", "Remove permanent avoid"]},
+                    want: ["Play recordings (disabled)", "Explore here", "Save as system", "Avoid this session", "Remove permanent avoid"]},
                 {tag: "permanently avoided, no session", hit: {matches: matched}, session: false, avoided: true,
-                    want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Remove permanent avoid"]}
+                    want: ["Play recordings (disabled)", "Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Remove permanent avoid"]},
+                // Issue #809: with Record calls on, a detection that kept no recordings offers none.
+                {tag: "recording, none kept", hit: {}, session: true, avoided: false, record: true,
+                    want: ["Explore here", "Save as system", "Avoid this session", "Avoid permanently"]}
             ];
         }
         function test_history_menu_per_state(data) {
@@ -1135,6 +1149,7 @@ Item {
             if (!data.session)
                 model.status = {phase: 0, session: "17", owned: false};
             model.avoids = data.avoided ? [462575000] : [];
+            testContext.setPrefs("recordCalls", data.record === true);
             model.history = [historyHit(data.hit)];
             wait(0);
             var more = findChild(screen, "searchHistoryActions");
@@ -1147,7 +1162,7 @@ Item {
             compare(menu.title, "462.5750 MHz");
             compare(menuTexts(), data.want);
             if (data.hit.matches) {
-                compare(findChild(menu, "actionMenuDescription2").text, "Avoided; remove the avoid in its site list to start it");
+                compare(findChild(menu, "actionMenuDescription3").text, "Avoided; remove the avoid in its site list to start it");
                 verify(!menuItem("searchActionStart1").enabled);
             }
             verify(!findChild(screen, "searchStartPause").enabled || !findChild(screen, "searchStartPause").parent.enabled, "the screen under the menu takes no taps");
@@ -1268,6 +1283,429 @@ Item {
             verify(message.visible);
             compare(message.mapToItem(scroll, 0, 0).y, panelY);
             model.error = "";
+        }
+
+        // Issue #809: a detection's recordings, from its Recent detections row.
+        // A recording as the store lists it (RecordingsFake fills the keys left out).
+        function rec(id, start, ms, extra) {
+            return Object.assign({id: id, path: "/rec/Explore/" + id + ".wav", fileName: id + ".wav", folderUid: "explore", start: start, durationMs: ms, rate: 8000, bytes: 96000}, extra || {});
+        }
+        function recordingsSheet() {
+            return findChild(loader.item, "detectionRecordingsSheet");
+        }
+        // The sheet's rows holding a recording, top to bottom.
+        function recordingRows() {
+            return findChildren(recordingsSheet(), "detectionRecordingRow").filter(function (row) {
+                return row.live && row.opacity > 0;
+            }).sort(function (a, b) {
+                return a.index - b.index;
+            });
+        }
+        function recordingRow(id) {
+            var rows = recordingRows().filter(function (row) { return row.key === id; });
+            return rows.length === 1 ? rows[0] : null;
+        }
+        function lastHostCall() {
+            var calls = testContext.hostCalls();
+            return calls.length > 0 ? calls[calls.length - 1] : ({});
+        }
+        // Seed detection 17:40 with @p list (newest first) and open its sheet from the row's actions.
+        function openRecordings(list, extra) {
+            recordings.setDetectionRecordings("17:40", list);
+            model.history = [historyHit(extra)];
+            wait(0);
+            findChild(loader.item, "searchHistoryActions").activate();
+            menuItem("searchActionRecordings").activate();
+            var sheet = recordingsSheet();
+            verify(sheet.visible, "the recordings sheet opens");
+            waitForRendering(sheet);
+            return sheet;
+        }
+        function sheetTap(item) {
+            verify(item !== null && item.visible && item.enabled);
+            mouseClick(item, item.width / 2, item.height / 2);
+        }
+        // Scroll the sheet until @p item is on screen, as a finger would.
+        function revealInSheet(sheet, item) {
+            var scroll = findChild(sheet, "modalSheetScroll");
+            sheet.reveal(item);
+            waitForRendering(sheet);
+            var y = item.mapToItem(scroll, 0, 0).y;
+            return y >= 0 && y + item.height <= scroll.height + 0.5;
+        }
+
+        // A row that kept recordings says how many under its details, and reads
+        // it in its name; one that kept none says nothing. It follows the store.
+        function test_row_recordings_count() {
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            model.history = [historyHit(), historyHit({id: "41", recordingKey: "17:41"}), historyHit({id: "42", recordingKey: ""})];
+            var rows = findChildren(loader.item, "searchHistoryDetail");
+            compare(rows.length, 3);
+            compare(rows[0].fullText, "RF only · ended\n3 recordings");
+            compare(rows[0].Accessible.name, "RF only · ended · 3 recordings");
+            compare(rows[1].fullText, "RF only · ended");
+            compare(rows[1].Accessible.name, "RF only · ended");
+            compare(rows[2].fullText, "RF only · ended", "no detection, no recordings");
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000)]);
+            compare(rows[0].fullText, "RF only · ended\n1 recording", "read again when the store's recordings change");
+            recordings.setDetectionRecordings("17:41", [rec("d", 1700000400, 4000), rec("e", 1700000300, 4000)]);
+            compare(rows[1].Accessible.name, "RF only · ended · 2 recordings");
+            recordings.setDetectionRecordings("17:40", []);
+            compare(rows[0].fullText, "RF only · ended");
+            model.history = [];
+        }
+        // Issue #809 B2: a row's details leave the accessibility tree behind an
+        // open sheet, as every node a screen reader reaches does, and hold no name.
+        function test_detail_text_gated_behind_sheet() {
+            model.history = [historyHit({confirmed: true, protocol: "DMR"})];
+            var detail = findChild(loader.item, "searchHistoryDetail");
+            verify(!detail.Accessible.ignored);
+            compare(detail.Accessible.name, "DMR · confirmed · ended");
+            findChild(loader.item, "searchHistoryActions").activate();
+            verify(findChild(loader.item, "searchDetectionMenu").visible);
+            verify(detail.Accessible.ignored, "behind the menu, out of the tree");
+            compare(detail.Accessible.name, "");
+            findChild(loader.item, "searchDetectionMenu").cancel();
+            verify(!detail.Accessible.ignored);
+            compare(detail.Accessible.name, "DMR · confirmed · ended");
+            model.history = [];
+        }
+        // The recordings come first among a row's actions when it kept any. With
+        // none while Record calls is off, the action stays, disabled, saying
+        // why; with Record calls on, a detection that kept none offers nothing.
+        // The Now panel's More only leaves for the detection.
+        function test_play_recordings_action_per_state_data() {
+            return [{tag: "kept, recording off", count: 2, record: false, first: "Play recordings (2)", enabled: true, description: ""},
+                {tag: "kept, recording on", count: 2, record: true, first: "Play recordings (2)", enabled: true, description: ""},
+                {tag: "none, recording off", count: 0, record: false, first: "Play recordings", enabled: false,
+                    description: "Record calls is off. Turn it on in Settings to keep the audio of later detections."},
+                {tag: "none, recording on", count: 0, record: true, first: "Explore here", enabled: true, description: ""}];
+        }
+        function test_play_recordings_action_per_state(data) {
+            testContext.setPrefs("recordCalls", data.record);
+            var list = [];
+            for (var i = 0; i < data.count; ++i)
+                list.push(rec("r" + i, 1700000000 - i, 2000));
+            recordings.setDetectionRecordings("17:40", list);
+            model.history = [historyHit()];
+            wait(0);
+            findChild(loader.item, "searchHistoryActions").activate();
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            compare(menu.actions[0].text, data.first);
+            compare(menu.actions[0].enabled !== false, data.enabled);
+            compare(menu.actions.filter(function (a) { return a.key === "recordings"; }).length, data.first === "Explore here" ? 0 : 1);
+            if (data.first !== "Explore here") {
+                var action = menuItem("searchActionRecordings");
+                compare(action.enabled, data.enabled);
+                compare(findChild(menu, "actionMenuDescription0").text, data.description);
+                compare(action.accessibleName, data.description.length ? "Play recordings. " + data.description : data.first);
+                if (!data.enabled) {
+                    action.activate();
+                    verify(menu.visible && !recordingsSheet().visible, "a disabled action does nothing");
+                }
+            }
+            menu.cancel();
+            // The Now panel's detection: only leaving for it.
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {recordingKey: "17:40"})});
+            findChild(loader.item, "searchMore").clicked();
+            compare(menuTexts(), ["Explore here"]);
+            menu.cancel();
+            model.history = [];
+        }
+        // Newest first, the newest selected; a tap on a row selects it and plays
+        // it, and the player plays what is selected.
+        function test_sheet_lists_newest_first_and_plays_selected() {
+            var sheet = openRecordings([rec("c", 1700000300, 42000, {target: "1234", source: "5678", system: "DMR · CC 1"}),
+                rec("b", 1700000200, 3000, {target: "Fire Dispatch", source: "", system: "NFM"}), rec("a", 1700000100, 500)]);
+            compare(findChild(sheet, "detectionRecordingsTitle").text, "462.5750 MHz");
+            compare(findChild(sheet, "detectionRecordingsCount").text, "3 recordings");
+            compare(sheet.accessibleName, "Recordings, 462.5750 MHz");
+            var rows = recordingRows();
+            compare(rows.map(function (row) { return row.key; }), ["c", "b", "a"]);
+            var time = function (start) { return Qt.formatDateTime(new Date(start * 1000), "hh:mm:ss"); };
+            compare(rows[0].line, time(1700000300) + " · 0:42\nTarget 1234 · Source 5678 · DMR · CC 1");
+            compare(rows[1].line, time(1700000200) + " · 0:03\nFire Dispatch · NFM");
+            compare(rows[2].line, time(1700000100) + " · 0:01\nNo call details");
+            verify(rows[0].selected && !rows[1].selected && !rows[2].selected, "the newest is selected");
+            compare(rows[0].Accessible.name, time(1700000300) + " · 0:42, Target 1234 · Source 5678 · DMR · CC 1, selected");
+            compare(rows[1].Accessible.name, time(1700000200) + " · 0:03, Fire Dispatch · NFM");
+            for (var row of rows)
+                verify(row.height >= Ui.Theme.minimumTouchSize);
+            var player = findChild(sheet, "detectionRecordingPlayer");
+            verify(player.visible);
+            compare(player.part.id, "c");
+            compare(findChild(player, "recordingHeader").text, "Call recording");
+            verify(!findChild(player, "recordingPlayAll").visible, "one recording at a time: no parts");
+            sheetTap(findChild(player, "recordingPlayButton"));
+            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().path, "/rec/Explore/c.wav");
+            testContext.publishPlayback("/rec/Explore/c.wav", 2, 1000, 42000, "");
+            // Another row: selected, and played in its place.
+            sheetTap(rows[1]);
+            verify(rows[1].selected && !rows[0].selected);
+            compare(rows[1].Accessible.name, time(1700000200) + " · 0:03, Fire Dispatch · NFM, selected");
+            compare(player.part.id, "b");
+            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().path, "/rec/Explore/b.wav");
+            verify(loader.item.menuOpen, "the screen under the sheet takes no taps");
+            // Closing stops what it played.
+            findChild(sheet, "detectionRecordingsClose").activate();
+            verify(!sheet.visible);
+            compare(lastHostCall().name, "stopPlayback");
+            verify(!loader.item.menuOpen);
+            // Reopened, it starts on the newest again.
+            findChild(loader.item, "searchHistoryActions").activate();
+            menuItem("searchActionRecordings").activate();
+            verify(recordingRow("c").selected);
+            sheet.visible = false;
+            model.history = [];
+        }
+        // The selected recording deleted (here or from the Recordings screen):
+        // the next one listed is selected, and focus moves to it if it was on the
+        // list; the oldest gone hands it to the one before it. Deleting says only
+        // the audio goes, for a recording with no History row and one whose row
+        // History trimmed (B3).
+        function test_sheet_selected_recording_deleted() {
+            var uid = callHistory.pushWithRecordings([]);
+            verify(callHistory.setFragmentRow("F:7:2", uid));
+            var sheet = openRecordings([rec("c", 1700000300, 4000), rec("b", 1700000200, 3000, {fragment: "F:7:2"}), rec("a", 1700000100, 2000)]);
+            var player = findChild(sheet, "detectionRecordingPlayer");
+            recordingRow("b").activate();
+            compare(lastHostCall().path, "/rec/Explore/b.wav");
+            testContext.publishPlayback("/rec/Explore/b.wav", 2, 1000, 3000, "");
+            recordingRow("b").forceActiveFocus();
+            // History trims b's row: the recording stays, with no row now.
+            verify(callHistory.trimRow(uid));
+            sheetTap(findChild(player, "recordingDelete"));
+            var confirm = findChild(sheet, "recordingDeleteConfirm");
+            verify(confirm.visible);
+            compare(findChild(confirm, "confirmMessage").text, "Only the audio is deleted. History and detections are unchanged.");
+            findChild(confirm, "confirmActionButton").activate();
+            compare(lastHostCall().name, "stopPlayback", "what plays stops first");
+            var calls = recordings.calls();
+            compare(calls[calls.length - 1].name, "deleteRecording");
+            compare(calls[calls.length - 1].id, "b");
+            // The store drops it.
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("a", 1700000100, 2000)]);
+            compare(sheet.selectedId, "a", "the next one listed");
+            verify(recordingRow("a").selected);
+            compare(player.part.id, "a");
+            tryVerify(function () { return recordingRow("a").activeFocus; }, 1000, "focus moves to it");
+            sheetTap(findChild(player, "recordingPlayButton"));
+            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().path, "/rec/Explore/a.wav");
+            // Rowless from the start (never linked): the same words.
+            sheetTap(findChild(player, "recordingDelete"));
+            compare(findChild(confirm, "confirmMessage").text, "Only the audio is deleted. History and detections are unchanged.");
+            findChild(confirm, "confirmCancelButton").activate();
+            // The oldest gone: the one before it.
+            recordings.setDetectionRecordings("17:40", [rec("d", 1700000400, 4000), rec("c", 1700000300, 4000)]);
+            compare(sheet.selectedId, "c");
+            compare(recordingRows().map(function (row) { return row.key; }), ["d", "c"]);
+            // A refresh that keeps it keeps the selection on it.
+            recordings.setDetectionRecordings("17:40", [rec("e", 1700000500, 4000), rec("d", 1700000400, 4000), rec("c", 1700000300, 4000)]);
+            compare(sheet.selectedId, "c");
+            compare(findChild(sheet, "detectionRecordingsCount").text, "3 recordings");
+            sheet.visible = false;
+            model.history = [];
+        }
+        // The last recording gone, the sheet closes and its playback stops.
+        function test_sheet_closes_when_empty() {
+            var sheet = openRecordings([rec("a", 1700000100, 2000)]);
+            compare(findChild(sheet, "detectionRecordingsCount").text, "1 recording");
+            sheetTap(findChild(sheet, "recordingPlayButton"));
+            testContext.publishPlayback("/rec/Explore/a.wav", 2, 500, 2000, "");
+            recordings.setDetectionRecordings("17:40", []);
+            compare(lastHostCall().name, "stopPlayback", "no control is left for it");
+            tryVerify(function () { return !sheet.visible; }, 1000, "the sheet closes");
+            verify(!loader.item.menuOpen);
+            verify(findChild(loader.item, "searchStartPause").enabled, "the screen takes taps again");
+            model.history = [];
+        }
+        // A recording on storage that went away stays listed and says so; it
+        // plays once the storage is back, the selection kept.
+        function test_sheet_away_recording() {
+            var sheet = openRecordings([rec("b", 1700000200, 3000, {available: false}), rec("a", 1700000100, 2000)]);
+            var row = recordingRow("b");
+            verify(row.selected);
+            compare(row.line.split("\n")[2], "Storage not available");
+            verify(findChild(row, "detectionRecordingAway").visible);
+            verify(row.Accessible.name.indexOf("Storage not available") > 0);
+            verify(!findChild(recordingRow("a"), "detectionRecordingAway").visible);
+            var player = findChild(sheet, "detectionRecordingPlayer");
+            compare(findChild(player, "recordingProblem").text, "The storage this recording is on isn't available right now.");
+            verify(!findChild(player, "recordingPlayButton").enabled);
+            row.activate();
+            compare(testContext.hostCalls().length, 0, "nothing plays from away storage");
+            recordings.setDetectionRecordings("17:40", [rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            compare(sheet.selectedId, "b");
+            verify(!findChild(recordingRow("b"), "detectionRecordingAway").visible);
+            sheetTap(findChild(player, "recordingPlayButton"));
+            compare(lastHostCall().path, "/rec/Explore/b.wav");
+            sheet.visible = false;
+            model.history = [];
+        }
+        // A held visit that kept 50: the count is right, every row is there and
+        // reachable by scrolling, and the last one plays.
+        function test_sheet_many_recordings_scroll() {
+            var list = [];
+            for (var i = 0; i < 50; ++i)
+                list.push(rec("r" + (49 - i), 1700000000 + 600 - i * 10, 8000));
+            recordings.setDetectionRecordings("17:40", list);
+            model.history = [historyHit()];
+            wait(0);
+            compare(findChild(loader.item, "searchHistoryDetail").fullText, "RF only · ended\n50 recordings");
+            findChild(loader.item, "searchHistoryActions").activate();
+            compare(menuTexts()[0], "Play recordings (50)");
+            menuItem("searchActionRecordings").activate();
+            var sheet = recordingsSheet();
+            waitForRendering(sheet);
+            compare(findChild(sheet, "detectionRecordingsCount").text, "50 recordings");
+            var rows = recordingRows();
+            compare(rows.length, 50);
+            compare(rows[0].key, "r49");
+            compare(rows[49].key, "r0");
+            for (var r = 0; r < rows.length; r += 7)
+                verify(revealInSheet(sheet, rows[r]), "row " + r + " scrolls into view");
+            verify(revealInSheet(sheet, rows[49]), "the last row scrolls into view");
+            verify(revealInSheet(sheet, findChild(sheet, "detectionRecordingsClose")), "and Close under it");
+            sheetTap(rows[49]);
+            compare(lastHostCall().path, "/rec/Explore/r0.wav");
+            sheet.visible = false;
+            model.history = [];
+        }
+        // Call details shows while History holds the selected recording's call,
+        // following History alone (no recording change): a late adoption, a
+        // merge into another row, a trim and a clear.
+        function test_call_details_resolution() {
+            var sheet = openRecordings([rec("b", 1700000200, 3000, {fragment: "F:3:1"}), rec("a", 1700000100, 2000)]);
+            var details = findChild(sheet, "detectionCallDetails");
+            var revision = recordings.revision;
+            verify(!details.visible, "no row holds it yet");
+            var uid = callHistory.pushWithRecordings([]);
+            verify(!details.visible);
+            verify(callHistory.setFragmentRow("F:3:1", uid));
+            verify(details.visible, "adopted late");
+            compare(sheet.detailsUid, uid);
+            var other = callHistory.pushWithRecordings([]);
+            verify(callHistory.setFragmentRow("F:3:1", other));
+            compare(sheet.detailsUid, other, "merged into another row");
+            verify(details.visible);
+            verify(callHistory.trimRow(other));
+            verify(!details.visible, "its row trimmed");
+            verify(callHistory.setFragmentRow("F:3:1", uid));
+            verify(details.visible);
+            callHistory.clearAll();
+            verify(!details.visible, "History cleared");
+            compare(recordings.revision, revision, "none of it moved the store");
+            // Selecting a recording with no fragment: none.
+            verify(callHistory.setFragmentRow("F:3:1", callHistory.pushWithRecordings([])));
+            verify(details.visible);
+            recordingRow("a").activate();
+            verify(!details.visible);
+            sheet.visible = false;
+            model.history = [];
+        }
+        // Call details closes the sheet, stopping what it played, and opens the
+        // History details here with Hold hidden; Back returns to the screen.
+        function test_call_details_replaces_sheet() {
+            var uid = callHistory.pushWithRecordings([]);
+            verify(callHistory.setFragmentRow("F:3:1", uid));
+            var sheet = openRecordings([rec("b", 1700000200, 3000, {fragment: "F:3:1"})]);
+            sheetTap(findChild(sheet, "recordingPlayButton"));
+            testContext.publishPlayback("/rec/Explore/b.wav", 2, 1000, 3000, "");
+            var details = findChild(sheet, "detectionCallDetails");
+            sheetTap(details);
+            verify(!sheet.visible, "the recordings sheet closes");
+            compare(lastHostCall().name, "stopPlayback", "and what it played stops");
+            var callDetails = findChild(loader.item, "searchCallDetails");
+            verify(callDetails.visible);
+            compare(callDetails.record.uid, uid);
+            verify(callDetails.rowTg > 0, "a talkgroup call, which would offer Hold");
+            verify(!findChild(callDetails, "historyHoldButton").visible, "no Hold during a search");
+            verify(!findChild(callDetails, "historyHoldReason").visible);
+            verify(loader.item.menuOpen, "the screen under it takes no taps");
+            verify(Ui.Navigation.back(callDetails.Window.window));
+            verify(!callDetails.visible);
+            verify(!sheet.visible, "Back returns to the search screen");
+            verify(!loader.item.menuOpen);
+            // Gone before the click: the click resolves again and stays.
+            sheet = openRecordings([rec("b", 1700000200, 3000, {fragment: "F:3:1"})]);
+            verify(details.visible);
+            callHistory.clearAll();
+            sheet.detailsUid = uid;
+            sheet.showDetails();
+            verify(sheet.visible && !callDetails.visible, "nothing to show");
+            sheet.visible = false;
+            model.history = [];
+        }
+        // Largest text on a 360 dp phone: the rows wrap inside the sheet, every
+        // control keeps a 48 dp target, and the sheet scrolls to its end.
+        function test_sheet_large_text_360_data() {
+            return [{tag: "dark", appearance: 2}, {tag: "light", appearance: 1}];
+        }
+        function test_sheet_large_text_360(data) {
+            testContext.setPrefs("appearance", data.appearance);
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            var uid = callHistory.pushWithRecordings([]);
+            verify(callHistory.setFragmentRow("F:9:1", uid));
+            model.history = [historyHit({recordingKey: "17:40", confirmed: true, protocol: "DMR", site: "TIII Small · Net 12 · Site 3 · SYS 1183", crypt: "ALG 21 · KID 0001", knownLabel: "Warehouse · 462.5750 MHz"}),
+                historyHit({id: "39", recordingKey: "17:39"})];
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 125000, {target: "Northern District Fire Dispatch", source: "Engine 42 Officer", system: "DMR · TIII Small · Net 12 · Site 3", fragment: "F:9:1"}),
+                rec("b", 1700000200, 3000, {target: "1234", source: "5678"}), rec("a", 1700000100, 500, {available: false})]);
+            wait(50);
+            var scroll = findChild(loader.item, "searchScroll");
+            var row = findChild(loader.item, "searchHistoryRow");
+            scroll.contentY = Math.max(0, row.mapToItem(scroll.contentItem, 0, 0).y - 60);
+            wait(100);
+            var detail = findChild(loader.item, "searchHistoryDetail");
+            verify(detail.mapToItem(row, 0, 0).x + detail.width <= row.width + 0.5);
+            grabImage(root).save("/tmp/dsd-signal-search-recordings-row-360-1.6x-" + data.tag + ".png");
+            findChild(loader.item, "searchHistoryActions").activate();
+            wait(50);
+            grabImage(root).save("/tmp/dsd-signal-search-recordings-menu-360-1.6x-" + data.tag + ".png");
+            menuItem("searchActionRecordings").activate();
+            var sheet = recordingsSheet();
+            waitForRendering(sheet);
+            wait(50);
+            grabImage(root).save("/tmp/dsd-signal-search-recordings-sheet-360-1.6x-" + data.tag + ".png");
+            var panel = findChild(sheet, "modalSheetScroll");
+            var inside = function (item) {
+                var p = item.mapToItem(panel, 0, 0);
+                return p.x >= -0.5 && p.x + item.width <= panel.width + 0.5;
+            };
+            for (var r of recordingRows()) {
+                verify(inside(r), r.key + " stays inside the sheet");
+                verify(r.height >= Ui.Theme.minimumTouchSize);
+                var identity = findChild(recordingRow("c"), "detectionRecordingIdentity");
+            verify(!/ ·/.test(identity.text), "no wrapped line starts with a separator");
+            compare(identity.text.replace(/\u00a0/g, " "), "Northern District Fire Dispatch · Engine 42 Officer · DMR · TIII Small · Net 12 · Site 3");
+            for (var name of ["detectionRecordingTime", "detectionRecordingIdentity"]) {
+                    var text = findChild(r, name);
+                    verify(text.mapToItem(r, 0, 0).x + text.width <= r.width + 0.5, r.key + " " + name + " inside its row");
+                    verify(text.mapToItem(r, 0, 0).y + text.height <= r.height + 0.5, r.key + " " + name + " inside its row");
+                }
+            }
+            for (var control of ["recordingPlayButton", "recordingSave", "recordingDelete", "detectionCallDetails", "detectionRecordingsClose"]) {
+                var item = findChild(sheet, control);
+                verify(item.visible, control);
+                verify(inside(item), control + " stays inside the sheet");
+                verify(item.height >= Ui.Theme.minimumTouchSize && item.width >= Ui.Theme.minimumTouchSize, control + " keeps its target");
+            }
+            verify(revealInSheet(sheet, findChild(sheet, "detectionRecordingsClose")), "the sheet scrolls to Close");
+            grabImage(root).save("/tmp/dsd-signal-search-recordings-sheet-360-1.6x-end-" + data.tag + ".png");
+            Ui.Theme.fontScale = 1.0;
+            sheet.visible = false;
+            wait(0);
+            findChild(loader.item, "searchHistoryActions").activate();
+            menuItem("searchActionRecordings").activate();
+            waitForRendering(sheet);
+            wait(50);
+            grabImage(root).save("/tmp/dsd-signal-search-recordings-sheet-360-1x-" + data.tag + ".png");
+            sheet.visible = false;
+            scroll.contentY = 0;
+            model.history = [];
         }
         function test_capture_menu() {
             model.history = [historyHit({matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})];

@@ -500,12 +500,37 @@ Item {
             tap("recordingDelete");
             var confirm = findChild(sheet(), "recordingDeleteConfirm");
             compare(confirm.title, "Delete this recording?");
-            compare(findChild(confirm, "confirmMessage").text, "The recording is deleted from this phone. The call stays in History.");
+            compare(findChild(confirm, "confirmMessage").text, "Only the audio is deleted. History and detections are unchanged.");
             compare(findChild(confirm, "confirmActionButton").text, "Delete recording");
             findChild(confirm, "confirmCancelButton").activate();
             compare(recordings.calls().length, 0, "nothing is deleted");
         }
 
+        // Issue #809 B3: a single recording's delete takes only its file, whether
+        // or not History has a row for it (here none: never linked), and no
+        // confirmation promises the call stays in History. A host can say it its
+        // own way. A Signal search detection's sheet lists recordings with no row,
+        // and ones whose row History trimmed (tst_signal_search.qml).
+        function test_delete_wording_without_a_row() {
+            var component = Qt.createComponent(uiDir + "/CallRecordingPlayer.qml");
+            compare(component.status, Component.Ready, component.errorString());
+            var host = Qt.createQmlObject("import QtQuick; Item { anchors.fill: parent }", loader);
+            var player = component.createObject(host, {width: 400, dialogParent: host, recordingList: [rec("t-9", pathC, 4000)]});
+            verify(player !== null);
+            tryVerify(function () { return player.visible; });
+            player.askDelete();
+            var confirm = findChild(player, "recordingDeleteConfirm");
+            verify(confirm.visible);
+            compare(findChild(confirm, "confirmMessage").text, "Only the audio is deleted. History and detections are unchanged.");
+            findChild(confirm, "confirmCancelButton").activate();
+            player.deleteMessage = "Only this recording's audio is deleted.";
+            player.askDelete();
+            compare(findChild(confirm, "confirmMessage").text, "Only this recording's audio is deleted.");
+            findChild(confirm, "confirmCancelButton").activate();
+            player.destroy();
+            host.destroy();
+            wait(0);
+        }
         function test_closing_stops_its_own_playback() {
             openWith([rec("t-1", pathA, 12000)]);
             tap("recordingPlayButton");
