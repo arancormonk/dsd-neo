@@ -527,7 +527,7 @@ expect_y_scan_transitions(int mode) {
     int rc = expect_eq(label, rtl_stream_test_retune_profile_sequence_mode(steps, 4U, 78125, mode, 0U, r), 0);
     const int dmr_rate = fsk_output_rate(78125, 4800, mode, 1);
     for (int i = 0; i < 4; i++) {
-        const int digital = (i % 2) == 1;
+        const int digital = (i % 2) != 0;
         DSD_SNPRINTF(label, sizeof label, "-Y mode %d: row %d taken", mode, i + 1);
         rc |= expect_eq(label, r[i].taken, 1);
         DSD_SNPRINTF(label, sizeof label, "-Y mode %d: row %d family", mode, i + 1);

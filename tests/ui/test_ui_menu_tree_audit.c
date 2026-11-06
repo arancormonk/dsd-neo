@@ -519,11 +519,22 @@ audit_freq_row(const NcMenuItem* root, size_t n) {
     }
 }
 
+/* The first row of the Advanced submenu the root menu opens, or NULL when the root has no Advanced or it is empty. */
+static const NcMenuItem*
+advanced_first_row(const NcMenuItem* root, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (root[i].id && strcmp(root[i].id, "main.advanced") == 0) {
+            return root[i].submenu && root[i].submenu_len > 0 ? &root[i].submenu[0] : NULL;
+        }
+    }
+    return NULL;
+}
+
 /* FTZ/DAZ is a start-time setting (issue #672 B12): its Advanced row, first there, only reports the mode in force and
    runs nothing. */
 static void
-audit_ftz_row(void) {
-    const NcMenuItem* it = ADV_MENU_ITEMS_LEN > 0 ? &ADV_MENU_ITEMS[0] : NULL;
+audit_ftz_row(const NcMenuItem* root, size_t n) {
+    const NcMenuItem* it = advanced_first_row(root, n);
     if (!it || !it->id || strcmp(it->id, "adv.ftz") != 0) {
         fail("root/advanced", it ? it->id : NULL, "the FTZ/DAZ status row is not Advanced's first row");
     } else if (it->kind != NC_ITEM_STATUS || it->on_select || it->submenu || it->label_fn != lbl_ftz_daz) {
@@ -671,7 +682,7 @@ main(void) {
     audit_hotkeys();
     audit_width_rows(root, n);
     audit_freq_row(root, n);
-    audit_ftz_row();
+    audit_ftz_row(root, n);
     audit_avoid_rows();
     audit_rigctl_rows(root, n);
     audit_scan_lists_row();
