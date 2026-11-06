@@ -2781,7 +2781,8 @@ suite runs under this compiler.
     WACN or SYSID, another protocol's note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a
     control block whose CRC passes (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves,
     never from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share of
-    random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md). It does not own radio I/O, persistence or Qt state.
+    random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
+    It does not own radio I/O, persistence or Qt state.
   - Readout text (`include/dsd-neo/runtime/number_text.h`, issue #669): `dsd_number_text()` formats with the platform
     printf and drops the sign of a text whose digits are all zero (`-0.0` → `0.0`, any radix; `nan`/`inf` untouched),
     so non-zero readings keep native rounding and the rule holds under fast-math; `DSD_NUMBER_TEXT_SATURATE` caps a
