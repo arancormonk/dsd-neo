@@ -22,6 +22,7 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <float.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -139,8 +140,12 @@ typedef struct {
 // ---- Chooser overlay state ----
 typedef struct {
     int active;
+    /* The chooser's own copies, made as it starts, so nothing it draws lives in the caller's storage: the title (NULL
+       for the default one) and every item string, back to back in text, and the item array pointing into it (a NULL
+       item stays NULL). Freed as the chooser closes. */
+    char* text;
     const char* title;
-    const char* const* items;
+    const char** items;
     int count;
     int sel;
     int top;
@@ -1443,20 +1448,75 @@ ui_chooser_start_fails(const char* const* items, int count) {
 }
 
 static int
-ui_chooser_text_cells(const char* text) {
-    return text ? ui_text_cells(g_chooser.unicode, text, strlen(text)) : 0;
+ui_chooser_text_cells(int unicode, const char* text) {
+    return text ? ui_text_cells(unicode, text, strlen(text)) : 0;
 }
 
 static int
-ui_chooser_max_item_width(void) {
+ui_chooser_max_item_width(const char* const* items, int count, int unicode) {
     int max_item = 0;
-    for (int i = 0; i < g_chooser.count; i++) {
-        int item_cells = ui_chooser_text_cells(g_chooser.items[i]);
+    for (int i = 0; i < count; i++) {
+        int item_cells = ui_chooser_text_cells(unicode, items[i]);
         if (item_cells > max_item) {
             max_item = item_cells;
         }
     }
     return max_item;
+}
+
+/* The chooser's copies of a start's title and items (UiChooser.text, .title, .items). */
+typedef struct {
+    char* text;
+    const char* title;
+    const char** items;
+} UiChooserCopy;
+
+/* Bytes of @p text with its NUL (0 for none) added to @p total; 0 when the sum overflows. */
+static int
+ui_chooser_add_text_bytes(size_t* total, const char* text) {
+    const size_t bytes = text ? strlen(text) + 1U : 0U;
+    if (bytes > SIZE_MAX - *total) {
+        return 0;
+    }
+    *total += bytes;
+    return 1;
+}
+
+/* @p text copied to @p *at, which then moves past it; NULL stays NULL. */
+static const char*
+ui_chooser_put_text(char** at, const char* text) {
+    if (!text) {
+        return NULL;
+    }
+    const size_t bytes = strlen(text) + 1U;
+    char* const copy = *at;
+    DSD_MEMCPY(copy, text, bytes);
+    *at += bytes;
+    return copy;
+}
+
+/* Copies the title and every item, so the open chooser reads none of the caller's storage once the start returns.
+   Returns 0 when it cannot (out of memory), with nothing held. */
+static int
+ui_chooser_copy_in(const char* title, const char* const* items, int count, UiChooserCopy* out) {
+    size_t bytes = 0U;
+    int sized = ui_chooser_add_text_bytes(&bytes, title);
+    for (int i = 0; sized && i < count; i++) {
+        sized = ui_chooser_add_text_bytes(&bytes, items[i]);
+    }
+    out->items = sized ? (const char**)calloc((size_t)count, sizeof *out->items) : NULL;
+    out->text = out->items ? (char*)malloc(bytes > 0U ? bytes : 1U) : NULL;
+    if (!out->text) {
+        free((void*)out->items);
+        out->items = NULL;
+        return 0;
+    }
+    char* at = out->text;
+    out->title = ui_chooser_put_text(&at, title);
+    for (int i = 0; i < count; i++) {
+        out->items[i] = ui_chooser_put_text(&at, items[i]);
+    }
+    return 1;
 }
 
 static void
@@ -1469,8 +1529,11 @@ ui_chooser_start_impl(const char* title, const char* const* items, int count, in
     if (!dispose) {
         dispose = owner;
     }
+    /* Copied before the close below, which may dispose a context the title or items live in. */
+    UiChooserCopy copy = {0};
+    const int fails = ui_chooser_start_fails(items, count) || !ui_chooser_copy_in(title, items, count, &copy);
     ui_chooser_close();
-    if (ui_chooser_start_fails(items, count)) {
+    if (fails) {
         // An empty list cancels straight away, but it still leaves by the one
         // door every other chooser result uses: publish the callback into
         // g_chooser and let ui_chooser_finish() deliver it. That keeps the
@@ -1486,8 +1549,9 @@ ui_chooser_start_impl(const char* title, const char* const* items, int count, in
         return;
     }
     g_chooser.active = 1;
-    g_chooser.title = title;
-    g_chooser.items = items;
+    g_chooser.text = copy.text;
+    g_chooser.title = copy.title;
+    g_chooser.items = copy.items;
     g_chooser.count = count;
     g_chooser.sel = (initial_sel > 0 && initial_sel < count) ? initial_sel : 0;
     g_chooser.top = 0;
@@ -1496,8 +1560,9 @@ ui_chooser_start_impl(const char* title, const char* const* items, int count, in
     g_chooser.user = user_ctx;
     g_chooser.dispose = dispose;
     g_chooser.unicode = ui_text_unicode_output();
-    g_chooser.title_cells = ui_chooser_text_cells(title ? title : k_chooser_default_title);
-    g_chooser.max_item_cells = ui_chooser_max_item_width();
+    g_chooser.title_cells =
+        ui_chooser_text_cells(g_chooser.unicode, g_chooser.title ? g_chooser.title : k_chooser_default_title);
+    g_chooser.max_item_cells = ui_chooser_max_item_width(g_chooser.items, count, g_chooser.unicode);
 }
 
 // Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
@@ -1530,6 +1595,8 @@ ui_chooser_close(void) {
         g_chooser.win = NULL;
     }
     (void)ui_prompt_curs_set(0);
+    free((void*)g_chooser.items);
+    free(g_chooser.text);
     DSD_MEMSET(&g_chooser, 0, sizeof(g_chooser));
     /* Closed without an answer: no callback, and an owned context goes now that nothing reads its strings. */
     if (dispose) {
@@ -1910,17 +1977,7 @@ ui_help_wrap_line_for_test(const char* text, int width, int index, char* out, si
 
 int
 ui_chooser_max_item_width_for_test(const char* const* items, int count) {
-    const char* const* saved_items = g_chooser.items;
-    int saved_count = g_chooser.count;
-    int saved_unicode = g_chooser.unicode;
-    g_chooser.items = items;
-    g_chooser.count = count;
-    g_chooser.unicode = ui_text_unicode_output();
-    int max_item = ui_chooser_max_item_width();
-    g_chooser.items = saved_items;
-    g_chooser.count = saved_count;
-    g_chooser.unicode = saved_unicode;
-    return max_item;
+    return ui_chooser_max_item_width(items, count, ui_text_unicode_output());
 }
 
 int

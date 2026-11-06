@@ -322,10 +322,36 @@ test_owned_chooser(void) {
 
     /* Take outside any callback, and inside a borrowed chooser's: nothing to take. */
     assert(ui_chooser_take_context() == NULL);
-    TakeProbe probe = {&g_ctx_a};
+    /* Static: the chooser keeps its context by pointer. */
+    static TakeProbe probe;
+    probe = (TakeProbe){&g_ctx_a};
     ui_chooser_start("Plain", OWNED_ITEMS, 3, borrowed_done, &probe);
     assert(ui_chooser_handle_key('\n') == 1);
     assert(probe.taken == NULL);
+}
+
+/* The chooser copies the title, the item array and its strings as it starts: the caller's storage, rewritten once the
+   start returns, changes nothing it holds or answers. */
+static void
+test_chooser_copies_its_text(void) {
+    char first[16];
+    char second[16];
+    (void)DSD_SNPRINTF(first, sizeof first, "%s", "First");
+    (void)DSD_SNPRINTF(second, sizeof second, "%s", "Second");
+    const char* items[] = {first, second};
+    g_done_sel = -2;
+    ui_chooser_start("Copied", items, 2, capture_done, NULL);
+    (void)DSD_SNPRINTF(first, sizeof first, "%s", "Rewritten");
+    DSD_MEMSET(second, 0, sizeof second);
+    items[0] = NULL;
+    items[1] = NULL;
+    assert(ui_chooser_test_snapshot().count == 2);
+    assert(ui_chooser_test_item(0) != NULL && strcmp(ui_chooser_test_item(0), "First") == 0);
+    assert(ui_chooser_test_item(1) != NULL && strcmp(ui_chooser_test_item(1), "Second") == 0);
+    assert(ui_chooser_handle_key(KEY_DOWN) == 1);
+    assert(ui_chooser_handle_key('\r') == 1);
+    assert(g_done_sel == 1);
+    assert(ui_chooser_active() == 0);
 }
 
 /* ---- Rendering (issue #672, B7) ---- */
@@ -407,6 +433,15 @@ test_render_ascii(void) {
     expect_row(5, "?t? ?!");
     ui_chooser_close();
     assert(ui_chooser_max_item_width_for_test(items, 3) == 41);
+
+    /* The title it draws is its own copy: the caller's buffer, rewritten after the start, is not what it shows. */
+    char title[8];
+    (void)DSD_SNPRINTF(title, sizeof title, "%s", "Mine");
+    render_on(12, title, items, 3);
+    (void)DSD_SNPRINTF(title, sizeof title, "%s", "Theirs");
+    ui_chooser_render();
+    expect_row(1, "Mine");
+    ui_chooser_close();
     static const char* const cjk[] = {"\xE6\xBC\xA2\xE5\xAD\x97"};
     assert(ui_chooser_max_item_width_for_test(cjk, 1) == 2); /* two '?' */
 }
@@ -565,6 +600,7 @@ main(void) {
 
     test_owned_chooser();
     test_owned_chooser_reuse();
+    test_chooser_copies_its_text();
     test_render();
 
     printf("UI_CHOOSER_NAVIGATION: OK\n");
