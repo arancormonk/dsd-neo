@@ -1588,41 +1588,58 @@ Item {
             sheet.visible = false;
             model.history = [];
         }
-        // Call details shows while History holds the selected recording's call,
-        // following History alone (no recording change): a late adoption, a
-        // merge into another row, a trim and a clear.
+        // Call details is enabled while History holds the selected recording's
+        // call, following History alone (no recording change): a late
+        // adoption, a merge into another row, a trim and a clear. Disabled, it
+        // stays where it is and says why, so a selection never moves the list.
         function test_call_details_resolution() {
             var sheet = openRecordings([rec("b", 1700000200, 3000, {fragment: "F:3:1"}), rec("a", 1700000100, 2000)]);
             var details = findChild(sheet, "detectionCallDetails");
+            var reason = findChild(sheet, "detectionCallDetailsReason");
+            var list = findChild(sheet, "detectionRecordingList");
             var revision = recordings.revision;
             var identity = findChild(recordingRow("b"), "detectionRecordingIdentity");
-            verify(!details.visible, "no row holds it yet");
+            verify(details.visible && !details.enabled, "no row holds it yet");
+            verify(reason.opacity > 0.5 && !reason.Accessible.ignored, "and says why");
+            compare(reason.text, "This call is not in History");
+            compare(details.Accessible.description, reason.text);
+            waitForRendering(sheet);
+            var listY = list.mapToItem(sheet, 0, 0).y;
             // The recording names no target or source: its line says only that,
             // which stays true with or without the History row Call details opens.
             compare(identity.text, "No\u00a0target\u00a0or\u00a0source\u00a0recorded");
             var uid = callHistory.pushWithRecordings([]);
-            verify(!details.visible);
+            verify(!details.enabled);
             verify(callHistory.setFragmentRow("F:3:1", uid));
-            verify(details.visible, "adopted late");
+            verify(details.enabled, "adopted late");
+            verify(reason.opacity < 0.5 && reason.Accessible.ignored, "with nothing to explain");
+            compare(details.Accessible.description, "");
+            waitForRendering(sheet);
+            compare(list.mapToItem(sheet, 0, 0).y, listY, "the list stays where it was");
             compare(sheet.detailsUid, uid);
             compare(identity.text, "No\u00a0target\u00a0or\u00a0source\u00a0recorded");
             verify(identity.text.indexOf("details") < 0, "never contradicts Call details");
             var other = callHistory.pushWithRecordings([]);
             verify(callHistory.setFragmentRow("F:3:1", other));
             compare(sheet.detailsUid, other, "merged into another row");
-            verify(details.visible);
+            verify(details.enabled);
             verify(callHistory.trimRow(other));
-            verify(!details.visible, "its row trimmed");
+            verify(!details.enabled, "its row trimmed");
             verify(callHistory.setFragmentRow("F:3:1", uid));
-            verify(details.visible);
+            verify(details.enabled);
             callHistory.clearAll();
-            verify(!details.visible, "History cleared");
+            verify(!details.enabled, "History cleared");
             compare(recordings.revision, revision, "none of it moved the store");
             // Selecting a recording with no fragment: none.
             verify(callHistory.setFragmentRow("F:3:1", callHistory.pushWithRecordings([])));
-            verify(details.visible);
+            verify(details.enabled);
             recordingRow("a").activate();
-            verify(!details.visible);
+            verify(details.visible && !details.enabled);
+            // Once it plays (the player's "Opening…" line gone), the list is where
+            // it was with Call details enabled.
+            testContext.publishPlayback("/rec/Explore/a.wav", 2, 0, 2000, "");
+            waitForRendering(sheet);
+            compare(list.mapToItem(sheet, 0, 0).y, listY, "selecting another recording moves no row");
             sheet.visible = false;
             model.history = [];
         }
@@ -1651,7 +1668,7 @@ Item {
             verify(!loader.item.menuOpen);
             // Gone before the click: the click resolves again and stays.
             sheet = openRecordings([rec("b", 1700000200, 3000, {fragment: "F:3:1"})]);
-            verify(details.visible);
+            verify(details.enabled);
             callHistory.clearAll();
             sheet.detailsUid = uid;
             sheet.showDetails();

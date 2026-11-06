@@ -10,7 +10,9 @@ import "Util.js" as Util
 // selected, so it is in the same place however long the list below it runs;
 // the list is newest first, and a tap on a row selects that recording and
 // plays it, as a part's chip does in History. Call details hands over to the
-// selected recording's History details while History holds its call.
+// selected recording's History details while History holds its call, and is
+// disabled, saying why, while it does not: always there, so selecting another
+// recording never moves the list under the finger.
 //
 // The store answers by the detection's key (`<session>:<hit>`), and every
 // change to its recordings moves `recordings.revision`: the list is read again
@@ -225,11 +227,26 @@ ModalSheet {
         title: sheet.selected && Number(sheet.selected.start) > 0 ? qsTr("%1 MHz · %2").arg(sheet.frequencyText).arg(Qt.formatDateTime(new Date(Number(sheet.selected.start) * 1000), "yyyy-MM-dd hh:mm")) : qsTr("%1 MHz").arg(sheet.frequencyText)
     }
     OutlineButton {
+        id: callDetailsButton
         objectName: "detectionCallDetails"
         width: parent.width
-        visible: sheet.detailsUid > 0
+        enabled: sheet.detailsUid > 0
         text: qsTr("Call details")
+        Accessible.description: enabled ? "" : callDetailsReason.text
         onClicked: sheet.showDetails()
+    }
+    // Why Call details is disabled, as History's Hold says why. Its line is
+    // kept while the button is enabled, only not shown or read, so the list
+    // below stays where it is whichever recording is selected.
+    MicroLabel {
+        id: callDetailsReason
+        objectName: "detectionCallDetailsReason"
+        width: parent.width
+        wrapMode: Text.Wrap
+        opacity: callDetailsButton.enabled ? 0 : 1
+        Accessible.focusable: navigationAllowed && visible && !callDetailsButton.enabled
+        Accessible.ignored: !navigationAllowed || !visible || callDetailsButton.enabled
+        text: qsTr("This call is not in History")
     }
     // The list's own section, named as the player's is.
     MicroLabel {

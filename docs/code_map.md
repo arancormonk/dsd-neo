@@ -10157,8 +10157,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   recording leaves, passes by place: to the row that takes its place (the next older), else the
   one before it, taking the focus if the list had it (an owned `Timer`); an emptied list closes
   the sheet (an owned `Timer`: a close inside the list's change is a binding loop). A row tap
-  selects and plays, as a part's chip does. Call details shows while
-  `callHistory.uidForFragment(fragment)` is above 0, resolved again on History `dataChanged`,
+  selects and plays, as a part's chip does. Call details is enabled while
+  `callHistory.uidForFragment(fragment)` is above 0 and otherwise disabled, its reason ("This
+  call is not in History", `detectionCallDetailsReason`, a `MicroLabel` as History's Hold
+  reason is, and the button's description) shown; the button and the reason's line stay laid
+  out in both states (the line only hidden and out of the tree), since the `ModalSheet` centres
+  its content and a control that came and went moved the list under the finger (emulator
+  check). It is resolved again on History `dataChanged`,
   `rowPositionsChanged`, `modelReset` and `rowsRemoved` while open and on the click, which closes
   the sheet (its playback stops) and has the screen open its own `HistoryDetailSheet`
   (`searchCallDetails`, `showHold: false`). Both sheets join `menuOpen` (`tst_signal_search.qml`,

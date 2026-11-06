@@ -134,7 +134,9 @@ While a search runs, the screen is laid out for what is on the air now:
   The selected one has a heavier border and a play mark. Tap a recording to
   select and play it. **Call details** opens the selected recording's History
   details while History still holds its call; their Hold is not offered, as a
-  search takes no receiver command, and Back returns to the search. The list
+  search takes no receiver command, and Back returns to the search. When History
+  does not hold the call (never logged, trimmed or cleared), Call details stays
+  in its place, disabled, with **This call is not in History** under it. The list
   follows the recordings: when the selected one is deleted or removed by the
   storage limit, the one that takes its place (the next older) is selected, or
   the one before it when it was the oldest; the sheet closes when none is left,
