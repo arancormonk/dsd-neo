@@ -1738,8 +1738,15 @@ suite runs under this compiler.
     slot's ended epoch whose row has yet to commit (a held drop verdict; `dsd_call_state_pending_row_epoch()`, the rule
     `close_and_publish_call_wav()` follows), so the commit links it and a drop unlinks it; with no such epoch, as no
     row's (nothing names it, as on the drop path). An empty file, `-P` off, a static WAV and an active call's file (its
-    commit closes it) are left alone. Every departure the decoder makes runs it, after ending its calls where it ends
-    them: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`); a
+    commit closes it) are left alone. The check that no call owns the file and its close run as one step under the
+    call-state lock, the lock every commit holds while it rotates a slot: a flush on the P25 watchdog's thread (a trunk
+    control-channel return or tune, under the tick guard) can meet the decoder thread committing the slot's ended call
+    (`dsd_event_sync_slot()` from `noCarrier()` or `getFrameSync()`, which holds the call-state lock and not the tick
+    guard), and the two must never close the same file. The slot writers never meet a flush: they run on the decoder
+    thread under the tick guard (a frame dispatch), and the watchdog flushes only inside its tick. Lock order: tick
+    guard, then the call-state lock, then the journal's and the segment table's; no flush caller holds the call-state
+    lock or an event-history transaction. Every departure the decoder makes runs it, after ending its calls where it
+    ends them: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`); a
     trunk-scan target switch (`trunk_scan_switch_to()` through `trunk_scan_leave_carrier()`, after either branch ends
     the outgoing calls; a park that saves no target, a retry's after a failed park, ends a call heard since on the
     carrier the receiver was left on first); the direct no-carrier return (`no_carrier_finish_cc_return()`, when the
@@ -1751,8 +1758,8 @@ suite runs under this compiler.
     control channel (`engine_return_to_cc_request_once()`, again after its release ended the voice channel's calls). A
     trunk tune to the frequency the receiver is on (a grant on a DMR composite control channel) moves nothing and closes
     nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune: on an RTL stream tuned
-    directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since a timed-out tune
-    names its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio where it was;
+    directly, the frequency the stream last applied (`rtl_stream_get_last_applied_freq()`), since a timed-out tune names
+    its target in `opts->rtlsdr_center_freq` before it lands and a later failure leaves the radio where it was;
     otherwise `opts->rtlsdr_center_freq`, which a rigctl tune sets once done. Retunes an external controller makes over
     the RTL UDP port are invisible to the decoder: a recording can span one (limit). One `sf_command()` per open slot
     file per departure; nothing on the write path.
@@ -1822,19 +1829,19 @@ suite runs under this compiler.
   Tests: `CORE_WAV_JOURNAL` (commit, merge chain, a pending close merged, drop, 44-byte, rename failure, B3 name,
   pending NFM/WAV_STOP/EDACS and their link, epoch moving on, full reset, a trunk-scan hop and revisit, start times
   (idle before the first call, mid-call enable, reacquisition, midnight, replay clock), torn tail, write failure, no
-  journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the
-  path forms, the process token, the Signal search visit on a commit, an NFM call, both DMR slots, the pending closers,
-  the session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a
-  zero id; the orphan close at a tune (both slots, the two halves' lengths, the visit it names, a held epoch's pending
-  and unlinked at its drop), not of an empty file, a static WAV, an active call's file or across a stream gap, at a
-  trunk-scan dwell hop and operator advance, and a retry park ending the call heard since a failed park; the write and
-  pending-list seams in `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at
-  the direct and trunk control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused
-  one or a grant on the carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each
-  trunk tune's and switch's close, counted), `TETRA_CALLS` (a reallocation keeps one recording),
-  `EDACS_GRANT_TUNE_MATRIX` (the grant closes through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec,
-  `dsd_path_canonical()`), `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE`
-  (`--wav-journal`).
+  journal, string escaping, a pending entry with no room or no id, `error` open and close, `failed`, `rdio`, the path
+  forms, the process token, the Signal search visit on a commit, an NFM call, both DMR slots, the pending closers, the
+  session's final closes and the real carrier boundary that leaves a visit, and none outside a visit or with a zero id;
+  the orphan close at a tune (both slots, the two halves' lengths, the visit it names, a held epoch's pending and
+  unlinked at its drop, one close and one publish beside a commit on another thread), not of an empty file, a static
+  WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, and a retry park
+  ending the call heard since a failed park; the write and pending-list seams in
+  `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at the direct and trunk
+  control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused one or a grant on the
+  carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each trunk tune's and switch's
+  close, counted), `TETRA_CALLS` (a reallocation keeps one recording), `EDACS_GRANT_TUNE_MATRIX` (the grant closes
+  through the pending closer), `PLATFORM_FILE_COMPAT` (close-on-exec, `dsd_path_canonical()`),
+  `APP_CONTROL_OPTS_SNAPSHOT` (the view's journal state), `RUNTIME_CLI_PARSE` (`--wav-journal`).
 - Invariant (rdio-scanner export verdict, issue #773 D7): the talkgroup and radio policy's `stream` flag decides only
   whether a call's per-call WAV is exported (DirWatch sidecar and API upload); audio and `-o udp`/`-o -` follow
   `audio`. The verdict is recording-owned: `watchdog_event_current_load_labels()` (`dsd_events.c`) judges the call on

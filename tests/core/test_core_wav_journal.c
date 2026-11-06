@@ -32,7 +32,10 @@
 #include <dsd-neo/engine/analog_call.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -2730,6 +2733,89 @@ test_orphan_flush_names_the_visit(void) {
     return rc;
 }
 
+/* The orphan flush on the P25 watchdog's thread (a trunk control-channel return) beside the decoder thread's commit of
+   the slot's ended call (dsd_event_sync_slot() from noCarrier()): the close seam holds the flush inside its close of
+   the slot file until the commit closes that file too, or for a bound. A flush that rotates outside the call-state lock
+   the commit holds lets both close one SNDFILE (a double close, and one reopened handle lost); serialized, the commit
+   waits for the flush and then finds the slot's new, empty file. The seam never closes a handle twice, so the race
+   shows as a count rather than a use after free. Run under TSan as well. */
+static const SNDFILE* g_race_file;
+/* Cleared once the flush's file is really closed: a later file may reuse its address. */
+static atomic_int g_race_armed;
+static atomic_int g_race_closes;
+static atomic_int g_race_flush_closing;
+
+static int
+race_close(SNDFILE* file) {
+    if (!atomic_load(&g_race_armed) || file != g_race_file) {
+        return sf_close(file);
+    }
+    if (atomic_fetch_add(&g_race_closes, 1) > 0) {
+        return 0; /* the second close of one handle: counted, not made */
+    }
+    atomic_store(&g_race_flush_closing, 1);
+    const uint64_t deadline = dsd_realtime_mono_ms() + 500U;
+    while (atomic_load(&g_race_closes) < 2 && dsd_realtime_mono_ms() < deadline) {
+        dsd_sleep_ms(1U);
+    }
+    const int closed = sf_close(file);
+    atomic_store(&g_race_armed, 0);
+    return closed;
+}
+
+typedef struct {
+    rig* r;
+} race_flush_arg;
+
+static DSD_THREAD_RETURN_TYPE
+race_flush(void* arg) {
+    const race_flush_arg* a = (const race_flush_arg*)arg;
+    dsd_event_flush_orphan_recordings(a->r->opts, a->r->state);
+    DSD_THREAD_RETURN;
+}
+
+static int
+test_orphan_flush_serialized_with_commit(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_orphan_race");
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 30U, DSD_CALL_BOUNDARY_BEGIN);
+    const uint64_t epoch = call_epoch(&r);
+    voice_frames(&r, 0, 5);
+    char id[64];
+    slot_id(&r, 0, id, sizeof id);
+    /* The call ended and its row waits for the decoder's next sync pass: no active call owns the file, so the flush
+       takes it, and the commit would rotate it. */
+    (void)dsd_call_state_end_ex(r.state, 0U, 0.0, DSD_CALL_END_EXPLICIT);
+    g_race_file = r.opts->wav_out_f;
+    atomic_store(&g_race_closes, 0);
+    atomic_store(&g_race_flush_closing, 0);
+    atomic_store(&g_race_armed, 1);
+    dsd_wav_test_set_io(NULL, race_close);
+    race_flush_arg arg = {&r};
+    dsd_thread_t watchdog;
+    rc |= expect_int("the watchdog's flush starts", dsd_thread_create(&watchdog, race_flush, &arg), 0);
+    const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+    while (!atomic_load(&g_race_flush_closing) && dsd_realtime_mono_ms() < deadline) {
+        dsd_sleep_ms(1U);
+    }
+    rc |= expect_true("the flush is closing the slot file", atomic_load(&g_race_flush_closing) != 0);
+    dsd_event_sync_slot(r.opts, r.state, 0U);
+    (void)dsd_thread_join(watchdog);
+    dsd_wav_test_set_io(NULL, NULL);
+    rc |= expect_int("the slot file closed once", atomic_load(&g_race_closes), 1);
+    g_race_file = NULL;
+    char after[64];
+    slot_id(&r, 0, after, sizeof after);
+    rc |= expect_true("the slot holds a new file", r.opts->wav_out_f != NULL && strcmp(after, id) != 0);
+    reload(&r);
+    rc |= expect_int("published once", count_for_id(&g_j, "publish", id), 1);
+    rc |= expect_pending_then_linked("orphan flush beside the commit", id, epoch, &r.state->event_history_s[0],
+                                     r.state->event_history_s[0].push_seq);
+    rig_close(&r);
+    return rc;
+}
+
 /* Trunk scan, two P25 targets at 851 and 852 MHz on a stand-in tuner. */
 static int
 scan_rig_start_with(rig* r, const char* csv) {
@@ -2891,6 +2977,7 @@ main(void) {
     rc |= test_orphan_flush_held_epoch_is_pending();
     rc |= test_stream_gap_keeps_orphan();
     rc |= test_orphan_flush_names_the_visit();
+    rc |= test_orphan_flush_serialized_with_commit();
     rc |= test_trunk_scan_switch_flushes_orphans();
     rc |= test_trunk_scan_retry_park_ends_the_call_left();
     if (rc == 0) {

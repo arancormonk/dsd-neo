@@ -98,4 +98,7 @@ void dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecyc
  */
 uint64_t dsd_call_state_pending_row_epoch(const dsd_state* state, uint8_t slot);
 
+/** dsd_call_state_pending_row_epoch() for a caller that holds the call-state mutex. */
+uint64_t dsd_call_state_pending_row_epoch_locked(const dsd_call_state_ext* ext, uint8_t slot);
+
 #endif /* DSD_NEO_SRC_CORE_UTIL_CALL_STATE_INTERNAL_H_ */

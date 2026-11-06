@@ -554,10 +554,11 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
     watchdog_event_rotate_slot_wav(opts, event_struct, slot, export_recording, owner);
 }
 
+/* Under the call-state lock: whether slot @p slot's canonical call is active. */
 static int
-watchdog_event_slot_call_active(const dsd_state* state, uint8_t slot) {
-    dsd_call_snapshot call;
-    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+watchdog_event_slot_call_active_locked(const dsd_call_state_ext* ext, uint8_t slot) {
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    return call->epoch != 0U && call->phase == DSD_CALL_PHASE_ACTIVE;
 }
 
 void
@@ -565,21 +566,28 @@ dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->static_wav_file != 0) {
         return;
     }
+    /* Under the call-state lock, which every commit holds while it rotates a slot: a flush on the P25 watchdog's thread
+       (a trunk control-channel return) can meet the decoder thread committing the slot's ended call
+       (dsd_event_sync_slot() from noCarrier() or getFrameSync(), outside the tick guard). Judging the file no call's
+       and closing it are one step, so the two never close the same file. */
+    const dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
+    dsd_call_state_ext_lock(ext);
     for (uint8_t slot = 0; slot < 2U; slot++) {
         /* An active call's file is its own and closes at its commit; a call that goes on across the move (a TETRA
            reallocation) stays one recording. */
         if (dsd_wav_segment_frames(slot == 0U ? opts->wav_out_f : opts->wav_out_fR) <= 0
-            || watchdog_event_slot_call_active(state, slot)) {
+            || (ext != NULL && watchdog_event_slot_call_active_locked(ext, slot))) {
             continue;
         }
         /* No active call owns the audio. An ended epoch whose row has yet to commit (a held drop verdict) claims it as
            pending, as close_and_publish_call_wav() does, so the row's commit links it and a drop unlinks it; otherwise
            no row does. Neither is exported, as on the drop path. */
-        const uint64_t epoch = dsd_call_state_pending_row_epoch(state, slot);
+        const uint64_t epoch = dsd_call_state_pending_row_epoch_locked(ext, slot);
         const dsd_wav_owner owner = {epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE, slot, 0U, epoch};
         const Event_History_I* event_struct = state->event_history_s ? &state->event_history_s[slot] : NULL;
         watchdog_event_rotate_slot_wav(opts, event_struct, slot, 0, &owner);
     }
+    dsd_call_state_ext_unlock(ext);
 }
 
 static void
