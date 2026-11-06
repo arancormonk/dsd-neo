@@ -5,6 +5,7 @@
 
 #ifndef DSD_NEO_QT_KNOWN_FREQUENCY_INDEX_H
 #define DSD_NEO_QT_KNOWN_FREQUENCY_INDEX_H
+#include <QByteArray>
 #include <QFileSystemWatcher>
 #include <QList>
 #include <QMap>
@@ -38,6 +39,13 @@ class ScanListsModel;
  * - `protocolLabel`: the protocol of a saved system, an entry or a target as the scan list editor names it ("NXDN48"),
  *   which tells two matches of one name apart; empty for a channel map's row and a saved system with no decode flag.
  */
+/**
+ * @brief The bytes the runtime's file opener takes for @p path (issue #644): UTF-8, as dsd_fopen() reads every path
+ * (platform/file_compat, wide on Windows), never the local 8-bit code page, which loses what it cannot spell. What the
+ * index hands the engine's CSV validators.
+ */
+QByteArray runtimeFilePath(const QString& path);
+
 class KnownFrequencyIndex : public QObject {
     Q_OBJECT
     Q_PROPERTY(qulonglong revision READ revision NOTIFY changed)

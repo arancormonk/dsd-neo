@@ -735,6 +735,28 @@ testKnownFrequencyChannelParity(const QString& dir) {
     }
 }
 
+/* Issue #644: a target list and a channel map whose file names hold an emoji and a CJK character are indexed: the
+   engine's validators get the path as the runtime's file opener reads it, UTF-8 (dsd_fopen()), not the local 8-bit
+   code page, which on Windows turns what it cannot spell into '?'. */
+static void
+testKnownFrequencyNonAsciiPaths(const QString& dir) {
+    const QString suffix = QString::fromUtf8("-\xF0\x9F\x93\xBB\xE4\xB8\xAD.csv");
+    const QString targets = QDir(dir).filePath(QStringLiteral("targets") + suffix);
+    const QString channels = QDir(dir).filePath(QStringLiteral("channels") + suffix);
+    const QByteArray want =
+        QDir(dir).filePath(QStringLiteral("targets")).toUtf8() + "-\xF0\x9F\x93\xBB\xE4\xB8\xAD.csv";
+    assert(dsd_qt::runtimeFilePath(targets) == want);
+    writeFile(targets, (QByteArray(kTargetHeader) + "\nwide,dmr-conventional,1461000000,,,,\n").constData());
+    writeFile(channels, "chan,freq,name\n1,1461100000,Narrow\n");
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    addTargetList(&lists, QStringLiteral("Glyphs"), targets);
+    addMapSystem(&systems, QStringLiteral("GlyphMap"), channels);
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    matchNamed(index.tunedMatches(1461000000, 12500), QStringLiteral("Glyphs / wide"));
+    matchNamed(index.tunedMatches(1461100000, 12500), QStringLiteral("GlyphMap / Narrow"));
+}
+
 /* Issue #644: every match says what it is, so a frontend can start it with its own settings. A saved system's own
    frequency and a scan list's row (an entry by its uid, a target CSV row by its id) can be started; a channel map's row
    (a saved system's, or a trunked target's), a disabled entry and a draft list's entry only name the channel. */
@@ -1373,6 +1395,7 @@ main(int argc, char** argv) {
     testKnownFrequencyWatchesUnparsedFiles(temp.path());
     testKnownFrequencyTargetParity(temp.path());
     testKnownFrequencyChannelParity(temp.path());
+    testKnownFrequencyNonAsciiPaths(temp.path());
     return 0;
 }
 

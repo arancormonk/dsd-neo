@@ -10142,20 +10142,22 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   names from the third column on, plain commas). In both a blank row is skipped and nothing
   is a comment, so a `#desk` target is one. Whether a file is taken at all is the engine's
   own loader's answer (`engineAccepts()`: `dsd_app_trunk_scan_validate_targets_csv()`,
-  `dsd_csv_validate_chan_file()`), so a duplicated id, an unknown type or mode, a short
-  row, an options cell it cannot parse or a header naming a column twice gives no rows, as
-  it gives the session none; a session's own targets (`KnownFrequencyIndex::sessionTargets()`)
-  are read the same way. A file is watched, with its directory, as soon as it is readable,
+  `dsd_csv_validate_chan_file()`, given the path as UTF-8, `runtimeFilePath()`, as
+  `dsd_fopen()` reads it), so a duplicated id, an unknown type or mode, a short row, an
+  options cell it cannot parse or a header naming a column twice gives no rows, as it gives
+  the session none; a session's own targets (`KnownFrequencyIndex::sessionTargets()`) are
+  read the same way. A file is watched, with its directory, as soon as it is readable,
   before it is parsed, so one put right rebuilds the index. Names and labels show as the
   loaders keep them (`dsd_channel_label_sanitize()`), and a row's own analog width is the
-  one `dsd_scan_options_parse()` reads from its options (`csvRowWidth()`). Cells read as their
-  loaders read them: a target's split outside quotes with one pair of outer quotes off
-  (`scan_unquote()`), its label's doubled quotes as one (`scan_csv_unescape_doubled_quotes()`),
-  and an options cell of either file as `dsd_scan_options_parse_cell()` reads it (a
-  spreadsheet's quoting, `dsd_scan_options_cell_csv_quoted()`, as its content), so a quoted
-  `"--nfm-bandwidth-hz 8000"` gives an 8 kHz channel. Neither loader caps its rows; the
-  index keeps at most 100000 of one file (`kStoredRowMax`), reading the rest only for what
-  refuses the file, and a file it cannot hold in memory gives no rows.
+  one `dsd_scan_options_parse()` reads from its options (`csvRowWidth()`). Cells read as
+  their loaders read them: a target's split outside quotes with one pair of outer quotes off
+  (`scan_unquote()`), its label's doubled quotes as one
+  (`scan_csv_unescape_doubled_quotes()`), and an options cell of either file as
+  `dsd_scan_options_parse_cell()` reads it (a spreadsheet's quoting,
+  `dsd_scan_options_cell_csv_quoted()`, as its content), so a quoted `"--nfm-bandwidth-hz
+  8000"` gives an 8 kHz channel. Neither loader caps its rows; the index keeps at most
+  100000 of one file (`kStoredRowMax`), reading the rest only for what refuses the file, and
+  a file it cannot hold in memory gives no rows.
   Exact matches win, nearest matches use half the smaller
   applicable channel width/spacing, and ties remain ambiguous. A channel-map row that names
   no mode or bandwidth of its own takes the width/spacing of the saved system or target row

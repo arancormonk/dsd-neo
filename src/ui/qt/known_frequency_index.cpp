@@ -52,6 +52,11 @@ parseFrequency(QString value, bool mhz) {
     return ok && std::isfinite(f) && f > 0 && f <= UINT32_MAX ? (qint64)std::llround(f) : 0;
 }
 
+QByteArray
+runtimeFilePath(const QString& path) {
+    return path.toUtf8();
+}
+
 KnownFrequencyIndex::KnownFrequencyIndex(SavedSystemsModel* systems, ScanListsModel* lists, QObject* parent)
     : QObject(parent), m_systems(systems), m_lists(lists) {
     connect(&m_files, &QFileSystemWatcher::fileChanged, this, &KnownFrequencyIndex::rebuild);
@@ -469,7 +474,7 @@ engineCsvRow(EngineCsvGrammar grammar, const QString& raw, EngineCsv* out) {
    key columns). A file it refuses gives the index nothing, as it gives the session nothing. */
 bool
 engineAccepts(const QString& path, EngineCsvGrammar grammar) {
-    const QByteArray local = QFile::encodeName(path);
+    const QByteArray local = runtimeFilePath(path);
     if (grammar == EngineCsvGrammar::Targets) {
         char err[256];
         return dsd_app_trunk_scan_validate_targets_csv(local.constData(), nullptr, err, sizeof err) == 0;
