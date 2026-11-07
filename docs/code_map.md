@@ -3962,7 +3962,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     prefix of the hit's protocol as "NXDN" is of NXDN48): another protocol's site note
     publishes the hit as changed too, and then the code the hit carries stays (issue #802
     B1). M17's CAN read at the link setup frame is carried through the stream frames after
-    it, whose sync type the LSF's call record does not answer. The
+    it, whose sync type the LSF's call record does not answer. The received tone (issue
+    #802 B3) is read from the rx tone view on every live publication of the hit: the latest
+    lock shows at once until some lock has been seen held 1 s (`SEARCH_TONE_HELD_MS`, decode
+    clock), and from then on the hit keeps the last lock so held, so a brief later lock (a
+    talk-off, a 150.0/151.4 Hz neighbour read, the old channel's tone) never replaces it. A
+    lock is held only while publications keep seeing the same `generation` and `lock_epoch`
+    with no unlocked view between them, which publication spacing cannot fake; anything but
+    a lock keeps the tones seen, the ended publication keeps the hit's tone, and a new
+    session, hit or protocol starts over. Holding 1 s does not validate a tone: a false lock
+    on a digital carrier held that long is the detection's tone. Test:
+    `APP_SIGNAL_SEARCH_PROVENANCE` (`test_detection_tone`). The
     callback reads the access code from state as it runs, so a protocol reports a confirmation
     only after committing the content that passed the check: M17's LSF, D-STAR's
     slow-data header and YSF's DCH report after publishing their callsigns (and M17's

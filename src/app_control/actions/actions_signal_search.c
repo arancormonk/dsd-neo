@@ -21,11 +21,28 @@
 #include <string.h>
 #include "../command_dispatch.h"
 
+/* How long one lock must be seen held before it becomes a detection's tone: longer than the brief locks a voice's
+   talk-off, a 150.0/151.4 Hz neighbour read or the old channel's tone after a retune make (issue #802 B3). */
+enum { SEARCH_TONE_HELD_MS = 1000 };
+
+/* The received tone a detection keeps (issue #802 B3): the latest lock seen this visit until some lock has been seen
+   held SEARCH_TONE_HELD_MS, then the last lock so held. The candidate is the lock now on air, one {generation,
+   lock_epoch} of the tap's publication, first seen at first_seen_ms on the decode clock. */
+typedef struct {
+    char provisional[DSD_APP_RX_TONE_TEXT_SIZE];
+    char established[DSD_APP_RX_TONE_TEXT_SIZE];
+    char candidate[DSD_APP_RX_TONE_TEXT_SIZE];
+    uint32_t generation;
+    uint32_t lock_epoch;
+    uint64_t first_seen_ms;
+} search_tone;
+
 /* One tuner/decoder owns the observer. Copy values here; the worker never reads live state. */
 static struct {
     const dsd_opts* opts;
     const dsd_state* state;
     dsd_signal_search_hit last;
+    search_tone tone;
 } observer;
 
 /* Whether the decoder's current sync type is of the hit's protocol family ("NXDN" for NXDN48 and NXDN96). Another
@@ -66,6 +83,43 @@ format_confirmed_access(dsd_signal_search_hit* hit) {
     }
 }
 
+/* Watch the received tone on a live publication of the hit. A lock continues the candidate only as the same lock of
+   the same reception (its generation and lock epoch), so a tone lost and found again, or replaced, between two
+   publications, which may be seconds apart, starts its time over. Anything but a lock ends the candidate and keeps the
+   tones already seen. Staleness is the view's, on the real-time clock; held time is decode time. */
+static void
+observe_tone(void) {
+    search_tone* tone = &observer.tone;
+    dsd_app_rx_tone view;
+    if (dsd_app_rx_tone_view(observer.opts, observer.state, dsd_realtime_mono_s(), &view) <= 0
+        || view.status != DSD_APP_RX_TONE_LOCKED) {
+        tone->candidate[0] = '\0';
+        return;
+    }
+    const uint64_t now = dsd_decode_now_mono_ms();
+    if (strcmp(tone->candidate, view.text) != 0 || tone->generation != view.generation
+        || tone->lock_epoch != view.lock_epoch) {
+        DSD_SNPRINTF(tone->candidate, sizeof(tone->candidate), "%s", view.text);
+        tone->generation = view.generation;
+        tone->lock_epoch = view.lock_epoch;
+        tone->first_seen_ms = now;
+    }
+    DSD_SNPRINTF(tone->provisional, sizeof(tone->provisional), "%s", view.text);
+    if (now >= tone->first_seen_ms && now - tone->first_seen_ms >= SEARCH_TONE_HELD_MS) {
+        DSD_SNPRINTF(tone->established, sizeof(tone->established), "%s", view.text);
+    }
+}
+
+/* The tone the hit carries: the last lock held SEARCH_TONE_HELD_MS, else the latest lock, else what it had. */
+static void
+apply_tone(dsd_signal_search_hit* hit) {
+    const search_tone* tone = &observer.tone;
+    const char* text = tone->established[0] ? tone->established : tone->provisional;
+    if (text[0]) {
+        DSD_SNPRINTF(hit->tone, sizeof(hit->tone), "%s", text);
+    }
+}
+
 static void
 publish_store(const dsd_signal_search_status* status, const dsd_signal_search_hit* hit) {
     dsd_app_signal_search_publish(status, hit, NULL);
@@ -87,18 +141,18 @@ publish_search(const dsd_signal_search_status* status, const dsd_signal_search_h
         && strcmp(hit->protocol, observer.last.protocol) == 0) {
         DSD_MEMCPY(hit->access, observer.last.access, sizeof(hit->access));
         DSD_MEMCPY(hit->tone, observer.last.tone, sizeof(hit->tone));
+    } else {
+        DSD_MEMSET(&observer.tone, 0, sizeof(observer.tone));
     }
     /* A periodic refresh can follow an unconfirmed sync or a damaged frame. Read
        decoded fields only in the synchronous, protocol-confirmed publication. */
     if (changed && !hit->ended && hit->confirmed) {
         format_confirmed_access(hit);
     }
+    /* The ended publication keeps the tone the hit last carried. */
     if (!hit->ended) {
-        dsd_app_rx_tone tone;
-        if (dsd_app_rx_tone_view(observer.opts, observer.state, dsd_realtime_mono_s(), &tone) > 0
-            && tone.status == DSD_APP_RX_TONE_LOCKED) {
-            DSD_SNPRINTF(hit->tone, sizeof(hit->tone), "%s", tone.text);
-        }
+        observe_tone();
+        apply_tone(hit);
     }
     observer.last = *hit;
     /* The store coalesces identical records, including periodic live-detail refreshes. */
