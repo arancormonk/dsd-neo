@@ -19,6 +19,9 @@ extern "C" {
 
 void p25p2_teardown_call(dsd_opts* opts, dsd_state* state);
 int p25p2_duid_lookup_soft(uint8_t received, const uint8_t* reliab8);
+/* The DUID of window timeslot @p timeslot_index (0-3) of the collected superframe, as its dispatch reads it (soft
+   lookup over p2bit/p2llr); -1 when it decodes to none. Pure. */
+int p25p2_window_duid(int timeslot_index);
 void p25p2_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_process_isch(dsd_opts* opts, dsd_state* state, int framing_index);

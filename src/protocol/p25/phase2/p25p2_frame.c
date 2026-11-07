@@ -52,6 +52,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "p25p2_frame_internal.h"
+#include "p25p2_seed_recover.h"
 
 extern int p2bit[4320];
 extern int16_t p2llr[1400];
@@ -1529,23 +1530,40 @@ p25p2_duid_has_valid_site(const dsd_state* state) {
            && state->p2_cc != 0xFFF && state->p2_sysid != 0xFFF;
 }
 
+/* The DUID bits of window timeslot @p timeslot_index (0-3) in @p bits, their reliabilities in @p reliab8, and its soft
+   lookup. */
+static int
+p25p2_duid_read(int timeslot_index, uint8_t bits[8], uint8_t reliab8[8]) {
+    static const int duid_offsets[8] = {0, 1, 74, 75, 244, 245, 318, 319};
+    int complete = 0;
+    for (int i = 0; i < 8; i++) {
+        int abs_bit = duid_offsets[i] + (timeslot_index * 360);
+        bits[i] = (uint8_t)p2bit[abs_bit];
+        reliab8[i] = p25p2_reliability_for_abs_bit(abs_bit);
+        complete = (complete << 1) | bits[i];
+    }
+    return p25p2_duid_lookup_soft((uint8_t)complete, reliab8);
+}
+
+int
+p25p2_window_duid(int timeslot_index) {
+    if (timeslot_index < 0 || timeslot_index >= 4) {
+        return -1;
+    }
+    uint8_t bits[8];
+    uint8_t reliab8[8];
+    return p25p2_duid_read(timeslot_index, bits, reliab8);
+}
+
 static void
 p25p2_duid_collect_and_decode(int timeslot_index) {
-    static const int duid_offsets[8] = {0, 1, 74, 75, 244, 245, 318, 319};
     uint8_t p2_duid_reliab[8];
-    int p2_duid_complete = 0;
     if (timeslot_index < 0 || timeslot_index >= 4) {
         DSD_MEMSET(p2_duid, 0, sizeof(p2_duid));
         duid_decoded = -1;
         return;
     }
-    for (int i = 0; i < 8; i++) {
-        int abs_bit = duid_offsets[i] + (timeslot_index * 360);
-        p2_duid[i] = p2bit[abs_bit];
-        p2_duid_reliab[i] = p25p2_reliability_for_abs_bit(abs_bit);
-        p2_duid_complete = (p2_duid_complete << 1) | p2_duid[i];
-    }
-    duid_decoded = p25p2_duid_lookup_soft((uint8_t)p2_duid_complete, p2_duid_reliab);
+    duid_decoded = (int16_t)p25p2_duid_read(timeslot_index, p2_duid, p2_duid_reliab);
 }
 
 static void
@@ -1887,6 +1905,8 @@ p25p2_frame_forget_carrier(dsd_state* state) {
     state->p2_is_lcch = 0;
     // What the playout still holds was decoded on the carrier left; the engine's carrier boundary has drained it.
     dsd_p25p2_playout_reset(state, -1);
+    // A scrambling code candidate from the carrier left waits for no confirmation here.
+    p25p2_seed_recover_forget(state);
     for (int slot = 0; slot < 2; slot++) {
         state->fourv_counter[slot] = 0;
         DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
@@ -1905,11 +1925,15 @@ p25p2_frame_forget_carrier(dsd_state* state) {
    descrambler offset the stale ISCH value would otherwise leave 4 timeslots behind. Skipped timeslots to retire come
    back in @p retire_first (superframe timeslot) and @p retire_count. A displacement nothing explains, or an ISCH start
    that contradicts continuity, breaks the playout's timeline (both streams close, so nothing fills across the gap, and
-   what follows starts a later pair) and sets @p broken: the pair a deferred rekey waits for will not complete. */
+   what follows starts a later pair) and sets @p broken: the pair a deferred rekey waits for will not complete. An ISCH
+   start that contradicts continuity also sets @p contradicted: one of the two positions is wrong, and scrambling code
+   recovery uses neither (issue #804). */
 static int
-p25p2_window_position(dsd_state* state, uint32_t entry_symbol, int* retire_first, int* retire_count, int* broken) {
+p25p2_window_position(dsd_state* state, uint32_t entry_symbol, int* retire_first, int* retire_count, int* broken,
+                      int* contradicted) {
     *retire_first = 0;
     *retire_count = 0;
+    *contradicted = 0;
     int expected = -1;
     int close_streams = 0;
     if (s_prev_window.valid && s_prev_window.carrier_seq == state->carrier_seq
@@ -1935,6 +1959,7 @@ p25p2_window_position(dsd_state* state, uint32_t entry_symbol, int* retire_first
         if (expected >= 0 && p25p2_timeslot_mod12(state->p2_scramble_offset) != expected) {
             close_streams = 1;
             *retire_count = 0;
+            *contradicted = 1;
         }
     } else if (expected >= 0) {
         state->p2_scramble_offset = expected;
@@ -1993,13 +2018,18 @@ processP2(dsd_opts* opts, dsd_state* state) {
     int retire_first = 0;
     int retire_count = 0;
     int broken = 0;
-    s_window_proven = p25p2_window_position(state, entry_symbol, &retire_first, &retire_count, &broken);
+    int contradicted = 0;
+    s_window_proven = p25p2_window_position(state, entry_symbol, &retire_first, &retire_count, &broken, &contradicted);
     p25p2_window_set_slot_unproven(!s_window_proven);
     if (!s_window_proven) {
         // A MAC assembly continued from a window whose slot parity is unknown could complete against the wrong
         // slot: none is kept, and the VPDU drops this window's fragments.
         DSD_MEMSET(state->p25_mac_frag, 0, sizeof(state->p25_mac_frag));
     }
+
+    // On a carrier whose scrambling code is unproven, the window's own scrambled signalling may give the code: once
+    // it is confirmed, the window descrambles with it below (issue #804).
+    p25p2_seed_recover_window(opts, state, s_isch_located, contradicted);
 
     //set initial current slot depending on offset value
     if (state->p2_scramble_offset % 2) {

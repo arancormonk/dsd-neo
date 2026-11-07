@@ -10224,6 +10224,44 @@ else()
 endif()
 add_test(NAME P25_P2_ACCH_VERDICT COMMAND dsd-neo_test_p25_p2_acch_verdict)
 
+# P25 P2 scrambling code recovery from a carrier's own FACCH/SACCH, through processP2() and the real RS, CRC and XCCH
+# handlers (issue #804)
+add_executable(
+    dsd-neo_test_p25_p2_seed_recover
+    protocol/p25/test_p25_p2_seed_recover.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_seed_recover
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real XCCH and frame processing reach the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_seed_recover
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_seed_recover
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+    )
+endif()
+add_test(NAME P25_P2_SEED_RECOVER COMMAND dsd-neo_test_p25_p2_seed_recover)
+
 # P25 P1 trunk SM core
 add_executable(dsd-neo_test_p25_p1_trunk_sm protocol/p25/test_p25_p1_trunk_sm.c)
 target_include_directories(
@@ -17813,13 +17851,24 @@ if(DSD_HAS_RADIO)
         6
     )
     # Every burst of this capture but its SACCHs is a scrambled data channel burst (DUID 10), a known kind: none is a
-    # DUID error, which would abort its window before the SACCHs that follow it (issue #804).
-    dsd_neo_add_iq_decode_test(
+    # DUID error, which would abort its window before the SACCHs that follow it (issue #804). Nothing in the capture
+    # names the site's scrambling code: it is recovered from the SACCHs themselves (the first SACCH window gives it, a
+    # SACCH at another superframe slot of the next one confirms it), and from then on every SACCH decodes its MAC, 8 of
+    # the capture's 10 (6 leaves a margin).
+    add_test(
+        NAME DECODE_IQ_P25P2_CC
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-f2
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p2_cc.iq.json"
+            "-DEXPECTED=P25p2 SACCH"
+            "-DEXPECTED2=P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161"
+            "-DEXPECTED3=P25p2 SACCH  MAC_IDLE" -DMIN_MATCHES3=6
+            "-DNOT_EXPECTED=DUID ERR 10" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
         DECODE_IQ_P25P2_CC
-        p25p2_cc
-        -f2
-        "P25p2 SACCH"
-        "DUID ERR 10"
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
     # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).
     dsd_neo_add_iq_decode_test(
@@ -18163,8 +18212,8 @@ if(DSD_HAS_RADIO)
     # 78,125 or 93,750 Hz) and runs the I/Q rate step to the DSP bandwidth rate, as the live Airspy stream does
     # (ENGINE_AIRSPY_FORCED_RATE_*, which feeds the same samples live). Each must decode at least what the same samples
     # decode at the native rate (48 kHz, 72 kHz for TETRA, with no step) less a frame or two at the excerpt's edges:
-    # p25p1_cqpsk_cc 41 network status and 18 grants, the simulcast control channel the same, p25p2_cc 10 SACCH (its
-    # DUID FEC alone: the capture is remodulated audio with no RS-checkable payload, so weak evidence), dmr_voice_synth's
+    # p25p1_cqpsk_cc 41 network status and 18 grants, the simulcast control channel the same, p25p2_cc 10 SACCH (and
+    # its scrambling code recovered from them, after which the next SACCH's MAC decodes), dmr_voice_synth's
     # first 2 s 16 voice bursts (one superframe of allowance), tetra_call_real_air_72k's first 2 s 70 identities and 25
     # TCH/FS bursts whose CRC passed. Before issue #806 the replay ran these chains unstepped at 78,125 or 93,750 Hz: the
     # two P25 Phase 1 control channels decoded no network status and no grant, P25 Phase 2 one SACCH, and TETRA ran only
@@ -18175,7 +18224,7 @@ if(DSD_HAS_RADIO)
         ITEMS
             "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
             "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@-@@0@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
+            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
             "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
             "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125"
     )
@@ -20014,7 +20063,8 @@ if(DSD_HAS_RADIO)
     # The CQPSK path decoding real frames: p25p2_cc under -f2 runs the front end's CQPSK
     # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
     # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its
-    # SACCH the same way. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
+    # SACCH the same way, recovering its scrambling code and decoding the SACCH MAC that
+    # follows. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
     # The jitter leg sleeps after about one read in 16 of the decoder's ~690 and must still
     # be sleeping past 1.5 s.
     dsd_neo_add_iq_determinism_test(
@@ -20022,7 +20072,7 @@ if(DSD_HAS_RADIO)
         p25p2_cc
         -f2
         "fast;short:19;jitter:23:120:16:1500"
-        "P25p2 SACCH"
+        "P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE"
         0
         11900
         95000

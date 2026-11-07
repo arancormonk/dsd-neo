@@ -13,6 +13,8 @@ static dsd_signal_search_evidence_fn evidence_fn = NULL;
 static dsd_signal_search_active_fn active_fn = NULL;
 static dsd_signal_search_site_fn site_fn = NULL;
 static dsd_signal_search_call_fn call_fn = NULL;
+static dsd_signal_search_p25p2_codes_fn p25p2_codes_fn = NULL;
+static dsd_signal_search_p25p2_code_fn p25p2_code_fn = NULL;
 
 /* The visit tag: the decoder sets and clears it, and a publish reads it on whichever thread closes a recording (the
    decoder, the watchdog, a command), so the pair is read and written whole under its own lock. Nothing calls out while
@@ -72,6 +74,32 @@ void
 dsd_signal_search_note_call(const dsd_state* state, uint8_t slot) {
     if (call_fn) {
         call_fn(state, slot);
+    }
+}
+
+void
+dsd_signal_search_p25p2_codes_set(dsd_signal_search_p25p2_codes_fn fn) {
+    p25p2_codes_fn = fn;
+}
+
+size_t
+dsd_signal_search_p25p2_codes(const dsd_state* state, uint64_t* out, size_t cap) {
+    if (!p25p2_codes_fn || !out || cap == 0) {
+        return 0;
+    }
+    const size_t n = p25p2_codes_fn(state, out, cap);
+    return n < cap ? n : cap;
+}
+
+void
+dsd_signal_search_p25p2_code_set(dsd_signal_search_p25p2_code_fn fn) {
+    p25p2_code_fn = fn;
+}
+
+void
+dsd_signal_search_note_p25p2_code(const dsd_state* state, uint64_t code, int source) {
+    if (p25p2_code_fn) {
+        p25p2_code_fn(state, code, source);
     }
 }
 

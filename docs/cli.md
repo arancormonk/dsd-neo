@@ -934,7 +934,8 @@ Notes
   connect is an error and a dropped one ends the input, as in any other mode.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`
   console diagnostics are suppressed.
-- P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
+- P25p2 on a single frequency without trunking recovers the scrambling code from the channel's own scrambled
+  FACCH/SACCH; `-X` (below) sets it by hand.
 
 ## Analog reception (`-fA`, `-fM`)
 
@@ -2012,7 +2013,10 @@ setting, shown apart from what is received, and it is off by default: then the o
   raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
   the menu's P25 P2 parameters set it: no NID or network status rewrites it, and neither a control channel change nor
-  another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it.
+  another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it. Unless `-X`
+  hand-sets it, a session without trunking finds the code itself: a scrambled FACCH or SACCH gives it, one at another
+  superframe position in a later window confirms it, and the line "P25p2 scrambling code recovered: WACN ... SYSID ...
+  NAC ..." reports it. A hand-set code is never replaced.
 - DMR Tier III location area (DMRLA): `-D <0–10>`. A radio is programmed with how many of the top Site ID bits form
   its location area (ETSI TS 102 361-4 §6.3.2.2.3); no message sends it, so `-D n` tells dsd-neo. With `-D n` the top
   n bits are the area and the rest the site in it, shown `Site area.site`; with no `-D` or `-D 0` the Site ID is

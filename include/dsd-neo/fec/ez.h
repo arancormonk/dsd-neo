@@ -67,6 +67,45 @@ int ez_rs28_sacch_fixed(int payload[180], int parity[132]);
 void ez_rs28_facch_encode(const int payload[156], int parity[114]);
 void ez_rs28_sacch_encode(const int payload[180], int parity[132]);
 
+/** Burst kinds of ez_p25p2_seed_tables, and its dimensions. */
+enum {
+    EZ_P25P2_SEED_FACCH = 0,
+    EZ_P25P2_SEED_SACCH = 1,
+    EZ_P25P2_SEED_KINDS = 2,
+    EZ_P25P2_SEED_SLOTS = 12,       /* superframe slots T */
+    EZ_P25P2_SEED_MAX_BITS = 312,   /* sent codeword bits: FACCH 270, SACCH 312 */
+    EZ_P25P2_SEED_MAX_CHECKS = 132, /* check rows: FACCH 114, SACCH 132 */
+    EZ_P25P2_SEED_WORDS = 5,        /* 64-bit words of a row over the codeword bits */
+};
+
+/**
+ * A scrambled P25 Phase 2 FACCH or SACCH as linear equations over GF(2) in its 44-bit scrambling code
+ * WACN(20) << 24 | SYSID(12) << 12 | NAC(12) (issue #804).
+ *
+ * A burst's sent codeword bits (payload bits, then sent parity bits, as the decoders above take them) sit at fixed
+ * burst bits, each XORed with the superframe sequence at (20 + 360 * T + burst bit) for superframe slot T. Every check
+ * row XORs to 0 over a codeword, and the sequence is linear in the code, so over the received bits r:
+ *
+ *     parity(check[kind][i] & r) == parity(seed[kind][T][i] & code)
+ *
+ * for each row i, with no bit error.
+ */
+typedef struct ez_p25p2_seed_tables {
+    int payload_bits[EZ_P25P2_SEED_KINDS]; /* 156, 180 */
+    int checks[EZ_P25P2_SEED_KINDS];       /* one row per sent parity bit: 114, 132 */
+    /* Codeword bit k -> its burst bit (0..319, from the timeslot's start). */
+    uint16_t burst_bit[EZ_P25P2_SEED_KINDS][EZ_P25P2_SEED_MAX_BITS];
+    /* Row i over the codeword bits (bit k in word k / 64): parity bit i and the payload bits that set it. */
+    uint64_t check[EZ_P25P2_SEED_KINDS][EZ_P25P2_SEED_MAX_CHECKS][EZ_P25P2_SEED_WORDS];
+    /* Row i at superframe slot T over the code's bits (bit 0 = the NAC's least significant bit). */
+    uint64_t seed[EZ_P25P2_SEED_KINDS][EZ_P25P2_SEED_SLOTS][EZ_P25P2_SEED_MAX_CHECKS];
+} ez_p25p2_seed_tables;
+
+/**
+ * The tables, built at the first call (thread-safe) and kept; NULL if they could not be built (an allocation failed).
+ */
+const ez_p25p2_seed_tables* ez_p25p2_seed_tables_get(void);
+
 int isch_lookup(uint64_t isch);
 int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
 

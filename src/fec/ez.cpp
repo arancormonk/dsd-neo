@@ -385,6 +385,140 @@ ez_rs28_sacch_encode(const int payload[180], int parity[132]) {
     acch_encode(kSacchLayout, payload, parity);
 }
 
+namespace {
+
+enum {
+    P2_SUPERFRAME_BITS = 4320, /* the scrambling sequence restarts every superframe */
+    P2_TIMESLOT_BITS = 360,
+    P2_SEQUENCE_START = 20, /* a timeslot's burst bit 0 takes sequence bit 20 + 360 * T */
+    P2_CODE_BITS = 44,
+};
+
+/* Where a burst carries its codeword bits, in order (payload, then sent parity): runs of consecutive burst bits around
+   the DUID and, for FACCH, the gap at 138..179. The layouts p25p2_frame.c gathers FACCH and SACCH by. */
+struct BitRun {
+    int first;
+    int count;
+};
+
+const BitRun kFacchRuns[] = {{2, 72}, {76, 62}, {180, 22}, {202, 42}, {246, 72}};
+const BitRun kSacchRuns[] = {{2, 72}, {76, 108}, {184, 60}, {246, 72}};
+
+/*
+ * The superframe sequence as masks over the code: sequence bit j is the parity of (code & masks[j]). The scrambler
+ * (p25p2_generate_scramble_bits()) is a Fibonacci LFSR, x^44 + x^34 + x^20 + x^15 + x^9 + x^4 + 1, loaded with the code
+ * and read from its bit 43; each register bit is tracked as the code bits it XORs.
+ */
+void
+seed_sequence_masks(uint64_t* masks) {
+    uint64_t reg[P2_CODE_BITS];
+    for (int i = 0; i < P2_CODE_BITS; i++) {
+        reg[i] = 1ULL << i;
+    }
+    for (int j = 0; j < P2_SUPERFRAME_BITS; j++) {
+        masks[j] = reg[43];
+        const uint64_t feedback = reg[33] ^ reg[19] ^ reg[14] ^ reg[8] ^ reg[3] ^ reg[43];
+        for (int i = P2_CODE_BITS - 1; i > 0; i--) {
+            reg[i] = reg[i - 1];
+        }
+        reg[0] = feedback;
+    }
+}
+
+void
+seed_set_bit(uint64_t* row, int bit) {
+    row[bit / 64] |= 1ULL << (bit % 64);
+}
+
+int
+seed_get_bit(const uint64_t* row, int bit) {
+    return (int)((row[bit / 64] >> (bit % 64)) & 1ULL);
+}
+
+/* The check rows of one code: parity bit i of a codeword is the XOR of the payload bits whose unit payload encodes to a
+   parity with bit i set, so that XOR plus parity bit i is 0. */
+void
+seed_check_rows(ez_p25p2_seed_tables* tables, int kind, const AcchLayout& layout) {
+    const int n_payload = layout.n_payload * 6;
+    const int n_parity = layout.n_parity * 6;
+    int parity[RS28_ROOTS * 6] = {0};
+    for (int j = 0; j < n_payload; j++) {
+        int unit[RS28_LOAD * 6] = {0};
+        unit[j] = 1;
+        acch_encode(layout, unit, parity);
+        for (int i = 0; i < n_parity; i++) {
+            if (parity[i] != 0) {
+                seed_set_bit(tables->check[kind][i], j);
+            }
+        }
+    }
+    for (int i = 0; i < n_parity; i++) {
+        seed_set_bit(tables->check[kind][i], n_payload + i);
+    }
+}
+
+void
+seed_burst_bits(ez_p25p2_seed_tables* tables, int kind, const BitRun* runs, size_t n_runs) {
+    int k = 0;
+    for (size_t r = 0; r < n_runs; r++) {
+        for (int i = 0; i < runs[r].count; i++) {
+            tables->burst_bit[kind][k++] = (uint16_t)(runs[r].first + i);
+        }
+    }
+}
+
+/* The seed rows of one code: what each check row XORs of the scrambling bits, at every superframe slot. */
+void
+seed_code_rows(ez_p25p2_seed_tables* tables, int kind, const uint64_t* masks) {
+    const int n_bits = tables->payload_bits[kind] + tables->checks[kind];
+    for (int t = 0; t < EZ_P25P2_SEED_SLOTS; t++) {
+        const int start = P2_SEQUENCE_START + (P2_TIMESLOT_BITS * t);
+        for (int i = 0; i < tables->checks[kind]; i++) {
+            uint64_t row = 0;
+            for (int k = 0; k < n_bits; k++) {
+                if (seed_get_bit(tables->check[kind][i], k) != 0) {
+                    row ^= masks[(start + tables->burst_bit[kind][k]) % P2_SUPERFRAME_BITS];
+                }
+            }
+            tables->seed[kind][t][i] = row;
+        }
+    }
+}
+
+void
+seed_tables_kind(ez_p25p2_seed_tables* tables, int kind, const AcchLayout& layout, const BitRun* runs, size_t n_runs,
+                 const uint64_t* masks) {
+    tables->payload_bits[kind] = layout.n_payload * 6;
+    tables->checks[kind] = layout.n_parity * 6;
+    seed_burst_bits(tables, kind, runs, n_runs);
+    seed_check_rows(tables, kind, layout);
+    seed_code_rows(tables, kind, masks);
+}
+
+} // namespace
+
+const ez_p25p2_seed_tables*
+ez_p25p2_seed_tables_get(void) {
+    static const ez_p25p2_seed_tables* tables = []() noexcept -> const ez_p25p2_seed_tables* {
+        if (rs28_instance() == nullptr) {
+            return nullptr;
+        }
+        try {
+            std::vector<uint64_t> masks(P2_SUPERFRAME_BITS, 0);
+            ez_p25p2_seed_tables* built = new ez_p25p2_seed_tables();
+            seed_sequence_masks(masks.data());
+            seed_tables_kind(built, EZ_P25P2_SEED_FACCH, kFacchLayout, kFacchRuns,
+                             sizeof(kFacchRuns) / sizeof(kFacchRuns[0]), masks.data());
+            seed_tables_kind(built, EZ_P25P2_SEED_SACCH, kSacchLayout, kSacchRuns,
+                             sizeof(kSacchRuns) / sizeof(kSacchRuns[0]), masks.data());
+            return built;
+        } catch (...) {
+            return nullptr;
+        }
+    }();
+    return tables;
+}
+
 /* One-time initialized ISCH lookup table (P25 (40,9,16) codewords) */
 static inline const std::unordered_map<uint64_t, int>&
 isch_table() {

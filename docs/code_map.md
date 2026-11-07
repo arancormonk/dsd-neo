@@ -2777,7 +2777,10 @@ suite runs under this compiler.
     carries validated protocol evidence, CRC/FEC-checked site notes
     (`dsd_signal_search_note_site()`), call notes (`dsd_signal_search_note_call()`: a slot whose
     canonical call record a protocol just published after its check; the engine reads the record)
-    and the decoder-thread active query, with no-op defaults. It also holds the visit tag (issue #809):
+    and the decoder-thread active query, with no-op defaults. P25 Phase 2 scrambling codes (issue #804): code recovery
+    asks `dsd_signal_search_p25p2_codes()` once per window for the session's learned codes (at most what it asked for;
+    0 without a provider) and reports a code it committed through `dsd_signal_search_note_p25p2_code()` with its
+    `dsd_p25p2_code_source`. It also holds the visit tag (issue #809):
     `dsd_signal_search_visit_set()`/`_clear()`/`_get()` keep one `(session_id, hit_id)` pair under a lazily
     initialised mutex, so a reader on any thread sees the tag clear or one whole pair; a pair with a zero half reads as
     clear, and the default is clear, so the CLI, headless runs and tests are unaffected (`RUNTIME_SIGNAL_SEARCH_VISIT`,
@@ -8113,6 +8116,14 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
     trial decodes. `ez_rs28_facch_encode()` and `ez_rs28_sacch_encode()` give the sent parity of a payload (all
     zeros if the codec could not be allocated). Tests:
     `P25_P2_RS_SHORTENED`, `P25_P2_RS28_LIMITS`, `P25_P2_FACCH_RS`, `FEC_BLOCK_CODES`.
+  - `ez_p25p2_seed_tables_get()` (issue #804): a scrambled FACCH or SACCH as GF(2) equations in its 44-bit scrambling
+    code, for P25 Phase 2 code recovery. Per kind: the burst bit of each sent codeword bit (the layouts
+    `p25p2_frame.c` gathers by), the 114 (FACCH) or 132 (SACCH) check rows over the codeword bits (built from
+    unit-payload encodes), and per superframe slot T each row's mask over the code (the scrambler, a Fibonacci LFSR
+    loaded with the code, tracked symbolically from bit `20 + 360 * T`): over the received bits r,
+    `parity(check & r) == parity(seed[T] & code)` for an error-free burst. Built once in a C++ function-local static
+    (thread-safe), about 1.5 ms in a release build; NULL if an allocation failed. `P25_P2_SEED_RECOVER` checks it
+    against the burst builder (`p25p2_generate_scramble_bits()` and the RS encoder) at every T.
 - Build files: `src/fec/CMakeLists.txt`
 
 ## Crypto
@@ -8383,6 +8394,32 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   nothing) with a failed checksum tries no soft rung, which could only decode it to itself. Only a verdict with
   RS, no soft erasures and the checksum proves the seed (scrambled bursts, `p25p2_note_seed_proven()`, after the
   checksum and before the MAC PDU) and marks the carrier two-slot (`p25p2_note_tdma_carrier()`).
+- Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
+  (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
+  each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with
+  whether the window's own channel-1 I-ISCH located it and whether that I-ISCH contradicted continuity. Each scrambled
+  FACCH (DUID 9) or SACCH (DUID 3) of a located window is tried in turn under the code in force (a burst that passes it
+  ends the window: the normal path proves the code), the candidate waiting for confirmation, the Signal search
+  session's learned codes, then a code solved from the burst itself (`ez_p25p2_seed_tables_get()`: Gaussian
+  elimination over the code's 44 bits, then the least reliable RS symbols by their weakest bit's LLR erased one more at
+  a time while 16 checks stay spare, so at most 9 FACCH or 12 SACCH symbols; the first consistent solution is the
+  burst's only one). A try descrambles into local buffers and needs `ez_rs28_*_fixed()` and the real MAC CRC
+  (`p25p2_acch_checksum_ok()`, whatever `-F` says), and a code is a candidate only with no zero or all-ones WACN, SYSID
+  or NAC (as `p25p2_duid_has_valid_site()`). A candidate (state-ext slot 29, `DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER`)
+  keeps its superframe slot, window serial, `carrier_seq` and alignment generation; it is confirmed only by a burst of
+  another located window at another slot, since a code solved under a mislabelled slot is a shifted code that decodes
+  every burst mislabelled alike and a wrong code's verdict is the same at one slot (`P25_P2_SEED_RECOVER`). A carrier
+  boundary, `p25p2_frame_forget_carrier()` and a contradicted window drop it; a contradicted window, or one only
+  continuity places, neither solves nor confirms. The confirmed code is committed like a checked network status:
+  WACN/SYSID through `p25_update_system_identity()`, the NAC into `p2_cc` (both clear `p2_cc_verified` on a change),
+  the line " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX" and
+  `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)`; the window then descrambles with it and its
+  confirming burst proves it through the verdict. Nothing else changes before the commit: no counter, MAC, proof,
+  identity, event or evidence. Cost: one `p2_cc_verified` read per window on a proven carrier; on an unproven one about
+  12 us per code tried and 30-45 us per worst-case solve in a release build (about 1.1 ms for a window of four
+  SACCHs that try 18 codes and solve each). Documented limits: voice (4V C0 Golay, ESS) is not solved from, a
+  channel whose probe sees no clean scrambled FACCH/SACCH stays unresolved, and an I-ISCH-to-offset mapping that is
+  wrong systematically would also break decoding with a known code (the real-air fixture pins it).
 - Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose
   decode failed cannot make the next FACCH or SACCH of the window an LCCH (its CRC-16 path rejected valid bursts).
   The MAC opcode is no service option: no burst writes it into `dmr_so`/`dmr_soR`, which carry the service options
@@ -8412,7 +8449,10 @@ Tests: `P25_P2_VOICE_OUTPUT` (end to end through the DUID dispatch, against a ta
 `P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_ACCH_VERDICT` (windows
 built as a site sends them, `tests/protocol/p25/p25p2_burst_builder.h`, through the real RS, CRC and XCCH: the
 verdict, the ladder and its ceilings, `-F`, the burst kind, `dmr_so`, DUID 10), `P25_P2_VPDU_GRANTS`,
-`P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`, `DECODE_IQ_P25P2_CC` (no DUID 10 error on the real-air capture).
+`P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`, `P25_P2_SEED_RECOVER` (code recovery through `processP2()`: tables, every
+slot and kind, symbol errors, noise, shifted codes, the confirmation rules, learned codes, `-F`, hand-set and trunked
+skips, boundaries), `DECODE_IQ_P25P2_CC` (no DUID 10 error on the real-air capture; the code BEE00/164/161 recovered
+from its SACCHs and the SACCH MACs after it decoded; also its Airspy and determinism variants).
 
 Call frequency and access-code provenance (issue #575). A call's canonical `frequency_hz` and the live access codes
 (`dmr_color_code`, `dpmr_color_code`, `nxdn_last_ran`) are read as describing the carrier the call is decoded on, so:
@@ -8593,7 +8633,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX` (also built on the real canonical call state as
     `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),
     `NXDN_ELEMENT_BOUNDS`, `NXDN_FRAME_ROUTING`, `ENGINE_TRUNK_SCAN`, `ENGINE_NO_CARRIER_RESET`.
-- `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
+- `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID, code recovery (`p25p2_seed_recover.c`) or
+  another carrier may have left. It is a call's
   received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its checks (a scrambled FACCH,
   SACCH or LCCH whose Reed-Solomon decode and MAC checksum passed, `p25p2_process_facch()`/`p25p2_process_sacch()`
   through the signalling verdict, since the FACCH code alone let about one wrong seed's burst in a thousand through
