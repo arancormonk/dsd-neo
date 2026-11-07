@@ -23326,14 +23326,15 @@ if(DSD_ENABLE_QT_UI)
     endif()
 endif()
 
-# Windows builds the terminal UI against vcpkg's PDCurses, whose include
-# directory dsd-neo_ui_terminal receives as a system directory through
-# PDCurses::PDCurses (MSVC: -external:I, its warnings off). A test that names
-# ${CURSES_INCLUDE_DIRS} itself takes it the same way. Otherwise the Windows
-# SDK's MOUSE_MOVED, which redefines PDCurses' when <windows.h> follows
-# <curses.h> as in ui_async.c, is a C4005 that /WX makes an error in a test
-# build of a source the library compiles cleanly.
-if(WIN32 AND CURSES_INCLUDE_DIRS)
+# dsd-neo_ui_terminal takes the curses include directories as system
+# directories (on Windows, vcpkg's PDCurses through PDCurses::PDCurses; MSVC:
+# -external:I, its warnings off). A test that names ${CURSES_INCLUDE_DIRS}
+# itself takes them the same way, so it compiles a library source with the
+# warnings the library sees. Otherwise the Windows SDK's MOUSE_MOVED, which
+# redefines PDCurses' when <windows.h> follows <curses.h> as in ui_async.c, is
+# a C4005 that /WX makes an error, and GCC reports warnings inside the ncurses
+# macros of Debian and Ubuntu's ncursesw/curses.h.
+if(CURSES_INCLUDE_DIRS)
     get_property(_dsd_neo_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     foreach(_dsd_neo_test_target IN LISTS _dsd_neo_test_targets)
         get_target_property(_dsd_neo_test_type ${_dsd_neo_test_target} TYPE)
