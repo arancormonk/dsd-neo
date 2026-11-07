@@ -402,6 +402,9 @@ publish(uint64_t id, bool confirmed = false) {
         DSD_SNPRINTF(h.site, sizeof(h.site), "%s", "TIII Small \xC2\xB7 Net 12 \xC2\xB7 Site 3 \xC2\xB7 SYS 1183");
         h.slot = 2;
         DSD_SNPRINTF(h.crypt, sizeof(h.crypt), "%s", "ALG 21 \xC2\xB7 KID 0001");
+        DSD_SNPRINTF(h.access, sizeof(h.access), "%s", "CC 1");
+    } else {
+        DSD_SNPRINTF(h.tone, sizeof(h.tone), "%s", "CTCSS 127.3 Hz");
     }
     dsd_app_signal_search_publish(&s, &h, nullptr);
 }
@@ -1205,14 +1208,22 @@ main(int argc, char** argv) {
     assert(saved.value(QStringLiteral("port")).toInt() == 1235);
     assert(saved.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fA"));
     assert(saved.value(QStringLiteral("searchUnresolved")).toBool());
-    // The checked site, slot and encryption reach the screens as they were published, and from history too.
+    // The checked site, slot and encryption, the access code and the received tone reach the screens as they were
+    // published, live and from history too (issue #802: a Recent detections row shows the access code and tone).
     const auto shown = model.history().front().toMap();
     assert(shown.value(QStringLiteral("site")) == QStringLiteral("TIII Small · Net 12 · Site 3 · SYS 1183"));
     assert(shown.value(QStringLiteral("slot")).toInt() == 2);
     assert(shown.value(QStringLiteral("crypt")) == QStringLiteral("ALG 21 · KID 0001"));
+    assert(shown.value(QStringLiteral("access")) == QStringLiteral("CC 1"));
+    assert(shown.value(QStringLiteral("tone")).toString().isEmpty());
+    const auto live = model.status().value(QStringLiteral("hit")).toMap();
+    assert(live.value(QStringLiteral("id")) == QStringLiteral("78"));
+    assert(live.value(QStringLiteral("access")) == QStringLiteral("CC 1"));
     assert(frozen.value(QStringLiteral("site")).toString().isEmpty()
            && frozen.value(QStringLiteral("slot")).toInt() == 0);
     assert(frozen.value(QStringLiteral("crypt")).toString().isEmpty());
+    assert(frozen.value(QStringLiteral("access")).toString().isEmpty());
+    assert(frozen.value(QStringLiteral("tone")) == QStringLiteral("CTCSS 127.3 Hz"));
     const auto confirmed = model.systemForHit(model.history().front().toMap(), {});
     assert(confirmed.value(QStringLiteral("decodeFlag")) == QStringLiteral("-fs"));
     auto nxdn = model.history().front().toMap();

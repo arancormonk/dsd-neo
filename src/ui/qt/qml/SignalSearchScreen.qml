@@ -259,8 +259,11 @@ Item {
     readonly property string identificationLine: leaving ? qsTr("Stopping the search…") : !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM · digital unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
     readonly property string identificationFull: !leaving && unresolvedShown ? qsTr("NFM monitoring · digital identification unresolved") : identificationLine
     readonly property var knownNames: hit.knownNames || ((hit.knownLabel || "").length > 0 ? [hit.knownLabel] : [])
-    /** A detection's checked details in reading order: its site, access code
-     * and tone, the call (slot, target, source), then the call's encryption. */
+    /** A detection's details in reading order: its site, access code and
+     * tone, the call (slot, target, source), then the call's encryption. All
+     * but the tone are checked signalling; the tone is what the analog
+     * monitor heard (the last tone held for 1 s, or the latest lock when
+     * none was). */
     function detailText(h) {
         return [h.site || "", h.access || "", h.tone || "", h.slot > 0 ? qsTr("Slot %1").arg(h.slot) : "", h.targetText || (h.target ? qsTr("Target %1").arg(h.target) : ""), h.sourceText || (h.source ? qsTr("Source %1").arg(h.source) : ""), h.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ");
     }
@@ -934,13 +937,17 @@ Item {
                                 id: historyDetail
                                 width: parent.width
                                 objectName: "searchHistoryDetail"
-                                // The site and encryption the detection was
-                                // checked with, under its verdict, then how
+                                // Under its verdict, the site, access code,
+                                // tone and encryption the detection last had,
+                                // in the Now panel's order without the call
+                                // (issue #802), then its saved names and how
                                 // many recordings it kept (issue #809).
-                                readonly property string checked: [modelData.site || "", modelData.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ")
+                                readonly property string details: [modelData.site || "", modelData.access || "", modelData.tone || "", modelData.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ")
                                 readonly property int recordingCount: screen.recordingCount(modelData)
-                                readonly property string fullText: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (checked ? "\n" + checked : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "") + (recordingCount > 0 ? "\n" + screen.recordingCountText(recordingCount) : "")
+                                readonly property string fullText: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (details ? "\n" + details : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "") + (recordingCount > 0 ? "\n" + screen.recordingCountText(recordingCount) : "")
                                 text: {
+                                    // advanceWidth() is a call, which a binding does not
+                                    // track: reading the font re-measures on a scale change.
                                     var font = historyMetrics.font;
                                     return screen.keepValues(fullText, width, historyMetrics);
                                 }

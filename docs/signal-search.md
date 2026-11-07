@@ -116,9 +116,16 @@ While a search runs, the screen is laid out for what is on the air now:
   the **Now** panel, so it never moves the panel as it appears or clears; with
   no search running it shows above the setup instead.
 - **Recent detections** shows the five newest; **Show more** adds 25. Under its
-  verdict a row shows the checked site and encryption the detection last had
-  (**TIII Small · Net 13 · Site 4 · SYS 1183 · Encrypted**). Each row's
-  actions button (**Actions for 463.5521 MHz**) opens what can be done with that
+  verdict a row shows the site, access code, tone and encryption the detection
+  last had, in the Now panel's order without the call
+  (**TIII Small · Net 13 · Site 4 · SYS 1183 · CC 1 · Encrypted**;
+  **CTCSS 127.3 Hz** or **DCS D023N / D047I** on an analog channel). A value
+  the detection never had is left out. The site, access code and encryption are
+  checked signalling; the tone is what the analog monitor heard (the tone
+  paragraph under [Ranges and reception](#ranges-and-reception) says which tone
+  a detection keeps). These are the detection's last values, not a lasting list
+  of each frequency's codes. Each row's actions button
+  (**Actions for 463.5521 MHz**) opens what can be done with that
   detection: **Explore here**, **Start “<saved system>”** for each saved system
   it matched, **Save as system**, **Avoid this session** (while a search runs),
   and **Avoid permanently**, or **Remove permanent avoid** when it already is.
@@ -346,9 +353,10 @@ available records remain in memory. Each record keeps the detection's checked
 site, slot and encryption, in a version 2 journal (`signal-search-history.v2`)
 beside the earlier releases' `signal-search-history.v1`. The first time no
 version 2 journal exists, the earlier journal's detections load without those
-details and the next save writes them to the version 2 journal; from then on
-only the version 2 journal is read. The earlier journal is never changed, so an
-earlier release still shows its own history, and detections it records later
+details and the next save writes them to the version 2 journal (both versions
+keep the access code and tone, so those detections still show theirs); from then
+on only the version 2 journal is read. The earlier journal is never changed, so
+an earlier release still shows its own history, and detections it records later
 do not reach this one. A detection republished with nothing new is not written
 again. Detection history is not part of a backup. History and permanent avoids
 are saved separately, and a failed one stays reported and is retried by later

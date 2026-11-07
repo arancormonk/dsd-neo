@@ -923,6 +923,93 @@ Item {
             compare(rows[0].Accessible.name, "DMR · confirmed · ended · TIII Small · Net 12 · Site 3 · SYS 1183 · ALG 21 · KID 0001 · Warehouse · 462.5750 MHz");
             model.history = [];
         }
+        // Issue #802: under its verdict a row reads the site, access code, tone
+        // and encryption the detection last had, in the Now panel's order
+        // without the call; a value it never had is left out, with no
+        // placeholder. The saved names and the recordings stay on their own
+        // lines after it.
+        function test_history_row_shows_access_and_tone() {
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            model.history = [historyHit({confirmed: true, protocol: "DMR", site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100,
+                    source: 2001, crypt: "ALG 21 · KID 0001", knownLabel: "Warehouse / Dock security"}),
+                historyHit({id: "61", recordingKey: "17:61", tone: "CTCSS 127.3 Hz"}),
+                historyHit({id: "62", recordingKey: "17:62", tone: "DCS D023N / D047I"}),
+                historyHit({id: "63", recordingKey: "17:63", confirmed: true, protocol: "P25", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", crypt: "Encrypted"}),
+                historyHit({id: "64", recordingKey: "17:64", confirmed: true, protocol: "DMR", access: "CC 1"}),
+                historyHit({id: "65", recordingKey: "17:65", confirmed: true, protocol: "NXDN48", site: "Site 12 · Sys 3", access: "RAN 5"}),
+                historyHit({id: "66", recordingKey: "17:66"}),
+                historyHit({id: "67", recordingKey: "17:67", ended: false, tone: "CTCSS 127.3 Hz"})];
+            loader.item.historyLimit = 8;
+            var rows = findChildren(loader.item, "searchHistoryDetail");
+            compare(rows.length, 8);
+            var expected = ["DMR · confirmed · ended\nTIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · ALG 21 · KID 0001\nWarehouse / Dock security\n3 recordings",
+                "RF only · ended\nCTCSS 127.3 Hz",
+                "RF only · ended\nDCS D023N / D047I",
+                "P25 · confirmed · ended\nWACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Encrypted",
+                "DMR · confirmed · ended\nCC 1",
+                "NXDN48 · confirmed · ended\nSite 12 · Sys 3 · RAN 5",
+                "RF only · ended",
+                "RF only\nCTCSS 127.3 Hz"];
+            for (var i = 0; i < expected.length; ++i) {
+                compare(rows[i].fullText, expected[i], "row " + i);
+                compare(rows[i].Accessible.name, expected[i].replace(/\n/g, " · "), "row " + i + " reads its whole text");
+                compare(rows[i].text.replace(/ /g, " "), expected[i], "row " + i + " draws its whole text");
+                verify(!/[^·\n] /.test(rows[i].text), "a value never splits across lines in row " + i);
+            }
+            model.history = [];
+        }
+        // The narrowest row (360 dp, the largest text), in both appearances:
+        // the longest site with its NAC and encryption, and a DCS pair, wrap
+        // only between values and stay inside their row.
+        function test_history_access_and_tone_large_text_360_data() {
+            return [{tag: "dark", appearance: 2}, {tag: "light", appearance: 1}];
+        }
+        function test_history_access_and_tone_large_text_360(data) {
+            testContext.setPrefs("appearance", data.appearance);
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            model.history = [historyHit({confirmed: true, protocol: "P25", site: longestSite, access: "NAC 293", crypt: "ALG 132 · KID 0001"}),
+                historyHit({id: "61", recordingKey: "17:61", tone: "DCS D023N / D047I"}),
+                historyHit({id: "62", recordingKey: "17:62", tone: "CTCSS 127.3 Hz"})];
+            wait(0);
+            var rows = findChildren(loader.item, "searchHistoryRow");
+            var details = findChildren(loader.item, "searchHistoryDetail");
+            compare(details.length, 3);
+            for (var i = 0; i < details.length; ++i) {
+                var detail = details[i];
+                var drawn = renderedLineStarts(detail, detail.text, detail.width);
+                compare(drawn.lines, detail.lineCount, "the mirror wraps as row " + i + " does");
+                for (var start of drawn.starts)
+                    verify(start.trim().charAt(0) !== "·", "a drawn line of row " + i + " starts with a separator: " + JSON.stringify(drawn.starts));
+                verify(detail.mapToItem(rows[i], 0, 0).x + detail.width <= rows[i].width + 0.5, "row " + i + "'s detail stays inside its row");
+                verify(detail.mapToItem(rows[i], 0, 0).y + detail.height <= rows[i].height + 0.5, "row " + i + "'s detail stays inside its row");
+            }
+            verify(details[0].lineCount > 2, "the longest site wraps at this size");
+            verify(details[0].text.indexOf("NAC 293") >= 0 && details[0].text.indexOf("ALG 132") >= 0, "the code and encryption stay whole");
+            verify(details[1].text.indexOf("DCS D023N / D047I") >= 0, "a DCS pair stays whole");
+            verify(details[2].text.indexOf("CTCSS 127.3 Hz") >= 0, "a CTCSS tone stays whole");
+            model.history = [];
+        }
+        // A larger text after the rows exist re-decides which values stay
+        // whole: the row reads its metrics' font, so a value that fit at the
+        // old size but no longer does wraps at its words instead of breaking
+        // before its separator.
+        function test_history_row_rewraps_on_font_scale() {
+            root.width = 360;
+            model.history = [historyHit({confirmed: true, protocol: "DMR", access: "CC 1", knownLabel: "Northern District Fire / Engine 42"})];
+            wait(0);
+            var detail = findChild(loader.item, "searchHistoryDetail");
+            var before = detail.text;
+            Ui.Theme.fontScale = 1.6;
+            wait(0);
+            var metrics = Qt.createQmlObject("import QtQuick; FontMetrics {}", root);
+            metrics.font = detail.font;
+            var expected = loader.item.keepValues(detail.fullText, detail.width, metrics);
+            metrics.destroy();
+            verify(expected !== before, "the larger text changes which values stay whole");
+            compare(detail.text, expected);
+            model.history = [];
+        }
         // Wider, every cell fits the widest label: three equal columns.
         function test_now_actions_use_three_columns_when_they_fit() {
             root.width = 900;
@@ -1817,8 +1904,9 @@ Item {
             wait(100);
             grabImage(root).save("/tmp/dsd-signal-search-menu.png");
             findChild(loader.item, "searchDetectionMenu").cancel();
-            model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz", confirmed: true, protocol: "P25 Phase 1", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2"}),
-                historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false, site: "TIII Small · Net 12 · Site 3 · SYS 1183", slot: 2, crypt: "Encrypted"})];
+            model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz", confirmed: true, protocol: "P25 Phase 1", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293"}),
+                historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false, site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, crypt: "Encrypted"}),
+                historyHit({id: "38", recordingKey: "17:38", tone: "DCS D023N / D047I"})];
             var scroll = findChild(loader.item, "searchScroll");
             for (var scale of [1.0, 1.6]) {
                 Ui.Theme.fontScale = scale;

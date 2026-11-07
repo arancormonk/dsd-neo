@@ -113,7 +113,8 @@ Generated (do not edit/commit):
     ACTIVE, CRC-clean (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN,
     dPMR, M17, YSF, D-STAR: `dsd_engine_signal_search_sync_protocol()` in
     `signal_search_protocol.c`, public and in radio-off builds, gives a sync type's name, NULL
-    for ProVoice, EDACS, X2-TDMA, TETRA, analog and none; `ENGINE_SIGNAL_SEARCH_PROTOCOL`). The tuple is the most recent call on the hit: a note for the tuple's own call
+    for ProVoice, EDACS, X2-TDMA, TETRA, analog and none; `ENGINE_SIGNAL_SEARCH_PROTOCOL`).
+    The tuple is the most recent call on the hit: a note for the tuple's own call
     (slot and epoch) updates it, a call that began no earlier (`started_m`) replaces it whole
     on either slot, and an older call still running on the other slot leaves it, so two DMR
     slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
@@ -10217,10 +10218,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   and scale) and shortens only the range name, so the pass and channel count always show
   whole. Its sixth cell, More, opens the
   detection menu (`tst_signal_search.qml`). `hitMap()` passes the hit's checked `site`,
-  `slot` and `crypt` through; the panel's two-line detail (`detailText()`) reads site,
-  access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
-  the whole text as its accessible name and description, and a history row shows site and
-  crypt under its verdict. `hitMap()` also gives `recordingKey` (issue #809), `"<session>:<hit>"`
+  `slot` and `crypt`, its `access` code and its received `tone` through; the panel's
+  two-line detail (`detailText()`) reads site, access, tone, `Slot N`, target, source,
+  then crypt, eliding within the two lines with the whole text as its accessible name and
+  description, and a history row shows site, access, tone and crypt under its verdict
+  (`detailText()`'s order without the call, empty values left out; issue #802). The tone
+  is what the analog monitor heard, not checked signalling. `hitMap()` also gives
+  `recordingKey` (issue #809), `"<session>:<hit>"`
   formatted in C++ from the two `uint64_t`s, never through a JS number, and empty while either
   is 0 (the live hit with no detection current): the recording store's
   key for the detection's recordings (`recordingCountForDetection()`, `recordingsForDetection()`);
