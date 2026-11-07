@@ -1833,6 +1833,44 @@ test_locked_tuple_kept(dsd_opts* o, dsd_state* s, const dsd_signal_search_config
     put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
 }
 
+/* A -m lock pins the profile, modulation and P25 Phase 2 pin, not the rate its timing was taken at: a locked session
+   on the 48 kHz analog monitor at Start, whose CQPSK chain lands at the 24 kHz complex rate, visits with its kept
+   profile timed for that landing, and Stop restores the session's own. */
+static void
+test_locked_tuple_timed_for_its_landing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    /* -mq: CQPSK on 4800/4. -m2: CQPSK on 6000/4, pinned. The session's timing at 48 kHz; the visit's at 24 kHz. */
+    static const int locked[2][6] = {
+        {DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0, 5, 2},
+        {DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 8, 3, 1, 4, 1},
+    };
+    use_front_end(48000, 24000, 24000, 1, 0);
+    for (int i = 0; i < 2; ++i) {
+        const dsd_signal_search_config one = tag_config(config, 88 + (uint64_t)i, 1, 0);
+        o->mod_cli_lock = 1;
+        o->mod_c4fm = 0;
+        o->mod_qpsk = 1;
+        o->mod_gfsk = 0;
+        o->mod_p25p2_profile_lock = locked[i][3];
+        put_timing(s, locked[i][0], locked[i][1], locked[i][2], 1);
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        assert(retune_family.family == DSD_RX_FAMILY_DIGITAL && retune_family.cqpsk_explicit == 1);
+        assert(timing_is(s, locked[i][0], locked[i][4], locked[i][5], 1));
+        assert(o->mod_cli_lock == 1 && o->mod_qpsk == 1 && o->mod_c4fm == 0);
+        assert(o->mod_p25p2_profile_lock == locked[i][3]);
+        put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0);
+        next_visit(o, s);
+        assert(timing_is(s, locked[i][0], locked[i][4], locked[i][5], 1));
+        stop_tag_session(o, s);
+        assert(timing_is(s, locked[i][0], locked[i][1], locked[i][2], 1) && o->mod_cli_lock == 1);
+        assert(o->mod_p25p2_profile_lock == locked[i][3]);
+    }
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    DSD_MEMSET(&front_end, 0, sizeof(front_end));
+    o->mod_cli_lock = o->mod_qpsk = o->mod_p25p2_profile_lock = 0;
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+}
+
 /* Issue #804 F6: every departure puts the session's own P25 site back whole, never the proof. */
 #define SITE_CODE(wacn, sysid, nac) (((uint64_t)(wacn) << 24) | ((uint64_t)(sysid) << 12) | (uint64_t)(nac))
 static const uint64_t CODE_A = SITE_CODE(0xBEE00, 0x1A3, 0x293);
@@ -2389,6 +2427,7 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_auto_visit_timed_for_its_landing(o, s, config);
     test_typed_visit_timed_for_its_landing(o, s, config);
     test_locked_tuple_kept(o, s, config);
+    test_locked_tuple_timed_for_its_landing(o, s, config);
     test_code_does_not_leak_between_visits(o, s, config);
     test_iden_before_nsb_restored(o, s, config);
     test_pending_announcements_stay_with_their_site(o, s, config);

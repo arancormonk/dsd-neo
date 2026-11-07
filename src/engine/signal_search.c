@@ -493,20 +493,26 @@ search_coord_free(void* ptr) {
 }
 
 /* Every Auto visit starts on the 4800/4 C4FM profile (issue #804): a visit restores the baseline Start captures, where
-   the session's hunt may have stood on any profile, or with CQPSK learned. A -m lock is the user's own timing and
-   modulation and stays whole: -mq keeps CQPSK, -m2 its 6000/4 P25 Phase 2 pin. Timed as the hunt times a profile, at
-   the rate each visit lands at; with no prediction, the scan mode's timing rate. */
+   the session's hunt may have stood on any profile, or with CQPSK learned. A -m lock keeps the user's own profile and
+   modulation: -mq keeps CQPSK, -m2 its 6000/4 P25 Phase 2 pin. Either way the baseline is timed as the hunt times a
+   profile, at the rate each visit lands at, since the lock pins the profile and not the rate its timing was taken at
+   (the analog monitor's, for a session that ran it at Start); with no prediction, the scan mode's timing rate. */
 static void
 search_start_profile(const dsd_opts* opts, dsd_state* state) {
-    if (opts->mod_cli_lock) {
+    if (!opts->mod_cli_lock) {
+        state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+        state->rf_mod = 0;
+    }
+    const int symbol_rate_hz = dsd_scan_mode_effective_profile(opts, state).symbol_rate_hz;
+    if (symbol_rate_hz <= 0) {
         return;
     }
-    const int landing_hz = search_visit_landing_hz(4800, 0);
-    const int rate_hz = landing_hz > 0 ? landing_hz : dsd_scan_mode_symbol_timing_rate_hz(opts, state, 4800, 0);
-    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, rate_hz);
+    const int cqpsk = state->rf_mod == 1;
+    const int landing_hz = search_visit_landing_hz(symbol_rate_hz, cqpsk);
+    const int rate_hz =
+        landing_hz > 0 ? landing_hz : dsd_scan_mode_symbol_timing_rate_hz(opts, state, symbol_rate_hz, cqpsk);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-    state->rf_mod = 0;
 }
 
 #endif
