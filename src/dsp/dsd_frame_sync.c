@@ -48,6 +48,7 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
 #include <math.h>
@@ -5043,6 +5044,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             frame_sync_publish_ui_throttled(opts, state);
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+                frame_sync_history_drop(state);
+                frame_sync_sps_hunt_mark_return(state);
+                return DSD_SYNC_NONE;
+            }
+            /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
+               back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
+               4800 sym/s, 750 ms at 2400). The hand-back is a no-sync return like the pass's own, only earlier: the
+               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. */
+            if (dsd_trunk_scan_hook_dwell_due(opts, state)) {
                 frame_sync_history_drop(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;

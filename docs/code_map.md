@@ -747,7 +747,7 @@ identified itself (`cc_freq_hz` and the shared `trunk_cc_freq` a target revisit 
 compares the receiver (`dmr_sm_receiver_on()`), not the shared alias.
 Probe frequency is separate from the saved anchor until control or grant evidence confirms it. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
 or retuning a newly parked target. Pending backend probes hold the target and disarm idle dwell; completion or timeout starts
-a fresh dwell. The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
+a fresh dwell (a coordinator park's dwell runs from its completion stamp). The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
 tuning generation and frequency, avoiding blocking rigctl queries in the CSBK path.
 
 Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
@@ -3474,6 +3474,17 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
     releases the target on air toward a target the walk passes over. With no such alternate, a failed park is retried in
     place after its cooldown (`trunk_scan_retry_active_if_due()`), as a single or held target's is; the walk names the
     widths a changed rate leaves unfit, since it no longer retunes them.
+- `dsd_trunk_scan_hook_dwell_due()` — whether the idle dwell of the target on air has run out
+  (`dsd_engine_trunk_scan_dwell_due()`, discussion #717). `getFrameSync()` asks it every 300 symbols, beside the Signal
+  search yield, and on a 1 returns a plain no-sync (history dropped, hunt return marked, no input interruption), so the
+  engine's next pass ticks the rotation under the coordinator's guard and runs its no-carrier pass as after any
+  no-sync return. Without it a silent target's dwell was seen only at the 1800-symbol pass end. It answers 1 once per
+  dwell start (`dwell_yield_from_m`), so a tick that keeps the target never makes the hunt hand back every 300
+  symbols, and counts a park still in flight from its landing. Every park's idle dwell runs from its landing
+  (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
+  listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
+  after it. A dwell disarmed in between (a hold toggled, activity) stays disarmed, so a release still gets a fresh dwell
+  from the next tick.
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
   its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only
