@@ -6880,8 +6880,8 @@ test_accepted_retunes_forget_the_carrier_codes(void) {
                       row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
     freeState(&state);
 
-    /* The Phase 1 NAC goes with them: a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves state->nac as it
-       was, so a Phase 1 call on the new carrier would record the old carrier's NAC. */
+    /* The Phase 1 NAC goes with them: a NID whose BCH-decoded NAC is 000 or FFF, which dsd-neo refuses, leaves
+       state->nac as it was, so a Phase 1 call on the new carrier would record the old carrier's NAC. */
     init_radio_context(&opts, &state, "rtl:0");
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     state.nac = 0x293;

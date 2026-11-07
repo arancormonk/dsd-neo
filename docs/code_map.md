@@ -8669,7 +8669,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      Core, "Recording journal", carrier departures).
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
      its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
-     because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
+     because a NID whose BCH-decoded NAC is 000 or FFF, which dsd-neo refuses as its own acceptance rule (a dead or
+     stuck input decodes as either), leaves `state->nac` as it was
      (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
      evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
      its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict, the Phase 1 NID's
@@ -8832,8 +8833,9 @@ the message passed its own check, with that message's values, an unchanged repea
   carries as the search binds it, and the location registration area; a Phase 2 network status also notes the NAC it
   carries (`p25_search_note_network_nac()`), so an unscrambled SACCH's records its own NAC whatever seed is set. Phase 2
   MACs note only with `ctx->crc_ok` (`p25p2_vpdu_system_tables_writable()`). The Phase 1 NID's NAC at the BCH accept
-  (`p25p1_apply_nac_update()`, reserved $000/$FFF excluded); the Phase 2 seed's WACN, SYSID and NAC once a burst
-  descrambled with the whole seed passed RS with its parity kept (`p25p2_note_seed_proven()`). The control channel at
+  (`p25p1_apply_nac_update()`, $000/$FFF excluded by dsd-neo's own acceptance rule); the Phase 2 seed's WACN, SYSID and
+  NAC once a burst descrambled with the whole seed passed RS with its parity kept (`p25p2_note_seed_proven()`). The
+  control channel at
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
 - DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
   dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III

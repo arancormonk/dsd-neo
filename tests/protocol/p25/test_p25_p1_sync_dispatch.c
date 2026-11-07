@@ -413,7 +413,7 @@ test_p25p1_nac_update_guards(void) {
         assert(state.nid_corrections_total == 2U);
         assert(state.debug_header_errors == 1U);
         assert(state.nid_failures_total == 0U);
-        assert(state.rx_id.valid == 0U); /* the reserved NACs name no carrier */
+        assert(state.rx_id.valid == 0U); /* dsd-neo takes no NAC 000 or FFF */
     }
 
     static dsd_opts opts;

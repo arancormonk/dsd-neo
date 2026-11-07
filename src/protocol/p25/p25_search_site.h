@@ -54,8 +54,8 @@ p25_search_note_rfss(dsd_state* state, uint16_t sysid, uint8_t rfss, uint8_t sit
     dsd_signal_search_note_site(state, &note);
 }
 
-/* The NAC a Phase 2 network status that passed its CRC carries: this carrier's, whatever seed is configured. NAC $000
- * and $FFF name no carrier (TIA-102.BAAC), as for a Phase 1 NID. */
+/* The NAC a Phase 2 network status that passed its CRC carries: this carrier's, whatever seed is configured. dsd-neo
+ * takes no NAC $000 or $FFF, as for a Phase 1 NID: a dead or stuck input decodes as either. */
 static inline void
 p25_search_note_network_nac(dsd_state* state, uint16_t nac) {
     nac &= 0xFFFU;

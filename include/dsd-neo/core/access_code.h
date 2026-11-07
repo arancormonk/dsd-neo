@@ -16,7 +16,8 @@
  * - DMR `dmr_color_code`: the slot type's Golay(20,8) (behind the BS colour-code lock) or the MS embedded
  *   signalling's QR(16,7,6); 16 until one decodes, and back to 16 at every carrier boundary.
  * - P25 Phase 1 `nac`: the BCH(63,16) network identifier; 0 between carriers. `p25p1_valid_decoded_nac()` refuses
- *   NAC 0x000 and 0xFFF, so a carrier whose NID decodes either leaves `nac` at 0.
+ *   NAC 0x000 and 0xFFF, dsd-neo's own acceptance rule (a dead or stuck input decodes as an all-zero or all-one NID),
+ *   so a carrier whose NID decodes either leaves `nac` at 0 and shows no NAC.
  * - P25 Phase 2 `p2_proven_nac`: the NAC the latest checked Phase 2 proof on this carrier named (issue #802), -1 for
  *   none: the seed (`p2_cc`, from the network status broadcast or the Phase 1 NID, or set by hand) once a burst
  *   descrambled with it (a scrambled FACCH or SACCH, or an ESS) passed its Reed-Solomon check, or the NAC a checked
@@ -30,7 +31,8 @@
  *   field also holds values that are not a RAN, which the terminal shows in its place: an IDAS (Type-D) carrier's SCCH
  *   area bit, and the fixed 7 a DCR transmission is given. The protocol marks
  *   those with `nxdn_last_ran_stand_in`, and the reader takes none of them: neither carrier has an access code.
- * - dPMR `dpmr_color_code`: the channel code's exact match in the colour-code table, set only once the transmission
+ * - dPMR `dpmr_color_code`: the colour-code table's entry whose 12 information-bearing bits (the channel code's dibit
+ *   MSBs; the LSBs are forced to 1 before the lookup) match the received channel code's, set only once the transmission
  *   is confirmed; -1 between carriers.
  * - M17 CAN: the low four bits of the call's service options, which the CRC-checked LSF carries; only once the call
  *   has service metadata.
@@ -60,7 +62,7 @@ extern "C" {
 typedef enum {
     DSD_ACCESS_CODE_NONE = 0,       /**< No code, or none known. */
     DSD_ACCESS_CODE_COLOR_CODE = 1, /**< DMR (0..15), dPMR (0..63) or TETRA (0..63) colour code. */
-    DSD_ACCESS_CODE_NAC = 2,        /**< P25 network access code (0x001..0xFFE). */
+    DSD_ACCESS_CODE_NAC = 2,        /**< P25 network access code (0x001..0xFFE; dsd-neo takes no 0x000 or 0xFFF). */
     DSD_ACCESS_CODE_RAN = 3,        /**< NXDN radio access number (0..63). */
     DSD_ACCESS_CODE_CAN = 4,        /**< M17 channel access number (0..15). */
 } dsd_access_code_kind;

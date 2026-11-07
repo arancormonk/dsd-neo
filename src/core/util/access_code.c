@@ -35,7 +35,8 @@ dsd_access_code_kind_for_protocol(int synctype) {
     return DSD_ACCESS_CODE_NONE;
 }
 
-/* A P25 NAC as the NID and the Phase 2 network status carry it: twelve bits, with 0x000 and 0xFFF reserved. */
+/* A P25 NAC as the NID and the Phase 2 network status carry it: twelve bits. dsd-neo takes no NAC 0x000 or 0xFFF, which
+ * a dead or stuck input decodes as, so a carrier set to either shows no NAC. */
 static int
 access_code_valid_nac(unsigned long long nac) {
     return nac >= 0x001ULL && nac <= 0xFFEULL;

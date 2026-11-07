@@ -2783,9 +2783,9 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
     /* The dPMR colour code, which only the confirmed path publishes; the no-carrier pass also resets it with the
      * confirmation evidence (no_carrier_reset_call_strings_and_dpmr()). */
     state->dpmr_color_code = -1;
-    /* The Phase 1 NAC: a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves it as it was while the frame still
-     * dispatches, so a Phase 1 call on the next carrier would read this one's. The no-carrier pass resets it as well
-     * (no_carrier_reset_voice_and_audio_metrics()). */
+    /* The Phase 1 NAC: a NID whose BCH-decoded NAC is 000 or FFF, which dsd-neo refuses (a dead or stuck input decodes
+     * as either), leaves it as it was while the frame still dispatches, so a Phase 1 call on the next carrier would
+     * read this one's. The no-carrier pass resets it as well (no_carrier_reset_voice_and_audio_metrics()). */
     state->nac = 0;
     /* The Phase 2 proofs are the carrier's too: the next carrier's bursts, or a network status broadcast, prove the seed
      * and a NAC again. p2_cc itself is the descrambling key and stays. */

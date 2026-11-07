@@ -73,7 +73,7 @@ test_range_edges(void) {
 static void
 test_out_of_range_is_hidden(void) {
     expect_hidden(DSD_ACCESS_CODE_COLOR_CODE, 64U);
-    /* The P25 NID's reserved values: no carrier is ever heard with them. */
+    /* NAC 0x000 and 0xFFF, which dsd-neo refuses (a dead or stuck input decodes as either), and past twelve bits. */
     expect_hidden(DSD_ACCESS_CODE_NAC, 0x000U);
     expect_hidden(DSD_ACCESS_CODE_NAC, 0xFFFU);
     expect_hidden(DSD_ACCESS_CODE_NAC, 0x1000U);
