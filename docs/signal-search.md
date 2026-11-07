@@ -171,6 +171,32 @@ list-decoded NID accepts several percent of random words and the voice link
 control's soft Reed-Solomon decode about a fifth, so neither tells such a carrier
 from noise. That carrier is monitored as NFM with the display above.
 
+P25 Phase 2 is confirmed by any Phase 2 MAC message whose CRC passes: on a voice
+channel's FACCH or SACCH (a call's push-to-talk or active message, its hangtime, idle
+or end, among others) as on a control channel's LCCH. A message let through with a
+failed CRC by `-F` confirms nothing. A Phase 2 voice channel usually scrambles these
+messages with its system's code (WACN, SYSID and NAC), so a visit must have the right
+code before anything on the channel decodes.
+
+Each visit starts from the session's own P25 site: the code, the frequency tables
+(IDEN) and the channel map the decoder held when the search started, including a code
+set with `-X` and an imported channel map. Whatever a visit learned about its system is
+dropped when the search leaves the channel, so one system's code or frequency tables
+never reach the next channel, and a code proven on one channel is never taken as proof
+on another. The session instead keeps the last 16 Phase 2 codes it confirmed, from
+network status broadcasts whose CRC passed and from codes recovered from a channel's
+own signalling, and each digital visit tries them on its channel. A new search starts
+with none; Pause and Resume keep them. A code set with `-X` in the decoder's extra
+arguments wins: every visit uses it, and the search neither tries a learned code nor
+recovers another, so only that system's Phase 2 channels decode.
+
+Each Auto visit starts on the 4800 symbols/s C4FM profile, whatever profile or
+modulation the decoder held when the search started. A modulation lock (`-m`) in the
+decoder's extra arguments is kept as given, and it confines identification to the
+profiles that share its timing: a lock such as `-mq` or `-mc` held on 4800 symbols/s
+never reaches P25 Phase 2, NXDN48, dPMR or ProVoice, and `-m2` holds 6000 symbols/s,
+where only P25 Phase 2 can be identified.
+
 A digital detection also shows the site it identified, from checked broadcasts heard
 during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SYSID,
 RFSS and site) from a TSBK, MBT or Phase 2 MAC whose CRC passed, read as

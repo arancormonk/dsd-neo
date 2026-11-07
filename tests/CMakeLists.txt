@@ -23362,6 +23362,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search
         engine/test_engine_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )
@@ -23382,6 +23383,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search_scene
         engine/test_engine_signal_search_scene.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )

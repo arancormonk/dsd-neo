@@ -65,6 +65,11 @@ Generated (do not edit/commit):
     flags as the session had them; when a mono preset (`-f1`) has turned both off, the
     baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
     voice frame is read, and Stop restores the session's own flags (`ENGINE_SIGNAL_SEARCH`).
+    An Auto visit restores that baseline's timing, so without a `-m` lock (`mod_cli_lock`) Start sets it to the
+    4800/4 C4FM profile (`search_start_profile()`: `sps_hunt_idx`, `samplesPerSymbol` and `symbolCenter` for 4800
+    sym/s at `dsd_scan_mode_symbol_timing_rate_hz()`, `rf_mod` 0) whatever the session's hunt held or learned; a
+    locked baseline keeps its whole tuple (`-mq` its CQPSK, `-m2` its 6000/4 P25 Phase 2 pin), and Stop restores the
+    session's own (issue #804, `ENGINE_SIGNAL_SEARCH`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A live strength that no
@@ -105,8 +110,22 @@ Generated (do not edit/commit):
     text into `hit.site` while the record's protocol is the hit's ("NXDN" for NXDN48/NXDN96; a
     site noted before identification waits for it), publishing the hit when the text changes,
     so a final broadcast before silence reaches the live status and the ended hit. Decoder state
-    (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never cleared or written
-    for it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple
+    (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never written from the site record
+    (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The session's own P25 site is restored at every
+    departure instead (issue #804): Start saves a `dsd_p25_site_snapshot` after the preset (the code and its hand-set
+    flag, RFSS/site, control channel and TDMA flags, IDEN tables, band plan, explicit TDMA flags, channel identifier and
+    channel map; `p25_site_snapshot.h`), and `search_restore_site()` puts it back whole right after the carrier boundary
+    in `search_queue_tune()` and `search_close_reception()`, whether or not the code changed (an IDEN update a visit
+    took before its network status is stamped with the code in force), so a hand-set `-X` code or an imported channel
+    map comes back and nothing a visit learned reaches the next. The proof (`p2_cc_verified`) is never restored: the
+    boundary cleared it, and a code proven on another carrier proves nothing here. A channel map that moved gets a new
+    `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it only once a boundary has closed the
+    reception; a decoder session that ends during a visit keeps the visit's code and proof for the final call
+    snapshots that follow. The coordinator also keeps the session's P25 Phase 2 code list (`p2_codes`, 16, most
+    recently confirmed first, a repeat moving to the front; Pause and Resume keep it, a new start begins empty):
+    `dsd_engine_signal_search_p25p2_code()` (the runtime code hook) adds a code without a reserved field from any
+    `dsd_p25p2_code_source` while a visit is receiving, and `dsd_engine_signal_search_p25p2_codes()` (the runtime codes
+    hook) answers code recovery only while a digital visit is receiving (`ENGINE_SIGNAL_SEARCH`). The hit's call tuple
     (`target`, `source`, `target_text`, `source_text`, `slot`, `crypt`) is one canonical call
     record's, copied whole by `dsd_engine_signal_search_call()` (installed as the runtime call
     hook) from the slot a call note names, under the same receiving gate: the record must be

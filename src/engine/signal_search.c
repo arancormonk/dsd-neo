@@ -33,6 +33,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "p25_site_snapshot.h"
 #include "scan_owner.h"
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -49,7 +50,9 @@ enum {
     SEARCH_LIVE_INTERVAL_MS = 250,
     SEARCH_LIVE_RETRY_MS = 1000,
     /* A live strength no accepted measurement has refreshed for three intervals and a retry is no current level. */
-    SEARCH_LIVE_STALE_MS = 3 * SEARCH_LIVE_INTERVAL_MS + SEARCH_LIVE_RETRY_MS
+    SEARCH_LIVE_STALE_MS = 3 * SEARCH_LIVE_INTERVAL_MS + SEARCH_LIVE_RETRY_MS,
+    /* The P25 Phase 2 scrambling codes a session keeps (issue #804). */
+    SEARCH_P2_CODES = 16
 };
 
 /* The call tuple: what one checked canonical call record says, copied whole when its call is noted. */
@@ -92,6 +95,12 @@ typedef struct {
     dsd_signal_search_site site;
     /* The visit's call tuple, from call notes alone; cleared at each landing and when the protocol changes. */
     search_call call;
+    /* The session's own P25 site as Start found it, put back whole after every departure (issue #804). */
+    dsd_p25_site_snapshot session_site;
+    /* The P25 Phase 2 scrambling codes the session learned, from content that passed its CRC/FEC check, most recently
+       confirmed first: code recovery tries them on each digital visit (issue #804). Pause and Resume keep them. */
+    uint64_t p2_codes[SEARCH_P2_CODES];
+    size_t p2_code_count;
 #ifdef USE_RADIO
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
@@ -289,6 +298,22 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
     return rtl_stream_prepare_retune_analog_profile_for_target(target, &family);
 }
 
+/* Right after the carrier boundary that ended a reception: the session's own P25 site comes back whole (issue #804).
+   What a visit learned or changed -- a code, IDEN tables, a channel mapped -- goes, and an operator's hand-set code
+   (-X) or imported channel map comes back, whether or not the code changed: a visit can take an IDEN update stamped
+   with the code in force before any network status names its system. The boundary cleared the code's proof, which was
+   the carrier left's, and nothing here sets it. A channel map that moved since the session's was saved moves on to a
+   new sequence, so a frontend that copies it on a change sees it go back. */
+static void
+search_restore_site(search_coord* c, dsd_state* state) {
+    const uint64_t seq = state->trunk_chan_map_seq;
+    dsd_p25_site_snapshot_restore(state, &c->session_site);
+    if (seq != c->session_site.trunk_chan_map_seq) {
+        state->trunk_chan_map_seq = seq + 1U;
+        c->session_site.trunk_chan_map_seq = state->trunk_chan_map_seq;
+    }
+}
+
 static int
 search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int visit, int analog) {
     search_cancel_measurements(c);
@@ -303,6 +328,7 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
     c->ticket = 0;
     c->tune_started = dsd_realtime_mono_ms();
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    search_restore_site(c, state);
     /* The boundary closed what the visit being left received, under its tag; the bypass passes nothing more until the
        next landing names its own visit (issue #809). */
     dsd_signal_search_visit_clear();
@@ -416,6 +442,31 @@ search_validate_start(const dsd_opts* opts, const dsd_state* state, const dsd_si
     return dsd_signal_search_validate_config(config, error, capacity);
 }
 
+static void
+search_coord_free(void* ptr) {
+    search_coord* c = (search_coord*)ptr;
+    if (c) {
+        dsd_p25_site_snapshot_clear(&c->session_site);
+    }
+    free(c);
+}
+
+/* Every Auto visit starts on the 4800/4 C4FM profile (issue #804): a visit restores the baseline Start captures, where
+   the session's hunt may have stood on any profile, or with CQPSK learned. A -m lock is the user's own timing and
+   modulation and stays whole: -mq keeps CQPSK, -m2 its 6000/4 P25 Phase 2 pin. Timed as the hunt times a profile, at
+   the rate the digital family runs at. */
+static void
+search_start_profile(const dsd_opts* opts, dsd_state* state) {
+    if (opts->mod_cli_lock) {
+        return;
+    }
+    const int rate_hz = dsd_scan_mode_symbol_timing_rate_hz(opts, state, 4800, 0);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, rate_hz);
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    state->rf_mod = 0;
+}
+
 #endif
 
 int
@@ -493,10 +544,12 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     if (!opts->dmr_stereo && !opts->dmr_mono) {
         opts->dmr_stereo = 1;
     }
-    if (dsd_scan_mode_begin(opts, state) || dsd_engine_scan_own(state, 1, c, free)) {
+    search_start_profile(opts, state);
+    dsd_p25_site_snapshot_save(state, &c->session_site);
+    if (dsd_scan_mode_begin(opts, state) || dsd_engine_scan_own(state, 1, c, search_coord_free)) {
         dsd_scan_mode_leave(opts, state);
         dsd_scan_settings_restore(&c->saved, opts, state);
-        free(c);
+        search_coord_free(c);
         return -1;
     }
     /* No visit is on the air before this search's first landing: what its first tune's boundary closes was received
@@ -506,6 +559,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     dsd_signal_search_site_set(dsd_engine_signal_search_site);
     dsd_signal_search_call_set(dsd_engine_signal_search_call);
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
+    dsd_signal_search_p25p2_codes_set(dsd_engine_signal_search_p25p2_codes);
+    dsd_signal_search_p25p2_code_set(dsd_engine_signal_search_p25p2_code);
     rtl_signal_search_set_owner(c->status.session_id);
     rtl_signal_search_bypass(1);
     /* The first enabled range: validation guarantees one, so this neither wraps the pass nor fails. */
@@ -659,6 +714,54 @@ dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_si
     if (search_refresh_site(c)) {
         search_publish(c, 1);
     }
+}
+
+/* A code with no reserved field: WACN neither 0 nor FFFFF, SYSID and NAC neither 0 nor FFF, nothing above 44 bits. */
+static int
+search_p25p2_code_valid(uint64_t code) {
+    const uint64_t wacn = code >> 24;
+    const uint64_t sysid = (code >> 12) & 0xFFFU;
+    const uint64_t nac = code & 0xFFFU;
+    return wacn != 0U && wacn < 0xFFFFFU && sysid != 0U && sysid != 0xFFFU && nac != 0U && nac != 0xFFFU;
+}
+
+size_t
+dsd_engine_signal_search_p25p2_codes(const dsd_state* state, uint64_t* out, size_t cap) {
+    const search_coord* c = search_get(state);
+    /* An analog visit, the probe's NFM fallback included, runs no Phase 2 decoder. */
+    if (!c || !out || !search_receiving(c, state) || c->analog_visit) {
+        return 0;
+    }
+    const size_t n = c->p2_code_count < cap ? c->p2_code_count : cap;
+    for (size_t i = 0; i < n; ++i) {
+        out[i] = c->p2_codes[i];
+    }
+    return n;
+}
+
+void
+dsd_engine_signal_search_p25p2_code(const dsd_state* state, uint64_t code, int source) {
+    search_coord* c = search_get(state);
+    if (!c || !search_receiving(c, state) || source < DSD_P25P2_CODE_RECOVERED || source > DSD_P25P2_CODE_P1_NETWORK
+        || !search_p25p2_code_valid(code)) {
+        return;
+    }
+    /* Confirmed again, a code moves to the front; a new one goes there, the oldest leaving a full list. */
+    size_t at = 0;
+    while (at < c->p2_code_count && c->p2_codes[at] != code) {
+        ++at;
+    }
+    if (at == c->p2_code_count) {
+        if (c->p2_code_count < SEARCH_P2_CODES) {
+            ++c->p2_code_count;
+        } else {
+            at = SEARCH_P2_CODES - 1;
+        }
+    }
+    for (; at > 0; --at) {
+        c->p2_codes[at] = c->p2_codes[at - 1];
+    }
+    c->p2_codes[0] = code;
 }
 
 /* The search's name for a call record's protocol, or NULL for one the search does not identify by its calls. */
@@ -1077,6 +1180,7 @@ static void
 search_close_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
     c->reception_ended = 1;
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    search_restore_site(c, state);
     dsd_signal_search_visit_clear();
     dsd_frame_sync_reset_acquisition(opts, state, 1);
     dsd_telemetry_publish_both_and_redraw(opts, state);
@@ -1442,6 +1546,12 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     search_cancel_measurements(c);
     search_restore(c, opts, state);
+    /* The session's own P25 site, once a boundary has closed the reception (a Stop, an input lost, a pause or a
+       failure). A decoder session ending during a visit keeps the visit's: its final call snapshots follow, and a call
+       still active is labelled with the code proven on its own carrier, never the session's (issue #804). */
+    if (c->reception_ended) {
+        search_restore_site(c, state);
+    }
     /* The session's frequency is the one the search started from, as after a Stop's restore tune: a session ending
        under the search autosaves its configuration next, which must not keep a visit's frequency. */
     opts->rtlsdr_center_freq = c->saved_frequency;
