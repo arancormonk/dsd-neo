@@ -14,6 +14,12 @@
  * verdict is the same for every burst at one T. So a candidate (solved, or a code the Signal search session learned)
  * is only accepted once a burst of another window, located by its own I-ISCH, at another T, passes Reed-Solomon (the
  * punctured symbols erased, nothing more) and its MAC CRC under it.
+ *
+ * A burst is left to the normal path only when the code in force passes that same check, which is what proves a code
+ * (p25p2_acch_verdict): one the normal path decodes with soft erasures proves nothing, so recovery still tries it.
+ *
+ * Nothing here allocates per window or per burst: the tables are built once per process (ez_p25p2_seed_tables_get())
+ * and the context once per decoder state, at its first located window on an unproven carrier.
  */
 
 #include "p25p2_seed_recover.h"
@@ -41,8 +47,6 @@ enum {
     SR_TIMESLOTS = 4,
     SR_TIMESLOT_BITS = 360,
     SR_SEQUENCE_START = 20, /* a timeslot's burst bit 0 takes sequence bit 20 + 360 * T */
-    SR_BURST_BITS = 320,
-    SR_SUPERFRAME_BITS = 4320,
     SR_SLOTS = 12,
     SR_CODE_BITS = 44,
     SR_SYMBOL_BITS = 6,
@@ -116,6 +120,8 @@ sr_ctx_peek(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(p25p2_seed_recover_ctx, state, DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER);
 }
 
+/* The context, made at the first located window of an unproven carrier and kept for the decoder state's life: the
+   module's only allocation besides the tables. */
 static p25p2_seed_recover_ctx*
 sr_ctx_get(dsd_state* state) {
     p25p2_seed_recover_ctx* ctx = sr_ctx_peek(state);
@@ -191,16 +197,14 @@ sr_load_burst(const ez_p25p2_seed_tables* tables, const dsd_state* state, int ts
    CRC: what proves a code on the normal path (p25p2_acch_verdict). Writes nothing but local buffers. */
 static int
 sr_try_code(const ez_p25p2_seed_tables* tables, const sr_burst* burst, uint64_t code) {
-    uint8_t sequence[SR_SUPERFRAME_BITS];
     const int start = SR_SEQUENCE_START + (SR_TIMESLOT_BITS * burst->t);
-    p25p2_generate_scramble_bits(code >> 24, (code >> 12) & 0xFFFU, code & 0xFFFU, sequence,
-                                 (size_t)start + SR_BURST_BITS);
     int payload[EZ_P25P2_SEED_MAX_BITS];
     int parity[EZ_P25P2_SEED_MAX_CHECKS];
     const int n_payload = tables->payload_bits[burst->kind];
     const int n_bits = sr_n_bits(tables, burst->kind);
     for (int k = 0; k < n_bits; k++) {
-        const int bit = sr_bit(burst->bits, k) ^ sequence[start + tables->burst_bit[burst->kind][k]];
+        const uint64_t mask = tables->sequence[start + tables->burst_bit[burst->kind][k]];
+        const int bit = sr_bit(burst->bits, k) ^ (dsd_popcount64(mask & code) & 1);
         if (k < n_payload) {
             payload[k] = bit;
         } else {
@@ -380,16 +384,16 @@ sr_find_candidate(const dsd_state* state, sr_learned* learned, const ez_p25p2_se
 }
 
 /* One burst, in order: the code in force, the pending candidate, the learned codes, a solve. Only the context
-   changes, and it is allocated only for a first candidate (@p ctxp). */
+   changes: a burst the code in force passes drops the candidate, which that code's proof makes moot. */
 static sr_burst_result
-sr_process_burst(dsd_state* state, p25p2_seed_recover_ctx** ctxp, sr_learned* learned,
+sr_process_burst(const dsd_state* state, p25p2_seed_recover_ctx* ctx, sr_learned* learned,
                  const ez_p25p2_seed_tables* tables, const sr_burst* burst) {
     const uint64_t in_force = sr_code_in_force(state);
     if (in_force != 0U && sr_try_code(tables, burst, in_force)) {
+        DSD_MEMSET(&ctx->pending, 0, sizeof(ctx->pending));
         return SR_BURST_IN_FORCE;
     }
-    p25p2_seed_recover_ctx* ctx = *ctxp;
-    const int has_pending = ctx != NULL && ctx->pending.valid;
+    const int has_pending = ctx->pending.valid;
     if (has_pending && ctx->pending.code != in_force && sr_try_code(tables, burst, ctx->pending.code)) {
         if (ctx->pending.source_window != ctx->window_serial && ctx->pending.source_t != burst->t) {
             return SR_BURST_CONFIRMED;
@@ -401,11 +405,6 @@ sr_process_burst(dsd_state* state, p25p2_seed_recover_ctx** ctxp, sr_learned* le
     if (!sr_find_candidate(state, learned, tables, burst, tried, &code)) {
         return SR_BURST_NOTHING;
     }
-    ctx = ctx ? ctx : sr_ctx_get(state);
-    if (!ctx) {
-        return SR_BURST_NOTHING;
-    }
-    *ctxp = ctx;
     ctx->pending.valid = 1;
     ctx->pending.code = code;
     ctx->pending.source_t = burst->t;
@@ -451,7 +450,12 @@ sr_ctx_next_window(p25p2_seed_recover_ctx* ctx, const dsd_state* state, int posi
 
 void
 p25p2_seed_recover_window(const dsd_opts* opts, dsd_state* state, int isch_located, int position_contradicted) {
-    if (!state || state->p2_cc_verified != 0U) {
+    if (!state) {
+        return;
+    }
+    if (state->p2_cc_verified != 0U) {
+        // A proven code leaves nothing to recover: a candidate from before the proof does not outlive it.
+        p25p2_seed_recover_forget(state);
         return;
     }
     if (!opts || state->p2_hardset != 0 || opts->trunk_enable != 0) {
@@ -460,7 +464,8 @@ p25p2_seed_recover_window(const dsd_opts* opts, dsd_state* state, int isch_locat
     p25p2_seed_recover_ctx* ctx = sr_ctx_peek(state);
     sr_ctx_next_window(ctx, state, position_contradicted);
     const ez_p25p2_seed_tables* tables = (position_contradicted || !isch_located) ? NULL : ez_p25p2_seed_tables_get();
-    if (!tables) {
+    ctx = tables ? sr_ctx_get(state) : NULL;
+    if (!ctx) {
         return;
     }
     sr_learned learned = {0};
@@ -469,7 +474,7 @@ p25p2_seed_recover_window(const dsd_opts* opts, dsd_state* state, int isch_locat
         if (!sr_load_burst(tables, state, ts, &burst)) {
             continue;
         }
-        const sr_burst_result result = sr_process_burst(state, &ctx, &learned, tables, &burst);
+        const sr_burst_result result = sr_process_burst(state, ctx, &learned, tables, &burst);
         if (result == SR_BURST_CONFIRMED) {
             sr_commit(state, ctx);
             return;

@@ -369,30 +369,6 @@ isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
     return isch_lookup(isch);
 }
 
-/* Scrambling code recovery (issue #804) reads its tables and decodes with the fixed erasures; without tables it does
-   nothing, so these windows exercise the dispatch and its stubbed decoders alone. */
-const struct ez_p25p2_seed_tables*
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_p25p2_seed_tables_get(void) {
-    return NULL;
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_facch_fixed(int* payload, int* parity) {
-    (void)payload;
-    (void)parity;
-    return -1;
-}
-
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-ez_rs28_sacch_fixed(int* payload, int* parity) {
-    (void)payload;
-    (void)parity;
-    return -1;
-}
-
 /* A decode that succeeds hands back a word whose MAC CRC-12 checks, as the decode of a sent FACCH (CRC over 144 bits)
    or SACCH (168) would: the frame decoder takes a FACCH or SACCH as decoded only once its checksum passes too
    (issue #804). The CRC is x^12 + x^11 + x^7 + x^4 + x^2 + x + 1, zero initial value, inverted (p25_crc.c). */

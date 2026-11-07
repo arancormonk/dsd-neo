@@ -504,13 +504,12 @@ ez_p25p2_seed_tables_get(void) {
             return nullptr;
         }
         try {
-            std::vector<uint64_t> masks(P2_SUPERFRAME_BITS, 0);
             ez_p25p2_seed_tables* built = new ez_p25p2_seed_tables();
-            seed_sequence_masks(masks.data());
+            seed_sequence_masks(built->sequence);
             seed_tables_kind(built, EZ_P25P2_SEED_FACCH, kFacchLayout, kFacchRuns,
-                             sizeof(kFacchRuns) / sizeof(kFacchRuns[0]), masks.data());
+                             sizeof(kFacchRuns) / sizeof(kFacchRuns[0]), built->sequence);
             seed_tables_kind(built, EZ_P25P2_SEED_SACCH, kSacchLayout, kSacchRuns,
-                             sizeof(kSacchRuns) / sizeof(kSacchRuns[0]), masks.data());
+                             sizeof(kSacchRuns) / sizeof(kSacchRuns[0]), built->sequence);
             return built;
         } catch (...) {
             return nullptr;

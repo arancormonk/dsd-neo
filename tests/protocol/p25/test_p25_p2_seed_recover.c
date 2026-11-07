@@ -10,11 +10,13 @@
  * reached it.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/ez.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -182,6 +184,7 @@ rng32(void) {
 static void
 fresh_decoder(int relaxed) {
     dsd_state_ext_free_all(g_state);
+    free(g_state->event_history_s);
     DSD_MEMSET(g_opts, 0, sizeof(*g_opts));
     DSD_MEMSET(g_state, 0, sizeof(*g_state));
     dsd_opts_set_relaxed_crc(g_opts, relaxed);
@@ -319,9 +322,78 @@ parity64(uint64_t v) {
     return dsd_popcount64(v) & 1;
 }
 
+/* Whether the tables' burst bits are the builder's for @p kind. */
+static int
+layout_matches(const ez_p25p2_seed_tables* tables, int kind, int duid) {
+    const int first_symbol = kind ? 5 : 9;
+    const int n_bits = tables->payload_bits[kind] + tables->checks[kind];
+    int ok = tables->payload_bits[kind] == (kind ? 180 : 156) && tables->checks[kind] == (kind ? 132 : 114);
+    for (int k = 0; k < n_bits; k++) {
+        int offsets[6];
+        const int rs_index =
+            (k < tables->payload_bits[kind]) ? first_symbol + (k / 6) : 35 + ((k - tables->payload_bits[kind]) / 6);
+        ok &= p25p2_bb_symbol_offsets(duid, rs_index, offsets) && offsets[k % 6] == tables->burst_bit[kind][k];
+    }
+    return ok;
+}
+
+/* For @p kind at slot @p t: every check row XORs to 0 over the builder's codeword (@p checks_ok), and over its
+   scrambled all-zero codeword to the seed row's parity with @p code (@p seeds_ok). */
+static void
+rows_match(const ez_p25p2_seed_tables* tables, int kind, int duid, uint64_t code, int t, int trial, int* checks_ok,
+           int* seeds_ok) {
+    const int n_bits = tables->payload_bits[kind] + tables->checks[kind];
+    int t0 = 0;
+    int ts = 0;
+    window_holding(t, trial & 1, &t0, &ts);
+    p25p2_bb_slot slots[4];
+    data_slots(slots);
+    idle_slot(&slots[ts], duid, trial);
+    uint8_t clear[1440];
+    p25p2_bb_window(0U, t0, slots, clear);
+    slots[ts].fill_crc = 0;
+    DSD_MEMSET(slots[ts].mac, 0, sizeof(slots[ts].mac));
+    uint8_t zero[1440];
+    p25p2_bb_window(code, t0, slots, zero);
+    for (int i = 0; i < tables->checks[kind]; i++) {
+        int clear_ones = 0;
+        int zero_ones = 0;
+        for (int k = 0; k < n_bits; k++) {
+            if ((tables->check[kind][i][k / 64] >> (k % 64)) & 1U) {
+                clear_ones += clear[(ts * 360) + tables->burst_bit[kind][k]];
+                zero_ones += zero[(ts * 360) + tables->burst_bit[kind][k]];
+            }
+        }
+        *checks_ok &= (clear_ones & 1) == 0;
+        *seeds_ok &= (zero_ones & 1) == parity64(tables->seed[kind][t][i] & code);
+    }
+}
+
+static uint64_t
+random_code(void) {
+    return CODE_OF(1 + (rng32() % 0xFFFFEU), 1 + (rng32() % 0xFFEU), 1 + (rng32() % 0xFFEU));
+}
+
+/* Whether the sequence masks give what p25p2_generate_scramble_bits() generates, for a few random codes. */
+static int
+sequence_matches(const ez_p25p2_seed_tables* tables) {
+    int ok = 1;
+    for (int trial = 0; trial < 4; trial++) {
+        const uint64_t code = random_code();
+        uint8_t sequence[EZ_P25P2_SEED_SEQUENCE_BITS];
+        p25p2_generate_scramble_bits(code >> 24, (code >> 12) & 0xFFFU, code & 0xFFFU, sequence,
+                                     EZ_P25P2_SEED_SEQUENCE_BITS);
+        for (int j = 0; j < EZ_P25P2_SEED_SEQUENCE_BITS; j++) {
+            ok &= sequence[j] == parity64(tables->sequence[j] & code);
+        }
+    }
+    return ok;
+}
+
 /* The tables against the builder, which scrambles with p25p2_generate_scramble_bits() and encodes with the RS
-   encoder: the burst bits are the builder's, every check row XORs to 0 over a codeword, and over a scrambled
-   all-zero codeword each check row's XOR is the seed row's parity with the code, at every T. */
+   encoder: the burst bits are the builder's, every check row XORs to 0 over a codeword, over a scrambled all-zero
+   codeword each check row's XOR is the seed row's parity with the code, at every T, and the sequence masks give the
+   scrambler's sequence. */
 static int
 test_tables_match_direct_encoding(void) {
     const ez_p25p2_seed_tables* tables = ez_p25p2_seed_tables_get();
@@ -330,50 +402,19 @@ test_tables_match_direct_encoding(void) {
         return rc;
     }
     static const int duids[2] = {DUID_FACCH_S, DUID_SACCH_S};
-    static const int first_symbol[2] = {9, 5};
     int layout_ok = 1;
     int checks_ok = 1;
     int seeds_ok = 1;
     for (int kind = 0; kind < 2; kind++) {
-        const int n_bits = tables->payload_bits[kind] + tables->checks[kind];
-        layout_ok &= tables->payload_bits[kind] == (kind ? 180 : 156) && tables->checks[kind] == (kind ? 132 : 114);
-        for (int k = 0; k < n_bits; k++) {
-            int offsets[6];
-            const int rs_index = (k < tables->payload_bits[kind]) ? first_symbol[kind] + (k / 6)
-                                                                  : 35 + ((k - tables->payload_bits[kind]) / 6);
-            layout_ok &=
-                p25p2_bb_symbol_offsets(duids[kind], rs_index, offsets) && offsets[k % 6] == tables->burst_bit[kind][k];
-        }
+        layout_ok &= layout_matches(tables, kind, duids[kind]);
         for (int trial = 0; trial < 8; trial++) {
-            const uint64_t code = CODE_OF(1 + (rng32() % 0xFFFFEU), 1 + (rng32() % 0xFFEU), 1 + (rng32() % 0xFFEU));
+            const uint64_t code = random_code();
             for (int t = 0; t < 12; t++) {
-                int t0 = 0;
-                int ts = 0;
-                window_holding(t, trial & 1, &t0, &ts);
-                p25p2_bb_slot slots[4];
-                data_slots(slots);
-                idle_slot(&slots[ts], duids[kind], trial);
-                uint8_t clear[1440];
-                p25p2_bb_window(0U, t0, slots, clear);
-                slots[ts].fill_crc = 0;
-                DSD_MEMSET(slots[ts].mac, 0, sizeof(slots[ts].mac));
-                uint8_t zero[1440];
-                p25p2_bb_window(code, t0, slots, zero);
-                for (int i = 0; i < tables->checks[kind]; i++) {
-                    int clear_ones = 0;
-                    int zero_ones = 0;
-                    for (int k = 0; k < n_bits; k++) {
-                        if ((tables->check[kind][i][k / 64] >> (k % 64)) & 1U) {
-                            clear_ones += clear[(ts * 360) + tables->burst_bit[kind][k]];
-                            zero_ones += zero[(ts * 360) + tables->burst_bit[kind][k]];
-                        }
-                    }
-                    checks_ok &= (clear_ones & 1) == 0;
-                    seeds_ok &= (zero_ones & 1) == parity64(tables->seed[kind][t][i] & code);
-                }
+                rows_match(tables, kind, duids[kind], code, t, trial, &checks_ok, &seeds_ok);
             }
         }
     }
+    rc |= expect("the sequence masks give p25p2_generate_scramble_bits()", sequence_matches(tables));
     rc |= expect("the tables' burst bits are the builder's", layout_ok);
     rc |= expect("every check row XORs to 0 over a codeword", checks_ok);
     rc |= expect("every seed row matches the scrambled zero codeword", seeds_ok);
@@ -441,17 +482,28 @@ test_high_llr_prefix_error(void) {
                   pending == 0U || pending == TEST_CODE);
 }
 
-/* Random windows with signalling DUIDs and a located position: whatever they give, nothing is committed. */
+/* Random windows with signalling DUIDs and a located position, the first of them with a wrong code waiting for
+   confirmation: whatever they give, nothing is confirmed or committed. */
 static int
 test_noise_never_accepted(void) {
-    enum { NOISE_WINDOWS = 20000 };
+    /* The first windows read with a wrong code waiting (each of their bursts is tried under it first, which costs an
+       RS decode), the rest with none. */
+    enum { NOISE_WINDOWS = 20000, NOISE_WINDOWS_WAITING = 5000 };
 
     static const int starts[6] = {2, 3, 6, 7, 10, 11};
     static const uint8_t duid_codewords[2] = {0x39U, 0x9AU}; /* DUID 3 and 9 */
     static const int duid_offsets[8] = {0, 1, 74, 75, 244, 245, 318, 319};
     fresh_decoder(0);
+    one_burst_window(OTHER_CODE, 10, 0, DUID_SACCH_S, 1);
+    feed(GAP_INDEPENDENT);
+    int rc = expect("noise: a wrong code waits", pending_code() == OTHER_CODE);
     int candidates = 0;
+    int waiting_held = 0;
     for (int w = 0; w < NOISE_WINDOWS; w++) {
+        if (w == NOISE_WINDOWS_WAITING) {
+            waiting_held = pending_code() == OTHER_CODE;
+            p25p2_seed_recover_forget(g_state);
+        }
         for (int i = 0; i < 1400; i++) {
             const uint32_t r = rng32();
             p2bit[i] = (int)(r & 1U);
@@ -468,7 +520,8 @@ test_noise_never_accepted(void) {
         const uint64_t after = pending_code();
         candidates += after != 0U && after != before;
     }
-    int rc = expect("noise commits no code", code_in_force() == 0U && g_code_notes == 0);
+    rc |= expect("noise confirms no waiting code and commits none", code_in_force() == 0U && g_code_notes == 0);
+    rc |= expect("the wrong code waited through its noise windows", candidates > 0 || waiting_held);
     if (candidates > 0) {
         DSD_FPRINTF(stderr, "note: %d noise windows gave a candidate\n", candidates);
     }
@@ -610,10 +663,20 @@ test_weak_right_code_is_not_replaced(void) {
     static const int weak_symbols[12] = {10, 13, 16, 19, 22, 25, 28, 31, 37, 43, 49, 52};
     fresh_decoder(0);
     hold_code(TEST_CODE);
-    one_burst_window(OTHER_CODE, 10, 0, DUID_SACCH_S, 1);
+    /* Two clean bursts under another code in one window, at slots 10 and 11: a candidate, not a confirmation. */
+    p25p2_bb_slot slots[4];
+    data_slots(slots);
+    idle_slot(&slots[0], DUID_SACCH_S, 1);
+    idle_slot(&slots[1], DUID_SACCH_S, 2);
+    build(OTHER_CODE, 10, slots);
     feed(GAP_INDEPENDENT);
-    int rc = expect("a burst under another code leaves a candidate", pending_code() == OTHER_CODE);
-    rc |= expect("but the code in force stays", code_in_force() == TEST_CODE);
+    int rc = expect("bursts under another code leave a candidate", pending_code() == OTHER_CODE);
+    rc |= expect("another slot of the same window keeps the code in force", code_in_force() == TEST_CODE);
+    /* Another window, the same slot: still no confirmation. */
+    one_burst_window(OTHER_CODE, 10, 0, DUID_SACCH_S, 3);
+    feed(GAP_INDEPENDENT);
+    rc |= expect("the same slot of another window keeps the code in force",
+                 code_in_force() == TEST_CODE && pending_code() == OTHER_CODE && g_code_notes == 0);
 
     for (int w = 0; w < 3; w++) {
         one_burst_window(TEST_CODE, 6, w % 4, DUID_FACCH_S, w);
@@ -629,44 +692,132 @@ test_weak_right_code_is_not_replaced(void) {
     feed(GAP_INDEPENDENT);
     rc |= expect("a clean burst proves the code in force", code_in_force() == TEST_CODE && g_state->p2_cc_verified);
     rc |= expect("nothing was recovered", g_code_notes == 0);
+    rc |= expect("and the other code no longer waits", pending_code() == 0U);
     return rc;
 }
 
-/* The window that gives a candidate changes nothing else: no counter, no service options, no received identity, no
-   event, no evidence, no call. */
-static int
-test_no_side_effects_before_acceptance(void) {
+/* The candidate window, with an active call on slot 1, as a decoder with recovery (or without it, @p recover 0: a
+   hand-set flag with no code held changes nothing else) reads it. */
+static void
+side_effect_window(int recover) {
     fresh_decoder(0);
-    dsd_signal_search_evidence_set(evidence_note);
-    dsd_signal_search_call_set(call_note);
+    g_state->event_history_s = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    g_state->p2_hardset = recover ? 0 : 1;
     g_state->dmr_so = 0x40;
     g_state->dmr_soR = 0x41;
-    dsd_state* before = (dsd_state*)calloc(1U, sizeof(*before));
-    if (before == NULL) {
-        return expect("snapshot allocated", 0);
-    }
-    DSD_MEMCPY(before, g_state, sizeof(*before));
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201,
+        .policy_target_id = 1201,
+        .ota_source_id = 1202,
+        .has_service_metadata = 1U,
+    };
+    (void)dsd_call_state_observe(g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     p25p2_bb_slot slots[4];
     data_slots(slots);
     idle_slot(&slots[0], DUID_SACCH_S, 1);
     idle_slot(&slots[2], DUID_FACCH_S, 2);
     build(TEST_CODE, 10, slots);
     feed(GAP_INDEPENDENT);
-    int rc = expect("the window gave a candidate", pending_code() == TEST_CODE);
-    rc |= expect("no code", code_in_force() == 0U && g_state->p2_cc_verified == 0U);
-    rc |= expect("no RS counter", g_state->p25_p2_rs_facch_ok == before->p25_p2_rs_facch_ok
-                                      && g_state->p25_p2_rs_facch_err == before->p25_p2_rs_facch_err
-                                      && g_state->p25_p2_rs_sacch_ok == before->p25_p2_rs_sacch_ok
-                                      && g_state->p25_p2_rs_sacch_err == before->p25_p2_rs_sacch_err
-                                      && g_state->p25_p2_soft_erasure_ok == before->p25_p2_soft_erasure_ok);
+}
+
+/* Whether no event was pushed, merged or rendered on either slot differently from @p control: every one of those
+   moves the ring's counters. */
+static int
+events_match(const Event_History_I* events, const Event_History_I* control) {
+    int ok = 1;
+    for (int slot = 0; slot < 2; slot++) {
+        ok &= events[slot].revision == control[slot].revision && events[slot].push_seq == control[slot].push_seq
+              && events[slot].commit_rev == control[slot].commit_rev;
+    }
+    return ok;
+}
+
+/* What the candidate window may not change, against the same window read without recovery. */
+static int
+same_as_control(const dsd_state* control, const Event_History_I* control_events,
+                const dsd_call_snapshot* control_call) {
+    int rc = expect("no RS counter", g_state->p25_p2_rs_facch_ok == control->p25_p2_rs_facch_ok
+                                         && g_state->p25_p2_rs_facch_err == control->p25_p2_rs_facch_err
+                                         && g_state->p25_p2_rs_sacch_ok == control->p25_p2_rs_sacch_ok
+                                         && g_state->p25_p2_rs_sacch_err == control->p25_p2_rs_sacch_err
+                                         && g_state->p25_p2_soft_erasure_ok == control->p25_p2_soft_erasure_ok);
     rc |= expect("no service options", g_state->dmr_so == 0x40 && g_state->dmr_soR == 0x41);
-    rc |= expect("no received identity", memcmp(&g_state->rx_id, &before->rx_id, sizeof(before->rx_id)) == 0);
-    rc |= expect("no TDMA carrier", g_state->tdma_carrier == before->tdma_carrier);
+    rc |= expect("no received identity", memcmp(&g_state->rx_id, &control->rx_id, sizeof(control->rx_id)) == 0);
+    rc |= expect("no TDMA carrier", g_state->tdma_carrier == control->tdma_carrier);
+    rc |=
+        expect("no event", g_state->event_history_s != NULL && events_match(g_state->event_history_s, control_events));
+    dsd_call_snapshot call;
+    rc |= expect("the call is untouched", control_call != NULL && dsd_call_state_get(g_state, 1U, &call) > 0
+                                              && call.phase == control_call->phase
+                                              && call.ota_target_id == control_call->ota_target_id
+                                              && call.ota_source_id == control_call->ota_source_id);
     rc |= expect("no MAC", g_vpdu_calls[P25_MAC_PDU_IDLE] == 0);
     rc |= expect("no evidence, call or code note", g_evidence_notes == 0 && g_call_notes == 0 && g_code_notes == 0);
-    free(before);
+    return rc;
+}
+
+/* The window that gives a candidate changes nothing else: no counter, no service options, no received identity, no
+   event, no evidence, no call. Its counters, events and call match a decoder without recovery's. */
+static int
+test_no_side_effects_before_acceptance(void) {
+    dsd_signal_search_evidence_set(evidence_note);
+    dsd_signal_search_call_set(call_note);
+    dsd_state* control = (dsd_state*)calloc(1U, sizeof(*control));
+    Event_History_I* control_events = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    int rc = expect("snapshots allocated", control != NULL && control_events != NULL);
+    if (rc == 0) {
+        side_effect_window(0);
+        rc |= expect("events allocated", g_state->event_history_s != NULL);
+    }
+    if (rc == 0) {
+        rc |= expect("without recovery nothing waits", pending_code() == 0U);
+        DSD_MEMCPY(control, g_state, sizeof(*control));
+        DSD_MEMCPY(control_events, g_state->event_history_s, 2U * sizeof(Event_History_I));
+        dsd_call_snapshot control_call;
+        const int control_call_ok = dsd_call_state_get(g_state, 1U, &control_call) > 0;
+
+        side_effect_window(1);
+        rc |= expect("the window gave a candidate", pending_code() == TEST_CODE);
+        rc |= expect("no code", code_in_force() == 0U && g_state->p2_cc_verified == 0U);
+        rc |= same_as_control(control, control_events, control_call_ok ? &control_call : NULL);
+    }
+    free(control);
+    free(control_events);
     dsd_signal_search_evidence_set(NULL);
     dsd_signal_search_call_set(NULL);
+    return rc;
+}
+
+/* A proven code leaves nothing to recover: a candidate from before the proof is dropped by a burst the code in force
+   passes, and by a window on a proven carrier, so it cannot be confirmed once the proof is gone. */
+static int
+test_proof_drops_pending(void) {
+    fresh_decoder(0);
+    hold_code(TEST_CODE);
+    one_burst_window(OTHER_CODE, 10, 0, DUID_SACCH_S, 1);
+    feed(GAP_INDEPENDENT);
+    int rc = expect("a wrong code waits", pending_code() == OTHER_CODE);
+    one_burst_window(TEST_CODE, 6, 1, DUID_FACCH_S, 2);
+    feed(GAP_INDEPENDENT);
+    rc |= expect("a burst the code in force passes drops it", pending_code() == 0U && g_state->p2_cc_verified == 1U);
+
+    fresh_decoder(0);
+    hold_code(TEST_CODE);
+    one_burst_window(OTHER_CODE, 10, 0, DUID_SACCH_S, 1);
+    feed(GAP_INDEPENDENT);
+    g_state->p2_cc_verified = 1U;
+    p25p2_bb_slot slots[4];
+    data_slots(slots);
+    build(TEST_CODE, 6, slots);
+    feed(GAP_INDEPENDENT);
+    rc |= expect("a window on a proven carrier drops it", pending_code() == 0U);
+    g_state->p2_cc_verified = 0U;
+    one_burst_window(OTHER_CODE, 6, 1, DUID_FACCH_S, 3);
+    feed(GAP_INDEPENDENT);
+    rc |= expect("once the proof is gone it confirms nothing", code_in_force() == TEST_CODE && g_code_notes == 0);
     return rc;
 }
 
@@ -861,6 +1012,7 @@ main(void) {
     rc |= test_learned_code_accepted();
     rc |= test_weak_right_code_is_not_replaced();
     rc |= test_no_side_effects_before_acceptance();
+    rc |= test_proof_drops_pending();
     rc |= test_hardset_and_trunking_skip();
     rc |= test_boundary_drops_pending();
     rc |= test_continuity_alone_neither_solves_nor_confirms();
@@ -869,6 +1021,7 @@ main(void) {
     dsd_signal_search_p25p2_codes_set(NULL);
     dsd_signal_search_p25p2_code_set(NULL);
     dsd_state_ext_free_all(g_state);
+    free(g_state->event_history_s);
     free(g_state);
     free(g_opts);
     if (rc == 0) {

@@ -79,12 +79,6 @@ int ez_rs28_ess(int* payload, int* parity, const int* erasures, int n_erasures);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 int isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-const struct ez_p25p2_seed_tables* ez_p25p2_seed_tables_get(void);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int ez_rs28_facch_fixed(int* payload, int* parity);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-int ez_rs28_sacch_fixed(int* payload, int* parity);
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 void process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void process_FACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits);
@@ -248,27 +242,6 @@ int
 isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
     (void)isch;
     (void)reliab40;
-    return -1;
-}
-
-/* Scrambling code recovery (issue #804) reads its tables and decodes with the fixed erasures; without tables it does
-   nothing, and these windows only exercise the dispatch. */
-const struct ez_p25p2_seed_tables*
-ez_p25p2_seed_tables_get(void) {
-    return NULL;
-}
-
-int
-ez_rs28_facch_fixed(int* payload, int* parity) {
-    (void)payload;
-    (void)parity;
-    return -1;
-}
-
-int
-ez_rs28_sacch_fixed(int* payload, int* parity) {
-    (void)payload;
-    (void)parity;
     return -1;
 }
 

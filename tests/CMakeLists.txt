@@ -10718,6 +10718,7 @@ add_test(NAME P25_CC_CACHE_PATH COMMAND dsd-neo_test_p25_cc_cache_path)
 add_executable(
     dsd-neo_test_p25_p2_2v_first_frame_gate
     protocol/p25/test_p25_p2_2v_first_frame_gate.c
+    protocol/p25/p25p2_no_seed_tables.c
 )
 target_include_directories(
     dsd-neo_test_p25_p2_2v_first_frame_gate
@@ -15008,6 +15009,7 @@ dsd_neo_add_dmr_synth_test(
 add_executable(
     dsd-neo_test_p25_p2_reliability
     protocol/p25/test_p25_p2_reliability.c
+    protocol/p25/p25p2_no_seed_tables.c
 )
 target_include_directories(
     dsd-neo_test_p25_p2_reliability

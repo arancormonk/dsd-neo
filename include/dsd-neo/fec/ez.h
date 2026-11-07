@@ -72,10 +72,11 @@ enum {
     EZ_P25P2_SEED_FACCH = 0,
     EZ_P25P2_SEED_SACCH = 1,
     EZ_P25P2_SEED_KINDS = 2,
-    EZ_P25P2_SEED_SLOTS = 12,       /* superframe slots T */
-    EZ_P25P2_SEED_MAX_BITS = 312,   /* sent codeword bits: FACCH 270, SACCH 312 */
-    EZ_P25P2_SEED_MAX_CHECKS = 132, /* check rows: FACCH 114, SACCH 132 */
-    EZ_P25P2_SEED_WORDS = 5,        /* 64-bit words of a row over the codeword bits */
+    EZ_P25P2_SEED_SLOTS = 12,           /* superframe slots T */
+    EZ_P25P2_SEED_MAX_BITS = 312,       /* sent codeword bits: FACCH 270, SACCH 312 */
+    EZ_P25P2_SEED_MAX_CHECKS = 132,     /* check rows: FACCH 114, SACCH 132 */
+    EZ_P25P2_SEED_WORDS = 5,            /* 64-bit words of a row over the codeword bits */
+    EZ_P25P2_SEED_SEQUENCE_BITS = 4320, /* the scrambling sequence restarts every superframe */
 };
 
 /**
@@ -99,10 +100,14 @@ typedef struct ez_p25p2_seed_tables {
     uint64_t check[EZ_P25P2_SEED_KINDS][EZ_P25P2_SEED_MAX_CHECKS][EZ_P25P2_SEED_WORDS];
     /* Row i at superframe slot T over the code's bits (bit 0 = the NAC's least significant bit). */
     uint64_t seed[EZ_P25P2_SEED_KINDS][EZ_P25P2_SEED_SLOTS][EZ_P25P2_SEED_MAX_CHECKS];
+    /* The superframe sequence over the code's bits: sequence bit j is parity(sequence[j] & code), as
+       p25p2_generate_scramble_bits() generates it. */
+    uint64_t sequence[EZ_P25P2_SEED_SEQUENCE_BITS];
 } ez_p25p2_seed_tables;
 
 /**
  * The tables, built at the first call (thread-safe) and kept; NULL if they could not be built (an allocation failed).
+ * The build is the only allocation, once per process: callers read them without allocating.
  */
 const ez_p25p2_seed_tables* ez_p25p2_seed_tables_get(void);
 

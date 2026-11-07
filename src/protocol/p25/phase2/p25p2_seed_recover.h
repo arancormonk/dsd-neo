@@ -31,7 +31,9 @@ extern "C" {
  */
 void p25p2_seed_recover_window(const dsd_opts* opts, dsd_state* state, int isch_located, int position_contradicted);
 
-/* Drops the candidate waiting for confirmation: the receiver left the carrier it came from. */
+/* Drops the candidate waiting for confirmation: the receiver left the carrier it came from. It writes the module's
+   state extension (DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER), which a const dsd_state still reaches, and no field of
+   dsd_state itself. */
 void p25p2_seed_recover_forget(const dsd_state* state);
 
 /* Whether a candidate waits for confirmation, and which (tests). */
