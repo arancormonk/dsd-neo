@@ -79,6 +79,8 @@ Item {
             testContext.setScanTestUsb(false, false);
             testContext.setLocalDeviceRecord("usb", false, "");
             testContext.setScanTestAcceptStart(true);
+            testContext.setTerminalReason(0);
+            app.completionMessage = "";
             prefs.onboardingDone = tc.saved.onboardingDone;
             prefs.autoStartOnAttach = tc.saved.autoStartOnAttach;
             prefs.exploreSourceType = tc.saved.exploreSourceType;
@@ -261,6 +263,44 @@ Item {
             app.startSystem(savedSystems.rowForUid(sites[1]));
             compareRefused(avoidedText("County"), sites[1]);
             compare(body.contentY, body.originY, "the failure card is in view");
+        }
+
+        // A refused pin start is the newest attempt: a finished replay's card goes, so its Play again cannot retry the
+        // refused target in place of the recording.
+        function test_refusal_replaces_replay_completion_data() {
+            return [{tag: "avoided site"}, {tag: "draft list"}, {tag: "removed target"}];
+        }
+        function test_refusal_replaces_replay_completion(data) {
+            var recording = testContext.writeFixtureCsv("pinned-replay.wav", "RIFF");
+            var replay = addSystem("Replay", "file", {filePath: recording});
+            var sites = addGroup("rtltcp");
+            avoid(sites[1]);
+            var draft = addList("Draft", {isDraft: true});
+            app.startSystem(savedSystems.rowForUid(replay));
+            compare(decoderHost.sessionState, 1, "the replay started");
+            testContext.setTerminalReason(1);
+            decoderHost.stop();
+            compare(app.completionMessage, "Replay completed: pinned-replay.wav");
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            var card = findChild(home, "homeCompletionCard");
+            verify(card.visible, "the replay's card shows");
+            verify(findChild(card, "homeReplayAgain").visible);
+
+            var refusal = data.tag === "avoided site" ? avoidedText("County")
+                : data.tag === "draft list" ? draftText : removedText;
+            if (data.tag === "avoided site")
+                app.startPin("site", sites[1]);
+            else if (data.tag === "draft list")
+                app.startPin("scan", draft);
+            else
+                app.startPin("system", "6f1c2a1e-0000-4000-8000-000000000000");
+            compareRefused(refusal, data.tag === "avoided site" ? sites[1] : data.tag === "draft list" ? draft : null);
+            compare(app.completionMessage, "", "the replay's completion is gone");
+            verify(!card.visible, "no Play again for the refused target");
+            var failure = findChild(home, "homeFailureCard");
+            verify(failure.visible);
+            compare(failure.message, refusal);
         }
 
         // D7 and [r2-4]: a draft list is refused without a start; Edit source opens it, Retry starts it once saved.

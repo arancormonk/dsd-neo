@@ -488,6 +488,7 @@ Item {
                 onDetails: screen.failureDetails()
             }
             UiPanel {
+                objectName: "homeCompletionCard"
                 width: parent.width
                 visible: screen.completionMessage.length > 0
                 height: completionBody.implicitHeight + 2 * Theme.cardPadding
@@ -505,6 +506,7 @@ Item {
                         font.pixelSize: Theme.fontSize(15)
                     }
                     OutlineButton {
+                        objectName: "homeReplayAgain"
                         width: parent.width
                         text: qsTr("Play again")
                         enabled: !decoderHost.sessionActive

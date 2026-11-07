@@ -231,6 +231,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return phase;
     }
 
+    /* How the last file replay ended (1 completed, 2 stopped), as the native session reports it (issue #801). */
+    int terminal = 0;
+
+    int
+    terminalReason() const override {
+        return terminal;
+    }
+
     void
     setPhase(SessionState value) {
         phase = value;
@@ -3877,6 +3885,13 @@ class Setup : public QObject {
         m_lifecycle_host->accessForSourceRequests = 0;
         m_lifecycle_host->accessSource.clear();
         m_lifecycle_host->accessSerial.clear();
+    }
+
+    /** @brief How the last replay ended, as DecoderHost::terminalReason() reports it: 1 completed, 2 stopped. */
+    Q_INVOKABLE void
+    setTerminalReason(int reason) {
+        m_lifecycle_host->terminal = reason;
+        Q_EMIT m_lifecycle_host->runResultChanged();
     }
 
     /** @brief The last session's input failure kind, as DecoderHost::inputFailureKind() reports it. */

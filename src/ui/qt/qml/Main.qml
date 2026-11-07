@@ -456,6 +456,12 @@ Window {
             companions: [],
             remember: true
         }, attempt) : null;
+        // As startWithMap() does for a new attempt: a finished replay's card
+        // goes with the attempt it names, or its Play again would retry this
+        // refused target. The session bookkeeping it also resets stays, since
+        // nothing starts here and a late initialization of the last session
+        // still counts.
+        completionMessage = "";
         dismissedFailure = "";
         startError = message;
         revealFailure();
