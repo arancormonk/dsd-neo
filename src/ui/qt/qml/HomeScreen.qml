@@ -313,9 +313,15 @@ Item {
             id: pinMetrics
             font: screen.heldPinFont
         }
+        // The narrowest a pin is shown elided at the end of the line: its
+        // padding and about five characters of label, and never under two
+        // touch targets, so a stub of a pin never stands in for a name.
+        readonly property real elidedMinimum: Math.max(2 * Theme.minimumTouchSize, Math.ceil(5 * pinMetrics.averageCharacterWidth) + 2 * 15)
         // The found pins that fit, in order, each with its place: a pin is as
-        // wide as its label (at most the room left of More), and the first one
-        // that does not fit ends the line.
+        // wide as its label (at most the room left of More). The first one that
+        // does not fit ends the line: shown elided in the room left when that is
+        // at least elidedMinimum (a long name otherwise leaves most of the line
+        // blank, as if nothing else were pinned), else left to the sheet.
         readonly property var placed: {
             // Nothing to lay out before Home has first shown. Reading the held
             // font here also lays the line out again when it changes, which the
@@ -328,11 +334,20 @@ Item {
             for (var entry of screen.heldPins) {
                 if (!entry.found)
                     continue;
-                var wide = Math.min(room, Math.max(Theme.minimumTouchSize, Math.ceil(pinMetrics.advanceWidth(entry.label)) + 2 * 15));
-                if (out.length > 0 && at + wide > room)
-                    break;
+                // As PinButton sizes its label: the wider of the advance and
+                // the ink, and a pixel, or a whole name can elide by a fraction.
+                var label = Math.ceil(Math.max(pinMetrics.advanceWidth(entry.label), pinMetrics.boundingRect(entry.label).width)) + 1;
+                var wide = Math.min(room, Math.max(Theme.minimumTouchSize, label + 2 * 15));
+                var last = out.length > 0 && at + wide > room;
+                if (last) {
+                    wide = Math.floor(room - at);
+                    if (wide < elidedMinimum)
+                        break;
+                }
                 out.push({key: entry.key, kind: entry.kind, uid: entry.uid, label: entry.label,
                     accessibleName: entry.accessibleName, x: at, width: wide});
+                if (last)
+                    break;
                 at += wide + pinGap;
             }
             return out;

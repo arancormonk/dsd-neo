@@ -218,6 +218,9 @@ Item {
                     verify(before.x + before.w <= p.x, "pin " + i + " overlaps the one before it");
                 }
                 compare(label.lineCount, 1, "pin " + i + " label on one line");
+                // Every pin but the last shows its whole name; only the last may be elided.
+                if (i < pins.length - 1)
+                    verify(!label.truncated, "pin " + i + " shows whole");
                 verify(label.height + 24 <= p.h + 0.5, "pin " + i + " label fits its pin");
             }
             // One line of label, not two.
@@ -233,6 +236,43 @@ Item {
             verify(b.h >= home.height / 2, "the body keeps most of the screen: " + b.h + " of " + home.height);
             var header = rectOf(findChild(home, "listenHeader"));
             verify(s.y >= header.y + header.h, "strip under the header");
+        }
+
+        // Strip fill: after the pins that fit whole, the next one is shown elided in the room left before More, when
+        // that room is at least the strip's minimum; its name stays whole for a screen reader. Pins after it are in the
+        // sheet.
+        function test_strip_fills_with_one_elided_pin() {
+            root.width = 360;
+            var names = ["SARA Network", "Countywide Public Safety Trunked Radio System", "Fire", "EMS", "Roads"];
+            for (var name of names)
+                pin("system", addSystem(name));
+            waitForRendering(home);
+            var pins = stripPins();
+            compare(pins.length, 2, "the whole first pin and one elided");
+            compare(pins[0].text, names[0]);
+            verify(!labelOf(pins[0]).truncated, "the first shows whole");
+            compare(pins[1].text, names[1], "in order");
+            verify(labelOf(pins[1]).truncated, "the second is elided");
+            verify(pins[1].width >= strip().elidedMinimum, "at no less than the minimum");
+            compare(pins[1].Accessible.name, "Start " + names[1], "read whole");
+            var more = findChild(home, "pinnedStripMore");
+            verify(pins[0].x + pins[0].width <= pins[1].x, "no overlap");
+            verify(pins[1].x + pins[1].width <= more.x, "More is last");
+            compare(more.x + more.width, strip().width);
+        }
+        // Too little room left for the minimum: the next pin is not shown, and the line ends with the whole ones.
+        function test_strip_leaves_out_a_pin_below_the_minimum() {
+            root.width = 360;
+            var names = ["Countywide Public Safety", "Metro Transit Operations Center", "EMS"];
+            for (var name of names)
+                pin("system", addSystem(name));
+            waitForRendering(home);
+            var pins = stripPins();
+            var more = findChild(home, "pinnedStripMore");
+            var left = more.x - strip().pinGap - (pins[0].x + pins[0].width + strip().pinGap);
+            verify(left > 0 && left < strip().elidedMinimum, "the case leaves less than the minimum: " + left);
+            compare(pins.length, 1, "only the first fits");
+            verify(!labelOf(pins[0]).truncated);
         }
 
         // §6: the strip shows found pins in stored order, and a tap, Return, Enter, Space or a screen reader's press on
@@ -256,6 +296,8 @@ Item {
                 return pair[0] + ":" + pair[1];
             })), "found pins in stored order, the missing one left out");
             compare(JSON.stringify(stripTexts()), JSON.stringify(["Explore", "County · South", "Patrol", "Signal search", "Solo"]));
+            for (var whole of stripPins())
+                verify(!labelOf(whole).truncated, whole.text + " shows whole");
             compare(stripPins()[4].accessibleName, "Start Solo");
             compare(stripPins()[2].accessibleName, "Start scan list Patrol");
             var pins = stripPins();

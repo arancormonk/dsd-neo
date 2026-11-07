@@ -40,7 +40,10 @@ Rectangle {
     Keys.onEnterPressed: activate()
     FocusFrame {}
 
-    implicitWidth: Math.max(Theme.minimumTouchSize, Math.ceil(labelMetrics.advanceWidth) + 2 * 15)
+    // The label's room: the wider of its advance and its ink, and a pixel,
+    // since a Text lays out a little wider than its advance and would elide a
+    // whole name by a fraction. Home's Pinned strip measures pins the same way.
+    implicitWidth: Math.max(Theme.minimumTouchSize, Math.ceil(Math.max(labelMetrics.advanceWidth, labelMetrics.boundingRect.width)) + 1 + 2 * 15)
     implicitHeight: Math.max(Theme.minimumTouchSize, label.height + 24)
     radius: height / 2
     color: tap.pressed && control.enabled ? Theme.chipSelectedFill : Theme.panel

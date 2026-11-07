@@ -10703,14 +10703,17 @@ Qt Quick frontend (`src/ui/qt`):
   Monitor or another tab adds, removes or renames no pin there and keeps the strip's height and the body's scroll; shown
   again, it takes the list and the line as they are. `placed` lays out the found pins in stored order before any is made
   (a `FontMetrics` in the held `Theme.pinLabelFont`, the font `PinButton` draws its label in): each pin is its label's
-  width plus 30 px, at most the room (the column less More and an 8 px gap), and the first that does not fit ends the
-  line, so the first always shows (elided). Pins past it, and pins not found, are not made. The buttons come from a
-  `StableRows` over `placed`, keyed by pin key, so a rename renames its button and a pin arriving or leaving adds or
-  removes only its own; a departing button is not drawn (`shown`) and reads as nothing, leaves the tree and takes no
-  focus or press (`live`, `PinButton.live`) for the rest of its turn. A pin starts the entry `placed` holds for its key.
-  More (`pinnedStripMore`, "All pinned shortcuts") always ends the strip. No Flickable, so the strip adds no container
-  node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, body. A pin or a sheet row emits Home's
-  `startPin(kind, uid)`, which Main connects to `startPin()` (the start gate below); pins are disabled while
+  width (the wider of advance and ink, plus a pixel, as `PinButton` sizes it, so a whole name never elides) plus 30 px,
+  at most the room (the column less More and an 8 px gap), so the first always shows (elided if it must). The first pin
+  that does not fit whole ends the line: it is shown elided in the room left when that is at least `elidedMinimum`
+  (padding and about five average characters, never under two touch targets), so a long name does not leave most of the
+  line blank, else it is left out; its accessible name stays whole. Pins past it, and pins not found, are not made. The
+  buttons come from a `StableRows` over `placed`, keyed by pin key, so a rename renames its button and a pin arriving or
+  leaving adds or removes only its own; a departing button is not drawn (`shown`) and reads as nothing, leaves the tree
+  and takes no focus or press (`live`, `PinButton.live`) for the rest of its turn. A pin starts the entry `placed` holds
+  for its key. More (`pinnedStripMore`, "All pinned shortcuts") always ends the strip. No Flickable, so the strip adds
+  no container node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, body. A pin or a sheet row emits
+  Home's `startPin(kind, uid)`, which Main connects to `startPin()` (the start gate below); pins are disabled while
   `decoderHost.transitioning`, and the strip while `managementSheetOpen`. `qml/PinButton.qml` is FilterPill's rounded
   chip with `OutlineButton`'s gate (focused-control `activeFocusOnTab` retention, `Navigation.allows()` read first,
   Return/Enter/Space, `onPressAction`, `FocusFrame`, half opacity when disabled) and a one-line plain-text label elided
