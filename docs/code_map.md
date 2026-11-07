@@ -2779,8 +2779,9 @@ suite runs under this compiler.
     canonical call record a protocol just published after its check; the engine reads the record)
     and the decoder-thread active query, with no-op defaults. P25 Phase 2 scrambling codes (issue #804): code recovery
     asks `dsd_signal_search_p25p2_codes()` once per window for the session's learned codes (at most what it asked for;
-    0 without a provider) and reports a code it committed through `dsd_signal_search_note_p25p2_code()` with its
-    `dsd_p25p2_code_source`. It also holds the visit tag (issue #809):
+    0 without a provider), and the protocol reports each complete code checked content gave it through
+    `dsd_signal_search_note_p25p2_code()` with its `dsd_p25p2_code_source` (`p25_search_site.h`, below). It also holds
+    the visit tag (issue #809):
     `dsd_signal_search_visit_set()`/`_clear()`/`_get()` keep one `(session_id, hit_id)` pair under a lazily
     initialised mutex, so a reader on any thread sees the tag clear or one whole pair; a pair with a zero half reads as
     clear, and the default is clear, so the CLI, headless runs and tests are unaffected (`RUNTIME_SIGNAL_SEARCH_VISIT`,
@@ -2789,9 +2790,12 @@ suite runs under this compiler.
     site record (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`, `dsd_signal_search_site_format()`) is
     runtime's: a P25 site note joins only a record with no SYSID or the same one, and a network note naming another
     WACN or SYSID, another protocol's note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a
-    control block whose CRC passes (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves,
-    never from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share of
-    random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
+    control block whose CRC passes (`p25_sm_note_cc_activity()`), from conventional calls whose identity resolves, and
+    from any Phase 2 FACCH or SACCH whose real MAC checksum passed, whatever MAC it carries
+    (`p25_sm_note_traffic_activity()` in `include/dsd-neo/protocol/p25/p25_traffic_activity.h`, issue #804: traffic,
+    not control channel activity, named by the current Phase 2 synctype and the MAC's slot), never from a NID, an
+    ISCH/DUID structure or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share
+    of random input (`P25_P1_TSBK_SEQUENCE`, `P25_P2_ACCH_VERDICT`; limit in docs/signal-search.md).
     It does not own radio I/O, persistence or Qt state.
   - Readout text (`include/dsd-neo/runtime/number_text.h`, issue #669): `dsd_number_text()` formats with the platform
     printf and drops the sign of a text whose digits are all zero (`-0.0` → `0.0`, any radix; `nan`/`inf` untouched),
@@ -8395,7 +8399,13 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   fallback as it was and always agree with the verdict. A received word that is already a codeword (rung 0 changed
   nothing) with a failed checksum tries no soft rung, which could only decode it to itself. Only a verdict with
   RS, no soft erasures and the checksum proves the seed (scrambled bursts, `p25p2_note_seed_proven()`, after the
-  checksum and before the MAC PDU) and marks the carrier two-slot (`p25p2_note_tdma_carrier()`).
+  checksum and before the MAC PDU) and marks the carrier two-slot (`p25p2_note_tdma_carrier()`). Any FACCH or SACCH
+  whose checksum passed, soft erasures or not, is then Signal search evidence (`p25p2_acch_note_evidence()` →
+  `p25_sm_note_traffic_activity()`, before the MAC PDU, which may retune): MAC_HANGTIME, MAC_IDLE and MAC_END_PTT
+  confirm a voice channel heard between calls as PTT and ACTIVE do. It names the MAC's slot (a SACCH's is the
+  opposite one, `p25_sacch_to_voice_slot()`), which the engine's receive policy judges, and moves no control channel
+  stamp. A verdict whose checksum failed reports nothing, under `-F` too, whatever its fallback dispatches. An LCCH
+  reports itself as control channel activity at its CRC-16 (`p25_sm_note_validated_cc()`), once.
 - Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
   (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
   each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with
@@ -8416,14 +8426,16 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   contradicted window, or one only continuity places, neither solves nor confirms. The confirmed code is committed
   like a checked network status: WACN/SYSID through `p25_update_system_identity()`, the NAC into `p2_cc` (both clear
   `p2_cc_verified` on a change), the line " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX" and
-  `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)`; the window then descrambles with it and its
-  confirming burst proves it through the verdict. Nothing else changes before the commit: no counter, MAC, proof,
-  identity, event or evidence. Allocation: the tables once per process and the context once per decoder state (at its
-  first located window on an unproven carrier, freed with the state's extensions); nothing per window or burst. Cost:
-  a `p2_cc_verified` read and a slot lookup per window on a proven carrier; on an unproven one a few microseconds per
-  code tried and 30-45 us per worst-case solve in a release build. Documented limits: voice (4V C0 Golay, ESS) is not
-  solved from, a channel whose probe sees no clean scrambled FACCH/SACCH stays unresolved, and an I-ISCH-to-offset
-  mapping that is wrong systematically would also break decoding with a known code (the real-air fixture pins it).
+  `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)` and a Signal search network site note with the
+  code's WACN and SYSID alone (`p25_search_note_recovered_network()`; no LRA, RFSS or site); the window then
+  descrambles with it and its confirming burst proves it through the verdict. Nothing else changes before the commit:
+  no counter, MAC, proof, identity, event or evidence. Allocation: the tables once per process and the context once
+  per decoder state (at its first located window on an unproven carrier, freed with the state's extensions); nothing
+  per window or burst. Cost: a `p2_cc_verified` read and a slot lookup per window on a proven carrier; on an unproven
+  one a few microseconds per code tried and 30-45 us per worst-case solve in a release build. Documented limits:
+  voice (4V C0 Golay, ESS) is not solved from, a channel whose probe sees no clean scrambled FACCH/SACCH stays
+  unresolved, and an I-ISCH-to-offset mapping that is wrong systematically would also break decoding with a known
+  code (the real-air fixture pins it).
 - Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose
   decode failed cannot make the next FACCH or SACCH of the window an LCCH (its CRC-16 path rejected valid bursts).
   The MAC opcode is no service option: no burst writes it into `dmr_so`/`dmr_soR`, which carry the service options
@@ -8451,12 +8463,13 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
 
 Tests: `P25_P2_VOICE_OUTPUT` (end to end through the DUID dispatch, against a tagging stand-in vocoder),
 `P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_ACCH_VERDICT` (windows
-built as a site sends them, `tests/protocol/p25/p25p2_burst_builder.h`, through the real RS, CRC and XCCH: the
-verdict, the ladder and its ceilings, `-F`, the burst kind, `dmr_so`, DUID 10), `P25_P2_VPDU_GRANTS`,
-`P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`, `P25_P2_SEED_RECOVER` (code recovery through `processP2()`: tables, every
-slot and kind, symbol errors, noise, shifted codes, the confirmation rules, learned codes, `-F`, hand-set and trunked
-skips, boundaries), `DECODE_IQ_P25P2_CC` (no DUID 10 error on the real-air capture; the code BEE00/164/161 recovered
-from its SACCHs and the SACCH MACs after it decoded; also its Airspy and determinism variants).
+built as a site sends them, `tests/protocol/p25/p25p2_burst_builder.h`, through the real RS, CRC and XCCH: the verdict,
+the ladder and its ceilings, `-F`, the burst kind, `dmr_so`, DUID 10, Signal search evidence from any checked MAC and
+its slot), `P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`, `P25_P2_SEED_RECOVER` (code recovery
+through `processP2()`: tables, every slot and kind, symbol errors, noise, shifted codes, the confirmation rules, learned
+codes, `-F`, hand-set and trunked skips, boundaries, the recovered code's site note), `DECODE_IQ_P25P2_CC` (no DUID 10
+error on the real-air capture; the code BEE00/164/161 recovered from its SACCHs and the SACCH MACs after it decoded;
+also its Airspy and determinism variants).
 
 Call frequency and access-code provenance (issue #575). A call's canonical `frequency_hz` and the live access codes
 (`dmr_color_code`, `dpmr_color_code`, `nxdn_last_ran`) are read as describing the carrier the call is decoded on, so:
@@ -9347,7 +9360,15 @@ Private per-protocol modules worth knowing about:
   either). An RFSS status notes the SYSID it advertises, even one the decoder's `p2_sysid` check ignores. Not notes:
   the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control channel fill-in
   (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan snapshot restores
-  (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR
+  (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). A recovered Phase 2 scrambling code (issue #804) adds a network
+  note with its WACN and SYSID alone at its commit (`p25_search_note_recovered_network()`, `P25_P2_SEED_RECOVER`): the
+  carrier's own checked scrambling names that system. The same checked network statuses feed the session's code list
+  (`dsd_signal_search_note_p25p2_code()`, `p25_search_note_p25p2_code()`, issue #804): a Phase 2 one with its own
+  WACN, SYSID and NAC (`DSD_P25P2_CODE_P2_NETWORK`), a TSBK or MBT one with its WACN and SYSID and the NAC of the NID
+  of the frame that carried it (`p25_search_note_p1_network_code()`, `DSD_P25P2_CODE_P1_NETWORK`), only while
+  `p25_frame_nac_valid` says that NID decoded in this frame, so a NAC never pairs with another frame's or carrier's
+  WACN/SYSID. A code with a zero or all-ones part is not noted; neither is anything from a voice LCW, a failed CRC,
+  `state->nac` or the `p2_*` seed. DMR
   (`dmr_tiii_note_search_site()` in `src/protocol/dmr/dmr_tiii_site.h`, which notes the search only while one runs and
   the received identity record always):
   C_ALOHA inside `dmr_cspdu()`'s CRC gate when the slot's `event_crc_invalid` is clear, since that gate also passes a

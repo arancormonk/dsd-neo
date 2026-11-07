@@ -374,6 +374,7 @@ p25_handle_mbt_net_sts_broadcast(const dsd_opts* opts, dsd_state* state, const u
         DSD_FPRINTF(stderr, "\n  P25 MBT NET_STS: ignoring invalid channel->freq (CHAN-T=%04X)", channelt);
     }
     p25_search_note_network(state, (uint32_t)wacn, (uint16_t)sysid, (uint8_t)lra);
+    p25_search_note_p1_network_code(state, (uint32_t)wacn, (uint16_t)sysid);
 }
 
 static void DSD_ATTR_USED

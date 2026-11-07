@@ -7,8 +7,8 @@
  * P25 Phase 2 FACCH, SACCH and LCCH bursts through the real Reed-Solomon decode, the real MAC CRC and the real XCCH
  * handlers (issue #804): the checksum verdict comes before anything the burst proves, the retry ladder looks past a
  * miscorrection its CRC rejects, its soft erasures stop where the code's check still means something, signalling
- * leaves the service options alone, an LCCH that failed does not turn the next burst into one, and a DUID 10 burst is
- * no error. The windows are built as a site sends them (p25p2_burst_builder.h) and dispatched by p25p2_process_duid().
+ * leaves the service options alone, an LCCH that failed does not turn the next burst into one, a DUID 10 burst is no
+ * error, and any MAC whose checksum passed is Signal search evidence for the slot it belongs to. The windows are built as a site sends them (p25p2_burst_builder.h) and dispatched by p25p2_process_duid().
  * Only the VPDU decoder is a stand-in, which records what reached it.
  */
 
@@ -24,9 +24,11 @@
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -53,6 +55,7 @@ enum {
     MAC_SIGNAL = 0,
     MAC_PTT = 1,
     MAC_END_PTT = 2,
+    MAC_IDLE = 3,
     MAC_ACTIVE = 4,
     MAC_HANGTIME = 6,
     STRONG_LLR = 200,
@@ -86,6 +89,25 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pd
     process_MAC_VPDU_crc(opts, state, type, pdu_type, mac, 1);
 }
 
+/* Signal search evidence the bursts reported: how many, and the last one's protocol, synctype and slot. */
+static int g_evidence;
+static char g_evidence_protocol[8];
+static int g_evidence_sync;
+static int g_evidence_slot;
+
+static void
+capture_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target, uint32_t source,
+                 const char* access) {
+    (void)state;
+    (void)target;
+    (void)source;
+    (void)access;
+    g_evidence++;
+    DSD_SNPRINTF(g_evidence_protocol, sizeof g_evidence_protocol, "%s", protocol ? protocol : "");
+    g_evidence_sync = sync;
+    g_evidence_slot = slot;
+}
+
 static int
 expect(const char* tag, int cond) {
     if (!cond) {
@@ -110,6 +132,10 @@ fresh_decoder(int relaxed) {
     p25_p2_frame_reset();
     DSD_MEMSET(g_vpdu_calls, 0, sizeof(g_vpdu_calls));
     g_vpdu_signal_crc_ok = -1;
+    g_evidence = 0;
+    g_evidence_protocol[0] = '\0';
+    g_evidence_sync = -2;
+    g_evidence_slot = -2;
 }
 
 static void
@@ -551,6 +577,131 @@ test_duid10_is_not_an_error(void) {
     return rc;
 }
 
+/* One burst of @p duid carrying MAC @p opcode at window timeslot @p ts, the rest DUID 10, in the window at superframe
+   slot 2 (timeslot 0 is slot 1's, timeslot 1 slot 2's), read under the current synctype @p sync. */
+static void
+run_one_burst(int duid, int opcode, int ts, int sync) {
+    p25p2_bb_slot slots[4];
+    for (int i = 0; i < 4; i++) {
+        mac_header(&slots[i], DUID_DATA, 0);
+    }
+    mac_call(&slots[ts], duid, opcode);
+    fresh_decoder(0);
+    g_state->synctype = sync;
+    run_window(2, slots);
+}
+
+/* Any MAC whose real checksum passed is CRC-checked P25 traffic, so a Signal search takes it as evidence (issue #804):
+   MAC_HANGTIME, MAC_IDLE and MAC_END_PTT as well as PTT and ACTIVE, once per burst, named by the decoder's current
+   Phase 2 synctype and the slot the MAC belongs to. It is traffic, not control channel activity. An LCCH, which is
+   control channel signalling, reports itself once, as control channel activity. */
+static int
+test_hangtime_idle_end_are_evidence(void) {
+    static const int duids[2] = {DUID_FACCH_S, DUID_SACCH_S};
+    static const char* const kinds[2] = {"FACCH", "SACCH"};
+    static const int opcodes[3] = {MAC_HANGTIME, MAC_IDLE, MAC_END_PTT};
+    static const char* const macs[3] = {"MAC_HANGTIME", "MAC_IDLE", "MAC_END_PTT"};
+    int rc = 0;
+    char tag[128];
+    for (int k = 0; k < 2; k++) {
+        for (int m = 0; m < 3; m++) {
+            run_one_burst(duids[k], opcodes[m], 0, DSD_SYNC_P25P2_NEG);
+            DSD_SNPRINTF(tag, sizeof tag, "%s %s is evidence once", kinds[k], macs[m]);
+            rc |= expect(tag, g_evidence == 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s %s evidence names P25", kinds[k], macs[m]);
+            rc |= expect(tag, strcmp(g_evidence_protocol, "P25") == 0);
+            DSD_SNPRINTF(tag, sizeof tag, "%s %s evidence names the current synctype", kinds[k], macs[m]);
+            rc |= expect(tag, g_evidence_sync == DSD_SYNC_P25P2_NEG);
+            /* Timeslot 0 is slot 1's: a FACCH's MAC is its own slot's, a SACCH's the other slot's. */
+            DSD_SNPRINTF(tag, sizeof tag, "%s %s evidence names the MAC's slot", kinds[k], macs[m]);
+            rc |= expect(tag, g_evidence_slot == (duids[k] == DUID_FACCH_S ? 0 : 1));
+            DSD_SNPRINTF(tag, sizeof tag, "%s %s is no control channel activity", kinds[k], macs[m]);
+            rc |= expect(tag, g_state->last_cc_sync_time == 0 && g_state->p25_last_cc_msg_time == 0);
+        }
+    }
+    /* Outside a Phase 2 sync (a replayed window, a test) the synctype is Phase 2's positive one. */
+    run_one_burst(DUID_SACCH_S, MAC_IDLE, 0, DSD_SYNC_P25P1_POS);
+    rc |= expect("a SACCH under another synctype names Phase 2's",
+                 g_evidence == 1 && g_evidence_sync == DSD_SYNC_P25P2_POS);
+
+    p25p2_bb_slot slots[4];
+    for (int i = 0; i < 4; i++) {
+        mac_header(&slots[i], DUID_DATA, 0);
+    }
+    mac_header(&slots[0], DUID_LCCH_S, MAC_SIGNAL);
+    slots[0].mac[1] = 0x7BU;
+    fresh_decoder(0);
+    run_window(2, slots);
+    rc |= expect("a checked LCCH is evidence once, as control channel activity",
+                 g_evidence == 1 && g_evidence_sync == -1 && g_state->p25_last_cc_msg_time != 0);
+    return rc;
+}
+
+/* A burst whose MAC checksum failed is no evidence, strict or under -F, whatever reached the MAC handlers: a FACCH, a
+   SACCH and the two MAC_SIGNAL fallbacks (a SACCH whose second octet is zero, and under -F an LCCH); nor is a burst
+   whose RS decode failed. */
+static int
+crc_failed_evidence(int relaxed) {
+    const char* mode = relaxed ? "-F" : "strict";
+    char tag[128];
+    int rc = 0;
+    p25p2_bb_slot slots[4];
+    mac_call(&slots[0], DUID_FACCH_S, MAC_HANGTIME);
+    mac_call(&slots[1], DUID_SACCH_S, MAC_IDLE);
+    mac_header(&slots[2], DUID_SACCH_S, MAC_SIGNAL);
+    mac_header(&slots[3], DUID_LCCH_S, MAC_SIGNAL);
+    slots[3].mac[1] = 0x7BU;
+    rc |= expect("broken checksum", break_crc(&slots[0], 156, 0));
+    rc |= expect("broken checksum", break_crc(&slots[1], 180, 0));
+    rc |= expect("broken checksum", break_crc(&slots[2], 180, 0));
+    rc |= expect("broken checksum", break_crc(&slots[3], 180, 1));
+    fresh_decoder(relaxed);
+    run_window(2, slots);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the MAC_SIGNAL fallbacks reached the VPDU", mode);
+    rc |= expect(tag, g_vpdu_calls[P25_MAC_PDU_SIGNAL] == (relaxed ? 2 : 1));
+    DSD_SNPRINTF(tag, sizeof tag, "%s: no CRC-failed MAC is evidence", mode);
+    rc |= expect(tag, g_evidence == 0);
+
+    for (int ts = 0; ts < 4; ts++) {
+        mac_call(&slots[ts], ts % 2 ? DUID_SACCH_S : DUID_FACCH_S, MAC_IDLE);
+    }
+    uint8_t bits[1440];
+    p25p2_bb_window(TEST_CODE, 2, slots, bits);
+    for (int ts = 0; ts < 4; ts++) {
+        for (int s = 0; s < 16; s++) {
+            p25p2_bb_flip_symbol(bits, ts, 10 + (2 * s));
+        }
+    }
+    fresh_decoder(relaxed);
+    load_window(bits);
+    dispatch_window(2);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: the RS decodes failed", mode);
+    rc |= expect(tag, g_state->p25_p2_rs_facch_err == 2U && g_state->p25_p2_rs_sacch_err == 2U);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: no RS-failed burst is evidence", mode);
+    rc |= expect(tag, g_evidence == 0);
+    return rc;
+}
+
+static int
+test_crc_failed_mac_is_not_evidence(void) {
+    return crc_failed_evidence(0) | crc_failed_evidence(1);
+}
+
+/* One active slot on a two-slot channel: a SACCH sent in one slot's timeslot announces the other slot's voice, so its
+   evidence names that other slot whichever timeslot carries it (the receive policy judges that slot, issue #637); a
+   FACCH names its own. */
+static int
+test_sacch_evidence_names_opposite_slot(void) {
+    int rc = 0;
+    run_one_burst(DUID_SACCH_S, MAC_HANGTIME, 0, DSD_SYNC_P25P2_POS);
+    rc |= expect("a SACCH in slot 1's timeslot names slot 2", g_evidence == 1 && g_evidence_slot == 1);
+    run_one_burst(DUID_SACCH_S, MAC_HANGTIME, 1, DSD_SYNC_P25P2_POS);
+    rc |= expect("a SACCH in slot 2's timeslot names slot 1", g_evidence == 1 && g_evidence_slot == 0);
+    run_one_burst(DUID_FACCH_S, MAC_HANGTIME, 1, DSD_SYNC_P25P2_POS);
+    rc |= expect("a FACCH in slot 2's timeslot names slot 2", g_evidence == 1 && g_evidence_slot == 1);
+    return rc;
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -558,6 +709,7 @@ main(void) {
     if (g_opts == NULL || g_state == NULL) {
         return 1;
     }
+    dsd_signal_search_evidence_set(capture_evidence);
     int rc = 0;
     rc |= test_seed_proof_needs_crc();
     rc |= test_seed_proof_before_end_ptt();
@@ -568,6 +720,10 @@ main(void) {
     rc |= test_lcch_flag_does_not_leak_to_sacch();
     rc |= test_relaxed_crc_never_proves();
     rc |= test_duid10_is_not_an_error();
+    rc |= test_hangtime_idle_end_are_evidence();
+    rc |= test_crc_failed_mac_is_not_evidence();
+    rc |= test_sacch_evidence_names_opposite_slot();
+    dsd_signal_search_evidence_set(NULL);
     dsd_state_ext_free_all(g_state);
     free(g_state->event_history_s);
     free(g_state);

@@ -33,6 +33,7 @@
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_lfsr.h>
+#include <dsd-neo/protocol/p25/p25_traffic_activity.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_xcch.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
@@ -652,6 +653,17 @@ p25p2_acch_note_verdict(dsd_opts* opts, dsd_state* state, const p25p2_acch_verdi
     p25p2_note_tdma_carrier(state);
 }
 
+/* A FACCH or SACCH whose real checksum passed is CRC-checked P25 traffic, whatever MAC it carries: Signal search
+   evidence for the voice slot its MAC belongs to (issue #804), a decode that leaned on soft erasures included, never a
+   word -F let through. Before the MAC PDU, which may move the receiver elsewhere. An LCCH is control channel signalling
+   and reports itself as that (p25_sm_note_validated_cc() at its CRC-16). */
+static void
+p25p2_acch_note_evidence(const dsd_state* state, const p25p2_acch_verdict* verdict, int mac_slot) {
+    if (verdict->checksum_ok && verdict->kind != P25P2_ACCH_LCCH) {
+        p25_sm_note_traffic_activity(state, mac_slot);
+    }
+}
+
 /* FACCH bits of window timeslot ts_counter, from p2bit (unscrambled, S-OEMI) or p2xbit (descrambled). */
 static void
 p25p2_gather_facch(const int* bits, int slot) {
@@ -715,6 +727,7 @@ p25p2_process_facch(dsd_opts* opts, dsd_state* state, int scrambled) {
         state->p25_p2_rs_facch_ok++;
         state->p25_p2_rs_facch_corr += (unsigned int)ec;
         p25p2_acch_note_verdict(opts, state, &verdict, scrambled);
+        p25p2_acch_note_evidence(state, &verdict, slot);
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 1, 0, 0, 0, 0);
@@ -749,6 +762,7 @@ p25p2_process_sacch(dsd_opts* opts, dsd_state* state, int scrambled, p25p2_acch_
         state->p25_p2_rs_sacch_ok++;
         state->p25_p2_rs_sacch_corr += (unsigned int)ec;
         p25p2_acch_note_verdict(opts, state, &verdict, scrambled);
+        p25p2_acch_note_evidence(state, &verdict, p25_sacch_to_voice_slot(slot));
         /* Feedback: RS OK */
 #ifdef USE_RADIO
         dsd_rtl_stream_metrics_hook_p25p2_err_update(slot, 0, 0, 1, 0, 0);

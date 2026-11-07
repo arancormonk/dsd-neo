@@ -210,10 +210,15 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     state->lastp25type = 0;
 }
 
+/* The frame NAC verdict the TSDU's TSBKs see, which a network status among them pairs its WACN and SYSID with (issue
+   #804); -1 before any TSDU. */
+static int g_tsbk_frame_nac_valid = -1;
+
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     state->lastp25type = 3;
+    g_tsbk_frame_nac_valid = state->p25_frame_nac_valid;
 }
 
 void
@@ -499,10 +504,13 @@ expect_frame_nac(int decoded_nac, int expected_valid) {
     state.p25_frame_nac_valid = 1U;
     g_new_nac = decoded_nac;
     g_test_duid = 0x7U;
+    g_tsbk_frame_nac_valid = -1;
 
     dsd_dispatch_handle_p25p1(&opts, &state);
 
     assert(state.p25_frame_nac_valid == (uint8_t)expected_valid);
+    /* The TSDU's TSBKs run after the NID: they see this frame's verdict, never the previous frame's NAC. */
+    assert(g_tsbk_frame_nac_valid == expected_valid);
     if (expected_valid) {
         assert(state.p25_frame_nac == (uint16_t)decoded_nac);
     }

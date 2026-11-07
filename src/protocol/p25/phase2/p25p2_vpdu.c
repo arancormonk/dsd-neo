@@ -3831,6 +3831,8 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
             /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
             p25_search_note_network_nac(state, (uint16_t)lcolorcode);
             p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
+            p25_search_note_p25p2_code(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint16_t)lcolorcode,
+                                       DSD_P25P2_CODE_P2_NETWORK);
         }
     }
 
@@ -3888,6 +3890,8 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
             /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
             p25_search_note_network_nac(state, (uint16_t)lcolorcode);
             p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
+            p25_search_note_p25p2_code(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint16_t)lcolorcode,
+                                       DSD_P25P2_CODE_P2_NETWORK);
         }
     }
 

@@ -36,6 +36,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "../p25_search_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25p2_frame_internal.h"
@@ -416,7 +417,8 @@ sr_process_burst(const dsd_state* state, p25p2_seed_recover_ctx* ctx, sr_learned
 
 /* The confirmed code becomes the seed in force, as a network status broadcast that passed its CRC applies one
    (p25p2_vpdu_apply_nsb_identity()): WACN and SYSID through p25_update_system_identity(), which resets what belonged
-   to another system, and the NAC. The burst that confirmed it then proves it as this window decodes. */
+   to another system, and the NAC. The Signal search hears of the code and of the system its WACN and SYSID name. The
+   burst that confirmed it then proves it as this window decodes. */
 static void
 sr_commit(dsd_state* state, p25p2_seed_recover_ctx* ctx) {
     const uint64_t code = ctx->pending.code;
@@ -431,6 +433,7 @@ sr_commit(dsd_state* state, p25p2_seed_recover_ctx* ctx) {
     state->p2_cc = nac;
     DSD_FPRINTF(stderr, " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX", wacn, sysid, nac);
     dsd_signal_search_note_p25p2_code(state, code, DSD_P25P2_CODE_RECOVERED);
+    p25_search_note_recovered_network(state, (uint32_t)wacn, (uint16_t)sysid);
 }
 
 /* A new window for the context, if there is one: a contradicted position, or another carrier, drops the candidate. */

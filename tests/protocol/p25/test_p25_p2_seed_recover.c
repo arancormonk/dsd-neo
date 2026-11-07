@@ -121,6 +121,8 @@ static uint64_t g_code_noted;
 static int g_code_noted_source;
 static int g_evidence_notes;
 static int g_call_notes;
+static int g_site_notes;
+static dsd_signal_search_site_note g_site_note;
 
 static size_t
 learned_codes(const dsd_state* state, uint64_t* out, size_t cap) {
@@ -152,6 +154,13 @@ evidence_note(const dsd_state* state, const char* protocol, int sync, int slot, 
     (void)source;
     (void)access;
     g_evidence_notes++;
+}
+
+static void
+site_note(const dsd_state* state, const dsd_signal_search_site_note* note) {
+    (void)state;
+    g_site_notes++;
+    g_site_note = *note;
 }
 
 static void
@@ -198,6 +207,8 @@ fresh_decoder(int relaxed) {
     g_code_noted_source = 0;
     g_evidence_notes = 0;
     g_call_notes = 0;
+    g_site_notes = 0;
+    DSD_MEMSET(&g_site_note, 0, sizeof(g_site_note));
 }
 
 static void
@@ -759,7 +770,8 @@ same_as_control(const dsd_state* control, const Event_History_I* control_events,
                                               && call.ota_target_id == control_call->ota_target_id
                                               && call.ota_source_id == control_call->ota_source_id);
     rc |= expect("no MAC", g_vpdu_calls[P25_MAC_PDU_IDLE] == 0);
-    rc |= expect("no evidence, call or code note", g_evidence_notes == 0 && g_call_notes == 0 && g_code_notes == 0);
+    rc |= expect("no evidence, call, code or site note",
+                 g_evidence_notes == 0 && g_call_notes == 0 && g_code_notes == 0 && g_site_notes == 0);
     return rc;
 }
 
@@ -769,6 +781,7 @@ static int
 test_no_side_effects_before_acceptance(void) {
     dsd_signal_search_evidence_set(evidence_note);
     dsd_signal_search_call_set(call_note);
+    dsd_signal_search_site_set(site_note);
     dsd_state* control = (dsd_state*)calloc(1U, sizeof(*control));
     Event_History_I* control_events = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
     int rc = expect("snapshots allocated", control != NULL && control_events != NULL);
@@ -792,6 +805,33 @@ test_no_side_effects_before_acceptance(void) {
     free(control_events);
     dsd_signal_search_evidence_set(NULL);
     dsd_signal_search_call_set(NULL);
+    dsd_signal_search_site_set(NULL);
+    return rc;
+}
+
+/* A recovered code names its system to the Signal search the way a network status does (D7): one network site note at
+   the commit, with the code's WACN and SYSID and nothing else (no RFSS or site: the code carries none). The confirming
+   burst's MAC is then evidence like any checked MAC. */
+static int
+test_recovered_code_site_note(void) {
+    dsd_signal_search_site_set(site_note);
+    dsd_signal_search_evidence_set(evidence_note);
+    fresh_decoder(0);
+    one_burst_window(TEST_CODE, 10, 0, DUID_SACCH_S, 1);
+    feed(GAP_INDEPENDENT);
+    int rc = expect("a candidate names no site", pending_code() == TEST_CODE && g_site_notes == 0);
+    rc |= expect("a candidate is no evidence", g_evidence_notes == 0);
+
+    one_burst_window(TEST_CODE, 6, 2, DUID_FACCH_S, 2);
+    feed(GAP_INDEPENDENT);
+    rc |= expect("the commit notes the site once", code_in_force() == TEST_CODE && g_site_notes == 1);
+    rc |= expect("a network note", g_site_note.kind == DSD_SEARCH_SITE_NOTE_P25_NETWORK);
+    rc |= expect("with the code's WACN and SYSID", g_site_note.wacn == 0xBEE00U && g_site_note.sysid == 0x164U);
+    rc |= expect("and nothing else", g_site_note.rfss == 0U && g_site_note.site == 0U && g_site_note.text[0] == '\0'
+                                         && g_site_note.nxdn_sys == 0U && g_site_note.nxdn_site == 0U);
+    rc |= expect("the confirming burst's MAC is evidence", g_evidence_notes == 1);
+    dsd_signal_search_site_set(NULL);
+    dsd_signal_search_evidence_set(NULL);
     return rc;
 }
 
@@ -1016,6 +1056,7 @@ main(void) {
     rc |= test_learned_code_accepted();
     rc |= test_weak_right_code_is_not_replaced();
     rc |= test_no_side_effects_before_acceptance();
+    rc |= test_recovered_code_site_note();
     rc |= test_proof_drops_pending();
     rc |= test_hardset_and_trunking_skip();
     rc |= test_boundary_drops_pending();
