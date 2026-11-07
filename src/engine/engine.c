@@ -2198,7 +2198,7 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
         state->p2_wacn = 0;
         state->p2_sysid = 0;
     }
-    state->p2_cc_verified = 0U;
+    dsd_state_forget_p2_proof(state);
     state->p2_rfssid = 0;
     state->p2_siteid = 0;
     state->p25_cc_is_tdma = 2; // The shared CC anchor no longer identifies a P25 session.
@@ -2787,9 +2787,9 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
      * dispatches, so a Phase 1 call on the next carrier would read this one's. The no-carrier pass resets it as well
      * (no_carrier_reset_voice_and_audio_metrics()). */
     state->nac = 0;
-    /* The Phase 2 seed's proof is the carrier's too: the next carrier's bursts, or a network status broadcast, prove it
-     * again. p2_cc itself is the descrambling key and stays. */
-    state->p2_cc_verified = 0U;
+    /* The Phase 2 proofs are the carrier's too: the next carrier's bursts, or a network status broadcast, prove the seed
+     * and a NAC again. p2_cc itself is the descrambling key and stays. */
+    dsd_state_forget_p2_proof(state);
 }
 
 static void

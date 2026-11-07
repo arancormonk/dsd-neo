@@ -1061,6 +1061,97 @@ test_site_notes_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     assert(strcmp(status.hit.site, "WACN ABCDE \xC2\xB7 SYS 123") == 0);
 }
 
+/* Issue #802 B7: a checked proof that gives the access code a new value after the visit's last evidence (a P25 Phase 2
+   NAC) publishes a confirmed hit of that sync type's family as changed, so the observer reads the code again. It
+   confirms nothing and keeps the visit's quiet timing, and an unconfirmed hit, another family's sync type, a cut frame
+   and an ended hit take nothing from it. */
+static void
+test_access_note_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    o->rtlsdr_center_freq = 100000000;
+    dsd_signal_search_config one = *config;
+    one.session_id = 63;
+    const int saved_sync = s->synctype;
+    const int saved_sps = s->sps_hunt_idx;
+    one.avoid_count = 0;
+    one.range_count = 1;
+    one.ranges[0].start_hz = 100000000;
+    one.ranges[0].end_hz = 100025000;
+    one.ranges[0].digital = 1;
+    one.ranges[0].max_visit_ms = 0;
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    // A proof while the search measures its span belongs to no detection.
+    s->synctype = DSD_SYNC_P25P2_POS;
+    int published = hits_published;
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && !status.hit.confirmed);
+
+    // An unconfirmed hit: the note confirms nothing and publishes nothing.
+    published = hits_published;
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published && !status.hit.confirmed && status.phase == DSD_SEARCH_IDENTIFYING);
+
+    // NXDN48 and NXDN96 are one family: an NXDN sync type's proof reaches an NXDN48 hit.
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+    assert(status.hit.confirmed && strcmp(status.hit.protocol, "NXDN48") == 0);
+    s->synctype = DSD_SYNC_NXDN_POS;
+    published = hits_published;
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published + 1 && strcmp(published_hit.protocol, "NXDN48") == 0);
+
+    // A confirmed P25 hit, then the transmission's last evidence. A proof 400 ms later publishes the hit as changed,
+    // and nothing else moves.
+    s->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    s->synctype = DSD_SYNC_P25P2_POS;
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    assert(status.hit.confirmed && strcmp(status.hit.protocol, "P25") == 0 && status.phase == DSD_SEARCH_LISTENING);
+    tick(o, s);
+    advance(400);
+    published = hits_published;
+    const uint64_t revision = status.revision;
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published + 1 && status.revision == revision + 1);
+    assert(published_hit.hit_id == status.hit.hit_id && !published_hit.ended);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.confirmed);
+    // Another family's sync type: the decoder holds that protocol's code, not the hit's.
+    s->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_signal_search_note_access(s);
+    s->synctype = DSD_SYNC_ANALOG;
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published + 1);
+    s->synctype = DSD_SYNC_P25P2_POS;
+    // A proof from a frame an input interruption cut is dropped.
+    s->input_interrupted = 1;
+    dsd_signal_search_note_access(s);
+    s->input_interrupted = 0;
+    assert(hits_published == published + 1);
+    // The proof kept the visit's quiet timing: the visit ends 500 ms after the last evidence, not after the proof.
+    advance(100);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && published_hit.ended);
+    // An ended hit takes nothing.
+    published = hits_published;
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published);
+
+    live = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.phase == DSD_SEARCH_STOPPED);
+    // No search: a note goes nowhere.
+    published = hits_published;
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published);
+    s->synctype = saved_sync;
+    s->sps_hunt_idx = saved_sps;
+}
+
 /* Put an active call on @p slot: one epoch of one transmission, as the canonical layer would hold it. */
 static dsd_call_snapshot*
 put_call(uint8_t slot, uint64_t epoch, double started_m, int protocol, uint64_t target_id, uint64_t source_id) {
@@ -1780,6 +1871,7 @@ main(void) {
     test_site_record_binding();
     test_site_notes_on_detection(o, s, &config);
     test_call_tuple_on_detection(o, s, &config);
+    test_access_note_on_detection(o, s, &config);
     test_visit_tag_set_on_landing(o, s, &config);
     test_visit_tag_cleared_after_departure_boundary(o, s, &config);
     test_visit_tag_probe_fallback_same_hit(o, s, &config);

@@ -9,14 +9,19 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -43,6 +48,15 @@ expect_code(const char* label, const dsd_state* state, int protocol, uint16_t sv
 }
 
 static int
+expect_int(const char* label, long long got, long long want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %lld want %lld\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_none(const char* label, const dsd_state* state, int protocol, uint16_t svc, uint8_t has_svc) {
     return expect_code(label, state, protocol, svc, has_svc, 0, DSD_ACCESS_CODE_NONE, 0U);
 }
@@ -63,7 +77,7 @@ reset_sources(dsd_state* state) {
     state->dmr_color_code = 16U;
     state->nac = 0;
     state->p2_cc = 0ULL;
-    state->p2_cc_verified = 0U;
+    dsd_state_forget_p2_proof(state);
     state->nxdn_last_ran = (unsigned int)-1;
     state->nxdn_last_ran_stand_in = 0U;
     state->dpmr_color_code = -1;
@@ -143,24 +157,87 @@ test_p25_phase1_reads_nac_only(dsd_state* state) {
     return rc;
 }
 
+/* A Phase 2 call reads the NAC the latest checked proof on this carrier named (issue #802), never the descrambler's
+ * seed as such, a Phase 1 NAC, or the received identity record. */
 static int
-test_p25_phase2_reads_p2_cc_only(dsd_state* state) {
+test_p25_phase2_reads_the_proven_nac(dsd_state* state) {
     int rc = 0;
     reset_sources(state);
     state->p2_cc = 0x293ULL;
-    /* The descrambler's seed is a received NAC only once a burst descrambled with it, or a network status broadcast,
-     * proved it on this carrier: -X, or another carrier, may have left it (issue #575). */
+    /* A seed no proof has named is no received NAC: -X, or another carrier, may have left it (issue #575). */
     rc |= expect_none("P25p2 unproven p2_cc", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    /* The seed's own proof mark is not read either: only the NAC a proof named is. */
     state->p2_cc_verified = 1U;
-    rc |= expect_code("P25p2 p2_cc 293", state, DSD_SYNC_P25P2_POS, 0U, 0U, 1, DSD_ACCESS_CODE_NAC, 0x293U);
-    /* The Phase 1 nac is not a Phase 2 call's code. */
-    state->p2_cc = 0ULL;
+    rc |= expect_none("P25p2 seed proof without a proven NAC", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    rc |= expect_int("a proof names the seed's NAC", dsd_state_note_p2_proven_nac(state, state->p2_cc), 1);
+    rc |= expect_code("P25p2 proven 293", state, DSD_SYNC_P25P2_POS, 0U, 0U, 1, DSD_ACCESS_CODE_NAC, 0x293U);
+    /* The Phase 1 nac and the received identity record are not a Phase 2 call's code. */
+    reset_sources(state);
     state->nac = 0x293;
-    rc |= expect_none("P25p2 p2_cc 0 ignores nac", state, DSD_SYNC_P25P2_NEG, 0U, 0U);
-    state->p2_cc = 0xFFFULL;
-    rc |= expect_none("P25p2 p2_cc FFF", state, DSD_SYNC_P25P2_POS, 0U, 0U);
-    state->p2_cc = 0x1000ULL;
-    rc |= expect_none("P25p2 p2_cc past twelve bits", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, 0x293U);
+    rc |= expect_none("P25p2 ignores nac and rx_id", state, DSD_SYNC_P25P2_NEG, 0U, 0U);
+    /* dsd-neo's own rule (a dead or stuck input decodes as NAC 0x000 or 0xFFF): neither, nor anything past twelve bits,
+     * is a proof, and the record keeps what it had. */
+    reset_sources(state);
+    rc |= expect_int("NAC 000 proves nothing", dsd_state_note_p2_proven_nac(state, 0x000ULL), 0);
+    rc |= expect_int("NAC FFF proves nothing", dsd_state_note_p2_proven_nac(state, 0xFFFULL), 0);
+    rc |= expect_int("past twelve bits proves nothing", dsd_state_note_p2_proven_nac(state, 0x1293ULL), 0);
+    rc |= expect_none("P25p2 no proof", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    rc |= expect_int("NAC 001 is a proof", dsd_state_note_p2_proven_nac(state, 0x001ULL), 1);
+    rc |= expect_code("P25p2 proven 001", state, DSD_SYNC_P25P2_POS, 0U, 0U, 1, DSD_ACCESS_CODE_NAC, 0x001U);
+    rc |= expect_int("NAC FFF keeps the proof", dsd_state_note_p2_proven_nac(state, 0xFFFULL), 0);
+    rc |= expect_int("NAC FFE is a proof", dsd_state_note_p2_proven_nac(state, 0xFFEULL), 1);
+    rc |= expect_code("P25p2 proven FFE", state, DSD_SYNC_P25P2_POS, 0U, 0U, 1, DSD_ACCESS_CODE_NAC, 0xFFEU);
+    /* A record holding a value outside the range (written whole by a snapshot, say) reads as none. */
+    state->p2_proven_nac = 0xFFF;
+    rc |= expect_none("P25p2 record FFF", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    state->p2_proven_nac = 0;
+    rc |= expect_none("P25p2 record 000", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    return rc;
+}
+
+/* The proof record's life on one carrier (issue #802 B8): the latest proof wins, whatever seed is configured, and the
+ * receive policy's NAC verdict follows the same record. */
+static int
+test_p25_phase2_proof_lifecycle(dsd_state* state) {
+    static dsd_opts opts;
+    int rc = 0;
+    reset_sources(state);
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    char error[160];
+    rc |= expect_int("NAC filter parses",
+                     dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_NAC, 1, "293", "", "", error, sizeof error), 0);
+
+    /* A hand-set seed (-X 123) proves nothing by itself: the policy is still checking. */
+    state->p2_hardset = 1;
+    state->p2_cc = 0x123ULL;
+    rc |= expect_none("hand-set seed alone", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    rc |= expect_int("hand-set seed alone: checking", dsd_receive_status(&opts, state, DSD_SYNC_P25P2_POS, 0),
+                     DSD_RECEIVE_CHECKING);
+    /* A checked network status names 293 on this carrier: the call reads 293 though the seed stays 123, and the policy
+     * admits it. */
+    rc |= expect_int("the broadcast's NAC is a new proof", dsd_state_note_p2_proven_nac(state, 0x293ULL), 1);
+    rc |= expect_code("hand-set 123, broadcast 293", state, DSD_SYNC_P25P2_POS, 0U, 0U, 1, DSD_ACCESS_CODE_NAC, 0x293U);
+    rc |= expect_int("hand-set 123, broadcast 293: admitted", dsd_receive_status(&opts, state, DSD_SYNC_P25P2_POS, 0),
+                     DSD_RECEIVE_ALLOWED);
+    rc |= expect_int("the same broadcast again is no new value", dsd_state_note_p2_proven_nac(state, 0x293ULL), 0);
+    /* A burst descrambled with the seed proves 123 later: the latest proof wins, and the policy rejects it. */
+    rc |= expect_int("the seed's proof is a new value", dsd_state_note_p2_proven_nac(state, 0x123ULL), 1);
+    rc |= expect_code("then the seed's proof", state, DSD_SYNC_P25P2_POS, 0U, 0U, 1, DSD_ACCESS_CODE_NAC, 0x123U);
+    rc |= expect_int("then the seed's proof: rejected", dsd_receive_status(&opts, state, DSD_SYNC_P25P2_POS, 0),
+                     DSD_RECEIVE_REJECTED);
+
+    /* The carrier goes: nothing is proven, the seed stays, and the policy is checking again. */
+    state->p2_cc_verified = 1U;
+    dsd_state_forget_p2_proof(state);
+    rc |= expect_int("the forget drops the seed's proof", state->p2_cc_verified, 0);
+    rc |= expect_int("the forget drops the proven NAC", state->p2_proven_nac, -1);
+    rc |= expect_int("the forget keeps the seed", (long long)state->p2_cc, 0x123);
+    rc |= expect_none("after the forget", state, DSD_SYNC_P25P2_POS, 0U, 0U);
+    rc |= expect_int("after the forget: checking", dsd_receive_status(&opts, state, DSD_SYNC_P25P2_POS, 0),
+                     DSD_RECEIVE_CHECKING);
+    state->p2_hardset = 0;
+    reset_sources(state);
     return rc;
 }
 
@@ -269,6 +346,7 @@ test_codeless_protocols(dsd_state* state) {
     state->dmr_color_code = 3U;
     state->nac = 0x293;
     state->p2_cc = 0x293ULL;
+    state->p2_proven_nac = 0x293;
     state->nxdn_last_ran = 5U;
     state->dpmr_color_code = 7;
     rc |= expect_none("YSF", state, DSD_SYNC_YSF_POS, 0x13U, 1U);
@@ -331,7 +409,8 @@ main(void) {
     rc |= test_kind_for_every_family();
     rc |= test_dmr_colour_code(state);
     rc |= test_p25_phase1_reads_nac_only(state);
-    rc |= test_p25_phase2_reads_p2_cc_only(state);
+    rc |= test_p25_phase2_reads_the_proven_nac(state);
+    rc |= test_p25_phase2_proof_lifecycle(state);
     rc |= test_nxdn_ran(state);
     rc |= test_nxdn_stand_ins_are_not_rans(state);
     rc |= test_dpmr_colour_code(state);

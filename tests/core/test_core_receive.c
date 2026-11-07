@@ -69,8 +69,10 @@ test_protocol_context(dsd_opts* opts, dsd_state* state) {
     assert(dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 1)); /* FDMA has no slot. */
     state->p2_cc = 0x293;
     state->p2_cc_verified = 0;
+    state->p2_proven_nac = -1;
     assert(dsd_receive_status(opts, state, DSD_SYNC_P25P2_POS, 0) == DSD_RECEIVE_CHECKING);
     state->p2_cc_verified = 1;
+    state->p2_proven_nac = 0x293;
     assert(dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, 0));
     assert(!dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, 1));
     assert(dsd_receive_grant_allows(opts, DSD_SYNC_P25P1_POS, 1));

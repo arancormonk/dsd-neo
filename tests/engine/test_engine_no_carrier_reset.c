@@ -7225,6 +7225,7 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     rc |= expect_true("access-codes: initState leaves all three unknown",
                       state->dmr_color_code == 16U && state->dpmr_color_code == -1
                           && state->nxdn_last_ran == (unsigned int)-1);
+    rc |= expect_true("access-codes: initState proves no Phase 2 NAC", state->p2_proven_nac == -1);
 
     /* A DMR MS decode sets the colour code without the BS confidence lock. */
     state->dmr_color_code = 7U;
@@ -7232,9 +7233,11 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->nxdn_last_ran = 21U;
     state->p2_cc = 0x293ULL;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
     noCarrier(opts, state);
-    /* The Phase 2 seed is the descrambling key and stays; its proof on this carrier goes. */
+    /* The Phase 2 seed is the descrambling key and stays; its proof on this carrier goes, with the NAC it named. */
     rc |= expect_true("access-codes: noCarrier forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
+    rc |= expect_true("access-codes: noCarrier forgets the proven Phase 2 NAC", state->p2_proven_nac == -1);
     rc |= expect_true("access-codes: noCarrier keeps the Phase 2 seed", state->p2_cc == 0x293ULL);
     rc |= expect_true("access-codes: noCarrier forgets the DMR colour code", state->dmr_color_code == 16U);
     rc |= expect_true("access-codes: noCarrier forgets the dPMR colour code", state->dpmr_color_code == -1);
@@ -7244,8 +7247,10 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->dpmr_color_code = 33;
     state->nxdn_last_ran = 0U; /* RAN 0 is a legal code, so "forgotten" is -1, not 0. */
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
     dsd_engine_reset_no_carrier_state(opts, state);
     rc |= expect_true("access-codes: the shared reset forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
+    rc |= expect_true("access-codes: the shared reset forgets the proven Phase 2 NAC", state->p2_proven_nac == -1);
     rc |= expect_true("access-codes: the shared reset forgets the DMR colour code", state->dmr_color_code == 16U);
     rc |= expect_true("access-codes: the shared reset forgets the dPMR colour code", state->dpmr_color_code == -1);
     rc |= expect_true("access-codes: the shared reset forgets the NXDN RAN", state->nxdn_last_ran == (unsigned int)-1);
@@ -7257,10 +7262,12 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->dpmr_color_code = 12;
     state->nxdn_last_ran = 21U;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
     noCarrier(opts, state);
     /* Issue #637: trunk scan keeps the DMR confidence lock, the target's acquisition hint, but no published code
        outlives its transmission: the next one proves its own before an access filter admits it. */
     rc |= expect_true("access-codes: trunk scan forgets the Phase 2 seed's proof", state->p2_cc_verified == 0U);
+    rc |= expect_true("access-codes: trunk scan forgets the proven Phase 2 NAC", state->p2_proven_nac == -1);
     rc |= expect_true("access-codes: trunk scan forgets the DMR colour code and keeps its lock",
                       state->dmr_color_code == 16U && state->dmr_confidence_locked == 1
                           && state->dmr_confidence_color_code == 5);
@@ -7291,6 +7298,7 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->nac = 0x293;
     state->p2_cc = 0x293ULL;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
     dsd_engine_forget_carrier_codes(state);
     rc |= expect_true("access-codes: the forget drops the Phase 1 NAC", state->nac == 0);
     rc |= expect_true("access-codes: the forget drops the DMR colour code with its lock",
@@ -7300,6 +7308,7 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     rc |= expect_true("access-codes: the forget drops the dPMR colour code", state->dpmr_color_code == -1);
     rc |= expect_true("access-codes: the forget drops the seed's proof and keeps the seed",
                       state->p2_cc_verified == 0U && state->p2_cc == 0x293ULL);
+    rc |= expect_true("access-codes: the forget drops the proven Phase 2 NAC", state->p2_proven_nac == -1);
     dsd_engine_forget_carrier_codes(NULL);
 
     /* A trunk voice-channel tune with every receive filter off (issue #637) forgets the published codes, so the control
@@ -7313,6 +7322,7 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->nac = 0x293;
     state->p2_cc = 0x293ULL;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
     dsd_engine_forget_carrier_code_values(state);
     rc |= expect_true("access-codes: the value forget drops the colour code and keeps its lock",
                       state->dmr_color_code == 16U && state->dmr_confidence_locked == 1
@@ -7321,7 +7331,7 @@ test_carrier_boundary_forgets_the_access_codes(void) {
                       state->dmr_mono_rx_slot == DSD_DMR_MONO_RX_NONE);
     rc |= expect_true("access-codes: the value forget drops the RAN, the NAC and the seed's proof",
                       state->nxdn_last_ran == (unsigned int)-1 && state->nac == 0 && state->p2_cc_verified == 0U
-                          && state->p2_cc == 0x293ULL);
+                          && state->p2_cc == 0x293ULL && state->p2_proven_nac == -1);
     dsd_engine_forget_carrier_code_values(NULL);
 
     /* With trunking off a retune also forgets the voice frequencies the carrier's grants named, as the trunking-off

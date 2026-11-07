@@ -3745,7 +3745,7 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
     if (state->p2_hardset == 0
         && p25_update_system_identity(state, (unsigned long long)lwacn, (unsigned long long)lsysid)) {
         if (state->p2_cc != (unsigned long long)lcolorcode) {
-            state->p2_cc_verified = 0U;
+            dsd_state_forget_p2_proof(state);
         }
         state->p2_cc = lcolorcode;
     }
@@ -3753,6 +3753,9 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
     if (state->p2_cc == (unsigned long long)lcolorcode) {
         state->p2_cc_verified = 1U;
     }
+    /* Whatever the seed: the NAC it carries is this carrier's (issue #802 B8). A hand-set seed (p2_hardset) stays the
+       descrambler's, unproven while the broadcast names another NAC, and a Phase 2 call reads the broadcast's. */
+    (void)p25_search_note_proven_nac(state, (unsigned long long)lcolorcode);
 }
 
 static void

@@ -40,6 +40,7 @@ typedef void (*dsd_signal_search_evidence_fn)(const dsd_state*, const char*, int
 typedef void (*dsd_signal_search_site_fn)(const dsd_state*, const dsd_signal_search_site_note*);
 typedef void (*dsd_signal_search_call_fn)(const dsd_state*, uint8_t);
 typedef int (*dsd_signal_search_active_fn)(const dsd_state*);
+typedef void (*dsd_signal_search_access_fn)(const dsd_state*);
 /** Decoder-thread query: during a search session the symbol readers take a failed (bounded) live read as an
  * interruption, not the end of the stream. */
 void dsd_signal_search_active_set(dsd_signal_search_active_fn fn);
@@ -61,6 +62,12 @@ void dsd_signal_search_note_site(const dsd_state* state, const dsd_signal_search
  * record itself. The default is a no-op. */
 void dsd_signal_search_call_set(dsd_signal_search_call_fn fn);
 void dsd_signal_search_note_call(const dsd_state* state, uint8_t slot);
+/** Install at engine startup. Protocol code calls dsd_signal_search_note_access() whenever a checked proof gives the
+ * access code dsd_access_code_current() reads for the decoder's current protocol a new value, from none included: a
+ * proof that may come after the transmission's last evidence (a P25 Phase 2 NAC, issue #802). The engine reads the code
+ * itself; the default is a no-op. */
+void dsd_signal_search_access_set(dsd_signal_search_access_fn fn);
+void dsd_signal_search_note_access(const dsd_state* state);
 /** The Signal search visit on the air (issue #809), which the recorder reads at a publish to name the detection a
  * recording was received on. The engine sets it when a visit's tune lands and clears it right after the closing step
  * that ends the visit's reception; when the decoder session itself ends, it lasts through the session's final

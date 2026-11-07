@@ -3571,8 +3571,9 @@ test_canonical_p25_slot_and_recent_activity(void) {
     static dsd_opts rejecting;
     DSD_MEMSET(&rejecting, 0, sizeof rejecting);
     assert(dsd_receive_edit_parse(&rejecting.receive, DSD_RECEIVE_NAC, 1, "", "293", "", NULL, 0) == 0);
-    state->p2_cc = 0x293; /* A Phase 2 call: its NAC is the verified Phase 2 one. */
+    state->p2_cc = 0x293; /* A Phase 2 call: its NAC is the one proven on the carrier. */
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
     dsd_call_state_refresh_receive(&rejecting, state, 0U);
     ui_slot_view rejected = ui_build_slot_view(&rejecting, state, 0);
     reset_printw_capture();
@@ -3590,6 +3591,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     dsd_call_state_refresh_receive(&rejecting, state, 0U);
     state->p2_cc = 0;
     state->p2_cc_verified = 0U;
+    state->p2_proven_nac = -1;
 
     state->dmrburstR = 21;
     ui_slot_view idle_companion = ui_build_slot_view(&no_opts, state, 1);

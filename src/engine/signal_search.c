@@ -505,6 +505,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     dsd_signal_search_evidence_set(dsd_engine_signal_search_evidence_at);
     dsd_signal_search_site_set(dsd_engine_signal_search_site);
     dsd_signal_search_call_set(dsd_engine_signal_search_call);
+    dsd_signal_search_access_set(dsd_engine_signal_search_access);
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
     rtl_signal_search_set_owner(c->status.session_id);
     rtl_signal_search_bypass(1);
@@ -657,6 +658,26 @@ dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_si
         return;
     }
     if (search_refresh_site(c)) {
+        search_publish(c, 1);
+    }
+}
+
+/* Whether an access note may republish the hit: a visit is receiving, its hit is confirmed, and the decoder's current
+   sync type is of the hit's protocol family ("NXDN" for NXDN48 and NXDN96), the family whose code the observer reads.
+   The hit is already confirmed, so the receive policy admitted it. */
+static int
+search_access_note_applies(const search_coord* c, const dsd_state* state) {
+    if (!c || !search_receiving(c, state) || !c->status.hit.confirmed) {
+        return 0;
+    }
+    const char* family = dsd_engine_signal_search_sync_protocol(state->synctype);
+    return family && strncmp(c->status.hit.protocol, family, strlen(family)) == 0;
+}
+
+void
+dsd_engine_signal_search_access(const dsd_state* state) {
+    search_coord* c = search_get(state);
+    if (search_access_note_applies(c, state)) {
         search_publish(c, 1);
     }
 }

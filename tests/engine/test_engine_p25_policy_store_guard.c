@@ -581,10 +581,11 @@ test_receive_set_takes_the_guard(void) {
     g_opts.trunk_is_tuned = 1;
     g_state.receive_codes_fresh_freq = 0;
     g_state.p2_cc_verified = 1U;
+    g_state.p2_proven_nac = 0x293;
     rc |= drain_command_under_held_guard(DSD_APP_CMD_RECEIVE_SET, NULL, &edit, sizeof edit,
                                          "a receive policy edit waits for the guard");
-    rc |=
-        expect(g_state.p2_cc_verified == 0U, "the first filter forgets the inherited code: the channel proves its own");
+    rc |= expect(g_state.p2_cc_verified == 0U && g_state.p2_proven_nac == -1,
+                 "the first filter forgets the inherited code: the channel proves its own");
     rc |= expect(g_opts.receive.filters[DSD_RECEIVE_NAC].enabled == 1
                      && dsd_receive_set_contains(&g_opts.receive.filters[DSD_RECEIVE_NAC].allow, 0x293U),
                  "the receive policy edit applied");
@@ -594,6 +595,7 @@ test_receive_set_takes_the_guard(void) {
     rc |= expect(dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE,
                  "a call the policy is checking carries on");
     g_state.p2_cc_verified = 1U;
+    g_state.p2_proven_nac = 0x293;
     dsd_app_receive_payload names;
     DSD_MEMSET(&names, 0, sizeof names);
     names.kind = 4;

@@ -2213,6 +2213,7 @@ main(void) {
     s20n = s20;
     s20n.p25_vc_cqpsk_override = -1;
     s20n.p2_cc_verified = 0U;
+    s20n.p2_proven_nac = -1;
     o20n.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
     assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20n.receive.filters[DSD_RECEIVE_NAC].allow, NULL, 0) == 0);
     p25_sm_ctx_t ctx20n;
@@ -2240,6 +2241,7 @@ main(void) {
     o20n.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
     assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20n.receive.filters[DSD_RECEIVE_NAC].block, NULL, 0) == 0);
     s20n.p2_cc_verified = 1U;
+    s20n.p2_proven_nac = 0x293;
     const long rejected_vc_hz = ctx20n.vc_freq_hz;
     ctx20n.receive_check_started_m = dsd_decode_now_mono_s() - 10.0;
     p25_sm_tick_ctx(&ctx20n, &o20n, &s20n);
@@ -2265,6 +2267,7 @@ main(void) {
         DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
         s20n.p2_cc = 0x293;
         s20n.p2_cc_verified = 1U;
+        s20n.p2_proven_nac = 0x293;
         p25_sm_init_ctx(&stale, &o20n, &s20n);
         p25_sm_event_t stale_grant = p25_sm_ev_group_grant(ch9, 0, 1237, 45, 0);
         p25_sm_event(&stale, &o20n, &s20n, &stale_grant);
@@ -2288,6 +2291,7 @@ main(void) {
         assert(dsd_receive_set_parse(DSD_RECEIVE_NAC, "293", &o20n.receive.filters[DSD_RECEIVE_NAC].allow, NULL, 0)
                == 0);
         s20n.p2_cc_verified = 0U;
+        s20n.p2_proven_nac = -1;
         p25_sm_init_ctx(gctx, &o20n, &s20n);
         p25_sm_event_t ptt_grant = p25_sm_ev_group_grant(ch9, 0, 1236, 44, 0);
         p25_sm_event(gctx, &o20n, &s20n, &ptt_grant);
@@ -2298,13 +2302,16 @@ main(void) {
         assert(dsd_call_state_get(&s20n, 0U, &checking_call) > 0 && checking_call.phase == DSD_CALL_PHASE_ACTIVE);
         /* Once the NAC is proven, the anonymous ACTIVE that follows continues the PTT's call, not a new one. */
         s20n.p2_cc_verified = 1U;
+        s20n.p2_proven_nac = 0x293;
         assert(p25_sm_emit_active(&o20n, &s20n, 0) == 1);
         dsd_call_snapshot admitted_call;
         assert(dsd_call_state_get(&s20n, 0U, &admitted_call) > 0 && admitted_call.epoch == checking_call.epoch);
         assert(admitted_call.ota_target_id == 1236U);
         s20n.p2_cc = 0x370;
+        s20n.p2_proven_nac = 0x370;
         assert(p25_sm_emit_ptt_call(&o20n, &s20n, 0, 1236, 0, 44, 1, 0) == 0);
         s20n.p2_cc = 0x293;
+        s20n.p2_proven_nac = 0x293;
         assert(p25_sm_emit_ptt_call(&o20n, &s20n, 0, 1236, 0, 44, 1, 0) == 1);
         assert(gctx->slots[0].voice_active == 1);
         DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
@@ -2318,6 +2325,7 @@ main(void) {
         DSD_MEMSET(&o20n.receive, 0, sizeof(o20n.receive));
         s20n.p2_cc = 0x293;
         s20n.p2_cc_verified = 1U;
+        s20n.p2_proven_nac = 0x293;
         p25_sm_init_ctx(gctx, &o20n, &s20n);
         p25_sm_event_t followed_grant = p25_sm_ev_group_grant(ch9, 0, 1238, 46, 0);
         p25_sm_event(gctx, &o20n, &s20n, &followed_grant);

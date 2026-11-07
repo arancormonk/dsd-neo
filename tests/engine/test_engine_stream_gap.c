@@ -544,6 +544,7 @@ test_gap_resets_dmr_confirmation_keeps_colour_code(dsd_opts* opts, dsd_state* st
     state->dpmr_color_code = 3;
     state->nac = 0x293;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
 
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
 
@@ -552,9 +553,9 @@ test_gap_resets_dmr_confirmation_keeps_colour_code(dsd_opts* opts, dsd_state* st
                && state->dmr_confidence_mismatch_count == 0U && state->dmr_confidence_voice_sync_seen[0] == 0U
                && state->dmr_confidence_voice_open[0] == 0U && state->dmr_confidence_voice_count[1] == 0U);
     expect("dmr: the published colour code stays", state->dmr_color_code == 5U);
-    expect("codes: the RAN, dPMR colour code, NAC and Phase 2 seed proof stay",
+    expect("codes: the RAN, dPMR colour code, NAC and Phase 2 proofs stay",
            state->nxdn_last_ran == 7U && state->dpmr_color_code == 3 && state->nac == 0x293
-               && state->p2_cc_verified == 1U);
+               && state->p2_cc_verified == 1U && state->p2_proven_nac == 0x293);
 }
 
 /* Whether two received identities hold the same values, every field (the record carries padding, so not memcmp). */

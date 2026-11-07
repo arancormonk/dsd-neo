@@ -198,6 +198,7 @@ typedef struct {
     uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
     uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
+    int p2_proven_nac;      /* the NAC the latest Phase 2 proof there named (issue #802) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_cc_prot_valid;
@@ -1827,6 +1828,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p2_sysid = state->p2_sysid;
     snapshot->p2_cc = state->p2_cc;
     snapshot->p2_cc_verified = state->p2_cc_verified;
+    snapshot->p2_proven_nac = state->p2_proven_nac;
     snapshot->p2_siteid = state->p2_siteid;
     snapshot->p2_rfssid = state->p2_rfssid;
     snapshot->p25_cc_freq = state->p25_cc_freq;
@@ -1885,6 +1887,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p2_sysid = snapshot->p2_sysid;
     state->p2_cc = snapshot->p2_cc;
     state->p2_cc_verified = snapshot->p2_cc_verified;
+    state->p2_proven_nac = snapshot->p2_proven_nac;
     state->p2_siteid = snapshot->p2_siteid;
     state->p2_rfssid = snapshot->p2_rfssid;
     state->p25_cc_freq = snapshot->p25_cc_freq;
@@ -2294,7 +2297,7 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     }
     trunk_scan_restore_snapshot(state, &rt->snapshot);
     state->nac = 0;
-    state->p2_cc_verified = 0;
+    dsd_state_forget_p2_proof(state);
     state->dmr_color_code = 16;
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
     state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;

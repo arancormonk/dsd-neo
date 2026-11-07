@@ -8,13 +8,15 @@
  * was handled, with that message's own values: never decoder state (p2_wacn, p2_sysid, RFSS/site, which hard-set
  * values, caches and other messages also write), a voice LCW (its Reed-Solomon word accepts random input) or a
  * fill-in. The record binds a site and the location registration area to the SYSID the message carries, as the search
- * does. */
+ * does. The carrier's proven Phase 2 NAC, which a burst's Reed-Solomon check or a network status's CRC proves, is noted
+ * to the search here too (p25_search_note_proven_nac()). */
 #ifndef DSD_NEO_SRC_PROTOCOL_P25_P25_SEARCH_SITE_H
 #define DSD_NEO_SRC_PROTOCOL_P25_P25_SEARCH_SITE_H
 
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
@@ -60,6 +62,21 @@ p25_search_note_network_nac(dsd_state* state, uint16_t nac) {
     if (nac != 0U && nac != 0xFFFU) {
         dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, nac);
     }
+}
+
+/* A checked Phase 2 proof on this carrier named @p nac: a burst descrambled with the seed passed its Reed-Solomon check
+ * (p25p2_note_seed_proven()), or a network status passed its CRC (p25p2_vpdu_apply_nsb_identity()). The latest proof is
+ * the carrier's proven NAC, which a Phase 2 call reads (dsd_state::p2_proven_nac). A proof may come after the
+ * transmission's last evidence (a final 2V burst's ESS, the burst carrying MAC_END_PTT, a final network status naming
+ * another NAC under the same WACN and SYSID), so each new value tells the search, whatever else the message noted.
+ * 1 when the proven NAC changed. */
+static inline int
+p25_search_note_proven_nac(dsd_state* state, unsigned long long nac) {
+    if (!dsd_state_note_p2_proven_nac(state, nac)) {
+        return 0;
+    }
+    dsd_signal_search_note_access(state);
+    return 1;
 }
 
 #endif /* DSD_NEO_SRC_PROTOCOL_P25_P25_SEARCH_SITE_H */

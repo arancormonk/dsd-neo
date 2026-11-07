@@ -982,11 +982,17 @@ struct dsd_state {
     unsigned long long int p2_sysid;
     unsigned long long int p2_cc; //p1 NAC
     /* 1 once p2_cc is proven on the carrier being decoded: a burst descrambled with it (a scrambled FACCH or SACCH, or an
-     * ESS) passed its Reed-Solomon check, or a CRC-checked network status broadcast named it. Only then is p2_cc a
-     * Phase 2 call's received NAC (issue #575): a call carried by unscrambled FACCH/SACCH never tests the seed, which
-     * -X or another carrier may have left. 0 at every carrier boundary and whenever p2_cc changes; p2_cc itself, the
-     * descrambling key, is never reset for it. */
+     * ESS) passed its Reed-Solomon check, or a CRC-checked network status broadcast named it (issue #575): a call
+     * carried by unscrambled FACCH/SACCH never tests the seed, which -X or another carrier may have left. Each such
+     * proof also names the carrier's proven NAC (p2_proven_nac), which is what a Phase 2 call reads. 0 at every
+     * carrier boundary and whenever p2_cc changes; p2_cc itself, the descrambling key, is never reset for it. */
     uint8_t p2_cc_verified;
+    /* The NAC the latest checked Phase 2 proof on the carrier being decoded named, -1 for none (issue #802): the seed a
+     * burst descrambled with passed its Reed-Solomon check, or the NAC a CRC-checked network status broadcast carries,
+     * whatever seed is configured. The latest proof wins. This, not p2_cc, is a Phase 2 call's received NAC
+     * (dsd_access_code_current()). Set only through dsd_state_note_p2_proven_nac(), cleared with p2_cc_verified by
+     * dsd_state_forget_p2_proof(). */
+    int p2_proven_nac;
     unsigned long long int p2_siteid;
     unsigned long long int p2_rfssid;
     long int p25_cc_freq;        // P25 control-channel frequency from network status
@@ -2840,6 +2846,26 @@ dsd_state_sync_readback_invalid(const dsd_state* state) {
         return 0U;
     }
     return state->sync_readback_invalid;
+}
+
+/* The carrier's Phase 2 proofs go (issue #575, #802): the seed's (p2_cc_verified) and the NAC the latest proof named
+   (p2_proven_nac). Every place that leaves the carrier, or changes the seed, runs this; p2_cc itself stays. */
+static inline void
+dsd_state_forget_p2_proof(dsd_state* state) {
+    state->p2_cc_verified = 0U;
+    state->p2_proven_nac = -1;
+}
+
+/* A checked Phase 2 proof on this carrier named @p nac (issue #802): it becomes the carrier's proven NAC, the latest
+   proof winning. dsd-neo takes no NAC 0x000 or 0xFFF (a dead or stuck input decodes as either), so those, and anything
+   past twelve bits, prove nothing and leave the record as it was. 1 when the record took a new value. */
+static inline int
+dsd_state_note_p2_proven_nac(dsd_state* state, unsigned long long nac) {
+    if (nac < 0x001ULL || nac > 0xFFEULL || state->p2_proven_nac == (int)nac) {
+        return 0;
+    }
+    state->p2_proven_nac = (int)nac;
+    return 1;
 }
 
 static inline int

@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include "../p25_search_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -429,15 +430,18 @@ p2_dibit_buffer(dsd_opts* opts, dsd_state* state) {
    wrong seed fail: p2_cc is the NAC this carrier runs on (issue #575). It proves the seed the buffer was descrambled
    with, so the seed in force is proven only while it is still that one.
 
-   A call's row reads the live NAC only while the call is active, and the burst that proves the seed may carry the
-   MAC_END_PTT that ends it, dispatched right after: the slots are rendered when the proof is first set, before the
-   burst's MAC PDU, so the row of the call that burst ends keeps the NAC it proved. */
+   The seed's NAC is the carrier's proven NAC from here, the latest proof winning (issue #802): a network status naming
+   another NAC may have proven that one before. A call's row reads the live NAC only while the call is active, and the
+   burst that proves the seed may carry the MAC_END_PTT that ends it, dispatched right after: the slots are rendered
+   when the proof first sets or changes the NAC, before the burst's MAC PDU, so the row of the call that burst ends
+   keeps the NAC it proved. */
 static void
 p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
     if (s_descramble_seed.valid && s_descramble_seed.wacn == state->p2_wacn
         && s_descramble_seed.sysid == state->p2_sysid && s_descramble_seed.nac == state->p2_cc) {
-        const int newly_proven = state->p2_cc_verified == 0U;
+        const int newly_verified = state->p2_cc_verified == 0U;
         state->p2_cc_verified = 1U;
+        const int newly_proven = p25_search_note_proven_nac(state, s_descramble_seed.nac) || newly_verified;
         /* The burst decoded under the whole seed, so the carrier sends with this WACN, SYSID and NAC: the received
            identity, however the seed was set. The NAC first: another NAC drops the old system, not this one. */
         if (s_descramble_seed.nac != 0U && s_descramble_seed.nac < 0xFFFU) {

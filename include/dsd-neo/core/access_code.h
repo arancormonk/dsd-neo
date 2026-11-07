@@ -17,11 +17,14 @@
  *   signalling's QR(16,7,6); 16 until one decodes, and back to 16 at every carrier boundary.
  * - P25 Phase 1 `nac`: the BCH(63,16) network identifier; 0 between carriers. `p25p1_valid_decoded_nac()` refuses
  *   NAC 0x000 and 0xFFF, so a carrier whose NID decodes either leaves `nac` at 0.
- * - P25 Phase 2 `p2_cc`: the NAC the Phase 2 descrambler runs on (from the network status broadcast or the Phase 1
- *   NID, or set by hand), taken only while `p2_cc_verified` says this carrier proved it: a burst descrambled with it (a
- *   scrambled FACCH or SACCH, or an ESS) passed its Reed-Solomon check, or a checked network status broadcast named
- *   it. A call carried by unscrambled FACCH/SACCH never tests the seed, so a value -X or another carrier left is no NAC
- *   until then; the mark goes at every carrier boundary.
+ * - P25 Phase 2 `p2_proven_nac`: the NAC the latest checked Phase 2 proof on this carrier named (issue #802), -1 for
+ *   none: the seed (`p2_cc`, from the network status broadcast or the Phase 1 NID, or set by hand) once a burst
+ *   descrambled with it (a scrambled FACCH or SACCH, or an ESS) passed its Reed-Solomon check, or the NAC a checked
+ *   network status broadcast carries, whatever seed is configured (a hand-set seed stays the descrambler's). A call
+ *   carried by unscrambled FACCH/SACCH never tests the seed, so a value -X or another carrier left is no NAC until a
+ *   proof names it. Never `rx_id`, which outlives the carrier and which a Phase 1 NID writes too; the record goes,
+ *   with the seed's proof (`p2_cc_verified`), at every carrier boundary, Phase 1 NID or site reset that changes the
+ *   seed, and seed set by hand.
  * - NXDN `nxdn_last_ran`: the CRC-checked CAC, FACCH2/UDCH or SACCH, or a CRC-checked site information message's site
  *   code (Table 6.3-4) of a confirmed transmission; (unsigned)-1 until one decodes, and between transmissions. The
  *   field also holds values that are not a RAN, which the terminal shows in its place: an IDAS (Type-D) carrier's SCCH
@@ -74,8 +77,9 @@ dsd_access_code_kind dsd_access_code_kind_for_protocol(int synctype);
 /**
  * Read a protocol's access code as the decoder holds it now.
  *
- * A P25 Phase 1 call reads `nac` only and a Phase 2 call `p2_cc` only. A fallback from one to the other would read a
- * stale `p2_cc` on a Phase 1 carrier whose NID decoded NAC 0x000 or 0xFFF, which leave `nac` at 0.
+ * A P25 Phase 1 call reads `nac` only and a Phase 2 call `p2_proven_nac` only. A fallback from one to the other would
+ * read a stale seed on a Phase 1 carrier whose NID decoded NAC 0x000 or 0xFFF, which leave `nac` at 0, or a Phase 1
+ * NID's NAC as a Phase 2 proof.
  *
  * @param state                Decoder state; NULL reports no code.
  * @param protocol             The call's `DSD_SYNC_*` value.

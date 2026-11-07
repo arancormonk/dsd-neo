@@ -860,6 +860,11 @@ test_X_seed_is_hand_set(void) {
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         initOpts(opts);
         initState(state);
+        if (state->p2_proven_nac != -1) {
+            DSD_FPRINTF(stderr, "-X %s: initState left a proven NAC %d\n", cases[i].hex, state->p2_proven_nac);
+            test_rc = 1;
+        }
+        state->p2_proven_nac = 0x293; /* as if a proof ran before the option (a config reload) */
         char arg0[] = "dsd-neo";
         char arg_X[] = "-X";
         char hex[16];
@@ -869,7 +874,8 @@ test_X_seed_is_hand_set(void) {
         int exit_rc = -1;
         const int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
         if (rc != DSD_PARSE_CONTINUE || state->p2_wacn != cases[i].wacn || state->p2_sysid != cases[i].sysid
-            || state->p2_cc != cases[i].nac || state->p2_hardset != cases[i].hardset || state->p2_cc_verified != 0U) {
+            || state->p2_cc != cases[i].nac || state->p2_hardset != cases[i].hardset || state->p2_cc_verified != 0U
+            || state->p2_proven_nac != -1) {
             DSD_FPRINTF(stderr,
                         "-X %s: rc=%d WACN %05llX SYSID %03llX NAC %03llX hardset %d verified %u, want hardset %d\n",
                         cases[i].hex, rc, state->p2_wacn, state->p2_sysid, state->p2_cc, state->p2_hardset,

@@ -53,7 +53,7 @@ access_code_read_dmr(const dsd_state* state, uint16_t* value) {
     return 1;
 }
 
-/* A Phase 1 call reads nac only and a Phase 2 call p2_cc only (see dsd_access_code_current()). */
+/* A Phase 1 call reads nac only and a Phase 2 call the carrier's proven NAC only (see dsd_access_code_current()). */
 static int
 access_code_read_p25(const dsd_state* state, int protocol, uint16_t* value) {
     if (DSD_SYNC_IS_P25P1(protocol)) {
@@ -63,12 +63,13 @@ access_code_read_p25(const dsd_state* state, int protocol, uint16_t* value) {
         *value = (uint16_t)state->nac;
         return 1;
     }
-    /* The seed is a received NAC only once a burst descrambled with it, or a network status broadcast, proved it on this
-     * carrier. */
-    if (state->p2_cc_verified == 0U || !access_code_valid_nac(state->p2_cc)) {
+    /* The NAC the latest checked proof on this carrier named: the seed a burst descrambled with, or a network status
+     * broadcast's NAC, whatever seed is configured. Never p2_cc unproven, nor rx_id, which outlives the carrier and
+     * which a Phase 1 NID writes too. */
+    if (state->p2_proven_nac < 0 || !access_code_valid_nac((unsigned long long)state->p2_proven_nac)) {
         return 0;
     }
-    *value = (uint16_t)state->p2_cc;
+    *value = (uint16_t)state->p2_proven_nac;
     return 1;
 }
 

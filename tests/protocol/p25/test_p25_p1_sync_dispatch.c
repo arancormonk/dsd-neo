@@ -748,6 +748,41 @@ test_p25p1_decoded_nid_ends_the_two_slot_carrier(void) {
     assert(state.tdma_carrier == 1U);
 }
 
+/* Issue #802: a Phase 1 NID's NAC, which the received identity record holds, is never a Phase 2 proof. One that changes
+   the seed drops the Phase 2 proofs with it, and one before any Phase 2 proof leaves a Phase 2 call reading nothing. */
+static void
+test_p25p1_nid_is_no_phase2_proof(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint16_t value = 0U;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.p2_cc = 0x123ULL;
+    state.p2_cc_verified = 1U;
+    state.p2_proven_nac = 0x123;
+    g_new_nac = 0x321;
+    g_error_count = 0;
+    g_test_duid = 0x0U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p2_cc == 0x321ULL);
+    assert(state.p2_cc_verified == 0U && state.p2_proven_nac == -1);
+    assert(state.rx_id.valid == DSD_RXID_ACCESS && state.rx_id.access == 0x321U);
+    assert(dsd_access_code_current(&state, DSD_SYNC_P25P2_POS, 0U, 0U, NULL, &value) == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_state_forget_p2_proof(&state);
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    g_new_nac = 0x321;
+    g_test_duid = 0x0U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.rx_id.access == 0x321U);
+    assert(dsd_access_code_current(&state, DSD_SYNC_P25P1_POS, 0U, 0U, NULL, &value) == 1 && value == 0x321U);
+    assert(dsd_access_code_current(&state, DSD_SYNC_P25P2_POS, 0U, 0U, NULL, &value) == 0);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -757,6 +792,7 @@ main(void) {
     test_p25p1_observed_nac_priority();
     test_p25p1_nid_correction_and_failure_state();
     test_p25p1_nac_update_guards();
+    test_p25p1_nid_is_no_phase2_proof();
     test_p25p1_mbe_output_and_resume_side_effects();
     test_p25p1_valid_nid_learns_modulation();
     test_p25p1_verdict_follows_the_nid_evidence_window();

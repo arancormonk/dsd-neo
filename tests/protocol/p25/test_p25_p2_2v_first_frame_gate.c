@@ -478,6 +478,7 @@ main(void) {
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     st.p2_cc = 0x293;
     st.p2_cc_verified = 0U;
+    st.p2_proven_nac = -1;
     opts.receive.filters[DSD_RECEIVE_NAC].enabled = 1;
     opts.receive.filters[DSD_RECEIVE_NAC].allow.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
     reset_mbe_calls();
@@ -486,6 +487,7 @@ main(void) {
     rc |= expect_eq("checking slot: audio stays shut", st.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("checking slot: nothing queued to play", dsd_p25p2_playout_level(&st, 0), 0);
     st.p2_cc_verified = 1U;
+    st.p2_proven_nac = 0x293;
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("admitted slot: frames decode", g_mbe_soft_calls, 2);
@@ -493,6 +495,7 @@ main(void) {
     opts.receive.filters[DSD_RECEIVE_NAC].allow.bits[0x293 / 64] = 0U;
     st.p2_cc = 0x293;
     st.p2_cc_verified = 1U;
+    st.p2_proven_nac = 0x293;
     opts.receive.filters[DSD_RECEIVE_NAC].block.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
     reset_mbe_calls();
     process_2V(&opts, &st);

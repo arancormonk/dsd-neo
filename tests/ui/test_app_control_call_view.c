@@ -472,6 +472,7 @@ test_service_name_names_the_call_and_keeps_its_channel(void) {
     assert(dsd_receive_names_parse("--nac-name 293=Hospital", &opts.receive.names, NULL, 0) == 0);
     state->p2_cc = 0x293;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
     observe_group_call(state, 0U, 51023U, 1234567U, 10.0);
     stage_group_name(history, 0U, 51023U, "Fire Ops");
     stage_channel_label(history, 0U, "Fire Dispatch");

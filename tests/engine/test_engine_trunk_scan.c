@@ -2973,6 +2973,7 @@ test_p25_nac_state_isolated_per_target(void) {
     /* Issue #575: the first target's Phase 2 seed was proven on its carrier. */
     state.p2_cc = 0x2A1ULL;
     state.p2_cc_verified = 1U;
+    state.p2_proven_nac = 0x2A1; /* Issue #802: and the NAC that proof named. */
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.nac != 0) {
@@ -2980,14 +2981,16 @@ test_p25_nac_state_isolated_per_target(void) {
                     dsd_engine_trunk_scan_active_index(&state), state.nac);
         test_rc = 1;
     }
-    if (state.p2_cc_verified != 0U) {
-        DSD_FPRINTF(stderr, "fresh P25 scan target inherited the first target's Phase 2 seed proof\n");
+    if (state.p2_cc_verified != 0U || state.p2_proven_nac != -1) {
+        DSD_FPRINTF(stderr, "fresh P25 scan target inherited the first target's Phase 2 proof (proven NAC %d)\n",
+                    state.p2_proven_nac);
         test_rc = 1;
     }
 
     state.nac = 0x345;
     state.p2_cc = 0x345ULL;
-    state.p2_cc_verified = 0U; /* the second target's seed was never proven */
+    state.p2_cc_verified = 0U;   /* the second target's seed was never proven, */
+    state.p2_proven_nac = 0x345; /* but a network status named its NAC */
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.nac != 0) {
@@ -2995,10 +2998,11 @@ test_p25_nac_state_isolated_per_target(void) {
                     dsd_engine_trunk_scan_active_index(&state), state.nac);
         test_rc = 1;
     }
-    if (state.p2_cc != 0x2A1ULL || state.p2_cc_verified != 0U) {
+    if (state.p2_cc != 0x2A1ULL || state.p2_cc_verified != 0U || state.p2_proven_nac != -1) {
         DSD_FPRINTF(stderr,
-                    "P25 scan target did not restore its Phase 2 seed without stale proof cc=0x%03llX verified=%u\n",
-                    state.p2_cc, (unsigned)state.p2_cc_verified);
+                    "P25 scan target did not restore its Phase 2 seed without stale proof cc=0x%03llX verified=%u "
+                    "proven=%d\n",
+                    state.p2_cc, (unsigned)state.p2_cc_verified, state.p2_proven_nac);
         test_rc = 1;
     }
 
@@ -3914,6 +3918,7 @@ test_p25_conventional_activity_receive_policy(void) {
         state->nac = 0;
         state->p2_cc = 0x293;
         state->p2_cc_verified = 1;
+        state->p2_proven_nac = 0x293;
         trunk_scan_test_set_now(0.10);
         dsd_engine_trunk_scan_p25_conventional_activity(opts, state, cases[i].protocol, cases[i].slot, 1001, 2002, 0, 0,
                                                         0);
