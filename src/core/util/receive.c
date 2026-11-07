@@ -121,15 +121,25 @@ dsd_receive_identity_admitted(const dsd_opts* opts, const dsd_receive_identity* 
     return verdict == DSD_RECEIVE_OFF || verdict == DSD_RECEIVE_ALLOWED;
 }
 
+/* The protocol generic output paths judge by: the owner a borrowed decoder names, else the current sync type, else the
+   last one. */
+static int
+receive_current_protocol(const dsd_state* state) {
+    if (!state) {
+        return DSD_SYNC_NONE;
+    }
+    if (state->receive_context_active) {
+        return state->receive_context_protocol;
+    }
+    return state->synctype == DSD_SYNC_NONE ? state->lastsynctype : state->synctype;
+}
+
 int
 dsd_receive_carrier_allows(const dsd_opts* opts, const dsd_state* state) {
     if (!dsd_receive_filters_enabled(opts) || !state) {
         return 1;
     }
-    int protocol = state->synctype == DSD_SYNC_NONE ? state->lastsynctype : state->synctype;
-    if (state->receive_context_active) {
-        protocol = state->receive_context_protocol;
-    }
+    const int protocol = receive_current_protocol(state);
     dsd_receive_identity identity;
     dsd_receive_identity_current(state, protocol, -1, &identity);
     if (!(DSD_SYNC_IS_DMR(protocol) || DSD_SYNC_IS_P25P2(protocol) || DSD_SYNC_IS_X2TDMA(protocol))) {
@@ -188,11 +198,12 @@ dsd_receive_context_end(dsd_state* state, dsd_receive_context saved) {
 
 int
 dsd_receive_current_allows(const dsd_opts* opts, const dsd_state* state, int slot) {
-    int protocol = state ? (state->synctype == DSD_SYNC_NONE ? state->lastsynctype : state->synctype) : DSD_SYNC_NONE;
-    if (state && state->receive_context_active) {
-        protocol = state->receive_context_protocol;
-    }
-    return dsd_receive_allows(opts, state, protocol, slot);
+    return dsd_receive_allows(opts, state, receive_current_protocol(state), slot);
+}
+
+dsd_receive_verdict
+dsd_receive_current_status(const dsd_opts* opts, const dsd_state* state, int slot) {
+    return dsd_receive_status(opts, state, receive_current_protocol(state), slot);
 }
 
 void

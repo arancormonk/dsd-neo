@@ -171,6 +171,19 @@ list-decoded NID accepts several percent of random words and the voice link
 control's soft Reed-Solomon decode about a fifth, so neither tells such a carrier
 from noise. That carrier is monitored as NFM with the display above.
 
+With a receive filter on (the slot, DCC, RAN and NAC filters in
+[Receive filters and service names](cli.md#receive-filters-and-service-names)), traffic the
+filter rejects, or whose code or slot it is still checking, neither confirms a detection nor
+keeps the search listening. A probe that heard traffic the filter rejects, and none it
+admits, leaves the detection when its window ends, unless it is held: monitored as NFM, the
+rejected transmission's own audio would keep the search on that channel until the maximum
+visit, or for good with no maximum. The detection ends unconfirmed, like an RF-only one, and
+the search goes on. A probe that heard only traffic still being checked, a probe that heard
+nothing, and a held probe fall back to NFM as above. One limit: with a receive filter on, a
+short transmission whose access code is proven only after its last checked frame ends
+unconfirmed at the probe deadline; a continuous carrier sends more checked frames and
+confirms normally.
+
 A digital detection also shows the site it identified, from checked broadcasts heard
 during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SYSID,
 RFSS and site) from a TSBK, MBT or Phase 2 MAC whose CRC passed, read as
@@ -237,7 +250,8 @@ showed.
 ## Controls, history and saved systems
 
 - **Hold** overrides quiet release and the maximum visit. A held probe still falls
-  back when its identification window expires.
+  back when its identification window expires, even one that heard only traffic a
+  receive filter rejects.
 - **Skip** suppresses this frequency for the current pass.
 - **Avoid this session** lasts until the session ends. Session avoids are listed
   under **Avoided this session**, and **Stop avoiding** lifts one for the following

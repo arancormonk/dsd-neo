@@ -31,6 +31,8 @@ int dsd_receive_identity_admitted(const dsd_opts* opts, const dsd_receive_identi
 int dsd_receive_carrier_allows(const dsd_opts* opts, const dsd_state* state);
 /** For generic output paths only. Protocol paths should supply their protocol explicitly. */
 int dsd_receive_current_allows(const dsd_opts* opts, const dsd_state* state, int slot);
+/** dsd_receive_status() for the protocol dsd_receive_current_allows() judges by; generic paths only, as it is. */
+dsd_receive_verdict dsd_receive_current_status(const dsd_opts* opts, const dsd_state* state, int slot);
 
 /** What generic output paths judge by while a protocol decodes or plays through another's decoder under that
  * decoder's synctype (YSF and scrambled dPMR through NXDN's): begin names the owner (a DSD_SYNC_* value) and returns

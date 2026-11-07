@@ -1705,6 +1705,367 @@ test_visit_tag_cleared_at_search_start(dsd_opts* o, dsd_state* s, const dsd_sign
     stop_tag_session(o, s);
 }
 
+/* Issue #802 B9: a digital probe that heard only traffic the receive policy rejects leaves the detection when it ends
+   unconfirmed and unheld, instead of falling back to NFM monitoring, where the rejected carrier would count as activity
+   until the maximum visit. */
+
+/* Land on the next detection of a digital range, its probe running. From a span tune, or the tune leaving a visit. */
+static void
+probe_next(dsd_opts* o, dsd_state* s) {
+    const uint64_t before = status.hit.hit_id;
+    for (int i = 0; i < 8 && !(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id != before); ++i) {
+        land(o, s);
+        ready = 1;
+        tick(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id != before && !status.hit.ended);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && status.identifying && !status.hit.confirmed);
+}
+
+/* Run the visit's 2 s probe out; nothing happens a millisecond before it ends. */
+static void
+run_probe_out(dsd_opts* o, dsd_state* s) {
+    advance(1999);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && !status.hit.confirmed);
+    advance(1);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    tick(o, s);
+}
+
+/* The probe of detection @p hit of session @p session left it for the span: the hit ended as an unconfirmed record ("RF
+   only"), what the visit received closed under its tag, and no NFM tune of the detection followed. No message. */
+static void
+assert_left(uint64_t session, uint64_t hit, uint32_t frequency) {
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id == hit && status.hit.ended && !status.identifying);
+    assert(!status.hit.confirmed && status.hit.unresolved && status.hit.protocol[0] == '\0');
+    assert(status.hit.access[0] == '\0' && status.hit.tone[0] == '\0' && status.hit.target == 0);
+    assert(published_hit.hit_id == hit && published_hit.ended && !published_hit.confirmed);
+    assert(target != frequency && family == DSD_RX_FAMILY_DIGITAL);
+    assert(boundary_closed_visit(session, hit) && tag_clear());
+    assert(status.message[0] == '\0');
+}
+
+/* The probe of detection @p hit fell back to NFM monitoring of the same detection, as before issue #802 B9. */
+static void
+assert_fell_back(uint64_t hit, uint32_t frequency) {
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id == hit && !status.hit.ended);
+    assert(!status.hit.confirmed && target == frequency && family == DSD_RX_FAMILY_ANALOG);
+}
+
+/* Leave the visit on the air with Skip. */
+static void
+skip_visit(dsd_opts* o, dsd_state* s) {
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+}
+
+/* Block DMR colour code 3, the only filter in force. A search judges by the policy configured when it started: each tune
+   applies it again. */
+static void
+block_cc3(dsd_opts* o) {
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
+    o->receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_DCC].block.bits[0] = UINT64_C(1) << 3;
+}
+
+/* Land the tune that left the last visit, then stop the session, and the filters it ran under with it. */
+static void
+stop_refusal_session(dsd_opts* o, dsd_state* s) {
+    land(o, s);
+    stop_tag_session(o, s);
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
+    s->synctype = DSD_SYNC_NONE;
+}
+
+/* DMR traffic on colour code @p cc, reported with the decoder's current sync type and slot. */
+static void
+dmr_evidence(dsd_state* s, unsigned cc) {
+    s->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    s->dmr_color_code = cc;
+    dsd_signal_search_note_evidence(s, "DMR", 100, 200, NULL);
+}
+
+static void
+test_refused_probe_leaves(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 50, 1, 0);
+    block_cc3(o);
+    start_tag_session(o, s, &one);
+
+    // Rejected traffic, then the probe's end: the detection is left, never monitored as NFM.
+    probe_next(o, s);
+    uint64_t hit = status.hit.hit_id;
+    uint32_t frequency = status.hit.frequency_hz;
+    dmr_evidence(s, 3);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && !status.hit.confirmed && status.hit.target == 0);
+    run_probe_out(o, s);
+    assert_left(50, hit, frequency);
+    // Admitted traffic reported after the visit ended joins nothing.
+    dmr_evidence(s, 1);
+    assert(status.hit.ended && !status.hit.confirmed);
+
+    // The refusal belonged to that visit: the next one, with no evidence, falls back as before.
+    probe_next(o, s);
+    hit = status.hit.hit_id;
+    frequency = status.hit.frequency_hz;
+    run_probe_out(o, s);
+    assert_fell_back(hit, frequency);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.unresolved && !status.hit.ended);
+    skip_visit(o, s);
+
+    // Traffic still being checked (no colour code proven yet) falls back as before.
+    probe_next(o, s);
+    hit = status.hit.hit_id;
+    frequency = status.hit.frequency_hz;
+    dmr_evidence(s, 16);
+    run_probe_out(o, s);
+    assert_fell_back(hit, frequency);
+    land(o, s);
+    skip_visit(o, s);
+
+    // Rejected traffic reported while an input interruption stands comes from a cut frame: it is no refusal.
+    probe_next(o, s);
+    hit = status.hit.hit_id;
+    frequency = status.hit.frequency_hz;
+    s->input_interrupted = 1;
+    dmr_evidence(s, 3);
+    s->input_interrupted = 0;
+    run_probe_out(o, s);
+    assert_fell_back(hit, frequency);
+    // Rejected traffic reported while the fallback tune is pending, or on the NFM visit after it, leaves nothing.
+    dmr_evidence(s, 3);
+    land(o, s);
+    dmr_evidence(s, 3);
+    carrier = 1;
+    advance(3000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.hit_id == hit && !status.hit.ended);
+    carrier = 0;
+    skip_visit(o, s);
+    stop_refusal_session(o, s);
+}
+
+/* Any admitted traffic confirms the visit, in either order with rejected traffic; a two-slot carrier's slots are each
+   their own traffic, and a silent slot's permission is no evidence. */
+static void
+test_refused_probe_verdict_order(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 51, 1, 0);
+    // Colour code 3 and slot 2 blocked.
+    block_cc3(o);
+    o->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2;
+    start_tag_session(o, s, &one);
+    for (int admitted_first = 0; admitted_first < 2; ++admitted_first) {
+        probe_next(o, s);
+        dmr_evidence(s, admitted_first ? 1 : 3);
+        dmr_evidence(s, admitted_first ? 3 : 1);
+        assert(status.phase == DSD_SEARCH_LISTENING && status.hit.confirmed && strcmp(status.hit.protocol, "DMR") == 0);
+        // The probe's deadline passes with the admitted traffic going on: the visit stays digital and listening.
+        const uint32_t frequency = status.hit.frequency_hz;
+        for (int i = 0; i < 6; ++i) {
+            advance(400);
+            dmr_evidence(s, 1);
+            tick(o, s);
+        }
+        assert(status.phase == DSD_SEARCH_LISTENING && status.hit.confirmed && !status.hit.ended);
+        assert(target == frequency && family == DSD_RX_FAMILY_DIGITAL);
+        skip_visit(o, s);
+        assert(status.hit.confirmed);
+    }
+
+    // On colour code 1, slot 2's traffic alone, slot 1 silent, leaves the detection.
+    probe_next(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    const uint32_t frequency = status.hit.frequency_hz;
+    s->dmr_color_code = 1;
+    dsd_signal_search_note_evidence_at(s, "DMR", DSD_SYNC_DMR_BS_VOICE_POS, 1, 100, 200, NULL);
+    run_probe_out(o, s);
+    assert_left(51, hit, frequency);
+    // Slot 1's traffic confirms, before or after slot 2's.
+    for (int admitted_first = 0; admitted_first < 2; ++admitted_first) {
+        probe_next(o, s);
+        s->dmr_color_code = 1;
+        dsd_signal_search_note_evidence_at(s, "DMR", DSD_SYNC_DMR_BS_VOICE_POS, admitted_first ? 0 : 1, 100, 200, NULL);
+        dsd_signal_search_note_evidence_at(s, "DMR", DSD_SYNC_DMR_BS_VOICE_POS, admitted_first ? 1 : 0, 100, 200, NULL);
+        assert(status.phase == DSD_SEARCH_LISTENING && status.hit.confirmed);
+        skip_visit(o, s);
+    }
+    stop_refusal_session(o, s);
+}
+
+/* NXDN by its RAN verdict (an unknown RAN, or a stand-in, is still being checked); a protocol with no code the receive
+   policy reads (dPMR, M17, YSF, D-STAR) confirms under a filter of another protocol, as before. */
+static void
+test_refused_probe_nxdn_and_codeless(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 57, 1, 0);
+    // RAN 5 and colour code 3 blocked.
+    block_cc3(o);
+    o->receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_RAN].block.bits[0] = UINT64_C(1) << 5;
+    start_tag_session(o, s, &one);
+    s->synctype = DSD_SYNC_NXDN_POS;
+    probe_next(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    const uint32_t frequency = status.hit.frequency_hz;
+    s->nxdn_last_ran = 5;
+    s->nxdn_last_ran_stand_in = 0;
+    dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+    run_probe_out(o, s);
+    assert_left(57, hit, frequency);
+    for (int stand_in = 0; stand_in < 2; ++stand_in) {
+        probe_next(o, s);
+        const uint64_t checking = status.hit.hit_id;
+        s->nxdn_last_ran = stand_in ? 5U : 64U;
+        s->nxdn_last_ran_stand_in = (uint8_t)stand_in;
+        dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+        run_probe_out(o, s);
+        assert_fell_back(checking, status.hit.frequency_hz);
+        land(o, s);
+        skip_visit(o, s);
+    }
+    s->nxdn_last_ran_stand_in = 0;
+
+    static const struct {
+        const char* name;
+        int sync;
+    } codeless[] = {
+        {"dPMR", DSD_SYNC_DPMR_FS1_POS},
+        {"M17", DSD_SYNC_M17_STR_POS},
+        {"YSF", DSD_SYNC_YSF_POS},
+        {"D-STAR", DSD_SYNC_DSTAR_VOICE_POS},
+    };
+
+    for (size_t i = 0; i < sizeof(codeless) / sizeof(codeless[0]); ++i) {
+        probe_next(o, s);
+        s->dmr_color_code = 3;
+        s->synctype = codeless[i].sync;
+        dsd_signal_search_note_evidence(s, codeless[i].name, 0, 0, NULL);
+        assert(status.phase == DSD_SEARCH_LISTENING && status.hit.confirmed);
+        assert(strcmp(status.hit.protocol, codeless[i].name) == 0);
+        skip_visit(o, s);
+    }
+    stop_refusal_session(o, s);
+}
+
+/* Hold keeps its documented fallback: a probe held when it ends falls back to NFM, whether the hold came before or after
+   the rejected traffic, and its release then follows the usual quiet rule. A hold released before the end holds
+   nothing. */
+static void
+test_refused_probe_held(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 58, 1, 0);
+    block_cc3(o);
+    start_tag_session(o, s, &one);
+    for (int hold_first = 0; hold_first < 2; ++hold_first) {
+        probe_next(o, s);
+        const uint64_t hit = status.hit.hit_id;
+        const uint32_t frequency = status.hit.frequency_hz;
+        if (hold_first) {
+            act(o, s, DSD_SEARCH_ACTION_HOLD);
+        }
+        dmr_evidence(s, 3);
+        if (!hold_first) {
+            act(o, s, DSD_SEARCH_ACTION_HOLD);
+        }
+        assert(status.phase == DSD_SEARCH_HELD && status.identifying);
+        advance(1999);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_HELD);
+        advance(1);
+        tick(o, s);
+        assert_fell_back(hit, frequency);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_HELD && !status.identifying && tag_is(58, hit));
+        carrier = 1;
+        advance(40000);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_HELD && !status.hit.ended);
+        carrier = 0;
+        act(o, s, DSD_SEARCH_ACTION_HOLD);
+        assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended);
+        advance(499);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_LISTENING);
+        advance(1);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && !status.hit.confirmed);
+    }
+
+    probe_next(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    const uint32_t frequency = status.hit.frequency_hz;
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    dmr_evidence(s, 3);
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING);
+    run_probe_out(o, s);
+    assert_left(58, hit, frequency);
+    stop_refusal_session(o, s);
+}
+
+/* A maximum visit shorter than the probe leaves first, as before. */
+static void
+test_refused_probe_max_visit(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 59, 1, 1500);
+    block_cc3(o);
+    start_tag_session(o, s, &one);
+    probe_next(o, s);
+    const uint64_t hit = status.hit.hit_id;
+    dmr_evidence(s, 3);
+    advance(1499);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING);
+    advance(1);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && boundary_closed_visit(59, hit) && tag_clear());
+    stop_refusal_session(o, s);
+}
+
+/* Skip, Avoid, Pause, Resume and Stop (Explore here's handoff stops the search) during a probe that heard rejected
+   traffic work as they always do, and the refusal never reaches the next visit. */
+static void
+test_refused_probe_actions(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 60, 1, 0);
+    uint64_t hit = 0;
+    block_cc3(o);
+    start_tag_session(o, s, &one);
+    for (int action = 0; action < 2; ++action) {
+        probe_next(o, s);
+        hit = status.hit.hit_id;
+        dmr_evidence(s, 3);
+        act(o, s, action ? DSD_SEARCH_ACTION_AVOID : DSD_SEARCH_ACTION_SKIP);
+        assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && boundary_closed_visit(60, hit) && tag_clear());
+        probe_next(o, s);
+        hit = status.hit.hit_id;
+        run_probe_out(o, s);
+        assert_fell_back(hit, status.hit.frequency_hz);
+        land(o, s);
+        skip_visit(o, s);
+    }
+    probe_next(o, s);
+    hit = status.hit.hit_id;
+    dmr_evidence(s, 3);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && status.hit.ended && boundary_closed_visit(60, hit) && tag_clear());
+    act(o, s, DSD_SEARCH_ACTION_RESUME);
+    probe_next(o, s);
+    hit = status.hit.hit_id;
+    run_probe_out(o, s);
+    assert_fell_back(hit, status.hit.frequency_hz);
+    land(o, s);
+    skip_visit(o, s);
+    probe_next(o, s);
+    hit = status.hit.hit_id;
+    dmr_evidence(s, 3);
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(status.hit.ended && !status.hit.confirmed && boundary_closed_visit(60, hit) && tag_clear());
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && tag_clear());
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
+    s->synctype = DSD_SYNC_NONE;
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -1883,6 +2244,12 @@ main(void) {
     test_visit_tag_hold_keeps(o, s, &config);
     test_session_end_keeps_tag_until_final_close(o, s, &config);
     test_visit_tag_cleared_at_search_start(o, s, &config);
+    test_refused_probe_leaves(o, s, &config);
+    test_refused_probe_verdict_order(o, s, &config);
+    test_refused_probe_nxdn_and_codeless(o, s, &config);
+    test_refused_probe_held(o, s, &config);
+    test_refused_probe_max_visit(o, s, &config);
+    test_refused_probe_actions(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

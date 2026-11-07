@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -87,6 +88,8 @@ typedef struct {
     int analog_visit, listen_ready;
     /* Paused or failed, the search has ended what the decoder was receiving (search_end_reception()). */
     int reception_ended;
+    /* The visit heard protocol-confirmed traffic the receive policy rejects (issue #802 B9); cleared at each tune. */
+    int refused;
     uint32_t ticket, target, before_generation;
     /* The current visit's checked site identity, from site notes alone; cleared at each landing. */
     dsd_signal_search_site site;
@@ -299,6 +302,7 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
     c->probing = visit && !analog;
     c->analog_visit = visit && analog;
     c->listen_ready = 0;
+    c->refused = 0;
     c->before_generation = rtl_stream_output_generation();
     c->ticket = 0;
     c->tune_started = dsd_realtime_mono_ms();
@@ -610,19 +614,32 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
     dsd_engine_signal_search_evidence_at(state, protocol, -1, -1, target, source, access);
 }
 
+/* The receive policy's verdict on reported traffic, by the protocol and slot the report names when it names them, else
+   by the decoder's current ones. The default policy (every filter off) answers before reading any identity. */
+static dsd_receive_verdict
+search_evidence_verdict(const search_coord* c, const dsd_state* state, int sync, int slot) {
+    if (!dsd_receive_filters_enabled(c->opts)) {
+        return DSD_RECEIVE_OFF;
+    }
+    return sync >= 0 ? dsd_receive_status(c->opts, state, sync, slot)
+                     : dsd_receive_current_status(c->opts, state, state->currentslot);
+}
+
 void
 dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
                                      uint32_t source, const char* access) {
     search_coord* c = search_get(state);
     /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. Traffic the receive
-       policy rejects or is still checking neither confirms the hit nor keeps the search listening (issue #637), judged
-       by the protocol and slot the report names when it names them. */
+       policy rejects or is still checking neither confirms the hit nor keeps the search listening (issue #637); traffic
+       it rejects also has the visit leave when its probe ends unconfirmed (issue #802 B9). */
     if (!c || !search_receiving(c, state)) {
         return;
     }
-    const int admitted = sync >= 0 ? dsd_receive_allows(c->opts, state, sync, slot)
-                                   : dsd_receive_current_allows(c->opts, state, state->currentslot);
-    if (!admitted) {
+    const dsd_receive_verdict verdict = search_evidence_verdict(c, state, sync, slot);
+    if (verdict == DSD_RECEIVE_REJECTED) {
+        c->refused = 1;
+    }
+    if (verdict != DSD_RECEIVE_OFF && verdict != DSD_RECEIVE_ALLOWED) {
         return;
     }
     c->activity = dsd_decode_now_mono_ms();
@@ -1320,6 +1337,20 @@ search_measure_tick(search_coord* c, dsd_opts* opts, dsd_state* state, const dsd
     return 1;
 }
 
+/* An unconfirmed probe falls back to NFM monitoring, unless it heard traffic the receive policy rejects (and, being
+   unconfirmed, none it admits) and is not held (issue #802 B9): there any open carrier, the rejected digital audio
+   included, would count as activity and keep the search on it until the maximum visit, so the detection is left
+   instead. A held probe keeps its documented fallback, and one that heard only traffic still being checked, or none,
+   falls back as before. */
+static void
+search_probe_expired(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    if (c->refused && !c->hold && !c->status.hit.confirmed) {
+        search_return_to_span(c, opts, state);
+        return;
+    }
+    (void)search_queue_tune(c, opts, state, c->status.hit.frequency_hz, 1, 1);
+}
+
 static int
 search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
     uint64_t now = dsd_decode_now_mono_ms();
@@ -1330,7 +1361,7 @@ search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
         return 1;
     }
     if (c->probing && now - c->probe_started >= (uint64_t)r->probe_ms) {
-        (void)search_queue_tune(c, opts, state, c->status.hit.frequency_hz, 1, 1);
+        search_probe_expired(c, opts, state);
         return 1;
     }
     if (!c->hold && !c->probing && now - c->activity >= SEARCH_QUIET_MS) {

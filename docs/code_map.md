@@ -137,6 +137,13 @@ Generated (do not edit/commit):
     and changes no phase or activity, so the visit's quiet timing still runs from its last
     evidence; the observer then reads the code through its usual family gate. It exists for a
     P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols).
+    Evidence the receive policy rejects (`search_evidence_verdict()`: `dsd_receive_status()` for the sync type and slot
+    the report names, else `dsd_receive_current_status()`; REJECTED only, never CHECKING) sets the visit's private
+    `refused` flag, which every tune clears (`search_queue_tune()`). At probe expiry an unheld, unconfirmed visit with
+    the flag returns to the span (`search_probe_expired()`, issue #802 B9) instead of the NFM re-tune, where the
+    rejected carrier would count as activity until the maximum visit: its hit ends unconfirmed and its reception closes
+    under its tag as at any return to the span. A held probe keeps the NFM fallback, and a probe with CHECKING-only or
+    no evidence falls back as before (`ENGINE_SIGNAL_SEARCH`).
     Published status carries `owned` (a coordinator holds the tuner) and
     the landed channel's live RF level. Receive profiles, gain and frequency are restored on
     exit: a search Stop tunes back, running the carrier boundary and acquisition reset as each
@@ -13631,7 +13638,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
 - `core/receive_types.h` owns bounded filter bitsets, naming rules and received identities. Runtime's
   `receive_policy.h` parses/validates CLI, INI, CSV and command edits; the frame path only matches pre-parsed data.
   `core/receive.h` supplies explicit protocol/slot admission from validated DCC/RAN/NAC/tone evidence. A P25 Phase 2
-  seed without proof and NXDN stand-in values stay unknown. Shared-vocoder invocations carry their owning protocol
+  seed without proof and NXDN stand-in values stay unknown. `dsd_receive_current_status()` is the verdict
+  `dsd_receive_current_allows()` reduces to yes or no, for the same current protocol, so a caller can tell REJECTED
+  from CHECKING (Signal search, issue #802 B9). Shared-vocoder invocations carry their owning protocol
   through `dsd_state::receive_context_*`, since YSF/dPMR temporarily borrow another protocol's decoder.
 - Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
   acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into

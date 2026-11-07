@@ -114,8 +114,19 @@ test_protocol_context(dsd_opts* opts, dsd_state* state) {
     state->receive_context_active = 1;
     state->receive_context_protocol = DSD_SYNC_YSF_POS;
     assert(dsd_receive_current_allows(opts, state, 1)); /* Borrowed vocoder keeps its owner's protocol. */
+    assert(dsd_receive_current_status(opts, state, 1) == DSD_RECEIVE_OFF);
     state->receive_context_active = 0;
     assert(!dsd_receive_current_allows(opts, state, 1));
+    /* The verdict behind it tells a rejection from a check still running (Signal search, issue #802 B9). */
+    assert(dsd_receive_current_status(opts, state, 1) == DSD_RECEIVE_REJECTED);
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->nxdn_last_ran = 64;
+    assert(dsd_receive_current_status(opts, state, 0) == DSD_RECEIVE_CHECKING);
+    state->nxdn_last_ran = 3;
+    assert(dsd_receive_current_status(opts, state, 0) == DSD_RECEIVE_ALLOWED);
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     /* YSF and scrambled dPMR play through NXDN's decoder under its synctype: playback is judged as the owner's, and
        the owner's context ends where its playback does. */
     state->synctype = DSD_SYNC_NXDN_POS;
