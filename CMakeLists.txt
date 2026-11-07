@@ -962,15 +962,13 @@ if(DSD_ENABLE_TERMINAL_UI)
         # would offer it to every find_package below.
         set(CMAKE_PREFIX_PATH "${_dsd_curses_saved_prefix_path}")
         unset(_dsd_curses_saved_prefix_path)
-        # Some ncurses installs do not provide a top-level curses.h shim in the
-        # include root. Our code includes <curses.h>, so add the ncursesw subdir
-        # when needed.
+        # Our code includes <curses.h>, so it must resolve to the wide header
+        # that matches libncursesw. Some installs have no top-level curses.h,
+        # and openSUSE's top-level one is the narrow header (the wide one lives
+        # in ncursesw/), so add the ncursesw subdir whenever it exists.
         if(CURSES_NEED_WIDE)
             foreach(_curses_inc IN LISTS CURSES_INCLUDE_DIRS)
-                if(
-                    EXISTS "${_curses_inc}/ncursesw/curses.h"
-                    AND NOT EXISTS "${_curses_inc}/curses.h"
-                )
+                if(EXISTS "${_curses_inc}/ncursesw/curses.h")
                     list(APPEND CURSES_INCLUDE_DIRS "${_curses_inc}/ncursesw")
                 endif()
             endforeach()
