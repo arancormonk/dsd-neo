@@ -171,6 +171,19 @@ list-decoded NID accepts several percent of random words and the voice link
 control's soft Reed-Solomon decode about a fifth, so neither tells such a carrier
 from noise. That carrier is monitored as NFM with the display above.
 
+A detection's tone (the CTCSS tone or DCS code on its detail line) is what the analog
+monitor heard, so only an NFM detection has one: a confirmed digital detection is
+monitored digitally and shows no tone. The analog monitor decodes no digital, and a
+digital carrier's repeated frames can read there as a false tone or code (measured cases
+under Digital carriers in [Received tone](cli.md#received-tone-ctcss-on-the-analog-monitor)).
+So a tone on an NFM detection can be false when the carrier is digital and Signal search
+could not confirm it: on an analog-only range, under a profile without that protocol, a
+signal too weak to confirm, or TETRA, which Signal search does not identify. The
+detection shows the latest tone until one has been held for 1 s, and from then on the
+last tone held that long; the ended detection keeps it. Holding 1 s does not make a tone
+real: a false tone held that long becomes the detection's tone, and a real tone heard
+after it for less than 1 s does not replace it.
+
 With a receive filter on (the slot, DCC, RAN and NAC filters in
 [Receive filters and service names](cli.md#receive-filters-and-service-names)), traffic the
 filter rejects, or whose code or slot it is still checking, neither confirms a detection nor

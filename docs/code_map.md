@@ -5597,7 +5597,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     closes a hop instead would let a carrier that keeps dropping out keep a stopped tone for good, once its openings
     missed every hop's end; this way each opening makes the two hops that read it count, and a dropout the hangover
     allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL (~1/pi, live and
-    replay) and int16 PCM scales read the same.
+    replay) and int16 PCM scales read the same. Neither this detector nor the DCS one below knows when a carrier
+    is digital (issue #802 B2): they run only under analog-only monitoring, where no digital decoder runs, and a
+    digital carrier's repeated frames make steady sub-audible lines that can lock a CTCSS tone (233.6 Hz on
+    `dmr_voice`, 141.3 Hz on `tetra_cc_marginal_real_air_144k`) or a DCS code (one synthetic TETRA-frame signal),
+    which the tone policy, the rx tone view and analog call history then take as received; `docs/cli.md` "Received
+    tone" documents it as a limit.
   - `src/dsp/analog_dcs.c` is the DCS detector (issue #523), the first row of the table, so its lock outranks a CTCSS
     one. It undoes the front end's known 10 Hz DC blocker (`DSD_ANALOG_RX_DC_CORNER_HZ`) and puts a 0.5 Hz pole in its
     place, integrates each bit (the NRZ matched filter) at bit ends recovered by square-law timing recovery (the edge
