@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -491,6 +492,148 @@ test_high_llr_prefix_error(void) {
     const uint64_t pending = pending_code();
     return expect("a high-LLR wrong symbol gives the code or none, never another",
                   pending == 0U || pending == TEST_CODE);
+}
+
+/* How a noisy burst reads: each payload bit of window timeslot @p ts (the DUID and the ISCH stay as built, so what is
+   measured is recovery, not the DUID or position decode) takes a hard bit and an LLR from the model. */
+typedef void (*noise_model)(int bit, double param);
+
+/* AWGN on antipodal bits: the receiver sees +-1 plus Gaussian noise of deviation @p sigma, decides the bit by its sign
+   and reads an LLR proportional to the sample (Box-Muller from the test's own generator). */
+static void
+awgn_bit(int bit, double sigma) {
+    const double u1 = ((double)rng32() + 1.0) / 4294967296.0;
+    const double u2 = (double)rng32() / 4294967296.0;
+    const double n = sqrt(-2.0 * log(u1)) * cos(6.283185307179586 * u2);
+    const double y = (g_bits[bit] ? 1.0 : -1.0) + (sigma * n);
+    int magnitude = (int)(fabs(y) * 100.0);
+    magnitude = magnitude < 1 ? 1 : (magnitude > 255 ? 255 : magnitude);
+    g_bits[bit] = (uint8_t)(y > 0.0 ? 1U : 0U);
+    g_llr[bit] = (int16_t)(g_bits[bit] ? magnitude : -magnitude);
+}
+
+/* A symbol slicer's error: both bits of a dibit wrong at once, read with high confidence (a symbol taken for the
+   opposite one), with probability @p p per dibit; every other bit right with a confidence spread as on air. Called
+   for the dibit's first bit; the second follows it. */
+static void
+dibit_error_pair(int bit, double p) {
+    const int wrong = (double)rng32() < p * 4294967296.0;
+    for (int i = bit; i < bit + 2; i++) {
+        const int magnitude = wrong ? 200 + (int)(rng32() % 56U) : 60 + (int)(rng32() % 181U);
+        g_bits[i] = (uint8_t)(wrong ? !g_bits[i] : g_bits[i]);
+        g_llr[i] = (int16_t)(g_bits[i] ? magnitude : -magnitude);
+    }
+}
+
+static int
+is_duid_offset(int offset) {
+    return offset == 0 || offset == 1 || offset == 74 || offset == 75 || offset == 244 || offset == 245 || offset == 318
+           || offset == 319;
+}
+
+static void
+apply_noise(int ts, noise_model model, int per_dibit, double param) {
+    for (int offset = 0; offset < 320; offset += per_dibit ? 2 : 1) {
+        if (!is_duid_offset(offset)) {
+            model((ts * 360) + offset, param);
+        }
+    }
+}
+
+/* One noisy window with one signalling burst at superframe slot @p t (a random kind and one of the two windows that
+   hold it), read as an independent observation. */
+static void
+noisy_burst_window(int t, int salt, noise_model model, int per_dibit, double param) {
+    static const int duids[2] = {DUID_FACCH_S, DUID_SACCH_S};
+    int t0 = 0;
+    int ts = 0;
+    window_holding(t, (int)(rng32() & 1U), &t0, &ts);
+    one_burst_window(TEST_CODE, t0, ts, duids[rng32() & 1U], salt);
+    apply_noise(ts, model, per_dibit, param);
+    feed(GAP_INDEPENDENT);
+}
+
+/* Pairs of noisy windows at two different slots, each pair on a fresh decoder: whatever the noise does, the code waiting
+   or in force is the right one or none. Returns how many pairs committed the right code; *@p wrong counts the pairs
+   that ever held another. */
+static int
+noisy_recovery_trials(int trials, noise_model model, int per_dibit, double param, int* wrong) {
+    int recovered = 0;
+    *wrong = 0;
+    for (int i = 0; i < trials; i++) {
+        fresh_decoder(0);
+        const int t1 = (int)(rng32() % 12U);
+        const int t2 = (t1 + 1 + (int)(rng32() % 11U)) % 12;
+        noisy_burst_window(t1, i, model, per_dibit, param);
+        const uint64_t first = pending_code();
+        noisy_burst_window(t2, i + 1, model, per_dibit, param);
+        const uint64_t pending = pending_code();
+        const uint64_t in_force = code_in_force();
+        *wrong += (first != 0U && first != TEST_CODE) || (pending != 0U && pending != TEST_CODE)
+                  || (in_force != 0U && in_force != TEST_CODE) || (g_code_notes != 0 && g_code_noted != TEST_CODE);
+        recovered += in_force == TEST_CODE;
+    }
+    return recovered;
+}
+
+/* Recovery under an AWGN bit-error model at Eb/N0 6, 4 and 2 dB (about 0.24%, 1.25% and 3.75% of bits wrong): never a
+   wrong code, and at least the share of the right one measured with this seed (149, 70 and 1 of 150). The floors sit a
+   little under the counts to leave room for another C library's log() and cos(), or a fused multiply-add; at 2 dB
+   almost nothing solves, so that point asks only for no wrong code. */
+static int
+test_awgn_recovery(void) {
+    enum { TRIALS = 150 };
+
+    static const struct {
+        double ebn0_db;
+        int floor;
+        const char* tag;
+    } points[3] = {
+        {6.0, 145, "AWGN 6 dB"},
+        {4.0, 64, "AWGN 4 dB"},
+        {2.0, 0, "AWGN 2 dB"},
+    };
+
+    int rc = 0;
+    g_rng = 0xA3C5804ULL;
+    for (int p = 0; p < 3; p++) {
+        const double sigma = sqrt(1.0 / (2.0 * pow(10.0, points[p].ebn0_db / 10.0)));
+        int wrong = 0;
+        const int recovered = noisy_recovery_trials(TRIALS, awgn_bit, 0, sigma, &wrong);
+        DSD_FPRINTF(stderr, "note: %s: %d of %d pairs recovered the code, %d held another\n", points[p].tag, recovered,
+                    TRIALS, wrong);
+        rc |= expect(points[p].tag, wrong == 0 && recovered >= points[p].floor);
+    }
+    return rc;
+}
+
+/* Recovery under correlated dibit errors: both bits of a dibit wrong, read with high confidence, at 0.2% and 0.5% of
+   the dibits. Erasure never reaches such a symbol, so a burst that holds one does not solve (it may still confirm a
+   waiting code, which Reed-Solomon corrects): never a wrong code, and at least the share of the right one measured
+   with this seed. The model uses integers only, so the floors are the counts. */
+static int
+test_dibit_error_recovery(void) {
+    enum { TRIALS = 150 };
+
+    static const struct {
+        double p;
+        int floor;
+        const char* tag;
+    } points[2] = {
+        {0.002, 122, "dibit errors 0.2%"},
+        {0.005, 71, "dibit errors 0.5%"},
+    };
+
+    int rc = 0;
+    g_rng = 0xD1B17804ULL;
+    for (int p = 0; p < 2; p++) {
+        int wrong = 0;
+        const int recovered = noisy_recovery_trials(TRIALS, dibit_error_pair, 1, points[p].p, &wrong);
+        DSD_FPRINTF(stderr, "note: %s: %d of %d pairs recovered the code, %d held another\n", points[p].tag, recovered,
+                    TRIALS, wrong);
+        rc |= expect(points[p].tag, wrong == 0 && recovered >= points[p].floor);
+    }
+    return rc;
 }
 
 /* Random windows with signalling DUIDs and a located position, the first of them with a wrong code waiting for
@@ -1049,6 +1192,8 @@ main(void) {
     rc |= test_solve_with_symbol_errors();
     rc |= test_high_llr_prefix_error();
     rc |= test_noise_never_accepted();
+    rc |= test_awgn_recovery();
+    rc |= test_dibit_error_recovery();
     rc |= test_shifted_seed_rejected();
     rc |= test_same_window_does_not_confirm();
     rc |= test_same_t_does_not_confirm();

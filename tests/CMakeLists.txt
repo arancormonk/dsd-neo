@@ -10250,6 +10250,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_proto_nxdn
             dsd-neo_core
             "-Wl,--end-group"
+            ${DSD_NEO_TEST_MATH_LIB}
     )
 else()
     target_link_libraries(
@@ -10259,6 +10260,7 @@ else()
             dsd-neo_proto_dmr
             dsd-neo_proto_nxdn
             dsd-neo_core
+            ${DSD_NEO_TEST_MATH_LIB}
     )
 endif()
 add_test(NAME P25_P2_SEED_RECOVER COMMAND dsd-neo_test_p25_p2_seed_recover)
