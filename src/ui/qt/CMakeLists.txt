@@ -60,6 +60,7 @@ target_sources(
         spectrum_model.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
+        listen_pins.cpp # Issue #801
         spectrum_view_item.cpp
         screen_reader_state.cpp # Issue #782
         session_args.cpp

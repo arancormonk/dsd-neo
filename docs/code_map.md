@@ -11054,6 +11054,8 @@ Qt Quick frontend (`src/ui/qt`):
     on a scratch copy was ruled out: the parse has side effects (Runtime, CLI). A target CSV's options cell refuses
     every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
     `recordingLimitMb` before `start()` and on every change.
+    `AppPrefs::pinned` (`listen/pinned`, issue #801) is no session preference: it never reaches the argv, and pinning
+    a Listen shortcut never writes `lastStarted*` (see `listen_pins.{h,cpp}` below).
   - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly, analogMaxGapMs, analogPrerollMs)` sends the
     analog pause hold (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, issue #756) and the NFM pre-roll
     (`DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET`, issue #668), each none when negative, so the session keeps its own, then
@@ -11878,6 +11880,26 @@ Qt Quick frontend (`src/ui/qt`):
   group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
   the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
   keeps its avoid: its "1 site" chooser lifts it. Tests: `UI_QT_PERSISTENCE`.
+- `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
+  `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
+  saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
+  `explore` (no UID). The getter is the only validation (unparsable text, an unquoted hand edit QSettings returns as a
+  list, unknown kinds, a malformed UUID, a scan UID empty or over 128 characters and repeats are dropped; at most
+  `AppPrefs::kPinnedCap`, 6), and the setter writes it sanitized and compact. `qt_ui.cpp` builds `ListenPins` over
+  `AppPrefs`, `SavedSystemsModel` and `ScanListsModel` after both load. `entries` holds every stored pin in order as
+  `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its group's lead and its
+  accessible name says whether a tap starts it or chooses a site (no site, or several, it can play), a site is
+  "system · site". `revision` moves on every entries change and on every row, data, sites or reset signal of either
+  model, because `isPinned()` follows groups: a system pin matches its group's card through any of its sites, and a row
+  in no group also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()` refuses a full
+  row ("Pinned is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`; `unpin()`
+  removes what `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model reset or when
+  pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting toward the cap,
+  until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they saved, prunes: a
+  `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group (`siblingRows()`
+  before the removal), else goes. User text lives in `ListenPins::text()`. The QML fixture publishes it over the real
+  `AppPrefs`, clears pins for each test file, and `testContext.resetPins()` clears them between cases. Tests:
+  `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
   systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
@@ -12170,6 +12192,9 @@ Qt Quick frontend (`src/ui/qt`):
     every restored replay system arrives, is refused before it starts (`SessionArgsError::RecordingMissing`, start
     category `recording-missing`), checked after AM's source rule (AM needs a radio whatever the file) and before
     TETRA's, so it never runs `-i ""` and is never told to choose a radio.
+  - A list-valued portable preference is a JSON array held in a string (`listen/pinned`, issue #801), since a backup
+    carries only scalars; its getter is its only validation, because a parse hook would fail the whole backup as
+    damaged. A backup without the key restores no pins, and a rollback restores the old ones.
   - Whole numbers from stored or restored data (preferences, saved systems, scan lists, imported files, decryption
     profiles) are read through `stored_int.h` (`stored_int()`, `stored_int_or()`, `stored_uint32()`). A restore keeps a
     large JSON number as a 64-bit integer, and the settings file hands one back as text; `QVariant::toInt()` and
@@ -12182,6 +12207,8 @@ Qt Quick frontend (`src/ui/qt`):
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
+    `listen/pinned` (issue #801): its round trip in `UI_QT_BACKUP_ARCHIVE`; in `UI_QT_BACKUP_APPLY`, a backup without
+    it restores no pins and a rolled-back apply keeps them.
 - Decryption profile key material (`decryption_profiles_model.{h,cpp}`, `session_args.{h,cpp}`):
   - One hex contract: `session_args_key_hex_normalize()` drops every `QChar::isSpace()` character, `-` and `:` and a
     leading `0x`/`0X`, for the hex direct types (`session_args_key_type_hex()`: hex, rc4, m17Scrambler, m17Aes) and the
@@ -13539,6 +13566,8 @@ Several lists in one session (issue #697):
   one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). A start hold (issue #644) is
   no part of the identity: `startWithMap()` takes it in `options.holdTarget` for that start, across a USB permission
   wait in `pendingStartHold` (set by every wait, read once by the grant), and never in `attemptedSource` or prefs.
+  Pinned Listen shortcuts (issue #801) name lists by uid too, but portably, since a restore keeps every list's uid.
+  `ListenPins` prunes them only on a saved removal, never at load, so pins survive a list file that fails to load.
 - In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
   (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
   every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the

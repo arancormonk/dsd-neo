@@ -39,6 +39,7 @@
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "known_frequency_index.h"
+#include "listen_pins.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "radio_reference_model.h"
@@ -283,6 +284,13 @@ publish_input_context(QQmlContext* context, QObject* owner) {
     context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
 }
 
+/* Issue #801: the shortcuts pinned to Listen, resolved over both models once they have loaded. */
+static void
+publish_listen_pins(QQmlContext* context, AppPrefs* prefs, SavedSystemsModel* systems, ScanListsModel* scanLists,
+                    QObject* owner) {
+    context->setContextProperty(QStringLiteral("listenPins"), new ListenPins(prefs, systems, scanLists, owner));
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
@@ -371,6 +379,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
+    publish_listen_pins(context, prefs, systems, scanLists, &engine);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
     publish_input_context(context, &engine);

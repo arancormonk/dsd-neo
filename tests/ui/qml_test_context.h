@@ -102,6 +102,7 @@
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "known_frequency_index.h"
+#include "listen_pins.h"
 #include "p25_network_model.h" // WP-F2
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -4082,6 +4083,14 @@ class Setup : public QObject {
         m_scan_list_queue_full = full;
     }
 
+    /** @brief Issue #801: no pinned Listen shortcuts, through the real AppPrefs `listenPins` reads. */
+    Q_INVOKABLE void
+    resetPins() {
+        if (m_app_prefs != nullptr) {
+            m_app_prefs->setPinned({});
+        }
+    }
+
     /** @brief No scan lists: an empty frame, and every switch and answer forgotten. */
     Q_INVOKABLE void
     resetScanLists() {
@@ -4983,6 +4992,11 @@ class Setup : public QObject {
         // Issue #644: the production index over them, so Main offers what a case saves on the tuned channel.
         ctx->setContextProperty(QStringLiteral("knownFrequencies"),
                                 new dsd_qt::KnownFrequencyIndex(saved_systems, scan_lists, engine));
+        /* Issue #801: the production pins over the real AppPrefs (the settings file every case shares, whichever `prefs`
+         * a case reads), cleared for each test file; resetPins() clears them between cases. */
+        app_prefs->setPinned({});
+        ctx->setContextProperty(QStringLiteral("listenPins"),
+                                new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);

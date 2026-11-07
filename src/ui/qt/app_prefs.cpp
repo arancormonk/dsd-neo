@@ -5,20 +5,26 @@
 
 #include "app_prefs.h"
 
+#include <QAnyStringView>
 #include <QChar>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaType>
+#include <QSet>
 #include <QStringList>
+#include <QUuid>
 #include <QVariant>
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
 #include <dsd-neo/core/opts.h>
 #include <iterator>
+#include <utility>
 #include "realtime_clock.h"
 #include "stored_int.h"
 
@@ -103,6 +109,9 @@ enum Key {
     // takes them up from here rather than from the saved lists' files, which a list deleted mid-session takes away.
     // Device-local with the rest of the accepted start.
     kAcceptedStartTargets,
+    // Issue #801: the shortcuts pinned to Listen, in order (JSON). Portable: they name saved systems and scan lists by
+    // UID, which a restore keeps, as it keeps lastStartedUid.
+    kPinned,
     kKeyCount
 };
 
@@ -152,6 +161,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/acceptedStartCompanions", false},
     {"listen/lastStartedCompanions", false},
     {"listen/acceptedStartTargets", false},
+    {"listen/pinned", true},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -946,6 +956,92 @@ AppPrefs::setAcceptedStartTargets(const QVariantList& value) {
         m_settings.setValue(key_name(kAcceptedStartTargets), text);
     }
     Q_EMIT acceptedStartChanged();
+}
+
+namespace {
+// Issue #801: a restored scan list's UID is any non-empty text, so a pinned one is bounded rather than shaped.
+constexpr int kMaxPinnedScanUidLength = 128;
+
+/* One pinned shortcut as stored, or empty when it is none: a known kind, and the UID that kind takes -- a saved row's
+ * UUID in the form the model stores it, a scan list's UID as stored, none for Signal search and Explore. */
+QVariantMap
+sane_pin(const QJsonValue& value) {
+    const QJsonObject pin = value.toObject();
+    const QString kind = pin.value(QLatin1String("kind")).toString();
+    const QString uid = pin.value(QLatin1String("uid")).toString();
+    QString kept;
+    if (kind == QLatin1String("system") || kind == QLatin1String("site")) {
+        const QUuid parsed(uid);
+        if (parsed.isNull()) {
+            return {};
+        }
+        kept = parsed.toString(QUuid::WithoutBraces);
+    } else if (kind == QLatin1String("scan")) {
+        if (uid.isEmpty() || uid.size() > kMaxPinnedScanUidLength) {
+            return {};
+        }
+        kept = uid;
+    } else if (kind != QLatin1String("search") && kind != QLatin1String("explore")) {
+        return {};
+    }
+    return {{QStringLiteral("kind"), kind}, {QStringLiteral("uid"), kept}};
+}
+
+/* The pins of @p stored in order: those that are none dropped, a repeat of a kind and UID dropped after its first, and
+ * no more than the cap. */
+QVariantList
+sane_pins(const QJsonArray& stored) {
+    QVariantList pins;
+    QSet<QString> seen;
+    for (const auto& value : stored) {
+        const QVariantMap pin = sane_pin(value);
+        const QString key = pin.value(QStringLiteral("kind")).toString() + QLatin1Char(':')
+                            + pin.value(QStringLiteral("uid")).toString();
+        if (pin.isEmpty() || seen.contains(key)) {
+            continue;
+        }
+        if (pins.size() == AppPrefs::kPinnedCap) {
+            break;
+        }
+        seen.insert(key);
+        pins.append(pin);
+    }
+    return pins;
+}
+} // namespace
+
+QVariantList
+AppPrefs::pinned() const {
+    // Only text QSettings wrote reads back as one string: a hand-edited unquoted value arrives as a list, split at its
+    // commas and stripped of its quotes, and reads as no pins, as text that is no JSON array does.
+    const QVariant stored = m_settings.value(key_name(kPinned));
+    if (stored.metaType().id() != QMetaType::QString) {
+        return {};
+    }
+    const QJsonDocument parsed = QJsonDocument::fromJson(stored.toString().toUtf8());
+    return parsed.isArray() ? sane_pins(parsed.array()) : QVariantList();
+}
+
+void
+AppPrefs::setPinned(const QVariantList& value) {
+    const QVariantList pins = sane_pins(QJsonArray::fromVariantList(value));
+    const QString text =
+        pins.isEmpty()
+            ? QString()
+            : QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(pins)).toJson(QJsonDocument::Compact));
+    // Compared with the raw stored value, so a value the getter reads as no pins is still replaced or removed.
+    const QVariant stored = m_settings.value(key_name(kPinned));
+    const bool same =
+        text.isEmpty() ? !stored.isValid() : stored.metaType().id() == QMetaType::QString && stored.toString() == text;
+    if (same) {
+        return;
+    }
+    if (text.isEmpty()) {
+        m_settings.remove(key_name(kPinned));
+    } else {
+        m_settings.setValue(key_name(kPinned), text);
+    }
+    Q_EMIT pinnedChanged();
 }
 
 bool

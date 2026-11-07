@@ -4625,6 +4625,9 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        # Issue #801: the pinned Listen shortcuts, over both models.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_persistence
@@ -5309,6 +5312,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
             # Issue #644: the known-frequency index Main offers Listen with its settings from.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/known_frequency_index.cpp
+            # Issue #801: the shortcuts pinned to Listen.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
             # Issue #782: whether a screen reader is on, as views read it.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the

@@ -174,6 +174,7 @@ test_kdf() {
 struct Fixture {
     QString groups, keys, bandplan, src, mapping, chan, chanRoot, targets, targetsRoot, updated, updatedRoot;
     QString systemUid, replayUid;
+    QString pinned; // issue #801: listen/pinned as stored
 };
 
 QString
@@ -376,7 +377,13 @@ populate(TestHost& host) {
     expect("avoid 156800000", dsd_app_signal_search_permanent_avoid(156800000U) >= DSD_APP_SEARCH_AVOID_ADDED);
     expect("avoid 162550000", dsd_app_signal_search_permanent_avoid(162550000U) >= DSD_APP_SEARCH_AVOID_ADDED);
 
+    // Issue #801: shortcuts pinned to Listen name a system and a list by the UIDs a restore keeps.
+    const QJsonArray pins{QJsonObject{{"kind", "system"}, {"uid", f.systemUid}},
+                          QJsonObject{{"kind", "scan"}, {"uid", scans.get(0).value("uid").toString()}},
+                          QJsonObject{{"kind", "search"}, {"uid", ""}}};
+    f.pinned = QString::fromUtf8(QJsonDocument(pins).toJson(QJsonDocument::Compact));
     expect("write portable settings", dsd_qt::AppPrefs::replacePortable({{"decode/extraArgs", "-Z"},
+                                                                         {"listen/pinned", f.pinned},
                                                                          {"rr/username", "scanner"},
                                                                          {"tuner/gainDb", "30"},
                                                                          {"explore/sourceType", "airspy"},
@@ -637,6 +644,9 @@ test_round_trip(const Fixture& f) {
                && parsed.prefs.value("search/sourceType").toString() == "rtltcp"
                && parsed.prefs.value("search/host").toString() == "10.0.2.2"
                && parsed.prefs.value("search/port").toInt() == 1235);
+    expect("the pinned shortcuts travel with the backup",
+           snapshot.prefs.value("listen/pinned").toString() == f.pinned
+               && parsed.prefs.value("listen/pinned").toString() == f.pinned);
     expect("avoids equal", parsed.avoids == snapshot.avoids);
     check_round_trip_files(parsed, opened, f);
     const auto& p = parsed.summary;

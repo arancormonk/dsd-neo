@@ -51,6 +51,10 @@ class AppPrefs : public QObject {
      * here, since a list deleted while its session runs takes its generated target files with it. Device-local. */
     Q_PROPERTY(QVariantList acceptedStartTargets READ acceptedStartTargets WRITE setAcceptedStartTargets NOTIFY
                    acceptedStartChanged)
+    /* Issue #801: the shortcuts pinned to Listen, in order, each {kind, uid}: "system" or "site" (a saved row's UID),
+     * "scan" (a scan list's UID), "search" or "explore" (uid empty). Read sanitized (unknown kinds, malformed UIDs and
+     * repeats dropped, at most kPinnedCap); ListenPins resolves and edits them. Portable. */
+    Q_PROPERTY(QVariantList pinned READ pinned WRITE setPinned NOTIFY pinnedChanged)
     Q_PROPERTY(double lastLat READ lastLat NOTIFY locationChanged)
     Q_PROPERTY(double lastLon READ lastLon NOTIFY locationChanged)
     Q_PROPERTY(qint64 lastFixAt READ lastFixAt NOTIFY locationChanged)
@@ -132,6 +136,9 @@ class AppPrefs : public QObject {
     enum ScreenMode { ScreenSystem = 0, ScreenAlwaysOn = 1, ScreenDimBetweenCalls = 2, ScreenOffBetweenCalls = 3 };
     Q_ENUM(ScreenMode)
 
+    /** @brief How many shortcuts Listen holds pinned (issue #801). */
+    static constexpr int kPinnedCap = 6;
+
     /** @brief One persisted key and whether it travels with a backup; device-local state does not. */
     struct KeySpec {
         const char* name;
@@ -170,6 +177,11 @@ class AppPrefs : public QObject {
     void setLastStartedCompanions(const QStringList& value);
     QVariantList acceptedStartTargets() const;
     void setAcceptedStartTargets(const QVariantList& value);
+    /** @brief The pinned shortcuts as stored, sanitized: text that is no JSON array (a hand-edited unquoted value
+     *         included) reads as none. */
+    QVariantList pinned() const;
+    /** @brief Store @p value sanitized as compact JSON, or remove the key when that leaves none. */
+    void setPinned(const QVariantList& value);
     double lastLat() const;
     void setLastLat(double value);
     double lastLon() const;
@@ -321,6 +333,7 @@ class AppPrefs : public QObject {
     void lastStartedUidChanged();
     void acceptedStartChanged();
     void lastStartedCompanionsChanged();
+    void pinnedChanged();
     void locationChanged();
 
     void appearanceChanged();
