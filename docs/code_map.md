@@ -10223,8 +10223,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   then crypt, eliding within the two lines with the whole text as its accessible name and
   description, and a history row shows site, access, tone and crypt under its verdict
   (`detailText()`'s order without the call, empty values left out; issue #802). The tone
-  is what the analog monitor heard, not checked signalling. `hitMap()` also gives
-  `recordingKey` (issue #809), `"<session>:<hit>"`
+  is what the analog monitor heard, not checked signalling. Text that can hold over-the-air,
+  imported or typed words (the Now detail, saved names, the phase and status lines, the
+  message, history rows, `PlexCheckBox` labels) is `Text.PlainText`, so a `<b>` in a
+  callsign or name is drawn and measured as written (issue #802 B4). `hitMap()` also
+  gives `recordingKey` (issue #809), `"<session>:<hit>"`
   formatted in C++ from the two `uint64_t`s, never through a JS number, and empty while either
   is 0 (the live hit with no detection current): the recording store's
   key for the detection's recordings (`recordingCountForDetection()`, `recordingsForDetection()`);

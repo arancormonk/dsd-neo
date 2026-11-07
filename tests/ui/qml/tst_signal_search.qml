@@ -1010,6 +1010,62 @@ Item {
             compare(detail.text, expected);
             model.history = [];
         }
+        // Issue #802 B4: text from the air (a D-STAR callsign), a saved name
+        // and a range name are drawn as written, never as markup, so what is
+        // drawn and measured is what a screen reader reads.
+        function plainWidth(text) {
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            mirror.font = text.font;
+            mirror.leftPadding = text.leftPadding;
+            mirror.rightPadding = text.rightPadding;
+            mirror.text = text.text;
+            var width = mirror.implicitWidth;
+            mirror.destroy();
+            return width;
+        }
+        function verifyPlain(text, tag) {
+            compare(text.textFormat, Text.PlainText, tag + " is plain text");
+            verify(text.text.indexOf("<b>") >= 0, tag + " holds the tag as written");
+            verify(Math.abs(text.implicitWidth - plainWidth(text)) <= 0.5, tag + " measures as plain text: " + text.implicitWidth + " vs " + plainWidth(text));
+        }
+        function test_air_and_typed_text_is_plain() {
+            var screen = loader.item;
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {confirmed: true, protocol: "D-STAR", unresolved: false,
+                targetText: "<b>CQCQCQ", sourceText: "N0CALL", knownNames: ["<b>Warehouse</b>", "Dock"]})});
+            var detail = findChild(screen, "searchDetail");
+            tryCompare(detail.Accessible, "description", "<b>CQCQCQ · N0CALL");
+            verifyPlain(detail, "the Now detail");
+            var saved = findChild(screen, "searchSaved");
+            verifyPlain(saved, "the saved names");
+            compare(saved.Accessible.name, "Saved frequency: <b>Warehouse</b>, Dock");
+            // A range name between detections: the phase and the status line.
+            model.status = Object.assign({}, model.status, {phase: 1, rangeName: "<b>North</b>", hit: {}});
+            var identification = findChild(screen, "searchIdentification");
+            compare(identification.text, "Searching <b>North</b>…");
+            verifyPlain(identification, "the phase line");
+            compare(identification.Accessible.name, "Searching <b>North</b>…");
+            verifyPlain(findChild(screen, "searchStatusLine"), "the status line");
+            // A failure can carry a device or path name.
+            root.hostFailure = "Cannot open <b>/dev/rtl0</b>";
+            var message = findChild(screen, "searchMessage");
+            verifyPlain(message, "the message");
+            compare(message.Accessible.name, "Cannot open <b>/dev/rtl0</b>");
+            root.hostFailure = "";
+            // A saved name on a history row.
+            model.history = [historyHit({knownLabel: "<b>Dock</b>"})];
+            var row = findChild(screen, "searchHistoryDetail");
+            compare(row.textFormat, Text.PlainText);
+            compare(row.Accessible.name, "RF only · ended · <b>Dock</b>");
+            model.history = [];
+            // The range list.
+            model.ranges = [Object.assign({}, model.ranges[0], {name: "<b>North</b>"})];
+            screen.rangesExpanded = true;
+            var range = findChild(screen, "searchRangeEnabled");
+            verify(range !== null && range.visible);
+            compare(range.contentItem.text, "<b>North</b> · 450.000000–460.000000 MHz");
+            verifyPlain(range.contentItem, "the range list");
+            model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
+        }
         // Wider, every cell fits the widest label: three equal columns.
         function test_now_actions_use_three_columns_when_they_fit() {
             root.width = 900;

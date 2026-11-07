@@ -430,6 +430,8 @@ Item {
                 objectName: "searchStatusLine"
                 width: parent.width
                 text: screen.sessionActive ? screen.statusLine : qsTr("Find strong signals across your frequency ranges")
+                // The range name is typed: drawn as written, never as markup.
+                textFormat: Text.PlainText
                 color: Theme.textSecondary
                 font.family: Theme.sans
                 font.pixelSize: screen.sessionActive ? Theme.fontSize(13) : Theme.fontSize(15)
@@ -615,6 +617,8 @@ Item {
                         width: parent.width
                         height: Math.ceil(identificationMetrics.lineSpacing)
                         text: screen.identificationLine
+                        // Holds the range name while searching.
+                        textFormat: Text.PlainText
                         color: Theme.textPrimary
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(16)
@@ -642,6 +646,10 @@ Item {
                                 var font = detailMetrics.font;
                                 return screen.receiving && fullText.length > 0 ? screen.fitValues(fullText.split(" · "), width, 2, detailMetrics) : fullText;
                             }
+                            // Call text comes off the air (a D-STAR callsign can
+                            // hold "<b>"): drawn as written, as fitValues()
+                            // measured it and a screen reader reads it.
+                            textFormat: Text.PlainText
                             color: Theme.textSecondary
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
@@ -675,6 +683,8 @@ Item {
                             width: Math.min(implicitWidth, parent.width - (savedMore.visible ? savedMore.implicitWidth + 4 : 0))
                             height: parent.height
                             text: !screen.receiving || screen.knownNames.length === 0 ? "" : qsTr("Saved: %1").arg(screen.knownNames.slice(0, 2).join(" / "))
+                            // Imported or typed names.
+                            textFormat: Text.PlainText
                             color: Theme.textSecondary
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(14)
@@ -794,6 +804,8 @@ Item {
                     // the search says now: the host's failure, else the search's
                     // message or the model's error.
                     text: [screen.localFailure, screen.failure || screen.status.message || (searchModel ? searchModel.error : "")].filter(function (s) { return s.length > 0; }).join("\n")
+                    // A failure can name a device, host or path.
+                    textFormat: Text.PlainText
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     font.family: Theme.sans
@@ -854,6 +866,7 @@ Item {
                         width: parent.width
                         spacing: 8
                         PlexCheckBox {
+                            objectName: "searchRangeEnabled"
                             width: parent.width
                             text: modelData.name + " · " + modelData.startMHz + "–" + modelData.endMHz + " MHz"
                             checked: modelData.enabled
@@ -951,6 +964,8 @@ Item {
                                     var font = historyMetrics.font;
                                     return screen.keepValues(fullText, width, historyMetrics);
                                 }
+                                // Saved names are imported or typed: drawn as written.
+                                textFormat: Text.PlainText
                                 // Gated as every node a screen reader reaches
                                 // is (ReadableText): behind an open sheet it
                                 // leaves the tree, and holds no name there.

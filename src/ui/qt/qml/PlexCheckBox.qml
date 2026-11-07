@@ -53,6 +53,9 @@ CheckBox {
     }
     contentItem: Text {
         text: control.text
+        // Labels can carry a typed name (a search range, a scan entry):
+        // drawn as written, never as markup.
+        textFormat: Text.PlainText
         font: control.font
         color: Theme.textPrimary
         verticalAlignment: Text.AlignVCenter
