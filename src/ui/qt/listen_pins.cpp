@@ -97,6 +97,16 @@ ListenPins::text(Text id, const QString& label, const QString& detail) {
     return QString();
 }
 
+QString
+ListenPins::actionText(bool pinned) {
+    return pinned ? tr("Unpin from Listen") : tr("Pin to Listen");
+}
+
+QString
+ListenPins::actionName(bool pinned, const QString& label) {
+    return pinned ? tr("Unpin %1 from Listen").arg(label) : tr("Pin %1 to Listen").arg(label);
+}
+
 ListenPins::ListenPins(AppPrefs* prefs, SavedSystemsModel* systems, ScanListsModel* lists, QObject* parent)
     : QObject(parent), m_prefs(prefs), m_systems(systems), m_lists(lists) {
     if (m_prefs != nullptr) {
@@ -226,10 +236,7 @@ ListenPins::resolve(const QVariantMap& stored) {
     const QString kind = stored.value(QStringLiteral("kind")).toString();
     const QString uid = stored.value(QStringLiteral("uid")).toString();
     const QString key = pin_key(kind, uid);
-    QVariantMap entry = kind == kScan      ? resolveScan(uid)
-                        : kind == kSearch  ? named(text(Text::SearchLabel), text(Text::OpenSearchName))
-                        : kind == kExplore ? resolveExplore()
-                                           : resolveSaved(kind, uid);
+    QVariantMap entry = resolveTarget(kind, uid);
     if (entry.isEmpty()) {
         entry = {{QStringLiteral("label"), m_lastLabels.value(key)},
                  {QStringLiteral("accessibleName"), QString()},
@@ -241,6 +248,15 @@ ListenPins::resolve(const QVariantMap& stored) {
     entry.insert(QStringLiteral("kind"), kind);
     entry.insert(QStringLiteral("uid"), uid);
     return entry;
+}
+
+/* The label and accessible name of what @p kind and @p uid name, or empty when it is not saved. */
+QVariantMap
+ListenPins::resolveTarget(const QString& kind, const QString& uid) const {
+    return kind == kScan      ? resolveScan(uid)
+           : kind == kSearch  ? named(text(Text::SearchLabel), text(Text::OpenSearchName))
+           : kind == kExplore ? resolveExplore()
+                              : resolveSaved(kind, uid);
 }
 
 /* A system is named by its group's lead, the row its Home card stands on, and starts as that card does: the one site
@@ -381,6 +397,28 @@ ListenPins::unpinKey(const QString& key) {
         }
     }
     store(kept);
+}
+
+QVariantMap
+ListenPins::action(const QString& kind, const QString& uid) const {
+    const bool pinned = isPinned(kind, uid);
+    const bool enabled = pinned || !full();
+    const QString label = resolveTarget(kind, uid).value(QStringLiteral("label")).toString();
+    const QString shown = actionText(pinned);
+    return {{QStringLiteral("pinned"), pinned},
+            {QStringLiteral("text"), shown},
+            {QStringLiteral("accessibleName"), label.isEmpty() ? shown : actionName(pinned, label)},
+            {QStringLiteral("enabled"), enabled},
+            {QStringLiteral("description"), enabled ? QString() : text(Text::FullRefusal)}};
+}
+
+QString
+ListenPins::toggle(const QString& kind, const QString& uid) {
+    if (isPinned(kind, uid)) {
+        unpin(kind, uid);
+        return QString();
+    }
+    return pin(kind, uid);
 }
 
 /* The pins once rows @p first to @p last of the saved systems are gone. A site's pin goes with its row; a system's

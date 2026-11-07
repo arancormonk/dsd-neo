@@ -83,7 +83,7 @@ Item {
     // Keep auto-start blocked throughout menu-to-confirmation transitions.
     readonly property bool managementSheetOpen: manageMenu.visible || scanMenu.visible || addSystemMenu.visible
         || removeSystem.visible || systemRemovalError.visible || removeScanList.visible || scanListRemovalError.visible
-        || scanTogether.visible || pinnedSheet.visible
+        || scanTogether.visible || pinnedSheet.visible || exploreMenu.visible || searchMenu.visible || pinRefusal.visible
 
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
@@ -131,6 +131,18 @@ Item {
         function onEntriesChanged() {
             screen.takePins();
         }
+    }
+
+    // Issue #801: Pin to Listen as every source's menu offers it, keyed "pin":
+    // Unpin once pinned, disabled with the reason while Pinned is full.
+    function pinAction(kind, uid, objectName) {
+        return Object.assign({key: "pin", objectName: objectName}, listenPins.action(kind, uid));
+    }
+    // A Pin offered before the row filled behind it still says why it did not pin.
+    function togglePin(kind, uid) {
+        var refusal = listenPins.toggle(kind, uid);
+        if (refusal.length > 0)
+            pinRefusal.openFor(refusal);
     }
 
     // B5: a session's ending or failure is reported at the top of the body.
@@ -693,12 +705,28 @@ Item {
             MicroLabel {
                 text: qsTr("Or go looking")
             }
-            OutlineButton {
-                objectName: "homeSignalSearch"
+            // Issue #801 D5: the button fills the row; its More holds Pin to Listen.
+            Item {
                 width: parent.width
-                text: qsTr("Signal search")
-                accessibleName: qsTr("Signal search across frequency ranges")
-                onClicked: screen.signalSearch()
+                height: searchButton.height
+
+                OutlineButton {
+                    id: searchButton
+                    objectName: "homeSignalSearch"
+                    width: parent.width - searchMore.width - 8
+                    text: qsTr("Signal search")
+                    accessibleName: qsTr("Signal search across frequency ranges")
+                    onClicked: screen.signalSearch()
+                }
+                IconButton {
+                    id: searchMore
+                    objectName: "signalSearchManageButton"
+                    icon: "more"
+                    accessibleName: qsTr("More options for Signal search")
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    onClicked: searchMenu.openFor()
+                }
             }
 
             // Deliberately not a system card: there is nothing saved here, nothing
@@ -712,74 +740,128 @@ Item {
                 width: content.width
                 height: Math.max(96, exploreLabels.implicitHeight + 2 * Theme.cardPadding)
 
+                readonly property string sourceLabel: screen.exploreSource === "rtltcp" ? qsTr("RTL-TCP") : screen.exploreSource === "airspy" ? qsTr("Airspy") : qsTr("USB dongle")
+                readonly property bool configured: prefs.exploreSourceType.length > 0
+
+                // B3: the card's face is the button that starts Explore, beside
+                // More rather than around it, so a key pressed on More never
+                // reaches it. Its name carries both lines, which read nothing on
+                // their own, so nothing is said twice.
+                Item {
+                    id: exploreFace
+
+                    objectName: "exploreStart"
+                    anchors.fill: parent
+                    enabled: !decoderHost.transitioning
+                    readonly property bool navigationAllowed: Navigation.allows(exploreFace)
+                    // Held while focused, and the gate read first: see OutlineButton.
+                    activeFocusOnTab: (navigationAllowed && enabled && visible) || activeFocus
+                    Accessible.role: Accessible.Button
+                    Accessible.name: exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
+                    Accessible.focusable: navigationAllowed && visible
+                    Accessible.ignored: !navigationAllowed || !visible
+                    Accessible.onPressAction: activate()
+                    // Nothing remembered means nothing to start from, so the first
+                    // press asks rather than guessing at a radio and a frequency.
+                    function activate() {
+                        if (!enabled || !Navigation.allows(exploreFace))
+                            return;
+                        if (exploreCard.configured)
+                            screen.explore();
+                        else
+                            screen.exploreSetup();
+                    }
+                    Keys.onReturnPressed: activate()
+                    Keys.onEnterPressed: activate()
+                    Keys.onSpacePressed: activate()
+                    FocusFrame {
+                        radius: Theme.radiusPanel + 2
+                    }
+
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        radius: Theme.radiusPanel - 1
+                        color: faceTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : "transparent"
+
+                        Behavior on color {
+                            ColorAnimation {
+                                duration: 120
+                            }
+                        }
+                    }
+
+                    Column {
+                        id: exploreLabels
+                        anchors.left: parent.left
+                        anchors.right: exploreCaret.left
+                        anchors.leftMargin: Theme.cardPadding
+                        anchors.rightMargin: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 4
+
+                        Text {
+                            objectName: "exploreTitle"
+                            width: parent.width
+                            Accessible.ignored: true
+                            text: qsTr("Explore the band")
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(17)
+                            font.weight: Font.Bold
+                            color: Theme.textPrimary
+                            elide: Text.ElideRight
+                        }
+
+                        Text {
+                            width: parent.width
+                            objectName: "homeExploreSubtitle"
+                            Accessible.ignored: true
+                            text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
+                            font.family: exploreCard.configured ? Theme.mono : Theme.sans
+                            font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
+                            color: Theme.textSubdued
+                            elide: Text.ElideRight
+                        }
+                    }
+
+                    Caret {
+                        id: exploreCaret
+
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.cardPadding + 6
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: Theme.cardPadding
+                        // Larger than the default: at the size a filter pill uses it
+                        // reads as a speck against a full-width card, and this is the
+                        // only thing saying the card goes somewhere.
+                        width: 13
+                        height: 9
+                        // Points down at rotation 0; a quarter turn anticlockwise reads
+                        // as forward navigation.
+                        rotation: -90
+                        color: Theme.cyan
+                    }
+
+                    // Long-press manages the card, as a system card's does.
+                    TapHandler {
+                        id: faceTap
+                        onTapped: exploreFace.activate()
+                        onLongPressed: exploreMenu.openFor()
+                    }
+                }
+
+                // Issue #801 D5: a menu, as a system card's More opens: Edit
+                // connection and Pin to Listen. It never starts Explore.
                 IconButton {
                     objectName: "exploreManageButton"
                     icon: "more"
-                    accessibleName: qsTr("Edit Explore connection")
+                    accessibleName: qsTr("More options for Explore")
                     anchors.right: parent.right
                     // Match the axis of the 52 px play circles above.
                     anchors.rightMargin: Theme.cardPadding + 2
                     anchors.top: parent.top
-                    onClicked: screen.exploreSetup()
+                    onClicked: exploreMenu.openFor()
                     z: 2
-                }
-                readonly property string sourceLabel: screen.exploreSource === "rtltcp" ? qsTr("RTL-TCP") : screen.exploreSource === "airspy" ? qsTr("Airspy") : qsTr("USB dongle")
-                readonly property bool configured: prefs.exploreSourceType.length > 0
-
-                Column {
-                    id: exploreLabels
-                    anchors.left: parent.left
-                    anchors.right: exploreCaret.left
-                    anchors.leftMargin: Theme.cardPadding
-                    anchors.rightMargin: 12
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 4
-
-                    ReadableText {
-                        width: parent.width
-                        text: qsTr("Explore the band")
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(17)
-                        font.weight: Font.Bold
-                        color: Theme.textPrimary
-                        elide: Text.ElideRight
-                    }
-
-                    ReadableText {
-                        width: parent.width
-                        objectName: "homeExploreSubtitle"
-                        text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
-                        font.family: exploreCard.configured ? Theme.mono : Theme.sans
-                        font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
-                        color: Theme.textSubdued
-                        elide: Text.ElideRight
-                    }
-                }
-
-                Caret {
-                    id: exploreCaret
-
-                    anchors.right: parent.right
-                    anchors.rightMargin: Theme.cardPadding + 6
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: Theme.cardPadding
-                    // Larger than the default: at the size a filter pill uses it
-                    // reads as a speck against a full-width card, and this is the
-                    // only thing saying the card goes somewhere.
-                    width: 13
-                    height: 9
-                    // Points down at rotation 0; a quarter turn anticlockwise reads
-                    // as forward navigation.
-                    rotation: -90
-                    color: Theme.cyan
-                }
-
-                TapHandler {
-                    enabled: !decoderHost.transitioning
-                    // Nothing remembered means nothing to start from, so the first
-                    // tap asks rather than guessing at a radio and a frequency.
-                    onTapped: exploreCard.configured ? screen.explore() : screen.exploreSetup()
-                    onLongPressed: screen.exploreSetup()
                 }
             }
         }
@@ -825,6 +907,7 @@ Item {
             var items = [{text: qsTr("Edit"), key: "edit", objectName: "editSavedSystemButton"}];
             if (savedSystems.siblingRows(row).length > 1)
                 items.push({text: qsTr("Sites"), key: "sites", objectName: "sitesSavedSystemButton"});
+            items.push(screen.pinAction("system", systemUid, "pinSavedSystemButton"));
             items.push({text: qsTr("Remove…"), key: "remove", destructive: true, objectName: "removeSavedSystemButton"});
             actions = items;
             open();
@@ -838,8 +921,11 @@ Item {
                 screen.editSystem(row);
             else if (key === "sites")
                 screen.chooseSites(row);
-            else
+            else if (key === "pin")
+                screen.togglePin("system", systemUid);
+            else if (key === "remove")
                 removeSystem.openFor(row);
+            // Any other key does nothing; it used to fall through to Remove.
         }
     }
 
@@ -866,6 +952,7 @@ Item {
             var items = [{text: qsTr("Edit"), key: "edit", objectName: "editScanListButton"}];
             if (canScanWithOthers(list))
                 items.push({text: qsTr("Scan with other lists…"), key: "together", objectName: "scanWithOtherListsButton"});
+            items.push(screen.pinAction("scan", listUid, "pinScanListButton"));
             items.push({text: qsTr("Remove…"), key: "remove", destructive: true, objectName: "removeScanListButton"});
             actions = items;
             open();
@@ -879,8 +966,54 @@ Item {
                 screen.editScanList(row);
             else if (key === "together")
                 scanTogether.openFor(row);
-            else
+            else if (key === "pin")
+                screen.togglePin("scan", listUid);
+            else if (key === "remove")
                 removeScanList.openFor(row);
+        }
+    }
+
+    ActionMenu {
+        id: exploreMenu
+        objectName: "exploreManageSheet"
+        title: qsTr("Explore")
+        function openFor() {
+            actions = [{text: qsTr("Edit connection"), key: "edit", objectName: "editExploreConnectionButton"},
+                screen.pinAction("explore", "", "pinExploreButton")];
+            open();
+        }
+        onTriggered: function (index) {
+            var key = actions[index].key;
+            if (key === "edit")
+                screen.exploreSetup();
+            else if (key === "pin")
+                screen.togglePin("explore", "");
+        }
+    }
+
+    ActionMenu {
+        id: searchMenu
+        objectName: "signalSearchManageSheet"
+        title: qsTr("Signal search")
+        function openFor() {
+            actions = [screen.pinAction("search", "", "pinSignalSearchButton")];
+            open();
+        }
+        onTriggered: function (index) {
+            if (actions[index].key === "pin")
+                screen.togglePin("search", "");
+        }
+    }
+
+    ConfirmDialog {
+        id: pinRefusal
+        objectName: "pinRefusal"
+        title: qsTr("Not pinned")
+        confirmText: qsTr("OK")
+        showCancel: false
+        function openFor(reason) {
+            message = reason;
+            open();
         }
     }
 

@@ -10728,6 +10728,31 @@ Qt Quick frontend (`src/ui/qt`):
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
+- Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
+  (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to
+  Listen"; not pinned while full, disabled with `Text::FullRefusal` as its description) and runs it through
+  `ListenPins::toggle()` (unpin when `isPinned()`, else `pin()`, whose refusal it returns). In `qml/HomeScreen.qml`
+  `pinAction(kind, uid, objectName)` builds the menu row (key `pin`) and `togglePin()` runs it, opening `pinRefusal`
+  ("Not pinned", the refusal as its message) when a Pin offered before the row filled is refused. The saved-system
+  menu (Edit, Sites, Pin, Remove…) pins `system` with the card's row UID, so a grouped card pins its group and a
+  standalone card also unpins a site pin of its own row; the scan-list menu (Edit, Scan with other lists…, Pin,
+  Remove…) pins `scan`. Both handlers route `remove` explicitly and do nothing for any other key (before #801 an
+  unknown key fell through to Remove). Signal search is a row: the button fills it less a 48 px More
+  (`signalSearchManageButton`) opening `searchMenu` [Pin]. Explore's card holds two siblings: the face
+  (`exploreStart`, the whole card) and More (`exploreManageButton`, "More options for Explore", on top). The face is
+  the button that starts Explore, or opens its setup with no radio chosen: Button role, name "Explore the band, start
+  on <radio> from <MHz> MHz" or "Explore the band, set up a radio to tune around and find what is on the air" (its two
+  lines are plain `Text` with `Accessible.ignored`, read in that name only), `OutlineButton`'s Tab gate, Return/Enter/
+  Space, `onPressAction`, `FocusFrame`, a pressed tint; a long press on it opens `exploreMenu` [Edit connection, Pin].
+  Being More's sibling, not its parent, no key pressed on More reaches it, and More never starts Explore. The three
+  menus and `pinRefusal` join `managementSheetOpen`. `qml/SiteChooserSheet.qml` gives each site row a Pin
+  `OutlineButton` (`sitePin<row>`, kind `site`) after Edit site, shown whatever the session state, whose action
+  re-reads `listenPins.revision` so it flips in place with the chooser open; under it `sitePinReason<row>` shows the
+  full reason, or a refusal the press got (`pinFailedUid`). Tests: `UI_QT_PERSISTENCE`
+  (`test_pin_action_and_toggle`), `UI_QT_QML_CALL_LISTS` (`tst_home_pinned.qml`: each menu, the standalone site card,
+  full, unknown keys, modal blocking; `tst_home_dongle_status.qml`: More and long press open the menu, keys and the
+  accessibility press on the face and on More; `tst_site_chooser_sheet.qml`; the key lists in
+  `tst_home_scan_lists.qml` and `tst_back_modals.qml`, whose auto-start case covers the new menus).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
   access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
   layout, Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery is reset and reopened once per
@@ -11967,7 +11992,8 @@ Qt Quick frontend (`src/ui/qt`):
   signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers each row's
   group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV field, or a
   library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the pin to the
-  group's lead and stores it; a group's last site keeps its pin. User text lives in `ListenPins::text()`. The QML
+  group's lead and stores it; a group's last site keeps its pin. `action()` and `toggle()` are every source's Pin to
+  Listen (see "Pin to Listen" above). User text lives in `ListenPins::text()`. The QML
   fixture publishes it over the real `AppPrefs`, clears pins for each test file, and `testContext.resetPins()` clears
   them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved

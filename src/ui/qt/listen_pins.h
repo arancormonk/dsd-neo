@@ -62,6 +62,10 @@ class ListenPins : public QObject {
 
     /** @brief The translated text @p id, with @p label (and @p detail, a site's name) in it where it takes them. */
     static QString text(Text id, const QString& label = QString(), const QString& detail = QString());
+    /** @brief Pin to Listen, or Unpin from Listen when @p pinned: a source's menu or site list action (action()). */
+    static QString actionText(bool pinned);
+    /** @brief actionText() as a screen reader says it, naming @p label, what it pins or unpins. */
+    static QString actionName(bool pinned, const QString& label);
 
     ListenPins(AppPrefs* prefs, SavedSystemsModel* systems, ScanListsModel* lists, QObject* parent = nullptr);
     ~ListenPins() override;
@@ -90,6 +94,16 @@ class ListenPins : public QObject {
     Q_INVOKABLE void unpin(const QString& kind, const QString& uid);
     /** @brief Remove the pin whose entry key is @p key. */
     Q_INVOKABLE void unpinKey(const QString& key);
+    /**
+     * @brief Pin to Listen, as a source's menu or site list offers it for what @p kind and @p uid name:
+     *        {pinned, text, accessibleName, enabled, description}.
+     *
+     * Pinned (isPinned()), it is Unpin from Listen. Not pinned while full, it is disabled and its description says why
+     * (Text::FullRefusal), so every source shows the same reason the same way.
+     */
+    Q_INVOKABLE QVariantMap action(const QString& kind, const QString& uid) const;
+    /** @brief What action() offers: unpin() when pinned, else pin(). "" when done, else pin()'s refusal. */
+    Q_INVOKABLE QString toggle(const QString& kind, const QString& uid);
 
   Q_SIGNALS:
     void entriesChanged();
@@ -100,6 +114,7 @@ class ListenPins : public QObject {
   private:
     void refresh(bool topology);
     QVariantMap resolve(const QVariantMap& stored);
+    QVariantMap resolveTarget(const QString& kind, const QString& uid) const;
     QVariantMap resolveSaved(const QString& kind, const QString& uid) const;
     QVariantMap resolveScan(const QString& uid) const;
     QVariantMap resolveExplore() const;

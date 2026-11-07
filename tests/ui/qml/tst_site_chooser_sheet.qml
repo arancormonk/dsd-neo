@@ -14,6 +14,7 @@ Item {
         when: windowShown
         function init() {
             testContext.useLifecycleHost(true)
+            testContext.resetPins()
             prefs.metricUnits = false
             prefs.setLocationFix(0, 0, 0)
             while (savedSystems.count) savedSystems.remove(0)
@@ -30,6 +31,7 @@ Item {
             prefs.setLocationFix(0, 0, 0)
             testContext.useLifecycleHost(false)
             while (savedSystems.count) savedSystems.remove(0)
+            testContext.resetPins()
         }
         function test_distance_units_update_live() {
             var north = findChild(sheet, "siteChoice0")
@@ -292,6 +294,34 @@ Item {
             // Reopened, the sheet starts clean.
             sheet.openFor(0)
             verify(!findChild(sheet, "siteAvoidError0").visible)
+        }
+        // Issue #801 D4: each site pins on its own from here. The button says what it will do, flips as it is
+        // pressed and keeps the chooser open; pinning starts nothing, and is offered while a session runs too.
+        function test_pin_from_site_chooser() {
+            var north = savedSystems.get(0).uid
+            var south = savedSystems.get(1).uid
+            var pin = findChild(sheet, "sitePin0")
+            verify(pin !== null)
+            compare(pin.text, "Pin to Listen")
+            compare(pin.accessibleName, "Pin North · North to Listen")
+            verify(pin.enabled)
+            verify(!findChild(sheet, "sitePinReason0").visible)
+            waitForRendering(sheet)
+            mouseClick(pin, pin.width / 2, pin.height / 2)
+            verify(sheet.visible, "pinning keeps the chooser open")
+            verify(listenPins.isPinned("site", north))
+            verify(!listenPins.isPinned("site", south), "only the pressed site")
+            verify(!listenPins.isPinned("system", north), "a site, not its system")
+            compare(pin.text, "Unpin from Listen", "the same button flips")
+            compare(pin.accessibleName, "Unpin North · North from Listen")
+            compare(findChild(sheet, "sitePin1").text, "Pin to Listen")
+            compare(starts.count, 0)
+            compare(switches.count, 0)
+            mouseClick(pin, pin.width / 2, pin.height / 2)
+            compare(listenPins.count, 0)
+            compare(pin.text, "Pin to Listen")
+            sheet.sessionState = 2
+            verify(pin.visible && pin.enabled, "offered while a session runs")
         }
         function test_avoid_toggle() {
             sheet.setAvoid(1, true)

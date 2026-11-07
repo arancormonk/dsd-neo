@@ -1851,6 +1851,68 @@ test_pin_full_refuses() {
     expect("full: then the list pins", pins.pin("scan", extra).isEmpty() && pins.full());
 }
 
+/* Every source offers the same Pin to Listen: named for what it pins, Unpin once pinned (a group's card through any of
+ * its sites), and disabled with the full reason while six are stored, except as Unpin. toggle() does what it offers. */
+void
+test_pin_action_and_toggle() {
+    PinsWorld w;
+    const QString lead = w.system("County", 7, 1, "North");
+    const QString second = w.system("County", 7, 2, "South");
+    const QString list = w.list("Patrol");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    using T = ListenPins::Text;
+    const auto offers = [&pins](const QString& kind, const QString& uid, const QString& text, const QString& name,
+                                bool pinned) {
+        const QVariantMap action = pins.action(kind, uid);
+        return action.value("text").toString() == text && action.value("accessibleName").toString() == name
+               && action.value("pinned").toBool() == pinned && action.value("enabled").toBool()
+               && action.value("description").toString().isEmpty();
+    };
+
+    expect("action: the copy",
+           ListenPins::actionText(false) == QStringLiteral("Pin to Listen")
+               && ListenPins::actionText(true) == QStringLiteral("Unpin from Listen")
+               && ListenPins::actionName(false, "Patrol") == QStringLiteral("Pin Patrol to Listen")
+               && ListenPins::actionName(true, "Patrol") == QStringLiteral("Unpin Patrol from Listen"));
+    expect("action: a system card names its system",
+           offers("system", lead, ListenPins::actionText(false), ListenPins::actionName(false, "County"), false));
+    expect("action: a site names its system and itself",
+           offers("site", second, ListenPins::actionText(false),
+                  ListenPins::actionName(false, ListenPins::text(T::SiteLabel, "County", "South")), false));
+    expect("action: Signal search and Explore",
+           offers("search", QString(), ListenPins::actionText(false), "Pin Signal search to Listen", false)
+               && offers("explore", QString(), ListenPins::actionText(false), "Pin Explore to Listen", false));
+
+    expect("toggle: pins the card through a site", pins.toggle("system", second).isEmpty() && pins.count() == 1);
+    expect("action: the card is Unpin through its lead",
+           offers("system", lead, ListenPins::actionText(true), ListenPins::actionName(true, "County"), true));
+    expect(
+        "action: the card's sites are not pinned by it",
+        offers("site", second, ListenPins::actionText(false), ListenPins::actionName(false, "County · South"), false));
+    expect("toggle: unpins the card through its lead", pins.toggle("system", lead).isEmpty() && pins.count() == 0);
+    expect("toggle: refuses what is not saved",
+           pins.toggle("scan", QStringLiteral("gone")) == ListenPins::text(T::NotFoundRefusal) && pins.count() == 0);
+
+    QVariantList six;
+    for (int i = 0; i < 5; ++i) {
+        six.append(pin_of("system", new_uid()));
+    }
+    six.append(pin_of("scan", list));
+    w.prefs.setPinned(six);
+    expect("full: six stored", pins.full());
+    const QVariantMap refused = pins.action("explore", QString());
+    expect("action: full, Pin is disabled with the reason",
+           refused.value("text").toString() == ListenPins::actionText(false) && !refused.value("enabled").toBool()
+               && refused.value("description").toString() == ListenPins::text(T::FullRefusal));
+    expect("action: full, Unpin stays offered",
+           offers("scan", list, ListenPins::actionText(true), "Unpin Patrol from Listen", true));
+    expect("toggle: full refuses a seventh",
+           pins.toggle("explore", QString()) == ListenPins::text(T::FullRefusal) && pins.count() == 6);
+    expect("toggle: full still unpins", pins.toggle("scan", list).isEmpty() && pins.count() == 5);
+    expect("action: room again, Pin is offered",
+           offers("explore", QString(), ListenPins::actionText(false), "Pin Explore to Listen", false));
+}
+
 /* A store that cannot be read loads as empty: pins stay stored, marked not found, through pinning something else, and
  * resolve again once the store loads. */
 void
@@ -2223,6 +2285,7 @@ main(int argc, char** argv) {
     test_pinned_pref_round_trip();
     test_pin_unpin_is_pinned();
     test_pin_full_refuses();
+    test_pin_action_and_toggle();
     test_pins_survive_unreadable_store();
     test_prune_on_remove();
     test_system_pin_rehomes_to_sibling();

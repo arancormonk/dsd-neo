@@ -2268,14 +2268,26 @@ not be exported or logged. QString/QML key copies cannot guarantee memory erasur
 Listen keeps up to 6 shortcuts in a **Pinned** row above its list: a saved system (the whole card), one site of a
 grouped system, a scan list, Signal search or Explore. A tap does what the shortcut's own control does: a system or
 site starts (a grouped system opens its site list when it has no playable site or more than one), a scan list starts
-on its own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text size and
-stays in place while the list scrolls. It shows the pins that fit, in the order they were pinned, then **More** (read
-as "All pinned shortcuts"), which opens the **Pinned** sheet: every pin, each with **Unpin**. A pin whose system,
-site or scan list is not found right now (its saved file could not be read, say) stays pinned and still counts
-toward the 6: the row leaves it out, and the sheet shows it greyed out, to unpin, until it is found again. Removing
-a saved system, site or scan list unpins it; a pinned system moves to another of its sites when one site is removed.
-A pin never changes what auto-start resumes. The row is shown only while something is pinned, and pins are kept in
-backups.
+on its own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text
+size and stays in place while the list scrolls. It shows the pins that fit, in the order they were pinned, then
+**More** (read as "All pinned shortcuts"), which opens the **Pinned** sheet: every pin, each with **Unpin**. A pin
+whose system, site or scan list is not found right now (its saved file could not be read, say) stays pinned and still
+counts toward the 6: the row leaves it out, and the sheet shows it greyed out, to unpin, until it is found again.
+Removing a saved system, site or scan list unpins it; a pinned system moves to another of its sites when one site is
+removed. A pin never changes what auto-start resumes. The row is shown only while something is pinned, and pins are
+kept in backups.
+
+To pin something, choose **Pin to Listen**; once pinned, the same place offers **Unpin from Listen**:
+
+- a saved system or a scan list: its card's More menu (or a long press on the card);
+- one site of a grouped system: its row in the site list (**N sites** on the card), which stays open;
+- Signal search: the More button beside it;
+- Explore: the card's More menu (or a long press on the card), which also holds **Edit connection**. A tap on the
+  card, or Enter or Space on it from a keyboard, starts Explore; More never does.
+
+With 6 pinned, every **Pin to Listen** is greyed out and says why ("Pinned is full (6). Unpin one first."); unpin one
+here or in the Pinned sheet first. A site that leaves its group (its frequency edited, say) keeps its pin, and its
+own card's More menu unpins it.
 
 ### Saved RadioReference sites
 

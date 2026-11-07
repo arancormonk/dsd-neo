@@ -25,6 +25,9 @@ ModalSheet {
     // rows are rebuilt on every change.
     property string avoidFailedUid: ""
     property bool avoidFailedWanted: false
+    // Issue #801: the site whose Pin to Listen was refused, and why.
+    property string pinFailedUid: ""
+    property string pinFailure: ""
     readonly property int groupRow: (revision, savedSystems.rowForUid(groupUid))
     readonly property int nearest: (revision, prefs.lastFixAt > 0 ? savedSystems.nearestRow(groupRow, prefs.lastLat, prefs.lastLon) : -1)
     readonly property var nearestSite: (revision, savedSystems.get(nearest))
@@ -79,6 +82,7 @@ ModalSheet {
         groupUid = savedSystems.get(row).uid || "";
         notice = "";
         avoidFailedUid = "";
+        pinFailedUid = "";
         locationUpdated = false;
         refresh();
         visible = rows.length > 0;
@@ -114,6 +118,11 @@ ModalSheet {
         avoidFailedWanted = avoid;
         // Rebuilt either way, so the toggle shows what is saved.
         refresh();
+    }
+    function togglePin(uid) {
+        userAction();
+        pinFailure = listenPins.toggle("site", uid);
+        pinFailedUid = pinFailure.length > 0 ? uid : "";
     }
     function useLocation() {
         userAction();
@@ -284,6 +293,30 @@ ModalSheet {
                     sheet.visible = false;
                     sheet.editSite(siteRow.modelData);
                 }
+            }
+            // Issue #801 D4: one site pinned to Listen on its own. It re-reads
+            // the pins, so it flips in place; while Pinned is full it is
+            // disabled and the line under it says why, here in the chooser.
+            OutlineButton {
+                id: sitePin
+                objectName: "sitePin" + siteRow.modelData
+                readonly property var action: (listenPins.revision, listenPins.action("site", siteRow.site.uid || ""))
+                width: parent.width
+                text: action.text
+                accessibleName: action.accessibleName
+                enabled: action.enabled
+                onClicked: sheet.togglePin(siteRow.site.uid || "")
+            }
+            ReadableText {
+                objectName: "sitePinReason" + siteRow.modelData
+                width: parent.width
+                visible: text.length > 0
+                text: sitePin.action.description || (sheet.pinFailedUid.length > 0 && sheet.pinFailedUid === siteRow.site.uid ? sheet.pinFailure : "")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(14)
+                color: Theme.textSecondary
             }
             PlexToggle {
                 objectName: "siteAvoid" + siteRow.modelData
