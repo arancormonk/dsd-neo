@@ -166,6 +166,8 @@ struct SoftNidCandidate {
     struct p25p1_nid_result decoded;
     int score;
     int changes;
+    char word[63];  /* the candidate the search decoded */
+    int flipped[3]; /* the bits it flipped in the word it searched from (changes of them) */
 };
 
 } // namespace
@@ -194,7 +196,13 @@ soft_nid_consider_candidate(const char* scoring_code, const char* candidate, con
         best->found = 1;
         best->decoded = decoded;
         best->score = score;
-        best->changes = changes;
+        best->changes = 0;
+        DSD_MEMCPY(best->word, candidate, 63);
+        for (int i = 0; i < 63 && best->changes < changes && best->changes < 3; i++) {
+            if ((scoring_code[i] != 0) != (candidate[i] != 0)) {
+                best->flipped[best->changes++] = i;
+            }
+        }
     }
 }
 
@@ -326,6 +334,43 @@ decode_nid_hard(const char* bch_code, int observed_nac, unsigned char parity) {
     return retry;
 }
 
+/* The bits a soft candidate's decode corrected in the word it was searched from (issue #804): the ones the search
+   flipped and the ones the BCH decode corrected after it, less any flip the BCH decode undid. The word without such a
+   flip reads to the same NAC and DUID with one BCH correction fewer, which no other flip does (the code's distance is
+   23). The candidate's own decoded.error_count, which ranks candidates, stays the BCH count. */
+static int
+soft_nid_corrections(const SoftNidCandidate& c) {
+    int corrections = c.decoded.error_count + c.changes;
+    for (int i = 0; i < c.changes; i++) {
+        char unflipped[63];
+        DSD_MEMCPY(unflipped, c.word, 63);
+        unflipped[c.flipped[i]] ^= 1;
+        char info[16];
+        const BCH_63_16_Result bch = p25p1_bch_instance().decode_with_result(unflipped, info);
+        int nac = 0;
+        int duid = 0;
+        for (int b = 0; b < 12; b++) {
+            nac = (nac << 1) | (info[b] != 0 ? 1 : 0);
+        }
+        for (int b = 12; b < 16; b++) {
+            duid = (duid << 1) | (info[b] != 0 ? 1 : 0);
+        }
+        if (bch.success && bch.error_count == c.decoded.error_count - 1 && nac == c.decoded.nac
+            && duid == (int)c.decoded.duid) {
+            corrections -= 2;
+        }
+    }
+    return corrections;
+}
+
+/* The decode a soft candidate gives, its error_count every bit it corrected. */
+static struct p25p1_nid_result
+soft_nid_result(const SoftNidCandidate& c) {
+    struct p25p1_nid_result result = c.decoded;
+    result.error_count = soft_nid_corrections(c);
+    return result;
+}
+
 /* A decode the observed NAC made possible stands on the received word alone when the soft search without the hint
    reaches the same NAC and DUID: that NAC was on the air after all, so the unhinted decode is kept and nothing is
    borrowed (issue #804). */
@@ -333,7 +378,7 @@ static struct p25p1_nid_result
 nid_prefer_unhinted(const struct p25p1_nid_result& decoded, const SoftNidCandidate& unhinted) {
     if (decoded.nac_borrowed != 0 && unhinted.found != 0 && unhinted.decoded.nac == decoded.nac
         && unhinted.decoded.duid == decoded.duid) {
-        return unhinted.decoded;
+        return soft_nid_result(unhinted);
     }
     return decoded;
 }
@@ -352,7 +397,7 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
         return hard_result;
     }
 
-    SoftNidCandidate unhinted = {0, {NID_DECODE_FAIL, 0, 0, 0, 0}, 0, 0};
+    SoftNidCandidate unhinted = {};
     soft_nid_search_from_base(bch_code, bch_code, reliab63, pool, pool_count, parity, parity_reliab, 0, &unhinted);
     if (hard_result.status > 0) {
         return nid_prefer_unhinted(hard_result, unhinted);
@@ -371,5 +416,5 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
         return hard_result;
     }
 
-    return nid_prefer_unhinted(best.decoded, unhinted);
+    return nid_prefer_unhinted(soft_nid_result(best), unhinted);
 }

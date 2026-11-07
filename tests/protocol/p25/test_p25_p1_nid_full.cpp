@@ -414,9 +414,9 @@ test_soft_nid_low_reliability_recovery(void) {
                     soft_result.status);
         return 1;
     }
-    if (soft_result.nac != nac || soft_result.duid != (uint8_t)duid || soft_result.error_count != 11) {
+    if (soft_result.nac != nac || soft_result.duid != (uint8_t)duid || soft_result.error_count != 12) {
         DSD_FPRINTF(stderr,
-                    "test_soft_nid_low_reliability_recovery: expected NAC=0x%X DUID=0x%X errors=11, "
+                    "test_soft_nid_low_reliability_recovery: expected NAC=0x%X DUID=0x%X errors=12, "
                     "got NAC=0x%X DUID=0x%X errors=%d\n",
                     nac, duid, soft_result.nac, soft_result.duid, soft_result.error_count);
         return 1;
@@ -505,9 +505,9 @@ test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
                     soft_result.status);
         return 1;
     }
-    if (soft_result.nac != nac || soft_result.duid != (uint8_t)duid || soft_result.error_count != 11) {
+    if (soft_result.nac != nac || soft_result.duid != (uint8_t)duid || soft_result.error_count != 12) {
         DSD_FPRINTF(stderr,
-                    "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected NAC=0x%X DUID=0x%X errors=11, "
+                    "test_soft_observed_nac_retry_exempts_forced_nac_bits: expected NAC=0x%X DUID=0x%X errors=12, "
                     "got NAC=0x%X DUID=0x%X errors=%d\n",
                     nac, duid, soft_result.nac, soft_result.duid, soft_result.error_count);
         return 1;
@@ -635,6 +635,66 @@ test_unhinted_soft_decode_is_not_borrowed(void) {
     return rc;
 }
 
+/* Issue #804: a soft decode's error_count counts every bit it corrected: the flipped ones and the BCH corrections
+   after them (13 errors, the 2 least reliable flipped, 11 corrected), never a flip the BCH decode undid (12 errors:
+   flipping the two 70-reliability errors and a right bit at reliability 0 is the only cheap enough way in, and the BCH
+   decode then corrects 11 including that right bit, 12 bits in all), and the unhinted soft decode that stands in for a
+   borrowed hard retry counts its flip too. */
+static int
+test_soft_decode_counts_flipped_bits(void) {
+    const int nac = 0x2C1;
+    const int duid = 0x7;
+    char info[16];
+    char codeword[63];
+    make_info_word(nac, duid, info);
+    p25_test_generate_nid_codeword(info, codeword);
+    const int errors[13] = {16, 22, 28, 34, 40, 46, 52, 18, 24, 30, 36, 42, 58};
+    int rc = 0;
+
+    char word[63];
+    uint8_t reliab[63];
+    DSD_MEMCPY(word, codeword, 63);
+    for (int i = 0; i < 63; i++) {
+        reliab[i] = 220;
+    }
+    for (int i = 0; i < 13; i++) {
+        word[errors[i]] ^= 1;
+    }
+    reliab[errors[0]] = 10;
+    reliab[errors[1]] = 11;
+    const struct p25p1_nid_result two = p25p1_nid_decode(word, reliab, 0, expected_parity(duid), 220);
+    if (two.status != NID_OK || two.nac != nac || two.error_count != 13) {
+        DSD_FPRINTF(stderr, "flips: 13 errors, 2 flipped: status %d NAC 0x%X errors %d\n", two.status, two.nac,
+                    two.error_count);
+        rc = 1;
+    }
+
+    DSD_MEMCPY(word, codeword, 63);
+    for (int i = 0; i < 63; i++) {
+        reliab[i] = 220;
+    }
+    for (int i = 0; i < 12; i++) {
+        word[errors[i]] ^= 1;
+    }
+    reliab[errors[0]] = 70;
+    reliab[errors[1]] = 70;
+    reliab[3] = 0; // a right bit
+    const struct p25p1_nid_result undone = p25p1_nid_decode(word, reliab, 0, expected_parity(duid), 220);
+    if (undone.status != NID_OK || undone.nac != nac || undone.error_count != 12) {
+        DSD_FPRINTF(stderr, "flips: a flip the BCH decode undid: status %d NAC 0x%X errors %d\n", undone.status,
+                    undone.nac, undone.error_count);
+        rc = 1;
+    }
+
+    const struct p25p1_nid_result agreed = decode_with_true_hint(1, 11, 1, 0);
+    if (agreed.nac_borrowed != 0 || agreed.error_count != 12) {
+        DSD_FPRINTF(stderr, "flips: unhinted decode for a hard retry: borrowed %d errors %d\n", agreed.nac_borrowed,
+                    agreed.error_count);
+        rc = 1;
+    }
+    return rc;
+}
+
 /* --------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
@@ -651,6 +711,7 @@ main(void) {
     rc |= test_observed_nac_retry_after_bch_failure();
     rc |= test_observed_nac_retry_is_marked_borrowed();
     rc |= test_unhinted_soft_decode_is_not_borrowed();
+    rc |= test_soft_decode_counts_flipped_bits();
     rc |= test_soft_nid_low_reliability_recovery();
     rc |= test_soft_nid_high_reliability_rejected();
     rc |= test_soft_observed_nac_retry_exempts_forced_nac_bits();
