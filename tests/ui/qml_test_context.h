@@ -4992,8 +4992,8 @@ class Setup : public QObject {
         // Issue #644: the production index over them, so Main offers what a case saves on the tuned channel.
         ctx->setContextProperty(QStringLiteral("knownFrequencies"),
                                 new dsd_qt::KnownFrequencyIndex(saved_systems, scan_lists, engine));
-        /* Issue #801: the production pins over the real AppPrefs (the settings file every case shares, whichever `prefs`
-         * a case reads), cleared for each test file; resetPins() clears them between cases. */
+        /* Issue #801: the production pins over the real AppPrefs (the settings file every case shares, whichever
+         * `prefs` a case reads), cleared for each test file; resetPins() clears them between cases. */
         app_prefs->setPinned({});
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));

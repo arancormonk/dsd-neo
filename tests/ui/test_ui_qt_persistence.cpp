@@ -39,6 +39,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <functional>
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
@@ -1689,12 +1690,14 @@ struct PinsWorld {
     }
 
     QString
-    system(const QString& name, int sid = 0, int siteId = 0, const QString& siteName = QString()) {
+    system(const QString& name, int sid = 0, int siteId = 0, const QString& siteName = QString(),
+           const QString& groupCsv = QString()) {
         expect("pins: add system", systems.add({{"name", name},
                                                 {"freqMhz", QStringLiteral("851.%1").arg(systems.count())},
                                                 {"rrSid", sid},
                                                 {"rrSiteId", siteId},
-                                                {"siteName", siteName}}));
+                                                {"siteName", siteName},
+                                                {"groupCsvPath", groupCsv}}));
         return systems.get(systems.count() - 1).value("uid").toString();
     }
 
@@ -1715,6 +1718,27 @@ entry_for(const ListenPins& pins, const QString& key) {
     return {};
 }
 
+/* Notes whether @p pins changes its entries while @p saved() says the departing row is still in its model, or names
+ * @p gone: a removal's prune must land once the row is gone, outside the model's removal. */
+struct EntriesWatch {
+    bool early = false;
+    QMetaObject::Connection connection;
+
+    EntriesWatch(ListenPins& pins, const std::function<bool()>& saved, const QString& gone) {
+        connection = QObject::connect(&pins, &ListenPins::entriesChanged, &pins, [this, &pins, saved, gone]() {
+            for (const QVariant& entry : pins.entries()) {
+                early = early || entry.toMap().value("label").toString() == gone;
+            }
+            early = early || saved();
+        });
+    }
+
+    ~EntriesWatch() { QObject::disconnect(connection); }
+
+    EntriesWatch(const EntriesWatch&) = delete;
+    EntriesWatch& operator=(const EntriesWatch&) = delete;
+};
+
 QStringList
 pin_keys(const ListenPins& pins) {
     QStringList keys;
@@ -1725,7 +1749,8 @@ pin_keys(const ListenPins& pins) {
 }
 
 /* A system pin stands for its card: a group's card is pinned through any of its sites, and a site in no group is its
- * own card, so a site pin of it pins that card too. Pinning is idempotent and never touches what Listen last started. */
+ * own card, so a site pin of it pins that card too. Pinning is idempotent and never touches what Listen last
+ * started. */
 void
 test_pin_unpin_is_pinned() {
     PinsWorld w;
@@ -1888,11 +1913,21 @@ test_prune_on_remove() {
                             std::make_pair("scan", other), std::make_pair("search", QString())}) {
         expect("prune: pin", pins.pin(pin.first, pin.second).isEmpty());
     }
-    expect("prune: remove the system", w.systems.remove(w.systems.rowForUid(solo)));
+    {
+        const EntriesWatch watch(
+            pins, [&w, &solo]() { return w.systems.rowForUid(solo) >= 0; }, QStringLiteral("Solo"));
+        expect("prune: remove the system", w.systems.remove(w.systems.rowForUid(solo)));
+        expect("prune: the pins change only once the system is gone", !watch.early);
+    }
     expect("prune: its pin goes", !pins.isPinned("system", solo) && pins.count() == 4);
     expect("prune: remove the site", w.systems.remove(w.systems.rowForUid(site)));
     expect("prune: its pin goes", !pins.isPinned("site", site) && pins.count() == 3);
-    expect("prune: remove a list", w.lists.remove(w.lists.rowForUid(list)));
+    {
+        const EntriesWatch watch(
+            pins, [&w, &list]() { return w.lists.rowForUid(list) >= 0; }, QStringLiteral("Patrol"));
+        expect("prune: remove a list", w.lists.remove(w.lists.rowForUid(list)));
+        expect("prune: the pins change only once the list is gone", !watch.early);
+    }
     expect("prune: its pin goes, and only its",
            pin_keys(pins) == QStringList{"scan:" + other, QStringLiteral("search:")});
     AppPrefs reread;
@@ -1905,13 +1940,19 @@ test_prune_on_remove() {
 void
 test_system_pin_rehomes_to_sibling() {
     PinsWorld w;
-    const QString lead = w.system("County", 7, 1, "North");
+    // Named apart from its group, so a label taken from the departing lead would show.
+    const QString lead = w.system("Old County", 7, 1, "North");
     w.system("Elsewhere");
     const QString second = w.system("County", 7, 2, "South");
     const QString third = w.system("County", 7, 3, "East");
     ListenPins pins(&w.prefs, &w.systems, &w.lists);
     expect("rehome: pin the card", pins.pin("system", lead).isEmpty());
-    expect("rehome: remove the pinned site", w.systems.remove(w.systems.rowForUid(lead)));
+    {
+        const EntriesWatch watch(
+            pins, [&w, &lead]() { return w.systems.rowForUid(lead) >= 0; }, QStringLiteral("Old County"));
+        expect("rehome: remove the pinned site", w.systems.remove(w.systems.rowForUid(lead)));
+        expect("rehome: the pin moves only once the site is gone, never named after it", !watch.early);
+    }
     expect("rehome: the pin moves to a remaining site",
            pin_keys(pins) == QStringList{"system:" + second} && pins.isPinned("system", third));
     expect("rehome: named by the new lead", entry_for(pins, "system:" + second).value("label") == "County");
@@ -1919,6 +1960,43 @@ test_system_pin_rehomes_to_sibling() {
     expect("rehome: the pin moves again", pin_keys(pins) == QStringList{"system:" + third});
     expect("rehome: remove the last", w.systems.remove(w.systems.rowForUid(third)));
     expect("rehome: the pin goes with the group", pins.count() == 0);
+}
+
+/* A system pin is the system, not the row it names: when that row is edited out of its group, or a library file it
+ * names is removed, the pin moves to the group's lead while the group has sites, and stays with the row once it is the
+ * group's last. */
+void
+test_system_pin_follows_group_when_row_leaves() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    PinsWorld w;
+    const QString lead = w.system("County", 7, 1, "North");
+    const QString second = w.system("County", 7, 2, "South", path);
+    const QString third = w.system("County", 7, 3, "East");
+    const QString lone = w.system("Lone", 9, 1, "Only");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("follow: pin the card through its lead", pins.pin("system", lead).isEmpty());
+    expect("follow: pin a one-site group", pins.pin("system", lone).isEmpty());
+
+    expect("follow: edit the lead's frequency", w.systems.update(w.systems.rowForUid(lead), {{"freqMhz", "852.5"}}));
+    expect("follow: the lead left its group", w.systems.siblingRows(w.systems.rowForUid(lead)).isEmpty());
+    expect("follow: the pin names a remaining site",
+           pin_keys(pins) == QStringList{"system:" + second, "system:" + lone});
+    expect("follow: the group's card is pinned", pins.isPinned("system", second) && pins.isPinned("system", third));
+    expect("follow: named as the system", entry_for(pins, "system:" + second).value("label") == "County");
+    expect("follow: the edited row's own card is not pinned", !pins.isPinned("system", lead));
+    {
+        const AppPrefs reread;
+        expect("follow: the move is stored", reread.pinned().first().toMap().value("uid").toString() == second);
+    }
+
+    expect("follow: the library file goes", w.systems.clearCsvPath(path));
+    expect("follow: a removed file moves it again",
+           pin_keys(pins) == QStringList{"system:" + third, "system:" + lone} && !pins.isPinned("system", second));
+
+    expect("follow: edit the one-site group's frequency",
+           w.systems.update(w.systems.rowForUid(lone), {{"freqMhz", "853.5"}}));
+    expect("follow: a group's last site keeps its pin",
+           entry_for(pins, "system:" + lone).value("label") == "Lone" && pins.isPinned("system", lone));
 }
 
 /* A site edited out of its group keeps its pin, and its new standalone card shows it pinned: the revision moves so a
@@ -2150,6 +2228,7 @@ main(int argc, char** argv) {
     test_pins_survive_unreadable_store();
     test_prune_on_remove();
     test_system_pin_rehomes_to_sibling();
+    test_system_pin_follows_group_when_row_leaves();
     test_site_pin_after_leaving_group();
     test_labels_follow_rename_and_site();
     test_failed_remove_keeps_pin();

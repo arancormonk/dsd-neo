@@ -106,8 +106,13 @@ class ListenPins : public QObject {
     bool exists(const QString& kind, const QString& uid) const;
     QList<int> matching(const QVariantList& pins, const QString& kind, const QString& uid) const;
     QStringList groupUids(const QString& uid, bool* standalone) const;
-    void pruneSystems(int first, int last);
-    void pruneLists(int first, int last);
+    void rememberGroups();
+    void modelChanged();
+    void followLeavers();
+    QVariantList withoutSystems(int first, int last) const;
+    QVariantList withoutLists(int first, int last) const;
+    void holdPrune(const QVariantList& kept);
+    void rowsRemoved();
     void store(const QVariantList& pins);
 
     AppPrefs* m_prefs;
@@ -116,6 +121,12 @@ class ListenPins : public QObject {
     QVariantList m_entries;
     // The label each key last resolved to this run, for a pin whose target has gone missing since.
     QHash<QString, QString> m_lastLabels;
+    // Each saved row's RadioReference group (0 for none) by UID, as the last refresh saw it: how a system pin whose row
+    // has since left its group is found.
+    QHash<QString, int> m_groupOf;
+    // The pins a removal leaves, worked out before the rows go and stored once they have.
+    QVariantList m_pendingPins;
+    bool m_prunePending = false;
     int m_revision = 0;
 };
 

@@ -52,6 +52,25 @@ remaining_sibling(const SavedSystemsModel& systems, int row, const QSet<int>& re
     return heir != siblings.cend() ? systems.get(heir->toInt()).value(QStringLiteral("uid")).toString() : QString();
 }
 
+/* The RadioReference system @p row is grouped under, as site_groups.cpp groups sites, or 0 for a row in no group. */
+int
+group_of(const SavedSystemsModel& systems, int row) {
+    const QModelIndex at = systems.index(row);
+    const int sid = systems.data(at, SavedSystemsModel::RrSidRole).toInt();
+    return sid > 0 && systems.data(at, SavedSystemsModel::RrSiteIdRole).toInt() > 0 ? sid : 0;
+}
+
+/* The UID of the first site grouped under @p sid, the one its Home card stands on, or empty when none is. */
+QString
+group_lead(const SavedSystemsModel& systems, int sid) {
+    for (int row = 0; row < systems.count(); ++row) {
+        if (group_of(systems, row) == sid) {
+            return systems.data(systems.index(row), SavedSystemsModel::UidRole).toString();
+        }
+    }
+    return QString();
+}
+
 QVariantMap
 named(const QString& label, const QString& accessibleName) {
     return {{QStringLiteral("label"), label},
@@ -91,20 +110,21 @@ ListenPins::ListenPins(AppPrefs* prefs, SavedSystemsModel* systems, ScanListsMod
             continue;
         }
         connect(model, &QAbstractItemModel::modelReset, this, [this]() { refresh(true); });
-        connect(model, &QAbstractItemModel::dataChanged, this, [this]() { refresh(true); });
+        connect(model, &QAbstractItemModel::dataChanged, this, [this]() { modelChanged(); });
         connect(model, &QAbstractItemModel::rowsInserted, this, [this]() { refresh(true); });
-        connect(model, &QAbstractItemModel::rowsRemoved, this, [this]() { refresh(true); });
+        connect(model, &QAbstractItemModel::rowsRemoved, this, [this]() { rowsRemoved(); });
     }
     /* Both models signal rowsAboutToBeRemoved only for a removal they have saved, so a pin is pruned only when its
-       target will not come back; a store that loads empty prunes nothing. */
+       target will not come back; a store that loads empty prunes nothing. What stays is worked out while the rows are
+       still there and stored once they are gone, so nothing this object signals lands inside the removal. */
     if (m_systems != nullptr) {
-        connect(m_systems, &SavedSystemsModel::sitesChanged, this, [this]() { refresh(true); });
+        connect(m_systems, &SavedSystemsModel::sitesChanged, this, [this]() { modelChanged(); });
         connect(m_systems, &QAbstractItemModel::rowsAboutToBeRemoved, this,
-                [this](const QModelIndex&, int first, int last) { pruneSystems(first, last); });
+                [this](const QModelIndex&, int first, int last) { holdPrune(withoutSystems(first, last)); });
     }
     if (m_lists != nullptr) {
         connect(m_lists, &QAbstractItemModel::rowsAboutToBeRemoved, this,
-                [this](const QModelIndex&, int first, int last) { pruneLists(first, last); });
+                [this](const QModelIndex&, int first, int last) { holdPrune(withoutLists(first, last)); });
     }
     refresh(false);
 }
@@ -150,6 +170,54 @@ ListenPins::refresh(bool topology) {
     if (changed || topology) {
         ++m_revision;
         Q_EMIT revisionChanged();
+    }
+    rememberGroups();
+}
+
+/* Each saved row's group as this refresh saw it, so the next change can tell a row that left its group. */
+void
+ListenPins::rememberGroups() {
+    m_groupOf.clear();
+    for (int row = 0; m_systems != nullptr && row < m_systems->count(); ++row) {
+        m_groupOf.insert(m_systems->data(m_systems->index(row), SavedSystemsModel::UidRole).toString(),
+                         group_of(*m_systems, row));
+    }
+}
+
+void
+ListenPins::modelChanged() {
+    followLeavers();
+    refresh(true);
+}
+
+/* A system pin is the system, not the row it names. When that row leaves its group (an edit of its frequency, decode
+   flag or a CSV field, or the removal of a library file it names) and the group still has sites, the pin moves to the
+   group's lead, as a removal moves it; with none left it stays with the row. */
+void
+ListenPins::followLeavers() {
+    if (m_prefs == nullptr || m_systems == nullptr) {
+        return;
+    }
+    QVariantList pins = m_prefs->pinned();
+    bool moved = false;
+    for (QVariant& value : pins) {
+        QVariantMap stored = value.toMap();
+        const QString uid = stored.value(QStringLiteral("uid")).toString();
+        const int was = m_groupOf.value(uid, 0);
+        const int row = m_systems->rowForUid(uid);
+        if (stored.value(QStringLiteral("kind")).toString() != kSystem || was <= 0 || row < 0
+            || group_of(*m_systems, row) == was) {
+            continue;
+        }
+        const QString lead = group_lead(*m_systems, was);
+        if (!lead.isEmpty()) {
+            stored.insert(QStringLiteral("uid"), lead);
+            value = stored;
+            moved = true;
+        }
+    }
+    if (moved) {
+        store(pins);
     }
 }
 
@@ -315,12 +383,12 @@ ListenPins::unpinKey(const QString& key) {
     store(kept);
 }
 
-/* Rows @p first to @p last of the saved systems are going, saved. A site's pin goes with its row; a system's moves to
-   a site of its group that stays, so the card stays pinned, else it goes. */
-void
-ListenPins::pruneSystems(int first, int last) {
+/* The pins once rows @p first to @p last of the saved systems are gone. A site's pin goes with its row; a system's
+   moves to a site of its group that stays, so the card stays pinned, else it goes. */
+QVariantList
+ListenPins::withoutSystems(int first, int last) const {
     if (m_prefs == nullptr || m_systems == nullptr) {
-        return;
+        return {};
     }
     QSet<int> removed;
     for (int row = first; row <= last; ++row) {
@@ -344,13 +412,14 @@ ListenPins::pruneSystems(int first, int last) {
         }
     }
     // A pin moved onto a site its group already had pinned is a repeat, which the preference keeps once.
-    store(kept);
+    return kept;
 }
 
-void
-ListenPins::pruneLists(int first, int last) {
+/* The pins once rows @p first to @p last of the scan lists are gone. */
+QVariantList
+ListenPins::withoutLists(int first, int last) const {
     if (m_prefs == nullptr || m_lists == nullptr) {
-        return;
+        return {};
     }
     QSet<QString> removed;
     for (int row = first; row <= last; ++row) {
@@ -364,7 +433,22 @@ ListenPins::pruneLists(int first, int last) {
             kept.append(stored);
         }
     }
-    store(kept);
+    return kept;
+}
+
+void
+ListenPins::holdPrune(const QVariantList& kept) {
+    m_pendingPins = kept;
+    m_prunePending = m_prefs != nullptr;
+}
+
+void
+ListenPins::rowsRemoved() {
+    if (m_prunePending) {
+        m_prunePending = false;
+        store(m_pendingPins);
+    }
+    modelChanged();
 }
 
 /* Through the live preference, so its pinnedChanged reaches refresh() and every view; unchanged pins write nothing. */

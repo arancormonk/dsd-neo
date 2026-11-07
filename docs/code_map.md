@@ -11897,9 +11897,13 @@ Qt Quick frontend (`src/ui/qt`):
   pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting toward the cap,
   until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they saved, prunes: a
   `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group (`siblingRows()`
-  before the removal), else goes. User text lives in `ListenPins::text()`. The QML fixture publishes it over the real
-  `AppPrefs`, clears pins for each test file, and `testContext.resetPins()` clears them between cases. Tests:
-  `UI_QT_PERSISTENCE`.
+  before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no `listenPins`
+  signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers each row's
+  group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV field, or a
+  library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the pin to the
+  group's lead and stores it; a group's last site keeps its pin. User text lives in `ListenPins::text()`. The QML
+  fixture publishes it over the real `AppPrefs`, clears pins for each test file, and `testContext.resetPins()` clears
+  them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
   systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder

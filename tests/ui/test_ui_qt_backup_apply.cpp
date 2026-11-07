@@ -72,7 +72,8 @@ using dsd_qt::backup::Fault;
 
 constexpr char kResultFile[] = "backup-restore-result.json";
 constexpr char kAvoidsFile[] = "signal-search-history.v1.avoids.json";
-// Issue #801: the pinned Listen shortcuts the configuration a restore replaces holds (singletons, so no store names them).
+// Issue #801: the pinned Listen shortcuts the configuration a restore replaces holds (singletons, so no store names
+// them).
 constexpr char kOldPins[] = R"([{"kind":"search","uid":""},{"kind":"explore","uid":""}])";
 
 int g_failures = 0;
