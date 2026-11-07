@@ -83,6 +83,33 @@ dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const cha
     DSD_SNPRINTF(notice, sizeof(notice), "%s", message);
 }
 
+/* The engine's family names, as ENGINE_SIGNAL_SEARCH pins them for the real mapper. */
+const char*
+dsd_engine_signal_search_sync_protocol(int synctype) {
+    if (DSD_SYNC_IS_DMR(synctype)) {
+        return "DMR";
+    }
+    if (DSD_SYNC_IS_P25(synctype)) {
+        return "P25";
+    }
+    if (DSD_SYNC_IS_NXDN(synctype)) {
+        return "NXDN";
+    }
+    if (DSD_SYNC_IS_DPMR(synctype)) {
+        return "dPMR";
+    }
+    if (DSD_SYNC_IS_M17(synctype)) {
+        return "M17";
+    }
+    if (DSD_SYNC_IS_YSF(synctype)) {
+        return "YSF";
+    }
+    if (DSD_SYNC_IS_DSTAR(synctype)) {
+        return "D-STAR";
+    }
+    return NULL;
+}
+
 int
 dsd_app_command_submit(int id, const void* data, size_t size) {
     (void)id;
@@ -217,7 +244,7 @@ main(void) {
     assert(strcmp(published.hit.access, "CC 7") == 0);
 
     // A newly confirmed protocol on the same RF frequency cannot inherit old identities: the coordinator cleared the
-    // tuple, and the observer restores none of it.
+    // tuple, and the observer restores none of it. NXDN's code is read for an NXDN48 hit: the family is a prefix.
     status.hit.target = status.hit.source = 0;
     status.hit.slot = 0;
     status.hit.crypt[0] = '\0';
@@ -264,6 +291,41 @@ main(void) {
     call.has_service_metadata = 1U;
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "CAN 7") == 0);
+
+    // Issue #802 B1: a changed publication while the decoder is on another protocol (that protocol's site note) reads
+    // nothing for the hit; the code it last had stays. A publication of the hit's own family reads again.
+    status.hit.hit_id = 4;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "P25");
+    DSD_MEMSET(&call, 0, sizeof(call));
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->nac = 0x293;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->dmr_color_code = 3;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    state->synctype = DSD_SYNC_P25P1_NEG;
+    state->nac = 0x2A4;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 2A4") == 0);
+
+    // M17's CAN is read at the link setup frame's own sync type; the stream frames after it publish under another
+    // M17 sync type, where the LSF's call record does not answer, so the CAN read at the LSF is carried.
+    status.hit.hit_id = 5;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "M17");
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    call.protocol = state->synctype;
+    call.phase = DSD_CALL_PHASE_ACTIVE;
+    call.epoch = 1;
+    call.service_options = 5U;
+    call.has_service_metadata = 1U;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 5") == 0);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    observer(&status, &status.hit, observer_user);
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 5") == 0);
     status.hit.hit_id = 2;
 
     // Controls mirror the session's own avoid list for the frontends; a permanent avoid goes to the store as well.

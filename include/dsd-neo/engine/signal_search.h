@@ -48,6 +48,10 @@ void dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_sear
  * a call that began no earlier; publishes the hit when the shown tuple changes. Outside a visit, or from a frame an
  * input interruption cut, it does nothing. */
 void dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot);
+/** The Signal search family name of @p synctype ("DMR", "P25", "NXDN", "dPMR", "M17", "YSF", "D-STAR"), the name a
+ * hit's protocol starts with when that sync type's protocol confirmed it ("NXDN" for NXDN48 and NXDN96); NULL for a
+ * sync type the search does not identify by its calls (ProVoice, EDACS, X2-TDMA, TETRA, analog, none). */
+const char* dsd_engine_signal_search_sync_protocol(int synctype);
 #ifdef __cplusplus
 }
 #endif

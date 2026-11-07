@@ -28,12 +28,24 @@ static struct {
     dsd_signal_search_hit last;
 } observer;
 
-/* The access code of a confirmed hit, formatted here as the frontends show it. The call tuple (IDs, texts, slot,
-   crypt) is the coordinator's, from one checked call record; this reads only service options (M17's CAN), under the
-   same record checks: from the call the tuple names (its slot), or with no slot named, from whichever slot holds
-   one, as before the tuple existed. */
+/* Whether the decoder's current sync type is of the hit's protocol family ("NXDN" for NXDN48 and NXDN96). Another
+   protocol's site note publishes the hit too, while the decoder holds that protocol's code. */
+static int
+sync_is_hit_protocol(const dsd_signal_search_hit* hit) {
+    const char* family = dsd_engine_signal_search_sync_protocol(observer.state->synctype);
+    return family && strncmp(hit->protocol, family, strlen(family)) == 0;
+}
+
+/* The access code of a confirmed hit, formatted here as the frontends show it, read only while the decoder is on the
+   hit's protocol; otherwise the code the hit carries stays. The call tuple (IDs, texts, slot, crypt) is the
+   coordinator's, from one checked call record; this reads only service options (M17's CAN), under the same record
+   checks: from the call the tuple names (its slot), or with no slot named, from whichever slot holds one, as before
+   the tuple existed. */
 static void
 format_confirmed_access(dsd_signal_search_hit* hit) {
+    if (!sync_is_hit_protocol(hit)) {
+        return;
+    }
     dsd_call_snapshot call;
     uint16_t service = 0;
     uint8_t metadata = 0;

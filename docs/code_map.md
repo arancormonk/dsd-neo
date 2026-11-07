@@ -111,10 +111,12 @@ Generated (do not edit/commit):
     record's, copied whole by `dsd_engine_signal_search_call()` (installed as the runtime call
     hook) from the slot a call note names, under the same receiving gate: the record must be
     ACTIVE, CRC-clean (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN,
-    dPMR, M17, YSF, D-STAR). The tuple is the most recent call on the hit: a note for the
-    tuple's own call (slot and epoch) updates it, a call that began no earlier (`started_m`)
-    replaces it whole on either slot, and an older call still running on the other slot leaves
-    it, so two DMR slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
+    dPMR, M17, YSF, D-STAR: `dsd_engine_signal_search_sync_protocol()`, public and in radio-off
+    builds, gives a sync type's name, NULL for ProVoice, EDACS, X2-TDMA, TETRA, analog and
+    none). The tuple is the most recent call on the hit: a note for the tuple's own call
+    (slot and epoch) updates it, a call that began no earlier (`started_m`) replaces it whole
+    on either slot, and an older call still running on the other slot leaves it, so two DMR
+    slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
     2, else 0; `crypt` is "ALG xx · KID xxxx" from the record's received bits only
     (`crypto_received`), "Encrypted" when its classification is encrypted, pending or
     decryptable with none received and the call's own checked signalling says encrypted
@@ -3951,7 +3953,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     and carries nothing forward from an earlier publication. The access code is formatted only
     on confirmation callbacks, from the service options of the call the tuple names (its slot,
     the same ACTIVE, protocol and CRC checks); periodic status refreshes cannot promote it from
-    a subsequent unconfirmed sync, and keep the access code and tone the hit last had. The
+    a subsequent unconfirmed sync, and keep the access code and tone the hit last had. It is
+    read only while the decoder's sync type is of the hit's protocol family
+    (`dsd_engine_signal_search_sync_protocol()`, the coordinator's call-protocol names, a
+    prefix of the hit's protocol as "NXDN" is of NXDN48): another protocol's site note
+    publishes the hit as changed too, and then the code the hit carries stays (issue #802
+    B1). M17's CAN read at the link setup frame is carried through the stream frames after
+    it, whose sync type the LSF's call record does not answer. The
     callback reads the access code from state as it runs, so a protocol reports a confirmation
     only after committing the content that passed the check: M17's LSF, D-STAR's
     slow-data header and YSF's DCH report after publishing their callsigns (and M17's

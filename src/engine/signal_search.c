@@ -661,28 +661,27 @@ dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_si
     }
 }
 
-/* The search's name for a call record's protocol, or NULL for one the search does not identify by its calls. */
-static const char*
-search_call_protocol(int protocol) {
-    if (DSD_SYNC_IS_DMR(protocol)) {
+const char*
+dsd_engine_signal_search_sync_protocol(int synctype) {
+    if (DSD_SYNC_IS_DMR(synctype)) {
         return "DMR";
     }
-    if (DSD_SYNC_IS_P25(protocol)) {
+    if (DSD_SYNC_IS_P25(synctype)) {
         return "P25";
     }
-    if (DSD_SYNC_IS_NXDN(protocol)) {
+    if (DSD_SYNC_IS_NXDN(synctype)) {
         return "NXDN";
     }
-    if (DSD_SYNC_IS_DPMR(protocol)) {
+    if (DSD_SYNC_IS_DPMR(synctype)) {
         return "dPMR";
     }
-    if (DSD_SYNC_IS_M17(protocol)) {
+    if (DSD_SYNC_IS_M17(synctype)) {
         return "M17";
     }
-    if (DSD_SYNC_IS_YSF(protocol)) {
+    if (DSD_SYNC_IS_YSF(synctype)) {
         return "YSF";
     }
-    if (DSD_SYNC_IS_DSTAR(protocol)) {
+    if (DSD_SYNC_IS_DSTAR(synctype)) {
         return "D-STAR";
     }
     return NULL;
@@ -733,7 +732,7 @@ search_call_admit(const search_coord* c, const dsd_state* state, uint8_t slot, d
         || record->crc_invalid != 0U || !dsd_receive_allows(c->opts, state, record->protocol, slot)) {
         return NULL;
     }
-    const char* protocol = search_call_protocol(record->protocol);
+    const char* protocol = dsd_engine_signal_search_sync_protocol(record->protocol);
     const dsd_signal_search_hit* hit = &c->status.hit;
     if (!protocol || (hit->protocol[0] && strncmp(hit->protocol, protocol, strlen(protocol)) != 0)) {
         return NULL;
