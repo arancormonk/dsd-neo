@@ -345,10 +345,18 @@ Item {
             verify(strip.visible, "the signal strip is on screen");
             verify(/FREQ/.test(testContext.accessibleNode(strip).name), "the strip is read: "
                    + JSON.stringify(testContext.accessibleNode(strip)));
+            // Each hop is let through once the strip reads its carrier: a fixed pause between hops can end before the
+            // 1 ms rename on a loaded machine, and the next hop then lands in the same step.
+            var freq = findChild(monitor, "monitorFreqValue");
+            var carrier = freq.text;
             testContext.startAccessibilityCount();
             for (var i = 1; i <= hops; ++i) {
                 testContext.publishTarget(reading(i));
-                wait(20);
+                verify(freq.text !== carrier, "hop " + i + " moved the carrier from " + carrier);
+                carrier = freq.text;
+                tryVerify(function () {
+                    return testContext.accessibleNode(strip).name.indexOf("FREQ " + carrier) >= 0;
+                }, 5000, "hop " + i + ": the strip reads " + carrier + ": " + testContext.accessibleNode(strip).name);
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
