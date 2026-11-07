@@ -1762,6 +1762,9 @@ Window {
             onExplore: mainRoot.startExploring()
             onSignalSearch: mainRoot.openSignalSearch()
             onExploreSetup: mainRoot.openExploreSetup()
+            onStartPin: function (kind, uid) {
+                mainRoot.startPin(kind, uid);
+            }
         }
 
         HistoryScreen {

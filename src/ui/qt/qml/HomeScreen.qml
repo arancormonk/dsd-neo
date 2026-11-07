@@ -62,6 +62,9 @@ Item {
     signal explore
     signal signalSearch
     signal exploreSetup
+    // Issue #801: a pinned shortcut was tapped; Main resolves @a kind and
+    // @a uid at that moment (Main.startPin()).
+    signal startPin(string kind, string uid)
     // The receiver a tap on the Explore card starts on. Main binds it to the
     // remembered radio resolved against what is plugged in, so the card states
     // what the tap will do.
@@ -80,7 +83,7 @@ Item {
     // Keep auto-start blocked throughout menu-to-confirmation transitions.
     readonly property bool managementSheetOpen: manageMenu.visible || scanMenu.visible || addSystemMenu.visible
         || removeSystem.visible || systemRemovalError.visible || removeScanList.visible || scanListRemovalError.visible
-        || scanTogether.visible
+        || scanTogether.visible || pinnedSheet.visible
 
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
@@ -93,6 +96,27 @@ Item {
     readonly property real columnWidth: supportingPane ? width - 280 - 3 * Theme.screenPadding : Math.min(Theme.formWidth, width - 2 * Theme.screenPadding)
     readonly property real columnX: supportingPane ? Theme.screenPadding : (width - columnWidth) / 2
     readonly property int headerClearance: 6
+    // Issue #801: the Pinned strip's height, 0 with nothing pinned.
+    readonly property real pinnedStripHeight: pinnedStrip.height
+
+    // Issue #801 [r1-7]: the pins the strip shows, taken from listenPins only
+    // while Home is shown. Hidden (another tab, a session, the wizard), it holds
+    // the last list, so a rename or removal there raises nothing from the strip
+    // and its height, and the body's scroll range, stay as they were; shown
+    // again, it takes the list as it is then.
+    property var heldPins: []
+    function takePins() {
+        if (visible)
+            heldPins = listenPins.entries;
+    }
+    onVisibleChanged: takePins()
+    Component.onCompleted: takePins()
+    Connections {
+        target: listenPins
+        function onEntriesChanged() {
+            screen.takePins();
+        }
+    }
 
     // B5: a session's ending or failure is reported at the top of the body.
     function revealTop() {
@@ -228,6 +252,104 @@ Item {
         }
     }
 
+    // Issue #801: the Pinned strip, one line above the body on both hosts (under
+    // the pinned header where there is one, else at the top, the title staying
+    // in the body). It holds the pins that are found, in order, as many as fit,
+    // each at most the line wide less More; More always ends it and opens the
+    // Pinned sheet with every pin. Pins that do not fit are not made, and the
+    // strip is no Flickable, so it adds no container node a swipe could stick on.
+    Item {
+        id: pinnedStrip
+
+        objectName: "pinnedStrip"
+        // Keyed on what is stored, not on `visible` (see listenHeader), and kept
+        // while every pin is not found, so More still reaches them to unpin.
+        readonly property bool shown: screen.heldPins.length > 0
+        readonly property int pinGap: 8
+        visible: shown
+        enabled: !screen.managementSheetOpen
+        x: screen.columnX
+        y: screen.pinnedHeader ? listenHeader.y + listenHeader.height + pinGap : Theme.screenPadding
+        width: screen.columnWidth
+        // One line of label in a pin, at any text size.
+        height: shown ? Math.max(Theme.minimumTouchSize, Math.ceil(pinMetrics.height) + 24) : 0
+
+        // PinButton's label font, to measure pins before any is made.
+        FontMetrics {
+            id: pinMetrics
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(13)
+            font.weight: Font.DemiBold
+        }
+        // The found pins that fit, in order, each with its place: a pin is as
+        // wide as its label (at most the room left of More), and the first one
+        // that does not fit ends the line.
+        readonly property var placed: {
+            var room = width - moreButton.width - pinGap;
+            var size = pinMetrics.font.pixelSize; // measured again when the text size changes
+            var out = [];
+            var at = 0;
+            for (var entry of screen.heldPins) {
+                if (!entry.found)
+                    continue;
+                var wide = Math.min(room, Math.max(Theme.minimumTouchSize, Math.ceil(pinMetrics.advanceWidth(entry.label)) + 2 * 15));
+                if (out.length > 0 && at + wide > room)
+                    break;
+                out.push({key: entry.key, label: entry.label, accessibleName: entry.accessibleName, x: at, width: wide});
+                at += wide + pinGap;
+            }
+            return out;
+        }
+
+        // A button per pin, kept on its pin (StableRows): a rename renames it,
+        // a pin that leaves the line or arrives on it adds or removes only it.
+        Repeater {
+            model: StableRows {
+                id: stripRows
+                entries: pinnedStrip.placed
+                keyOf: function (entry) {
+                    return entry.key;
+                }
+                lineOf: function (entry) {
+                    return JSON.stringify([entry.label, entry.accessibleName]);
+                }
+            }
+            PinButton {
+                required property int index
+                required property string key
+                required property string line
+                readonly property var parts: JSON.parse(line)
+                readonly property var place: index >= 0 && index < pinnedStrip.placed.length ? pinnedStrip.placed[index] : null
+                readonly property string pinKey: key
+
+                objectName: "pinnedStripPin"
+                x: place ? place.x : 0
+                width: place ? place.width : 0
+                height: pinnedStrip.height
+                // A pin past the end of a shrinking line goes at the end of the turn.
+                opacity: index >= 0 && index < stripRows.shown ? 1 : 0
+                text: parts[0]
+                accessibleName: parts[1]
+                enabled: !decoderHost.transitioning
+                onClicked: {
+                    var split = key.indexOf(":");
+                    screen.startPin(key.slice(0, split), key.slice(split + 1));
+                }
+            }
+        }
+
+        IconButton {
+            id: moreButton
+
+            objectName: "pinnedStripMore"
+            icon: "more"
+            accessibleName: qsTr("All pinned shortcuts")
+            x: pinnedStrip.width - width
+            anchors.verticalCenter: parent.verticalCenter
+            onClicked: pinnedSheet.open()
+        }
+    }
+
     PlexFlickable {
         id: scrollBody
 
@@ -236,7 +358,9 @@ Item {
         // Pinned, the body is clipped a few pixels below the header, so cards
         // scroll away short of the pill; the rest of the header's gap to the
         // first card stays at the body's top, and nothing moves at rest.
-        anchors.topMargin: screen.pinnedHeader ? listenHeader.y + listenHeader.height + screen.headerClearance : 0
+        // The Pinned strip, when shown, sits between them on the same terms.
+        anchors.topMargin: pinnedStrip.shown ? pinnedStrip.y + pinnedStrip.height + screen.headerClearance
+            : screen.pinnedHeader ? listenHeader.y + listenHeader.height + screen.headerClearance : 0
         contentHeight: content.y + content.height + Theme.screenPadding
         clip: true
         // Menu rows use passive tap grabs, so a tap on a manage-menu button
@@ -248,6 +372,8 @@ Item {
             id: content
 
             x: screen.columnX
+            // On the desktop the title leads the body, under the Pinned strip too,
+            // with the body's own padding above it.
             y: screen.pinnedHeader ? Theme.gap - screen.headerClearance : Theme.screenPadding
             width: screen.columnWidth
             spacing: Theme.gap
@@ -633,10 +759,10 @@ Item {
         }
     }
 
-    // Once cards pass under the pinned header, a hairline marks where they go,
-    // as the bottom navigation's top edge does.
+    // Once cards pass under the pinned header or the Pinned strip, a hairline
+    // marks where they go, as the bottom navigation's top edge does.
     Rectangle {
-        visible: screen.pinnedHeader && scrollBody.contentY > scrollBody.originY + 0.5
+        visible: (screen.pinnedHeader || pinnedStrip.shown) && scrollBody.contentY > scrollBody.originY + 0.5
         y: scrollBody.y - 1
         width: screen.supportingPane ? screen.columnX + screen.columnWidth : screen.width
         height: 1
@@ -729,6 +855,13 @@ Item {
                 scanTogether.openFor(row);
             else
                 removeScanList.openFor(row);
+        }
+    }
+
+    PinnedSheet {
+        id: pinnedSheet
+        onStartRequested: function (kind, uid) {
+            screen.startPin(kind, uid);
         }
     }
 

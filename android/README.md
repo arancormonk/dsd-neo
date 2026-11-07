@@ -2263,12 +2263,26 @@ list's effective alias file must be readable.
 Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 
+### Pinned shortcuts
+
+Listen keeps up to 6 shortcuts in a **Pinned** row above its list: a saved system (the whole card), one site of a
+grouped system, a scan list, Signal search or Explore. A tap does what the shortcut's own control does: a system or
+site starts (a grouped system with no site, or several, it can play opens its site list), a scan list starts on its
+own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text size and
+stays in place while the list scrolls. It shows the pins that fit, in the order they were pinned, then **More** (read
+as "All pinned shortcuts"), which opens the **Pinned** sheet: every pin, each with **Unpin**. A pin whose system,
+site or scan list is not found right now (its saved file could not be read, say) stays pinned and still counts
+toward the 6: the row leaves it out, and the sheet shows it greyed out, to unpin, until it is found again. Removing
+a saved system, site or scan list unpins it; a pinned system moves to another of its sites when one site is removed.
+A pin never changes what auto-start resumes. The row is shown only while something is pinned, and pins are kept in
+backups.
+
 ### Saved RadioReference sites
 
 The Qt import screen can import each selected trunked site as a separate saved system. Each site uses its own
 recorded simulcast setting unless an explicit override is chosen. Home groups
-these rows behind **n sites ›**. **Use my location** orders sites by distance and names the nearest
-eligible saved site. Distances use miles or the metric preference; location accuracy and missing
+these rows behind one button on the card, **1 site** or **N sites**. **Use my location** orders sites by distance
+and names the nearest eligible saved site. Distances use miles or the metric preference; location accuracy and missing
 site coordinates are explained. Avoided sites and sites without coordinates are excluded from
 nearest selection. **Listen to nearest site** starts while Idle; while listening, **Stop and switch to nearest**
 and each site's **Stop and switch** wait for the

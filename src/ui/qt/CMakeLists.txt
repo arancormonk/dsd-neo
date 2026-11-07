@@ -152,6 +152,8 @@ qt_add_resources(
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PassbandSheet.qml
+        qml/PinButton.qml
+        qml/PinnedSheet.qml
         qml/ScanAvoidSheet.qml
         qml/ScanListsSheet.qml
         qml/ScanTogetherSheet.qml

@@ -163,6 +163,12 @@ Item {
             {file: "NetworkSheet"},
             {file: "OnboardingScreen"},
             {file: "PassbandSheet"},
+            // Issue #801: a pin, and the sheet with a row (Signal search is always found).
+            {file: "PinButton", properties: {text: "Fire dispatch", accessibleName: "Start Fire dispatch"}},
+            {file: "PinnedSheet", open: function (sheet) {
+                listenPins.pin("search", "");
+                sheet.open();
+            }},
             {file: "RadioReferenceAccountEditor"},
             {file: "RadioReferenceAccountScreen"},
             {file: "RadioReferenceScreen"},
@@ -412,6 +418,7 @@ Item {
             Ui.Navigation.speechPeriodMs = 5000;
             Ui.Navigation.modals = [];
             Ui.Navigation.layers = [];
+            testContext.resetPins();
         }
 
         // The walk sees what TalkBack sees: a plain or ignored Text is unreached, a named one or a button's own label
@@ -536,7 +543,11 @@ Item {
             var imported = importedFiles.importFile(groups, "reach-groups.csv", "group");
             verify(imported.ok, "the fixture CSV must import");
             savedSystems.add({name: "County P25", sourceType: "rtltcp", freqMhz: "851.0125"});
-            var systemRow = savedSystems.rowForUid(savedSystems.get(savedSystems.count - 1).uid);
+            var systemUid = savedSystems.get(savedSystems.count - 1).uid;
+            var systemRow = savedSystems.rowForUid(systemUid);
+            // Issue #801: Home's Pinned strip and sheet, with a pin of each.
+            compare(listenPins.pin("system", systemUid), "");
+            compare(listenPins.pin("search", ""), "");
             var rrBefore = {credentialsReady: radioReference.credentialsReady, systemDetails: radioReference.systemDetails,
                 sites: radioReference.sites};
             testContext.setRadioReference("credentialsReady", true);
@@ -598,6 +609,8 @@ Item {
                 wait(20);
                 verify(rowsShown[file](item), file + " shows its model's rows");
                 problems = problems.concat(unexplained(item, sheetsWithin(item, []), file + " with rows"));
+                if (file === "HomeScreen")
+                    problems = problems.concat(pinnedReach(item));
                 dispose(item);
             }
             diagnosticsLog.paused = false;
@@ -622,6 +635,44 @@ Item {
             diagnosticsLog.clear();
             callHistory.clearAll();
             compare(problems.length, 0, report(problems));
+        }
+
+        // Issue #801: every pin on Home's strip and More are named nodes in the tree, and so is each row of the Pinned
+        // sheet once it is open on top; the sheet's words are all reached.
+        function pinnedReach(home) {
+            var problems = [];
+            var strip = findChild(home, "pinnedStrip");
+            var named = [];
+            for (var child of strip.children) {
+                if (child.objectName === "pinnedStripPin" && child.opacity > 0)
+                    named.push(child);
+            }
+            named.push(findChild(home, "pinnedStripMore"));
+            var expected = ["Start County P25", "Open Signal search", "All pinned shortcuts"];
+            if (named.length !== expected.length)
+                problems.push("Home strip: " + named.length + " controls, expected " + expected.length);
+            for (var i = 0; i < named.length && i < expected.length; ++i) {
+                var node = testContext.accessibleNode(named[i]);
+                if (!node.exists || !node.inTree || node.name !== expected[i] || node.role !== Accessible.Button)
+                    problems.push("Home strip: " + expected[i] + " not reached: " + JSON.stringify(node));
+            }
+            var sheet = findChild(home, "pinnedSheet");
+            sheet.open();
+            waitForRendering(host);
+            wait(20);
+            problems = problems.concat(unexplained(sheet, [], "HomeScreen > Pinned sheet with rows"));
+            var rows = ["Start County P25", "Unpin County P25", "Open Signal search", "Unpin Signal search"];
+            var found = testContext.accessibleNodesUnder(sheet).filter(function (node) {
+                return node.inTree && node.role === Accessible.Button;
+            }).map(function (node) {
+                return node.name;
+            });
+            for (var name of rows) {
+                if (found.indexOf(name) < 0)
+                    problems.push("Pinned sheet: " + name + " not reached: " + JSON.stringify(found));
+            }
+            sheet.visible = false;
+            return problems;
         }
 
         // The wizard's Advanced header is a button TalkBack can press, saying whether it is open.

@@ -62,6 +62,7 @@ Item {
 
         function cleanup() {
             findChild(app, "siteChooserSheet").visible = false;
+            findChild(app, "pinnedSheet").visible = false;
             app.signalSearchOpen = false;
             app.exploreSetupOpen = false;
             app.scanListOpen = false;
@@ -378,6 +379,51 @@ Item {
                 compare(chooser.groupUid, sites[1]);
                 compare(app.startError, "");
             }
+        }
+
+        // §6: a pin on Home's strip goes to Main's startPin(), which starts it as its card would.
+        function stripPin(key) {
+            var strip = findChild(app, "pinnedStrip");
+            for (var child of strip.children) {
+                if (child.objectName === "pinnedStripPin" && child.pinKey === key && child.opacity > 0)
+                    return child;
+            }
+            return null;
+        }
+        function test_strip_pin_starts_through_main() {
+            var solo = addSystem("Solo", "rtltcp");
+            var list = addList("Patrol");
+            compare(listenPins.pin("scan", list), "");
+            compare(listenPins.pin("system", solo), "");
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            waitForRendering(home);
+            var button = stripPin("system:" + solo);
+            verify(button !== null, "the pin is on the strip");
+            mouseClick(button);
+            compare(decoderHost.sessionState, 1);
+            compare(sessionUid(), solo);
+            compare(prefs.lastStartedUid, "", "a pin records nothing until the session initializes, as a card");
+        }
+
+        // D9: a start from the Pinned sheet closes the sheet first, so the site chooser it may open is on top.
+        function test_sheet_start_closes_first() {
+            var sites = addGroup("rtltcp");
+            compare(listenPins.pin("system", sites[0]), "");
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            waitForRendering(home);
+            mouseClick(findChild(home, "pinnedStripMore"));
+            var sheet = findChild(app, "pinnedSheet");
+            tryCompare(sheet, "visible", true);
+            verify(home.managementSheetOpen);
+            waitForRendering(sheet);
+            mouseClick(findChild(sheet, "pinnedSheetStart"));
+            verify(!sheet.visible, "the sheet closed");
+            var chooser = findChild(app, "siteChooserSheet");
+            verify(chooser.visible, "two playable sites: the chooser opens");
+            compare(chooser.groupUid, sites[0]);
+            compare(decoderHost.sessionState, 0);
         }
     }
 }

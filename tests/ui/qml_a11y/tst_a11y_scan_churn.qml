@@ -516,6 +516,68 @@ Item {
                     + JSON.stringify(counts.chains));
         }
 
+        // Issue #801 [r1-7]: with Home hidden behind the wizard, renaming, removing and unpinning pinned targets raises
+        // nothing from the Pinned strip or the closed Pinned sheet; back on Home, the strip shows them as they are.
+        // (Home's own saved-system cards follow their model while hidden, as before: a decided limit, not this case's.)
+        function test_k_hidden_home_pin_changes_stay_silent() {
+            testContext.setLifecyclePhase(0);
+            verify(!app.monitorMode);
+            testContext.resetPins();
+            var uids = [];
+            for (var name of ["Alpha", "Bravo", "Charlie"]) {
+                verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+                uids.push(savedSystems.get(savedSystems.count - 1).uid);
+                compare(listenPins.pin("system", uids[uids.length - 1]), "");
+            }
+            verify(scanLists.add({name: "Patrol", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            var list = scanLists.get(scanLists.count - 1).uid;
+            compare(listenPins.pin("scan", list), "");
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            waitForRendering(home);
+            var strip = findChild(home, "pinnedStrip");
+            var sheet = findChild(home, "pinnedSheet");
+            verify(strip.visible && !sheet.visible);
+            app.wizardOpen = true;
+            tryCompare(home, "visible", false);
+            testContext.startAccessibilityCount();
+            verify(savedSystems.update(savedSystems.rowForUid(uids[0]), {name: "Alpha Prime"}));
+            verify(scanLists.update(scanLists.rowForUid(list), {name: "Night patrol"}));
+            verify(savedSystems.remove(savedSystems.rowForUid(uids[1])));
+            listenPins.unpin("system", uids[2]);
+            wait(50);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(listenPins.count, 2, "the pins moved on");
+            var noisy = [];
+            for (var scope of [strip, sheet]) {
+                var events = 0;
+                for (var type of Object.keys(counts.types))
+                    events += testContext.accessibilityCountWithin(scope, type);
+                if (events !== 0)
+                    noisy.push(scope.objectName + ": " + events);
+            }
+            app.wizardOpen = false;
+            tryCompare(home, "visible", true);
+            var shown = [];
+            tryVerify(function () {
+                shown = [];
+                for (var child of strip.children) {
+                    if (child.objectName === "pinnedStripPin" && child.opacity > 0)
+                        shown.push(child.text);
+                }
+                return shown.join("|") === "Alpha Prime|Night patrol";
+            }, 1000, "the strip shows the pins as they are now");
+            while (savedSystems.count)
+                savedSystems.remove(0);
+            while (scanLists.count)
+                scanLists.remove(0);
+            testContext.resetPins();
+            compare(noisy.length, 0, "the hidden strip or closed sheet raised events: " + JSON.stringify(noisy) + " "
+                    + JSON.stringify(counts.chains));
+        }
+
         // Issue #782: the Spectrum is built at once on its first open, screen reader or not. Building it raises a hide
         // for each part created hidden, and Qt's Android bridge answers each with calls the main thread waits on, so
         // the first open under TalkBack stalls (a Qt limit, android/README.md "Known limits"). Building it a slice at a
