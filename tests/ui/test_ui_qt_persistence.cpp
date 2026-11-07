@@ -1092,7 +1092,15 @@ systems_store_path() {
 bool
 block_systems_store() {
     const QString path = systems_store_path();
-    return QFile::rename(path, path + ".saved") && QDir().mkpath(path);
+    if (!QFile::rename(path, path + ".saved")) {
+        return false;
+    }
+    if (!QDir().mkpath(path)) {
+        // Put the store back, so the tests after this one still read and write it.
+        QFile::rename(path + ".saved", path);
+        return false;
+    }
+    return true;
 }
 
 bool
@@ -1117,9 +1125,9 @@ record_signals(SavedSystemsModel& model, QStringList& log) {
 
 void
 empty_systems(SavedSystemsModel& model) {
-    while (model.count()) {
-        model.remove(0);
-    }
+    // A removal can fail now (a store left blocked); stop there rather than retry forever.
+    while (model.count() && model.remove(0)) {}
+    expect("the systems empty", model.count() == 0);
 }
 
 /* A removal whose save fails changes nothing: the card stays, and anything that follows rows out (a pinned shortcut)
@@ -1228,7 +1236,7 @@ test_avoid_cleared_when_site_leaves_group() {
     const QString path = QStringLiteral("/data/imports/county.csv");
     SavedSystemsModel model;
     empty_systems(model);
-    for (int site = 1; site <= 3; ++site) {
+    for (int site = 1; site <= 4; ++site) {
         expect("leave: site", model.add({{"name", QStringLiteral("Site %1").arg(site)},
                                          {"freqMhz", "851"},
                                          {"rrSid", 12},
@@ -1243,12 +1251,19 @@ test_avoid_cleared_when_site_leaves_group() {
     expect("leave: a frequency edit takes the site out of its group and drops its avoid",
            model.get(1).value("rrSid").toInt() == 0 && !model.get(1).value("avoidSite").toBool());
     expect("leave: the other avoided site keeps its avoid", model.get(2).value("avoidSite").toBool());
+    // Listening for another protocol from the Radio controls saves the decode flag through the same edit.
+    expect("leave: a third site avoided", model.setAvoidSite(3, true));
+    expect("leave: a decoder change from the Radio controls",
+           model.updateRadioSettings(model.get(3).value("uid").toString(), {{"decodeFlag", "-fs"}}));
+    expect("leave: a decoder change takes the site out of its group and drops its avoid",
+           model.get(3).value("rrSid").toInt() == 0 && !model.get(3).value("avoidSite").toBool());
     expect("leave: the library file goes", model.clearCsvPath(path));
     expect("leave: a removed library file drops the avoid of the sites it ungroups",
            model.get(2).value("rrSid").toInt() == 0 && !model.get(2).value("avoidSite").toBool());
     SavedSystemsModel reloaded;
-    expect("leave: the dropped avoids persist",
-           !reloaded.get(1).value("avoidSite").toBool() && !reloaded.get(2).value("avoidSite").toBool());
+    expect("leave: the dropped avoids persist", !reloaded.get(1).value("avoidSite").toBool()
+                                                    && !reloaded.get(2).value("avoidSite").toBool()
+                                                    && !reloaded.get(3).value("avoidSite").toBool());
 }
 
 /* Rows already stored with an avoid outside a group (saved before the rule above) lose it at load, and the load saves
