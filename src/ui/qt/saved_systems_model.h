@@ -105,13 +105,24 @@ class SavedSystemsModel : public QAbstractListModel {
      * QString copies retain the private store's existing erasure limitations. */
     Q_INVOKABLE bool addWithKeyFrom(const QString& sourceUid, const QVariantMap& system);
 
-    /** @brief Replace one system's fields. Unknown keys are ignored. */
+    /**
+     * @brief Replace one system's fields. Unknown keys are ignored. Persists first; false leaves the row as it was.
+     *
+     * A changed frequency, decode flag or CSV field takes an imported site out of its group (rrSid and rrSiteId
+     * zeroed) and drops its avoid, which only the group's site chooser could lift.
+     */
     Q_INVOKABLE bool update(int row, const QVariantMap& system);
 
     /** Persist confirmed Radio controls by stable identity, preserving unrelated wizard fields. */
     Q_INVOKABLE bool updateRadioSettings(const QString& uid, const QVariantMap& changes);
 
-    Q_INVOKABLE void remove(int row);
+    /**
+     * @brief Remove one system. Persists first: on a failed save it returns false, keeps the row and signals nothing.
+     *
+     * A saved removal signals rowsAboutToBeRemoved/rowsRemoved, then sitesChanged, countChanged and
+     * mostRecentRowChanged, so whatever follows rows out of the model sees only removals that will hold.
+     */
+    Q_INVOKABLE bool remove(int row);
 
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
@@ -119,11 +130,16 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE int nearestRow(int row, double lat, double lon) const;
     Q_INVOKABLE int siteCount(int row) const;
     Q_INVOKABLE double distanceKm(int row, double lat, double lon) const;
-    Q_INVOKABLE void setAvoidSite(int row, bool avoid);
+    /** @brief Mark a grouped site avoided or not; false when the row is unknown or the save failed. */
+    Q_INVOKABLE bool setAvoidSite(int row, bool avoid);
     Q_INVOKABLE int rowForUid(const QString& uid) const;
     Q_INVOKABLE QVariantMap getByUid(const QString& uid) const;
 
-    /** @brief Stamp lastHeard = now; called when a session on this system starts. */
+    /**
+     * @brief Stamp lastHeard = now; called when a session on this system starts.
+     *
+     * Persists first, and a failed save leaves lastHeard as it was. Recency is advisory, so nothing is reported.
+     */
     Q_INVOKABLE void touch(int row);
 
     /**
@@ -146,13 +162,15 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE QStringList systemsReferencingPath(const QString& path) const;
 
     /**
-     * @brief Blank every CSV field matching @p path, in every system. Persists.
+     * @brief Blank every CSV field matching @p path, in every system. Persists first.
      *
      * Called when a library file is removed: a saved system pointing at a
      * deleted file would otherwise fail its next start with an opaque
-     * "configure failed".
+     * "configure failed". A site that loses a file leaves its group and its
+     * avoid. Returns false, with every row unchanged, when the save fails, and
+     * true when nothing referenced @p path.
      */
-    Q_INVOKABLE void clearCsvPath(const QString& path);
+    Q_INVOKABLE bool clearCsvPath(const QString& path);
 
   Q_SIGNALS:
     void sitesChanged();

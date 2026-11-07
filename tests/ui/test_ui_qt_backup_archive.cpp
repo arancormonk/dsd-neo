@@ -608,8 +608,7 @@ test_saved_tetra_system_round_trip() {
     expect("tetra backup: restore summary counts it with no extra options",
            parsed.summary.systems == 3 && parsed.summary.systemsWithExtraArgs == 1);
 
-    systems.remove(row);
-    expect("tetra backup: the fixture is back to two systems", systems.rowCount() == row);
+    expect("tetra backup: the fixture is back to two systems", systems.remove(row) && systems.rowCount() == row);
 }
 
 void

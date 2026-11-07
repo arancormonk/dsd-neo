@@ -1707,8 +1707,7 @@ main(int argc, char** argv) {
         quietly([&]() { test_export(host, full); });
         quietly([&]() {
             dsd_qt::SavedSystemsModel systems;
-            systems.remove(1);
-            expect("drop a system", systems.rowCount() == 1);
+            expect("drop a system", systems.remove(1) && systems.rowCount() == 1);
             expect("export the older configuration",
                    export_to(host, older).value("summary").toMap().value("systems").toInt() == 1);
         });

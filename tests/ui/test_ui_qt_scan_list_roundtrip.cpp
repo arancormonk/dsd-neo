@@ -776,7 +776,7 @@ main(int argc, char** argv) {
     list["srcCsvPath"] = "invalid,effective.csv";
     check(!keyedStarter.build(list).value("ok").toBool());
     list.remove("srcCsvPath");
-    systems.remove(0);
+    check(systems.remove(0));
     // Removing a list also removes its private generated session input.
     check(starter.build(model.get(0)).value("ok").toBool());
     model.remove(0);

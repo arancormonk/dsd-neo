@@ -11867,6 +11867,17 @@ Qt Quick frontend (`src/ui/qt`):
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
+- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
+  `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
+  the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
+  `void`: recency is advisory, and an unsaved stamp stays out of memory too). `clearCsvPath` returns true when nothing
+  names the path. So `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`,
+  `mostRecentRowChanged`) mean the removal is on disk, and whatever follows rows out of the model can prune on them.
+  A site is grouped while `rrSid > 0` and `rrSiteId > 0` (`site_groups.cpp`). An edit of its frequency, decode flag or
+  a CSV field, or the removal of a library file it names, zeroes both and also clears `avoidSite`, because only the
+  group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
+  the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
+  keeps its avoid: its "1 site" chooser lifts it. Tests: `UI_QT_PERSISTENCE`.
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   Every history change rescans the whole history (a merge can move a row to another session, so contributions are

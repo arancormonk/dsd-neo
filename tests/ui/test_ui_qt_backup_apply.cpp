@@ -530,7 +530,7 @@ change_references(const Backup& b, Old& old, const QString& external) {
     dsd_qt::SavedSystemsModel systems;
     dsd_qt::ScanListsModel scans;
     for (const QString& path : {b.groups, b.src}) {
-        systems.clearCsvPath(path);
+        expect("the systems drop a removed file", systems.clearCsvPath(path));
     }
     expect("the target scan list drops its file", scans.clearCsvPath(b.targets));
     expect("an unreferenced directory where the target bundle was",
@@ -573,7 +573,7 @@ change_references(const Backup& b, Old& old, const QString& external) {
             && systems.add({{"name", "Both4Replay"}, {"sourceType", "file"}, {"filePath", at("IMPORTS/BOTH4.CSV")}}));
     expect("add a system to delete",
            systems.add({{"name", "Gone"}, {"sourceType", "file"}, {"filePath", at("recordings/gone.wav")}}));
-    systems.remove(systems.rowCount() - 1);
+    expect("delete that system", systems.remove(systems.rowCount() - 1));
 
     old.externalFile = external + "/outside.csv";
     old.linkTarget = external + "/linked.csv";

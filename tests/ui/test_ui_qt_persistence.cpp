@@ -8,10 +8,12 @@
  * trip and reload path, and AppPrefs defaults and persistence. Registered only
  * when the Qt frontend is enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
+#include <QAbstractListModel>
 #include <QAnyStringView>
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QHash>
@@ -881,6 +883,21 @@ test_screen_policy_prefs() {
     stored.remove(legacyKey);
 }
 
+/* Saved-system migration warnings so far. The log tap is installed once and never replaced, so what it counts into
+ * must live as long as the process. */
+int g_migration_warnings = 0;
+
+void
+count_migration_warnings() {
+    dsd_neo_log_set_tap(
+        [](dsd_neo_log_level_t level, const char* text, void*) {
+            if (level == LOG_LEVEL_WARN && QString::fromUtf8(text).contains("migration could not be persisted")) {
+                ++g_migration_warnings;
+            }
+        },
+        nullptr);
+}
+
 void
 test_migration_write_failure() {
     const QString store = QStringLiteral("saved_systems.json");
@@ -888,17 +905,10 @@ test_migration_write_failure() {
     const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     const auto permissions = QFile::permissions(directory);
     expect("migration directory made read only", QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
-    int warnings = 0;
-    dsd_neo_log_set_tap(
-        [](dsd_neo_log_level_t level, const char* text, void* context) {
-            if (level == LOG_LEVEL_WARN && QString::fromUtf8(text).contains("migration could not be persisted")) {
-                ++*static_cast<int*>(context);
-            }
-        },
-        &warnings);
+    count_migration_warnings();
+    const int before = g_migration_warnings;
     SavedSystemsModel model;
-    dsd_neo_log_set_tap(nullptr, nullptr);
-    expect("migration warns once when write fails", warnings == 1);
+    expect("migration warns once when write fails", g_migration_warnings - before == 1);
     expect("failed migration keeps readable row", model.count() == 1);
     expect("migration permissions restored", QFile::setPermissions(directory, permissions));
 }
@@ -1071,6 +1081,216 @@ test_site_provenance_edits() {
     model.add(site);
     model.update(model.count() - 1, {{"siteLat", "invalid"}});
     expect("malformed coordinates cannot become equator", !model.get(model.count() - 1).value("hasSitePos").toBool());
+}
+
+/* A directory where the systems file goes fails every save, whatever the permissions the test runs with. */
+QString
+systems_store_path() {
+    return json_store_path(QStringLiteral("saved_systems.json"));
+}
+
+bool
+block_systems_store() {
+    const QString path = systems_store_path();
+    return QFile::rename(path, path + ".saved") && QDir().mkpath(path);
+}
+
+bool
+unblock_systems_store() {
+    const QString path = systems_store_path();
+    return QDir().rmdir(path) && QFile::rename(path + ".saved", path);
+}
+
+/* Every change signal @p model sends, by name, in order, into @p log (declared before the model, so it outlives it). */
+void
+record_signals(SavedSystemsModel& model, QStringList& log) {
+    const auto note = [&model, &log](auto signal, const char* name) {
+        QObject::connect(&model, signal, &model, [&log, name]() { log.append(QString::fromLatin1(name)); });
+    };
+    note(&SavedSystemsModel::rowsAboutToBeRemoved, "rowsAboutToBeRemoved");
+    note(&SavedSystemsModel::rowsRemoved, "rowsRemoved");
+    note(&SavedSystemsModel::dataChanged, "dataChanged");
+    note(&SavedSystemsModel::sitesChanged, "sitesChanged");
+    note(&SavedSystemsModel::countChanged, "countChanged");
+    note(&SavedSystemsModel::mostRecentRowChanged, "mostRecentRowChanged");
+}
+
+void
+empty_systems(SavedSystemsModel& model) {
+    while (model.count()) {
+        model.remove(0);
+    }
+}
+
+/* A removal whose save fails changes nothing: the card stays, and anything that follows rows out (a pinned shortcut)
+ * keeps it, because the system is still there on the next launch. A saved removal signals rows, sites, count, then
+ * the most recent row. */
+void
+test_remove_failure_keeps_row() {
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("remove: first system", model.add({{"name", "First"}}));
+    expect("remove: second system", model.add({{"name", "Second"}}));
+    record_signals(model, log);
+    expect("remove: store blocked", block_systems_store());
+    expect("remove: a failed save reports failure", !model.remove(0));
+    expect("remove: a failed save keeps the row",
+           model.count() == 2 && model.get(0).value("name") == "First" && model.get(1).value("name") == "Second");
+    expect("remove: a failed save sends no signal", log.isEmpty());
+    expect("remove: store unblocked", unblock_systems_store());
+    {
+        SavedSystemsModel reloaded;
+        expect("remove: a failed removal is still on disk", reloaded.count() == 2);
+    }
+    expect("remove: a saved removal reports success", model.remove(0));
+    expect("remove: a saved removal drops the row", model.count() == 1 && model.get(0).value("name") == "Second");
+    expect("remove: a saved removal signals rows, sites, count and recency in order",
+           log
+               == QStringList{"rowsAboutToBeRemoved", "rowsRemoved", "sitesChanged", "countChanged",
+                              "mostRecentRowChanged"});
+    expect("remove: a row past the end is refused", !model.remove(1) && !model.remove(-1));
+    SavedSystemsModel reloaded;
+    expect("remove: a saved removal persists", reloaded.count() == 1);
+}
+
+/* Recency is advisory, so touch() reports nothing, but a stamp that did not save stays out of memory: the most recent
+ * row the app shows is the one the next launch shows. */
+void
+test_touch_failure_keeps_memory() {
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("touch: system", model.add({{"name", "Heard"}}));
+    record_signals(model, log);
+    expect("touch: store blocked", block_systems_store());
+    model.touch(0);
+    expect("touch: a failed save keeps lastHeard", model.get(0).value("lastHeard").toLongLong() == 0);
+    expect("touch: a failed save sends no signal", log.isEmpty());
+    expect("touch: store unblocked", unblock_systems_store());
+    model.touch(0);
+    expect("touch: a saved stamp lands", model.get(0).value("lastHeard").toLongLong() > 0);
+    SavedSystemsModel reloaded;
+    expect("touch: a saved stamp persists", reloaded.get(0).value("lastHeard").toLongLong() > 0);
+}
+
+/* Clearing a removed library file's references saves first: a failure reports false and leaves every reference (and
+ * the site's group) as it was, so a retry can finish it. A path nothing references needs no save. */
+void
+test_clear_csv_failure_keeps_memory() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("clear: grouped site",
+           model.add({{"name", "North"}, {"rrSid", 12}, {"rrSiteId", 1}, {"groupCsvPath", path}}));
+    expect("clear: second system", model.add({{"name", "Butler"}, {"chanCsvPath", path}}));
+    record_signals(model, log);
+    expect("clear: store blocked", block_systems_store());
+    expect("clear: a failed save reports failure", !model.clearCsvPath(path));
+    expect("clear: a failed save keeps every reference",
+           model.get(0).value("groupCsvPath") == path && model.get(1).value("chanCsvPath") == path);
+    expect("clear: a failed save keeps the site in its group",
+           model.get(0).value("rrSid").toInt() == 12 && model.get(0).value("rrSiteId").toInt() == 1);
+    expect("clear: a failed save sends no signal", log.isEmpty());
+    expect("clear: an unreferenced path needs no save", model.clearCsvPath(QStringLiteral("/data/imports/none.csv")));
+    expect("clear: store unblocked", unblock_systems_store());
+    expect("clear: a saved clear reports success", model.clearCsvPath(path));
+    expect("clear: a saved clear blanks every reference",
+           model.get(0).value("groupCsvPath").toString().isEmpty()
+               && model.get(1).value("chanCsvPath").toString().isEmpty());
+    SavedSystemsModel reloaded;
+    expect("clear: a saved clear persists", reloaded.get(0).value("groupCsvPath").toString().isEmpty()
+                                                && reloaded.get(1).value("chanCsvPath").toString().isEmpty());
+}
+
+/* The site chooser's Avoid reports a failed save, so the toggle can show the stored state. */
+void
+test_set_avoid_failure_reports() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("avoid: north site", model.add({{"name", "North"}, {"rrSid", 12}, {"rrSiteId", 1}}));
+    expect("avoid: south site", model.add({{"name", "South"}, {"rrSid", 12}, {"rrSiteId", 2}}));
+    expect("avoid: store blocked", block_systems_store());
+    expect("avoid: a failed save reports failure", !model.setAvoidSite(1, true));
+    expect("avoid: a failed save leaves the site unavoided", !model.get(1).value("avoidSite").toBool());
+    expect("avoid: store unblocked", unblock_systems_store());
+    expect("avoid: a saved avoid reports success", model.setAvoidSite(1, true));
+    SavedSystemsModel reloaded;
+    expect("avoid: a saved avoid persists", reloaded.get(1).value("avoidSite").toBool());
+    expect("avoid: a row past the end is refused", !model.setAvoidSite(2, true));
+}
+
+/* An avoid is lifted only in the group's site chooser, so a site that leaves its group (an edited frequency, decode
+ * flag or file, or a removed library file) drops its avoid with the group; an edit that keeps the group keeps it. */
+void
+test_avoid_cleared_when_site_leaves_group() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    for (int site = 1; site <= 3; ++site) {
+        expect("leave: site", model.add({{"name", QStringLiteral("Site %1").arg(site)},
+                                         {"freqMhz", "851"},
+                                         {"rrSid", 12},
+                                         {"rrSiteId", site},
+                                         {"groupCsvPath", path}}));
+    }
+    expect("leave: two sites avoided", model.setAvoidSite(1, true) && model.setAvoidSite(2, true));
+    expect("leave: a rename", model.update(1, {{"name", "Renamed"}}));
+    expect("leave: a rename keeps the group and the avoid",
+           model.get(1).value("rrSid").toInt() == 12 && model.get(1).value("avoidSite").toBool());
+    expect("leave: a frequency edit", model.update(1, {{"freqMhz", "852"}}));
+    expect("leave: a frequency edit takes the site out of its group and drops its avoid",
+           model.get(1).value("rrSid").toInt() == 0 && !model.get(1).value("avoidSite").toBool());
+    expect("leave: the other avoided site keeps its avoid", model.get(2).value("avoidSite").toBool());
+    expect("leave: the library file goes", model.clearCsvPath(path));
+    expect("leave: a removed library file drops the avoid of the sites it ungroups",
+           model.get(2).value("rrSid").toInt() == 0 && !model.get(2).value("avoidSite").toBool());
+    SavedSystemsModel reloaded;
+    expect("leave: the dropped avoids persist",
+           !reloaded.get(1).value("avoidSite").toBool() && !reloaded.get(2).value("avoidSite").toBool());
+}
+
+/* Rows already stored with an avoid outside a group (saved before the rule above) lose it at load, and the load saves
+ * that as it saves a UID repair; a lone RadioReference site keeps its avoid, since its "1 site" chooser lifts it. */
+void
+test_load_migrates_orphaned_avoid() {
+    const QString store = QStringLiteral("saved_systems.json");
+    const auto row = [](const char* name, int sid, int site) {
+        return QJsonObject{{"uid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+                           {"name", name},
+                           {"rrSid", sid},
+                           {"rrSiteId", site},
+                           {"avoidSite", true}};
+    };
+    expect("orphan: fixture saved",
+           json_store_save_array(store, QJsonArray{row("Orphan", 0, 0), row("No site", 12, 0), row("Lone", 12, 5)}));
+    {
+        SavedSystemsModel model;
+        expect("orphan: an ungrouped row loads unavoided", !model.get(0).value("avoidSite").toBool());
+        expect("orphan: a row with no site id loads unavoided", !model.get(1).value("avoidSite").toBool());
+        expect("orphan: a lone RadioReference site keeps its avoid", model.get(2).value("avoidSite").toBool());
+    }
+    const QJsonArray stored = json_store_load_array(store);
+    expect("orphan: the cleared avoids are saved without an edit",
+           !stored.at(0).toObject().value("avoidSite").toBool() && !stored.at(1).toObject().value("avoidSite").toBool()
+               && stored.at(2).toObject().value("avoidSite").toBool());
+
+    expect("orphan: unsaved fixture", json_store_save_array(store, QJsonArray{row("Orphan", 0, 0)}));
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const auto permissions = QFile::permissions(directory);
+    expect("orphan: data directory made read only",
+           QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
+    count_migration_warnings();
+    const int before = g_migration_warnings;
+    {
+        SavedSystemsModel model;
+        expect("orphan: an unsaved clear still clears in memory", !model.get(0).value("avoidSite").toBool());
+    }
+    expect("orphan: an unsaved clear warns once", g_migration_warnings - before == 1);
+    expect("orphan: data directory permissions restored", QFile::setPermissions(directory, permissions));
+    SavedSystemsModel model;
+    empty_systems(model);
 }
 
 void
@@ -1419,6 +1639,12 @@ main(int argc, char** argv) {
     test_key_persistence();
     test_foundation_key_type_migration();
     test_site_provenance_edits();
+    test_remove_failure_keeps_row();
+    test_touch_failure_keeps_memory();
+    test_clear_csv_failure_keeps_memory();
+    test_set_avoid_failure_reports();
+    test_avoid_cleared_when_site_leaves_group();
+    test_load_migrates_orphaned_avoid();
     test_add_with_retained_key();
     test_radio_settings();
 
