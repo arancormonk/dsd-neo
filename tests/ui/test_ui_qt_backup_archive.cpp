@@ -255,8 +255,9 @@ test_startup_clears_missing_library_paths_twice() {
         expect("systems name the files",
                systems.add({{"name", "Gone"}, {"sourceType", "usb"}, {"groupCsvPath", gone}, {"srcCsvPath", kept}})
                    && systems.add({{"name", "Outside"}, {"sourceType", "usb"}, {"groupCsvPath", outside}}));
-        expect("a list names the gone file",
-               scans.add({{"name", "Targets"}, {"targetSource", "csv"}, {"targetsCsvPath", gone}}));
+        expect("lists name the gone file",
+               scans.add({{"name", "Fallback"}, {"groupCsvPath", gone}, {"srcCsvPath", kept}})
+                   && scans.add({{"name", "Targets"}, {"targetSource", "csv"}, {"targetsCsvPath", gone}}));
     }
     expect(
         "the index names both library files",
@@ -265,6 +266,7 @@ test_startup_clears_missing_library_paths_twice() {
                                               QJsonObject{{"name", "kept.csv"}, {"path", kept}, {"type", "group"}}}));
     const auto first = [](const dsd_qt::SavedSystemsModel& systems) { return systems.get(systems.count() - 2); };
     const auto list = [](const dsd_qt::ScanListsModel& scans) { return scans.get(scans.count() - 1); };
+    const auto fallback = [](const dsd_qt::ScanListsModel& scans) { return scans.get(scans.count() - 2); };
     {
         TestHost host;
         dsd_qt::ImportedFilesModel library(&host);
@@ -272,8 +274,9 @@ test_startup_clears_missing_library_paths_twice() {
         dsd_qt::ScanListsModel scans;
         expect("launch 1: stores blocked", block_store("saved_systems.json") && block_store("scan_lists.json"));
         dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
-        expect("launch 1: the unsaved clears change nothing",
-               first(systems).value("groupCsvPath") == gone && list(scans).value("targetsCsvPath") == gone);
+        expect("launch 1: the unsaved clears change nothing", first(systems).value("groupCsvPath") == gone
+                                                                  && list(scans).value("targetsCsvPath") == gone
+                                                                  && fallback(scans).value("groupCsvPath") == gone);
         expect("launch 1: stores unblocked", unblock_store("saved_systems.json") && unblock_store("scan_lists.json"));
     }
     expect("the index no longer names the gone file",
@@ -287,13 +290,17 @@ test_startup_clears_missing_library_paths_twice() {
         expect("launch 2: the system's gone file is cleared", first(systems).value("groupCsvPath") == "");
         expect("launch 2: the list's gone file is cleared",
                list(scans).value("targetsCsvPath") == "" && list(scans).value("isDraft").toBool());
+        expect("launch 2: the gone fallback file is cleared, and the list is no draft",
+               fallback(scans).value("groupCsvPath") == "" && !fallback(scans).value("isDraft").toBool());
     }
     {
         const dsd_qt::SavedSystemsModel systems;
         const dsd_qt::ScanListsModel scans;
         expect("the clears are saved",
                first(systems).value("groupCsvPath") == "" && list(scans).value("targetsCsvPath") == "");
-        expect("a library file that exists stays named", first(systems).value("srcCsvPath") == kept);
+        expect("a library file that exists stays named",
+               first(systems).value("srcCsvPath") == kept && fallback(scans).value("srcCsvPath") == kept);
+        expect("the fallback clear is saved", fallback(scans).value("groupCsvPath") == "");
         expect("a missing file outside the library stays named",
                systems.get(systems.count() - 1).value("groupCsvPath") == outside);
     }

@@ -2216,8 +2216,9 @@ The CSV remains authoritative; its rows are not converted into manual entries.
 Select another imported target CSV in the list editor or use **Update from file**
 in the imports library to change target contents. Replacement and removal require
 an idle decoder. Failed replacement keeps the previous file usable. Removing a
-referenced target asset marks its lists as drafts; deleting a list keeps shared
-assets. A removal that cannot save those changes or delete the file says so and
+referenced target asset marks its lists as drafts; removing a list's fallback
+talkgroups or radio IDs file clears it from the list, which keeps running
+without it. Deleting a list keeps shared assets. A removal that cannot save those changes or delete the file says so and
 keeps the file in the library; remove it again to finish. Validation reports the failing row/field without displaying key values.
 
 Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies

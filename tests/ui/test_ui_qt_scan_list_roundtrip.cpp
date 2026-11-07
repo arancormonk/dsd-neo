@@ -653,6 +653,33 @@ checkImportedListsNamedApart(const QTemporaryDir& dir) {
     check(model.remove(model.count() - 1) && model.remove(model.count() - 1));
 }
 
+/* Issue #801: a list's fallback talkgroups and radio IDs name library files too. Removing such a file empties that
+ * field (the list keeps running, without it, and is no draft), names the list beforehand, and is saved. */
+static void
+checkFallbackPathsClear() {
+    ScanListsModel model;
+    const QString groups = json_store_path("imports/groups.csv");
+    const QString aliases = json_store_path("imports/aliases.csv");
+    const QVariantList entries{QVariantMap{{"kind", "freq"}, {"protocol", "p25"}, {"freqMhz", "851.0125"}}};
+    check(model.add({{"name", "Fallback"}, {"groupCsvPath", groups}, {"srcCsvPath", aliases}, {"entries", entries}}));
+    const int row = model.count() - 1;
+    check(model.listsReferencingPath(groups) == QStringList{"Fallback"}
+          && model.listsReferencingPath(aliases) == QStringList{"Fallback"});
+    check(model.listsFallingBackOnPath(groups) == QStringList{"Fallback"}
+          && model.listsTargetingPath(groups).isEmpty());
+    check(model.csvPaths().contains(groups) && model.csvPaths().contains(aliases));
+    check(model.clearCsvPath(groups));
+    check(model.get(row).value("groupCsvPath").toString().isEmpty() && model.get(row).value("srcCsvPath") == aliases
+          && !model.get(row).value("isDraft").toBool());
+    check(model.listsReferencingPath(groups).isEmpty());
+    check(model.clearCsvPath(aliases));
+    const ScanListsModel reloaded;
+    check(reloaded.get(row).value("groupCsvPath").toString().isEmpty()
+          && reloaded.get(row).value("srcCsvPath").toString().isEmpty() && !reloaded.get(row).value("isDraft").toBool()
+          && reloaded.get(row).value("entries").toList().size() == 1);
+    check(model.remove(row));
+}
+
 int
 main(int argc, char** argv) {
     QTemporaryDir dir;
@@ -829,6 +856,7 @@ main(int argc, char** argv) {
     checkMixedAnalogRoundTrip(dir);
     checkAnalogEntriesIgnoreHiddenDecryption();
     checkAnalogRateDiagnostic(dir);
+    checkFallbackPathsClear();
     QDir(dataDir).removeRecursively();
     return failures ? 1 : 0;
 }

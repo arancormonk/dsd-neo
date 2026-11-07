@@ -40,9 +40,20 @@ class ScanListsModel : public QAbstractListModel {
     Q_INVOKABLE bool add(const QVariantMap& list);
     Q_INVOKABLE bool update(int row, const QVariantMap& list);
     Q_INVOKABLE bool remove(int row);
+    /** @brief Names of the lists that name @p path in any CSV field: target CSV or a fallback file. */
     Q_INVOKABLE QStringList listsReferencingPath(const QString& path) const;
+    /** @brief Names of the lists that run from target CSV @p path; clearing it makes them drafts. */
+    Q_INVOKABLE QStringList listsTargetingPath(const QString& path) const;
+    /** @brief Names of the lists with @p path as fallback talkgroups or radio IDs; clearing just empties those. */
+    Q_INVOKABLE QStringList listsFallingBackOnPath(const QString& path) const;
+    /**
+     * @brief Blank every CSV field matching @p path, in every list. Persists first.
+     *
+     * A list that ran from @p path as its target CSV becomes a draft; a fallback file is emptied, and the list runs
+     * without it. Returns false, with every list unchanged, when the save fails, and true when nothing named @p path.
+     */
     Q_INVOKABLE bool clearCsvPath(const QString& path);
-    /** @brief Every target CSV the lists over one name, each once: what clearCsvPath() can clear. */
+    /** @brief Every CSV path the lists name (target CSVs and fallback files), each once: what clearCsvPath() clears. */
     QStringList csvPaths() const;
     Q_INVOKABLE void touch(int row);
     /**

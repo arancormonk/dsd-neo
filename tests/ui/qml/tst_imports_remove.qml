@@ -39,7 +39,7 @@ Item {
                     savedSystems.remove(i);
             }
             for (var j = scanLists.count - 1; j >= 0; j--) {
-                if (scanLists.get(j).name === "Order list")
+                if (scanLists.get(j).name === "Order list" || scanLists.get(j).name === "Fallback list")
                     scanLists.remove(j);
             }
             while (importedFiles.count > 0)
@@ -108,6 +108,30 @@ Item {
             compare(tc.screen.actionRow, -1);
             compare(importedFiles.rowForPath(path), -1);
             verify(!testContext.fileExists(path), "the file must be deleted");
+        }
+
+        // A list that uses the file for its fallback talkgroups is named before the removal, and keeps running
+        // without the file afterwards: the field empties and the list is no draft.
+        function test_remove_names_and_clears_fallback_lists() {
+            var source = testContext.writeFixtureCsv("fallback.csv", "id,mode,name\n1001,A,Dispatch\n");
+            var imported = importedFiles.importFile(source, "fallback.csv", "group");
+            verify(imported.ok, "the fixture did not import");
+            var path = imported.path;
+            verify(scanLists.add({name: "Fallback list", groupCsvPath: path}));
+            tc.screen.actionRow = importedFiles.rowForPath(path);
+            var sheet = findChild(tc.screen, "importsRemoveSheet");
+            sheet.visible = true;
+            var line = findChild(sheet, "importsRemoveFallbackLists");
+            verify(line !== null, "the remove confirmation does not name fallback lists");
+            verify(line.visible);
+            compare(line.text, "Used by scan lists for talkgroups or radio IDs: Fallback list. Removing clears it from those lists.");
+            sheet.visible = false;
+            removeFile(path);
+            compare(tc.screen.notice, "Removed");
+            var list = scanLists.get(scanLists.count - 1);
+            compare(list.name, "Fallback list");
+            compare(list.groupCsvPath, "");
+            verify(!list.isDraft);
         }
     }
 }

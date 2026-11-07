@@ -11881,7 +11881,13 @@ Qt Quick frontend (`src/ui/qt`):
 - Removing a library file (issue #801) runs in this order, and each step is safe to run again: `ImportsScreen.qml`'s
   Remove file clears the path from saved systems (`SavedSystemsModel::clearCsvPath`), then from scan lists
   (`ScanListsModel::clearCsvPath`), then calls `ImportedFilesModel::remove()`, which deletes the file (one already
-  gone counts as deleted) and its bundle before it saves the index without the row. The first step that returns false
+  gone counts as deleted) and its bundle before it saves the index without the row. File first, so a failure never
+  leaves a copy no row names: a file that will not delete keeps its row, and a row whose index save fails names a file
+  already gone, which the retry and the next load's prune finish. A scan list names library files in three fields:
+  its target CSV (cleared, the list becomes a draft) and its fallback `groupCsvPath`/`srcCsvPath` (emptied, the list
+  runs without it; an empty fallback is "none" to the starter and session args). `listsReferencingPath()` covers all
+  three; the remove sheet names target lists (`listsTargetingPath()`) and fallback lists
+  (`listsFallingBackOnPath()`) on separate lines, since removal does different things to each. The first step that returns false
   stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only when all
   three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
   (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
@@ -11889,7 +11895,7 @@ Qt Quick frontend (`src/ui/qt`):
   The library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an
   earlier launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
   (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
-  `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
+  `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   Every history change rescans the whole history (a merge can move a row to another session, so contributions are

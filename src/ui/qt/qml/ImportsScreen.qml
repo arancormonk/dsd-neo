@@ -562,7 +562,8 @@ Item {
         objectName: "importsRemoveSheet"
 
         readonly property var profilesUsingFile: visible && screen.actionRow >= 0 && typeof decryptionProfiles !== "undefined" ? decryptionProfiles.profilesReferencingPath(importedFiles.get(screen.actionRow).path) : []
-        readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsReferencingPath(importedFiles.get(screen.actionRow).path) : []
+        readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsTargetingPath(importedFiles.get(screen.actionRow).path) : []
+        readonly property var listsFallingBack: visible && screen.actionRow >= 0 ? scanLists.listsFallingBackOnPath(importedFiles.get(screen.actionRow).path) : []
         readonly property var usedBy: visible && screen.actionRow >= 0 ? savedSystems.systemsReferencingPath(importedFiles.get(screen.actionRow).path) : []
 
         ReadableText {
@@ -597,6 +598,15 @@ Item {
             width: parent.width
             visible: removeSheet.listsUsingFile.length > 0
             text: qsTr("Used by scan lists: %1. Removing makes these lists drafts until another target CSV is selected.").arg(removeSheet.listsUsingFile.join(", "))
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+        }
+        ReadableText {
+            objectName: "importsRemoveFallbackLists"
+            width: parent.width
+            visible: removeSheet.listsFallingBack.length > 0
+            text: qsTr("Used by scan lists for talkgroups or radio IDs: %1. Removing clears it from those lists.").arg(removeSheet.listsFallingBack.join(", "))
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: Theme.textSecondary
