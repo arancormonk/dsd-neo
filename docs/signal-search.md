@@ -207,6 +207,13 @@ with none; Pause and Resume keep them. A code set with `-X` in the decoder's ext
 arguments wins: every visit uses it, and the search neither tries a learned code nor
 recovers another, so only that system's Phase 2 channels decode.
 
+**Explore here** and **Save as system** carry no Phase 2 scrambling code from the
+search: not the code a visit used, and not one the session learned. The new session
+learns the code from the air again, unless its decoder arguments set one with `-X`.
+On a weak voice channel, whose code comes from its own signalling, that can wait for
+a clean FACCH or SACCH burst, so a channel that decoded in the search may stay silent
+for a while after Explore here or in the saved system.
+
 A Phase 2 channel stays unresolved, and is monitored as NFM, when the probe hears no
 Phase 2 MAC message that decodes with the right code: a voice channel whose code the
 session has not learned and whose own signalling gives none to recover in time (code
@@ -336,7 +343,8 @@ showed.
   another kind, only the settings that kind takes go with it: a detection heard
   on an RTL dongle starts on an Airspy without the dongle's PPM, bias tee and
   tuner gain, and an Airspy's own settings (its serial among them) never go to a
-  dongle. Explore here does not change where
+  dongle. A P25 Phase 2 channel's scrambling code does not go with it (see
+  [Ranges and reception](#ranges-and-reception)). Explore here does not change where
   Explore resumes from Home, even through a USB permission request. A saved
   system starts as saved (keys, decoder and trunking). A system whose site is
   avoided is refused with a message on the search screen, and nothing stops.
@@ -407,7 +415,9 @@ at manual 0 or 0.9 dB saves as manual 1 dB, not automatic, and the tuner then
 runs the nearest step it supports. An Airspy keeps its own gain settings.
 Confirmed NXDN48 and NXDN96 detections preserve their respective decoder rates.
 Unresolved identification stays explicit. The user must choose the normal Save
-action; later detections do not change the open draft.
+action; later detections do not change the open draft. A P25 Phase 2 detection's
+scrambling code is not saved; the saved system finds it on the air (see
+[Ranges and reception](#ranges-and-reception)).
 
 ## Scope and implementation
 
