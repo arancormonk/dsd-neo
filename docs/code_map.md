@@ -3988,9 +3988,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     publishes the hit as changed too, and then the code the hit carries stays (issue #802
     B1). Nor is it read while the receive policy rejects the code the decoder holds for that sync type
     (`dsd_receive_code_rejects()`, the code alone: a slot filter never applies, and a code still CHECKING passes), so
-    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). M17's CAN read at the link setup frame is carried through the stream frames after
-    it, whose sync type the LSF's call record does not answer. The received tone (issue
-    #802 B3) is read from the rx tone view on every live publication of the hit: the latest
+    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). M17's CAN read at the link setup
+    frame is carried through the stream frames after it, whose sync type the LSF's call record does not answer. The
+    received tone (issue #802 B3) is read from the rx tone view on every live publication of the hit: the latest
     lock shows at once until some lock has been seen held 1 s (`SEARCH_TONE_HELD_MS`, decode
     clock), and from then on the hit keeps the last lock so held, so a brief later lock (a
     talk-off, a 150.0/151.4 Hz neighbour read, the old channel's tone) never replaces it. A
@@ -13648,8 +13648,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   seed without proof and NXDN stand-in values stay unknown. `dsd_receive_current_status()` is the verdict
   `dsd_receive_current_allows()` reduces to yes or no, for the same current protocol, so a caller can tell REJECTED
   from CHECKING (Signal search, issue #802 B9). `dsd_receive_code_rejects()` judges a protocol's verified code alone,
-  without the slot filter, for carrier-level facts such as a site broadcast (Signal search, issue #802 B11). Shared-vocoder invocations carry their owning protocol
-  through `dsd_state::receive_context_*`, since YSF/dPMR temporarily borrow another protocol's decoder.
+  without the slot filter, for carrier-level facts such as a site broadcast (Signal search, issue #802 B11).
+  Shared-vocoder invocations carry their owning protocol through `dsd_state::receive_context_*`, since YSF/dPMR
+  temporarily borrow another protocol's decoder.
 - Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
   acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into
   a hold. Restoring a scan target preserves acquisition hints but clears its current received-code proof. The P25 and

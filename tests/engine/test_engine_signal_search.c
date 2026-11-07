@@ -1895,6 +1895,51 @@ test_refused_probe_verdict_order(dsd_opts* o, dsd_state* s, const dsd_signal_sea
     stop_refusal_session(o, s);
 }
 
+/* Rejected traffic beside traffic still being checked, nothing admitted: the probe leaves the detection when it ends
+   unheld (a check still running vetoes nothing, since NFM monitoring could not confirm the carrier either), and held it
+   keeps the NFM fallback. */
+static void
+test_refused_probe_mixed(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 52, 1, 0);
+    // Colour code 3 and slot 2 blocked.
+    block_cc3(o);
+    o->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 2;
+    start_tag_session(o, s, &one);
+    for (int held = 0; held < 2; ++held) {
+        for (int checking_first = 0; checking_first < 2; ++checking_first) {
+            probe_next(o, s);
+            const uint64_t hit = status.hit.hit_id;
+            const uint32_t frequency = status.hit.frequency_hz;
+            if (held) {
+                act(o, s, DSD_SEARCH_ACTION_HOLD);
+            }
+            // Slot 1 on a colour code not proven yet (checking) and slot 2 (rejected by the slot filter).
+            s->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+            s->dmr_color_code = 16;
+            dsd_signal_search_note_evidence_at(s, "DMR", DSD_SYNC_DMR_BS_VOICE_POS, checking_first ? 0 : 1, 0, 0, NULL);
+            dsd_signal_search_note_evidence_at(s, "DMR", DSD_SYNC_DMR_BS_VOICE_POS, checking_first ? 1 : 0, 0, 0, NULL);
+            // The colour code alone, still checking, reported with the decoder's current slot.
+            dsd_signal_search_note_evidence(s, "DMR", 0, 0, NULL);
+            assert(!status.hit.confirmed && status.identifying);
+            if (!held) {
+                run_probe_out(o, s);
+                assert_left(52, hit, frequency);
+                continue;
+            }
+            assert(status.phase == DSD_SEARCH_HELD);
+            advance(2000);
+            tick(o, s);
+            assert_fell_back(hit, frequency);
+            land(o, s);
+            assert(status.phase == DSD_SEARCH_HELD && !status.hit.ended);
+            act(o, s, DSD_SEARCH_ACTION_HOLD);
+            skip_visit(o, s);
+        }
+    }
+    stop_refusal_session(o, s);
+}
+
 /* NXDN by its RAN verdict (an unknown RAN, or a stand-in, is still being checked); a protocol with no code the receive
    policy reads (dPMR, M17, YSF, D-STAR) confirms under a filter of another protocol, as before. */
 static void
@@ -2364,6 +2409,7 @@ main(void) {
     test_visit_tag_cleared_at_search_start(o, s, &config);
     test_refused_probe_leaves(o, s, &config);
     test_refused_probe_verdict_order(o, s, &config);
+    test_refused_probe_mixed(o, s, &config);
     test_refused_probe_nxdn_and_codeless(o, s, &config);
     test_refused_probe_held(o, s, &config);
     test_refused_probe_max_visit(o, s, &config);
