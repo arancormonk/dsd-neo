@@ -459,7 +459,10 @@ Window {
         dismissedFailure = "";
         startError = message;
         revealFailure();
-        homeScreen.revealTop();
+        // revealFailure() scrolls Home to the top only on a brokered host; a
+        // refusal is revealed on the desktop too.
+        if (!decoderHost.localDeviceBrokered)
+            homeScreen.revealTop();
     }
     /**
      * Leave Signal search for another session, as one operation.
@@ -601,6 +604,10 @@ Window {
         target: uiController
         function onAutoStartRequested(kind, uid, companions) {
             var row = kind === "saved" ? savedSystems.rowForUid(uid) : kind === "scan" ? scanLists.rowForUid(uid) : -1;
+            // Deliberately silent for a target removed since it last started:
+            // nobody asked for this start (a dongle was plugged in), so a
+            // "removed" banner would only be noise. Unlike a tap, nothing is
+            // refused here.
             if (row < 0)
                 return;
             // B2: through the saved-system gate, so an avoided site is refused
@@ -1362,6 +1369,10 @@ Window {
     // and so is a draft, before any start is tried: Retry asks again and Edit
     // source opens it, so it can be saved and started.
     function startScanByUid(uid, companionUids, holdTarget) {
+        // The saved gate's transition guard, before refuseStart() can drop
+        // anything waiting.
+        if (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4)
+            return;
         var row = scanLists.rowForUid(uid);
         if (row < 0) {
             mainRoot.refuseStart(qsTr("This source was removed. Choose another source."), null);

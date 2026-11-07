@@ -74,6 +74,7 @@ Item {
             app.attemptedSource = null;
             app.dismissedFailure = "";
             testContext.setScanTestUsb(false, false);
+            testContext.setLocalDeviceRecord("usb", false, "");
             testContext.setScanTestAcceptStart(true);
             prefs.onboardingDone = tc.saved.onboardingDone;
             prefs.autoStartOnAttach = tc.saved.autoStartOnAttach;
@@ -140,9 +141,14 @@ Item {
 
         // B6: a saved start that waits on USB access starts what is saved when access arrives, by uid.
         function test_usb_grant_revalidates_saved_start_data() {
-            return [{tag: "removed"}, {tag: "avoided"}, {tag: "reindexed"}, {tag: "receiver edited"}];
+            return [{tag: "removed"}, {tag: "avoided"}, {tag: "reindexed"}, {tag: "receiver edited"},
+                {tag: "Airspy serial edited"}];
         }
         function test_usb_grant_revalidates_saved_start(data) {
+            if (data.tag === "Airspy serial edited") {
+                grantAfterSerialEdit();
+                return;
+            }
             var earlier = addSystem("Earlier", "usb");
             var sites = addGroup("usb");
             var north = sites[0];
@@ -172,6 +178,23 @@ Item {
             compare(sessionUid(), north);
             compare(app.sessionRow, savedSystems.rowForUid(north), "the session names the row the system is at now");
             compare(app.sessionSystem.sourceType, data.tag === "receiver edited" ? "rtltcp" : "usb");
+        }
+
+        // An Airspy start waits on access to its serial. The serial edited meanwhile is the one the grant asks for:
+        // the fixture host reports no serial open, so the edited start waits again, for the new serial.
+        function grantAfterSerialEdit() {
+            var uid = addSystem("Airspy site", "airspy", {airspy: {serial: "AAAA1111"}});
+            testContext.setLocalDeviceRecord("airspy", false, "");
+            testContext.setScanTestUsb(true, false);
+            app.startSystem(savedSystems.rowForUid(uid));
+            verify(app.awaitingUsbAccess);
+            compare(testContext.lastDeviceAccess().serial, "AAAA1111");
+            verify(savedSystems.update(savedSystems.rowForUid(uid), {airspy: {serial: "BBBB2222"}}));
+            testContext.setScanTestUsb(true, true);
+            compare(testContext.lastDeviceAccess().serial, "BBBB2222", "the grant asks for the serial saved now");
+            verify(app.awaitingUsbAccess);
+            compare(app.pendingStart.airspy.serial, "BBBB2222");
+            compare(app.attemptedSource.system.airspy.serial, "BBBB2222");
         }
 
         // [r2-3] A refused start replaces a start still waiting on USB access: a late grant starts nothing.
@@ -312,6 +335,25 @@ Item {
                 verify(!app.exploreSetupOpen);
                 compare(app.attemptedSource, null, "nothing was attempted");
             }
+        }
+
+        // The scan gate has the saved gate's transition guard: while a session runs or changes state, neither a list
+        // nor a refusal goes through, and nothing waiting is dropped.
+        function test_scan_gate_waits_out_a_session_data() {
+            return [{tag: "starting", phase: 1}, {tag: "running", phase: 2}, {tag: "stopping", phase: 3}];
+        }
+        function test_scan_gate_waits_out_a_session(data) {
+            var ready = addList("Ready");
+            var draft = addList("Draft", {isDraft: true});
+            testContext.setLifecyclePhase(data.phase);
+            app.pendingRestart = {kind: "scan", uid: ready};
+            for (var uid of [ready, draft, "gone"])
+                app.startScanByUid(uid, [], "");
+            compare(decoderHost.sessionState, data.phase);
+            compare(app.startError, "", "nothing was refused");
+            compare(app.attemptedSource, null, "nothing was attempted");
+            verify(app.pendingRestart !== null, "the waiting restart is kept");
+            app.pendingRestart = null;
         }
 
         // D4: a pinned grouped system plays its one playable site, else opens the site chooser.

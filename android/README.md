@@ -1223,8 +1223,10 @@ app must have completed onboarding, be Idle (Failed does not qualify), and have
 no overlay or USB permission request open; a permission request that expires
 unanswered lifts the block. A suppressed attachment is consumed;
 closing a sheet or enabling the preference does not retry it. Existing start and
-permission failures use the normal banner. Last-started identity changes only
-on confirmed session initialization, never when the service queues a start.
+permission failures use the normal banner, and a site avoided in its site list
+is refused there with the reason instead of being started. Last-started
+identity changes only on confirmed session initialization, never when the
+service queues a start.
 
 Activity cold-start/new intents and receiver broadcasts share one dedupe tracker.
 It validates deviceName and VID/PID against the current USB device list, retains

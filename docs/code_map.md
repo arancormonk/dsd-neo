@@ -10762,10 +10762,14 @@ Qt Quick frontend (`src/ui/qt`):
     resolved at that moment: the transition guard first (refused unless Idle or Failed, before anything is
     cancelled), then `savedStartRefusal()` ("removed", or the avoided-site text), then `startWithMap()` on the row the
     uid is at now. `startSystem(row)` only names the row's uid, so a missing row is refused as removed, not ignored.
+    Decided limit: auto-start stays silent for a target removed since it last started (an unattended plug-in, so a
+    "removed" banner would be noise; `onAutoStartRequested` returns before the gate), and refuses only an existing
+    avoided site.
     A USB grant re-enters it by the waiting start's uid instead of running the map captured at the tap, so a system
     removed, avoided, moved to another row or given another receiver during the permission dialog is refused or
-    starts as saved (B6); a scan list's grant goes through `startScanByUid()`, which refuses a removed list and a
-    draft (`scanListStarter.draftRefusal`, the starter's own text) before any start or USB request. Every refusal is
+    starts as saved (B6); a scan list's grant goes through `startScanByUid()`, which has the same transition guard and
+    refuses a removed list and a draft (`scanListStarter.draftRefusal`, the starter's own text) before any start or
+    USB request. Every refusal is
     `refuseStart(message, attempt)`: it drops any waiting start (`dropPendingStarts()`: the pending restart and all
     `pendingStart*` state), sets `attemptedSource` to `attempt` (`{kind: "saved"|"scan", uid, system}`, null when
     the target is gone) so Retry asks again and Edit source opens that system or list, clears `dismissedFailure`,
