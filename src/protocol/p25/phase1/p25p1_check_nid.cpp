@@ -172,6 +172,18 @@ struct SoftNidCandidate {
 
 } // namespace
 
+/* Keeps @p candidate as the best one's word, with the bits it differs from @p scoring_code in (at most three). */
+static void
+soft_nid_record_word(const char* scoring_code, const char* candidate, int changes, SoftNidCandidate* best) {
+    best->changes = 0;
+    DSD_MEMCPY(best->word, candidate, 63);
+    for (int i = 0; i < 63 && best->changes < changes && best->changes < 3; i++) {
+        if ((scoring_code[i] != 0) != (candidate[i] != 0)) {
+            best->flipped[best->changes++] = i;
+        }
+    }
+}
+
 static void
 soft_nid_consider_candidate(const char* scoring_code, const char* candidate, const uint8_t* reliab,
                             unsigned char parity, uint8_t parity_reliab, int nac_borrowed, SoftNidCandidate* best) {
@@ -196,13 +208,7 @@ soft_nid_consider_candidate(const char* scoring_code, const char* candidate, con
         best->found = 1;
         best->decoded = decoded;
         best->score = score;
-        best->changes = 0;
-        DSD_MEMCPY(best->word, candidate, 63);
-        for (int i = 0; i < 63 && best->changes < changes && best->changes < 3; i++) {
-            if ((scoring_code[i] != 0) != (candidate[i] != 0)) {
-                best->flipped[best->changes++] = i;
-            }
-        }
+        soft_nid_record_word(scoring_code, candidate, changes, best);
     }
 }
 
@@ -338,25 +344,34 @@ decode_nid_hard(const char* bch_code, int observed_nac, unsigned char parity) {
    flipped and the ones the BCH decode corrected after it, less any flip the BCH decode undid. The word without such a
    flip reads to the same NAC and DUID with one BCH correction fewer, which no other flip does (the code's distance is
    23). The candidate's own decoded.error_count, which ranks candidates, stays the BCH count. */
+/* Whether the word without the search's flip @p i reads to the candidate's NAC and DUID with one BCH correction fewer.
+   A failed decode leaves its output unwritten, so nothing of it is read. */
+static bool
+soft_nid_flip_undone(const SoftNidCandidate& c, int i) {
+    char unflipped[63];
+    DSD_MEMCPY(unflipped, c.word, 63);
+    unflipped[c.flipped[i]] ^= 1;
+    char info[16];
+    const BCH_63_16_Result bch = p25p1_bch_instance().decode_with_result(unflipped, info);
+    if (!bch.success || bch.error_count != c.decoded.error_count - 1) {
+        return false;
+    }
+    int nac = 0;
+    int duid = 0;
+    for (int b = 0; b < 12; b++) {
+        nac = (nac << 1) | (info[b] != 0 ? 1 : 0);
+    }
+    for (int b = 12; b < 16; b++) {
+        duid = (duid << 1) | (info[b] != 0 ? 1 : 0);
+    }
+    return nac == c.decoded.nac && duid == (int)c.decoded.duid;
+}
+
 static int
 soft_nid_corrections(const SoftNidCandidate& c) {
     int corrections = c.decoded.error_count + c.changes;
     for (int i = 0; i < c.changes; i++) {
-        char unflipped[63];
-        DSD_MEMCPY(unflipped, c.word, 63);
-        unflipped[c.flipped[i]] ^= 1;
-        char info[16];
-        const BCH_63_16_Result bch = p25p1_bch_instance().decode_with_result(unflipped, info);
-        int nac = 0;
-        int duid = 0;
-        for (int b = 0; b < 12; b++) {
-            nac = (nac << 1) | (info[b] != 0 ? 1 : 0);
-        }
-        for (int b = 12; b < 16; b++) {
-            duid = (duid << 1) | (info[b] != 0 ? 1 : 0);
-        }
-        if (bch.success && bch.error_count == c.decoded.error_count - 1 && nac == c.decoded.nac
-            && duid == (int)c.decoded.duid) {
+        if (soft_nid_flip_undone(c, i)) {
             corrections -= 2;
         }
     }
