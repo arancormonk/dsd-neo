@@ -175,7 +175,8 @@ p25p1_apply_nac_update(dsd_state* state, int new_nac) {
     /* The seed's NAC follows a NID that names a new NAC, and comes back from the next NID once cleared by hand on this
        carrier (issue #804). A repeat of the NAC state->nac holds leaves any other seed NAC alone: on a system whose
        Phase 2 colour code differs from its Phase 1 control channel's NAC, a network status that passed its CRC set it,
-       and the control channel's NIDs must not undo that. */
+       and repeats of the control channel's NAC keep it. A carrier boundary, a trunked voice channel tune included,
+       zeroes state->nac, so the first NID after one still rewrites a seed NAC that differs. */
     if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac
         && (state->p2_cc == 0ULL || new_nac != state->nac)) {
         state->p2_cc = (unsigned long long)new_nac;

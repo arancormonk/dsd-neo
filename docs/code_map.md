@@ -8744,16 +8744,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   reset for it. A valid Phase 1 NID (BCH-accepted, not 0x000 or 0xFFF) rewrites a `p2_cc` that is not hand-set and
   differs when `p2_cc` is 0, so a seed NAC cleared by hand on the carrier comes back, or when its NAC differs from
   `state->nac` (a new carrier or NAC); a repeat of the NAC `state->nac` holds leaves another `p2_cc` alone, so on a
-  system whose Phase 2 colour code differs from its Phase 1 control channel's NAC the control channel's NIDs do not undo
-  the colour code a CRC-passed network status set (`p25p1_apply_nac_update()`); a NID split by a carrier boundary writes
-  no NAC at all, and neither does a NID that decoded only once the observed NAC (a hand-set seed's, `state->nac`, then
-  the seed's) stood in for its received NAC field (`p25p1_nid_result::nac_borrowed`, set by the hard and the soft retry
-  unless the soft search on the received word alone reaches the same NAC and DUID, which is then the decode): its NAC is
-  the decoder's own, which a carrier boundary may have kept from another carrier, so only its DUID counts. The same NID
-  records the NAC of the frame being decoded (`p25_frame_nac` with `p25_frame_nac_valid`), which a network status in
-  that frame is paired with: invalid from every P25p1 sync until its NID decodes, after a NID that failed, was cut or
-  was split by a carrier boundary, at every carrier boundary (`dsd_engine_forget_carrier_code_values()`) and at a trunk
-  scan target switch.
+  system whose Phase 2 colour code differs from its Phase 1 control channel's NAC repeats of the control channel's NAC
+  keep the colour code a CRC-passed network status set, while a carrier boundary (a trunked voice channel tune included)
+  zeroes `state->nac`, so the first NID after one still rewrites a `p2_cc` that differs (`p25p1_apply_nac_update()`); a
+  NID split by a carrier boundary writes no NAC at all, and neither does a NID that decoded only once the observed NAC
+  (a hand-set seed's, `state->nac`, then the seed's) stood in for its received NAC field
+  (`p25p1_nid_result::nac_borrowed`, set by the hard and the soft retry unless the soft search on the received word
+  alone reaches the same NAC and DUID, which is then the decode): its NAC is the decoder's own, which a carrier boundary
+  may have kept from another carrier, so only its DUID counts. The same NID records the NAC of the frame being decoded
+  (`p25_frame_nac` with `p25_frame_nac_valid`), which a network status in that frame is paired with: invalid from every
+  P25p1 sync until its NID decodes, after a NID that failed, was cut or was split by a carrier boundary, at every
+  carrier boundary (`dsd_engine_forget_carrier_code_values()`) and at a trunk scan target switch.
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
   with its confidence lock, the RAN with its stand-in mark, `p2_cc` with its proof, and the conventional grant pair.
   What the decoders gathered on the carrier is in no snapshot: a target switch (`trunk_scan_switch_to()`) forgets it

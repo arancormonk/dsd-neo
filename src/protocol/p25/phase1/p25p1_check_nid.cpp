@@ -340,10 +340,6 @@ decode_nid_hard(const char* bch_code, int observed_nac, unsigned char parity) {
     return retry;
 }
 
-/* The bits a soft candidate's decode corrected in the word it was searched from (issue #804): the ones the search
-   flipped and the ones the BCH decode corrected after it, less any flip the BCH decode undid. The word without such a
-   flip reads to the same NAC and DUID with one BCH correction fewer, which no other flip does (the code's distance is
-   23). The candidate's own decoded.error_count, which ranks candidates, stays the BCH count. */
 /* Whether the word without the search's flip @p i reads to the candidate's NAC and DUID with one BCH correction fewer.
    A failed decode leaves its output unwritten, so nothing of it is read. */
 static bool
@@ -367,6 +363,10 @@ soft_nid_flip_undone(const SoftNidCandidate& c, int i) {
     return nac == c.decoded.nac && duid == (int)c.decoded.duid;
 }
 
+/* The bits a soft candidate's decode corrected in the word it was searched from (issue #804): the ones the search
+   flipped and the ones the BCH decode corrected after it, less any flip the BCH decode undid. The word without such a
+   flip reads to the same NAC and DUID with one BCH correction fewer, which no other flip does (the code's distance is
+   23). The candidate's own decoded.error_count, which ranks candidates, stays the BCH count. */
 static int
 soft_nid_corrections(const SoftNidCandidate& c) {
     int corrections = c.decoded.error_count + c.changes;
