@@ -496,6 +496,7 @@ frame_sync_seed_p25_cqpsk_level_windows(const dsd_opts* opts, dsd_state* state) 
 }
 
 static int frame_sync_p25p1_chain_step_begin(const dsd_opts* opts, dsd_state* state, int* taken);
+static void frame_sync_sample_search_order(const dsd_opts* opts, dsd_state* state);
 static void frame_sync_p25p1_chain_step_end(int taken);
 static void frame_sync_p25p1_mod_compare_abort(const dsd_opts* opts, dsd_state* state, int restore_learned,
                                                int restore_chain);
@@ -550,6 +551,9 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     /* Every caller is a boundary a received tone must not survive: a scan row or target
        change, a decode-mode change, a scope resume (issue #522). */
     dsd_analog_rx_reset(state);
+    /* A Signal search visit's tune is one of them: whether its probe identifies an Auto detection decides the order the
+       hunt tries the profiles in from here (issue #804). */
+    frame_sync_sample_search_order(opts, state);
 }
 
 #ifdef USE_RADIO
@@ -3861,6 +3865,36 @@ frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
     return current;
 }
 
+int
+frame_sync_sps_hunt_search_next_index(const dsd_opts* opts, int current) {
+    static const int order[] = {
+        DSD_FRAME_SYNC_SPS_PROFILE_4800_4, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4,
+        DSD_FRAME_SYNC_SPS_PROFILE_9600_2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, DSD_FRAME_SYNC_SPS_PROFILE_18000_4,
+    };
+    const int count = (int)(sizeof(order) / sizeof(order[0]));
+    int at = -1;
+    for (int i = 0; i < count; i++) {
+        if (order[i] == current) {
+            at = i;
+        }
+    }
+    for (int step = 1; step <= count; step++) {
+        const int idx = order[(at + step + count) % count];
+        if (frame_sync_sps_profile_has_candidate(opts, idx)) {
+            return idx;
+        }
+    }
+    return -1;
+}
+
+/* Whether a Signal search probe identifies an Auto detection, kept for the hunt's step and dwell to read
+   (dsd_state::sps_hunt_search_order): asked here, where the hunt changes profile or resets its acquisition, never per
+   symbol. */
+static void
+frame_sync_sample_search_order(const dsd_opts* opts, dsd_state* state) {
+    state->sps_hunt_search_order = dsd_frame_sync_hook_signal_search_probe(opts, state) ? 1U : 0U;
+}
+
 static int
 frame_sync_sps_hunt_next_index_matching_timing(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
@@ -4022,6 +4056,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 
     if (profile_changed) {
         frame_sync_apply_sps_profile_timing(opts, state, profile);
+        frame_sync_sample_search_order(opts, state);
     }
 
 #ifdef USE_RADIO
@@ -4676,6 +4711,14 @@ frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* s
  * ends. */
 static int
 frame_sync_sps_hunt_unlocked_next_index(const dsd_opts* opts, const dsd_state* state) {
+    /* A Signal search probe identifying an Auto detection steps in the search order (issue #804); its answer was kept
+       when this profile was adopted, and evidence clears it. */
+    if (state->sps_hunt_search_order) {
+        const int search_idx = frame_sync_sps_hunt_search_next_index(opts, state->sps_hunt_idx);
+        if (search_idx >= 0) {
+            return search_idx;
+        }
+    }
     if (dsd_frame_sync_hook_p25_probe_in_flight(opts, state)) {
         const int p25_idx = frame_sync_sps_hunt_p25_probe_next_index(opts, state->sps_hunt_idx);
         if (p25_idx >= 0) {

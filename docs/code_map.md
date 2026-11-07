@@ -70,6 +70,12 @@ Generated (do not edit/commit):
     sym/s at `dsd_scan_mode_symbol_timing_rate_hz()`, `rf_mod` 0) whatever the session's hunt held or learned; a
     locked baseline keeps its whole tuple (`-mq` its CQPSK, `-m2` its 6000/4 P25 Phase 2 pin), and Stop restores the
     session's own (issue #804, `ENGINE_SIGNAL_SEARCH`).
+    The frame sync's `signal_search_probe` hook answers 1 while a visit to an Auto range probes
+    (`dsd_engine_signal_search_probe()`: `visit`, `probing`, not stopping, the hit not ended, `digital == 1`), so a
+    visit's tune, whose acquisition reset samples the answer, starts the hunt in the search order; admitted evidence
+    clears `probing` and also the hunt's kept `sps_hunt_search_order`, so a listening visit gets the full dwell at once
+    (`test_probe_hook_answer`). A new range probes for 3 s (`dsd_signal_search_range_default()`), the measured time
+    for Auto to reach P25 Phase 2 and recover and confirm its code (`DECODE_IQ_SEARCH_SCHEDULE_*`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A live strength that no
@@ -3485,6 +3491,11 @@ depending directly on protocol headers. The runtime provides a small hook table 
 timers are due (issue #703); the engine's answer reads the state machines under the P25 SM tick guard.
 `p25_probe_in_flight` tells the SPS hunt that a P25-driven control-channel probe is in flight, so it steps only between
 the P25 profiles (see the startup control-channel hunt below); with nothing installed there is no probe.
+`signal_search_probe` (issue #804) tells it that a Signal search probe is identifying an Auto detection
+(`dsd_engine_signal_search_probe()`), so the unlocked hunt steps in the search order and spends the search dwell on
+6000/4 (the DSP section's SPS hunt entry); the hunt keeps the answer in `dsd_state::sps_hunt_search_order`.
+`dsd_frame_sync_hooks_get()` copies the installed table out, so a host that replaces one slot keeps the others
+(`tests/engine/search_schedule_replay.c`).
 `analog_call_block` hands the engine's NFM call every processed conventional monitor block as a `dsd_analog_call_block`
 descriptor (issues #756, #668; see `dsd_symbol.c` in the DSP section), borrowed for the synchronous call.
 
@@ -6231,6 +6242,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
   `_AUTO` twin, `DECODE_IQ_NXDN96_WEAK`, `DECODE_IQ_NXDN96_WEAK_0DB`, `DECODE_IQ_NXDN96`.
+- Signal search probe order (issue #804, `dsd_frame_sync.c`, `frame_sync_policy.c`). While
+  `dsd_state::sps_hunt_search_order` is set the unlocked hunt steps 4800/4 -> 6000/4 -> 2400/4 -> 9600/2 -> 4800/2
+  (-> 18000/4, which no search enables), skipping profiles without a candidate (`frame_sync_sps_hunt_search_next_index()`,
+  asked before the P25 probe order), and `dsd_frame_sync_sps_hunt_dwell_passes()` gives 6000/4
+  `DSD_FRAME_SYNC_SEARCH_6000_4_PASSES` (1: a P25 Phase 2 carrier holds the profile from its first sync), every other
+  profile its usual three. A `-m` lock keeps its equal-timing walk and dwell. The flag is sampled from
+  `dsd_frame_sync_hook_signal_search_probe()` only where the hunt adopts a new profile
+  (`frame_sync_apply_sps_hunt_profile()`) or resets its acquisition (`dsd_frame_sync_reset_acquisition()`), never per
+  symbol; the step and dwell read the flag. The 2400/4 proven hold still covers the first 4800/4 dwell, since the search
+  order crosses fewer profiles on its way back. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_search_order_each_flag_subset`, `test_search_order_off_is_todays_order`, `test_search_dwell_6000`,
+  `test_order_flag_cleared_on_evidence`), `FRAME_SYNC_POLICY`, `DECODE_IQ_SEARCH_SCHEDULE_*` (the whole chain from a
+  4800/4 C4FM start, landing 0, 350 and 700 ms into each capture, `tests/engine/search_schedule_replay.c`).
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a P25p1
   signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by

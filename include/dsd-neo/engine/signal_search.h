@@ -34,6 +34,10 @@ void dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, cons
 int dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state);
 int dsd_engine_signal_search_active(const dsd_state* state);
 int dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);
+/** Runtime frame-sync signal_search_probe hook (issue #804): 1 while a visit to a range with Auto identification is
+ * probing (no protocol evidence yet, the probe time running, the detection not ended); 0 for a typed or analog range,
+ * the probe's analog fallback, a listening or ended visit, a span tune, a paused or stopped search. */
+int dsd_engine_signal_search_probe(const dsd_opts* opts, const dsd_state* state);
 void dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state);
 /** Puts the session's own P25 site back (issue #804) when the decoder session ended during a visit: the search's
  * shutdown left the visit's code and tables for the session's final call snapshots. The engine's teardown calls it

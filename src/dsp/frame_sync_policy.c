@@ -121,6 +121,12 @@ dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* stat
     if (!opts || !state) {
         return 3;
     }
+    /* A Signal search probe (issue #804) runs with trunking off, on the unlocked walk alone: a -m lock keeps its own
+     * equal-timing walk and its dwell. */
+    if (state->sps_hunt_search_order && !opts->mod_cli_lock
+        && state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
+        return DSD_FRAME_SYNC_SEARCH_6000_4_PASSES;
+    }
     if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 0 && (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1)) {
         if (frame_sync_trunk_scan_p25p1_trial(opts, state)) {
             /* C4FM and CQPSK each get 5400 symbols (1125 ms); Phase 2 then

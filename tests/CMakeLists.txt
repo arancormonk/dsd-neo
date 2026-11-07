@@ -17949,6 +17949,50 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_FP_MODE
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
     )
+    # How long a Signal search probe takes to identify a carrier (issue #804): the real chain on a replay with the
+    # search's probe forced, from an Auto visit's 4800/4 start, landing 0, 350 and 700 ms into the capture (a scratch
+    # copy that runs on cyclically from there), each within the default three-second probe. P25 Phase 2 (profile 3)
+    # recovers its scrambling code from the SACCHs and confirms 1.8-2.1 s in, NXDN48 joined mid-call 1.7-2.3 s in; the
+    # ordinary rotation reaches neither the first in time: tests/engine/search_schedule_replay.c.
+    add_executable(
+        dsd-neo_test_search_schedule_replay
+        engine/search_schedule_replay.c
+    )
+    target_include_directories(
+        dsd-neo_test_search_schedule_replay
+        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_search_schedule_replay
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+    )
+    function(dsd_neo_add_search_schedule_test name fixture protocol profile)
+        foreach(_offset 0 350 700)
+            add_test(
+                NAME DECODE_IQ_SEARCH_SCHEDULE_${name}_${_offset}
+                COMMAND
+                    dsd-neo_test_search_schedule_replay
+                    "${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json" ${_offset}
+                    3000 --expect ${protocol} --expect-profile ${profile} --
+                    ${ARGN}
+            )
+            set_tests_properties(
+                DECODE_IQ_SEARCH_SCHEDULE_${name}_${_offset}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endfunction()
+    dsd_neo_add_search_schedule_test(P25P1_C4FM_CC p25p1_c4fm_cc P25 0 -fa)
+    dsd_neo_add_search_schedule_test(P25P2_CC p25p2_cc P25 3 -fa)
+    dsd_neo_add_search_schedule_test(DMR_VOICE dmr_voice DMR 0 -fa)
+    dsd_neo_add_search_schedule_test(NXDN96 nxdn96 NXDN96 0 -fa)
+    dsd_neo_add_search_schedule_test(NXDN48 nxdn48 NXDN48 1 -fa)
+    dsd_neo_add_search_schedule_test(DPMR_SYNTH dpmr_synth dPMR 1 -fa)
+    dsd_neo_add_search_schedule_test(YSF ysf YSF 0 -fa)
+    dsd_neo_add_search_schedule_test(M17 m17 M17 0 -fa)
+    # A -mq lock (Settings > Extra decoder arguments) keeps CQPSK on 4800/4; the unlocked hunt reads this capture too.
+    dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC_LOCKED p25p1_cqpsk_cc P25 0 -fa -mq)
+    dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC p25p1_cqpsk_cc P25 0 -fa)
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")

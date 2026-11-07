@@ -28,6 +28,21 @@ int frame_sync_trunk_scan_p25p1_trial(const dsd_opts* opts, const dsd_state* sta
  * profile it returns to the first of them. -1 when the options enable neither P25 phase: the ordinary rotation runs. */
 int frame_sync_sps_hunt_p25_probe_next_index(const dsd_opts* opts, int current);
 
+/** The unlocked SPS hunt's next profile from @p current while a Signal search probe identifies an Auto detection
+ * (dsd_state::sps_hunt_search_order, issue #804): 4800/4 -> 6000/4 -> 2400/4 -> 9600/2 -> 4800/2 (-> 18000/4, which no
+ * search enables), skipping profiles the options give no candidate, and back to the first. P25 Phase 2 then comes right
+ * after the 4800/4 protocols instead of fourth. @p current itself when it is the only candidate; -1 when no profile
+ * has one: the ordinary rotation runs. */
+int frame_sync_sps_hunt_search_next_index(const dsd_opts* opts, int current);
+
+/** Dwell passes on 6000/4 while a Signal search probe identifies an Auto detection (issue #804), 300 ms: a P25 Phase 2
+ * carrier keeps the profile for as long as its bursts keep coming (each frame read is refunded to the dwell), so the
+ * pass only has to see the first one.
+ * Chosen by replaying the I/Q fixtures and real Phase 2 voice through the search order
+ * (tests/engine/search_schedule_replay.c): two passes identified nothing sooner and put 2400/4 300 ms later, and a
+ * shorter 4800/4 dwell lost P25 Phase 1 voice whose first frame comes late. */
+#define DSD_FRAME_SYNC_SEARCH_6000_4_PASSES 1
+
 /** Run the P25p1 chain comparison (dsd_p25p1_mod_compare) on what the last frame validated: start one on an
  * acquisition's first NID-decoded frame on 4800/4, add up what validated frames read in each chain's pass, try the
  * other chain only when the incumbent let a frame go by unread, and keep the chain that read more.

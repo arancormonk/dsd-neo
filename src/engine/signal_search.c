@@ -695,6 +695,10 @@ dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protoco
     }
     c->activity = dsd_decode_now_mono_ms();
     c->probing = 0;
+    /* The probe is over: the hunt goes back to its ordinary order and dwell now, not at its next step, so a carrier
+       that just confirmed keeps its profile for the full dwell (issue #804). The decoder's state is never const; the
+       evidence hook takes it so because protocols report from their read paths. */
+    ((dsd_state*)state)->sps_hunt_search_order = 0U;
     c->status.hit.confirmed = 1;
     c->status.hit.unresolved = 0;
     search_identified_protocol(c, state, protocol);
@@ -996,6 +1000,14 @@ search_visit_expired(const search_coord* c, uint64_t now) {
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
     return (r->max_visit_ms && now - c->acquired >= (uint64_t)r->max_visit_ms)
            || (!c->probing && now - c->activity >= SEARCH_QUIET_MS);
+}
+
+int
+dsd_engine_signal_search_probe(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    const search_coord* c = state ? search_get(state) : NULL;
+    return c && c->visit && c->probing && !c->stopping && !c->status.hit.ended && c->status.phase != DSD_SEARCH_STOPPED
+           && c->config.ranges[c->status.range_index].digital == 1;
 }
 
 int

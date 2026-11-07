@@ -328,11 +328,14 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     state->carrier_seq++;
 }
 
+/* What the engine's signal_search_probe answer was at the latest acquisition reset: what the frame sync keeps for its
+   hunt order (issue #804). */
+static int reset_probe_answer = -1;
+
 void
 dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int clear) {
-    (void)opts;
-    (void)state;
     (void)clear;
+    reset_probe_answer = dsd_engine_signal_search_probe(opts, state);
 }
 
 static void
@@ -1424,7 +1427,7 @@ test_visit_tag_probe_fallback_same_hit(dsd_opts* o, dsd_state* s, const dsd_sign
     visit_strongest(o, s);
     const uint64_t hit = status.hit.hit_id;
     assert(status.identifying && tag_is(65, hit));
-    advance(2000);
+    advance(3000);
     tick(o, s);
     assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id == hit && !status.hit.ended);
     assert(boundary_closed_visit(65, hit) && tag_clear());
@@ -1956,6 +1959,7 @@ departed_mid_recovery(const dsd_state* s) {
 static void
 test_departure_mid_recovery_drops_pending(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     dsd_signal_search_config one = tag_config(config, 88, 1, 2500);
+    one.ranges[0].probe_ms = 2000; // the departures below are timed against a two-second probe
     session_site(s, CODE_A, 0, 0);
     start_tag_session(o, s, &one);
     visit_strongest(o, s);
@@ -2104,7 +2108,7 @@ test_code_list_only_while_receiving(dsd_opts* o, dsd_state* s, const dsd_signal_
     visit_strongest(o, s);
     assert(codes_now(s, out, 4) == 1 && out[0] == test_code(3));
     /* The probe's analog fallback listens to the channel as NFM: no code is tried there. */
-    advance(2000);
+    advance(3000);
     tick(o, s);
     land(o, s);
     assert(status.phase == DSD_SEARCH_LISTENING && codes_now(s, out, 4) == 0);
@@ -2123,6 +2127,74 @@ test_code_list_only_while_receiving(dsd_opts* o, dsd_state* s, const dsd_signal_
 }
 
 /* Issue #804: the start profile (F5), the session's P25 site (F6) and its code list. */
+/* The frame sync's signal_search_probe answer (issue #804): 1 only while a visit to an Auto range probes, from the
+   acquisition reset its tune runs (which the hunt keeps) to the evidence that ends the probe (which clears what the hunt
+   kept); 0 for a span tune, a typed or analog range, the probe's analog fallback, a listening, held-off, ended, paused
+   or stopped visit. */
+static void
+test_probe_hook_answer(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    assert(dsd_engine_signal_search_probe(o, s) == 0); // no search
+    dsd_signal_search_config one = tag_config(config, 90, 1, 0);
+    start_tag_session(o, s, &one);
+    assert(status.phase == DSD_SEARCH_TUNING && dsd_engine_signal_search_probe(o, s) == 0); // a span tune
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING && dsd_engine_signal_search_probe(o, s) == 0);
+    ready = 1;
+    tick(o, s);
+    /* The visit's tune: its acquisition reset already sees the probe, so the hunt starts the visit in the search order. */
+    assert(status.phase == DSD_SEARCH_TUNING && reset_probe_answer == 1 && dsd_engine_signal_search_probe(o, s) == 1);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && dsd_engine_signal_search_probe(o, s) == 1);
+    /* Evidence the search refuses ends nothing. */
+    s->sps_hunt_search_order = 1;
+    s->input_interrupted = 1;
+    dsd_signal_search_note_evidence(s, "DMR", 1, 2, NULL);
+    assert(s->sps_hunt_search_order == 1 && dsd_engine_signal_search_probe(o, s) == 1);
+    s->input_interrupted = 0;
+    /* Admitted evidence ends the probe, and the order the hunt kept with it. */
+    dsd_signal_search_note_evidence(s, "DMR", 1, 2, NULL);
+    assert(status.phase == DSD_SEARCH_LISTENING && s->sps_hunt_search_order == 0);
+    assert(dsd_engine_signal_search_probe(o, s) == 0);
+    /* Left at Skip: the span tune after it answers 0. */
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(status.hit.ended && reset_probe_answer == 0 && dsd_engine_signal_search_probe(o, s) == 0);
+    /* A probe that finds nothing: its analog fallback answers 0 from that tune's reset. */
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && dsd_engine_signal_search_probe(o, s) == 1);
+    advance(3000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended);
+    assert(reset_probe_answer == 0 && dsd_engine_signal_search_probe(o, s) == 0);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && dsd_engine_signal_search_probe(o, s) == 0);
+    /* Paused mid-probe: the pause's reset answers 0. */
+    next_visit(o, s);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && dsd_engine_signal_search_probe(o, s) == 1);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && reset_probe_answer == 0 && dsd_engine_signal_search_probe(o, s) == 0);
+    stop_tag_session(o, s);
+    assert(reset_probe_answer == 0 && dsd_engine_signal_search_probe(o, s) == 0);
+
+    /* Stopped mid-probe: no answer of 1 from the Stop on. */
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(dsd_engine_signal_search_probe(o, s) == 1);
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(dsd_engine_signal_search_probe(o, s) == 0);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && dsd_engine_signal_search_probe(o, s) == 0);
+
+    /* A typed range (P25) and an analog range never probe in the search order. */
+    for (int digital = 0; digital <= 2; digital += 2) {
+        one = tag_config(config, 91 + (uint64_t)digital, digital, 0);
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        assert(status.hit.hit_id != 0 && !status.hit.ended);
+        assert(reset_probe_answer == 0 && dsd_engine_signal_search_probe(o, s) == 0);
+        stop_tag_session(o, s);
+    }
+}
+
 static void
 test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     test_auto_visit_starts_on_4800_c4fm(o, s, config);
@@ -2137,6 +2209,7 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_code_list_bound_dedupe_order(o, s, config);
     test_code_list_pause_resume_and_new_start(o, s, config);
     test_code_list_only_while_receiving(o, s, config);
+    test_probe_hook_answer(o, s, config);
 }
 
 int
@@ -2163,6 +2236,8 @@ main(void) {
     config.session_id = 42;
     config.range_count = 1;
     dsd_signal_search_range_default(&config.ranges[0]);
+    // A new range probes for three seconds: Auto reaches P25 Phase 2 and confirms it inside that (issue #804).
+    assert(config.ranges[0].probe_ms == 3000 && config.ranges[0].digital == 1);
     config.ranges[0].start_hz = 100000000;
     config.ranges[0].end_hz = 100025000;
     char error[192];
@@ -2200,7 +2275,7 @@ main(void) {
     // A sync without protocol evidence cannot claim any digital identity.
     s->synctype = 12;
     s->nac = 99;
-    advance(1999);
+    advance(2999);
     tick(o, s);
     assert(!status.hit.confirmed && status.hit.protocol[0] == '\0');
     advance(1);

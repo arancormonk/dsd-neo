@@ -33,7 +33,10 @@ dsd_signal_search_range_default(dsd_signal_search_range* range) {
     range->squelch_mode = DSD_SQUELCH_MODE_NOISE;
     range->squelch_margin_db = 10;
     range->squelch_dbfs = -60;
-    range->probe_ms = 2000;
+    /* Three seconds: an Auto probe reaches P25 Phase 2 (6000/4) 1.1 s in and needs up to about a second more to
+       recover a scrambling code and confirm, and NXDN48 joined mid-call confirms up to 2.3 s in (issue #804,
+       tests/engine/search_schedule_replay.c). Two seconds stays the shortest a range may ask for. */
+    range->probe_ms = 3000;
     range->max_visit_ms = 30000;
 }
 
