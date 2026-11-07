@@ -637,8 +637,8 @@ Item {
             compare(problems.length, 0, report(problems));
         }
 
-        // Issue #801: every pin on Home's strip and More are named nodes in the tree, and so is each row of the Pinned
-        // sheet once it is open on top; the sheet's words are all reached.
+        // Issue #801: every pin on Home's strip and More are named nodes in the tree, the title once, and so is each row
+        // of the Pinned sheet once it is open on top; the sheet's words are all reached.
         function pinnedReach(home) {
             var problems = [];
             var strip = findChild(home, "pinnedStrip");
@@ -656,6 +656,16 @@ Item {
                 if (!node.exists || !node.inTree || node.name !== expected[i] || node.role !== Accessible.Button)
                     problems.push("Home strip: " + expected[i] + " not reached: " + JSON.stringify(node));
             }
+            // On the desktop with pins the title is fixed above the strip, and read once (controller ruling on D2).
+            if (home.pinnedHeader)
+                problems.push("Home: expected the desktop host here");
+            var titles = testContext.accessibleNodesUnder(home).filter(function (node) {
+                return node.inTree && node.role === Accessible.Heading && node.name === "Listen";
+            });
+            if (titles.length !== 1 || titles[0].objectName !== "listenHeaderTitle")
+                problems.push("Home: the Listen title read " + titles.length + " times: " + JSON.stringify(titles.map(function (node) {
+                    return node.objectName;
+                })));
             var sheet = findChild(home, "pinnedSheet");
             sheet.open();
             waitForRendering(host);

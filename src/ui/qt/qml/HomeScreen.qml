@@ -88,8 +88,13 @@ Item {
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
     // Connect or Retry never scroll away. The desktop opens its receiver itself
-    // and keeps the title in the body, as before.
+    // and keeps the title in the body, as before, while nothing is pinned.
     readonly property bool pinnedHeader: !!decoderHost && decoderHost.localDeviceBrokered === true
+    // Issue #801: the title is fixed above the body wherever the header is
+    // pinned, and on the desktop too while the Pinned strip shows, so the order
+    // is title, strip, body on both hosts. The desktop's header then holds the
+    // title alone. Keyed on the strip's stored pins, not on `visible` (below).
+    readonly property bool fixedTitle: pinnedHeader || pinnedStrip.shown
     readonly property bool dongleReady: pinnedHeader && deviceStatus.state === "ready"
     readonly property bool showDeviceDetails: pinnedHeader && localDeviceRelevant && !dongleReady && !(failure.message || "").length
     // The content column, which the pinned header lines up with.
@@ -148,7 +153,7 @@ Item {
         id: listenHeader
 
         objectName: "listenHeader"
-        visible: screen.pinnedHeader
+        visible: screen.fixedTitle
         enabled: !screen.managementSheetOpen
         x: screen.columnX
         y: Theme.screenPadding
@@ -156,11 +161,12 @@ Item {
         // One row while the title and the whole pill fit side by side; otherwise
         // the pill drops under the title, left-aligned, and its label wraps at
         // spaces rather than eliding.
-        readonly property bool stacked: headerTitle.implicitWidth + Theme.gap + dongleStatusPill.implicitWidth > width
+        readonly property bool stacked: screen.pinnedHeader && headerTitle.implicitWidth + Theme.gap + dongleStatusPill.implicitWidth > width
         readonly property real titleHeight: Math.max(44, headerTitle.implicitHeight)
-        // Keyed on the host, not on `visible`: Main hides Home on the other
-        // tabs, and a collapsing header would move the body's scroll position.
-        height: !screen.pinnedHeader ? 0 : stacked ? titleHeight + 4 + dongleStatusPill.height : Math.max(titleHeight, dongleStatusPill.height)
+        // Keyed on the host and the strip's held pins, not on `visible`: Main
+        // hides Home on the other tabs, and a collapsing header would move the
+        // body's scroll position.
+        height: !screen.fixedTitle ? 0 : !screen.pinnedHeader ? titleHeight : stacked ? titleHeight + 4 + dongleStatusPill.height : Math.max(titleHeight, dongleStatusPill.height)
 
         ListenTitle {
             id: headerTitle
@@ -172,6 +178,8 @@ Item {
             id: dongleStatusPill
 
             objectName: "dongleStatusPill"
+            // Only where the host brokers USB: the desktop's header holds the title alone.
+            visible: screen.pinnedHeader
             readonly property bool actionable: deviceStatus.canAct && !screen.managementSheetOpen
             readonly property bool navigationAllowed: Navigation.allows(dongleStatusPill)
             function activate() {
@@ -252,10 +260,10 @@ Item {
         }
     }
 
-    // Issue #801: the Pinned strip, one line above the body on both hosts (under
-    // the pinned header where there is one, else at the top, the title staying
-    // in the body). It holds the pins that are found, in order, as many as fit,
-    // each at most the line wide less More; More always ends it and opens the
+    // Issue #801: the Pinned strip, one line under the fixed title header and
+    // above the body, on both hosts (see fixedTitle). It holds the pins that
+    // are found, in order, as many as fit, each at most the line wide less
+    // More; More always ends it and opens the
     // Pinned sheet with every pin. Pins that do not fit are not made, and the
     // strip is no Flickable, so it adds no container node a swipe could stick on.
     Item {
@@ -269,7 +277,7 @@ Item {
         visible: shown
         enabled: !screen.managementSheetOpen
         x: screen.columnX
-        y: screen.pinnedHeader ? listenHeader.y + listenHeader.height + pinGap : Theme.screenPadding
+        y: listenHeader.y + listenHeader.height + pinGap
         width: screen.columnWidth
         // One line of label in a pin, at any text size.
         height: shown ? Math.max(Theme.minimumTouchSize, Math.ceil(pinMetrics.height) + 24) : 0
@@ -360,7 +368,7 @@ Item {
         // first card stays at the body's top, and nothing moves at rest.
         // The Pinned strip, when shown, sits between them on the same terms.
         anchors.topMargin: pinnedStrip.shown ? pinnedStrip.y + pinnedStrip.height + screen.headerClearance
-            : screen.pinnedHeader ? listenHeader.y + listenHeader.height + screen.headerClearance : 0
+            : screen.fixedTitle ? listenHeader.y + listenHeader.height + screen.headerClearance : 0
         contentHeight: content.y + content.height + Theme.screenPadding
         clip: true
         // Menu rows use passive tap grabs, so a tap on a manage-menu button
@@ -372,14 +380,12 @@ Item {
             id: content
 
             x: screen.columnX
-            // On the desktop the title leads the body, under the Pinned strip too,
-            // with the body's own padding above it.
-            y: screen.pinnedHeader ? Theme.gap - screen.headerClearance : Theme.screenPadding
+            y: screen.fixedTitle ? Theme.gap - screen.headerClearance : Theme.screenPadding
             width: screen.columnWidth
             spacing: Theme.gap
 
             Item {
-                visible: !screen.pinnedHeader
+                visible: !screen.fixedTitle
                 width: parent.width
                 height: 44
 
@@ -762,7 +768,7 @@ Item {
     // Once cards pass under the pinned header or the Pinned strip, a hairline
     // marks where they go, as the bottom navigation's top edge does.
     Rectangle {
-        visible: (screen.pinnedHeader || pinnedStrip.shown) && scrollBody.contentY > scrollBody.originY + 0.5
+        visible: screen.fixedTitle && scrollBody.contentY > scrollBody.originY + 0.5
         y: scrollBody.y - 1
         width: screen.supportingPane ? screen.columnX + screen.columnWidth : screen.width
         height: 1

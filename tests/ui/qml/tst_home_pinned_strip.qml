@@ -161,11 +161,11 @@ Item {
             tryCompare(strip(), "visible", true);
             verify(strip().height >= Ui.Theme.minimumTouchSize);
             compare(home.pinnedStripHeight, strip().height);
-            compare(strip().y, data.brokered ? header.y + header.height + 8 : Ui.Theme.screenPadding);
+            verify(header.visible, "the title is fixed above the strip");
+            compare(strip().y, header.y + header.height + 8);
             compare(body().y, strip().y + strip().height + home.headerClearance, "the body starts under the strip");
             compare(JSON.stringify(stripTexts()), JSON.stringify(["Alpha"]));
-            if (!data.brokered)
-                verify(title.visible, "the desktop title stays in the body");
+            verify(!title.visible, "the body's own title row is not shown as well");
 
             listenPins.unpin("system", uid);
             tryCompare(strip(), "visible", false);
@@ -231,10 +231,8 @@ Item {
             verify(b.y >= s.y + s.h, "body below the strip");
             compare(b.y + b.h, home.height, "the body runs to the bottom");
             verify(b.h >= home.height / 2, "the body keeps most of the screen: " + b.h + " of " + home.height);
-            if (data.brokered) {
-                var header = rectOf(findChild(home, "listenHeader"));
-                verify(s.y >= header.y + header.h, "strip under the header");
-            }
+            var header = rectOf(findChild(home, "listenHeader"));
+            verify(s.y >= header.y + header.h, "strip under the header");
         }
 
         // §6: the strip shows found pins in stored order, and a tap, Return, Enter, Space or a screen reader's press on
@@ -420,6 +418,54 @@ Item {
             compare(strip().height, height);
             home.visible = true;
             tryCompare(strip(), "visible", false);
+        }
+
+        // Controller ruling on D2: on the desktop with pins, the title leaves the body for a fixed header above the
+        // strip (no receiver pill), so the order is title, strip, body as on Android; shown once, and kept across tabs.
+        function test_desktop_title_leads_with_pins() {
+            testContext.useLifecycleHost(false);
+            root.width = 900;
+            root.height = 400;
+            for (var i = 0; i < 8; ++i) {
+                var uid = addSystem("System " + i);
+                if (i < 2)
+                    pin("system", uid);
+            }
+            waitForRendering(home);
+            var header = findChild(home, "listenHeader");
+            var headerTitle = findChild(home, "listenHeaderTitle");
+            var bodyTitle = findChild(home, "listenTitle");
+            verify(header.visible && headerTitle.visible, "the title is in the fixed header");
+            verify(!bodyTitle.visible, "and not in the body as well");
+            verify(!findChild(home, "dongleStatusPill").visible, "no receiver pill on the desktop");
+            compare(header.y, Ui.Theme.screenPadding);
+            var h = rectOf(header);
+            var t = rectOf(headerTitle);
+            verify(t.y >= h.y - 0.5 && t.y + t.h <= h.y + h.h + 0.5, "the title inside its header");
+            var s = rectOf(strip());
+            verify(s.y >= h.y + h.h, "the strip under the title");
+            verify(body().y >= s.y + s.h, "the body under the strip");
+            var headerHeight = header.height;
+            var stripHeight = strip().height;
+            var scrolled = body().contentHeight - body().height;
+            verify(scrolled > 40, "the body scrolls");
+            body().contentY = 40;
+            home.visible = false;
+            // Everything unpinned on another tab: the hidden title and strip stay where they were.
+            while (listenPins.count > 0)
+                listenPins.unpinKey(listenPins.entries[0].key);
+            compare(header.height, headerHeight, "the hidden header keeps its height");
+            compare(strip().height, stripHeight, "the hidden strip keeps its height");
+            compare(body().contentY, 40);
+            home.visible = true;
+            verify(waitForPolish(home));
+            compare(body().contentY, 40, "scroll position after a tab switch");
+            // Back on Home with nothing pinned: exactly the desktop layout as before.
+            tryCompare(header, "visible", false);
+            compare(header.height, 0);
+            verify(bodyTitle.visible);
+            compare(body().y, 0);
+            compare(bodyTitle.parent.mapToItem(body().contentItem, 0, 0).y, Ui.Theme.screenPadding);
         }
 
         // Hidden on another tab with pins, Home keeps its scroll range and position, also when the pins change there.
