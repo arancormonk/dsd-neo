@@ -90,8 +90,9 @@
 
 typedef struct {
     /* The target's P25 site identity: its Phase 2 code, RFSS and site, control channel, IDEN tables, its own user band
-       plan (its p25_bandplan_csv, re-seeded by p25_update_system_identity() once the target's WACN/SYS resolves) and
-       its channel map. */
+       plan (its p25_bandplan_csv, re-seeded by p25_update_system_identity() once the target's WACN/SYS resolves), its
+       channel map, and its site broadcasts (pending announcements, secondary control channels, protection, services,
+       LRA, network active). */
     dsd_p25_site_snapshot site;
     int trunk_recovery_protocol;
     time_t p25_sys_time;
@@ -122,13 +123,9 @@ typedef struct {
     long int lcn_back_retry_freq;
     dsd_trunk_cc_candidates cc_candidates;
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX];
-    p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
-    p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
-    uint32_t p25_sys_services_available;
-    uint32_t p25_sys_services_supported;
     unsigned int dmr_color_code;
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
@@ -144,8 +141,6 @@ typedef struct {
     int p25_aff_count;
     int p25_ga_count;
     int p25_nb_count;
-    int p25_secondary_cc_count;
-    int p25_pending_announcement_count;
     uint32_t p25_src_nid;
     int dmr_mfid;
     int dmr_rest_channel;
@@ -178,16 +173,8 @@ typedef struct {
     uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
-    uint8_t p25_cc_prot_valid;
-    uint8_t p25_cc_prot_algid;
     uint8_t p25_sys_time_valid;
     uint8_t p25_sys_time_offset_valid;
-    uint8_t p25_sys_services_valid;
-    uint8_t p25_sys_services_request_priority;
-    uint8_t p25_site_lra_valid;
-    uint8_t p25_site_lra;
-    uint8_t p25_site_network_active_valid;
-    uint8_t p25_site_network_active;
     uint8_t p25_cc_cache_loaded;
     uint8_t p25_patch_is_patch[8];
     uint8_t p25_patch_active[8];
@@ -1760,20 +1747,10 @@ trunk_scan_save_p25_metadata_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p25_prot_valid = state->p25_prot_valid;
     snapshot->p25_prot_algid = state->p25_prot_algid;
     snapshot->p25_prot_kid = state->p25_prot_kid;
-    snapshot->p25_cc_prot_valid = state->p25_cc_prot_valid;
-    snapshot->p25_cc_prot_algid = state->p25_cc_prot_algid;
     snapshot->p25_sys_time_valid = state->p25_sys_time_valid;
     snapshot->p25_sys_time = state->p25_sys_time;
     snapshot->p25_sys_time_offset_valid = state->p25_sys_time_offset_valid;
     snapshot->p25_sys_time_offset = state->p25_sys_time_offset;
-    snapshot->p25_sys_services_valid = state->p25_sys_services_valid;
-    snapshot->p25_sys_services_available = state->p25_sys_services_available;
-    snapshot->p25_sys_services_supported = state->p25_sys_services_supported;
-    snapshot->p25_sys_services_request_priority = state->p25_sys_services_request_priority;
-    snapshot->p25_site_lra_valid = state->p25_site_lra_valid;
-    snapshot->p25_site_lra = state->p25_site_lra;
-    snapshot->p25_site_network_active_valid = state->p25_site_network_active_valid;
-    snapshot->p25_site_network_active = state->p25_site_network_active;
 }
 
 static void
@@ -1781,20 +1758,10 @@ trunk_scan_restore_p25_metadata_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p25_prot_valid = snapshot->p25_prot_valid;
     state->p25_prot_algid = snapshot->p25_prot_algid;
     state->p25_prot_kid = snapshot->p25_prot_kid;
-    state->p25_cc_prot_valid = snapshot->p25_cc_prot_valid;
-    state->p25_cc_prot_algid = snapshot->p25_cc_prot_algid;
     state->p25_sys_time_valid = snapshot->p25_sys_time_valid;
     state->p25_sys_time = snapshot->p25_sys_time;
     state->p25_sys_time_offset_valid = snapshot->p25_sys_time_offset_valid;
     state->p25_sys_time_offset = snapshot->p25_sys_time_offset;
-    state->p25_sys_services_valid = snapshot->p25_sys_services_valid;
-    state->p25_sys_services_available = snapshot->p25_sys_services_available;
-    state->p25_sys_services_supported = snapshot->p25_sys_services_supported;
-    state->p25_sys_services_request_priority = snapshot->p25_sys_services_request_priority;
-    state->p25_site_lra_valid = snapshot->p25_site_lra_valid;
-    state->p25_site_lra = snapshot->p25_site_lra;
-    state->p25_site_network_active_valid = snapshot->p25_site_network_active_valid;
-    state->p25_site_network_active = snapshot->p25_site_network_active;
 }
 
 static void
@@ -1842,12 +1809,6 @@ trunk_scan_save_p25_catalog_snapshot(const dsd_state* state, dsd_trunk_scan_snap
     DSD_MEMCPY(snapshot->p25_ga_last_seen, state->p25_ga_last_seen, sizeof(snapshot->p25_ga_last_seen));
     snapshot->p25_nb_count = state->p25_nb_count;
     DSD_MEMCPY(snapshot->p25_nb_entries, state->p25_nb_entries, sizeof(snapshot->p25_nb_entries));
-    snapshot->p25_secondary_cc_count = state->p25_secondary_cc_count;
-    DSD_MEMCPY(snapshot->p25_secondary_cc_entries, state->p25_secondary_cc_entries,
-               sizeof(snapshot->p25_secondary_cc_entries));
-    snapshot->p25_pending_announcement_count = state->p25_pending_announcement_count;
-    DSD_MEMCPY(snapshot->p25_pending_announcements, state->p25_pending_announcements,
-               sizeof(snapshot->p25_pending_announcements));
     snapshot->p25_src_nid = state->p25_src_nid;
 }
 
@@ -1862,12 +1823,6 @@ trunk_scan_restore_p25_catalog_snapshot(dsd_state* state, const dsd_trunk_scan_s
     DSD_MEMCPY(state->p25_ga_last_seen, snapshot->p25_ga_last_seen, sizeof(state->p25_ga_last_seen));
     state->p25_nb_count = snapshot->p25_nb_count;
     DSD_MEMCPY(state->p25_nb_entries, snapshot->p25_nb_entries, sizeof(state->p25_nb_entries));
-    state->p25_secondary_cc_count = snapshot->p25_secondary_cc_count;
-    DSD_MEMCPY(state->p25_secondary_cc_entries, snapshot->p25_secondary_cc_entries,
-               sizeof(state->p25_secondary_cc_entries));
-    state->p25_pending_announcement_count = snapshot->p25_pending_announcement_count;
-    DSD_MEMCPY(state->p25_pending_announcements, snapshot->p25_pending_announcements,
-               sizeof(state->p25_pending_announcements));
     state->p25_src_nid = snapshot->p25_src_nid;
 }
 

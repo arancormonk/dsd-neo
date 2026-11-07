@@ -109,6 +109,46 @@ p25_site_snapshot_restore_chan_map(dsd_state* state, const dsd_p25_site_snapshot
     state->trunk_chan_map_seq = snapshot->trunk_chan_map_seq;
 }
 
+static void
+p25_site_snapshot_save_broadcasts(const dsd_state* state, dsd_p25_site_snapshot* snapshot) {
+    snapshot->p25_pending_announcement_count = state->p25_pending_announcement_count;
+    DSD_MEMCPY(snapshot->p25_pending_announcements, state->p25_pending_announcements,
+               sizeof(snapshot->p25_pending_announcements));
+    snapshot->p25_secondary_cc_count = state->p25_secondary_cc_count;
+    DSD_MEMCPY(snapshot->p25_secondary_cc_entries, state->p25_secondary_cc_entries,
+               sizeof(snapshot->p25_secondary_cc_entries));
+    snapshot->p25_sys_services_valid = state->p25_sys_services_valid;
+    snapshot->p25_sys_services_available = state->p25_sys_services_available;
+    snapshot->p25_sys_services_supported = state->p25_sys_services_supported;
+    snapshot->p25_sys_services_request_priority = state->p25_sys_services_request_priority;
+    snapshot->p25_cc_prot_valid = state->p25_cc_prot_valid;
+    snapshot->p25_cc_prot_algid = state->p25_cc_prot_algid;
+    snapshot->p25_site_lra_valid = state->p25_site_lra_valid;
+    snapshot->p25_site_lra = state->p25_site_lra;
+    snapshot->p25_site_network_active_valid = state->p25_site_network_active_valid;
+    snapshot->p25_site_network_active = state->p25_site_network_active;
+}
+
+static void
+p25_site_snapshot_restore_broadcasts(dsd_state* state, const dsd_p25_site_snapshot* snapshot) {
+    state->p25_pending_announcement_count = snapshot->p25_pending_announcement_count;
+    DSD_MEMCPY(state->p25_pending_announcements, snapshot->p25_pending_announcements,
+               sizeof(state->p25_pending_announcements));
+    state->p25_secondary_cc_count = snapshot->p25_secondary_cc_count;
+    DSD_MEMCPY(state->p25_secondary_cc_entries, snapshot->p25_secondary_cc_entries,
+               sizeof(state->p25_secondary_cc_entries));
+    state->p25_sys_services_valid = snapshot->p25_sys_services_valid;
+    state->p25_sys_services_available = snapshot->p25_sys_services_available;
+    state->p25_sys_services_supported = snapshot->p25_sys_services_supported;
+    state->p25_sys_services_request_priority = snapshot->p25_sys_services_request_priority;
+    state->p25_cc_prot_valid = snapshot->p25_cc_prot_valid;
+    state->p25_cc_prot_algid = snapshot->p25_cc_prot_algid;
+    state->p25_site_lra_valid = snapshot->p25_site_lra_valid;
+    state->p25_site_lra = snapshot->p25_site_lra;
+    state->p25_site_network_active_valid = snapshot->p25_site_network_active_valid;
+    state->p25_site_network_active = snapshot->p25_site_network_active;
+}
+
 int
 dsd_p25_site_snapshot_save(const dsd_state* state, dsd_p25_site_snapshot* snapshot) {
     if (!state || !snapshot) {
@@ -131,6 +171,7 @@ dsd_p25_site_snapshot_save(const dsd_state* state, dsd_p25_site_snapshot* snapsh
     DSD_MEMCPY(snapshot->p25_iden_tdma, state->p25_iden_tdma, sizeof(snapshot->p25_iden_tdma));
     DSD_MEMCPY(snapshot->p25_bandplan_rows, state->p25_bandplan_rows, sizeof(snapshot->p25_bandplan_rows));
     snapshot->p25_bandplan_row_count = state->p25_bandplan_row_count;
+    p25_site_snapshot_save_broadcasts(state, snapshot);
     return p25_site_snapshot_save_chan_map(state, snapshot);
 }
 
@@ -155,6 +196,7 @@ dsd_p25_site_snapshot_restore(dsd_state* state, const dsd_p25_site_snapshot* sna
     DSD_MEMCPY(state->p25_iden_tdma, snapshot->p25_iden_tdma, sizeof(state->p25_iden_tdma));
     DSD_MEMCPY(state->p25_bandplan_rows, snapshot->p25_bandplan_rows, sizeof(state->p25_bandplan_rows));
     state->p25_bandplan_row_count = snapshot->p25_bandplan_row_count;
+    p25_site_snapshot_restore_broadcasts(state, snapshot);
     p25_site_snapshot_restore_chan_map(state, snapshot);
 }
 

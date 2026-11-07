@@ -24,6 +24,7 @@
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
@@ -1720,6 +1721,9 @@ static const uint64_t CODE_B = SITE_CODE(0x45564, 0x006, 0x006);
 /* The channel an imported channel map names, and the one a visit maps. */
 enum { IMPORTED_CHANNEL = 5, VISIT_CHANNEL = 7, VISIT_IDEN = 3 };
 
+/* The raw channels of a pending neighbour announcement the session's site and a visited site each heard. */
+enum { SESSION_PENDING_CHANNEL = 0x1011, VISIT_PENDING_CHANNEL = 0x300A };
+
 static void
 hold_code(dsd_state* s, uint64_t code) {
     s->p2_wacn = code >> 24;
@@ -1732,6 +1736,19 @@ clear_chan_map(dsd_state* s) {
     while (s->trunk_chan_map_used_count) {
         dsd_state_set_trunk_chan_freq(s, s->trunk_chan_map_used[0], 0);
     }
+}
+
+/* A neighbour announcement on raw @p channel, waiting for the IDEN that resolves it, appended to the site's. */
+static void
+add_pending_neighbor(dsd_state* s, uint16_t channel) {
+    p25_pending_announcement_t* e = &s->p25_pending_announcements[s->p25_pending_announcement_count++];
+    DSD_MEMSET(e, 0, sizeof(*e));
+    e->populated = 1;
+    e->kind = P25_PENDING_ANNOUNCEMENT_NEIGHBOR;
+    e->rfss = 1;
+    e->site = 4;
+    e->sysid = 0x006;
+    e->channel = channel;
 }
 
 /* The session's P25 site at Start: @p code (0 for none), unproven, hand-set when @p hardset, nothing learned, and
@@ -1749,18 +1766,33 @@ session_site(dsd_state* s, uint64_t code, int hardset, long imported) {
     DSD_MEMSET(s->p25_chan_tdma_explicit, 0, sizeof(s->p25_chan_tdma_explicit));
     DSD_MEMSET(s->p25_iden_fdma, 0, sizeof(s->p25_iden_fdma));
     DSD_MEMSET(s->p25_iden_tdma, 0, sizeof(s->p25_iden_tdma));
+    s->p25_pending_announcement_count = s->p25_secondary_cc_count = 0;
+    DSD_MEMSET(s->p25_pending_announcements, 0, sizeof(s->p25_pending_announcements));
+    DSD_MEMSET(s->p25_secondary_cc_entries, 0, sizeof(s->p25_secondary_cc_entries));
+    s->p25_cc_prot_valid = s->p25_sys_services_valid = s->p25_site_lra_valid = s->p25_site_network_active_valid = 0;
     clear_chan_map(s);
     if (imported) {
         dsd_state_set_trunk_chan_freq(s, IMPORTED_CHANNEL, imported);
     }
 }
 
-/* Whether nothing a visit learned stays on @p s: no RFSS or site, control channel, TDMA flags or IDEN update. */
+/* Whether none of a visited site's broadcasts stays on @p s: no pending announcement or secondary control channel,
+   and none of its protection, services, LRA or network-active broadcasts. */
+static int
+no_site_broadcasts(const dsd_state* s) {
+    return s->p25_pending_announcement_count == 0 && !s->p25_pending_announcements[0].populated
+           && s->p25_secondary_cc_count == 0 && s->p25_secondary_cc_entries[0].freq == 0 && !s->p25_cc_prot_valid
+           && !s->p25_sys_services_valid && !s->p25_site_lra_valid && !s->p25_site_network_active_valid;
+}
+
+/* Whether nothing a visit learned stays on @p s: no RFSS or site, control channel, TDMA flags, IDEN update or site
+   broadcast. */
 static int
 nothing_learned(const dsd_state* s) {
     return s->p2_rfssid == 0 && s->p2_siteid == 0 && s->p25_cc_freq == 0 && s->trunk_cc_freq == 0
            && s->p25_cc_is_tdma == 2 && s->p25_sys_is_tdma == 0 && s->p25_chan_iden == 0
-           && s->p25_chan_tdma_explicit[VISIT_IDEN] == 0 && !s->p25_iden_tdma[VISIT_IDEN].populated;
+           && s->p25_chan_tdma_explicit[VISIT_IDEN] == 0 && !s->p25_iden_tdma[VISIT_IDEN].populated
+           && no_site_broadcasts(s);
 }
 
 /* Whether @p s holds the session's site as session_site() set it, the proof cleared. */
@@ -1788,7 +1820,8 @@ learn_iden(dsd_state* s, uint64_t code, long base) {
 }
 
 /* What a visited Phase 2 site teaches the decoder: its code, proven there, its RFSS and site, its TDMA control channel,
-   an IDEN update and a channel mapped. */
+   an IDEN update, a channel mapped, a neighbour announcement still waiting for its IDEN, a secondary control channel
+   and its site broadcasts. */
 static void
 learn_site(dsd_state* s, uint64_t code) {
     hold_code(s, code);
@@ -1800,6 +1833,15 @@ learn_site(dsd_state* s, uint64_t code) {
     s->p25_sys_is_tdma = 1;
     learn_iden(s, code, 153950000);
     dsd_state_set_trunk_chan_freq(s, VISIT_CHANNEL, 770152750);
+    add_pending_neighbor(s, VISIT_PENDING_CHANNEL);
+    p25_secondary_cc_entry_t* scc = &s->p25_secondary_cc_entries[s->p25_secondary_cc_count++];
+    scc->freq = 769918750;
+    scc->channel = 0x3010;
+    scc->rfss = 2;
+    scc->site = 9;
+    s->p25_cc_prot_valid = s->p25_sys_services_valid = s->p25_site_lra_valid = s->p25_site_network_active_valid = 1;
+    s->p25_cc_prot_algid = 0x84;
+    s->p25_site_lra = 0x22;
 }
 
 static void
@@ -1891,6 +1933,31 @@ test_verified_seed_at_start_not_restored_as_proof(dsd_opts* o, dsd_state* s, con
     assert(session_back(s, CODE_A, 0, 0));
     stop_tag_session(o, s);
     assert(session_back(s, CODE_A, 0, 0));
+}
+
+/* A neighbour or secondary control channel announcement waiting for its IDEN belongs to the site that sent it: the
+   session's comes back at a departure, and a visited site's never does. Left behind, a visited site's would be resolved
+   with the session's IDEN tables once the session's network status came back with its system unchanged, publishing a
+   neighbour at a frequency of the wrong system. */
+static void
+test_pending_announcements_stay_with_their_site(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 96, 1, 0);
+    session_site(s, CODE_A, 0, 0);
+    add_pending_neighbor(s, SESSION_PENDING_CHANNEL);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    learn_site(s, CODE_B);
+    assert(s->p25_pending_announcement_count == 2);
+    next_visit(o, s);
+    assert(s->p25_pending_announcement_count == 1 && s->p25_pending_announcements[0].populated);
+    assert(s->p25_pending_announcements[0].channel == SESSION_PENDING_CHANNEL);
+    assert(!s->p25_pending_announcements[1].populated && s->p25_secondary_cc_count == 0);
+    learn_site(s, CODE_B);
+    stop_tag_session(o, s);
+    assert(s->p25_pending_announcement_count == 1
+           && s->p25_pending_announcements[0].channel == SESSION_PENDING_CHANNEL);
+    assert(!s->p25_pending_announcements[1].populated);
+    session_site(s, 0, 0, 0);
 }
 
 /* The decoder session ends under the search during a call: the final call snapshots come after the search's shutdown,
@@ -2202,6 +2269,7 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_locked_tuple_kept(o, s, config);
     test_code_does_not_leak_between_visits(o, s, config);
     test_iden_before_nsb_restored(o, s, config);
+    test_pending_announcements_stay_with_their_site(o, s, config);
     test_hardset_restored(o, s, config);
     test_unknown_identity_restored(o, s, config);
     test_verified_seed_at_start_not_restored_as_proof(o, s, config);

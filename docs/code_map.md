@@ -120,16 +120,18 @@ Generated (do not edit/commit):
     (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never written from the site record
     (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The session's own P25 site is restored at every
     departure instead (issue #804): Start saves a `dsd_p25_site_snapshot` after the preset (the code and its hand-set
-    flag, RFSS/site, control channel and TDMA flags, IDEN tables, band plan, explicit TDMA flags, channel identifier and
-    channel map; `p25_site_snapshot.h`), and `search_restore_site()` puts it back whole right after the carrier boundary
-    in `search_queue_tune()` and `search_close_reception()`, whether or not the code changed (an IDEN update a visit
-    took before its network status is stamped with the code in force), so a hand-set `-X` code or an imported channel
-    map comes back and nothing a visit learned reaches the next. The proof (`p2_cc_verified`) is never restored: the
-    boundary cleared it, and a code proven on another carrier proves nothing here. A channel map that moved gets a new
-    `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it once a boundary has closed the reception;
-    a decoder session that ends during a visit keeps the visit's code and proof for the final call snapshots that
-    follow, and `dsd_engine_cleanup()` then puts the session's back, unproven, through
-    `dsd_engine_signal_search_release_site()`, before the `--p25-bandplan-export` write, so no visited system's IDEN
+    flag, RFSS/site, control channel and TDMA flags, IDEN tables, band plan, explicit TDMA flags, channel identifier,
+    channel map, and the site broadcasts a change of system drops with the IDEN tables: the neighbour and secondary
+    control channel announcements still waiting for an IDEN, the secondary control channels, and the control channel
+    protection, services, LRA and network-active broadcasts; `p25_site_snapshot.h`), and `search_restore_site()` puts
+    it back whole right after the carrier boundary in `search_queue_tune()` and `search_close_reception()`, whether or
+    not the code changed (an IDEN update a visit took before its network status is stamped with the code in force), so
+    a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
+    (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
+    here. A channel map that moved gets a new `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it
+    once a boundary has closed the reception; a decoder session that ends during a visit keeps the visit's code and
+    proof for the final call snapshots that follow, and `dsd_engine_cleanup()` then puts the session's back, unproven,
+    through `dsd_engine_signal_search_release_site()`, before the `--p25-bandplan-export` write, so no visited system's IDEN
     tables reach the exported band plan. A session site that cannot be saved whole (its channel map's storage) refuses
     the start. The coordinator also keeps the session's P25 Phase 2 code list (`p2_codes`, 16, most
     recently confirmed first, a repeat moving to the front; Pause and Resume keep it, a new start begins empty):
@@ -734,10 +736,13 @@ control-channel state from one system is never reused on another. That is also w
 channel map or `--p25-bandplan` and imports each target's `chan_csv` through throwaway options and its
 `p25_bandplan_csv` straight from the path, so neither touches the live options.
 The P25 site part of a snapshot (the Phase 2 code and its hand-set flag, RFSS and site, the control channel and its
-TDMA flags, the IDEN tables, the band plan, the explicit TDMA channel flags, the channel identifier and the sparse
-channel map) is `dsd_p25_site_snapshot` in `src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once
-per session (see Signal search). Trunk scan keeps the session's hand-set flag across a restore, and keeps the code's
-proof, the NAC, the modulation and the call state in its own snapshot fields.
+TDMA flags, the IDEN tables, the band plan, the explicit TDMA channel flags, the channel identifier, the sparse
+channel map, and what `p25_update_system_identity()` drops with the IDEN tables on a change of system: the pending
+announcements, which resolve against whatever IDEN tables the state holds, the secondary control channels and the
+site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
+`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). Trunk scan
+keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
+state in its own snapshot fields.
 The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator fills empty slots or replaces an
 untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_idens()`, TDMA first), and `dsd_engine_p25_bandplan_export()` in

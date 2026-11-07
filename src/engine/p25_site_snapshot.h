@@ -11,15 +11,16 @@
 #define DSD_NEO_ENGINE_P25_SITE_SNAPSHOT_H
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
 
 /**
  * The decoder's P25 site identity, saved whole: the Phase 2 scrambling code (WACN, SYSID, NAC) and whether it was set
  * by hand, the RFSS and site, the control channel and its TDMA flags, the IDEN tables and the band plan they were
- * seeded from, the explicit TDMA channel flags, the channel identifier in use and the channel map. Never the code's
- * proof (`p2_cc_verified`): it belongs to the carrier it was proven on, so whoever restores a snapshot on another
- * carrier leaves it cleared.
+ * seeded from, the explicit TDMA channel flags, the channel identifier in use, the channel map, and the site's
+ * broadcasts that a change of system drops with the IDEN tables. Never the code's proof (`p2_cc_verified`): it belongs
+ * to the carrier it was proven on, so whoever restores a snapshot on another carrier leaves it cleared.
  */
 typedef struct dsd_p25_site_snapshot {
     unsigned long long p2_wacn;
@@ -48,6 +49,25 @@ typedef struct dsd_p25_site_snapshot {
     size_t chan_map_capacity;
     uint32_t trunk_chan_map_used_count;
     uint64_t trunk_chan_map_seq;
+    /* What p25_update_system_identity() drops with the IDEN tables when the system changes, and keeps while it does
+       not: a restore that changes the identity has to bring the site's own back. The neighbour and secondary control
+       channel announcements still waiting for an IDEN are resolved against whatever IDEN tables the state holds, so
+       another site's would publish its neighbours at this site's frequencies. Then the secondary control channels, and
+       the control channel protection, system services, LRA and network-active broadcasts. */
+    int p25_pending_announcement_count;
+    p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
+    int p25_secondary_cc_count;
+    p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
+    uint32_t p25_sys_services_available;
+    uint32_t p25_sys_services_supported;
+    uint8_t p25_sys_services_valid;
+    uint8_t p25_sys_services_request_priority;
+    uint8_t p25_cc_prot_valid;
+    uint8_t p25_cc_prot_algid;
+    uint8_t p25_site_lra_valid;
+    uint8_t p25_site_lra;
+    uint8_t p25_site_network_active_valid;
+    uint8_t p25_site_network_active;
 } dsd_p25_site_snapshot;
 
 /** Save @p state's P25 site identity into @p snapshot, growing its channel map storage as needed. Returns 0, or -1 when
