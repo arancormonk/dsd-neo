@@ -53,6 +53,7 @@ publish(dsd_state* state, int carrier, int tone_state, int kind, int tenths) {
     state->analog_rx.tone_kind = kind;
     state->analog_rx.ctcss_tenths_hz = tenths;
     state->analog_rx.generation = 7U;
+    state->analog_rx.lock_epoch = 5U;
 }
 
 static void
@@ -97,6 +98,9 @@ test_states_and_formats(void) {
     assert(view.ctcss_tenths_hz == 1000);
     assert(view.carrier_open == 1U);
     assert(view.generation == 7U);
+    /* The lock counter rides beside the reset counter (issue #802), so an observer can tell one lock held from the
+       same value locked again. */
+    assert(view.lock_epoch == 5U);
 
     /* Both ends of the table, one decimal, no padding. */
     publish(state, 1, DSD_ANALOG_TONE_STATE_LOCKED, DSD_ANALOG_TONE_KIND_CTCSS, 670);
@@ -239,7 +243,7 @@ test_paused_stream_reads_no_carrier(void) {
     assert(view.visible == 1U && view.status == DSD_APP_RX_TONE_NO_CARRIER);
     assert(strcmp(view.text, EM_DASH) == 0);
     assert(view.carrier_open == 0U && view.kind == 0U && view.ctcss_tenths_hz == 0);
-    assert(view.generation == 7U);
+    assert(view.generation == 7U && view.lock_epoch == 5U);
     assert(strcmp(view.configured_text, "off") == 0);
 
     /* So does a received code. */

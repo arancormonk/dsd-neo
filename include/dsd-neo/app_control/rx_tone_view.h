@@ -61,16 +61,19 @@ enum { DSD_APP_RX_TONE_POLICY_TEXT_SIZE = 128 };
  * policy. All three are UTF-8 and always terminated.
  */
 typedef struct {
-    uint8_t visible;                      /**< 1 = detection runs, so the row belongs on screen. */
-    uint8_t status;                       /**< One of the DSD_APP_RX_TONE_* values. */
-    uint8_t kind;                         /**< dsd_analog_tone_kind of a locked tone; 0 otherwise. */
-    uint8_t carrier_open;                 /**< 1 while a carrier is open (held through the short hangover). */
-    int ctcss_tenths_hz;                  /**< Locked CTCSS tone in tenths of a hertz; 0 otherwise. */
-    int dcs_code;                         /**< Locked DCS code as its value (023 octal = 19); 0 otherwise. */
-    int dcs_alias_code;                   /**< The signal's other supported spelling (047 for D023N); 0 otherwise. */
-    uint8_t dcs_inverted;                 /**< 1 = inverted polarity; never for a supported code (analog_tones.h). */
-    uint8_t dcs_alias_inverted;           /**< 1 = the other spelling is inverted: always, for a supported code. */
-    uint32_t generation;                  /**< The publication's reset counter, to tell one reception from the next. */
+    uint8_t visible;            /**< 1 = detection runs, so the row belongs on screen. */
+    uint8_t status;             /**< One of the DSD_APP_RX_TONE_* values. */
+    uint8_t kind;               /**< dsd_analog_tone_kind of a locked tone; 0 otherwise. */
+    uint8_t carrier_open;       /**< 1 while a carrier is open (held through the short hangover). */
+    int ctcss_tenths_hz;        /**< Locked CTCSS tone in tenths of a hertz; 0 otherwise. */
+    int dcs_code;               /**< Locked DCS code as its value (023 octal = 19); 0 otherwise. */
+    int dcs_alias_code;         /**< The signal's other supported spelling (047 for D023N); 0 otherwise. */
+    uint8_t dcs_inverted;       /**< 1 = inverted polarity; never for a supported code (analog_tones.h). */
+    uint8_t dcs_alias_inverted; /**< 1 = the other spelling is inverted: always, for a supported code. */
+    uint32_t generation;        /**< The publication's reset counter, to tell one reception from the next. */
+    /** The publication's lock counter (dsd_analog_rx_publication::lock_epoch): with @c generation unchanged, an equal
+        value means the lock shown is the one an earlier view showed, held without a break in between. */
+    uint32_t lock_epoch;
     char text[DSD_APP_RX_TONE_TEXT_SIZE]; /**< "CTCSS 100.0 Hz", "DCS D023N / D047I", "detecting", "none", "—", "". */
     char configured_text[DSD_APP_RX_TONE_POLICY_TEXT_SIZE]; /**< The tone policy in force: "off", "allow 100.0 Hz". */
     /** 1 = detection runs and a tone policy is in force, or a scan row set its own: the Tone filter row belongs on

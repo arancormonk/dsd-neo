@@ -2040,7 +2040,10 @@ suite runs under this compiler.
   and `gate_no_tone`, the CTCSS/DCS receive policy's verdict (issue #527: OFF with no policy in force, PENDING while it
   checks, ALLOWED, REJECTED; `gate_no_tone` when no confirmed value decided it), `gate_rejected_ended` (1 once a
   rejected reception has ended with its carrier, until the next carrier or any other reset), a `generation`
-  bumped by every reset, input switch and input-rate change, and `stale_after_ms`, the real-time monotonic deadline
+  bumped by every reset, input switch and input-rate change, a `lock_epoch` bumped each time the verdict locks a tone
+  or code it did not hold the block before (a first lock, a lock after none within one carrier too, another value;
+  after the DCS precedence, never while one lock holds, never reset; issue #802), and `stale_after_ms`, the real-time
+  monotonic deadline
   (`dsd_realtime_mono_ms()`) past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family
   radio stream) no longer describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
   It rides the `vertex_ks_count..ui_msg` snapshot range beside `scan_timing`, pinned by a `_Static_assert` in
@@ -4972,7 +4975,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   UDP or TCP producer that stopped sending, or a live radio stream whose source stopped, while the decoder waits for
   samples and cannot say so itself) reads as the em dash. A locked value this build cannot name (an unsupported
   frequency, a DCS code that is unsupported or not the canonical member of its alias class) reads `detecting`, never a
-  value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted` beside `ctcss_tenths_hz`, and the same
+  value. It carries the publication's `generation` and `lock_epoch` (issue #802), and the locked code and polarity in
+  `dcs_code` / `dcs_inverted` beside `ctcss_tenths_hz`, and the same
   signal's other supported spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text names both, canonical first.
   The first polarity reads normal and the second inverted for every supported code, whose
   inverted signal is another supported code's normal one; both are kept because a code is named with its polarity
@@ -5444,6 +5448,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (every reset moves the
     publication's generation on and starts a new reception, which logs its verdict again, the same tone included).
+    The core numbers locks (issue #802): after every block the detectors heard, `core_note_lock()` compares the merged
+    verdict's lock (kind and tone or code, after the DCS precedence) with the one the block before left, and a lock
+    where there was none or another value moves `lock_epoch` on; a reset clears the comparison, never the count, and
+    a new session continues the published value as it continues the generation. So a reader that polls the
+    publication tells one unbroken lock from the same value locked again after a gap between its reads. Tests:
+    `DSP_ANALOG_CTCSS` (`test_lock_epoch_counts_each_lock`), `DSP_ANALOG_DCS` (`test_a_code_outranks_a_tone`).
     The publication's `boundaries` epoch (issue #756) is the session's count of hard boundaries the tap crossed: an
     announced reset (`dsd_analog_rx_reset()`, a TCP reconnect included, also at a block boundary with nothing
     collected), a generation or receive-profile move, a detected stream pause, a rate move and an FM/AM switch. Every

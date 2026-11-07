@@ -245,6 +245,7 @@ dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now_m,
     }
     out->visible = 1U;
     out->generation = pub->generation;
+    out->lock_epoch = pub->lock_epoch;
     if (rx_tone_stale(pub, now_m)) {
         out->status = DSD_APP_RX_TONE_NO_CARRIER;
         rx_tone_set_text(out, RX_TONE_NO_CARRIER_TEXT);

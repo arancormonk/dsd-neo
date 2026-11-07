@@ -898,6 +898,12 @@ struct dsd_analog_rx_publication {
      * input-rate change, carrier hangover, stream pause), so a reader can tell a new reception
      * from the one it last saw. */
     uint32_t generation;
+    /** Bumped each time the verdict locks a tone or code it did not hold the block before: a first lock, a lock after
+     * none (within one generation too: a tone lost and found again under one carrier), or another tone or code, after
+     * a DCS lock's precedence over a CTCSS one; never while one lock holds, and never reset (issue #802). A reader that
+     * sees the same generation and lock_epoch twice has seen one unbroken lock in between, as far as the tap's blocks
+     * can tell. */
+    uint32_t lock_epoch;
     /** Bumped on every hard boundary the tap crosses: an announced reset (dsd_analog_rx_reset(): a retune, a row or
      * target change, an input switch or TCP reconnect, a mode change, stop), a retune or receive-profile change the
      * tap's own generation check found, a detected stream pause, an input-rate move and a switch between the FM and AM

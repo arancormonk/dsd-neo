@@ -445,6 +445,11 @@ typedef struct {
     /** The resets value the last end of a reception by its carrier left: the carrier's hangover running out here, or
         an input pause the tap's glue counts as the carrier dropping (issue #527); 0 before any. */
     uint32_t carrier_end_reset;
+    /** Bumped on every block after which the published verdict holds a lock it did not hold after the block before:
+        a first lock, a lock after none, or another tone or code (after the DCS precedence of the merge), published as
+        the lock epoch (issue #802). Never reset, so it counts on across generations. */
+    uint32_t lock_epoch;
+    int lock_key; /**< the lock the last block left published (0 for none), which lock_epoch compares against */
     float scratch[DSD_ANALOG_RX_SCRATCH];
     float scratch_wide[DSD_ANALOG_RX_SCRATCH];
     float scratch_full[DSD_ANALOG_RX_SCRATCH];
@@ -499,7 +504,7 @@ void dsd_analog_rx_core_track_carrier(dsd_analog_rx_core* core, const float* blo
  *
  * Zeroes @p out, then fills carrier_open, tone_state (IDLE without carrier, else the merged
  * detector verdict), tone_kind, ctcss_tenths_hz or dcs_code and dcs_inverted, dcs_candidate (the
- * DCS detector's candidate while nothing is locked), and generation. gate stays OFF: detection
+ * DCS detector's candidate while nothing is locked), generation and lock_epoch. gate stays OFF: detection
  * never gates audio; the tap's glue fills the tone policy's verdict (issue #527).
  */
 void dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publication* out);
