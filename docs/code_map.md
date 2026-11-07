@@ -8104,9 +8104,11 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   - A decode is accepted only within 2 x errors + erasures <= 28. ezpwd's Berlekamp-Massey occasionally decodes past
     that (about 1.5% of FACCH words with 10 errors), where the codeword is no longer unique.
   - The return value counts the sent symbols the decode changed; punctured fills are not counted. A failed decode
-    writes nothing.
+    writes nothing. `ez_rs28_ess()` counts in the same unit (an erasure that held the right value is no
+    correction), so the terminal's ESS, FACCH and SACCH average corrections compare.
   - `ez_rs28_facch_fixed()` and `ez_rs28_sacch_fixed()` erase the punctured symbols only and allocate nothing, for
-    trial decodes. `ez_rs28_facch_encode()` and `ez_rs28_sacch_encode()` give the sent parity of a payload. Tests:
+    trial decodes. `ez_rs28_facch_encode()` and `ez_rs28_sacch_encode()` give the sent parity of a payload (all
+    zeros if the codec could not be allocated). Tests:
     `P25_P2_RS_SHORTENED`, `P25_P2_RS28_LIMITS`, `P25_P2_FACCH_RS`, `FEC_BLOCK_CODES`.
 - Build files: `src/fec/CMakeLists.txt`
 

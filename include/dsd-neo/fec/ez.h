@@ -24,7 +24,9 @@ extern "C" {
  * Decode the P25 Phase 2 ESS, a shortened RS(63,35) code: RS(44,16,29).
  *
  * Pass NULL and zero for a decoder without erasures. At most 28 erasure
- * positions are consumed.
+ * positions (ESS symbol indices 0..43: ESS_B 0..15, ESS_A 16..43) are
+ * consumed. Returns the number of symbols the decode changed (an erasure that
+ * held the right value is not counted), or < 0 on failure.
  */
 int ez_rs28_ess(int payload[96], int parity[168], const int* erasures, int n_erasures);
 
@@ -56,7 +58,9 @@ int ez_rs28_sacch_fixed(int payload[180], int parity[132]);
 
 /**
  * Encode a FACCH or SACCH payload: writes the sent parity (FACCH RS symbols
- * 35..53, SACCH 35..56) in the bit layout the decoders take.
+ * 35..53, SACCH 35..56) in the bit layout the decoders take. If the codec
+ * cannot be created (its allocation fails at first use), the parity is all
+ * zeros; the decoders then fail every word.
  */
 void ez_rs28_facch_encode(const int payload[156], int parity[114]);
 void ez_rs28_sacch_encode(const int payload[180], int parity[132]);

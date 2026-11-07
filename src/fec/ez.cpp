@@ -215,13 +215,18 @@ acch_decode_fixed(const AcchLayout& layout, int* payload, const int* parity) {
 
 void
 acch_encode(const AcchLayout& layout, const int* payload, int* parity) {
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        /* No codec (its allocation failed at first use): all-zero parity, as documented in ez.h. */
+        for (int i = 0; i < layout.n_parity * 6; i++) {
+            parity[i] = 0;
+        }
+        return;
+    }
     uint8_t data[RS28_LOAD] = {0};
     uint8_t parity_hb[RS28_ROOTS] = {0};
-    ezpwd::RS<63, 35>* rs = rs28_instance();
     bits_to_hexbits(payload, layout.n_payload, data);
-    if (rs != nullptr) {
-        rs->encode(data, (unsigned)layout.n_payload, parity_hb);
-    }
+    rs->encode(data, (unsigned)layout.n_payload, parity_hb);
     hexbits_to_bits(parity_hb, layout.n_parity, parity);
 }
 
@@ -240,7 +245,7 @@ acch_encode(const AcchLayout& layout, const int* payload, int* parity) {
  * @param parity    168-bit parity array (ESS_A, converted to 28 hexbits).
  * @param erasures  Erasure position array (RS symbol positions 0-43).
  * @param n_erasures Number of erasures (must be <= 28).
- * @return Correction count, or -1 on failure.
+ * @return Number of symbols corrected (erasures that held the right value not counted), or < 0 on failure.
  */
 int
 ez_rs28_ess(int payload[96], int parity[168], const int* erasures, int n_erasures) {
@@ -286,8 +291,16 @@ ez_rs28_ess(int payload[96], int parity[168], const int* erasures, int n_erasure
         (*ess_a)[i] = a;
     }
 
-    /* Decode with erasures */
+    /* Decode with erasures. ezpwd counts every erasure as a correction; count the symbols it changed instead, the
+       unit of the FACCH and SACCH decoders. */
+    uint8_t received_b[16];
+    uint8_t received_a[28];
+    DSD_MEMCPY(received_b, ess_b->data(), sizeof(received_b));
+    DSD_MEMCPY(received_a, ess_a->data(), sizeof(received_a));
     ec = rs->decode(*ess_b, *ess_a, ErasuresDyn);
+    if (ec >= 0) {
+        ec = count_changed(received_b, ess_b->data(), 16) + count_changed(received_a, ess_a->data(), 28);
+    }
 
     /* Convert ESS_B back to bits */
     k = 0;

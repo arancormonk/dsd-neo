@@ -16,6 +16,7 @@
  * sym[0..pad-1], the payload sym[pad..34], the sent parity sym[35..] and the punctured parity the rest. The test
  * carries its own RS(63,35) encoder (GF(64) on x^6+x+1, roots alpha^1..alpha^28, as ezpwd's RS<63,35>) to check
  * the wrapper encoders against the unshortened code and to build words that only the unshortened code accepts.
+ * The ESS (RS(63,35) shortened by 19) is checked for the same correction-count unit.
  */
 
 #include <algorithm>
@@ -408,6 +409,51 @@ test_fixed_entry_matches_vector_entry(void) {
     return rc;
 }
 
+/*
+ * The ESS (RS(44,16,29): RS(63,35) shortened by 19, every symbol sent, indices 0..43) reports the symbols its decode
+ * changed, the unit of FACCH and SACCH: an erasure that held the right value is not a correction. ezpwd's own count
+ * includes every erasure.
+ */
+int
+test_ess_counts_changed_symbols(void) {
+    static const int kErrors[3] = {1, 20, 30};              // wrong, not erased
+    static const int kWrongErased[2] = {8, 35};             // wrong and erased
+    static const int kErasures[6] = {8, 35, 5, 10, 25, 40}; // 5, 10, 25 and 40 hold the right value
+    Rng rng{0x80410AULL};
+    int rc = 0;
+    for (int trial = 0; trial < 50; trial++) {
+        Word full(63, 0);
+        for (int i = 19; i < 35; i++) {
+            full[(size_t)i] = (uint8_t)(rng() & 0x3F);
+        }
+        reference_encode(&full);
+        Word rx = full;
+        for (int pos : kErrors) {
+            rx[19U + (size_t)pos] ^= (uint8_t)(1 + (rng() % 63));
+        }
+        for (int pos : kWrongErased) {
+            rx[19U + (size_t)pos] ^= (uint8_t)(1 + (rng() % 63));
+        }
+        int payload[96];
+        int parity[168];
+        symbols_to_bits(&rx[19], 16, payload);
+        symbols_to_bits(&rx[35], 28, parity);
+        int ec = ez_rs28_ess(payload, parity, kErasures, 6);
+        int want[96];
+        symbols_to_bits(&full[19], 16, want);
+        bool exact = true;
+        for (int i = 0; i < 96; i++) {
+            exact = exact && payload[i] == want[i];
+        }
+        if (ec != 5 || !exact) {
+            DSD_FPRINTF(stderr, "ESS changed-symbol count: trial %d got %d want 5 (payload %s)\n", trial, ec,
+                        exact ? "exact" : "wrong");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 /* Wrongly descrambled bursts look random; the full RS check now rejects nearly all of them (base: ~240 passes). */
 int
 test_random_words_rarely_pass(void) {
@@ -447,6 +493,7 @@ main(void) try {
     rc |= test_pad_correction_rejected();
     rc |= test_shortened_indices_in_erasure_list_ignored();
     rc |= test_fixed_entry_matches_vector_entry();
+    rc |= test_ess_counts_changed_symbols();
     rc |= test_random_words_rarely_pass();
     return rc;
 } catch (const std::exception& e) {
