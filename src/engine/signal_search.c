@@ -445,6 +445,14 @@ search_validate_start(const dsd_opts* opts, const dsd_state* state, const dsd_si
     return dsd_signal_search_validate_config(config, error, capacity);
 }
 
+/* Every start refusal past validation is a failed allocation: the session, its scan scope or its saved P25 site. */
+static void
+search_refuse_start(char* error, size_t capacity) {
+    if (error && capacity) {
+        DSD_SNPRINTF(error, capacity, "%s", "Not enough memory to start Signal search");
+    }
+}
+
 static void
 search_coord_free(void* ptr) {
     search_coord* c = (search_coord*)ptr;
@@ -523,6 +531,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     }
     search_coord* c = (search_coord*)calloc(1, sizeof(*c));
     if (!c) {
+        search_refuse_start(error, capacity);
         return -1;
     }
     c->config = *config;
@@ -554,6 +563,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         dsd_scan_mode_leave(opts, state);
         dsd_scan_settings_restore(&c->saved, opts, state);
         search_coord_free(c);
+        search_refuse_start(error, capacity);
         return -1;
     }
     /* No visit is on the air before this search's first landing: what its first tune's boundary closes was received
