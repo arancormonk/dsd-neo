@@ -3861,6 +3861,34 @@ frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
     return current;
 }
 
+/*
+ * The samples per symbol that dsd_state::samplesPerSymbol stands for when the hunt compares it with each profile's
+ * rounded timing. On an RTL output whose rate is not a whole multiple of @p profile_index's symbol rate, the FSK
+ * discriminator slicer times each symbol at the floor or the ceiling of the ratio (symbol_rtl_fsk_next_sps(): 12 kHz at
+ * 4800/s reads 2,3,2,3,...), so samplesPerSymbol holds the last symbol's length, not the profile's timing. Either length
+ * is that profile's timing and reads as its rounded rate; a short symbol is not another profile's timing. Read once per
+ * getFrameSync() entry or hunt step, never per symbol.
+ */
+static int
+frame_sync_timing_sps(const dsd_opts* opts, const dsd_state* state, int profile_index, int demod_rate) {
+    const int sps = state->samplesPerSymbol;
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && demod_rate > 0) {
+        const int symbol_rate_hz = frame_sync_sps_profile_for_index(profile_index)->symbol_rate_hz;
+        const int whole = demod_rate / symbol_rate_hz;
+        /* The slicer's own clamp: outside 2..63 whole samples it times every symbol alike. */
+        if (whole >= 2 && whole < 64 && (demod_rate % symbol_rate_hz) != 0 && (sps == whole || sps == whole + 1)) {
+            return dsd_opts_compute_sps_rate(opts, symbol_rate_hz, demod_rate);
+        }
+    }
+#else
+    UNUSED(opts);
+    UNUSED(profile_index);
+    UNUSED(demod_rate);
+#endif
+    return sps;
+}
+
 static int
 frame_sync_sps_hunt_next_index_matching_timing(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
@@ -3876,11 +3904,12 @@ frame_sync_sps_hunt_next_index_matching_timing(const dsd_opts* opts, const dsd_s
     }
 
     const int demod_rate = frame_sync_current_demod_rate(opts, state);
+    const int timing_sps = frame_sync_timing_sps(opts, state, current, demod_rate);
     int next_idx = (current + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
     for (int tries = 0; tries < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; tries++) {
         const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
         const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
-        if (frame_sync_sps_profile_has_candidate(opts, next_idx) && expected_sps == state->samplesPerSymbol) {
+        if (frame_sync_sps_profile_has_candidate(opts, next_idx) && expected_sps == timing_sps) {
             return next_idx;
         }
         next_idx = (next_idx + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
@@ -4039,13 +4068,14 @@ frame_sync_sps_profile_matching_timing(const dsd_opts* opts, const dsd_state* st
     int matching_profile = -1;
     int matching_level_profile = -1;
     const int current_levels = frame_sync_sps_profile_for_index(state->sps_hunt_idx)->levels;
+    const int timing_sps = frame_sync_timing_sps(opts, state, state->sps_hunt_idx, demod_rate);
     for (int profile_index = 0; profile_index < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
         if (!frame_sync_sps_profile_has_candidate(opts, profile_index)) {
             continue;
         }
         const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(profile_index);
         const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
-        if (expected_sps != state->samplesPerSymbol) {
+        if (expected_sps != timing_sps) {
             continue;
         }
         if (profile_index == state->sps_hunt_idx) {
