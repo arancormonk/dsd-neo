@@ -155,25 +155,22 @@ p25p1_read_nid_fields(dsd_opts* opts, dsd_state* state, uint8_t* duid, char bch_
     *parity_reliab = p25p1_llr_reliability(soft.llr[1]);
 }
 
-/* The NAC of the frame being decoded (issue #804), which a network status in it is paired with. A NID split by a carrier
-   boundary names no carrier's, as the received identity takes it (dsd_rxid_note_access()). */
-static void
-p25p1_note_frame_nac(dsd_state* state, int nac) {
-    if (state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq)) {
-        return;
-    }
-    state->p25_frame_nac = (uint16_t)nac;
-    state->p25_frame_nac_valid = 1U;
-}
-
 static void
 p25p1_apply_nac_update(dsd_state* state, int new_nac) {
     int valid_nac = p25p1_valid_decoded_nac(new_nac);
 
-    /* The NAC of a NID the BCH accepted is the carrier's received access code, an unchanged repeat included. */
+    /* A NID split by a carrier boundary names no carrier's NAC (issue #804): the BCH may accept the split word, but
+       neither the received identity nor state->nac, the seed's NAC or the frame's takes it. The boundary zeroed
+       state->nac so the next carrier never reads the old one. */
+    if (state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq)) {
+        return;
+    }
+    /* The NAC of a NID the BCH accepted is the carrier's received access code, an unchanged repeat included, and the
+       NAC of the frame being decoded (issue #804), which a network status in it is paired with. */
     if (valid_nac) {
         dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, (uint16_t)new_nac);
-        p25p1_note_frame_nac(state, new_nac);
+        state->p25_frame_nac = (uint16_t)new_nac;
+        state->p25_frame_nac_valid = 1U;
     }
     /* The seed's NAC follows the NID whatever state->nac holds: a seed NAC cleared by hand on this carrier comes back
        from the next NID (issue #804). */

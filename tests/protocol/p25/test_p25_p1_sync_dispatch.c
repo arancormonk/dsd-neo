@@ -811,6 +811,8 @@ test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_stub_state();
     g_new_nac = 0x293;
+    state.nac = 0x111;
+    state.p2_cc = 0x111ULL;
     state.frame_dispatch_active = 1;
     state.frame_dispatch_carrier_seq = state.carrier_seq;
     g_boundary_at_dibit = 10;
@@ -819,6 +821,9 @@ test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac(void) {
 
     assert(state.carrier_seq == 1U);
     assert(state.rx_id.valid == 0U && state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE);
+    /* Nor does the received NAC or the seed's take it (issue #804). */
+    assert(state.nac == 0x111);
+    assert(state.p2_cc == 0x111ULL);
 }
 
 /* A trunked system's return from a Phase 2 voice channel to its Phase 1 control channel crosses no carrier boundary:
