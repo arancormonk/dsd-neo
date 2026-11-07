@@ -12,6 +12,7 @@
 #include <QUuid>
 #include <QVariantList>
 #include <Qt>
+#include <dsd-neo/runtime/log.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <utility>
 #include "app_prefs.h"
@@ -99,8 +100,10 @@ ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
         auto row = normalize(value.toObject().toVariantMap());
         auto id = row.value("uid").toString();
         if (id.isEmpty() || ids.contains(id)) {
-            row["uid"] = id = uuid();
+            id = uuid();
         }
+        // Stored as text, so a UID that was not (a number) is saved as the one it reads as, and loads unrepaired.
+        row["uid"] = id;
         // Issue #697: a UID minted here is not the one anything stored before this load named.
         m_uidsRepaired = m_uidsRepaired || id != stored;
         ids.insert(id);
@@ -110,6 +113,11 @@ ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
     // or none, so they are forgotten, as a restore forgets them.
     if (m_uidsRepaired) {
         (void)AppPrefs::forgetScanCompanions();
+        // Saved now (issue #801), or the next launch mints others and whatever named these (a pinned shortcut, the
+        // last started list) loses them. Unsaved, they still hold for this run.
+        if (!save(m_rows)) {
+            LOG_WARN("Scan-list identity repair could not be persisted; list identities may change on restart.\n");
+        }
     }
 }
 
@@ -248,6 +256,18 @@ ScanListsModel::listsReferencingPath(const QString& path) const {
         }
     }
     return names;
+}
+
+QStringList
+ScanListsModel::csvPaths() const {
+    QStringList paths;
+    for (const auto& row : m_rows) {
+        const QString path = row.value("targetsCsvPath").toString();
+        if (row.value("targetSource") == "csv" && !path.isEmpty() && !paths.contains(path)) {
+            paths.append(path);
+        }
+    }
+    return paths;
 }
 
 bool

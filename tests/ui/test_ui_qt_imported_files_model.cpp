@@ -767,6 +767,37 @@ test_metadata_failure_keeps_file() {
     model.remove(row);
 }
 
+/* Issue #801: removal deletes the file before the row, and each step can run again. A file that will not delete keeps
+ * its row, in memory and in the index; an index that will not save after the file went keeps the row too, and the
+ * next call finishes the removal. */
+void
+test_remove_finishes_on_retry() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir fixtures;
+    const auto source = fixtures.filePath("talkgroups.csv");
+    expect("removal fixture", write_file(source, "id,mode,name\n123,A,Dispatch\n"));
+    const auto path = model.importFile(source, "removal.csv", "group").value("path").toString();
+    const auto store = dsd_qt::json_store_path("imported_files.json");
+    const auto indexed = [&store, &path]() { return read_file(store).contains(QFileInfo(path).fileName().toUtf8()); };
+    const int count = model.count();
+    // A non-empty directory where the file was: nothing deletes it as a file.
+    expect("hold the stored file", QFile::rename(path, path + ".held"));
+    expect("block the file delete", QDir().mkpath(path + "/inside"));
+    expect("an undeletable file is reported", !model.remove(model.rowForPath(path)));
+    expect("an undeletable file keeps its row", model.count() == count && model.rowForPath(path) >= 0 && indexed());
+    expect("unblock the file delete", QDir(path).removeRecursively() && QFile::rename(path + ".held", path));
+    // The file goes, then the index save fails.
+    expect("move the index", QFile::rename(store, store + ".held"));
+    expect("block the index save", QDir().mkdir(store));
+    expect("an unsaved index is reported", !model.remove(model.rowForPath(path)));
+    expect("the file went first", !QFile::exists(path));
+    expect("an unsaved index keeps the row", model.count() == count && model.rowForPath(path) >= 0);
+    expect("unblock the index save", QDir().rmdir(store) && QFile::rename(store + ".held", store));
+    expect("the retry finishes", model.remove(model.rowForPath(path)));
+    expect("the row is gone", model.count() == count - 1 && model.rowForPath(path) < 0 && !indexed());
+}
+
 } // namespace
 
 /* Issue #526: the channel-map review carries an analog row's own channel width in Hz -- an nfm row's
@@ -1683,6 +1714,7 @@ main(int argc, char** argv) {
         expect("initialization signal is available", host.metaObject()->indexOfSignal("sessionInitialized()") >= 0);
     }
     test_metadata_failure_keeps_file();
+    test_remove_finishes_on_retry();
     test_channel_bundle();
     test_channel_bundle_quoted_options();
     test_channel_review_bandwidth();

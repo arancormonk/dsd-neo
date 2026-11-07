@@ -58,6 +58,9 @@ class ImportedFilesModel : public QAbstractListModel {
     /** @brief Every library row type the model can validate; a row of any other type cannot be used. */
     static QStringList knownTypes();
 
+    /** @brief The folder the library stores its copies in; every row's file, bundles included, lies below it. */
+    static QString libraryRoot();
+
     /**
      * @brief Dry-run validate @p path as @p type; false when it cannot be parsed.
      *
@@ -132,8 +135,14 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     Q_INVOKABLE QVariantMap refreshGeneratedFile(int row, const QString& sourcePath);
 
-    /** @brief Delete the stored file, then the row. Persists immediately. */
     Q_INVOKABLE QVariantMap channelProfiles(int row) const;
+    /**
+     * @brief Delete the stored file (and its bundle), then the row. Persists immediately.
+     *
+     * Returns false, keeping the row, when removal is refused (canRemove()), the file will not delete, or the index
+     * cannot be saved. Each step is safe to repeat, so calling it again finishes a removal that stopped part way; a
+     * file already gone counts as deleted. References to the path are the caller's to clear, before this call.
+     */
     Q_INVOKABLE bool remove(int row);
     Q_INVOKABLE bool canRemove(int row) const;
     Q_INVOKABLE QVariantMap targetPreview(const QString& path) const;

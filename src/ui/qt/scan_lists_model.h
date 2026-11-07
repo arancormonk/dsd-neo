@@ -42,6 +42,8 @@ class ScanListsModel : public QAbstractListModel {
     Q_INVOKABLE bool remove(int row);
     Q_INVOKABLE QStringList listsReferencingPath(const QString& path) const;
     Q_INVOKABLE bool clearCsvPath(const QString& path);
+    /** @brief Every target CSV the lists over one name, each once: what clearCsvPath() can clear. */
+    QStringList csvPaths() const;
     Q_INVOKABLE void touch(int row);
     /**
      * @brief How many targets @p list holds as Home counts them (issue #697): its entries, or for a list over an

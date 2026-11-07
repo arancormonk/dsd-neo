@@ -7,7 +7,10 @@
 #include <QVariantMap>
 #include "qt_ui.h"
 
+#include <QChar>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QLatin1String>
 #include <QObject>
@@ -19,6 +22,7 @@
 #include <QUrl>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/runtime/log.h>
 #include <functional>
 #include <qqml.h>
 
@@ -244,16 +248,30 @@ apply_confirmed_restore(const DecoderHost* host) {
     return backup::apply_pending_restore(env);
 }
 
-static void
+void
 prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* systems, ScanListsModel* scanLists) {
     // The library drops rows whose stored copy vanished behind the app's back;
     // saved systems that still point at one would build a `-G <missing>` argv and
     // fail to start with a parse error naming the input settings, not the file.
     // Reconciled here because the library cannot: it loads in its constructor,
     // and it has no business knowing what references it.
-    for (const QString& gone : importedFiles->takePrunedPaths()) {
-        systems->clearCsvPath(gone);
-        scanLists->clearCsvPath(gone);
+    QStringList gone = importedFiles->takePrunedPaths();
+    // The library saves its prune before anything here runs, so a clear that fails is not in the next launch's
+    // pruned list. Every reference into the library to a file that is gone is cleared as well, which retries it at
+    // each launch until it saves (issue #801). Files outside the library are the user's own and stay named.
+    const QString root = QDir::cleanPath(ImportedFilesModel::libraryRoot()) + QLatin1Char('/');
+    for (const QString& path : systems->csvPaths() + scanLists->csvPaths()) {
+        if (!gone.contains(path) && QDir::cleanPath(path).startsWith(root) && !QFileInfo::exists(path)) {
+            gone.append(path);
+        }
+    }
+    bool saved = true;
+    for (const QString& path : gone) {
+        saved = systems->clearCsvPath(path) && saved;
+        saved = scanLists->clearCsvPath(path) && saved;
+    }
+    if (!saved) {
+        LOG_WARN("Could not clear references to removed library files; they are retried at the next launch.\n");
     }
 }
 

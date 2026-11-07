@@ -161,6 +161,9 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief Names of systems whose CSV fields reference @p path; for delete warnings. */
     Q_INVOKABLE QStringList systemsReferencingPath(const QString& path) const;
 
+    /** @brief Every non-empty path the systems' CSV fields hold, each once: what clearCsvPath() can clear. */
+    QStringList csvPaths() const;
+
     /**
      * @brief Blank every CSV field matching @p path, in every system. Persists first.
      *

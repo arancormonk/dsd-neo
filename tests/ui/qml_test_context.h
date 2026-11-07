@@ -42,6 +42,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFocusEvent>
 #include <QFont>
 #include <QFontDatabase>
@@ -3667,6 +3668,32 @@ class Setup : public QObject {
         }
         file.close();
         return path;
+    }
+
+    /**
+     * @brief Make @p path impossible to replace or delete as a file, or (@p blocked false) put it back.
+     *
+     * The file is moved aside and a non-empty directory takes its place, so a store saved there fails and a file
+     * removed there stays, whatever the permissions the suite runs with (issue #801). Answers whether it worked.
+     */
+    Q_INVOKABLE bool
+    blockPath(const QString& path, bool blocked) const {
+        if (blocked) {
+            return QFile::rename(path, path + QStringLiteral(".held")) && QDir().mkpath(path + QStringLiteral("/held"));
+        }
+        return QDir(path).removeRecursively() && QFile::rename(path + QStringLiteral(".held"), path);
+    }
+
+    /** @brief The absolute path of app store @p name, for blockPath(). */
+    Q_INVOKABLE QString
+    storePath(const QString& name) const {
+        return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/") + name;
+    }
+
+    /** @brief Whether @p path names an existing file (not a directory). */
+    Q_INVOKABLE bool
+    fileExists(const QString& path) const {
+        return QFileInfo(path).isFile();
     }
 
     /** Use real QObject signals and QSettings for initialization bookkeeping tests;

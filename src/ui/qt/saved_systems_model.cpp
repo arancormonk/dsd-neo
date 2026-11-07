@@ -578,6 +578,20 @@ SavedSystemsModel::systemsReferencingPath(const QString& path) const {
     return names;
 }
 
+QStringList
+SavedSystemsModel::csvPaths() const {
+    QStringList paths;
+    for (const Row& row : m_rows) {
+        for (const QString* path :
+             {&row.chanCsvPath, &row.groupCsvPath, &row.keyCsvPath, &row.p25BandplanCsvPath, &row.srcCsvPath}) {
+            if (!path->isEmpty() && !paths.contains(*path)) {
+                paths.append(*path);
+            }
+        }
+    }
+    return paths;
+}
+
 bool
 SavedSystemsModel::clearCsvPath(const QString& path) {
     if (path.isEmpty()) {

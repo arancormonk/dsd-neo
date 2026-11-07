@@ -11878,6 +11878,18 @@ Qt Quick frontend (`src/ui/qt`):
   group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
   the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
   keeps its avoid: its "1 site" chooser lifts it. Tests: `UI_QT_PERSISTENCE`.
+- Removing a library file (issue #801) runs in this order, and each step is safe to run again: `ImportsScreen.qml`'s
+  Remove file clears the path from saved systems (`SavedSystemsModel::clearCsvPath`), then from scan lists
+  (`ScanListsModel::clearCsvPath`), then calls `ImportedFilesModel::remove()`, which deletes the file (one already
+  gone counts as deleted) and its bundle before it saves the index without the row. The first step that returns false
+  stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only when all
+  three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
+  (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
+  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists.
+  The library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an
+  earlier launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
+  (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
+  `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   Every history change rescans the whole history (a merge can move a row to another session, so contributions are
@@ -13514,7 +13526,9 @@ Several lists in one session (issue #697):
   (`UiController::autoStartRequested(kind, uid, companions)`, from `qt_ui.cpp`) and `pruneScanCompanions()` trims of
   removed lists. A start resolves the uids as the lists are saved then (`scanListsByUid()`): a removed companion is left
   out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
-  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. A start hold (issue #644) is
+  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. That load also saves the
+  repaired uids (issue #801), so the next load keeps them and a backup taken at once carries them; a failed save logs
+  one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). A start hold (issue #644) is
   no part of the identity: `startWithMap()` takes it in `options.holdTarget` for that start, across a USB permission
   wait in `pendingStartHold` (set by every wait, read once by the grant), and never in `attemptedSource` or prefs.
 - In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n

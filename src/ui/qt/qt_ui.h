@@ -16,6 +16,9 @@ class QQmlApplicationEngine;
 namespace dsd_qt {
 
 class DecoderHost;
+class ImportedFilesModel;
+class SavedSystemsModel;
+class ScanListsModel;
 
 /**
  * @brief Pin the look shared by every platform.
@@ -32,6 +35,15 @@ void ui_apply_style(void);
  * @return true when the root document instantiated a window.
  */
 bool ui_load(QQmlApplicationEngine& engine, DecoderHost* host);
+
+/**
+ * @brief Clear what saved systems and scan lists name of library files that are gone.
+ *
+ * ui_load() runs it once the models have loaded: the paths the library pruned this load, and every path into
+ * ImportedFilesModel::libraryRoot() whose file no longer exists, so a clear whose save failed at one launch is done
+ * at a later one. A path outside the library is left as it is.
+ */
+void prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* systems, ScanListsModel* scanLists);
 
 } // namespace dsd_qt
 

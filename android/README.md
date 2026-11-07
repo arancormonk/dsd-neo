@@ -2217,7 +2217,8 @@ Select another imported target CSV in the list editor or use **Update from file*
 in the imports library to change target contents. Replacement and removal require
 an idle decoder. Failed replacement keeps the previous file usable. Removing a
 referenced target asset marks its lists as drafts; deleting a list keeps shared
-assets. Validation reports the failing row/field without displaying key values.
+assets. A removal that cannot save those changes or delete the file says so and
+keeps the file in the library; remove it again to finish. Validation reports the failing row/field without displaying key values.
 
 Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
