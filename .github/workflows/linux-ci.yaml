@@ -592,7 +592,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -920,7 +920,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -1002,7 +1002,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -1095,10 +1095,10 @@ jobs:
 
           check = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
           expected = sorted([
-              "semgrep 1.182.1 has requirement mcp==1.29.0, but you have mcp 1.30.0.",
-              "semgrep 1.182.1 has requirement opentelemetry-api~=1.37.0, but you have opentelemetry-api 1.45.1.",
-              "semgrep 1.182.1 has requirement opentelemetry-exporter-otlp-proto-http~=1.37.0, but you have opentelemetry-exporter-otlp-proto-http 1.45.1.",
-              "semgrep 1.182.1 has requirement opentelemetry-sdk~=1.37.0, but you have opentelemetry-sdk 1.45.1.",
+              "semgrep 1.184.0 has requirement mcp==1.29.0, but you have mcp 1.30.0.",
+              "semgrep 1.184.0 has requirement opentelemetry-api~=1.37.0, but you have opentelemetry-api 1.45.2.",
+              "semgrep 1.184.0 has requirement opentelemetry-exporter-otlp-proto-http~=1.37.0, but you have opentelemetry-exporter-otlp-proto-http 1.45.2.",
+              "semgrep 1.184.0 has requirement opentelemetry-sdk~=1.37.0, but you have opentelemetry-sdk 1.45.2.",
           ])
           if check.returncode != 1 or sorted(check.stdout.splitlines()) != expected or check.stderr:
               sys.exit(f"Unexpected Semgrep dependency check: {check.stdout}{check.stderr}")
@@ -1123,7 +1123,7 @@ jobs:
       - name: Upload Semgrep SARIF
         if: always() && hashFiles('.semgrep.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: .semgrep.sarif
 
@@ -1235,7 +1235,7 @@ jobs:
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+      image: archlinux:base-devel@sha256:2de80105abb49f813a85393c6758a4334deb6bcec4a2411bd2f059c0bee6ee4c
       # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
       # GitHub rejects empty credentials before the job starts. That is safe only because this
       # job never runs on a pull request, where Dependabot and fork PRs have no secrets; a job
@@ -1449,7 +1449,7 @@ jobs:
     needs: [build-linux, validate-release-tag]
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel@sha256:51dd3d24f7fba779e7c471caeee7804c50e8c134ad948e19685a1c83a42facc3
+      image: archlinux:base-devel@sha256:2de80105abb49f813a85393c6758a4334deb6bcec4a2411bd2f059c0bee6ee4c
       # Pulled before any step runs, so a login step cannot cover it: authenticate the pull itself.
       # GitHub rejects empty credentials before the job starts. That is safe only because this
       # job never runs on a pull request, where Dependabot and fork PRs have no secrets; a job
@@ -1992,7 +1992,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -2081,7 +2081,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -2208,7 +2208,7 @@ jobs:
         # The Arch toolchain image below is pulled with `docker` inside a step, so it
         # needs a login of its own.
         if: env.CI_RUN_CHECK == 'true' && (steps.dockerhub.outputs.available == 'true')
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}

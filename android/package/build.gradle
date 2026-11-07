@@ -1,7 +1,7 @@
 // Copyright (C) The Qt Company Ltd.
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// Vendored from Qt 6.11.2's androiddeployqt template
+// Vendored from Qt 6.11.3's androiddeployqt template
 // (<Qt>/android_arm64_v8a/src/android/templates/build.gradle) with changes marked
 // DSD-NEO below. Files in QT_ANDROID_PACKAGE_SOURCE_DIR override the Qt template, so
 // this copy is what Gradle actually runs. Re-diff against the Qt template when the

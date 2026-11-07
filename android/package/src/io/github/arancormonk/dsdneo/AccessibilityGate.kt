@@ -36,7 +36,7 @@ data class LaunchPlan(val wanted: Boolean, val activated: Boolean, val env: Stri
     }
 }
 
-/** Whether Qt 6.11.2 reads [value] of the variable as "keep the bridge off" (QtAccessibilityDelegate.java:94-95). */
+/** Whether Qt 6.11.3 reads [value] of the variable as "keep the bridge off" (QtAccessibilityDelegate.java:94-95). */
 fun qtKeepsBridgeOff(value: String?): Boolean = value == "1" || value.equals("true", ignoreCase = true)
 
 /** What the platform side does with the notice: nothing, show it now, or keep it for the owner's next resume. */
@@ -44,7 +44,7 @@ enum class Notice { NONE, SHOW, PENDING }
 
 /**
  * The accessibility bridge's process state (#782). Qt reads `QT_ANDROID_DISABLE_ACCESSIBILITY` as it starts and on each
- * later change of the enabled state, and turning the bridge on later is unsafe on Qt 6.11.2, so the first [launch]
+ * later change of the enabled state, and turning the bridge on later is unsafe on Qt 6.11.3, so the first [launch]
  * decides for the whole process and the variable is frozen right after. Touch exploration turned on after a launch that
  * left the bridge off owes the user a notice: the app has to be closed and opened again.
  *

@@ -93,8 +93,23 @@ AppImage's pinned libcrypto tracks OpenSSL 3.5 LTS (supported through April 2030
 independently of the vcpkg registry's OpenSSL version. Keep each runtime's
 `libssl` and `libcrypto` compatible: a newer `libssl.so.3` can require symbols
 that an older `libcrypto.so.3` does not provide despite the shared major version.
-The AppImage CMake installer stays on 3.31 because pinned SoapySDR and AppImage
-helper sources still declare policy versions rejected by CMake 4.
+The AppImage build installs CMake 4. SoapySDR, libairspy, linuxdeploy and its
+AppImage plugin still declare CMake minimums older than 3.5, which CMake 4
+rejects, so their builds pass `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`. Drop the
+option for a source once its pinned revision declares 3.5 or newer.
+
+Two packaging pins are held below upstream on purpose:
+
+- SoapySDR stays on 0.8.1. SoapySDR 0.9.0 moves the module ABI to `0.9`, and
+  the AppImage loads the SoapySDR device modules installed on the host, which
+  every distribution still builds for `0.8`. Move it once distributions ship
+  0.9 modules.
+- libairspy stays on `bd15be38e91ebaa3e0bebb1e320255bde4ccf059`. Upstream's
+  June 2025 "Copyright Update" commits put `iqconverter_float.*` and
+  `iqconverter_int16.*` under a license that allows distribution only within
+  the Airspy ecosystem. dsd-neo ships those files in its Android, AppImage,
+  macOS and Windows packages, so it cannot take a later revision unless
+  upstream restores a redistributable license.
 
 ## Tooling Dependencies
 
@@ -109,7 +124,7 @@ CI and local quality tools are tracked through:
 Hashed Python requirements are used where Python tooling is installed in CI.
 GitHub Actions are pinned to immutable commit SHAs by policy.
 
-Semgrep 1.182.1 pins two vulnerable dependency ranges:
+Semgrep 1.184.0 pins two vulnerable dependency ranges:
 
 - `mcp==1.29.0`, which is affected by
   [GHSA-84m7-p3x7-pcfv](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv).
@@ -117,7 +132,7 @@ Semgrep 1.182.1 pins two vulnerable dependency ranges:
 - `opentelemetry-*~=1.37.0` and `~=0.58b0`, which hold `opentelemetry-api` below
   the fix for [GHSA-xcq7-p3pf-p88h](https://github.com/advisories/GHSA-xcq7-p3pf-p88h).
   The Semgrep requirements override the OpenTelemetry packages Semgrep names
-  with 1.45.1 and 0.66b1, so the family stays in step.
+  with 1.45.2 and 0.66b2, so the family stays in step.
 
 Regenerate the complete hashed lockfile with the command in its header, including
 `--override .github/requirements/semgrep.in`. Install it with
@@ -229,7 +244,7 @@ stale pins for migrated sources. It also accepts older releases that still carry
 their FFT. Both AUR CI jobs use it; recipe-only updates increment `pkgrel`.
 Neither DSD nor mbelib needs a separate PFFFT dependency package.
 
-The mbelib vcpkg overlay pins release 2.6.5. It acquires
+The mbelib vcpkg overlay pins release 2.6.6. It acquires
 mbelib's FFT through vcpkg's verified download/cache mechanism and passes an
 offline override. Its independent `MBELIB_PFFFT_*` pins are mirrored in
 `vcpkg-ports/mbe-neo/pffft.cmake` by `tools/check_vcpkg_overlay_pins.sh --fix`.

@@ -28,11 +28,11 @@ DISTROS=(
   ubuntu-24.04
   debian-13
   debian-12
-  fedora-44
-  rocky-9
-  almalinux-9
-  centos-stream-9
-  opensuse-leap-16.0
+  fedora-45
+  rocky-10
+  almalinux-10
+  centos-stream-10
+  opensuse-leap-16.1
   opensuse-tumbleweed
   alpine-3.24
   arch
@@ -52,11 +52,11 @@ image_for_distro() {
     ubuntu-24.04) printf '%s\n' "${INSTALL_UBUNTU_2404_IMAGE:?}" ;;
     debian-13) printf '%s\n' "${INSTALL_DEBIAN_13_IMAGE:?}" ;;
     debian-12) printf '%s\n' "${INSTALL_DEBIAN_12_IMAGE:?}" ;;
-    fedora-44) printf '%s\n' "${INSTALL_FEDORA_44_IMAGE:?}" ;;
-    rocky-9) printf '%s\n' "${INSTALL_ROCKY_9_IMAGE:?}" ;;
-    almalinux-9) printf '%s\n' "${INSTALL_ALMALINUX_9_IMAGE:?}" ;;
-    centos-stream-9) printf '%s\n' "${INSTALL_CENTOS_STREAM_9_IMAGE:?}" ;;
-    opensuse-leap-16.0) printf '%s\n' "${INSTALL_OPENSUSE_LEAP_160_IMAGE:?}" ;;
+    fedora-45) printf '%s\n' "${INSTALL_FEDORA_45_IMAGE:?}" ;;
+    rocky-10) printf '%s\n' "${INSTALL_ROCKY_10_IMAGE:?}" ;;
+    almalinux-10) printf '%s\n' "${INSTALL_ALMALINUX_10_IMAGE:?}" ;;
+    centos-stream-10) printf '%s\n' "${INSTALL_CENTOS_STREAM_10_IMAGE:?}" ;;
+    opensuse-leap-16.1) printf '%s\n' "${INSTALL_OPENSUSE_LEAP_161_IMAGE:?}" ;;
     opensuse-tumbleweed) printf '%s\n' "${INSTALL_OPENSUSE_TUMBLEWEED_IMAGE:?}" ;;
     alpine-3.24) printf '%s\n' "${INSTALL_ALPINE_324_IMAGE:?}" ;;
     arch) printf '%s\n' "${ARCHLINUX_BASE_DEVEL_IMAGE:?}" ;;
@@ -64,12 +64,13 @@ image_for_distro() {
   esac
 }
 
-# Most distros must prove both radio backends are installable. openSUSE Leap
-# 16.0 ships rtl-sdr but has no SoapySDR package in its repositories, so it
-# validates with whichever backends are available.
+# Most distros must prove every radio backend is installable. openSUSE Leap
+# 16.1 ships rtl-sdr but has no SoapySDR or libairspy package, and
+# EPEL 10 has rtl-sdr and SoapySDR but no libairspy, so those validate with
+# whichever backends are available.
 radio_mode_for_distro() {
   case "$1" in
-    opensuse-leap-16.0) printf '%s\n' auto ;;
+    opensuse-leap-16.1 | rocky-10 | almalinux-10 | centos-stream-10) printf '%s\n' auto ;;
     *) printf '%s\n' required ;;
   esac
 }
@@ -224,6 +225,12 @@ run_one() {
         fi
 
         echo "==> Debug test build"
+        # The archive carries no .git, and some TOOLS_* tests read the checkout
+        # through git, so give them a one-commit repository of the same files.
+        git -C /workspace init -q
+        git -C /workspace add -A
+        git -C /workspace -c user.name=install-matrix -c user.email=install-matrix@localhost \
+          -c commit.gpgsign=false commit -q -m "install matrix snapshot"
         cmake -S /workspace -B /tmp/dsd-neo-build-debug -G Ninja \
           -DCMAKE_BUILD_TYPE=Debug \
           -DBUILD_TESTING=ON \

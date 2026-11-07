@@ -61,7 +61,7 @@ private fun aSummaryFollowsTheFacts() {
     val second = record(7, 1).copy(status = 0, summary = LaunchGuard.SUMMARY)
     check(
         ExitFacts.line(second, format) == "exit: t7 pid 4007 EXIT_SELF status 0 importance 125 pss 51200 kB " +
-            "(activity: second instance in a running process; Qt 6.11.2 restarts the process)",
+            "(activity: second instance in a running process; Qt 6.11.3 restarts the process)",
     ) { "unexpected line: ${ExitFacts.line(second, format)}" }
     val described = record(7, 1, "exit\tcode 0").copy(summary = LaunchGuard.SUMMARY)
     check(ExitFacts.line(described, format).endsWith(" kB \"exit code 0\" (${LaunchGuard.SUMMARY})")) {

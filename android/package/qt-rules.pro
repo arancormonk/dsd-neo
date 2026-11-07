@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Qt 6.11.2 ships plain JARs without consumer keep rules. Its native libraries
+# Qt 6.11.3 ships plain JARs without consumer keep rules. Its native libraries
 # use FindClass, RegisterNatives and named upcalls. Re-audit on every Qt upgrade.
 # Native registration requires even methods with no Java caller to survive.
 -keepclasseswithmembers,includedescriptorclasses class org.qtproject.qt.android.** {

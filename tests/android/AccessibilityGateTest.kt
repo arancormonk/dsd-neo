@@ -63,7 +63,7 @@ private fun theFirstLaunchDecidesForTheProcess() {
 }
 
 private fun qtsOwnReadingOfTheVariable() {
-    // QtAccessibilityDelegate.java:94-95 at v6.11.2: equalsIgnoreCase("true") || equals("1").
+    // QtAccessibilityDelegate.java:94-95 at v6.11.3: equalsIgnoreCase("true") || equals("1").
     for (value in listOf("1", "true", "TRUE", "True", "tRuE")) check(qtKeepsBridgeOff(value)) { "Qt keeps off: $value" }
     for (value in listOf(null, "", "0", "false", "yes", "11", " 1", "1 ", "truee")) {
         check(!qtKeepsBridgeOff(value)) { "Qt does not keep off: $value" }

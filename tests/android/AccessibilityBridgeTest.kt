@@ -40,7 +40,7 @@ internal object Recorder : AccessibilityBridge.Effects {
 }
 
 /**
- * Qt 6.11.2's accessibility listener, as QtAccessibilityDelegate has it (:66-140): registered inside super.onCreate()
+ * Qt 6.11.3's accessibility listener, as QtAccessibilityDelegate has it (:66-140): registered inside super.onCreate()
  * and called at once if accessibility is enabled; on every call it reads the variable first and does nothing at all
  * when it is "1" or "true", else turns the bridge on or off with the enabled state.
  */

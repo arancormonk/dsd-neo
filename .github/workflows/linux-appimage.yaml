@@ -73,7 +73,7 @@ jobs:
       - name: Login to Docker Hub (optional)
         # The QEMU and Ubuntu images below are pulled inside steps.
         if: steps.dockerhub.outputs.available == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550
         continue-on-error: true
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -267,11 +267,11 @@ jobs:
               arch=$(uname -m)
               case "$arch" in
                 x86_64)
-                  cmUrl=https://github.com/Kitware/CMake/releases/download/v3.31.12/cmake-3.31.12-linux-x86_64.sh
+                  cmUrl=https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-linux-x86_64.sh
                   cmSha="$CMAKE_LINUX_X86_64_SHA256"
                   ;;
                 aarch64)
-                  cmUrl=https://github.com/Kitware/CMake/releases/download/v3.31.12/cmake-3.31.12-linux-aarch64.sh
+                  cmUrl=https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-linux-aarch64.sh
                   cmSha="$CMAKE_LINUX_AARCH64_SHA256"
                   ;;
                 *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
@@ -385,7 +385,7 @@ jobs:
               build_dep https://github.com/arancormonk/rtl-sdr "$rtlsdr_sha" librtlsdr rtlsdr_sha "-DDETACH_KERNEL_DRIVER=ON" librtlsdr
               build_dep https://github.com/airspy/airspyone_host "$airspy_sha" libairspy airspy_sha "-DINSTALL_UDEV_RULES=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5" libairspy
               build_dep https://github.com/pothosware/SoapySDR "$soapy_sdr_sha" SoapySDR soapy_sdr_sha \
-                "-DENABLE_APPS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_PYTHON=OFF -DENABLE_PYTHON3=OFF -DSOAPY_SDR_ROOT=$soapy_sdr_root"
+                "-DENABLE_APPS=OFF -DENABLE_TESTS=OFF -DENABLE_DOCS=OFF -DENABLE_PYTHON=OFF -DENABLE_PYTHON3=OFF -DSOAPY_SDR_ROOT=$soapy_sdr_root -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
 
               mf="$DEPS/.manifest"
               {
@@ -488,6 +488,8 @@ jobs:
                 -DCMAKE_BUILD_TYPE=Release
                 -DCMAKE_C_COMPILER=gcc
                 -DCMAKE_CXX_COMPILER=g++
+                # linuxdeploy and its AppImage plugin declare CMake minimums that CMake 4 rejects.
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5
               )
 
               echo "Building native appimagetool from pinned source..."
@@ -714,7 +716,7 @@ jobs:
         if: >-
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: nightly
           name: nightly

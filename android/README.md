@@ -531,7 +531,7 @@ Prerequisites:
 - NDK r28c (`28.2.13676358`), retained by this tree's CI; Qt 6.11's published
   support matrix recommends r27c, so a further NDK upgrade needs separate validation
 - JDK 21 for the build tools (Java source/target compatibility remains 17)
-- Qt 6.11.2 `android_arm64_v8a` kit **and** the matching host kit (`gcc_64` on Linux)
+- Qt 6.11.3 `android_arm64_v8a` kit **and** the matching host kit (`gcc_64` on Linux)
 - vcpkg (the repo's manifest and overlay ports cross-compile mbe-neo, OpenSSL,
   libsndfile, Codec2 and libcurl)
 - a host C compiler: Codec2 builds `generate_codebook` for the build machine and
@@ -541,8 +541,8 @@ Prerequisites:
 export VCPKG_ROOT=$HOME/vcpkg
 export ANDROID_SDK_ROOT=/opt/android-sdk
 export ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/28.2.13676358
-export QT_ANDROID_ROOT=$HOME/Qt/6.11.2/android_arm64_v8a
-export QT_HOST_ROOT=$HOME/Qt/6.11.2/gcc_64
+export QT_ANDROID_ROOT=$HOME/Qt/6.11.3/android_arm64_v8a
+export QT_HOST_ROOT=$HOME/Qt/6.11.3/gcc_64
 
 cmake --preset android-app
 cmake --build --preset android-app -j          # builds the apk target
@@ -571,7 +571,7 @@ libraries have their own CMake/compiler optimization settings.
 name from `decoder_host_android.cpp` and the `DsdNative` JNI bindings. Add a matching
 rule whenever adding a native upcall. `qt-rules.pro` preserves Qt's native method
 registration, `UsedFromNativeCode` annotations and the unannotated bridge types and
-methods in Qt 6.11.2. Re-audit it on a Qt upgrade: annotations alone are incomplete.
+methods in Qt 6.11.3. Re-audit it on a Qt upgrade: annotations alone are incomplete.
 This includes the `relativePath`, `size` and `isDir` fields of
 `QtApkFileEngine.JFileInfo`: native plugin discovery reads them when libraries stay
 inside Play's APK splits. Removing or renaming them prevents the Android platform
@@ -686,7 +686,7 @@ the tree is known good with. Two of them are audited pins, not minimums (#782), 
   restarts the app (see "Known limits"), so a bump starts by comparing the new
   platform's flags with the list (`launch_policy` in `tests/android/run_jvm_tests.py`
   says how).
-- **Qt.** The accessibility bridge gate and the launch policy depend on how Qt 6.11.2
+- **Qt.** The accessibility bridge gate and the launch policy depend on how Qt 6.11.3
   reads its accessibility variable and restarts the process. A Qt bump re-audits
   both: run the "Qt upgrade checks" in `docs/code_map.md` again, then make
   `LaunchGuard.QT_RESTART` name the new version. The test reads the CI pin only; a
@@ -1005,7 +1005,7 @@ With Signal search open, its screen says to plug the receiver back in and start
 the search again. **Dismiss** clears the notice and cancels a Reconnect still
 waiting. A UI created over a service that is still running could not prove which
 saved system the service runs, so Reconnect there would only ask for access, and
-the notice would end "…tap Reconnect, then start it again." Under Qt 6.11.2 that
+the notice would end "…tap Reconnect, then start it again." Under Qt 6.11.3 that
 never happens: closing the app, or Android reclaiming it, ends the process and the
 session with it, and a recreated Activity restarts the process (see "Known limits").
 
@@ -1631,7 +1631,7 @@ module behind it, so androiddeployqt has nothing extra to package.
   each section lists its entries by frequency, SGID or radio ID rather than most
   recent first: Qt tells TalkBack nothing when rows change places, and a list that
   kept reordering under it made swiping skip, repeat or loop entries.
-- **A recreated Activity restarts the app.** Under Qt 6.11.2, a second instance of
+- **A recreated Activity restarts the app.** Under Qt 6.11.3, a second instance of
   the app's Activity in the running process makes Qt restart the whole process from
   inside that instance's start, with none of the app's teardown: decoding stops at
   once, as if the app had been killed. Android creates one when a configuration
@@ -1758,7 +1758,7 @@ one only for the restart under "Known limits", just before Qt restarts the proce
 (#782):
 
 ```
-exit: … EXIT_SELF status 0 … (activity: second instance in a running process; Qt 6.11.2 restarts the process)
+exit: … EXIT_SELF status 0 … (activity: second instance in a running process; Qt 6.11.3 restarts the process)
 ```
 
 The reason and the status are Android's; the summary names the Qt of the build that
@@ -2057,7 +2057,7 @@ A screen reader reaches them through Qt's accessibility bridge, which the app tu
 on only when a screen reader's explore-by-touch (TalkBack's) is on at launch (#782).
 Unless the bridge is already on, no other accessibility service gets app content:
 Switch Access, Voice Access, Select to Speak, and apps that bind a service for other
-reasons, such as remote-control or call-recording apps. Qt 6.11.2 turns the bridge on
+reasons, such as remote-control or call-recording apps. Qt 6.11.3 turns the bridge on
 for any of them, and each item it shows or hides then costs Android's main thread a
 task that makes 8 blocking round trips to Qt's thread. A scan hopping between targets
 raised dozens a second, so the main thread fell more than a minute behind: the dim,

@@ -8,12 +8,12 @@
  * @brief How the QML engine's garbage collector runs in every DSD-neo process.
  *
  * Since Qt 6.8 the QML collector is incremental: a collection runs in time slices (5 ms by default)
- * between allocations and event-loop turns. Qt 6.11.2 can lose a QML object's function storage this
+ * between allocations and event-loop turns. Qt 6.11 can lose a QML object's function storage this
  * way while the object is still being created (QQmlVMEMetaObject holds that storage through a weak
  * reference only). When the object is a `Connections` element with a `function onX()` handler,
- * QQmlConnections::connectSignalsToMethods() then dereferences null and the process crashes. A Qt
- * build with qtdeclarative 42c76d7acd (QTBUG-148459) null-checks there instead and skips the
- * handler, so a sheet's `onVisibleChanged` cleanup would silently not run.
+ * QQmlConnections::connectSignalsToMethods() then dereferences null and the process crashes (6.11.2).
+ * Qt 6.11.3 carries qtdeclarative 42c76d7acd (QTBUG-148459), which null-checks there instead and
+ * skips the handler, so a sheet's `onVisibleChanged` cleanup would silently not run.
  *
  * Every Qt since 6.8 runs a collection to completion when QV4_GC_TIMELIMIT is 0, as every collection
  * ran before 6.8. On Qt 6.11.2, eight parallel runs of the session-tools QML suite on a loaded host
