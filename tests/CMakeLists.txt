@@ -8115,6 +8115,30 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
+    # Discussion #717: a failed EDACS grant tune must not leave a session whose
+    # control channel keeps syncing tuned to the voice channel forever.
+    add_executable(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        engine/test_engine_edacs_failed_grant_stall.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_EDACS_FAILED_GRANT_STALL
+        COMMAND dsd-neo_test_engine_edacs_failed_grant_stall
+    )
     add_executable(
         dsd-neo_test_engine_cold_start_hunt
         engine/test_engine_cold_start_hunt.c

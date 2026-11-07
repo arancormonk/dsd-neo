@@ -8194,7 +8194,30 @@ at the stream's output rate and Pulse at 48 kHz (`edacs_analog_input_rate_hz()`)
 WAVs see 48 kHz, and at 48 kHz the collection is unchanged. A triplet a retune cut through (the trunk-tuning, RTL
 stream or PCM stream generation moved while it was read), or read while the call's tune or any other retune is
 unresolved, is discarded: no audio, recording, release check, squelch count or media update. A tune that failed leaves
-the call, since the radio reads the previous channel again. The converter starts over at every retune, during a
+the call, since the radio reads the previous channel again, and returns the session to the control channel
+(`edacs_grant_tune_failed()`, discussion #717). A grant tune accepted in flight is recorded in
+`dsd_state::edacs_tune_request`; `edacs_trunk_tick()` (`<dsd-neo/protocol/edacs/edacs.h>`), which the engine runs
+between synced frames (withheld ones included) and on each outer-loop pass under the P25 SM tick guard, forgets it once
+it lands and rolls a digital (ProVoice) grant back the same way when it fails: the grant's call ends (EXPLICIT), the
+control channel is tuned again through the helper `eot_cc()` shares (`edacs_return_to_cc()`; a refused tune leaves the
+receiver where the failure left it, on the control channel, and only the tuned state goes), and the failed request is
+disowned, so it no longer withholds frames that `edacs()` must act on. A control-channel return accepted in flight (that
+rollback's or `eot_cc()`'s) is watched in `dsd_state::edacs_cc_return_request`: the session already reads as on the
+control channel, so a failure nothing settled would withhold every frame for good; the tick disowns it and asks for the
+control channel again while the tuner takes the request, and a refusal leaves the receiver decoding where it is. Who
+settles a failure is decided before anything lets it go (`edacs_tune_failure_owner()`). It is handed over, and EDACS
+only forgets its reference (`edacs_tune_request` and `edacs_tuned_lcn`, or `edacs_cc_return_request`), when the session
+is no longer a trunked EDACS one (trunking off, another mode) or the request is no longer the tuning ledger's newest,
+both asked and unresolved (an input or device switch resets the ledger; a trunk-scan park, a channel step or another
+protocol's grant is newer): the record stays for that owner, or for the engine, which reconciles the tuner frequency
+with the radio before it retires a failure no trunking owns (`dsd_engine_retire_inactive_tune_failures()`), and the
+call, the tuned flag, the frequencies and the crypto in force, which may be the new owner's, are left alone. When the
+carrier count has moved since the request (`edacs_tune_carrier_seq`, `edacs_cc_return_carrier_seq`; a typed tune or a
+stream restart, whose owner set the new carrier) EDACS still holds the record that nobody else will settle, so it
+disowns it and touches nothing else. Only otherwise does EDACS own the recovery: it ends the grant's call, clears its
+tuned state, disowns the failure and retunes, the rollback or the retry, when `dsd_trunk_tuning_hook_tuner_free()`
+answers free (no manual tune, trunk scan or `-Y` scan owns the tuner); its own control-channel tune makes the tuner
+frequency agree with the radio. The converter starts over at every retune, during a
 triplet or between two, and the PCM staging held from before the call is dropped when it ends. A triplet plays
 (`edacs_emit_analog_audio()`) only past the talkgroup gate, and only while the output is unmuted (`audio_out` 1) and
 slot 1 is on, on the local stream, UDP and the raw fd alike (`edacs_analog_output_enabled()`, the mixers' rule); it
@@ -8202,7 +8225,9 @@ notes the audible-audio stamp only when one of them receives it (the shared outp
 only, and the null output or a local stream that is not open receives nothing) and the squelch the call runs opened on
 it (see Core). Tests:
 `EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout; the
-emitter's outputs and stamp under each gate, squelch, output type and sample format).
+emitter's outputs and stamp under each gate, squelch, output type and sample format; the `analog-717` and `digital-717`
+failed-tune rollbacks), `ENGINE_EDACS_FAILED_GRANT_STALL` (a control channel that keeps syncing after a failed grant
+tune is decoded again).
 
 P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
 active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,
