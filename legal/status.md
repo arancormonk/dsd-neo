@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-# Licensing review for DSD-neo 2.11.4
+# Licensing review for DSD-neo 2.12.0
 
-Version 2.11.4 carries forward the 2.11.1 findings below. It pins mbelib-neo
+Version 2.12.0 carries forward the 2.11.1 findings below. It pins mbelib-neo
 **2.6.6**, commit `470b944631d6d367e045cb5135e66b9788d2e91b`, and PFFFT
 `316f0b01e3bdd327e89933891ea2c0be2d10c75e`, also embedded by that mbelib release.
 The updated dependency notices are packaged; the unresolved findings remain open.
