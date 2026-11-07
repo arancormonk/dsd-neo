@@ -146,18 +146,35 @@ acch_punctured_erasures(const AcchLayout& layout, unsigned* native) {
     return n_native;
 }
 
-/* Correction positions (ezpwd's, `n_positions` of them) that are not erasures: the errors the decode located. */
-int
-count_located_errors(const unsigned* positions, int n_positions, const unsigned* erasures, int n_erasures) {
-    int errors = 0;
-    for (int i = 0; i < n_positions; i++) {
-        int erased = 0;
-        for (int j = 0; j < n_erasures; j++) {
-            erased |= (positions[i] == erasures[j]) ? 1 : 0;
+bool
+is_erasure(unsigned position, const unsigned* erasures, int n_erasures) {
+    for (int i = 0; i < n_erasures; i++) {
+        if (erasures[i] == position) {
+            return true;
         }
-        errors += erased ? 0 : 1;
     }
-    return errors;
+    return false;
+}
+
+/*
+ * The sent symbols, erasures aside, in which the received word differs from a codeword (its payload @p data and sent
+ * parity @p check). ezpwd's coordinates: payload 0..n_payload-1, sent parity from n_payload on.
+ */
+int
+acch_unerased_distance(const AcchLayout& layout, const uint8_t* received_data, const uint8_t* received_parity,
+                       const uint8_t* data, const uint8_t* check, const unsigned* erasures, int n_erasures) {
+    int distance = 0;
+    for (int i = 0; i < layout.n_payload; i++) {
+        if (received_data[i] != data[i] && !is_erasure((unsigned)i, erasures, n_erasures)) {
+            distance++;
+        }
+    }
+    for (int j = 0; j < layout.n_parity; j++) {
+        if (received_parity[j] != check[j] && !is_erasure((unsigned)(layout.n_payload + j), erasures, n_erasures)) {
+            distance++;
+        }
+    }
+    return distance;
 }
 
 /*
@@ -165,10 +182,12 @@ count_located_errors(const unsigned* positions, int n_positions, const unsigned*
  * payload and the return value is the number of sent symbols (payload and parity) the decode changed; on failure
  * nothing is written and the return value is < 0.
  *
- * ezpwd's Berlekamp-Massey occasionally decodes past the code's radius (for FACCH, about 1.5% of words with 10
- * errors and the 9 punctured erasures). Only a decode within 2 * errors + erasures <= 28 names a unique codeword, so
- * any other fails: callers take a passing decode as proof of the burst, and past the radius it proves less than the
- * code's distance promises.
+ * A decode is accepted only when the codeword its payload encodes to lies within 2 * errors + erasures <= 28 of the
+ * received word, the radius inside which a codeword is unique. ezpwd's own verdict is not enough: its
+ * Berlekamp-Massey occasionally decodes past that radius (for FACCH, about 1.5% of words with 10 errors and the 9
+ * punctured erasures), and now and then (a few random words in 1e7, issue #804) it reports a decode whose payload
+ * and corrected parity form no codeword at all, 19 or more symbols from the received word. Callers take a passing
+ * decode as proof of the burst, so the codeword is rebuilt from the payload and measured against what was received.
  */
 int
 acch_decode(const AcchLayout& layout, int* payload, const int* parity, const unsigned* erasures, int n_erasures) {
@@ -187,16 +206,19 @@ acch_decode(const AcchLayout& layout, int* payload, const int* parity, const uns
     unsigned positions[RS28_ROOTS] = {0}; /* ezpwd reads the erasures here and writes the correction positions */
     DSD_MEMCPY(positions, erasures, (size_t)n_erasures * sizeof(positions[0]));
 
-    int ec = rs->decode(data, (unsigned)layout.n_payload, parity_hb, positions, (unsigned)n_erasures);
-    if (ec < 0) {
-        return ec;
+    if (rs->decode(data, (unsigned)layout.n_payload, parity_hb, positions, (unsigned)n_erasures) < 0) {
+        return -1;
     }
-    if ((2 * count_located_errors(positions, ec, erasures, n_erasures)) + n_erasures > RS28_ROOTS) {
+    uint8_t check[RS28_ROOTS] = {0};
+    rs->encode(data, (unsigned)layout.n_payload, check);
+    const int distance =
+        acch_unerased_distance(layout, received_data, received_parity, data, check, erasures, n_erasures);
+    if ((2 * distance) + n_erasures > RS28_ROOTS) {
         return -1;
     }
     hexbits_to_bits(data, layout.n_payload, payload);
     return count_changed(received_data, data, layout.n_payload)
-           + count_changed(received_parity, parity_hb, layout.n_parity);
+           + count_changed(received_parity, check, layout.n_parity);
 }
 
 int

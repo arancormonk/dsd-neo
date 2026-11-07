@@ -8101,8 +8101,11 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
     shortened, out-of-range and repeated ones, translate the rest into ezpwd's shortened code (index minus the pad),
     and fail a decode that would correct a shortened symbol. The punctured symbols must be in the list (the fixed
     lists in `p25p2_frame.c`; the soft-erasure ranking in `p25p2_soft.c` adds sent symbols only).
-  - A decode is accepted only within 2 x errors + erasures <= 28. ezpwd's Berlekamp-Massey occasionally decodes past
-    that (about 1.5% of FACCH words with 10 errors), where the codeword is no longer unique.
+  - A decode is accepted only when the codeword its payload re-encodes to lies within 2 x errors + erasures <= 28 of
+    the received word (`acch_unerased_distance()`). ezpwd's Berlekamp-Massey occasionally decodes past that radius
+    (about 1.5% of FACCH words with 10 errors), where the codeword is no longer unique, and now and then reports a
+    decode that is no codeword at all (a few random words in 1e7 on the soft-erasure ladder), which its own error
+    count does not reveal.
   - The return value counts the sent symbols the decode changed; punctured fills are not counted. A failed decode
     writes nothing. `ez_rs28_ess()` counts in the same unit (an erasure that held the right value is no
     correction), so the terminal's ESS, FACCH and SACCH average corrections compare.
@@ -8374,7 +8377,10 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   rung passes both, the first word that passed RS is dispatched, as before the checksum joined the ladder, so the
   XCCH's own CRC check and `-F`'s fallback see what they always saw: a FACCH rejects every failed CRC, a SACCH's
   PTT/END/ACTIVE need a CRC that passed, and only a MAC_SIGNAL whose second octet is zero (and under `-F` an LCCH
-  MAC_SIGNAL whose second octet is not) reaches `process_MAC_VPDU_crc()` with its failed verdict. Only a verdict with
+  MAC_SIGNAL whose second octet is not) reaches `process_MAC_VPDU_crc()` with its failed verdict. The XCCH validators
+  (`p25p2_xcch_validate_{f,s}acch_crc()`) check the same CRC over the same bits again by design: they keep the `-F`
+  fallback as it was and always agree with the verdict. A received word that is already a codeword (rung 0 changed
+  nothing) with a failed checksum tries no soft rung, which could only decode it to itself. Only a verdict with
   RS, no soft erasures and the checksum proves the seed (scrambled bursts, `p25p2_note_seed_proven()`, after the
   checksum and before the MAC PDU) and marks the carrier two-slot (`p25p2_note_tdma_carrier()`).
 - Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose

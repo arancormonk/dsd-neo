@@ -248,7 +248,8 @@ static const uint16_t sacch_parity_bit_offsets[22][6] = {
  * @param scrambled      1 if using descrambled LLRs, 0 for raw LLRs.
  * @param erasures       Output: array to append erasures (must have space for at least 28 entries).
  * @param n_fixed        Number of fixed erasures already in the array.
- * @param max_add        Maximum dynamic erasures to add (recommend <=10 for FACCH).
+ * @param max_add        Maximum dynamic erasures to add (the frame decoder passes 4,
+ *                       P25P2_FACCH_MAX_SOFT_ERASURES in p25p2_frame.c).
  * @return Total erasure count (fixed + dynamic).
  */
 int
@@ -291,7 +292,8 @@ p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fi
  * @param scrambled      1 if using descrambled buffers, 0 otherwise.
  * @param erasures       Output: array to append erasures (must have space for at least 28 entries).
  * @param n_fixed        Number of fixed erasures already in the array.
- * @param max_add        Maximum dynamic erasures to add (recommend <=16 for SACCH).
+ * @param max_add        Maximum dynamic erasures to add (the frame decoder passes 6,
+ *                       P25P2_SACCH_MAX_SOFT_ERASURES in p25p2_frame.c).
  * @return Total erasure count (fixed + dynamic).
  */
 int

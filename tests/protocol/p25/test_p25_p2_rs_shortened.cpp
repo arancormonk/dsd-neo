@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <dsd-neo/fec/ez.h>
 #include <exception>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <utility>
@@ -454,6 +455,70 @@ test_ess_counts_changed_symbols(void) {
     return rc;
 }
 
+/* Received words (found by a Monte Carlo of the frame decoder's soft-erasure ladder on random words) on which ezpwd
+   reports a successful decode that is no codeword: the payload it returns re-encodes to a codeword 19 or more sent
+   symbols away from the received word, outside 2 x errors + erasures <= 28, though ezpwd located few enough errors
+   to pass that bound. No codeword lies within the radius of these words (Berlekamp-Massey finds one that does), so
+   the decode must fail and leave the payload alone. */
+struct NonCodewordVector {
+    const AcchFormat* format;
+    uint8_t data[30];   // payload symbols, RS index pad..34
+    uint8_t parity[22]; // sent parity symbols, RS index 35..
+    int erasures[13];   // full RS(63,35) indices
+    int n_erasures;
+};
+
+const NonCodewordVector kNonCodewords[] = {
+    {&kFacch,
+     {0x0B, 0x2D, 0x0C, 0x07, 0x3E, 0x32, 0x2F, 0x00, 0x1F, 0x21, 0x19, 0x13, 0x1D,
+      0x19, 0x1A, 0x2A, 0x03, 0x2D, 0x14, 0x0C, 0x1C, 0x35, 0x3A, 0x16, 0x2D, 0x26},
+     {0x2D, 0x03, 0x2A, 0x0C, 0x23, 0x11, 0x04, 0x2B, 0x15, 0x01, 0x0E, 0x24, 0x26, 0x08, 0x3F, 0x3A, 0x28, 0x1A, 0x25},
+     {54, 55, 56, 57, 58, 59, 60, 61, 62, 42},
+     10},
+    {&kFacch,
+     {0x38, 0x10, 0x27, 0x2A, 0x24, 0x1E, 0x39, 0x0E, 0x3A, 0x06, 0x17, 0x2F, 0x01,
+      0x3C, 0x09, 0x05, 0x12, 0x0E, 0x34, 0x05, 0x3A, 0x32, 0x3D, 0x01, 0x07, 0x2B},
+     {0x26, 0x18, 0x13, 0x0D, 0x33, 0x10, 0x2A, 0x10, 0x21, 0x1E, 0x3E, 0x34, 0x26, 0x3A, 0x04, 0x32, 0x10, 0x35, 0x24},
+     {54, 55, 56, 57, 58, 59, 60, 61, 62, 26, 30, 14, 49},
+     13},
+    {&kSacch,
+     {0x16, 0x15, 0x05, 0x20, 0x09, 0x13, 0x3E, 0x21, 0x1E, 0x14, 0x32, 0x0D, 0x28, 0x30, 0x3B,
+      0x1B, 0x08, 0x2A, 0x0E, 0x13, 0x15, 0x3A, 0x36, 0x19, 0x08, 0x2C, 0x37, 0x14, 0x3A, 0x2A},
+     {0x12, 0x0F, 0x30, 0x25, 0x2D, 0x0B, 0x34, 0x0E, 0x11, 0x3E, 0x27,
+      0x0B, 0x11, 0x34, 0x05, 0x1C, 0x32, 0x28, 0x3E, 0x21, 0x34, 0x01},
+     {57, 58, 59, 60, 61, 62, 52, 34},
+     8},
+    {&kSacch,
+     {0x12, 0x2F, 0x3F, 0x08, 0x2E, 0x2D, 0x25, 0x15, 0x0E, 0x27, 0x12, 0x27, 0x13, 0x13, 0x31,
+      0x28, 0x1E, 0x36, 0x13, 0x0E, 0x12, 0x17, 0x34, 0x19, 0x37, 0x2B, 0x25, 0x2E, 0x36, 0x1D},
+     {0x12, 0x0B, 0x3D, 0x13, 0x0B, 0x0D, 0x2F, 0x1B, 0x30, 0x0F, 0x20,
+      0x38, 0x22, 0x1D, 0x3F, 0x1B, 0x3A, 0x23, 0x25, 0x18, 0x07, 0x20},
+     {57, 58, 59, 60, 61, 62, 30, 8, 45, 44, 9, 32},
+     12},
+};
+
+int
+test_non_codeword_decode_rejected(void) {
+    int rc = 0;
+    int trial = 0;
+    for (const NonCodewordVector& v : kNonCodewords) {
+        const AcchFormat& f = *v.format;
+        Bits rx = {};
+        symbols_to_bits(v.data, f.n_payload, rx.payload);
+        symbols_to_bits(v.parity, f.n_parity, rx.parity);
+        Bits out = rx;
+        const int got = f.decode(out.payload, out.parity, v.erasures, v.n_erasures);
+        if (got >= 0) {
+            rc |= fail("non-codeword decode rejected", f, trial, got);
+        }
+        if (!std::equal(rx.payload, rx.payload + (ptrdiff_t)f.n_payload * 6, out.payload)) {
+            rc |= fail("non-codeword decode leaves the payload", f, trial, got);
+        }
+        trial++;
+    }
+    return rc;
+}
+
 /* Wrongly descrambled bursts look random; the full RS check now rejects nearly all of them (base: ~240 passes). */
 int
 test_random_words_rarely_pass(void) {
@@ -494,6 +559,7 @@ main(void) try {
     rc |= test_shortened_indices_in_erasure_list_ignored();
     rc |= test_fixed_entry_matches_vector_entry();
     rc |= test_ess_counts_changed_symbols();
+    rc |= test_non_codeword_decode_rejected();
     rc |= test_random_words_rarely_pass();
     return rc;
 } catch (const std::exception& e) {

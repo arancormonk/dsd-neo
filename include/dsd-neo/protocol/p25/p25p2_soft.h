@@ -42,8 +42,9 @@ int p25p2_soft_erasure_threshold(void);
  * @param ts_counter  Current timeslot counter (0-3).
  * @param scrambled   1 for p2xllr, 0 for p2llr.
  * @param erasures    Erasure array (in/out). Must have space for n_fixed + max_add.
- * @param n_fixed     Number of fixed erasures already present (typically 18 for FACCH).
- * @param max_add     Maximum dynamic erasures to add (recommend <=10 for FACCH).
+ * @param n_fixed     Number of fixed erasures already present (the 9 punctured FACCH symbols, 54..62).
+ * @param max_add     Maximum dynamic erasures to add. The frame decoder passes 4
+ *                    (P25P2_FACCH_MAX_SOFT_ERASURES in p25p2_frame.c, where the bound is derived).
  * @return Total erasure count.
  */
 int p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add);
@@ -54,8 +55,9 @@ int p25p2_facch_soft_erasures(int ts_counter, int scrambled, int* erasures, int 
  * @param ts_counter  Current timeslot counter (0-3).
  * @param scrambled   1 for p2xllr, 0 for p2llr.
  * @param erasures    Erasure array (in/out). Must have space for n_fixed + max_add.
- * @param n_fixed     Number of fixed erasures already present (typically 11 for SACCH).
- * @param max_add     Maximum dynamic erasures to add (recommend <=16 for SACCH).
+ * @param n_fixed     Number of fixed erasures already present (the 6 punctured SACCH symbols, 57..62).
+ * @param max_add     Maximum dynamic erasures to add. The frame decoder passes 6
+ *                    (P25P2_SACCH_MAX_SOFT_ERASURES in p25p2_frame.c, where the bound is derived).
  * @return Total erasure count.
  */
 int p25p2_sacch_soft_erasures(int ts_counter, int scrambled, int* erasures, int n_fixed, int max_add);

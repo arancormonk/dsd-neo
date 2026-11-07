@@ -611,7 +611,10 @@ p25p2_acch_decode_ranked(const p25p2_acch_code* code, p25p2_acch_kind kind, int 
     DSD_MEMCPY(erasures, code->fixed_erasures, (size_t)code->n_fixed * sizeof(erasures[0]));
     int ec = p25p2_acch_rung(code, kind, received, payload, parity, erasures, code->n_fixed, &rs_only);
     int soft_erasures = 0;
-    if (ec < 0) {
+    /* A received word that is already a codeword (rung 0 changed nothing) decodes to itself on every later rung, so
+       its failed checksum stays failed: no rung is worth trying. */
+    const int received_is_codeword = rs_only.found && rs_only.ec == 0;
+    if (ec < 0 && !received_is_codeword) {
         const int n_erasures = code->rank(ts_counter, scrambled, erasures, code->n_fixed, code->max_soft);
         for (int n = code->n_fixed + 1; n <= n_erasures && ec < 0; n++) {
             ec = p25p2_acch_rung(code, kind, received, payload, parity, erasures, n, &rs_only);

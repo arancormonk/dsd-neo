@@ -42,7 +42,9 @@ int ez_rs28_ess(int payload[96], int parity[168], const int* erasures, int n_era
  * Bits are MSB-first per hexbit. Erasure positions are full RS(63,35)
  * indices; the punctured symbols must be among them. Shortened, out-of-range
  * and repeated positions are ignored, and at most 28 are used. A decode that
- * would correct a shortened symbol fails. Returns the number of sent symbols
+ * would correct a shortened symbol fails, and so does one whose codeword (the
+ * decoded payload, re-encoded) lies outside 2 x errors + erasures <= 28 of the
+ * received word. Returns the number of sent symbols
  * (payload and parity) corrected, or < 0 on failure; the payload bits are
  * written only on success.
  */

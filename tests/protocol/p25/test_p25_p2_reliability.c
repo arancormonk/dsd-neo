@@ -133,6 +133,8 @@ static int g_facch_mac_calls = 0;
 static int g_facch_mac_last_opcode = -1;
 static int g_sacch_mac_calls = 0;
 static int g_sacch_mac_last_opcode = -1;
+/* Whether a stub decode hands back a word whose MAC CRC-12 checks (stub_seal_crc12()). */
+static int g_xcch_stub_seal_crc = 1;
 /* SACCH MAC PDUs dispatched as an LCCH (dsd_state::p2_is_lcch set while the PDU ran). */
 static int g_sacch_mac_lcch_calls = 0;
 static int g_isch_lookup_result = -1;
@@ -396,7 +398,9 @@ ez_rs28_facch(int* payload, int* parity, const int* erasures, int n_erasures) {
     if (n_erasures < g_facch_min_success) {
         return -1;
     }
-    stub_seal_crc12(payload, 156 - 12);
+    if (g_xcch_stub_seal_crc) {
+        stub_seal_crc12(payload, 156 - 12);
+    }
     return g_facch_success_rc;
 }
 
@@ -410,7 +414,9 @@ ez_rs28_sacch(int* payload, int* parity, const int* erasures, int n_erasures) {
     if (n_erasures < g_sacch_min_success) {
         return -1;
     }
-    stub_seal_crc12(payload, 180 - 12);
+    if (g_xcch_stub_seal_crc) {
+        stub_seal_crc12(payload, 180 - 12);
+    }
     return g_sacch_success_rc;
 }
 
@@ -552,6 +558,7 @@ reset_xcch_stubs(void) {
     g_sacch_mac_calls = 0;
     g_sacch_mac_last_opcode = -1;
     g_sacch_mac_lcch_calls = 0;
+    g_xcch_stub_seal_crc = 1;
     g_isch_lookup_result = -1;
     DSD_MEMSET(g_isch_last_reliab, 0, sizeof(g_isch_last_reliab));
     g_sacch_mac_hook = NULL;
@@ -1044,6 +1051,7 @@ test_facchc_failure_preserves_mac_and_counts_error(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     p25_p2_frame_reset();
     reset_xcch_stubs();
+    DSD_MEMSET(p2llr, 0, sizeof(p2llr));
 
     state.currentslot = 0;
     state.dmr_so = 99;
@@ -1058,6 +1066,68 @@ test_facchc_failure_preserves_mac_and_counts_error(void) {
     rc |= expect_int("facch failure keeps the service options", (int)state.dmr_so, 99);
     rc |= expect_int("facch failure no mac", g_facch_mac_calls, 0);
     rc |= expect_int("facch failure tried ranked erasures", g_facch_calls > 1, 1);
+    /* Every sent symbol is unreliable, so the ladder runs to its ceiling: the 9 punctured plus 4 (issue #804). */
+    rc |= expect_int("facch failure stops at the soft-erasure ceiling", g_facch_last_erasures, 9 + 4);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/* Issue #804: the SACCH ladder stops at its ceiling too, the 6 punctured symbols plus 6. */
+static int
+test_sacchc_failure_stops_at_the_soft_erasure_ceiling(void) {
+    printf("Test 20b: SACCHc failure stops at the soft-erasure ceiling... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+    DSD_MEMSET(p2llr, 0, sizeof(p2llr));
+    g_sacch_min_success = 99;
+
+    p25p2_process_sacchc(&opts, &state, 1);
+
+    int rc = 0;
+    rc |= expect_int("sacch failure err", (int)state.p25_p2_rs_sacch_err, 1);
+    rc |= expect_int("sacch failure stops at the soft-erasure ceiling", g_sacch_last_erasures, 6 + 6);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/* Issue #804: a received FACCH that is already a codeword (the fixed-erasure decode changed nothing) but fails its
+   checksum decodes to itself on every soft rung, so none is tried; one the decode changed tries them all. Either way
+   the word that passed RS is still dispatched, for the MAC PDU's own CRC check. */
+static int
+test_codeword_with_failed_checksum_skips_the_ladder(void) {
+    printf("Test 20c: a codeword whose checksum fails skips the soft-erasure ladder... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int changed = 0; changed < 2; changed++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        p25_p2_frame_reset();
+        reset_xcch_stubs();
+        DSD_MEMSET(p2llr, 0, sizeof(p2llr));
+        g_xcch_stub_seal_crc = 0;
+        g_facch_success_rc = changed;
+        seed_xcch_opcode(0, 1);
+
+        p25p2_process_facchc(&opts, &state, 0);
+
+        rc |= expect_int(changed ? "changed word tries every rung" : "codeword tries no soft rung", g_facch_calls,
+                         changed ? 1 + 4 : 1);
+        rc |= expect_int("the word that passed RS is dispatched", g_facch_mac_calls, 1);
+    }
+    reset_xcch_stubs();
     if (rc == 0) {
         printf("PASS\n");
     } else {
@@ -2573,6 +2643,8 @@ main(void) {
     failures += test_ess_decode_failure_refreshes_existing_aes_state();
     failures += test_facchc_success_routes_opcode_and_counters();
     failures += test_facchc_failure_preserves_mac_and_counts_error();
+    failures += test_sacchc_failure_stops_at_the_soft_erasure_ceiling();
+    failures += test_codeword_with_failed_checksum_skips_the_ladder();
     failures += test_sacchc_dynamic_erasure_success_maps_inverse_slot();
     failures += test_isch_channel_one_location_sets_scramble_offset();
     failures += test_duid_exact_or_null_soft_metrics_preserve_hard_decision();
