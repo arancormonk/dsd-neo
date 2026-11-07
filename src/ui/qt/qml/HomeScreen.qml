@@ -728,8 +728,9 @@ Item {
                     icon: "more"
                     accessibleName: qsTr("More options for Signal search")
                     anchors.right: parent.right
-                    // On the axis of the cards' More buttons around it.
-                    anchors.rightMargin: Theme.cardPadding + 2
+                    // On the column of the Explore card's More just below, the
+                    // axis every card's More shares.
+                    anchors.rightMargin: exploreCard.width - exploreMore.x - exploreMore.width
                     anchors.verticalCenter: parent.verticalCenter
                     onClicked: searchMenu.openFor()
                 }
@@ -837,6 +838,11 @@ Item {
                             font.family: exploreCard.configured ? Theme.mono : Theme.sans
                             font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
                             color: Theme.textSubdued
+                            // Two lines before it elides, so the frequency a tap
+                            // starts on stays whole at large text; the card grows
+                            // with the labels.
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 2
                             elide: Text.ElideRight
                         }
                     }

@@ -584,30 +584,34 @@ Item {
             testContext.setLifecyclePhase(0);
             verify(!app.monitorMode);
             var saved = {source: prefs.exploreSourceType, freq: prefs.exploreFreqMhz};
-            prefs.exploreSourceType = "rtltcp";
-            prefs.exploreFreqMhz = "851.5";
-            var home = findChild(app, "homeScreen");
-            tryCompare(home, "visible", true);
-            waitForRendering(home);
-            var face = findChild(home, "exploreStart");
-            compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 851.5 MHz");
-            app.exploreSetupOpen = true;
-            tryVerify(function () { return face.Accessible.ignored; }, 1000, "Home's face leaves the tree");
-            testContext.startAccessibilityCount();
-            prefs.exploreFreqMhz = "852.0125";
-            wait(50);
-            var counts = testContext.accessibilityCount();
-            testContext.stopAccessibilityCount();
-            var events = 0;
-            for (var type of Object.keys(counts.types))
-                events += testContext.accessibilityCountWithin(face, type);
-            app.exploreSetupOpen = false;
-            tryVerify(function () { return !face.Accessible.ignored; }, 1000);
-            var shown = face.Accessible.name;
-            prefs.exploreSourceType = saved.source;
-            prefs.exploreFreqMhz = saved.freq;
-            compare(events, 0, "the hidden face raised events: " + JSON.stringify(counts.chains));
-            compare(shown, "Explore the band, start on RTL-TCP from 852.0125 MHz");
+            try {
+                prefs.exploreSourceType = "rtltcp";
+                prefs.exploreFreqMhz = "851.5";
+                var home = findChild(app, "homeScreen");
+                tryCompare(home, "visible", true);
+                waitForRendering(home);
+                var face = findChild(home, "exploreStart");
+                compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 851.5 MHz");
+                app.exploreSetupOpen = true;
+                tryVerify(function () { return face.Accessible.ignored; }, 1000, "Home's face leaves the tree");
+                testContext.startAccessibilityCount();
+                prefs.exploreFreqMhz = "852.0125";
+                wait(50);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                var events = 0;
+                for (var type of Object.keys(counts.types))
+                    events += testContext.accessibilityCountWithin(face, type);
+                compare(events, 0, "the hidden face raised events: " + JSON.stringify(counts.chains));
+                app.exploreSetupOpen = false;
+                tryVerify(function () { return !face.Accessible.ignored; }, 1000);
+                compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 852.0125 MHz");
+            } finally {
+                testContext.stopAccessibilityCount();
+                app.exploreSetupOpen = false;
+                prefs.exploreSourceType = saved.source;
+                prefs.exploreFreqMhz = saved.freq;
+            }
         }
 
         // Issue #782: the Spectrum is built at once on its first open, screen reader or not. Building it raises a hide

@@ -10729,32 +10729,33 @@ Qt Quick frontend (`src/ui/qt`):
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
-  (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to
-  Listen"; not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml`
-  `pinAction(kind, uid, objectName)` builds the menu row (key `pin`) and `togglePin(kind, uid, offeredPinned)` does
-  what the row said when it was offered (`unpin()` for an offered Unpin, else `pin()`), never the opposite. `pin()`'s
-  refusal is not shown: every source is modal, so nothing fills the row while one is open, and a full row's Pin is
-  already disabled with the reason (D3: a full row is not an error dialog). The saved-system menu (Edit, Sites, Pin,
-  Remove…) pins `system` with the card's row UID, so a grouped card pins its group and a standalone card also unpins a
-  site pin of its own row; the scan-list menu (Edit, Scan with other lists…, Pin, Remove…) pins `scan`. Both handlers
-  route `remove` explicitly and do nothing for any other key (before #801 an unknown key fell through to Remove).
-  Signal search is a row: the button fills it up to a 48 px More (`signalSearchManageButton`) on the cards' More axis,
-  opening `searchMenu` [Pin]. Explore's card: a card-wide `TapHandler` (tap starts, long press opens `exploreMenu`
-  [Edit connection, Pin]) and pressed tint, the face `exploreStart`, and More (`exploreManageButton`, "More options for
-  Explore"). The face is a sibling of More, stopping at More's column (`width: exploreMore.x`), so its focus ring and
-  accessible bounds leave More out and no key pressed on More reaches it; the caret, in More's column, is drawn
-  outside the face and stays in the card's tap target. The face is the button that starts Explore, or opens its setup
-  with no radio chosen: Button role, name "Explore the band, start on <radio> from <MHz> MHz" or "Explore the band,
-  set up a radio to tune around and find what is on the air", empty while `Accessible.ignored` (so a frequency changed
-  in Explore's setup, Home hidden, renames nothing), its two lines plain `Text` with `Accessible.ignored`,
-  `OutlineButton`'s Tab gate, Return/Enter/Space, `onPressAction`, `FocusFrame`. More never starts Explore. The two
-  new menus join `managementSheetOpen`. `qml/SiteChooserSheet.qml` gives each site row a Pin `OutlineButton`
-  (`sitePin<row>`, kind `site`) after Edit site, shown whatever the session state, whose action re-reads
-  `listenPins.revision` so it flips in place with the chooser open; under it `sitePinReason<row>` shows the full
-  reason. Tests: `UI_QT_PERSISTENCE` (`test_pin_action`), `UI_QT_QML_CALL_LISTS` (`tst_home_pinned.qml`: each menu,
-  the standalone site card, full, a row doing what it offered, unknown keys, modal blocking;
-  `tst_home_dongle_status.qml`: More and long press open the menu, the face clear of More, the caret tappable, keys
-  and the accessibility press on the face and on More; `tst_site_chooser_sheet.qml`; the key lists in
+  (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
+  not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
+  uid, objectName)` builds the menu row (key `pin`) and `togglePin(kind, uid, offeredPinned)` does what the row said
+  when it was offered (`unpin()` for an offered Unpin, else `pin()`), never the opposite. `pin()`'s refusal is not
+  shown: every source is modal, so nothing fills the row while one is open, and a full row's Pin is already disabled
+  with the reason (D3: a full row is not an error dialog). The saved-system menu (Edit, Sites, Pin, Remove…) pins
+  `system` with the card's row UID, so a grouped card pins its group and a standalone card also unpins a site pin of its
+  own row; the scan-list menu (Edit, Scan with other lists…, Pin, Remove…) pins `scan`. Both handlers route `remove`
+  explicitly and do nothing for any other key (before #801 an unknown key fell through to Remove). Signal search is a
+  row: the button fills it up to a 48 px More (`signalSearchManageButton`), placed from the Explore card's More just
+  below so it shares the cards' More column, opening `searchMenu` [Pin]. Explore's card: a card-wide `TapHandler` (tap
+  starts, long press opens `exploreMenu` [Edit connection, Pin]) and pressed tint, the face `exploreStart`, and More
+  (`exploreManageButton`, "More options for Explore"). The face is a sibling of More, stopping at More's column (`width:
+  exploreMore.x`), so its focus ring and accessible bounds leave More out and no key pressed on More reaches it; the
+  caret, in More's column, is drawn outside the face and stays in the card's tap target. The face is the button that
+  starts Explore, or opens its setup with no radio chosen: Button role, name "Explore the band, start on <radio> from
+  <MHz> MHz" or "Explore the band, set up a radio to tune around and find what is on the air", empty while
+  `Accessible.ignored` (so a frequency changed in Explore's setup, Home hidden, renames nothing), its two lines plain
+  `Text` with `Accessible.ignored`, `OutlineButton`'s Tab gate, Return/Enter/Space, `onPressAction`, `FocusFrame`. The
+  subtitle wraps to two lines before it elides, so the frequency stays whole at large text, and the card grows with the
+  labels. More never starts Explore. The two new menus join `managementSheetOpen`. `qml/SiteChooserSheet.qml` gives each
+  site row a Pin `OutlineButton` (`sitePin<row>`, kind `site`) after Edit site, shown whatever the session state, whose
+  action re-reads `listenPins.revision` so it flips in place with the chooser open; under it `sitePinReason<row>` shows
+  the full reason. Tests: `UI_QT_PERSISTENCE` (`test_pin_action`), `UI_QT_QML_CALL_LISTS` (`tst_home_pinned.qml`: each
+  menu, the standalone site card, full, a row doing what it offered, unknown keys, modal blocking;
+  `tst_home_dongle_status.qml`: More and long press open the menu, the face clear of More, the caret tappable, keys and
+  the accessibility press on the face and on More; `tst_site_chooser_sheet.qml`; the key lists in
   `tst_home_scan_lists.qml` and `tst_back_modals.qml`, whose auto-start case covers the new menus),
   `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: the hidden face raises nothing on a frequency change).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB

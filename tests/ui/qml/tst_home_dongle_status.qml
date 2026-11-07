@@ -169,6 +169,32 @@ Item {
                 prefs.exploreSourceType = oldSource;
             }
         }
+        // At large text the subtitle wraps rather than cutting the frequency a tap starts on, and the card grows
+        // to hold it.
+        function test_explore_subtitle_whole_at_large_text_data() {
+            return [{tag: "320", width: 320}, {tag: "360", width: 360}];
+        }
+        function test_explore_subtitle_whole_at_large_text(data) {
+            var saved = {source: prefs.exploreSourceType, freq: prefs.exploreFreqMhz};
+            try {
+                prefs.exploreSourceType = "rtltcp";
+                prefs.exploreFreqMhz = "851.0125";
+                root.width = data.width;
+                Ui.Theme.fontScale = 1.6;
+                var card = findChild(home, "exploreCard");
+                var subtitle = findChild(home, "homeExploreSubtitle");
+                verify(waitForPolish(home));
+                compare(subtitle.text, "RTL-TCP · from 851.0125 MHz");
+                verify(!subtitle.truncated, "the whole frequency shows");
+                verify(subtitle.lineCount <= 2);
+                tryVerify(function () {
+                    return subtitle.mapToItem(card, 0, subtitle.height).y <= card.height - Ui.Theme.cardPadding + 1;
+                }, 1000, "the card holds both lines");
+            } finally {
+                prefs.exploreSourceType = saved.source;
+                prefs.exploreFreqMhz = saved.freq;
+            }
+        }
         // B3: the face is a button: Return, Enter, Space and a screen reader's press start Explore (or, with no radio
         // chosen, open its setup). The same on More open the menu at most and never start.
         function test_explore_keyboard_and_press_start_data() {
