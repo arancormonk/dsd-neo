@@ -207,7 +207,13 @@ p25p1_handle_nid_decode_success(const dsd_opts* opts, dsd_state* state, uint8_t*
         }
     }
 
-    p25p1_apply_nac_update(state, decoded->nac);
+    /* A NID that decoded only once the observed NAC stood in for its received NAC field carries the decoder's own NAC
+       (a hand-set seed's, the last NID's, or the seed's, which a carrier boundary keeps), not one read off the air
+       (issue #804): its DUID stands, but neither the received NAC, the received identity, the seed's NAC nor the
+       frame's NAC a network status pairs with takes it. */
+    if (!decoded->nac_borrowed) {
+        p25p1_apply_nac_update(state, decoded->nac);
+    }
     p25p1_apply_duid_update(state, duid, decoded->duid);
 }
 

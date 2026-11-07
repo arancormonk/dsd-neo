@@ -45,10 +45,13 @@ p25_search_note_network(dsd_state* state, uint32_t wacn, uint16_t sysid, uint8_t
 /* The WACN and SYSID of a Phase 2 scrambling code recovered from this carrier's own scrambled signalling and confirmed
    there (p25p2_seed_recover.c, issue #804): the search's network note, as a network status would give it, with no
    location registration area, RFSS or site, which a code does not carry. The received identity takes the code when
-   the confirming burst proves it (p25p2_note_seed_proven()). */
+   the confirming burst proves it (p25p2_note_seed_proven()). A zero or all-ones WACN or SYSID names no system (the
+   code rule of p25_search_note_p25p2_code()), whatever the caller checked. */
 static inline void
 p25_search_note_recovered_network(const dsd_state* state, uint32_t wacn, uint16_t sysid) {
-    if ((sysid & 0xFFFU) != 0U) {
+    wacn &= 0xFFFFFU;
+    sysid &= 0xFFFU;
+    if (wacn != 0U && wacn != 0xFFFFFU && sysid != 0U && sysid != 0xFFFU) {
         p25_search_note_network_site(state, wacn, sysid);
     }
 }

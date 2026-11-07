@@ -516,6 +516,72 @@ test_soft_observed_nac_retry_exempts_forced_nac_bits(void) {
     return 0;
 }
 
+/* Issue #804: a NID that decodes only once the observed NAC stands in for its received NAC field says so
+   (nac_borrowed), from the hard retry and from the soft retry alike; a NID decoded from what was received, corrected
+   or not and with an observed NAC offered or not, does not. */
+static int
+test_observed_nac_retry_is_marked_borrowed(void) {
+    const int nac = 0x2C1;
+    const int duid = 0x7; // TSDU
+    char info[16];
+    char codeword[63];
+    make_info_word(nac, duid, info);
+    p25_test_generate_nid_codeword(info, codeword);
+    int rc = 0;
+
+    const struct p25p1_nid_result clean = p25p1_nid_decode(codeword, nullptr, 0x293, expected_parity(duid), 0);
+    if (clean.status != NID_OK || clean.nac != nac || clean.nac_borrowed != 0) {
+        DSD_FPRINTF(stderr, "borrowed: a clean NID with a hint: status %d NAC 0x%X borrowed %d\n", clean.status,
+                    clean.nac, clean.nac_borrowed);
+        rc = 1;
+    }
+
+    char corrected[63];
+    DSD_MEMCPY(corrected, codeword, 63);
+    corrected[3] ^= 1;
+    corrected[20] ^= 1;
+    corrected[40] ^= 1;
+    const struct p25p1_nid_result fixed = p25p1_nid_decode(corrected, nullptr, nac, expected_parity(duid), 0);
+    if (fixed.status != NID_OK || fixed.nac != nac || fixed.nac_borrowed != 0) {
+        DSD_FPRINTF(stderr, "borrowed: a corrected NID: status %d NAC 0x%X borrowed %d\n", fixed.status, fixed.nac,
+                    fixed.nac_borrowed);
+        rc = 1;
+    }
+
+    char weak[63];
+    DSD_MEMCPY(weak, codeword, 63);
+    for (int i = 0; i < 12; i++) {
+        weak[i] ^= 1;
+    }
+    const struct p25p1_nid_result hard = p25p1_nid_decode(weak, nullptr, nac, expected_parity(duid), 0);
+    if (hard.status != NID_OK || hard.nac != nac || hard.nac_borrowed != 1) {
+        DSD_FPRINTF(stderr, "borrowed: the hard retry: status %d NAC 0x%X borrowed %d\n", hard.status, hard.nac,
+                    hard.nac_borrowed);
+        rc = 1;
+    }
+
+    /* The soft retry: a NAC bit the hint puts right, and 12 parity errors, one of them least reliable. */
+    char soft_weak[63];
+    DSD_MEMCPY(soft_weak, codeword, 63);
+    soft_weak[0] ^= 1;
+    const int parity_errors[12] = {16, 22, 28, 34, 40, 46, 52, 18, 24, 30, 36, 42};
+    for (int i = 0; i < 12; i++) {
+        soft_weak[parity_errors[i]] ^= 1;
+    }
+    uint8_t reliab[63];
+    for (int i = 0; i < 63; i++) {
+        reliab[i] = 220;
+    }
+    reliab[parity_errors[0]] = 10;
+    const struct p25p1_nid_result soft = p25p1_nid_decode(soft_weak, reliab, nac, expected_parity(duid), 220);
+    if (soft.status <= 0 || soft.nac != nac || soft.nac_borrowed != 1) {
+        DSD_FPRINTF(stderr, "borrowed: the soft retry: status %d NAC 0x%X borrowed %d\n", soft.status, soft.nac,
+                    soft.nac_borrowed);
+        rc = 1;
+    }
+    return rc;
+}
+
 /* --------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
@@ -530,6 +596,7 @@ main(void) {
     rc |= test_parity_override_correctable_range();
     rc |= test_decode_failure_no_error_count();
     rc |= test_observed_nac_retry_after_bch_failure();
+    rc |= test_observed_nac_retry_is_marked_borrowed();
     rc |= test_soft_nid_low_reliability_recovery();
     rc |= test_soft_nid_high_reliability_rejected();
     rc |= test_soft_observed_nac_retry_exempts_forced_nac_bits();

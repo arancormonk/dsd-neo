@@ -8688,7 +8688,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   names (with a hand-set seed, only when that NAC is the seed's). `p2_cc` itself is the descrambling key and is never
   reset for it. A valid Phase 1 NID (BCH-accepted, not 0x000 or 0xFFF) rewrites a `p2_cc` that is not hand-set whenever
   it differs, whatever `state->nac` holds, so a seed NAC cleared by hand on the carrier comes back
-  (`p25p1_apply_nac_update()`); a NID split by a carrier boundary writes no NAC at all. The same NID records the NAC of
+  (`p25p1_apply_nac_update()`); a NID split by a carrier boundary writes no NAC at all, and neither does a NID that
+  decoded only once the observed NAC (a hand-set seed's, `state->nac`, then the seed's) stood in for its received NAC
+  field (`p25p1_nid_result::nac_borrowed`, set by both the hard and the soft retry): its NAC is the decoder's own,
+  which a carrier boundary may have kept from another carrier, so only its DUID counts. The same NID records the NAC of
   the frame being decoded (`p25_frame_nac` with `p25_frame_nac_valid`), which a network status in that frame is paired
   with: invalid from every P25p1 sync until its NID decodes, after a NID that failed, was cut or was split by a carrier
   boundary, at every carrier boundary (`dsd_engine_forget_carrier_code_values()`) and at a trunk scan target switch.
@@ -8883,8 +8886,9 @@ the message passed its own check, with that message's values, an unchanged repea
   carries as the search binds it, and the location registration area; a Phase 2 network status also notes the NAC it
   carries (`p25_search_note_network_nac()`), so an unscrambled SACCH's records its own NAC whatever seed is set. Phase 2
   MACs note only with `ctx->crc_ok` (`p25p2_vpdu_system_tables_writable()`). The Phase 1 NID's NAC at the BCH accept
-  (`p25p1_apply_nac_update()`, reserved $000/$FFF excluded); the Phase 2 seed's WACN, SYSID and NAC once a burst
-  descrambled with the whole seed passed RS with its parity kept (`p25p2_note_seed_proven()`). The control channel at
+  (`p25p1_apply_nac_update()`, reserved $000/$FFF excluded, never a NAC the observed-NAC retry put in); the Phase 2
+  seed's WACN, SYSID and NAC once a burst descrambled with the whole seed passed RS with its parity kept
+  (`p25p2_note_seed_proven()`). The control channel at
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
 - DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
   dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III

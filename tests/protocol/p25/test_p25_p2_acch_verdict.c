@@ -8,8 +8,9 @@
  * handlers (issue #804): the checksum verdict comes before anything the burst proves, the retry ladder looks past a
  * miscorrection its CRC rejects, its soft erasures stop where the code's check still means something, signalling
  * leaves the service options alone, an LCCH that failed does not turn the next burst into one, a DUID 10 burst is no
- * error, and any MAC whose checksum passed is Signal search evidence for the slot it belongs to. The windows are built as a site sends them (p25p2_burst_builder.h) and dispatched by p25p2_process_duid().
- * Only the VPDU decoder is a stand-in, which records what reached it.
+ * error, and any MAC whose checksum passed is Signal search evidence for the slot it belongs to. The windows are built
+ * as a site sends them (p25p2_burst_builder.h) and dispatched by p25p2_process_duid(). Only the VPDU decoder is a
+ * stand-in, which records what reached it.
  */
 
 #include <dsd-neo/core/access_code.h>

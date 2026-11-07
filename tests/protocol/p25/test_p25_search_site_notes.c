@@ -28,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_search_site.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -578,9 +579,9 @@ test_p2_nsb_notes_code(void) {
     return rc;
 }
 
-/* A Phase 1 network status that passed its CRC gives the session its WACN and SYSID with the NAC of the NID of the frame
-   that carried it, never the received NAC state->nac keeps, the seed's NAC or the seed's WACN and SYSID. A frame whose
-   NID gave no valid NAC pairs nothing (the site note stands). */
+/* A Phase 1 network status that passed its CRC gives the session its WACN and SYSID with the NAC of the NID of the
+   frame that carried it, never the received NAC state->nac keeps, the seed's NAC or the seed's WACN and SYSID. A frame
+   whose NID gave no valid NAC pairs nothing (the site note stands). */
 static int
 test_p1_net_sts_pairs_frame_nac(void) {
     int rc = 0;
@@ -676,6 +677,25 @@ test_lcw_never_notes_code(void) {
     return rc;
 }
 
+/* A recovered code's network note (D7) names only a usable system: a zero or all-ones WACN or SYSID gives none. */
+static int
+test_recovered_network_validity(void) {
+    static const uint32_t wacn[5] = {0xBEE00, 0x00000, 0xFFFFF, 0xBEE00, 0xBEE00};
+    static const uint16_t sysid[5] = {0x164, 0x164, 0x164, 0x000, 0xFFF};
+    int rc = 0;
+    for (int i = 0; i < 5; ++i) {
+        reset();
+        p25_search_note_recovered_network(&g_state, wacn[i], sysid[i]);
+        rc |= expect_int("recovered network notes only a usable system", g_notes, i == 0 ? 1 : 0);
+    }
+    reset();
+    p25_search_note_recovered_network(&g_state, 0xBEE00, 0x164);
+    rc |= expect_int("recovered network kind", g_note.kind, DSD_SEARCH_SITE_NOTE_P25_NETWORK);
+    rc |= expect_site("recovered network names the system", "WACN BEE00 \xC2\xB7 SYS 164");
+    rc |= expect_int("recovered network leaves the received identity", (long)g_state.rx_id.valid, 0);
+    return rc;
+}
+
 int
 main(void) {
     dsd_signal_search_site_set(capture_site);
@@ -690,6 +710,7 @@ main(void) {
     rc |= test_p1_net_sts_pairs_frame_nac();
     rc |= test_frame_nac_cleared_at_boundary();
     rc |= test_lcw_never_notes_code();
+    rc |= test_recovered_network_validity();
     dsd_signal_search_site_set(NULL);
     dsd_signal_search_p25p2_code_set(NULL);
     return rc;

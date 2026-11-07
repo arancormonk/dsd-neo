@@ -24,9 +24,11 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "p25_search_site.h"
 
 int dsd_dispatch_matches_p25p1(int synctype);
 dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
@@ -34,6 +36,8 @@ dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 static uint8_t g_test_duid = 0x3U;
 static int g_check_result = NID_OK;
 static int g_new_nac = 0x293;
+/* Whether the stand-in decoder reports a NID decoded only with the observed NAC put in its NAC field. */
+static int g_nac_borrowed;
 static int g_error_count;
 static int g_last_observed_nac;
 static int g_open_mbe_calls;
@@ -59,6 +63,7 @@ reset_stub_state(void) {
     g_test_duid = 0x3U;
     g_check_result = NID_OK;
     g_new_nac = 0x293;
+    g_nac_borrowed = 0;
     g_error_count = 0;
     g_last_observed_nac = -1;
     g_open_mbe_calls = 0;
@@ -94,7 +99,9 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
     (void)parity_reliab;
     g_nid_decode_calls++;
     g_last_observed_nac = observed_nac;
-    struct p25p1_nid_result result = {(enum NidResult)g_check_result, g_new_nac, g_test_duid, g_error_count};
+    struct p25p1_nid_result result = {
+        (enum NidResult)g_check_result, g_new_nac, g_test_duid, g_error_count, g_nac_borrowed,
+    };
     return result;
 }
 
@@ -213,12 +220,27 @@ processTDU(dsd_opts* opts, dsd_state* state) {
 /* The frame NAC verdict the TSDU's TSBKs see, which a network status among them pairs its WACN and SYSID with (issue
    #804); -1 before any TSDU. */
 static int g_tsbk_frame_nac_valid = -1;
+/* The scrambling codes the TSDU's network status (WACN BEE00, SYSID 1A3) gave the Signal search, and the last one. */
+static int g_code_notes;
+static uint64_t g_code;
 
+/* The Signal search side of the code hook (the runtime is not linked here). */
+void
+dsd_signal_search_note_p25p2_code(const dsd_state* state, uint64_t code, int source) {
+    (void)state;
+    assert(source == DSD_P25P2_CODE_P1_NETWORK);
+    g_code_notes++;
+    g_code = code;
+}
+
+/* A TSDU whose block is a network status that passed its CRC: it pairs its system with the frame's NAC as
+   tsbk_handle_network_status() does. */
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     state->lastp25type = 3;
     g_tsbk_frame_nac_valid = state->p25_frame_nac_valid;
+    p25_search_note_p1_network_code(state, 0xBEE00U, 0x1A3U);
 }
 
 void
@@ -560,6 +582,50 @@ test_frame_nac_validity(void) {
     assert(state.p25_frame_nac_valid == 0U);
 }
 
+/* Issue #804: a NID that decoded only once the observed NAC stood in for its received NAC field (here the seed's NAC
+   0x293 a Phase 2 carrier left, after the carrier boundary zeroed the received NAC) names no NAC: neither the frame's,
+   so the TSDU's network status pairs nothing, nor the received NAC, the received identity or the seed's. Its DUID
+   stands. The same NID read off the air pairs its own NAC. */
+static void
+test_borrowed_nac_names_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0;
+    state.p2_cc = 0x293ULL;
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_test_duid = 0x7U;
+    g_new_nac = 0x293;
+    g_nac_borrowed = 1;
+    g_tsbk_frame_nac_valid = -1;
+    g_code_notes = 0;
+
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_last_observed_nac == 0x293);
+    assert(state.lastp25type == 3);
+    assert(g_tsbk_frame_nac_valid == 0);
+    assert(g_code_notes == 0);
+    assert(state.p25_frame_nac_valid == 0U);
+    assert(state.nac == 0);
+    assert(state.rx_id.valid == 0U);
+    assert(state.p2_cc == 0x293ULL);
+
+    /* The same NID decoded from what was on the air: NAC 0x2C1 pairs with the network status. */
+    reset_stub_state();
+    g_test_duid = 0x7U;
+    g_new_nac = 0x2C1;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_tsbk_frame_nac_valid == 1);
+    assert(g_code_notes == 1);
+    assert(g_code == ((0xBEE00ULL << 24) | (0x1A3ULL << 12) | 0x2C1ULL));
+    assert(state.nac == 0x2C1);
+}
+
 static void
 test_p25p1_mbe_output_and_resume_side_effects(void) {
     static dsd_opts opts;
@@ -882,6 +948,7 @@ main(void) {
     test_p25p1_nac_update_guards();
     test_nid_restores_cleared_p2_cc();
     test_frame_nac_validity();
+    test_borrowed_nac_names_nothing();
     test_p25p1_mbe_output_and_resume_side_effects();
     test_p25p1_valid_nid_learns_modulation();
     test_p25p1_verdict_follows_the_nid_evidence_window();

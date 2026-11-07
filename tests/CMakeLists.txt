@@ -10101,7 +10101,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_search_site_notes
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
 )
 target_link_libraries(
     dsd-neo_test_p25_search_site_notes
@@ -10339,6 +10339,7 @@ target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
     PRIVATE
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25
         ${PROJECT_SOURCE_DIR}/include
 )
 target_include_directories(

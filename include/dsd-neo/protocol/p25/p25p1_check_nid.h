@@ -49,6 +49,10 @@ struct p25p1_nid_result {
     int nac;
     uint8_t duid;
     int error_count;
+    /** 1 when the NID decoded only after its received NAC field was replaced by the caller's observed NAC (the hard or
+        the soft retry, issue #804): the NAC is the one the caller already held, not one read off the air, so it names
+        nothing about the carrier. 0 otherwise. */
+    int nac_borrowed;
 };
 
 /**
@@ -64,7 +68,8 @@ struct p25p1_nid_result {
  * @param observed_nac  Known 12-bit NAC to use for retry, or 0 when unavailable.
  * @param parity         The 64th parity bit read from the air interface.
  * @param parity_reliab  Reliability of the final parity bit.
- * @return Typed status, numeric NAC/DUID, and BCH correction count. NAC and
+ * @return Typed status, numeric NAC/DUID, BCH correction count, and whether the
+ *         NAC was the observed one the retry put in (nac_borrowed). NAC and
  *         DUID are valid when status is positive; error_count is zero on failure.
  */
 struct p25p1_nid_result p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observed_nac,
