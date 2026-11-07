@@ -47,6 +47,16 @@ ModalSheet {
         visible = false;
         startRequested(entry.kind, entry.uid);
     }
+    // Unpin the row at @a index. An Unpin pressed from the keyboard first hands
+    // its focus to the next row's Unpin, else the one before, else Done, so the
+    // reader stays in the list where it was rather than on the sheet itself.
+    function unpinRow(index, key, focused) {
+        if (focused) {
+            var neighbour = index + 1 < rows.shown ? rowRepeater.itemAt(index + 1) : index > 0 ? rowRepeater.itemAt(index - 1) : null;
+            (neighbour ? neighbour.unpin : doneButton).forceActiveFocus();
+        }
+        listenPins.unpinKey(key);
+    }
     function entryFor(key) {
         for (var entry of listenPins.entries) {
             if (entry.key === key)
@@ -68,7 +78,7 @@ ModalSheet {
     ReadableText {
         objectName: "pinnedSheetHint"
         width: parent.width
-        text: qsTr("Up to 6. Pin more with Pin to Listen, in the More menu of a system, scan list, Signal search or Explore, or in a site list.")
+        text: qsTr("You can pin up to 6. Use Pin to Listen in the More menu of a system, scan list, Signal search or Explore, or in a site list.")
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Theme.textSecondary
@@ -94,6 +104,7 @@ ModalSheet {
         visible: listenPins.count > 0
         spacing: 12
         Repeater {
+            id: rowRepeater
             model: StableRows {
                 id: rows
                 entries: sheet.visible ? listenPins.entries : []
@@ -114,9 +125,13 @@ ModalSheet {
                 required property string line
                 readonly property var parts: JSON.parse(line)
                 readonly property bool found: parts[3] === true
+                readonly property alias unpin: unpinButton
                 // A row past the end of a shrinking list goes at the end of
-                // the turn; until then it is not drawn and reads as nothing.
+                // the turn; until then it is not drawn (`shown`), and its
+                // buttons read as nothing, leave the tree and take no focus or
+                // press (`live`), as the house's StableRows views do.
                 opacity: index >= 0 && index < rows.shown ? 1 : 0
+                readonly property bool live: index >= 0 && index < rows.live
                 width: parent.width
                 height: Math.max(startButton.height, unpinButton.height)
 
@@ -127,9 +142,10 @@ ModalSheet {
                     width: pinRow.width - unpinButton.width - 8
                     anchors.verticalCenter: parent.verticalCenter
                     text: pinRow.parts[0]
-                    accessibleName: pinRow.parts[1]
+                    accessibleName: pinRow.live ? pinRow.parts[1] : ""
+                    Accessible.ignored: !navigationAllowed || !visible || !pinRow.live
                     wrapMode: Text.WordWrap
-                    enabled: pinRow.found && !decoderHost.transitioning
+                    enabled: pinRow.live && pinRow.found && !decoderHost.transitioning
                     onClicked: sheet.start(pinRow.key)
                 }
                 OutlineButton {
@@ -142,14 +158,17 @@ ModalSheet {
                     // off the right border.
                     width: Math.ceil(implicitWidth)
                     text: qsTr("Unpin")
-                    accessibleName: pinRow.parts[2]
-                    onClicked: listenPins.unpinKey(pinRow.key)
+                    accessibleName: pinRow.live ? pinRow.parts[2] : ""
+                    Accessible.ignored: !navigationAllowed || !visible || !pinRow.live
+                    enabled: pinRow.live
+                    onClicked: sheet.unpinRow(pinRow.index, pinRow.key, activeFocus)
                 }
             }
         }
     }
 
     OutlineButton {
+        id: doneButton
         objectName: "pinnedSheetDone"
         width: parent.width
         text: qsTr("Done")

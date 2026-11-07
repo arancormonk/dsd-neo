@@ -279,15 +279,22 @@ Item {
         }
 
         // §6: Tab goes from the receiver pill through the pins to More, then into the body.
-        function test_keyboard_order() {
+        // On the desktop the fixed title is no stop, and there is no pill: pins, More, body.
+        function test_keyboard_order_data() {
+            return [{tag: "brokered", brokered: true}, {tag: "desktop", brokered: false}];
+        }
+        function test_keyboard_order(data) {
+            if (!data.brokered)
+                testContext.useLifecycleHost(false);
             pin("system", addSystem("Alpha"));
             pin("system", addSystem("Bravo"));
             waitForRendering(home);
             var pill = findChild(home, "dongleStatusPill");
-            verify(pill.visible);
+            compare(pill.visible, data.brokered);
+            verify(findChild(home, "listenHeaderTitle").visible, "the title leads");
             var pins = stripPins();
             compare(pins.length, 2);
-            var order = [pill, pins[0], pins[1], findChild(home, "pinnedStripMore")];
+            var order = (data.brokered ? [pill] : []).concat([pins[0], pins[1], findChild(home, "pinnedStripMore")]);
             root.forceActiveFocus();
             for (var i = 0; i < order.length; ++i) {
                 keyClick(Qt.Key_Tab);
@@ -365,6 +372,104 @@ Item {
             verify(!sheet.visible);
         }
 
+        // Unpinned from the keyboard, an Unpin hands its focus to the next row's Unpin, else the one before, else Done:
+        // the reader stays in the sheet's list.
+        function test_keyboard_unpin_keeps_focus_in_sheet() {
+            var names = ["Alpha", "Bravo", "Charlie"];
+            for (var name of names)
+                pin("system", addSystem(name));
+            var sheet = openSheet();
+            var panel = findChild(home, "pinnedSheetPanel");
+            function within(item, scope) {
+                for (var at = item; at; at = at.parent) {
+                    if (at === scope)
+                        return true;
+                }
+                return false;
+            }
+            function unpinOf(label) {
+                return sheetRows("pinnedSheetUnpin").filter(function (button) {
+                    return button.accessibleName === "Unpin " + label;
+                })[0];
+            }
+            // The middle row: focus goes on to the next.
+            unpinOf("Bravo").forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            compare(listenPins.count, 2);
+            var focused = root.Window.window.activeFocusItem;
+            verify(within(focused, panel), "focus stays in the sheet: " + focused);
+            compare(focused, unpinOf("Charlie"), "on the next row's Unpin");
+            // The last row: back to the one before.
+            keyClick(Qt.Key_Space);
+            compare(listenPins.count, 1);
+            tryVerify(function () {
+                return sheetRows("pinnedSheetUnpin").length === 1;
+            });
+            compare(root.Window.window.activeFocusItem, unpinOf("Alpha"), "on the row before");
+            // The only row: Done.
+            keyClick(Qt.Key_Space);
+            compare(listenPins.count, 0);
+            compare(root.Window.window.activeFocusItem, findChild(sheet, "pinnedSheetDone"), "on Done");
+            verify(sheet.visible);
+        }
+
+        // StableRows lets a departing row go at the end of the turn; until then its buttons, in the strip and in the
+        // sheet, are not drawn, read as nothing, leave the tree and take no press.
+        function test_departing_rows_read_as_nothing() {
+            var alpha = addSystem("Alpha");
+            pin("system", alpha);
+            pin("system", addSystem("Bravo"));
+            var sheet = openSheet();
+            var stripButtons = stripPins();
+            var starts = sheetRows("pinnedSheetStart");
+            var unpins = sheetRows("pinnedSheetUnpin");
+            compare(stripButtons.length, 2);
+            compare(starts.length, 2);
+            var departing = [stripButtons[0], starts[0], unpins[0]];
+            started.clear();
+            listenPins.unpin("system", alpha);
+            // Still in this turn: the rows are there, the departing ones not live.
+            for (var button of departing) {
+                verify(button.parent !== null, "the row is let go of at the end of the turn");
+                compare(button.Accessible.name, "", button.objectName + " reads as nothing");
+                verify(button.Accessible.ignored, button.objectName + " leaves the tree");
+                verify(!button.activeFocusOnTab, button.objectName + " takes no focus");
+                button.activate();
+            }
+            compare(started.count, 0, "a departing strip pin or sheet start starts nothing");
+            compare(listenPins.count, 1, "a departing Unpin unpins nothing more");
+            compare(stripButtons[1].Accessible.name, "Start Bravo", "the staying pin keeps its name");
+            sheet.visible = false;
+        }
+
+        // [r1-7] and the strip's layout: a rotation or a text-size change while Home is hidden adds or removes no pin
+        // there; shown again, the line is laid out for the new width and size.
+        function test_hidden_home_holds_strip_layout_data() {
+            return [{tag: "rotation", width: 700}, {tag: "text size", width: 420}];
+        }
+        function test_hidden_home_holds_strip_layout(data) {
+            root.width = data.width;
+            for (var name of ["Fire", "EMS", "Police", "Roads"])
+                pin("system", addSystem(name));
+            waitForRendering(home);
+            var buttons = stripPins();
+            compare(buttons.length, 4, "all four fit at " + data.width + " px");
+            var widths = buttons.map(function (b) { return b.width; });
+            home.visible = false;
+            if (data.tag === "rotation")
+                root.width = 320;
+            else
+                Ui.Theme.fontScale = 1.6;
+            sameButtons(stripPins(), buttons, "the hidden strip keeps its pins");
+            compare(JSON.stringify(stripPins().map(function (b) { return b.width; })), JSON.stringify(widths),
+                    "and their places");
+            home.visible = true;
+            tryVerify(function () {
+                return stripPins().length < 4;
+            }, 1000, "shown again, fewer pins fit");
+            verify(stripPins()[0] === buttons[0], "the first pin kept its button");
+        }
+
         // The sheet is a management sheet: open, nothing on the strip or the body behind it acts.
         function test_sheet_blocks_background() {
             pin("system", addSystem("Alpha"));
@@ -376,9 +481,11 @@ Item {
             verify(pinButton.Accessible.ignored, "the covered pin leaves the tree");
             verify(!pinButton.activeFocusOnTab);
             started.clear();
-            pinButton.activate();
+            pinButton.forceActiveFocus();
+            verify(!pinButton.activeFocus, "the covered pin takes no focus");
             keyClick(Qt.Key_Return);
-            compare(started.count, 0, "the pin's own activation does nothing");
+            pinButton.activate();
+            compare(started.count, 0, "neither a key nor the pin's own activation starts anything");
             // A tap over the pin is a tap outside the panel: it closes the sheet and goes no further.
             var at = pinButton.mapToItem(root, pinButton.width / 2, pinButton.height / 2);
             mouseClick(root, at.x, at.y);

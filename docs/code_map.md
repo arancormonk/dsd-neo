@@ -10698,30 +10698,36 @@ Qt Quick frontend (`src/ui/qt`):
   then one line tall, `max(48, pin label height + 24)` at any text size; the body's top margin adds it plus the 6 px
   clearance, and the scroll divider shows under it. Header and strip heights follow `heldPins`, not `visible`, so a tab
   switch moves nothing. With nothing pinned the layout is as before on both hosts. `heldPins` takes `listenPins.entries`
-  only while Home is visible and holds the last list while hidden ([r1-7]), so a rename, removal or unpin behind the
-  wizard, Monitor or another tab raises nothing from the strip and keeps its height and the body's scroll; shown again,
-  it takes the list as it is. `placed` lays out the found pins in stored order before any is made (a `FontMetrics` in
-  `PinButton`'s label font): each pin is `min(label + 30, room)` wide, room being the column less More and an 8 px gap,
-  and the first that does not fit ends the line, so the first always shows (elided). Pins past it, and pins not found,
-  are not made. The buttons come from a `StableRows` over `placed`, keyed by pin key, so a rename renames its button and
-  a pin arriving or leaving adds or removes only its own. More (`pinnedStripMore`, "All pinned shortcuts") always ends
-  the strip. No Flickable, so the strip adds no container node (R-2). Tab and TalkBack order: title, receiver pill,
-  pins, More, body. A pin or a sheet row emits Home's `startPin(kind, uid)`, which Main connects to `startPin()` (the
-  start gate below); pins are disabled while `decoderHost.transitioning`, and the strip while `managementSheetOpen`.
-  `qml/PinButton.qml` is FilterPill's rounded chip with `OutlineButton`'s gate (focused-control `activeFocusOnTab`
-  retention, `Navigation.allows()` read first, Return/Enter/Space, `onPressAction`, `FocusFrame`, half opacity when
-  disabled) and a one-line plain-text label elided at its width; FilterPill is unchanged. `qml/PinnedSheet.qml`
-  (`pinnedSheet`, Home-hosted, in `managementSheetOpen`): heading "Pinned", a hint naming the cap and where to pin, then
-  a row per stored pin from a `StableRows` fed only while open: a start `OutlineButton` (its accessible name from
-  `entries`) and an **Unpin** (`unpinKey()`, "Unpin <label>"). A pin not found shows "<last label> (not found)", else
-  "Saved system not found", "Site not found" or "Scan list not found", and its start is disabled; its Unpin reads "Unpin
-  the missing ..." without a label. A start closes the sheet before it asks, so a site chooser it opens is on top.
-  "Nothing is pinned." replaces the rows when the last is unpinned. Tests: `UI_QT_QML_CALL_LISTS`
-  (`tst_home_pinned_strip.qml` on Home alone: hidden without pins, one line at 320/360/411 px x 1.0/1.3/1.6 portrait and
-  landscape and the 900 px desktop, order and activation, keyboard order, the sheet, modal blocking, hidden hold, scroll
-  across tabs, renames, the desktop title above the strip; `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN`
-  (`tst_a11y_text_reach.qml` reaches every pin, More, the title once and each sheet row; `tst_a11y_scan_churn.qml`
-  changes pinned targets behind the wizard with no event from the strip or the closed sheet).
+  only while Home is visible and holds the last list while hidden ([r1-7]), with the line it is laid out on
+  (`heldStripWidth`, `heldPinFont`), so a rename, removal or unpin, a rotation or a text-size change behind the wizard,
+  Monitor or another tab adds, removes or renames no pin there and keeps the strip's height and the body's scroll; shown
+  again, it takes the list and the line as they are. `placed` lays out the found pins in stored order before any is made
+  (a `FontMetrics` in the held `Theme.pinLabelFont`, the font `PinButton` draws its label in): each pin is its label's
+  width plus 30 px, at most the room (the column less More and an 8 px gap), and the first that does not fit ends the
+  line, so the first always shows (elided). Pins past it, and pins not found, are not made. The buttons come from a
+  `StableRows` over `placed`, keyed by pin key, so a rename renames its button and a pin arriving or leaving adds or
+  removes only its own; a departing button is not drawn (`shown`) and reads as nothing, leaves the tree and takes no
+  focus or press (`live`, `PinButton.live`) for the rest of its turn. A pin starts the entry `placed` holds for its key.
+  More (`pinnedStripMore`, "All pinned shortcuts") always ends the strip. No Flickable, so the strip adds no container
+  node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, body. A pin or a sheet row emits Home's
+  `startPin(kind, uid)`, which Main connects to `startPin()` (the start gate below); pins are disabled while
+  `decoderHost.transitioning`, and the strip while `managementSheetOpen`. `qml/PinButton.qml` is FilterPill's rounded
+  chip with `OutlineButton`'s gate (focused-control `activeFocusOnTab` retention, `Navigation.allows()` read first,
+  Return/Enter/Space, `onPressAction`, `FocusFrame`, half opacity when disabled) and a one-line plain-text label elided
+  at its width; FilterPill is unchanged. `qml/PinnedSheet.qml` (`pinnedSheet`, Home-hosted, in `managementSheetOpen`):
+  heading "Pinned", a hint naming the cap and where to pin, then a row per stored pin from a `StableRows` fed only while
+  open: a start `OutlineButton` (its accessible name from `entries`) and an **Unpin** (`unpinKey()`, "Unpin <label>"),
+  both gated on `live` as the strip's pins are. An Unpin pressed from the keyboard first hands its focus to the next
+  row's Unpin, else the one before, else Done. A pin not found shows "<last label> (not found)", else "Saved system not
+  found", "Site not found" or "Scan list not found", and its start is disabled; its Unpin reads "Unpin the missing ..."
+  without a label. A start closes the sheet before it asks, so a site chooser it opens is on top. "Nothing is pinned."
+  replaces the rows when the last is unpinned. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_pinned_strip.qml` on Home alone:
+  hidden without pins, one line at 320/360/411 px x 1.0/1.3/1.6 portrait and landscape and the 900 px desktop, order and
+  activation, keyboard order on both hosts, the sheet, focus after a keyboard Unpin, departing rows, modal blocking,
+  hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip;
+  `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
+  title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
+  the strip or the closed sheet).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
   access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
   layout, Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery is reset and reopened once per

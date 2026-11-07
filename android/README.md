@@ -2267,8 +2267,8 @@ not be exported or logged. QString/QML key copies cannot guarantee memory erasur
 
 Listen keeps up to 6 shortcuts in a **Pinned** row above its list: a saved system (the whole card), one site of a
 grouped system, a scan list, Signal search or Explore. A tap does what the shortcut's own control does: a system or
-site starts (a grouped system with no site, or several, it can play opens its site list), a scan list starts on its
-own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text size and
+site starts (a grouped system opens its site list when it has no playable site or more than one), a scan list starts
+on its own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text size and
 stays in place while the list scrolls. It shows the pins that fit, in the order they were pinned, then **More** (read
 as "All pinned shortcuts"), which opens the **Pinned** sheet: every pin, each with **Unpin**. A pin whose system,
 site or scan list is not found right now (its saved file could not be read, say) stays pinned and still counts

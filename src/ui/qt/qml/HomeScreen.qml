@@ -108,13 +108,23 @@ Item {
     // while Home is shown. Hidden (another tab, a session, the wizard), it holds
     // the last list, so a rename or removal there raises nothing from the strip
     // and its height, and the body's scroll range, stay as they were; shown
-    // again, it takes the list as it is then.
+    // again, it takes the list as it is then. The line they are laid out on is
+    // held with them, its width and the pins' font, so a rotation or a text
+    // size changed behind a hidden Home adds or removes no pin there either.
     property var heldPins: []
+    property real heldStripWidth: 0
+    property font heldPinFont: Theme.pinLabelFont
     function takePins() {
-        if (visible)
-            heldPins = listenPins.entries;
+        if (!visible)
+            return;
+        heldPins = listenPins.entries;
+        heldStripWidth = columnWidth;
+        heldPinFont = Theme.pinLabelFont;
     }
+    readonly property font pinLabelFont: Theme.pinLabelFont
     onVisibleChanged: takePins()
+    onColumnWidthChanged: takePins()
+    onPinLabelFontChanged: takePins()
     Component.onCompleted: takePins()
     Connections {
         target: listenPins
@@ -282,19 +292,21 @@ Item {
         // One line of label in a pin, at any text size.
         height: shown ? Math.max(Theme.minimumTouchSize, Math.ceil(pinMetrics.height) + 24) : 0
 
-        // PinButton's label font, to measure pins before any is made.
+        // PinButton's label font as held, to measure pins before any is made.
         FontMetrics {
             id: pinMetrics
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(13)
-            font.weight: Font.DemiBold
+            font: screen.heldPinFont
         }
         // The found pins that fit, in order, each with its place: a pin is as
         // wide as its label (at most the room left of More), and the first one
         // that does not fit ends the line.
         readonly property var placed: {
-            var room = width - moreButton.width - pinGap;
-            var size = pinMetrics.font.pixelSize; // measured again when the text size changes
+            // Nothing to lay out before Home has first shown. Reading the held
+            // font here also lays the line out again when it changes, which the
+            // advanceWidth() calls below, being calls, would not.
+            if (screen.heldStripWidth <= 0 || screen.heldPinFont.pixelSize <= 0)
+                return [];
+            var room = screen.heldStripWidth - moreButton.width - pinGap;
             var out = [];
             var at = 0;
             for (var entry of screen.heldPins) {
@@ -303,7 +315,8 @@ Item {
                 var wide = Math.min(room, Math.max(Theme.minimumTouchSize, Math.ceil(pinMetrics.advanceWidth(entry.label)) + 2 * 15));
                 if (out.length > 0 && at + wide > room)
                     break;
-                out.push({key: entry.key, label: entry.label, accessibleName: entry.accessibleName, x: at, width: wide});
+                out.push({key: entry.key, kind: entry.kind, uid: entry.uid, label: entry.label,
+                    accessibleName: entry.accessibleName, x: at, width: wide});
                 at += wide + pinGap;
             }
             return out;
@@ -334,14 +347,21 @@ Item {
                 x: place ? place.x : 0
                 width: place ? place.width : 0
                 height: pinnedStrip.height
-                // A pin past the end of a shrinking line goes at the end of the turn.
+                // A pin past the end of a shrinking line goes at the end of the
+                // turn; until then it is not drawn, reads as nothing and takes
+                // no focus or press (StableRows' `shown` and `live`).
                 opacity: index >= 0 && index < stripRows.shown ? 1 : 0
+                live: index >= 0 && index < stripRows.live
                 text: parts[0]
                 accessibleName: parts[1]
                 enabled: !decoderHost.transitioning
                 onClicked: {
-                    var split = key.indexOf(":");
-                    screen.startPin(key.slice(0, split), key.slice(split + 1));
+                    for (var entry of pinnedStrip.placed) {
+                        if (entry.key === pinKey) {
+                            screen.startPin(entry.kind, entry.uid);
+                            return;
+                        }
+                    }
                 }
             }
         }

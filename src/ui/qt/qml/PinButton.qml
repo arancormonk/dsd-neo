@@ -14,19 +14,23 @@ Rectangle {
     signal clicked
 
     property string accessibleName: text
+    // False for a button whose row StableRows is letting go of at the end of
+    // the turn (index past `live`): it reads as nothing, is out of the tree and
+    // takes no focus or press, as the house's StableRows views do.
+    property bool live: true
     // Held while the button has active focus, as OutlineButton does: Qt refuses
     // to drop activeFocusOnTab from the active focus item.
-    activeFocusOnTab: (Navigation.allows(control) && enabled && visible) || activeFocus
+    activeFocusOnTab: (Navigation.allows(control) && enabled && visible && live) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: accessibleName
+    Accessible.name: live ? accessibleName : ""
     // Issue #782: focusable only while in the tree (see OutlineButton).
-    Accessible.focusable: navigationAllowed && visible
+    Accessible.focusable: navigationAllowed && visible && live
     readonly property bool navigationAllowed: Navigation.allows(control)
     // Gate first: see OutlineButton.
-    Accessible.ignored: !navigationAllowed || !visible
+    Accessible.ignored: !navigationAllowed || !visible || !live
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !Navigation.allows(control))
+        if (!enabled || !live || !Navigation.allows(control))
             return;
         Navigation.commitComposing(true);
         clicked();
@@ -56,8 +60,6 @@ Rectangle {
         text: control.text
     }
 
-    // The Pinned strip measures labels in this font (HomeScreen's pinMetrics)
-    // to lay its pins out before any is made: change both together.
     Text {
         id: label
         objectName: "pinButtonLabel"
@@ -68,9 +70,8 @@ Rectangle {
         textFormat: Text.PlainText
         maximumLineCount: 1
         elide: Text.ElideRight
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(13)
-        font.weight: Font.DemiBold
+        // The font the Pinned strip measures pins in (Theme.pinLabelFont).
+        font: Theme.pinLabelFont
         color: Theme.buttonSecondaryText
     }
 
