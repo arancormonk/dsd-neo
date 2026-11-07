@@ -10,6 +10,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -322,6 +323,56 @@ test_detection_tone(void) {
     dsd_decode_clock_use_system();
 }
 
+/* Issue #802 B11: the access code is the carrier's, judged by the code alone. A changed publication while co-channel
+   traffic on a code the receive policy rejects holds the decoder reads nothing for the hit, which keeps the code it
+   had; a slot filter blocking the slot the decoder is on keeps nothing from it. */
+static void
+test_rejected_code_access(dsd_opts* opts, dsd_state* state) {
+    dsd_signal_search_status status = {0};
+    status.session_id = status.hit.session_id = 9;
+    status.hit.hit_id = 1;
+    status.hit.confirmed = 1;
+    status.phase = DSD_SEARCH_LISTENING;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "DMR");
+    DSD_MEMSET(&call, 0, sizeof(call));
+    opts->receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_DCC].block.bits[0] = UINT64_C(1) << 3;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->dmr_color_code = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 1") == 0);
+    state->dmr_color_code = 3;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 1") == 0);
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 1") == 0);
+
+    // P25 Phase 2, slot 1 blocked and NAC 293 allowed, the decoder on slot 1: the proven NAC is the carrier's.
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    opts->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 1;
+    opts->receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_NAC].allow.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
+    status.hit.hit_id = 2;
+    status.hit.ended = 0;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "P25");
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->currentslot = 0;
+    state->p2_proven_nac = 0x293;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    // A NAC the filter does not allow, proven on the carrier the decoder holds now, is not the hit's.
+    state->p2_proven_nac = 0x2A4;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    // With the filters off, the code is read as before.
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 2A4") == 0);
+    state->p2_proven_nac = -1;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -477,6 +528,7 @@ main(void) {
     assert(strcmp(published.hit.access, "CAN 5") == 0);
     status.hit.hit_id = 2;
 
+    test_rejected_code_access(opts, state);
     test_detection_tone();
 
     // Controls mirror the session's own avoid list for the frontends; a permanent avoid goes to the store as well.

@@ -26,6 +26,10 @@ int dsd_receive_grant_allows(const dsd_opts* opts, int protocol, int slot);
 /** Whether the policy in force admits a call by the identity it was received with (a call snapshot's), whatever the
  * decoder holds now: a sync loss forgets the live code before the carrier proves it again. */
 int dsd_receive_identity_admitted(const dsd_opts* opts, const dsd_receive_identity* identity);
+/** Whether the policy rejects the access code @p state has verified for @p protocol, judged by the code alone: the
+ * slot filter is not asked, so a carrier-level fact (a site broadcast, the carrier's access code) is judged by the
+ * carrier's code whichever slot carried it. A code not verified yet, and a protocol with none, are not rejected. */
+int dsd_receive_code_rejects(const dsd_opts* opts, const dsd_state* state, int protocol);
 /** Whether the policy admits everything on the carrier the decoder is on: both over-the-air slots of a two-slot one,
  * each judged as that slot whatever the single-slot DMR decoder has proven for its one lane. */
 int dsd_receive_carrier_allows(const dsd_opts* opts, const dsd_state* state);

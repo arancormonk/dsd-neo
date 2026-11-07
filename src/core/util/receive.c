@@ -121,6 +121,18 @@ dsd_receive_identity_admitted(const dsd_opts* opts, const dsd_receive_identity* 
     return verdict == DSD_RECEIVE_OFF || verdict == DSD_RECEIVE_ALLOWED;
 }
 
+int
+dsd_receive_code_rejects(const dsd_opts* opts, const dsd_state* state, int protocol) {
+    if (!dsd_receive_filters_enabled(opts) || !state) {
+        return 0;
+    }
+    dsd_receive_identity identity;
+    dsd_receive_identity_current(state, protocol, -1, &identity);
+    identity.slot = 0;
+    identity.slot_pending = 0;
+    return dsd_receive_policy_match(&opts->receive, &identity) == DSD_RECEIVE_REJECTED;
+}
+
 /* The protocol generic output paths judge by: the owner a borrowed decoder names, else the current sync type, else the
    last one. */
 static int

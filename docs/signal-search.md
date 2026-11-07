@@ -182,7 +182,11 @@ the search goes on. A probe that heard only traffic still being checked, a probe
 nothing, and a held probe fall back to NFM as above. One limit: with a receive filter on, a
 short transmission whose access code is proven only after its last checked frame ends
 unconfirmed at the probe deadline; a continuous carrier sends more checked frames and
-confirms normally.
+confirms normally. A detection's site and access code never come from traffic whose access
+code the filter rejects: when a transmitter on a blocked colour code takes over the channel
+after the detection was confirmed, the detection keeps the site and code it showed, and that
+transmitter's broadcasts heard before the confirmation never join it. A slot filter alone
+does not keep them off, since the site and the code belong to the whole channel.
 
 A digital detection also shows the site it identified, from checked broadcasts heard
 during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SYSID,

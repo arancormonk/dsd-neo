@@ -666,12 +666,30 @@ dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protoco
     search_publish(c, 1);
 }
 
+/* The sync type whose access code judges a site note of @p kind: the decoder's current one while it is of the note's
+   family (P25 Phase 1 and Phase 2 read their NACs apart), else one of that family. */
+static int
+search_site_sync(const dsd_state* state, int kind) {
+    int family = DSD_SYNC_P25P1_POS;
+    if (kind == DSD_SEARCH_SITE_NOTE_DMR_TIII) {
+        family = DSD_SYNC_DMR_BS_DATA_POS;
+    } else if (kind == DSD_SEARCH_SITE_NOTE_NXDN) {
+        family = DSD_SYNC_NXDN_POS;
+    }
+    const char* name = dsd_engine_signal_search_sync_protocol(family);
+    return dsd_engine_signal_search_family_matches(name, state->synctype) ? state->synctype : family;
+}
+
 void
 dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
     search_coord* c = search_get(state);
-    /* A repeated broadcast changes nothing and publishes nothing; a new identity publishes the hit at once, so the
-       last broadcast before the channel falls silent still reaches it. */
-    if (!c || !search_receiving(c, state) || !dsd_signal_search_site_apply(&c->site, note)) {
+    /* A site broadcast is the carrier's: one carrying an access code the receive policy rejects names no site of the
+       visit, before the hit is confirmed or after, whichever slot carried it (issue #802 B11). A repeated broadcast
+       changes nothing and publishes nothing; a new identity publishes the hit at once, so the last broadcast before
+       the channel falls silent still reaches it. */
+    if (!c || !note || !search_receiving(c, state)
+        || dsd_receive_code_rejects(c->opts, state, search_site_sync(state, note->kind))
+        || !dsd_signal_search_site_apply(&c->site, note)) {
         return;
     }
     if (search_refresh_site(c)) {
@@ -679,15 +697,16 @@ dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_si
     }
 }
 
-/* Whether an access note may republish the hit: a visit is receiving, its hit is confirmed, and the decoder's current
-   sync type is of the hit's protocol family ("NXDN" for NXDN48 and NXDN96), the family whose code the observer reads.
-   The hit is already confirmed, so the receive policy admitted it. */
+/* Whether an access note may republish the hit: a visit is receiving, its hit is confirmed, the decoder's current sync
+   type is of the hit's protocol family ("NXDN" for NXDN48 and NXDN96), the family whose code the observer reads, and
+   the receive policy does not reject that code, judged by the code alone (issue #802 B11). */
 static int
 search_access_note_applies(const search_coord* c, const dsd_state* state) {
     if (!c || !search_receiving(c, state) || !c->status.hit.confirmed) {
         return 0;
     }
-    return dsd_engine_signal_search_family_matches(c->status.hit.protocol, state->synctype);
+    return dsd_engine_signal_search_family_matches(c->status.hit.protocol, state->synctype)
+           && !dsd_receive_code_rejects(c->opts, state, state->synctype);
 }
 
 void

@@ -365,6 +365,42 @@ test_carrier_admission_judges_both_slots(dsd_opts* opts) {
     opts->receive = saved;
 }
 
+/* Issue #802 B11: a carrier-level fact is judged by the carrier's code alone. The slot filter is never asked, a code
+   not proven yet is no rejection, and a protocol with no code is never rejected. */
+static void
+test_code_rejects_judges_the_code_alone(dsd_opts* opts) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof state);
+    const dsd_receive_policy saved = opts->receive;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    state.dmr_color_code = 7;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS)); /* No filter. */
+    set_filter(opts, DSD_RECEIVE_SLOT, "", "1");
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    assert(!dsd_receive_allows(opts, &state, DSD_SYNC_DMR_BS_DATA_POS, 0));
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    set_filter(opts, DSD_RECEIVE_DCC, "", "7");
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_color_code = 16; /* Not locked: still checking. */
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_color_code = 5;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_color_code = 7;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DPMR_FS1_POS));
+    set_filter(opts, DSD_RECEIVE_NAC, "293", "");
+    state.p2_proven_nac = -1;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P2_POS));
+    state.p2_proven_nac = 0x2A4;
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P2_POS));
+    state.p2_proven_nac = 0x293;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P2_POS));
+    state.nac = 0x2A4; /* Phase 1 reads its own NAC. */
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P1_POS));
+    opts->receive = saved;
+}
+
 /* Issue #637: the single-slot DMR decoder carries both over-the-air slots on lane 0, so a proven move from TS1 to TS2
    with the same colour code is a new service: its call ends rather than taking TS2's name. While the next slot is
    still pending the call keeps the slot it had proven. */
@@ -4529,6 +4565,7 @@ main(void) {
     test_mono_slot_change_is_a_boundary(opts, state);
     test_reacquired_call_keeps_its_service(opts, state);
     test_carrier_admission_judges_both_slots(opts);
+    test_code_rejects_judges_the_code_alone(opts);
     test_events(opts, state);
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));

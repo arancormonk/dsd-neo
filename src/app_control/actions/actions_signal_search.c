@@ -10,6 +10,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -53,13 +54,15 @@ sync_is_hit_protocol(const dsd_signal_search_hit* hit) {
 }
 
 /* The access code of a confirmed hit, formatted here as the frontends show it, read only while the decoder is on the
-   hit's protocol; otherwise the code the hit carries stays. The call tuple (IDs, texts, slot, crypt) is the
-   coordinator's, from one checked call record; this reads only service options (M17's CAN), under the same record
-   checks: from the call the tuple names (its slot), or with no slot named, from whichever slot holds one, as before
-   the tuple existed. */
+   hit's protocol and the receive policy does not reject the code it holds (judged by the code alone: co-channel
+   traffic on a blocked code names no code of the hit, issue #802 B11); otherwise the code the hit carries stays. The
+   call tuple (IDs, texts, slot, crypt) is the coordinator's, from one checked call record; this reads only service
+   options (M17's CAN), under the same record checks: from the call the tuple names (its slot), or with no slot named,
+   from whichever slot holds one, as before the tuple existed. */
 static void
 format_confirmed_access(dsd_signal_search_hit* hit) {
-    if (!sync_is_hit_protocol(hit)) {
+    if (!sync_is_hit_protocol(hit)
+        || dsd_receive_code_rejects(observer.opts, observer.state, observer.state->synctype)) {
         return;
     }
     dsd_call_snapshot call;

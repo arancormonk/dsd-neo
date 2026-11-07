@@ -23188,6 +23188,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_signal_search.c
     ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
     ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
 )
 target_include_directories(

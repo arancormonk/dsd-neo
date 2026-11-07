@@ -2066,6 +2066,124 @@ test_refused_probe_actions(dsd_opts* o, dsd_state* s, const dsd_signal_search_co
     s->synctype = DSD_SYNC_NONE;
 }
 
+/* Issue #802 B11: a site broadcast and an access code belong to the carrier, so one carrying an access code the receive
+   policy rejects reaches no detection: judged by the code alone, before the hit is confirmed or after it. */
+
+/* A checked DMR Tier III identity. */
+static dsd_signal_search_site_note
+dmr_site_note(const char* text) {
+    dsd_signal_search_site_note note = {0};
+    note.kind = DSD_SEARCH_SITE_NOTE_DMR_TIII;
+    DSD_SNPRINTF(note.text, sizeof(note.text), "%s", text);
+    return note;
+}
+
+static void
+test_rejected_code_site(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 61, 1, 0);
+    // Colour code 3 and NXDN RAN 5 blocked.
+    block_cc3(o);
+    o->receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_RAN].block.bits[0] = UINT64_C(1) << 5;
+    start_tag_session(o, s, &one);
+
+    // Admitted colour code 1 confirms the detection with its site.
+    probe_next(o, s);
+    s->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    s->dmr_color_code = 1;
+    dsd_signal_search_note_evidence(s, "DMR", 100, 200, "CC 1");
+    const dsd_signal_search_site_note admitted = dmr_site_note("TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 4");
+    dsd_signal_search_note_site(s, &admitted);
+    assert(status.hit.confirmed && strcmp(status.hit.site, admitted.text) == 0);
+    // Co-channel colour code 3 locks and broadcasts its own identity: neither its site nor its access code proof reaches
+    // the detection, and nothing is published for it.
+    s->dmr_color_code = 3;
+    const int published = hits_published;
+    const dsd_signal_search_site_note rejected = dmr_site_note("TIII Small \xC2\xB7 Net 9 \xC2\xB7 Site 1");
+    dsd_signal_search_note_site(s, &rejected);
+    dsd_signal_search_note_evidence(s, "DMR", 300, 400, "CC 3");
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published && strcmp(status.hit.site, admitted.text) == 0);
+    assert(strcmp(status.hit.access, "CC 1") == 0 && status.hit.target == 100);
+    // Back on colour code 1, a new broadcast shows.
+    s->dmr_color_code = 1;
+    const dsd_signal_search_site_note next = dmr_site_note("TIII Small \xC2\xB7 Net 13 \xC2\xB7 Site 5");
+    dsd_signal_search_note_site(s, &next);
+    assert(hits_published == published + 1 && strcmp(status.hit.site, next.text) == 0);
+    skip_visit(o, s);
+
+    // Before confirmation: the rejected code's broadcast never joins the identity admitted after it. A code not proven
+    // yet is no rejection: that broadcast waits for the identification, as before.
+    probe_next(o, s);
+    s->dmr_color_code = 3;
+    dsd_signal_search_note_site(s, &rejected);
+    s->dmr_color_code = 1;
+    dsd_signal_search_note_evidence(s, "DMR", 100, 200, "CC 1");
+    assert(status.hit.confirmed && status.hit.site[0] == '\0');
+    skip_visit(o, s);
+    probe_next(o, s);
+    s->dmr_color_code = 16;
+    dsd_signal_search_note_site(s, &admitted);
+    s->dmr_color_code = 1;
+    dsd_signal_search_note_evidence(s, "DMR", 100, 200, "CC 1");
+    assert(status.hit.confirmed && strcmp(status.hit.site, admitted.text) == 0);
+    skip_visit(o, s);
+
+    // NXDN by its RAN, whatever the decoder's sync type says when the broadcast is noted.
+    probe_next(o, s);
+    dsd_signal_search_site_note nxdn = {0};
+    nxdn.kind = DSD_SEARCH_SITE_NOTE_NXDN;
+    nxdn.nxdn_site = 12;
+    nxdn.nxdn_sys = 3;
+    s->synctype = DSD_SYNC_NONE;
+    s->nxdn_last_ran = 5;
+    dsd_signal_search_note_site(s, &nxdn);
+    s->synctype = DSD_SYNC_NXDN_POS;
+    s->nxdn_last_ran = 7;
+    dsd_signal_search_note_evidence(s, "NXDN", 0, 0, NULL);
+    assert(status.hit.confirmed && status.hit.site[0] == '\0');
+    dsd_signal_search_note_site(s, &nxdn);
+    assert(strcmp(status.hit.site, "Site 12 \xC2\xB7 Sys 3") == 0);
+    s->nxdn_last_ran = 64;
+    stop_refusal_session(o, s);
+}
+
+/* The code alone: a slot filter blocking the slot the decoder is on never keeps a P25 Phase 2 carrier's network status
+   or its proven NAC from a detection its admitted slot confirmed. The NAC filter does. */
+static void
+test_rejected_code_p25p2_slot(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 63, 1, 0);
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
+    o->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 1;
+    o->receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_NAC].allow.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
+    start_tag_session(o, s, &one);
+    probe_next(o, s);
+    s->synctype = DSD_SYNC_P25P2_POS;
+    s->currentslot = 0;
+    s->p2_proven_nac = 0x293;
+    dsd_signal_search_note_evidence_at(s, "P25", DSD_SYNC_P25P2_POS, 1, 0, 0, NULL);
+    assert(status.hit.confirmed && strcmp(status.hit.protocol, "P25") == 0);
+    int published = hits_published;
+    const dsd_signal_search_site_note network = p25_network_note(0xBEE00, 0x1A3);
+    dsd_signal_search_note_site(s, &network);
+    assert(hits_published == published + 1 && strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3") == 0);
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published + 2);
+    // Another NAC, which the filter does not allow, on the same carrier: its broadcast and its proof stay off.
+    s->p2_proven_nac = 0x2A4;
+    published = hits_published;
+    const dsd_signal_search_site_note other = p25_network_note(0xBEE00, 0x2B4);
+    dsd_signal_search_note_site(s, &other);
+    dsd_signal_search_note_access(s);
+    assert(hits_published == published && strcmp(status.hit.site, "WACN BEE00 \xC2\xB7 SYS 1A3") == 0);
+    s->p2_proven_nac = -1;
+    s->synctype = DSD_SYNC_NONE;
+    skip_visit(o, s);
+    stop_refusal_session(o, s);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -2250,6 +2368,8 @@ main(void) {
     test_refused_probe_held(o, s, &config);
     test_refused_probe_max_visit(o, s, &config);
     test_refused_probe_actions(o, s, &config);
+    test_rejected_code_site(o, s, &config);
+    test_rejected_code_p25p2_slot(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

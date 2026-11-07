@@ -132,11 +132,16 @@ Generated (do not edit/commit):
     runtime access hook, issue #802 B7) republishes the hit as changed when a checked proof gives
     the decoder's current access code a new value: only while a visit is receiving, the hit is
     confirmed and the current sync type's family is the hit's protocol
-    (`dsd_engine_signal_search_family_matches()`), the decision `search_access_note_applies()`
-    makes. It confirms nothing
+    (`dsd_engine_signal_search_family_matches()`) and the receive policy does not reject that sync type's code, the
+    decision `search_access_note_applies()` makes. It confirms nothing
     and changes no phase or activity, so the visit's quiet timing still runs from its last
     evidence; the observer then reads the code through its usual family gate. It exists for a
     P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols).
+    A site note applies only when the policy does not reject the code of the note's family either
+    (`search_site_sync()`: the current sync type when it is of that family, else one of it), before confirmation as
+    after, so a rejected code's site never joins a later admitted identity. Both judge by the code alone
+    (`dsd_receive_code_rejects()`, issue #802 B11): site broadcasts and the access code are the carrier's, so a slot
+    filter blocking the slot the decoder is on keeps neither from the hit, and a code still CHECKING passes.
     Evidence the receive policy rejects (`search_evidence_verdict()`: `dsd_receive_status()` for the sync type and slot
     the report names, else `dsd_receive_current_status()`; REJECTED only, never CHECKING) sets the visit's private
     `refused` flag, which every tune clears (`search_queue_tune()`). At probe expiry an unheld, unconfirmed visit with
@@ -3981,7 +3986,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     sync type, `dsd_engine_signal_search_sync_protocol()`, is a prefix of the hit's protocol
     as "NXDN" is of NXDN48; the coordinator's call and access gates use the same test): another protocol's site note
     publishes the hit as changed too, and then the code the hit carries stays (issue #802
-    B1). M17's CAN read at the link setup frame is carried through the stream frames after
+    B1). Nor is it read while the receive policy rejects the code the decoder holds for that sync type
+    (`dsd_receive_code_rejects()`, the code alone: a slot filter never applies, and a code still CHECKING passes), so
+    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). M17's CAN read at the link setup frame is carried through the stream frames after
     it, whose sync type the LSF's call record does not answer. The received tone (issue
     #802 B3) is read from the rx tone view on every live publication of the hit: the latest
     lock shows at once until some lock has been seen held 1 s (`SEARCH_TONE_HELD_MS`, decode
@@ -13640,7 +13647,8 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   `core/receive.h` supplies explicit protocol/slot admission from validated DCC/RAN/NAC/tone evidence. A P25 Phase 2
   seed without proof and NXDN stand-in values stay unknown. `dsd_receive_current_status()` is the verdict
   `dsd_receive_current_allows()` reduces to yes or no, for the same current protocol, so a caller can tell REJECTED
-  from CHECKING (Signal search, issue #802 B9). Shared-vocoder invocations carry their owning protocol
+  from CHECKING (Signal search, issue #802 B9). `dsd_receive_code_rejects()` judges a protocol's verified code alone,
+  without the slot filter, for carrier-level facts such as a site broadcast (Signal search, issue #802 B11). Shared-vocoder invocations carry their owning protocol
   through `dsd_state::receive_context_*`, since YSF/dPMR temporarily borrow another protocol's decoder.
 - Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
   acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into
