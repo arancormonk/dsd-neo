@@ -10,7 +10,8 @@ import android.system.Os
 
 /**
  * The QML garbage collector's policy for the app (`src/ui/qt/qml_gc_policy.h`): `QV4_GC_TIMELIMIT=0`, so each
- * collection runs to completion, which keeps Qt 6.11.2 from freeing a QML object's function storage mid-creation.
+ * collection runs to completion, which keeps Qt 6.11's incremental collector from freeing a QML object's function
+ * storage mid-creation.
  *
  * Set here, before the activity's `super.onCreate()`, rather than by `applyQmlGcPolicy()` in `main()`: once
  * `super.onCreate()` has started `main()` on the Qt thread, no thread may add an environment entry (#782; see

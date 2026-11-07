@@ -45,7 +45,7 @@
 
         <!-- QtActivity plus one override: it raises the Qt quit that Qt's own teardown
              waits for but does not send. See DsdNeoActivity. -->
-        <!-- One instance per process (#782): Qt 6.11.2 restarts the whole process, skipping
+        <!-- One instance per process (#782): Qt 6.11.3 restarts the whole process, skipping
              the app's teardown, when a second instance is created in a process it already
              started. singleTask brings the running instance forward for a USB attachment
              (to onNewIntent), the launcher icon and the decoding notification, where

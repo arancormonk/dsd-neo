@@ -368,7 +368,7 @@ install_optional_packages() {
   fi
 
   # Install whichever packages this distro does provide, so one missing package
-  # does not drop the whole optional group (openSUSE Leap 16.0, for example,
+  # does not drop the whole optional group (openSUSE Leap 16.1, for example,
   # ships rtl-sdr-devel but has no SoapySDR package).
   available=
   unavailable=

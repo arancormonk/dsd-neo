@@ -564,7 +564,7 @@ def a11y_bridge_order():
 
 
 # Every android:configChanges flag that android-36's attrs_manifest.xml defines, except resourcesUnused, which overrides
-# them all and is for activities that use no resources (#782). A flag missing here recreates the activity, and Qt 6.11.2
+# them all and is for activities that use no resources (#782). A flag missing here recreates the activity, and Qt 6.11.3
 # then restarts the process without the app's teardown. Audited for AUDITED_COMPILE_SDK only.
 PINNED_CONFIG_CHANGES = (
     "mcc", "mnc", "locale", "touchscreen", "keyboard", "keyboardHidden", "navigation", "orientation", "screenLayout",
@@ -584,7 +584,7 @@ ANDROID_ATTRIBUTE = re.compile(r'\bandroid:(\w+)\s*=\s*"([^"]*)"')
 
 
 def launch_policy():
-    """#782: Qt 6.11.2 restarts the process inside onCreate, without the app's teardown, when a second activity instance
+    """#782: Qt 6.11.3 restarts the process inside onCreate, without the app's teardown, when a second activity instance
     is created in a process it started, so the manifest allows none: singleTask, and every configuration change handled
     in place, against the compile SDK the list was audited for, the one CI installs. LaunchGuard's summary names the Qt
     the restart path was audited on, so a Qt bump fails here until it is audited again; this proves only that the text

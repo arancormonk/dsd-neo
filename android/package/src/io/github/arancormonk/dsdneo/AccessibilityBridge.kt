@@ -15,14 +15,14 @@ import android.view.accessibility.AccessibilityManager
  * Keeps Qt's Android accessibility bridge off unless touch exploration is on at launch (#782), and tells the user when
  * touch exploration turns on later. The decisions are [AccessibilityGate]'s; this feeds it and carries them out.
  *
- * Qt 6.11.2 turns its bridge on for any enabled accessibility service, and while the app scans the bridge floods the
+ * Qt 6.11.3 turns its bridge on for any enabled accessibility service, and while the app scans the bridge floods the
  * main thread. Qt reads `QT_ANDROID_DISABLE_ACCESSIBILITY` synchronously inside the activity's `super.onCreate()`, and
  * again on each later change of the enabled state; only `1` or `true` keeps the bridge off, any other value leaves Qt's
- * default (QtAccessibilityDelegate.java:94-95 at v6.11.2). So:
+ * default (QtAccessibilityDelegate.java:94-95 at v6.11.3). So:
  * - [beforeQt], just before `super.onCreate()`, sets the variable from the launch's facts: `1` keeps the bridge off,
  *   `0` under touch exploration lets Qt turn it on;
  * - [afterQt], just after, makes it `1` for the rest of the process: turning the bridge on mid-session crashes Qt
- *   6.11.2 (QTBUG-144911), and turning it off would leave a screen reader with nothing to read. Touch exploration
+ *   6.11.3 (QTBUG-144911), and turning it off would leave a screen reader with nothing to read. Touch exploration
  *   turned on later gets the notice instead, through [Effects].
  *
  * The environment rule: once `super.onCreate()` has started Qt's `main()` on the Qt thread, the app's own code, Kotlin

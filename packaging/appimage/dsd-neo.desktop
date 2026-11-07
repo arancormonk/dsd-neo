@@ -6,4 +6,4 @@ Comment=Decode various digital voice protocols from audio and SDR
 Exec=dsd-neo
 Icon=dsd-neo
 Terminal=true
-Categories=Audio;Utility;HamRadio;
+Categories=AudioVideo;Audio;Utility;HamRadio;

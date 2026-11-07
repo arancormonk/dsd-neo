@@ -8,7 +8,7 @@ package io.github.arancormonk.dsdneo
 /**
  * Records a second activity instance in a running process (#782). A record only: it changes nothing about the launch.
  *
- * Qt 6.11.2 cannot take a second activity in a process its first one started: the new instance's `super.onCreate()`
+ * Qt 6.11.3 cannot take a second activity in a process its first one started: the new instance's `super.onCreate()`
  * sees Qt already started and restarts the application, with `startActivity`, `finish()` and `Runtime.exit(0)` inside
  * `onCreate`, before the app's teardown can run. The manifest prevents that (`singleTask`, and every configuration
  * change handled in place; `tests/android/run_jvm_tests.py` `launch_policy` pins both). What still gets through is
@@ -36,7 +36,7 @@ object LaunchGuard {
      * against: `launch_policy` fails when the pinned Qt moves, until the restart path is checked again (the "Qt upgrade
      * checks" in docs/code_map.md) and this text with it.
      */
-    const val QT_RESTART = "Qt 6.11.2 restarts the process"
+    const val QT_RESTART = "Qt 6.11.3 restarts the process"
 
     /** The process state summary, as the next start prints it in parentheses on the exit's line. */
     const val SUMMARY = "$SECOND_INSTANCE; $QT_RESTART"

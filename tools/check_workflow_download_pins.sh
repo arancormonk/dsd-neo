@@ -54,7 +54,7 @@ floating_ci_images=$(
 report_violation "Digestless CI container image reference detected:" "$floating_ci_images"
 
 floating_install_images=$(
-  rg -n '(ubuntu:(24|26)[.]04|debian:(12|13)|fedora:44|rockylinux:9|almalinux:9|quay[.]io/centos/centos:stream9|opensuse/(leap:15[.]6|tumbleweed:latest)|alpine:3[.]24)' \
+  rg -n '(ubuntu:(24|26)[.]04|debian:(12|13)|fedora:45|rockylinux/rockylinux:10|almalinux:10|quay[.]io/centos/centos:stream10|opensuse/(leap:16[.]1|tumbleweed:latest)|alpine:3[.]24)' \
     .github/workflows tools \
     --glob '!tools/check_workflow_download_pins.sh' |
     grep -v '@sha256:' ||
@@ -74,11 +74,11 @@ for var in \
   INSTALL_UBUNTU_2404_IMAGE \
   INSTALL_DEBIAN_13_IMAGE \
   INSTALL_DEBIAN_12_IMAGE \
-  INSTALL_FEDORA_44_IMAGE \
-  INSTALL_ROCKY_9_IMAGE \
-  INSTALL_ALMALINUX_9_IMAGE \
-  INSTALL_CENTOS_STREAM_9_IMAGE \
-  INSTALL_OPENSUSE_LEAP_160_IMAGE \
+  INSTALL_FEDORA_45_IMAGE \
+  INSTALL_ROCKY_10_IMAGE \
+  INSTALL_ALMALINUX_10_IMAGE \
+  INSTALL_CENTOS_STREAM_10_IMAGE \
+  INSTALL_OPENSUSE_LEAP_161_IMAGE \
   INSTALL_OPENSUSE_TUMBLEWEED_IMAGE \
   INSTALL_ALPINE_324_IMAGE \
   TONISTIIGI_BINFMT_IMAGE \

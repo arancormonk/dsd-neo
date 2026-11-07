@@ -64,7 +64,7 @@ import org.qtproject.qt.android.bindings.QtActivity
  * destroy callbacks go to [AccessibilityBridge] too, so the notice for TalkBack turned on later reaches only a resumed
  * activity and is never lost.
  *
- * Qt 6.11.2 restarts the whole process, with none of the teardown below, when a second instance of this activity is
+ * Qt 6.11.3 restarts the whole process, with none of the teardown below, when a second instance of this activity is
  * created in a process Qt already started (#782). The manifest keeps that from happening: `singleTask`, so a USB
  * attachment (to [onNewIntent]), the launcher icon and the decoding notification all bring this one instance forward,
  * and every configuration change handled in place. Those three also close a document picker or permission dialog open
@@ -129,7 +129,7 @@ class DsdNeoActivity : QtActivity() {
         AccessibilityBridge.onPause(this)
     }
 
-    // A stop that is part of a recreation is not a loss of the foreground (on Qt 6.11.2 the process restarts right
+    // A stop that is part of a recreation is not a loss of the foreground (on Qt 6.11.3 the process restarts right
     // after it; see onDestroy). Leaving the foreground pauses a call recording playing (#708 D10).
     override fun onStop() {
         super.onStop()
@@ -220,7 +220,7 @@ class DsdNeoActivity : QtActivity() {
         // Not on a recreation. The manifest handles every configuration change in place
         // (configChanges, pinned by launch_policy), so a change never destroys this
         // activity. A recreation that happens anyway skips this teardown, as Qt skips
-        // its own, and on Qt 6.11.2 the new instance's super.onCreate() then restarts
+        // its own, and on Qt 6.11.3 the new instance's super.onCreate() then restarts
         // the whole process without it (#782; LaunchGuard records it, and docs/code_map.md
         // "Launch policy" documents the limit).
         if (!isChangingConfigurations) {

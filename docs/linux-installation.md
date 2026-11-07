@@ -62,8 +62,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 Useful options:
 
-- `--radio auto|required|off` controls RTL-SDR and SoapySDR package setup.
-  `required` fails configure if either backend is unavailable.
+- `--radio auto|required|off` controls RTL-SDR, SoapySDR and Airspy package
+  setup. `required` fails configure if any of them is unavailable.
 - `--codec2 auto|required|off` controls Codec2 setup (default: `required`).
   Missing development packages trigger a pinned source build, including on
   Alpine, so the default installation retains M17 voice support. Explicit
@@ -82,16 +82,18 @@ pacman. The Docker matrix validates the bootstrap path on pinned images for:
 
 - Ubuntu 26.04 and 24.04; Linux Mint and Pop!_OS follow this apt path.
 - Debian 13 and 12.
-- Fedora 44.
-- Rocky Linux 9, AlmaLinux 9, and CentOS Stream 9 with EPEL/CRB enabled.
-- openSUSE Leap 16.0 and Tumbleweed.
+- Fedora 45.
+- Rocky Linux 10, AlmaLinux 10, and CentOS Stream 10 with EPEL/CRB enabled.
+- openSUSE Leap 16.1 and Tumbleweed.
 - Alpine 3.24.
 - Arch Linux base-devel for source-build validation; use AUR for normal Arch
   installs.
 
-openSUSE Leap 16.0 provides RTL-SDR but no SoapySDR development package in its
-standard repositories. Its default `--radio auto` installation includes RTL-SDR
-and omits SoapySDR; `--radio required` requires both and fails there.
+openSUSE Leap 16.1 provides RTL-SDR but no SoapySDR or libairspy development
+package in its standard repositories, and EPEL 10 (Rocky, AlmaLinux and CentOS
+Stream 10) provides RTL-SDR and SoapySDR but no libairspy. Their default
+`--radio auto` installation includes the backends the distro packages and omits
+the rest; `--radio required` requires all three and fails there.
 
 Run one Docker validation target:
 
@@ -114,7 +116,8 @@ root-owned build outputs in the working tree. Containers carry the
 Each image validates the default user-prefix installation first, then an
 independent `/usr/local` build staged with `DESTDIR`. Both installed binaries
 must start outside the installer environment. Codec2 is required on every image;
-both radio backends are required except for Leap's documented SoapySDR gap.
+every radio backend is required except the documented gaps on Leap (SoapySDR,
+libairspy) and EL10 (libairspy).
 A separate Debug build runs the CTest suite; use `--no-tests` to run only the two
 installation checks. `--jobs N` limits build/test parallelism inside each container.
 
