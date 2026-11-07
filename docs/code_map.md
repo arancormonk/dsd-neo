@@ -8690,8 +8690,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   it differs, whatever `state->nac` holds, so a seed NAC cleared by hand on the carrier comes back
   (`p25p1_apply_nac_update()`); a NID split by a carrier boundary writes no NAC at all, and neither does a NID that
   decoded only once the observed NAC (a hand-set seed's, `state->nac`, then the seed's) stood in for its received NAC
-  field (`p25p1_nid_result::nac_borrowed`, set by both the hard and the soft retry): its NAC is the decoder's own,
-  which a carrier boundary may have kept from another carrier, so only its DUID counts. The same NID records the NAC of
+  field (`p25p1_nid_result::nac_borrowed`, set by the hard and the soft retry unless the soft search on the received
+  word alone reaches the same NAC and DUID, which is then the decode): its NAC is the decoder's own, which a carrier
+  boundary may have kept from another carrier, so only its DUID counts. The same NID records the NAC of
   the frame being decoded (`p25_frame_nac` with `p25_frame_nac_valid`), which a network status in that frame is paired
   with: invalid from every P25p1 sync until its NID decodes, after a NID that failed, was cut or was split by a carrier
   boundary, at every carrier boundary (`dsd_engine_forget_carrier_code_values()`) and at a trunk scan target switch.

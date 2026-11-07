@@ -50,8 +50,9 @@ struct p25p1_nid_result {
     uint8_t duid;
     int error_count;
     /** 1 when the NID decoded only after its received NAC field was replaced by the caller's observed NAC (the hard or
-        the soft retry, issue #804): the NAC is the one the caller already held, not one read off the air, so it names
-        nothing about the carrier. 0 otherwise. */
+        the soft retry, issue #804) and no decode of the received word alone, hard or soft, reached the same NAC and
+        DUID: the NAC is the one the caller already held, not one read off the air, so it names nothing about the
+        carrier. 0 otherwise, the unhinted decode being returned when it agrees. */
     int nac_borrowed;
 };
 

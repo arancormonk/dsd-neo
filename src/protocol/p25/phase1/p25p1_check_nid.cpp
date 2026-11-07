@@ -326,11 +326,23 @@ decode_nid_hard(const char* bch_code, int observed_nac, unsigned char parity) {
     return retry;
 }
 
+/* A decode the observed NAC made possible stands on the received word alone when the soft search without the hint
+   reaches the same NAC and DUID: that NAC was on the air after all, so the unhinted decode is kept and nothing is
+   borrowed (issue #804). */
+static struct p25p1_nid_result
+nid_prefer_unhinted(const struct p25p1_nid_result& decoded, const SoftNidCandidate& unhinted) {
+    if (decoded.nac_borrowed != 0 && unhinted.found != 0 && unhinted.decoded.nac == decoded.nac
+        && unhinted.decoded.duid == decoded.duid) {
+        return unhinted.decoded;
+    }
+    return decoded;
+}
+
 struct p25p1_nid_result
 p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observed_nac, unsigned char parity,
                  uint8_t parity_reliab) {
     struct p25p1_nid_result hard_result = decode_nid_hard(bch_code, observed_nac, parity);
-    if (hard_result.status > 0 || reliab63 == 0) {
+    if (reliab63 == 0 || (hard_result.status > 0 && hard_result.nac_borrowed == 0)) {
         return hard_result;
     }
 
@@ -340,9 +352,13 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
         return hard_result;
     }
 
-    SoftNidCandidate best = {0, {NID_DECODE_FAIL, 0, 0, 0, 0}, 0, 0};
-    soft_nid_search_from_base(bch_code, bch_code, reliab63, pool, pool_count, parity, parity_reliab, 0, &best);
+    SoftNidCandidate unhinted = {0, {NID_DECODE_FAIL, 0, 0, 0, 0}, 0, 0};
+    soft_nid_search_from_base(bch_code, bch_code, reliab63, pool, pool_count, parity, parity_reliab, 0, &unhinted);
+    if (hard_result.status > 0) {
+        return nid_prefer_unhinted(hard_result, unhinted);
+    }
 
+    SoftNidCandidate best = unhinted;
     if (valid_observed_nac(observed_nac) && received_nac(bch_code) != observed_nac) {
         char retry_code[63];
         DSD_MEMCPY(retry_code, bch_code, 63);
@@ -355,5 +371,5 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
         return hard_result;
     }
 
-    return best.decoded;
+    return nid_prefer_unhinted(best.decoded, unhinted);
 }
