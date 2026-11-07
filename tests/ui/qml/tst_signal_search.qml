@@ -85,6 +85,9 @@ Item {
             loader.item.sessionSource = {};
             loader.item.sourceType = "usb";
             loader.item.resetView();
+            // A test that renames the range restores it even when it fails.
+            if (model.ranges.length > 0 && model.ranges[0].name !== "Local UHF")
+                model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
         }
         function init() {
             verify(loader.item !== null);
@@ -953,7 +956,7 @@ Item {
             for (var i = 0; i < expected.length; ++i) {
                 compare(rows[i].fullText, expected[i], "row " + i);
                 compare(rows[i].Accessible.name, expected[i].replace(/\n/g, " · "), "row " + i + " reads its whole text");
-                compare(rows[i].text.replace(/ /g, " "), expected[i], "row " + i + " draws its whole text");
+                compare(rows[i].text.replace(/\u00a0/g, " "), expected[i], "row " + i + " draws its whole text");
                 verify(!/[^·\n] /.test(rows[i].text), "a value never splits across lines in row " + i);
             }
             model.history = [];
@@ -985,9 +988,9 @@ Item {
                 verify(detail.mapToItem(rows[i], 0, 0).y + detail.height <= rows[i].height + 0.5, "row " + i + "'s detail stays inside its row");
             }
             verify(details[0].lineCount > 2, "the longest site wraps at this size");
-            verify(details[0].text.indexOf("NAC 293") >= 0 && details[0].text.indexOf("ALG 132") >= 0, "the code and encryption stay whole");
-            verify(details[1].text.indexOf("DCS D023N / D047I") >= 0, "a DCS pair stays whole");
-            verify(details[2].text.indexOf("CTCSS 127.3 Hz") >= 0, "a CTCSS tone stays whole");
+            verify(details[0].text.indexOf("NAC\u00a0293") >= 0 && details[0].text.indexOf("ALG\u00a0132") >= 0, "the code and encryption stay whole");
+            verify(details[1].text.indexOf("DCS\u00a0D023N\u00a0/\u00a0D047I") >= 0, "a DCS pair stays whole");
+            verify(details[2].text.indexOf("CTCSS\u00a0127.3\u00a0Hz") >= 0, "a CTCSS tone stays whole");
             model.history = [];
         }
         // A larger text after the rows exist re-decides which values stay
@@ -1051,20 +1054,31 @@ Item {
             verifyPlain(message, "the message");
             compare(message.Accessible.name, "Cannot open <b>/dev/rtl0</b>");
             root.hostFailure = "";
-            // A saved name on a history row.
+            // A saved name on a history row. Its first line is the fixed
+            // verdict, which AutoText alone would read, so the row drew the
+            // name as written before too: plain text keeps it so should a
+            // value ever lead the row.
             model.history = [historyHit({knownLabel: "<b>Dock</b>"})];
             var row = findChild(screen, "searchHistoryDetail");
             compare(row.textFormat, Text.PlainText);
+            verify(row.text.indexOf("<b>Dock</b>") >= 0, "the row holds the tag as written");
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            mirror.font = row.font;
+            mirror.width = row.width;
+            mirror.wrapMode = row.wrapMode;
+            mirror.text = row.text;
+            compare(row.lineCount, mirror.lineCount, "the row wraps as plain text does");
+            verify(Math.abs(row.contentWidth - mirror.contentWidth) <= 0.5, "the row draws as plain text: " + row.contentWidth + " vs " + mirror.contentWidth);
+            mirror.destroy();
             compare(row.Accessible.name, "RF only · ended · <b>Dock</b>");
             model.history = [];
-            // The range list.
+            // The range list (cleanup() restores its name).
             model.ranges = [Object.assign({}, model.ranges[0], {name: "<b>North</b>"})];
             screen.rangesExpanded = true;
             var range = findChild(screen, "searchRangeEnabled");
             verify(range !== null && range.visible);
             compare(range.contentItem.text, "<b>North</b> · 450.000000–460.000000 MHz");
             verifyPlain(range.contentItem, "the range list");
-            model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
         }
         // Wider, every cell fits the widest label: three equal columns.
         function test_now_actions_use_three_columns_when_they_fit() {

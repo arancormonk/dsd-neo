@@ -1199,6 +1199,10 @@ main(int argc, char** argv) {
     publish(77);
     model.refresh();
     const auto frozen = model.history().front().toMap();
+    const auto liveRf = model.status().value(QStringLiteral("hit")).toMap();
+    assert(liveRf.value(QStringLiteral("id")) == QStringLiteral("77"));
+    assert(liveRf.value(QStringLiteral("tone")) == QStringLiteral("CTCSS 127.3 Hz"));
+    assert(liveRf.value(QStringLiteral("access")).toString().isEmpty());
     publish(78, true);
     model.refresh();
     const auto saved = model.systemForHit(frozen, {{QStringLiteral("sourceType"), QStringLiteral("usb")}});
@@ -1219,6 +1223,7 @@ main(int argc, char** argv) {
     const auto live = model.status().value(QStringLiteral("hit")).toMap();
     assert(live.value(QStringLiteral("id")) == QStringLiteral("78"));
     assert(live.value(QStringLiteral("access")) == QStringLiteral("CC 1"));
+    assert(live.value(QStringLiteral("tone")).toString().isEmpty());
     assert(frozen.value(QStringLiteral("site")).toString().isEmpty()
            && frozen.value(QStringLiteral("slot")).toInt() == 0);
     assert(frozen.value(QStringLiteral("crypt")).toString().isEmpty());

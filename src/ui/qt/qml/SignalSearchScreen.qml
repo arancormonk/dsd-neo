@@ -964,7 +964,9 @@ Item {
                                     var font = historyMetrics.font;
                                     return screen.keepValues(fullText, width, historyMetrics);
                                 }
-                                // Saved names are imported or typed: drawn as written.
+                                // The first line is the fixed verdict, so AutoText
+                                // would draw the names after it as written; plain
+                                // text keeps that should a value ever lead the row.
                                 textFormat: Text.PlainText
                                 // Gated as every node a screen reader reaches
                                 // is (ReadableText): behind an open sheet it
