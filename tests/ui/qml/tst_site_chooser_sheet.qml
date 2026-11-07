@@ -251,6 +251,48 @@ Item {
             mouseClick(toggle, toggle.width / 2, toggle.height / 2)
             verify(savedSystems.get(0).avoidSite)
         }
+        // Issue #801 B7: an avoid the store refuses is not shown as made; the row says it failed. The rows are
+        // rebuilt on every change, so each step finds them again.
+        function clickAvoid(row, blocked) {
+            var toggle = findChild(sheet, "siteAvoid" + row)
+            verify(toggle !== null)
+            waitForRendering(sheet)
+            var store = testContext.storePath("saved_systems.json")
+            if (blocked)
+                verify(testContext.blockPath(store, true), "could not block the store")
+            try {
+                mouseClick(toggle, toggle.width / 2, toggle.height / 2)
+            } finally {
+                if (blocked)
+                    verify(testContext.blockPath(store, false), "could not unblock the store")
+            }
+        }
+        function test_avoid_toggle_failure_shown() {
+            clickAvoid(0, true)
+            verify(!savedSystems.get(0).avoidSite)
+            compare(findChild(sheet, "siteAvoid0").checked, false, "the toggle shows what is saved")
+            var error = findChild(sheet, "siteAvoidError0")
+            verify(error.visible)
+            compare(error.text, "Could not avoid this site. Try again.")
+            compare(error.textFormat, Text.PlainText)
+            verify(!findChild(sheet, "siteAvoidError1").visible, "only the row that failed says so")
+
+            clickAvoid(0, false)
+            verify(savedSystems.get(0).avoidSite)
+            compare(findChild(sheet, "siteAvoid0").checked, true)
+            verify(!findChild(sheet, "siteAvoidError0").visible, "a saved change clears the line")
+
+            clickAvoid(0, true)
+            verify(savedSystems.get(0).avoidSite)
+            compare(findChild(sheet, "siteAvoid0").checked, true)
+            error = findChild(sheet, "siteAvoidError0")
+            verify(error.visible)
+            compare(error.text, "Could not stop avoiding this site. Try again.")
+
+            // Reopened, the sheet starts clean.
+            sheet.openFor(0)
+            verify(!findChild(sheet, "siteAvoidError0").visible)
+        }
         function test_avoid_toggle() {
             sheet.setAvoid(1, true)
             verify(savedSystems.get(1).avoidSite)

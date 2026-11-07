@@ -79,7 +79,8 @@ Item {
 
     // Keep auto-start blocked throughout menu-to-confirmation transitions.
     readonly property bool managementSheetOpen: manageMenu.visible || scanMenu.visible || addSystemMenu.visible
-        || removeSystem.visible || removeScanList.visible || scanListRemovalError.visible || scanTogether.visible
+        || removeSystem.visible || systemRemovalError.visible || removeScanList.visible || scanListRemovalError.visible
+        || scanTogether.visible
 
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
@@ -796,10 +797,27 @@ Item {
         onConfirmed: {
             var row = savedSystems.rowForUid(systemUid);
             systemUid = "";
-            if (row >= 0)
-                savedSystems.remove(row);
+            // Named before the removal is tried: a removal that cannot be
+            // saved keeps the system, and the notice says which one.
+            var system = savedSystems.get(row);
+            var grouped = row >= 0 && savedSystems.siblingRows(row).length > 1;
+            if (row >= 0 && !savedSystems.remove(row))
+                systemRemovalError.openFor(system, grouped);
         }
         onCancelled: systemUid = ""
+    }
+    ConfirmDialog {
+        id: systemRemovalError
+        objectName: "systemRemovalError"
+        confirmText: qsTr("OK")
+        showCancel: false
+        function openFor(system, grouped) {
+            title = grouped ? qsTr("Site removal failed") : qsTr("System removal failed");
+            message = grouped
+                ? qsTr("Could not remove site %1 of %2. It is still saved. Try again.").arg(system.siteName || system.name).arg(system.name)
+                : qsTr("Could not remove %1. It is still saved. Try again.").arg(system.name);
+            open();
+        }
     }
 
     UiPanel {

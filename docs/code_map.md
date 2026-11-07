@@ -10192,16 +10192,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   so Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and
   returns), so a stop that hangs past the engine's restore timeouts cannot lock the
   screen; the site chooser's any-input cancel is ignored while it runs, and
-  `startSystem()`/`restartSite()` refuse by state before cancelling, so a USB
+  `startSavedByUid()`/`restartSite()` refuse by state before cancelling, so a USB
   attachment's start cannot drop it. `leaveSearchFor()` pins `signalSearchOpen`
   true, as Stop does, so a screen reopened after Activity recreation (bound to `status.owned`, which
   the search clears before the decoder is idle) stays through the stop and after a Back cancel.
   `finishPendingRestart()` closes the screen just
   before starting the request, and a stop ending in Failed closes it and clears the flag.
   A saved request is checked (`savedStartRefusal()`) before the stop, the refusal shown in
-  the screen's `localFailure`, and again in `finishPendingRestart()`, which shows the
-  refusal (an avoided site no longer declines silently) and records the system as
-  `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here
+  the screen's `localFailure`, and again when `finishPendingRestart()` starts it through
+  `startSavedByUid()`, which shows the refusal (an avoided site no longer declines
+  silently) and records the system as `attemptedSource` so Home's Retry asks again and
+  Edit opens it. Explore here
   (`exploreHereSystem()`) is `systemForHit()` renamed Exploring, untrunked, on the
   `effectiveSource()` kind through `onAttachedReceiver()`/`onReceiver()` (an Airspy map only
   stays on an Airspy; a switch to an Airspy drops the RTL `ppm`, `biasTee` and gain); `startWithMap(sys,
@@ -10756,6 +10757,29 @@ Qt Quick frontend (`src/ui/qt`):
     the bus; a suppressed attachment is still consumed. An unanswered permission request
     (`localDeviceRequestPending`) joins `autoStartBlocked`; its expiry lifts the block without retrying the old
     attachment.
+  - Saved-system start gate (Main.qml, issue #801): every saved start (card play, the site chooser, auto-start,
+    Retry and Listen with through `finishPendingRestart()`, a pin, a USB grant) goes through `startSavedByUid(uid)`,
+    resolved at that moment: the transition guard first (refused unless Idle or Failed, before anything is
+    cancelled), then `savedStartRefusal()` ("removed", or the avoided-site text), then `startWithMap()` on the row the
+    uid is at now. `startSystem(row)` only names the row's uid, so a missing row is refused as removed, not ignored.
+    A USB grant re-enters it by the waiting start's uid instead of running the map captured at the tap, so a system
+    removed, avoided, moved to another row or given another receiver during the permission dialog is refused or
+    starts as saved (B6); a scan list's grant goes through `startScanByUid()`, which refuses a removed list and a
+    draft (`scanListStarter.draftRefusal`, the starter's own text) before any start or USB request. Every refusal is
+    `refuseStart(message, attempt)`: it drops any waiting start (`dropPendingStarts()`: the pending restart and all
+    `pendingStart*` state), sets `attemptedSource` to `attempt` (`{kind: "saved"|"scan", uid, system}`, null when
+    the target is gone) so Retry asks again and Edit source opens that system or list, clears `dismissedFailure`,
+    sets `startError`, and always reveals Home's failure card (`revealFailure()` then `homeScreen.revealTop()`, on
+    the desktop too and over a failure already showing). `startPin(kind, uid)` is a pin's tap, a no-op while
+    `decoderHost.transitioning`: a system plays its group's one playable (unavoided) site, else opens the site
+    chooser (`openSiteChooser()`, shared with the card's sites button), and a standalone row starts; a site starts; a
+    scan list starts alone (`startScanByUid(uid, [])`); Signal search opens (`openSignalSearch()`, shared with
+    Home's button); Explore starts when `explore/sourceType` is set, else opens its setup. Home shows
+    `systemRemovalError` ("System removal failed" / "Site removal failed") when `SavedSystemsModel::remove()` cannot
+    save, as `scanListRemovalError` does for a list (both join `managementSheetOpen`); the site chooser keeps the
+    site whose avoid change failed (`avoidFailedUid`) and says so under its row, the toggle showing what is saved.
+    Tests: `tst_home_pinned.qml` (the start contract), `tst_back_modals.qml` (`test_system_removal_failure_notice`),
+    `tst_site_chooser_sheet.qml` (`test_avoid_toggle_failure_shown`).
   - Tests: `UI_QT_QML_DEVICE_STATUS` (`tst_device_status.qml`, every state), `tst_home_dongle_status.qml` (pinned
     header, reflow at 320/360/411 px by 1.0/1.6/2.0 and the 900 px supporting pane, activation paths and the modal
     guard, focus kept when the prompt opens, scroll kept across tabs, desktop layout unchanged, Onboarding),

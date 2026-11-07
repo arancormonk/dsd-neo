@@ -42,6 +42,9 @@ class ScanListStarter : public QObject {
     Q_OBJECT
     /** @brief The most lists one session scans (DSD_TRUNK_SCAN_MAX_LISTS, issue #697). */
     Q_PROPERTY(int maxLists READ maxLists CONSTANT)
+    /** @brief Why a draft list does not start; a start refuses a draft with it, and so does a pinned draft before any
+     *  start is tried (issue #801). */
+    Q_PROPERTY(QString draftRefusal READ draftRefusal CONSTANT)
   public:
     explicit ScanListStarter(const AppPrefs* prefs, const SavedSystemsModel* systems, QObject* parent = nullptr);
     QVariantMap build(const QVariantMap& list) const;
@@ -67,6 +70,7 @@ class ScanListStarter : public QObject {
     /** @brief Why @p other cannot scan in one session with @p primary, or empty; see session_args_scan_join_conflict(). */
     Q_INVOKABLE QString joinConflict(const QVariantMap& primary, const QVariantMap& other) const;
     static int maxLists();
+    static QString draftRefusal();
 
     void
     setTargetFileLookup(std::function<bool(const QString&)> lookup) {

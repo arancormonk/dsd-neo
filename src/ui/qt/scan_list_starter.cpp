@@ -527,6 +527,11 @@ ScanListStarter::maxLists() {
 }
 
 QString
+ScanListStarter::draftRefusal() {
+    return QStringLiteral("This scan list is a draft. Edit and save it before listening.");
+}
+
+QString
 ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& other) const {
     return session_args_scan_join_conflict(primary, other, session_args_prefs(m_prefs));
 }
@@ -743,7 +748,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
             {"ok", false}, {"args", QStringList()}, {"error", error}, {"warnings", warnings}, {"targetCount", 0}};
     };
     if (materialize && list.value("isDraft").toBool()) {
-        return fail(QStringLiteral("This scan list is a draft. Edit and save it before listening."));
+        return fail(draftRefusal());
     }
     const QString source = list.value("targetSource", "entries").toString();
     if (source == "csv") {
