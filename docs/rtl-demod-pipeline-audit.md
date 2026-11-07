@@ -51,7 +51,7 @@ described under [Analog Monitor Path](#analog-monitor-path).
 | NXDN48 | FSK discriminator | 2400 | 4 | 6.25 kHz |
 | NXDN96 | FSK discriminator | 4800 | 4 | 12.5 kHz |
 | D-STAR | FSK discriminator | 4800 | 2 | 6.25 kHz |
-| X2-TDMA | FSK discriminator | 6000 | 4 | 12.5 kHz |
+| X2-TDMA | FSK discriminator | 4800 | 4 | P25 C4FM |
 | YSF | FSK discriminator | 4800 | 4 | 12.5 kHz |
 | dPMR | FSK discriminator | 2400 | 4 | 6.25 kHz |
 | M17 | FSK discriminator | 4800 | 4 | 12.5 kHz |

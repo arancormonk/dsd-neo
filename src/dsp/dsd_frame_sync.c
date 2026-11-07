@@ -79,8 +79,8 @@ frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
     if (!opts) {
         return 0;
     }
-    return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
-            || opts->frame_m17 == 1);
+    return (opts->frame_p25p1 == 1 || opts->frame_x2tdma == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1
+            || opts->frame_ysf == 1 || opts->frame_m17 == 1);
 }
 
 static int frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state);
@@ -893,7 +893,7 @@ static int
 frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     /* The burst is decoded back from dibit_buf_p (frame_sync_accept_x2tdma()). */
-    if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
+    if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
         || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
@@ -3836,7 +3836,7 @@ frame_sync_sps_profile_has_candidate(const dsd_opts* opts, int profile_index) {
         case DSD_FRAME_SYNC_SPS_PROFILE_4800_4: return frame_sync_opts_has_4800_four_level_mode(opts);
         case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_9600_2: return opts->frame_provoice == 1;
-        case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1;
+        case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return opts->frame_p25p2 == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_4800_2: return opts->frame_dstar == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_18000_4: return opts->frame_tetra == 1;
         default: return 0;

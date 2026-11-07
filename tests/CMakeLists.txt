@@ -14657,6 +14657,42 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_sps_hunt_false_sync
 )
 
+# X2-TDMA syncs at 4800 sym/s, the P25 Phase 1 rate, and not at P25 Phase 2's 6000 (discussion #717): synthetic bursts
+# through the real WAV reader, symbol slicer and frame sync, under -fx and Auto.
+add_executable(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    dsp/test_frame_sync_x2tdma_rate.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_x2tdma_rate
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_X2TDMA_RATE
+    COMMAND dsd-neo_test_frame_sync_x2tdma_rate
+)
+
 # The frame sync's history across a no-sync exit: a TETRA control uplink burst that straddles the end of a matchless
 # pass locks in the next call when the stream went on unbroken, and not across a carrier, epoch, read or modulation
 # change. The levels go with the dibits: an NXDN96 FSW straddling the exit is read on them (a sign-only one does not

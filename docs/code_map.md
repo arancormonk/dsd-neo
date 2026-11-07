@@ -6150,6 +6150,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
   choose: a CQPSK vote there (a carrier near 0 Hz) took the front end off the monitor path. Tests:
   `FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`.
+- X2-TDMA runs on the 4800/4 hunt profile (`frame_sync_try_x2tdma()`, `frame_sync_sps_profile_has_candidate()`,
+  `dsd_decode_mode_profile_for()`, discussion #717): Motorola's X2-TDMA reuses the P25 Phase 1 modulation (C4FM, or
+  CQPSK/LSM on simulcast) and its 9600 bit/s, so 4800 sym/s over four levels, and the RTL front end gives it the P25
+  channel filters (`opts_has_p25_mode()` in `rtl_demod_config.cpp`, `kFskModeP25` in `rtl_sdr_fm.cpp`). The 6000/4
+  profile is P25 Phase 2's alone. Its four sync-word compares now run on 4800/4 beside DMR's, where the matcher
+  returned at its profile check, and no longer on 6000/4; the difference is within run-to-run noise. Tests: `FRAME_SYNC_X2TDMA_RATE`
+  (synthetic bursts through the real WAV reader and frame sync), `FRAME_SYNC_DMR_WAV_RATE`, `IO_RTL_DEMOD_CONFIG`.
 - dPMR FS2 acceptance (`frame_sync_try_dpmr()` in `dsd_frame_sync.c`), a decided cost. FS2 (ETSI TS 102 658 6.1.2,
   5FF77D) is matched as one exact window of 12 sign-sliced symbols, which about one window in 4096 of any carrier's
   payload or of receiver noise passes: about 0.6-0.8 false FS2s a second on noise and on NXDN48 data alike (8 in the 10

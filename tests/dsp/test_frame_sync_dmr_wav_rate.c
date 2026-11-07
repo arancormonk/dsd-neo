@@ -460,7 +460,7 @@ run_wav_protocol_extended_sync_matrix(void) {
             .label = "X2-TDMA BS data",
             .pattern = X2TDMA_BS_DATA_SYNC,
             .frame_x2tdma = 1,
-            .profile_index = 3,
+            .profile_index = 0, /* 4800/4, the P25 Phase 1 rate X2-TDMA runs at (discussion #717) */
             .expected_sync = DSD_SYNC_X2TDMA_DATA_POS,
             .expected_ftype = "X2-TDMA",
         },
@@ -469,7 +469,7 @@ run_wav_protocol_extended_sync_matrix(void) {
             .pattern = X2TDMA_BS_VOICE_SYNC,
             .frame_x2tdma = 1,
             .inverted_x2tdma = 1,
-            .profile_index = 3,
+            .profile_index = 0,
             .expected_sync = DSD_SYNC_X2TDMA_DATA_NEG,
             .expected_ftype = "X2-TDMA",
         },

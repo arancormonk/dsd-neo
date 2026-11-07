@@ -765,10 +765,10 @@ preset and therefore win. The hunt matrix:
 
 | Hunt profile | Symbol rate | Levels | Candidates |
 | --- | ---: | ---: | --- |
-| 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
+| 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), X2-TDMA (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
 | 1 | 2400 | 4 | NXDN48, dPMR |
 | 2 | 9600 | 2 | ProVoice, EDACS |
-| 3 | 6000 | 4 | P25 Phase 2 (CQPSK), X2-TDMA |
+| 3 | 6000 | 4 | P25 Phase 2 (CQPSK) |
 | 4 | 4800 | 2 | D-STAR |
 
 Profiles without an enabled candidate are skipped. A successful sync retains

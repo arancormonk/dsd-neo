@@ -630,7 +630,7 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
 - D‑STAR: `-fd`
-- X2‑TDMA: `-fx`
+- X2‑TDMA: `-fx` (4800 sps, P25 Phase 1 modulation: C4FM, or CQPSK/LSM with `-mq` on simulcast)
 - YSF: `-fy`
 - M17: `-fz` (radio); `-fU` (M17 UDP/IP frame)
 - NXDN48: `-fi` (6.25 kHz)
@@ -765,10 +765,10 @@ Notes
 
   | Hunt profile | Symbol rate | Levels | Enabled candidates |
   | --- | ---: | ---: | --- |
-  | 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
+  | 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), X2-TDMA (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
   | 1 | 2400 | 4 | NXDN48, dPMR |
   | 2 | 9600 | 2 | ProVoice, EDACS |
-  | 3 | 6000 | 4 | P25 Phase 2 (CQPSK), X2-TDMA |
+  | 3 | 6000 | 4 | P25 Phase 2 (CQPSK) |
   | 4 | 4800 | 2 | D-STAR |
 
   A sync that a protocol turns into decoded frames locks the active rate, level count, timing, and RTL-family channel

@@ -1538,12 +1538,13 @@ expect_fsk_profile_policy_matrix(void) {
     rc |= expect_int_eq("ProVoice sym-rate profile", profiles[2], DSD_CH_LPF_PROFILE_PROVOICE);
     rc |= expect_int_eq("NXDN48 sym-rate profile", profiles[3], DSD_CH_LPF_PROFILE_6K25);
     rc |= expect_int_eq("dPMR sym-rate profile", profiles[4], DSD_CH_LPF_PROFILE_6K25);
-    rc |= expect_int_eq("X2-TDMA sym-rate profile", profiles[5], DSD_CH_LPF_PROFILE_12K5);
+    /* X2-TDMA runs at 4800 sym/s on the P25 filters (discussion #717): 6000 sym/s picks nothing for it. */
+    rc |= expect_int_eq("X2-TDMA has no 6000 sym-rate profile", profiles[5], -1);
     rc |= expect_int_eq("DMR frame profile", profiles[6], DSD_CH_LPF_PROFILE_12K5);
     rc |= expect_int_eq("P25P1 frame profile", profiles[7], DSD_CH_LPF_PROFILE_P25_C4FM);
     rc |= expect_int_eq("P25P2 frame profile", profiles[8], DSD_CH_LPF_PROFILE_P25_C4FM);
     rc |= expect_int_eq("D-STAR frame profile", profiles[9], DSD_CH_LPF_PROFILE_6K25);
-    rc |= expect_int_eq("X2-TDMA frame profile", profiles[10], DSD_CH_LPF_PROFILE_12K5);
+    rc |= expect_int_eq("X2-TDMA frame profile", profiles[10], DSD_CH_LPF_PROFILE_P25_C4FM);
     rc |= expect_int_eq("ProVoice frame profile", profiles[11], DSD_CH_LPF_PROFILE_PROVOICE);
     rc |= expect_int_eq("2400 symbol-rate fallback profile", profiles[12], DSD_CH_LPF_PROFILE_6K25);
     rc |= expect_int_eq("9600 symbol-rate fallback profile", profiles[13], DSD_CH_LPF_PROFILE_PROVOICE);
@@ -3278,10 +3279,11 @@ main(void) {
     static dsd_opts x2tdma;
     DSD_MEMSET(&x2tdma, 0, sizeof(x2tdma));
     x2tdma.frame_x2tdma = 1;
-    rc |= expect_configured_mode("X2-TDMA uses 6 ksps 12.5 kHz LPF", x2tdma, 48000, DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR,
-                                 6000, 4, DSD_CH_LPF_PROFILE_12K5);
-    rc |= expect_configured_mode("X2-TDMA keeps 6 ksps 12.5 kHz LPF at 24 kHz", x2tdma, 24000,
-                                 DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 6000, 4, DSD_CH_LPF_PROFILE_12K5);
+    /* P25 Phase 1 modulation at 9600 bit/s (discussion #717): 4800 sym/s, four levels, the P25 C4FM filter. */
+    rc |= expect_configured_mode("X2-TDMA uses 4.8 ksps P25 C4FM LPF", x2tdma, 48000,
+                                 DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 4800, 4, DSD_CH_LPF_PROFILE_P25_C4FM);
+    rc |= expect_configured_mode("X2-TDMA keeps 4.8 ksps P25 C4FM LPF at 24 kHz", x2tdma, 24000,
+                                 DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 4800, 4, DSD_CH_LPF_PROFILE_P25_C4FM);
 
     static dsd_opts ysf;
     DSD_MEMSET(&ysf, 0, sizeof(ysf));
