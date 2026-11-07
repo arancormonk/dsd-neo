@@ -13,8 +13,10 @@
  *-----------------------------------------------------------------------------*/
 
 #include <climits>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/fec/ez.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <unordered_map>
 #include <utility>
@@ -48,30 +50,6 @@ ess_b_instance(void) {
     return instance;
 }
 
-std::vector<uint8_t>*
-hb_instance(void) {
-    static std::vector<uint8_t>* instance = []() noexcept -> std::vector<uint8_t>* {
-        try {
-            return new std::vector<uint8_t>(63, 0);
-        } catch (...) {
-            return nullptr;
-        }
-    }();
-    return instance;
-}
-
-std::vector<uint8_t>*
-hbs_instance(void) {
-    static std::vector<uint8_t>* instance = []() noexcept -> std::vector<uint8_t>* {
-        try {
-            return new std::vector<uint8_t>(63, 0);
-        } catch (...) {
-            return nullptr;
-        }
-    }();
-    return instance;
-}
-
 ezpwd::RS<63, 35>*
 rs28_instance(void) {
     static ezpwd::RS<63, 35>* instance = []() noexcept -> ezpwd::RS<63, 35>* {
@@ -82,6 +60,169 @@ rs28_instance(void) {
         }
     }();
     return instance;
+}
+
+enum {
+    RS28_LOAD = 35,  /* RS(63,35) data symbols */
+    RS28_ROOTS = 28, /* RS(63,35) parity symbols */
+    RS28_SIZE = 63,
+};
+
+/*
+ * FACCH and SACCH are RS(63,35) codes, shortened at the front and punctured at the back. In full RS(63,35)
+ * coordinates the shortened symbols 0..pad-1 are zero and never sent, the payload is pad..34, the sent parity is
+ * 35..35+n_parity-1 and the remaining parity is punctured (not sent). ezpwd decodes the shortened code natively:
+ * given only the n_payload data symbols it treats the pad as known zero and fails any decode that would correct a
+ * pad symbol. Its symbol index is the full index minus the pad.
+ */
+struct AcchLayout {
+    int pad;
+    int n_payload;
+    int n_parity;
+};
+
+const AcchLayout kFacchLayout = {9, 26, 19};
+const AcchLayout kSacchLayout = {5, 30, 22};
+
+void
+bits_to_hexbits(const int* bits, int n_hexbits, uint8_t* out) {
+    for (int i = 0; i < n_hexbits; i++) {
+        uint8_t hexbit = 0;
+        for (int j = 0; j < 6; j++) {
+            hexbit = (uint8_t)((hexbit << 1) | (bits[(i * 6) + j] & 1));
+        }
+        out[i] = hexbit;
+    }
+}
+
+void
+hexbits_to_bits(const uint8_t* hexbits, int n_hexbits, int* bits) {
+    for (int i = 0; i < n_hexbits; i++) {
+        for (int j = 0; j < 6; j++) {
+            bits[(i * 6) + j] = (hexbits[i] >> (5 - j)) & 1;
+        }
+    }
+}
+
+int
+count_changed(const uint8_t* before, const uint8_t* after, int n) {
+    int changed = 0;
+    for (int i = 0; i < n; i++) {
+        changed += (before[i] != after[i]) ? 1 : 0;
+    }
+    return changed;
+}
+
+/*
+ * Erasures in full RS(63,35) coordinates to ezpwd's: shortened symbols are known, so a shortened, out-of-range or
+ * repeated position is dropped. At most RS28_ROOTS positions are kept.
+ */
+int
+acch_native_erasures(const AcchLayout& layout, const int* erasures, int n_erasures, unsigned* native) {
+    int n_native = 0;
+    for (int i = 0; erasures != nullptr && i < n_erasures && n_native < RS28_ROOTS; i++) {
+        if (erasures[i] < layout.pad || erasures[i] >= RS28_SIZE) {
+            continue;
+        }
+        unsigned position = (unsigned)(erasures[i] - layout.pad);
+        int repeated = 0;
+        for (int j = 0; j < n_native; j++) {
+            repeated |= (native[j] == position) ? 1 : 0;
+        }
+        if (!repeated) {
+            native[n_native++] = position;
+        }
+    }
+    return n_native;
+}
+
+/* The punctured parity symbols, in ezpwd's coordinates. */
+int
+acch_punctured_erasures(const AcchLayout& layout, unsigned* native) {
+    int n_native = 0;
+    for (int full = RS28_LOAD + layout.n_parity; full < RS28_SIZE; full++) {
+        native[n_native++] = (unsigned)(full - layout.pad);
+    }
+    return n_native;
+}
+
+/* Correction positions (ezpwd's, `n_positions` of them) that are not erasures: the errors the decode located. */
+int
+count_located_errors(const unsigned* positions, int n_positions, const unsigned* erasures, int n_erasures) {
+    int errors = 0;
+    for (int i = 0; i < n_positions; i++) {
+        int erased = 0;
+        for (int j = 0; j < n_erasures; j++) {
+            erased |= (positions[i] == erasures[j]) ? 1 : 0;
+        }
+        errors += erased ? 0 : 1;
+    }
+    return errors;
+}
+
+/*
+ * Decode one shortened codeword with ezpwd's erasure positions. On success the payload bits take the corrected
+ * payload and the return value is the number of sent symbols (payload and parity) the decode changed; on failure
+ * nothing is written and the return value is < 0.
+ *
+ * ezpwd's Berlekamp-Massey occasionally decodes past the code's radius (for FACCH, about 1.5% of words with 10
+ * errors and the 9 punctured erasures). Only a decode within 2 * errors + erasures <= 28 names a unique codeword, so
+ * any other fails: callers take a passing decode as proof of the burst, and past the radius it proves less than the
+ * code's distance promises.
+ */
+int
+acch_decode(const AcchLayout& layout, int* payload, const int* parity, const unsigned* erasures, int n_erasures) {
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    if (rs == nullptr) {
+        return -2;
+    }
+    uint8_t data[RS28_LOAD] = {0};
+    uint8_t parity_hb[RS28_ROOTS] = {0};
+    bits_to_hexbits(payload, layout.n_payload, data);
+    bits_to_hexbits(parity, layout.n_parity, parity_hb);
+    uint8_t received_data[RS28_LOAD];
+    uint8_t received_parity[RS28_ROOTS];
+    DSD_MEMCPY(received_data, data, sizeof(received_data));
+    DSD_MEMCPY(received_parity, parity_hb, sizeof(received_parity));
+    unsigned positions[RS28_ROOTS] = {0}; /* ezpwd reads the erasures here and writes the correction positions */
+    DSD_MEMCPY(positions, erasures, (size_t)n_erasures * sizeof(positions[0]));
+
+    int ec = rs->decode(data, (unsigned)layout.n_payload, parity_hb, positions, (unsigned)n_erasures);
+    if (ec < 0) {
+        return ec;
+    }
+    if ((2 * count_located_errors(positions, ec, erasures, n_erasures)) + n_erasures > RS28_ROOTS) {
+        return -1;
+    }
+    hexbits_to_bits(data, layout.n_payload, payload);
+    return count_changed(received_data, data, layout.n_payload)
+           + count_changed(received_parity, parity_hb, layout.n_parity);
+}
+
+int
+acch_decode_list(const AcchLayout& layout, int* payload, const int* parity, const int* erasures, int n_erasures) {
+    unsigned native[RS28_ROOTS];
+    int n_native = acch_native_erasures(layout, erasures, n_erasures, native);
+    return acch_decode(layout, payload, parity, native, n_native);
+}
+
+int
+acch_decode_fixed(const AcchLayout& layout, int* payload, const int* parity) {
+    unsigned native[RS28_ROOTS];
+    int n_native = acch_punctured_erasures(layout, native);
+    return acch_decode(layout, payload, parity, native, n_native);
+}
+
+void
+acch_encode(const AcchLayout& layout, const int* payload, int* parity) {
+    uint8_t data[RS28_LOAD] = {0};
+    uint8_t parity_hb[RS28_ROOTS] = {0};
+    ezpwd::RS<63, 35>* rs = rs28_instance();
+    bits_to_hexbits(payload, layout.n_payload, data);
+    if (rs != nullptr) {
+        rs->encode(data, (unsigned)layout.n_payload, parity_hb);
+    }
+    hexbits_to_bits(parity_hb, layout.n_parity, parity);
 }
 
 } // namespace
@@ -162,121 +303,51 @@ ez_rs28_ess(int payload[96], int parity[168], const int* erasures, int n_erasure
 }
 
 /**
- * Reed-Solomon correction of a FACCH section with optional erasures.
+ * Reed-Solomon correction of a FACCH section: RS(63,35) shortened by 9 (0..8) and punctured by 9 (54..62).
  *
- * @param payload   156-bit payload array.
- * @param parity    114-bit parity array.
- * @param erasures  Erasure position array (RS symbol positions 0-62).
- * @param n_erasures Number of erasures (must be <=28).
- * @return Correction count, or -1 on failure.
+ * @param payload   156-bit payload array (RS symbols 9..34).
+ * @param parity    114-bit sent parity array (RS symbols 35..53).
+ * @param erasures  Erasure positions in full RS(63,35) coordinates; shortened ones (0..8) are ignored.
+ * @param n_erasures Number of erasures.
+ * @return Number of sent symbols corrected, or < 0 on failure.
  */
 int
 ez_rs28_facch(int payload[156], int parity[114], const int* erasures, int n_erasures) {
-    int ec = -2;
-    int i, j, k;
-    std::vector<uint8_t>* hb = hb_instance();
-    if (hb == nullptr) {
-        return ec;
-    }
-    ezpwd::RS<63, 35>* rs = rs28_instance();
-    if (rs == nullptr) {
-        return ec;
-    }
-
-    /* Initialize HB */
-    for (i = 0; i < (int)hb->size(); i++) {
-        (*hb)[i] = 0;
-    }
-
-    std::vector<int> ErasuresDyn;
-    for (i = 0; erasures != nullptr && i < n_erasures && i < 28; i++) {
-        ErasuresDyn.push_back(erasures[i]);
-    }
-
-    j = 9;
-    for (i = 0; i < 156; i += 6) {
-        (*hb)[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
-                   + (payload[i + 4] << 1) + payload[i + 5];
-        j++;
-    }
-    for (i = 0; i < 114; i += 6) {
-        (*hb)[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
-                   + (parity[i + 4] << 1) + parity[i + 5];
-        j++;
-    }
-
-    ec = rs->decode(*hb, ErasuresDyn);
-
-    /* Convert back to bits */
-    k = 0;
-    for (i = 0; i < 26; i++) {
-        for (j = 0; j < 6; j++) {
-            int b = ((*hb)[i + 9] >> (5 - j)) & 0x1;
-            payload[k] = b;
-            k++;
-        }
-    }
-
-    return ec;
+    return acch_decode_list(kFacchLayout, payload, parity, erasures, n_erasures);
 }
 
 /**
- * Reed-Solomon correction of a SACCH section with optional erasures.
+ * Reed-Solomon correction of a SACCH section: RS(63,35) shortened by 5 (0..4) and punctured by 6 (57..62).
  *
- * @param payload   180-bit payload array.
- * @param parity    132-bit parity array.
- * @param erasures  Erasure position array (RS symbol positions 0-62).
- * @param n_erasures Number of erasures (must be <=28).
- * @return Correction count, or -1 on failure.
+ * @param payload   180-bit payload array (RS symbols 5..34).
+ * @param parity    132-bit sent parity array (RS symbols 35..56).
+ * @param erasures  Erasure positions in full RS(63,35) coordinates; shortened ones (0..4) are ignored.
+ * @param n_erasures Number of erasures.
+ * @return Number of sent symbols corrected, or < 0 on failure.
  */
 int
 ez_rs28_sacch(int payload[180], int parity[132], const int* erasures, int n_erasures) {
-    int ec = -2;
-    int i, j, k;
-    std::vector<uint8_t>* hbs = hbs_instance();
-    if (hbs == nullptr) {
-        return ec;
-    }
-    ezpwd::RS<63, 35>* rs = rs28_instance();
-    if (rs == nullptr) {
-        return ec;
-    }
+    return acch_decode_list(kSacchLayout, payload, parity, erasures, n_erasures);
+}
 
-    /* Initialize HBS */
-    for (i = 0; i < (int)hbs->size(); i++) {
-        (*hbs)[i] = 0;
-    }
+int
+ez_rs28_facch_fixed(int payload[156], int parity[114]) {
+    return acch_decode_fixed(kFacchLayout, payload, parity);
+}
 
-    std::vector<int> ErasuresDyn;
-    for (i = 0; erasures != nullptr && i < n_erasures && i < 28; i++) {
-        ErasuresDyn.push_back(erasures[i]);
-    }
+int
+ez_rs28_sacch_fixed(int payload[180], int parity[132]) {
+    return acch_decode_fixed(kSacchLayout, payload, parity);
+}
 
-    j = 5;
-    for (i = 0; i < 180; i += 6) {
-        (*hbs)[j] = (payload[i] << 5) + (payload[i + 1] << 4) + (payload[i + 2] << 3) + (payload[i + 3] << 2)
-                    + (payload[i + 4] << 1) + payload[i + 5];
-        j++;
-    }
-    for (i = 0; i < 132; i += 6) {
-        (*hbs)[j] = (parity[i] << 5) + (parity[i + 1] << 4) + (parity[i + 2] << 3) + (parity[i + 3] << 2)
-                    + (parity[i + 4] << 1) + parity[i + 5];
-        j++;
-    }
+void
+ez_rs28_facch_encode(const int payload[156], int parity[114]) {
+    acch_encode(kFacchLayout, payload, parity);
+}
 
-    ec = rs->decode(*hbs, ErasuresDyn);
-
-    /* Convert back to bits */
-    k = 0;
-    for (i = 0; i < 30; i++) {
-        for (j = 0; j < 6; j++) {
-            int b = ((*hbs)[i + 5] >> (5 - j)) & 0x1;
-            payload[k] = b;
-            k++;
-        }
-    }
-
-    return ec;
+void
+ez_rs28_sacch_encode(const int payload[180], int parity[132]) {
+    acch_encode(kSacchLayout, payload, parity);
 }
 
 /* One-time initialized ISCH lookup table (P25 (40,9,16) codewords) */

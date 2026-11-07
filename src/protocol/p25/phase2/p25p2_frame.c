@@ -489,15 +489,17 @@ p25p2_process_frame_scramble(dsd_opts* opts, const dsd_state* state) {
 
 enum {
     P25P2_RS_ERASURE_CAPACITY = 28,
-    P25P2_FACCH_FIXED_ERASURES_COUNT = 18,
-    P25P2_SACCH_FIXED_ERASURES_COUNT = 11,
+    P25P2_FACCH_FIXED_ERASURES_COUNT = 9,
+    P25P2_SACCH_FIXED_ERASURES_COUNT = 6,
 };
 
+/* The punctured RS(63,35) parity symbols, never sent. The shortened symbols (FACCH 0..8, SACCH 0..4) are known
+   zeros, not erasures: erasing them as well cost FACCH 4 of its 9 correctable errors and SACCH 3 of 11. */
 static const int P25P2_FACCH_FIXED_ERASURES[P25P2_FACCH_FIXED_ERASURES_COUNT] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62,
+    54, 55, 56, 57, 58, 59, 60, 61, 62,
 };
 static const int P25P2_SACCH_FIXED_ERASURES[P25P2_SACCH_FIXED_ERASURES_COUNT] = {
-    0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62,
+    57, 58, 59, 60, 61, 62,
 };
 
 static int

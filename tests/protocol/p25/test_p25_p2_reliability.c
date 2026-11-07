@@ -993,7 +993,7 @@ test_facchc_success_routes_opcode_and_counters(void) {
     rc |= expect_int("facch slot1 opcode", state.dmr_soR, 5);
     rc |= expect_int("facch mac calls", g_facch_mac_calls, 1);
     rc |= expect_int("facch mac opcode", g_facch_mac_last_opcode, 5);
-    rc |= expect_int("facch fixed erasures", g_facch_last_erasures, 18);
+    rc |= expect_int("facch fixed erasures", g_facch_last_erasures, 9);
     if (rc == 0) {
         printf("PASS\n");
     } else {
@@ -1045,7 +1045,7 @@ test_sacchc_dynamic_erasure_success_maps_inverse_slot(void) {
     set_p25p2_threshold(64);
 
     state.currentslot = 0;
-    g_sacch_min_success = 12;
+    g_sacch_min_success = 7;
     g_sacch_success_rc = 4;
     seed_xcch_opcode(1, 6);
 
@@ -1059,7 +1059,7 @@ test_sacchc_dynamic_erasure_success_maps_inverse_slot(void) {
     rc |= expect_int("sacch inverse opcode", state.dmr_soR, 6);
     rc |= expect_int("sacch mac calls", g_sacch_mac_calls, 1);
     rc |= expect_int("sacch mac opcode", g_sacch_mac_last_opcode, 6);
-    rc |= expect_int("sacch erasure depth", g_sacch_last_erasures, 12);
+    rc |= expect_int("sacch erasure depth", g_sacch_last_erasures, 7);
     rc |= expect_int("sacch dynamic erasure retried after the first attempt", g_sacch_calls > 1, 1);
     if (rc == 0) {
         printf("PASS\n");
@@ -1479,12 +1479,12 @@ test_seed_proof_needs_a_descrambled_burst(void) {
     /* A scrambled burst that decodes only once soft erasures are added checked less of its parity than its fixed
        erasures leave, possibly none of it: it still decodes, but proves nothing. */
     reset_xcch_stubs();
-    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
+    g_facch_min_success = 10; /* one dynamic erasure past the 9 fixed */
     run_seeded_superframe(&opts, &state, scrambled_facch);
     rc |= expect_int("soft-erasure scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
     rc |= expect_int("soft-erasure scrambled FACCH proves nothing", state.p2_cc_verified, 0);
     reset_xcch_stubs();
-    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    g_sacch_min_success = 7; /* one dynamic erasure past the 6 fixed */
     run_seeded_superframe(&opts, &state, scrambled_sacch);
     rc |= expect_int("soft-erasure scrambled SACCH decodes", g_sacch_mac_calls > 0, 1);
     rc |= expect_int("soft-erasure scrambled SACCH proves nothing", state.p2_cc_verified, 0);
@@ -1744,8 +1744,8 @@ test_checked_block_marks_two_slot_carrier(void) {
     rc |= expect_int("failed scrambled SACCH marks nothing", state.tdma_carrier, 0);
 
     reset_xcch_stubs();
-    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
-    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    g_facch_min_success = 10; /* one dynamic erasure past the 9 fixed */
+    g_sacch_min_success = 7;  /* one dynamic erasure past the 6 fixed */
     run_seeded_superframe(&opts, &state, unscrambled);
     rc |= expect_int("soft-erasure unscrambled bursts decode", g_facch_mac_calls > 0 && g_sacch_mac_calls > 0, 1);
     rc |= expect_int("soft-erasure unscrambled bursts mark nothing", state.tdma_carrier, 0);

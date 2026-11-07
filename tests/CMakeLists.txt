@@ -10175,6 +10175,18 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_p2_rs28_limits PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_RS28_LIMITS COMMAND dsd-neo_test_p25_p2_rs28_limits)
 
+# P25 P2 FACCH/SACCH as shortened, punctured RS(63,35) codes
+add_executable(
+    dsd-neo_test_p25_p2_rs_shortened
+    protocol/p25/test_p25_p2_rs_shortened.cpp
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_rs_shortened
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_p25_p2_rs_shortened PRIVATE dsd-neo_fec)
+add_test(NAME P25_P2_RS_SHORTENED COMMAND dsd-neo_test_p25_p2_rs_shortened)
+
 # P25 P1 trunk SM core
 add_executable(dsd-neo_test_p25_p1_trunk_sm protocol/p25/test_p25_p1_trunk_sm.c)
 target_include_directories(

@@ -8091,6 +8091,23 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   passes) and succeeds only on a valid product codeword, returning that codeword's payload, R bits and its distance to
   the received bits. The decode is iterative, not nearest-codeword (some four-error patterns reach a different
   codeword at distance 5), so callers gate on the distance.
+- `ez.cpp` / `<dsd-neo/fec/ez.h>`: the P25 Phase 2 Reed-Solomon codes, all RS(63,35) over GF(64) (ezpwd, the only
+  file that includes it). The ESS is RS(44,16,29). FACCH and SACCH are shortened at the front and punctured at the
+  back: FACCH RS(45,26,20) (symbols 0..8 shortened, payload 9..34, sent parity 35..53, punctured 54..62), SACCH
+  RS(52,30,23) (0..4 shortened, payload 5..34, sent parity 35..56, punctured 57..62). Shortened symbols are known
+  zeros, never erasures (issue #804): erasing them as well cut FACCH from 9 correctable errors to 5 and SACCH from 11
+  to 8, and let about 1.2e-3 of random FACCH words pass by "correcting" a symbol that is zero on air.
+  - Coordinates: callers pass erasures as full RS(63,35) indices. `ez_rs28_facch()` and `ez_rs28_sacch()` drop
+    shortened, out-of-range and repeated ones, translate the rest into ezpwd's shortened code (index minus the pad),
+    and fail a decode that would correct a shortened symbol. The punctured symbols must be in the list (the fixed
+    lists in `p25p2_frame.c`; the soft-erasure ranking in `p25p2_soft.c` adds sent symbols only).
+  - A decode is accepted only within 2 x errors + erasures <= 28. ezpwd's Berlekamp-Massey occasionally decodes past
+    that (about 1.5% of FACCH words with 10 errors), where the codeword is no longer unique.
+  - The return value counts the sent symbols the decode changed; punctured fills are not counted. A failed decode
+    writes nothing.
+  - `ez_rs28_facch_fixed()` and `ez_rs28_sacch_fixed()` erase the punctured symbols only and allocate nothing, for
+    trial decodes. `ez_rs28_facch_encode()` and `ez_rs28_sacch_encode()` give the sent parity of a payload. Tests:
+    `P25_P2_RS_SHORTENED`, `P25_P2_RS28_LIMITS`, `P25_P2_FACCH_RS`, `FEC_BLOCK_CODES`.
 - Build files: `src/fec/CMakeLists.txt`
 
 ## Crypto
