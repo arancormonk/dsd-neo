@@ -1914,8 +1914,7 @@ test_prune_on_remove() {
         expect("prune: pin", pins.pin(pin.first, pin.second).isEmpty());
     }
     {
-        const EntriesWatch watch(
-            pins, [&w, &solo]() { return w.systems.rowForUid(solo) >= 0; }, QStringLiteral("Solo"));
+        EntriesWatch watch(pins, [&w, &solo]() { return w.systems.rowForUid(solo) >= 0; }, QStringLiteral("Solo"));
         expect("prune: remove the system", w.systems.remove(w.systems.rowForUid(solo)));
         expect("prune: the pins change only once the system is gone", !watch.early);
     }
@@ -1923,8 +1922,7 @@ test_prune_on_remove() {
     expect("prune: remove the site", w.systems.remove(w.systems.rowForUid(site)));
     expect("prune: its pin goes", !pins.isPinned("site", site) && pins.count() == 3);
     {
-        const EntriesWatch watch(
-            pins, [&w, &list]() { return w.lists.rowForUid(list) >= 0; }, QStringLiteral("Patrol"));
+        EntriesWatch watch(pins, [&w, &list]() { return w.lists.rowForUid(list) >= 0; }, QStringLiteral("Patrol"));
         expect("prune: remove a list", w.lists.remove(w.lists.rowForUid(list)));
         expect("prune: the pins change only once the list is gone", !watch.early);
     }
@@ -1948,7 +1946,7 @@ test_system_pin_rehomes_to_sibling() {
     ListenPins pins(&w.prefs, &w.systems, &w.lists);
     expect("rehome: pin the card", pins.pin("system", lead).isEmpty());
     {
-        const EntriesWatch watch(
+        EntriesWatch watch(
             pins, [&w, &lead]() { return w.systems.rowForUid(lead) >= 0; }, QStringLiteral("Old County"));
         expect("rehome: remove the pinned site", w.systems.remove(w.systems.rowForUid(lead)));
         expect("rehome: the pin moves only once the site is gone, never named after it", !watch.early);
