@@ -417,7 +417,7 @@ still save; **Skip** never saves or changes the list. See [Skip lifetimes](cli.m
 | `targets_csv_2` … `targets_csv_8` | PATH | Lists 2 to 8, scanned in the same session | (empty) |
 | `lists_off` | STRING | Lists that start switched off, by number (`2, 3`) | (empty) |
 | `idle_dwell_ms` | INT (250-600000) | Default idle dwell per target | `3000` |
-| `activity_hold_ms` | INT (250-600000) | Conventional DMR/NXDN activity hold | `1200` |
+| `activity_hold_ms` | INT (250-600000) | Conventional DMR/P25/NXDN activity hold and analog (`nfm-conventional`/`am-conventional`) carrier tail | `1200` |
 
 **[radioreference] section:**
 | Key | Type | Description | Default |

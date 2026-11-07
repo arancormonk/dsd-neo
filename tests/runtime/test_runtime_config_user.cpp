@@ -170,6 +170,22 @@ expect_absent_quiet(const char* label, const char* haystack, const char* needle)
     return 0;
 }
 
+/*
+ * Discussion #717: [trunk_scan] activity_hold_ms is the hold of every conventional digital target (DMR, P25, NXDN) and
+ * an analog target's carrier tail (trunk_scan_conventional_stay_reason(), --help, docs/trunk-scan.md). The schema text,
+ * which --dump-config-template prints, said DMR/NXDN only.
+ */
+static int
+test_trunk_scan_activity_hold_description(void) {
+    const dsdcfg_schema_entry_t* e = dsdcfg_schema_find("trunk_scan", "activity_hold_ms");
+    if (!e || !e->description || !strstr(e->description, "DMR/P25/NXDN") || !strstr(e->description, "analog")) {
+        DSD_FPRINTF(stderr, "FAIL: [trunk_scan] activity_hold_ms description does not name P25 and analog: %s\n",
+                    (e && e->description) ? e->description : "(missing)");
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_radioreference_schema_rows(void) {
     int rc = 0;
@@ -5788,6 +5804,7 @@ main(void) {
     rc |= test_snapshot_roundtrip_preserves_decoder_set();
     rc |= test_snapshot_roundtrip_dmr_mono_override();
     rc |= test_radioreference_schema_rows();
+    rc |= test_trunk_scan_activity_hold_description();
     rc |= test_radioreference_config_roundtrip();
     rc |= test_radioreference_save_atomic_roundtrip();
     rc |= test_input_warn_db_load_snapshot_render();

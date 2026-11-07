@@ -155,8 +155,9 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunk_scan", "lists_off", "Trunk scan lists that start switched off, by number (e.g. 2, 3)", "", NULL,
      DSDCFG_TYPE_STRING, 0, 0},
     {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000},
-    {"trunk_scan", "activity_hold_ms", "Default conventional DMR/NXDN activity hold", "1200", NULL, DSDCFG_TYPE_INT,
-     250, 600000},
+    {"trunk_scan", "activity_hold_ms",
+     "Default conventional DMR/P25/NXDN activity hold and analog (nfm/am-conventional) carrier tail", "1200", NULL,
+     DSDCFG_TYPE_INT, 250, 600000},
 
     /* [logging] section */
     {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
