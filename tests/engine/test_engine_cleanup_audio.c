@@ -63,10 +63,25 @@ init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
 #define M_PI 3.14159265358979323846
 #endif
 
+/* Thirty 20 ms blocks of a 100.0 Hz tone through the real tap, continuing @p phase. */
+static void
+feed_rx_tone(dsd_opts* opts, dsd_state* state, double* phase) {
+    float block[960];
+    for (int b = 0; b < 30; b++) {
+        for (int i = 0; i < 960; i++) {
+            block[i] = (float)(3000.0 * cos(*phase));
+            *phase += 2.0 * M_PI * 100.0 / 48000.0;
+        }
+        dsd_analog_rx_tap(opts, state, block, 960U);
+    }
+}
+
 /*
  * Engine stop is a boundary the received tone (issue #522) must not cross: a locked tone and
  * the detector session behind it are gone after cleanup, and the publication's generation
- * moves on so a frontend can tell the next session's first verdict from the old one.
+ * moves on so a frontend can tell the next session's first verdict from the old one. The lock
+ * epoch (issue #802) counts on instead: neither a reset with no session nor the next session
+ * starts it over, so a reader never sees a value it has seen before.
  */
 static int
 test_cleanup_forgets_received_tone(dsd_opts* opts, dsd_state* state) {
@@ -78,19 +93,14 @@ test_cleanup_forgets_received_tone(dsd_opts* opts, dsd_state* state) {
     opts->rtl_pwr = 1.0;
     opts->rtl_squelch_level = 0.0;
     double phase = 0.0;
-    float block[960];
-    for (int b = 0; b < 30; b++) {
-        for (int i = 0; i < 960; i++) {
-            block[i] = (float)(3000.0 * cos(phase));
-            phase += 2.0 * M_PI * 100.0 / 48000.0;
-        }
-        dsd_analog_rx_tap(opts, state, block, 960U);
-    }
+    feed_rx_tone(opts, state, &phase);
     rc |= expect_true("rx-tone-locked-before-cleanup", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
                                                            && state->analog_rx.ctcss_tenths_hz == 1000);
     rc |= expect_true("rx-tone-session-before-cleanup",
                       dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX) != NULL);
     const uint32_t generation = state->analog_rx.generation;
+    const uint32_t lock_epoch = state->analog_rx.lock_epoch;
+    rc |= expect_true("rx-tone-lock-epoch-before-cleanup", lock_epoch != 0U);
 
     dsd_engine_cleanup(opts, state);
 
@@ -101,6 +111,20 @@ test_cleanup_forgets_received_tone(dsd_opts* opts, dsd_state* state) {
     rc |= expect_true("rx-tone-generation-moves-on-cleanup", state->analog_rx.generation != generation);
     rc |= expect_true("rx-tone-session-freed-by-cleanup",
                       dsd_state_ext_get_const(state, DSD_STATE_EXT_DSP_ANALOG_RX) == NULL);
+    rc |= expect_true("rx-tone-lock-epoch-kept-by-cleanup", state->analog_rx.lock_epoch == lock_epoch);
+
+    /* A reset with no session clears the publication but keeps the count. */
+    const uint32_t generation_after_cleanup = state->analog_rx.generation;
+    dsd_analog_rx_reset(state);
+    rc |= expect_true("rx-tone-sessionless-reset-moves-generation",
+                      state->analog_rx.generation != generation_after_cleanup);
+    rc |= expect_true("rx-tone-sessionless-reset-keeps-lock-epoch", state->analog_rx.lock_epoch == lock_epoch);
+
+    /* The next session's first lock of the same tone is the next epoch, never one seen before. */
+    feed_rx_tone(opts, state, &phase);
+    rc |= expect_true("rx-tone-locked-in-next-session", state->analog_rx.tone_state == DSD_ANALOG_TONE_STATE_LOCKED
+                                                            && state->analog_rx.ctcss_tenths_hz == 1000);
+    rc |= expect_true("rx-tone-next-session-continues-lock-epoch", state->analog_rx.lock_epoch == lock_epoch + 1U);
     return rc;
 }
 

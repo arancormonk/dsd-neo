@@ -5462,8 +5462,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     verdict's lock (kind and tone or code, after the DCS precedence) with the one the block before left, and a lock
     where there was none or another value moves `lock_epoch` on; a reset clears the comparison, never the count, and
     a new session continues the published value as it continues the generation. So a reader that polls the
-    publication tells one unbroken lock from the same value locked again after a gap between its reads. Tests:
-    `DSP_ANALOG_CTCSS` (`test_lock_epoch_counts_each_lock`), `DSP_ANALOG_DCS` (`test_a_code_outranks_a_tone`).
+    publication tells one unbroken lock from the same value locked again after a gap between its reads. The key it
+    compares is the `Received tone:` log key (`analog_rx_lock_key()`). Tests: `DSP_ANALOG_CTCSS`
+    (`test_lock_epoch_counts_each_lock`), `DSP_ANALOG_DCS` (`test_a_code_outranks_a_tone`), `ENGINE_CLEANUP_AUDIO`
+    (the count goes on across a reset with no session and into the next session).
     The publication's `boundaries` epoch (issue #756) is the session's count of hard boundaries the tap crossed: an
     announced reset (`dsd_analog_rx_reset()`, a TCP reconnect included, also at a block boundary with nothing
     collected), a generation or receive-profile move, a detected stream pause, a rate move and an FM/AM switch. Every

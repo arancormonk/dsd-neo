@@ -350,25 +350,32 @@ core_track_carrier(dsd_analog_rx_core* core, const float* block, int count, int 
 /* Defined with the publication, which merges the reports the same way. */
 static void core_merge_reports(const dsd_analog_rx_core* core, dsd_analog_rx_report* out);
 
-/* The lock the merged verdict names, as the publication would report it now: 0 for none (no carrier, nothing locked, or
-   a front end that hears nothing), a CTCSS tone's tenths of a hertz, or CORE_LOCK_DCS plus a DCS code, doubled, plus
-   its polarity. */
-enum { CORE_LOCK_NONE = 0, CORE_LOCK_DCS = 10000 };
+/* One number for a lock, shared by the lock epoch and the "Received tone:" log key: a CTCSS tone's tenths of a hertz
+   (1..9999), or ANALOG_RX_LOCK_DCS plus a DCS code, doubled, plus its polarity; ANALOG_RX_LOCK_NONE for any other
+   kind. */
+enum { ANALOG_RX_LOCK_NONE = 0, ANALOG_RX_LOCK_DCS = 10000 };
 
+static int
+analog_rx_lock_key(int kind, int ctcss_tenths_hz, int dcs_code, int dcs_inverted) {
+    if (kind == DSD_ANALOG_TONE_KIND_DCS) {
+        return ANALOG_RX_LOCK_DCS + (dcs_code * 2) + (dcs_inverted ? 1 : 0);
+    }
+    return kind == DSD_ANALOG_TONE_KIND_CTCSS ? ctcss_tenths_hz : ANALOG_RX_LOCK_NONE;
+}
+
+/* The lock the merged verdict names, as the publication would report it now (analog_rx_lock_key()), or
+   ANALOG_RX_LOCK_NONE with no carrier, nothing locked, or a front end that hears nothing. */
 static int
 core_lock_key(const dsd_analog_rx_core* core) {
     if (!core->fe.active || !core->carrier_open) {
-        return CORE_LOCK_NONE;
+        return ANALOG_RX_LOCK_NONE;
     }
     dsd_analog_rx_report report;
     core_merge_reports(core, &report);
     if (report.state != DSD_ANALOG_TONE_STATE_LOCKED) {
-        return CORE_LOCK_NONE;
+        return ANALOG_RX_LOCK_NONE;
     }
-    if (report.kind == DSD_ANALOG_TONE_KIND_DCS) {
-        return CORE_LOCK_DCS + (report.dcs_code * 2) + (report.dcs_inverted ? 1 : 0);
-    }
-    return report.kind == DSD_ANALOG_TONE_KIND_CTCSS ? report.ctcss_tenths_hz : CORE_LOCK_NONE;
+    return analog_rx_lock_key(report.kind, report.ctcss_tenths_hz, report.dcs_code, report.dcs_inverted);
 }
 
 /* After each block the detectors heard: a lock the block before did not leave published starts a new lock epoch
@@ -377,7 +384,7 @@ core_lock_key(const dsd_analog_rx_core* core) {
 static void
 core_note_lock(dsd_analog_rx_core* core) {
     const int key = core_lock_key(core);
-    if (key != CORE_LOCK_NONE && key != core->lock_key) {
+    if (key != ANALOG_RX_LOCK_NONE && key != core->lock_key) {
         core->lock_epoch++;
     }
     core->lock_key = key;
@@ -484,10 +491,9 @@ dsd_analog_rx_core_publish(const dsd_analog_rx_core* core, dsd_analog_rx_publica
  * Decoder-thread glue
  * ---------------------------------------------------------------------------------------- */
 
-/* Log key for "Received tone:" lines: nothing logged yet this reception, "none", a CTCSS tone
-   (its tenths of a hertz, 1..9999) or a DCS code (ANALOG_RX_LOG_DCS plus the code, doubled, plus
-   its polarity). */
-enum { ANALOG_RX_LOG_UNSET = -1, ANALOG_RX_LOG_NONE = 0, ANALOG_RX_LOG_DCS = 10000 };
+/* Log key for "Received tone:" lines: nothing logged yet this reception, "none", or the lock's key
+   (analog_rx_lock_key()), which is never ANALOG_RX_LOG_NONE. */
+enum { ANALOG_RX_LOG_UNSET = -1, ANALOG_RX_LOG_NONE = ANALOG_RX_LOCK_NONE };
 
 /* Room for either label. */
 enum { ANALOG_RX_LABEL_SIZE = 24 };
@@ -516,7 +522,7 @@ typedef struct {
     dsd_analog_rx_core core;
     /** The boundaries as the tap saw them at its last read. */
     analog_rx_generations noted;
-    int log_key;              /**< ANALOG_RX_LOG_*, or the logged tone or code (see ANALOG_RX_LOG_DCS) */
+    int log_key;              /**< ANALOG_RX_LOG_*, or the logged tone or code (see analog_rx_lock_key()) */
     uint32_t log_generation;  /**< the publication generation log_key belongs to */
     int unusable_rate_logged; /**< the unusable rate reported for the current stretch of such input; 0 = none */
     /** Input that may pause: the monotonic ms past which the next read arrives after a pause
@@ -799,10 +805,10 @@ static int
 analog_rx_log_key(const dsd_analog_rx_publication* pub, int current) {
     switch (pub->tone_state) {
         case DSD_ANALOG_TONE_STATE_LOCKED:
-            if (pub->tone_kind == DSD_ANALOG_TONE_KIND_DCS) {
-                return ANALOG_RX_LOG_DCS + (pub->dcs_code * 2) + (pub->dcs_inverted ? 1 : 0);
+            if (pub->tone_kind == DSD_ANALOG_TONE_KIND_DCS || pub->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS) {
+                return analog_rx_lock_key(pub->tone_kind, pub->ctcss_tenths_hz, pub->dcs_code, pub->dcs_inverted);
             }
-            return pub->tone_kind == DSD_ANALOG_TONE_KIND_CTCSS ? pub->ctcss_tenths_hz : current;
+            return current;
         case DSD_ANALOG_TONE_STATE_NONE: return ANALOG_RX_LOG_NONE;
         case DSD_ANALOG_TONE_STATE_ACQUIRING: return current;
         default: return ANALOG_RX_LOG_UNSET;
@@ -828,7 +834,7 @@ analog_rx_log_change(analog_rx_session* session, const dsd_analog_rx_publication
         return;
     }
     char label[ANALOG_RX_LABEL_SIZE];
-    const int written = (key >= ANALOG_RX_LOG_DCS)
+    const int written = (key >= ANALOG_RX_LOCK_DCS)
                             ? dsd_dcs_format_label(pub->dcs_code, pub->dcs_inverted, label, sizeof(label))
                             : dsd_ctcss_format_label(key, label, sizeof(label));
     if (written > 0) {
