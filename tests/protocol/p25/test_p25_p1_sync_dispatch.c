@@ -442,6 +442,116 @@ test_p25p1_nac_update_guards(void) {
     assert(state.nid_failures_total == 0U);
 }
 
+/* Issue #804 (F10): a seed NAC cleared by hand (the menu's P2 parameters) on the carrier being decoded comes back from
+   the next valid NID, although state->nac already holds that NAC. A NID repeating the NAC of a proven seed leaves the
+   proof alone. */
+static void
+test_nid_restores_cleared_p2_cc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0x293;
+    state.p2_cc = 0ULL;
+    state.p2_hardset = 0;
+    g_new_nac = 0x293;
+    g_test_duid = 0x7U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.nac == 0x293);
+    assert(state.p2_cc == 0x293ULL);
+    assert(state.p2_cc_verified == 0U);
+    /* The DUID read counts one header error; the NAC, the one state->nac holds, none. */
+    assert(state.debug_header_errors == 1U);
+
+    reset_stub_state();
+    g_new_nac = 0x293;
+    state.p2_cc_verified = 1U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p2_cc == 0x293ULL);
+    assert(state.p2_cc_verified == 1U);
+
+    /* A NID naming another NAC than the seed's, state->nac already holding it, replaces the seed's and its proof. */
+    reset_stub_state();
+    g_new_nac = 0x293;
+    state.p2_cc = 0x111ULL;
+    state.p2_cc_verified = 1U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p2_cc == 0x293ULL);
+    assert(state.p2_cc_verified == 0U);
+}
+
+static void
+expect_frame_nac(int decoded_nac, int expected_valid) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    /* The previous frame's NAC, which this frame's NID replaces or withdraws. */
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_new_nac = decoded_nac;
+    g_test_duid = 0x7U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.p25_frame_nac_valid == (uint8_t)expected_valid);
+    if (expected_valid) {
+        assert(state.p25_frame_nac == (uint16_t)decoded_nac);
+    }
+}
+
+/* Issue #804: the NAC of the frame being decoded, which a network status in it is paired with. It is valid only from a
+   NID the BCH accepted naming no reserved NAC, and never outlives a NID that decoded nothing. */
+static void
+test_frame_nac_validity(void) {
+    expect_frame_nac(0x000, 0);
+    expect_frame_nac(0xFFF, 0);
+    expect_frame_nac(0x001, 1);
+    expect_frame_nac(0xFFE, 1);
+
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A NID the BCH rejected. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_check_result = NID_DECODE_FAIL;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_frame_nac_valid == 0U);
+
+    /* A NID an input interruption cut. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_interrupt_at_dibit = 15;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(state.p25_frame_nac_valid == 0U);
+
+    /* A NID a carrier boundary split: the BCH accepted it, but its NAC is no carrier's. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    g_boundary_at_dibit = 10;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.carrier_seq == 1U);
+    assert(state.p25_frame_nac_valid == 0U);
+}
+
 static void
 test_p25p1_mbe_output_and_resume_side_effects(void) {
     static dsd_opts opts;
@@ -757,6 +867,8 @@ main(void) {
     test_p25p1_observed_nac_priority();
     test_p25p1_nid_correction_and_failure_state();
     test_p25p1_nac_update_guards();
+    test_nid_restores_cleared_p2_cc();
+    test_frame_nac_validity();
     test_p25p1_mbe_output_and_resume_side_effects();
     test_p25p1_valid_nid_learns_modulation();
     test_p25p1_verdict_follows_the_nid_evidence_window();

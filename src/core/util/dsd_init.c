@@ -1173,6 +1173,8 @@ init_state_p25p1_nid_learning(dsd_state* state) {
     state->p25_p1_validated_symbolcnt = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
+    state->p25_frame_nac = 0U;
+    state->p25_frame_nac_valid = 0U;
     DSD_MEMSET(&state->p25_p1_mod_compare, 0, sizeof(state->p25_p1_mod_compare));
 }
 

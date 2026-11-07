@@ -155,6 +155,17 @@ p25p1_read_nid_fields(dsd_opts* opts, dsd_state* state, uint8_t* duid, char bch_
     *parity_reliab = p25p1_llr_reliability(soft.llr[1]);
 }
 
+/* The NAC of the frame being decoded (issue #804), which a network status in it is paired with. A NID split by a carrier
+   boundary names no carrier's, as the received identity takes it (dsd_rxid_note_access()). */
+static void
+p25p1_note_frame_nac(dsd_state* state, int nac) {
+    if (state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq)) {
+        return;
+    }
+    state->p25_frame_nac = (uint16_t)nac;
+    state->p25_frame_nac_valid = 1U;
+}
+
 static void
 p25p1_apply_nac_update(dsd_state* state, int new_nac) {
     int valid_nac = p25p1_valid_decoded_nac(new_nac);
@@ -162,14 +173,17 @@ p25p1_apply_nac_update(dsd_state* state, int new_nac) {
     /* The NAC of a NID the BCH accepted is the carrier's received access code, an unchanged repeat included. */
     if (valid_nac) {
         dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, (uint16_t)new_nac);
+        p25p1_note_frame_nac(state, new_nac);
+    }
+    /* The seed's NAC follows the NID whatever state->nac holds: a seed NAC cleared by hand on this carrier comes back
+       from the next NID (issue #804). */
+    if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac) {
+        state->p2_cc = (unsigned long long)new_nac;
+        state->p2_cc_verified = 0U; // a Phase 1 NID proves no Phase 2 seed (issue #575)
     }
     if (new_nac != state->nac) {
         if (valid_nac) {
             state->nac = new_nac;
-        }
-        if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac) {
-            state->p2_cc = (unsigned long long)new_nac;
-            state->p2_cc_verified = 0U; // a Phase 1 NID proves no Phase 2 seed (issue #575)
         }
         state->debug_header_errors++;
     }
@@ -227,6 +241,8 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state) {
     int observed_nac;
     uint8_t duid = P25P1_DUID_INVALID;
 
+    /* The previous frame's NAC is not this one's: only this frame's NID, once decoded, names it. */
+    state->p25_frame_nac_valid = 0U;
     p25p1_read_nid_fields(opts, state, &duid, bch_code, bch_reliab, &parity, &parity_reliab);
     /* An input interruption cut the NID (a Signal search left the frame): the rest of it is erasures the reader stood
        in, which the BCH can take for the all-zero codeword (NAC 0, an HDU). Nothing of it decodes. */

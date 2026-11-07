@@ -2787,6 +2787,9 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
      * dispatches, so a Phase 1 call on the next carrier would read this one's. The no-carrier pass resets it as well
      * (no_carrier_reset_voice_and_audio_metrics()). */
     state->nac = 0;
+    /* So is the NAC of the last Phase 1 frame (issue #804): a network status on the next carrier is never paired with
+     * it. */
+    state->p25_frame_nac_valid = 0U;
     /* The Phase 2 seed's proof is the carrier's too: the next carrier's bursts, or a network status broadcast, prove it
      * again. p2_cc itself is the descrambling key and stays. */
     state->p2_cc_verified = 0U;

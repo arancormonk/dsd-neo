@@ -8625,8 +8625,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   decoded at all: a 2V burst ahead of any 4V burst would read the old carrier's ALG, KID and MI from it, and
   prove the new seed with it. An unscrambled FACCH/SACCH (DUID 15, 12, 13) never tests the seed, so a call carried only
   by those records no NAC. The mark goes at the carrier boundary with
-  the codes above, and whenever a Phase 1 NID, a hand-set seed or a site reset changes `p2_cc`; `p2_cc` itself is the
-  descrambling key and is never reset for it.
+  the codes above, and whenever a Phase 1 NID, a hand-set seed or a site reset changes `p2_cc`, or
+  `p25_update_system_identity()` changes WACN or SYSID (a Phase 1 TSBK, MBT or LCW network status; issue #804); a
+  network status that passed its CRC proves its own seed again afterwards. `p2_cc` itself is the descrambling key and
+  is never reset for it. A valid Phase 1 NID (BCH-accepted, not 0x000 or 0xFFF) rewrites a `p2_cc` that is not hand-set
+  whenever it differs, whatever `state->nac` holds, so a seed NAC cleared by hand on the carrier comes back
+  (`p25p1_apply_nac_update()`). The same NID records the NAC of the frame being decoded (`p25_frame_nac` with
+  `p25_frame_nac_valid`), which a network status in that frame is paired with: invalid from every P25p1 sync until its
+  NID decodes, after a NID that failed, was cut or was split by a carrier boundary, at every carrier boundary
+  (`dsd_engine_forget_carrier_code_values()`) and at a trunk scan target switch.
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
   with its confidence lock, the RAN with its stand-in mark, `p2_cc` with its proof, and the conventional grant pair.
   What the decoders gathered on the carrier is in no snapshot: a target switch (`trunk_scan_switch_to()`) forgets it
@@ -8654,7 +8661,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      still that carrier's; then the per-call recordings no call owns close (`dsd_event_flush_orphan_recordings()`, see
      Core, "Recording journal", carrier departures).
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
-     its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
+     its stand-in mark, the dPMR colour code, the Phase 1 NAC with the last Phase 1 frame's, and the seed's proof (never
+     `p2_cc`). The NAC goes
      because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it was
      (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
      evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
