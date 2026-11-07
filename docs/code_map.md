@@ -74,8 +74,9 @@ Generated (do not edit/commit):
     (`dsd_engine_signal_search_probe()`: `visit`, `probing`, not stopping, the hit not ended, `digital == 1`), so a
     visit's tune, whose acquisition reset samples the answer, starts the hunt in the search order; admitted evidence
     clears `probing`, and the hunt asks again when the probe's dwell is spent, so the carrier that confirmed keeps its
-    profile for the ordinary dwell (`test_probe_hook_answer`). The engine writes nothing of the hunt's state. A new range probes for 3 s (`dsd_signal_search_range_default()`), the measured time
-    for Auto to reach P25 Phase 2 and recover and confirm its code (`DECODE_IQ_SEARCH_SCHEDULE_*`).
+    profile for the ordinary dwell (`test_probe_hook_answer`). The engine writes nothing of the hunt's state. A new
+    range probes for 3 s (`dsd_signal_search_range_default()`), the measured time for Auto to reach P25 Phase 2 and
+    recover and confirm its code (`DECODE_IQ_SEARCH_SCHEDULE_*`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A live strength that no

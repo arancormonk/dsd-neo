@@ -8,8 +8,9 @@
  * Production Signal search refuses an I/Q replay, so this runs the real engine on a replay with the search's probe
  * forced instead: the frame sync's signal_search_probe hook answers 1 from the first acquisition reset (as a search
  * visit's tune runs one) until the first admitted protocol evidence, which a recording evidence hook takes in place of
- * the search coordinator and which clears the hunt's kept order as the coordinator does. Every other frame-sync hook
- * is the engine's own. The decoder starts on 4800/4 (C4FM unless a -m lock says otherwise), as every Auto visit does.
+ * the search coordinator; from then on it answers 0, as the coordinator's does, and the hunt finds that out itself
+ * when it next asks (when the probe's dwell is spent). Every other frame-sync hook is the engine's own. The decoder
+ * starts on 4800/4 (C4FM unless a -m lock says otherwise), as every Auto visit does.
  *
  * Usage: search_schedule_replay FIXTURE.iq.json OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N]
  *        [--hold-ms MS] [--ordinary] [-- DECODER ARGS...]
@@ -67,7 +68,6 @@ typedef struct {
 
 static struct {
     const dsd_opts* opts;
-    dsd_state* state;
     dsd_frame_sync_hooks engine;
     uint64_t landed_ms;
     uint32_t deadline_ms;
@@ -102,8 +102,9 @@ schedule_should_yield(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* The coordinator's evidence handling, as far as the schedule goes: the first evidence the search would admit ends the
-   probe and the hunt's search order (dsd_engine_signal_search_evidence_at()). NXDN is named by the profile that
-   confirmed it, as the search names it. */
+   probe (dsd_engine_signal_search_evidence_at()), so the forced answer is 0 from here; the hunt's kept order is left
+   for the frame sync to ask again, as in a search. NXDN is named by the profile that confirmed it, as the search names
+   it. */
 static void
 record_evidence(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target, uint32_t source,
                 const char* access) {
@@ -119,7 +120,6 @@ record_evidence(const dsd_state* state, const char* protocol, int sync, int slot
         return;
     }
     g_run.probing = 0;
-    g_run.state->sps_hunt_search_order = 0U;
     g_run.identified = 1;
     g_run.at_ms = dsd_decode_now_mono_ms() - g_run.landed_ms;
     g_run.profile = state->sps_hunt_idx;
@@ -140,7 +140,6 @@ schedule_start(dsd_opts* opts, dsd_state* state, void* context) {
         return -1;
     }
     g_run.opts = opts;
-    g_run.state = state;
     dsd_frame_sync_hooks_get(&g_run.engine);
     dsd_frame_sync_hooks hooks = g_run.engine;
     hooks.signal_search_probe = g_run.ordinary ? NULL : forced_search_probe;

@@ -2129,8 +2129,8 @@ test_code_list_only_while_receiving(dsd_opts* o, dsd_state* s, const dsd_signal_
 /* Issue #804: the start profile (F5), the session's P25 site (F6) and its code list. */
 /* The frame sync's signal_search_probe answer (issue #804): 1 only while a visit to an Auto range probes, from the
    acquisition reset its tune runs (which the hunt keeps) to the evidence that ends the probe (the hunt asks again when
-   its dwell is spent); 0 for a span tune, a typed or analog range, the probe's analog fallback, a listening, held-off, ended, paused
-   or stopped visit. */
+   its dwell is spent); 0 for a span tune, a typed or analog range, the probe's analog fallback, a listening, held-off,
+   ended, paused or stopped visit. */
 static void
 test_probe_hook_answer(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     assert(dsd_engine_signal_search_probe(o, s) == 0); // no search
