@@ -375,7 +375,8 @@ the session; they never write the process environment.
 | `dmr_mono` | BOOL | Enable the single-slot DMR decoder without changing `decode` | `false` |
 | `dmr_lrrp_ports` | STRING | Extra UDP ports decoded as DMR LRRP, comma-separated, at most 8 (same as `--lrrp-extra-port`; a CLI list replaces this one) | (empty) |
 | `dmr_udp_comp_ports` | STRING | UDP ports linked to the manufacturer-specific DMR compressed-UDP port indices 95-127, comma-separated `<index>=<port>` pairs such as `"97=4005,98=4007"`; one port per index, a bad entry is skipped with a warning (same as `--dmr-udp-comp-port`; a CLI list replaces this one) | (empty) |
-| `edacs_ea` | BOOL | Decode EDACS with extended addressing, without changing `decode` | `false` |
+| `edacs_addressing` | ENUM | EDACS addressing mode, without changing `decode`: `none` (ProVoice alone, as `-fp`), `standard` (as `-fh`) or `extended` (as `-fe`). Wins over `edacs_ea` when both are present | (unset) |
+| `edacs_ea` | BOOL | Older form of `edacs_addressing`, read only when that key is absent: `true` is extended addressing, `false` standard | `false` |
 | `edacs_esk` | BOOL | Apply the EDACS ESK `0xA0` scrambling mask, without changing `decode` | `false` |
 | `demod` | ENUM | Demodulator path | `auto` |
 
@@ -780,6 +781,20 @@ no preset saves no `decode` key at all and reloads with the decoder set it
 starts with left alone. An autosave written before Auto became the default
 (without a `decode` key) therefore reloads as Auto. Independent keys such as
 `dmr_mono` are still saved either way.
+
+The EDACS addressing mode is saved apart from `decode`, because the one
+`edacs_pv` preset stands for all five EDACS/ProVoice selectors and selects
+standard addressing. Any of `edacs_addressing`, `edacs_ea` and `edacs_esk`
+sets the mode after the preset; `edacs_esk` defaults to `false` then. A session
+with an addressing mode, and every session saved as `edacs_pv`, writes
+`edacs_addressing` and `edacs_esk`: a `-fp` session saves
+`edacs_addressing = "none"` and reloads as ProVoice alone, not as `-fh`. A
+session with no addressing mode under any other preset writes neither key, so
+its reload leaves the mode unselected. Generated configurations write only
+`edacs_addressing`, so a file holds one answer for the mode; an older file's
+`edacs_ea` still loads (`true` extended, `false` standard) and is written back
+as `edacs_addressing` on the next save. When a file has both, `edacs_addressing`
+wins wherever the two keys sit.
 Passive analog monitoring, native AM and already-framed M17 UDP input are
 outside this frame-sync hunt.
 

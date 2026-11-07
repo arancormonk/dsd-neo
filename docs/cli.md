@@ -922,13 +922,14 @@ Notes
   stays); on a narrowed set it widens it back out.
 - EDACS under Auto: Auto enables the EDACS/ProVoice decoder, but EDACS frames are processed only once an EDACS
   addressing mode is selected: `-fh -fa` (or `-fe -fa`), a switch to Auto from an EDACS/ProVoice preset, a config with
-  `edacs_ea`, or the EA toggle (terminal menu, `ProVoice EA mode`), whose first press under plain Auto selects
+  `edacs_addressing = "standard"` or `"extended"` (or the older `edacs_ea`), or the EA toggle (terminal menu, `ProVoice EA mode`), whose first press under plain Auto selects
   standard addressing. Until then the session is no EDACS session: no raw analog stream or UDP analog socket
   (port + 2) opens for it, `-T` keeps `-8` on, the dynamic squelch treats its channels as digital, and talkgroup
   lockout and Skip work on P25, DMR and NXDN calls. Once EDACS is selected, Auto behaves as the EDACS/ProVoice preset
   does for those (the analog sink opens then, and on a trunked `-o udp` run `-8` turns off, as under `-fh -T`; so does
   a switch to EDACS/ProVoice or a config apply that selects EDACS).
-  ProVoice alone (`-fp`) is an EDACS session without an addressing mode. Any other preset clears the addressing, so
+  ProVoice alone (`-fp`) is an EDACS session without an addressing mode, also after an earlier `-fh/-fH/-fe/-fE`, and
+  its config saves `edacs_addressing = "none"` to keep it so. Any other preset clears the addressing, so
   EDACS, then DMR, then Auto is plain Auto again; a scan row's own class keeps the configured addressing.
   Only `-fz` (M17 alone) waits for a TCP audio server that refuses or drops the connection; under Auto a refused
   connect is an error and a dropped one ends the input, as in any other mode.

@@ -7331,6 +7331,147 @@ test_f_edacs_presets_match_reference_modes(void) {
     return test_rc;
 }
 
+/* Parse @p a then @p b (b may be NULL) into fresh opts/state; returns DSD_PARSE_CONTINUE or the parse rc. */
+static int
+parse_f_pair(const char* a, const char* b, dsd_opts* opts, dsd_state* state) {
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char argbuf[2][16] = {{0}};
+    char* argv[4] = {arg0, NULL, NULL, NULL};
+    int argc = 1;
+    DSD_SNPRINTF(argbuf[0], sizeof argbuf[0], "%s", a);
+    argv[argc++] = argbuf[0];
+    if (b) {
+        DSD_SNPRINTF(argbuf[1], sizeof argbuf[1], "%s", b);
+        argv[argc++] = argbuf[1];
+    }
+    int argc_effective = 0;
+    int exit_rc = -1;
+    return dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+}
+
+/*
+ * Discussion #717. A later -f selector replaces an earlier one (docs/cli.md "-fT -fp decodes ProVoice alone"),
+ * and -fp selects no EDACS addressing mode (docs/cli.md "ProVoice alone (-fp) is an EDACS session without an
+ * addressing mode"; dsd_edacs_session()). So `-fE -fp` and `-fh -fp` must leave the session as `-fp` alone does:
+ * ea_mode -1 and no ESK mask.
+ */
+static int
+test_f_provoice_after_edacs_selects_no_addressing(void) {
+    static const char* const earlier[] = {"-fE", "-fh", "-fe", "-fH"};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof(earlier) / sizeof(earlier[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        const int rc = parse_f_pair(earlier[i], "-fp", opts, state);
+        if (rc != DSD_PARSE_CONTINUE || state->ea_mode != -1 || state->esk_mask != 0) {
+            DSD_FPRINTF(stderr,
+                        "FAIL #717: %s -fp: rc=%d ea_mode=%d esk_mask=0x%X (want ea_mode=-1 esk_mask=0x0, as -fp)\n",
+                        earlier[i], rc, state->ea_mode, (unsigned)state->esk_mask);
+            test_rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* Parse @p selector, autosave the session to a temp file, load it and apply it to fresh opts/state. Returns 0 when
+   the round trip ran; the reloaded state is left in @p opts / @p state (freeState() is the caller's). */
+static int
+edacs_autosave_round_trip(const char* selector, dsd_opts* opts, dsd_state* state, dsdneoUserConfig* saved,
+                          dsdneoUserConfig* loaded, int* parsed_ea_mode, unsigned* parsed_esk) {
+    if (parse_f_pair(selector, NULL, opts, state) != DSD_PARSE_CONTINUE) {
+        freeState(state);
+        return 1;
+    }
+    *parsed_ea_mode = state->ea_mode;
+    *parsed_esk = state->esk_mask;
+    dsd_snapshot_opts_to_user_config(opts, state, saved);
+    freeState(state);
+    char path[DSD_TEST_PATH_MAX] = {0};
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsd_717_edacs_autosave");
+    if (fd < 0) {
+        return 1;
+    }
+    (void)dsd_close(fd);
+    const int io_rc = (dsd_user_config_save_atomic(path, saved) != 0 || dsd_user_config_load(path, loaded) != 0);
+    (void)remove(path);
+    if (io_rc) {
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    dsd_apply_user_config_to_opts(loaded, opts, state);
+    return 0;
+}
+
+/*
+ * Discussion #717. Every EDACS/ProVoice selector autosaves as decode = "edacs_pv", whose preset selects
+ * standard addressing, so the addressing mode must be saved beside it and come back: a -fp session (ea_mode -1, no
+ * addressing mode) must not reload as -fh, and -fh/-fH/-fe/-fE must keep theirs. The tri-state
+ * [mode] edacs_addressing key carries it.
+ */
+static int
+test_f_edacs_autosave_reloads_its_addressing(void) {
+    static const struct {
+        const char* selector;
+        int ea_mode;
+        unsigned esk;
+        dsdneoUserEdacsAddressing addressing;
+    } cases[] = {
+        {"-fp", -1, 0U, DSDCFG_EDACS_ADDRESSING_NONE},       {"-fh", 0, 0U, DSDCFG_EDACS_ADDRESSING_STANDARD},
+        {"-fH", 0, 0xA0U, DSDCFG_EDACS_ADDRESSING_STANDARD}, {"-fe", 1, 0U, DSDCFG_EDACS_ADDRESSING_EXTENDED},
+        {"-fE", 1, 0xA0U, DSDCFG_EDACS_ADDRESSING_EXTENDED},
+    };
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    dsdneoUserConfig* saved = (dsdneoUserConfig*)calloc(1, sizeof(dsdneoUserConfig));
+    dsdneoUserConfig* loaded = (dsdneoUserConfig*)calloc(1, sizeof(dsdneoUserConfig));
+    int test_rc = 0;
+    if (!opts || !state || !saved || !loaded) {
+        DSD_FPRINTF(stderr, "out of memory\n");
+        test_rc = 1;
+    }
+    for (size_t i = 0; test_rc == 0 && i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int parsed_ea = 99;
+        unsigned parsed_esk = 0U;
+        DSD_MEMSET(saved, 0, sizeof *saved);
+        DSD_MEMSET(loaded, 0, sizeof *loaded);
+        if (edacs_autosave_round_trip(cases[i].selector, opts, state, saved, loaded, &parsed_ea, &parsed_esk) != 0) {
+            DSD_FPRINTF(stderr, "FAIL #717: %s autosave round trip did not parse/save/load\n", cases[i].selector);
+            test_rc = 1;
+            break;
+        }
+        if (parsed_ea != cases[i].ea_mode || parsed_esk != cases[i].esk || loaded->decode_mode != DSDCFG_MODE_EDACS_PV
+            || loaded->edacs_addressing != cases[i].addressing || state->ea_mode != cases[i].ea_mode
+            || state->esk_mask != cases[i].esk || opts->frame_provoice != 1) {
+            DSD_FPRINTF(stderr,
+                        "FAIL #717: %s (parsed ea_mode=%d esk=0x%X) autosaved decode_mode=%d edacs_addressing=%d and "
+                        "reloaded with ea_mode=%d esk_mask=0x%X frame_provoice=%d (want ea_mode=%d esk=0x%X)\n",
+                        cases[i].selector, parsed_ea, parsed_esk, (int)loaded->decode_mode,
+                        (int)loaded->edacs_addressing, state->ea_mode, (unsigned)state->esk_mask, opts->frame_provoice,
+                        cases[i].ea_mode, cases[i].esk);
+            test_rc = 1;
+        }
+        freeState(state);
+    }
+    free(loaded);
+    free(saved);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 /*
  * -fA followed by a selector the preset helper never sees.
  *
@@ -12361,6 +12502,8 @@ main(void) {
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_dpmr_and_m17_presets_match_documented_letters();
     rc |= test_f_edacs_presets_match_reference_modes();
+    rc |= test_f_provoice_after_edacs_selects_no_addressing();
+    rc |= test_f_edacs_autosave_reloads_its_addressing();
     rc |= test_f_session_predicates_follow_the_cli();
     rc |= test_f_manual_selectors_leave_analog_monitor();
     rc |= test_f_am_preset_on_iq_inputs();

@@ -2573,7 +2573,7 @@ suite runs under this compiler.
   ProVoice and M17 beside every other decoder. `dsd_edacs_session(opts, state)` (`<dsd-neo/core/edacs_session.h>`,
   header-only so the runtime squelch policy reads it without linking core) is a selected EDACS session:
   `frame_provoice` and either an EDACS addressing mode selected (`state->ea_mode >= 0`: `-fh/-fH/-fe/-fE`, `-fh -fa`,
-  an EDACS-to-Auto switch, a config's `edacs_ea`, the EA toggle) or ProVoice the one digital decoder (`-fp`, which
+  an EDACS-to-Auto switch, a config's `edacs_addressing` or `edacs_ea`, the EA toggle) or ProVoice the one digital decoder (`-fp`, which
   selects no mode). Plain Auto (`ea_mode == -1`, where EDACS only prints the mode-selection hint) is none. Every preset
   but EDACS/ProVoice and Auto sets `ea_mode = -1` and `esk_mask = 0` (`dsd_stage_decode_mode_preset()`), so EDACS, then
   another mode, then Auto is plain Auto; a scan row's preset keeps the configured addressing
@@ -2750,7 +2750,8 @@ suite runs under this compiler.
   the DMR trunking parts (keeping the colour code the reset keeps, and the user's `-D`) and the NXDN location, IDAS
   parts and RAN (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and
   once a switch onto the analog monitor the front end has queued is taken (`ui_commit_mode_identity()`: refused where it
-  lands, the session goes back with its identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`,
+  lands, the session goes back with its identity), an EDACS addressing mode a config apply sets without a `decode` key
+  (`[mode] edacs_addressing`, `edacs_ea` or `edacs_esk`),
   a RadioReference import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their
   site) run `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an
   EDACS record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as
@@ -4619,7 +4620,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   meaning `[mode]`, `[demod]` and both `[analog]` widths, restored over the row-scoped options in force by
   `ui_restore_receive_settings()`, which puts back `[analog]`'s tone policy from among those options as well; and what
   `[mode]` sets outside that snapshot that the decoder reads, `ui_cfg_mode_extras`: `ea_mode` and `esk_mask`, which
-  `edacs_ea`/`edacs_esk` and the EDACS/ProVoice preset set, the extra LRRP ports and the compressed-UDP port map; the
+  `edacs_addressing`/`edacs_ea`/`edacs_esk` and the EDACS/ProVoice preset set, the extra LRRP ports and the compressed-UDP port map; the
   audio layout a preset carries
   is the session's anyway), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
   runs after it (the other hot restarts, the output reconfigure, `apply_cfg_receive_family_change()`) sees the receive

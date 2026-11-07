@@ -506,6 +506,28 @@ assign_bool_key(int* field, const char* val) {
     }
 }
 
+/* [mode] edacs_addressing. A value it does not name leaves the key unset (the validator warns), so an edacs_ea beside
+   it still answers. */
+static void
+assign_edacs_addressing_key(dsdneoUserConfig* cfg, const char* val) {
+    static const struct {
+        const char* name;
+        dsdneoUserEdacsAddressing value;
+    } k_names[] = {
+        {"none", DSDCFG_EDACS_ADDRESSING_NONE},
+        {"standard", DSDCFG_EDACS_ADDRESSING_STANDARD},
+        {"extended", DSDCFG_EDACS_ADDRESSING_EXTENDED},
+    };
+
+    for (size_t i = 0; val && i < sizeof k_names / sizeof k_names[0]; i++) {
+        if (dsd_strcasecmp(val, k_names[i].name) == 0) {
+            cfg->has_edacs_variant = 1;
+            cfg->edacs_addressing = k_names[i].value;
+            return;
+        }
+    }
+}
+
 static void
 apply_mode_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "decode") == 0) {
@@ -523,6 +545,8 @@ apply_mode_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* va
     } else if (strcmp(key_lc, "edacs_ea") == 0) {
         cfg->has_edacs_variant = 1;
         assign_bool_key(&cfg->edacs_ea, val);
+    } else if (strcmp(key_lc, "edacs_addressing") == 0) {
+        assign_edacs_addressing_key(cfg, val);
     } else if (strcmp(key_lc, "edacs_esk") == 0) {
         cfg->has_edacs_variant = 1;
         assign_bool_key(&cfg->edacs_esk, val);
