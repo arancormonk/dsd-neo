@@ -31,7 +31,7 @@ Item {
         function defaultRange() { return {name: "Range", startMHz: "450.000000", endMHz: "460.000000", enabled: true,
             stepNum: 12500, stepDen: 1, bandwidth: 16000, am: false, digital: 1, gainSet: false, gainAuto: true,
             gain: 0, sensitivity: 15, minimumSet: false, minimum: -60, squelchMode: 2, squelchMargin: 10,
-            squelchLevel: -60, probe: 2, visit: 30, airspyGainSet: false, airspy: {}}; }
+            squelchLevel: -60, probe: 3, visit: 30, airspyGainSet: false, airspy: {}}; }
     }
     TestCase {
         name: "MainSessionTools"

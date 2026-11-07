@@ -873,7 +873,8 @@ test_search_dwell_6000(void) {
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
     assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
-    assert(state.sps_hunt_search_order == 1 && g_search_probe_queries == 2);
+    /* Asked at the spent dwell and again on adopting 6000/4. */
+    assert(state.sps_hunt_search_order == 1 && g_search_probe_queries == 3);
     assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == DSD_FRAME_SYNC_SEARCH_6000_4_PASSES);
 
     /* The 6000/4 dwell ends after its search passes, not three. */
@@ -903,9 +904,9 @@ test_search_dwell_6000(void) {
 }
 
 /*
- * Evidence ends the probe, and the engine clears the kept answer then (dsd_engine_signal_search_evidence_at()): the
- * profile that just confirmed is owed its full dwell at once, not at the next step, and the next step runs today's
- * order. A step after the probe ended asks again and keeps 0.
+ * Evidence ends the probe: the engine's answer is 0 from then on, and the hunt asks again when the probe's dwell is
+ * spent (frame_sync_no_sync_sps_hunt()). The carrier that confirmed keeps its profile for the ordinary dwell, and the
+ * listening visit's next step runs today's order. The question is asked once per spent dwell, never per symbol.
  */
 static void
 test_order_flag_cleared_on_evidence(void) {
@@ -917,21 +918,66 @@ test_order_flag_cleared_on_evidence(void) {
     state.sps_hunt_search_order = 1; // kept from the visit's acquisition reset
     assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
     assert(state.sps_hunt_search_order == 1);
-    const int dwell = DSD_FRAME_SYNC_SEARCH_6000_4_PASSES * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
-    state.sps_hunt_counter = dwell;
-    /* Evidence on 6000/4: the engine clears the flag and the probe answers 0 from here. */
-    state.sps_hunt_search_order = 0;
+    /* Evidence on 6000/4: the engine answers 0 from here, and the kept flag still says the probe runs. */
     g_search_probe = 0;
-    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    g_search_probe_queries = 0;
+    const int dwell = DSD_FRAME_SYNC_SEARCH_6000_4_PASSES * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell - 1;
     assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
-    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(g_search_probe_queries == 0 && state.sps_hunt_search_order == 1); // the dwell runs: nothing asked
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4 && state.sps_hunt_search_order == 0);
+    assert(g_search_probe_queries == 1 && dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    /* The symbols after it ask nothing more. */
+    state.sps_hunt_counter = dwell + 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(g_search_probe_queries == 1);
+    /* The listening visit's next step runs today's order. */
     assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
     assert(state.sps_hunt_search_order == 0);
-    /* A stale flag the engine did not clear is put right by the next step's answer. */
+    /* A flag kept when the probe answers 0 by the time a 4800/4 dwell is spent: the step asks, and runs today's order. */
     state.sps_hunt_search_order = 1;
-    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
-    assert(state.sps_hunt_search_order == 0);
     assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state.sps_hunt_search_order == 0);
+    dsd_frame_sync_hooks_set(NULL);
+}
+
+static void arm_2400_4_proof(dsd_state* state, uint32_t at_symbolcnt);
+
+/*
+ * A 2400/4 proof while the probe still runs: the search order's way back to 4800/4 (2400/4, 9600/2, 4800/2) skips
+ * 6000/4, so DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS, sized for the ordinary way back, still stands through the
+ * whole first 4800/4 dwell, where the matchers it holds off live.
+ */
+static void
+test_proven_2400_4_hold_spans_the_search_order(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    auto_hunt_session(&opts, &state);
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.signal_search_probe = fake_search_probe});
+    g_search_probe = 1;
+    state.sps_hunt_search_order = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    arm_2400_4_proof(&state, 1000);
+    /* The proof restarted the 2400/4 dwell: the longest stay is that dwell plus one on each profile back to and
+       including the first 4800/4 dwell. */
+    static const int way_back[] = {
+        DSD_FRAME_SYNC_SPS_PROFILE_2400_4, DSD_FRAME_SYNC_SPS_PROFILE_9600_2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2,
+        DSD_FRAME_SYNC_SPS_PROFILE_4800_4, DSD_FRAME_SYNC_SPS_PROFILE_6000_4,
+    };
+    uint32_t spent = 0;
+    for (int i = 0; i + 1 < (int)(sizeof(way_back) / sizeof(way_back[0])); i++) {
+        state.sps_hunt_idx = way_back[i];
+        spent += (uint32_t)(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+        assert(step_auto_hunt_from(&opts, &state, way_back[i]) == way_back[i + 1]);
+        assert(state.sps_hunt_search_order == 1);
+    }
+    /* The last symbol of the first 4800/4 dwell is still under the hold. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.symbolcnt = 1000U + spent - 1U;
+    assert(spent <= DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS);
+    assert(dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(&opts, &state) == 1);
     dsd_frame_sync_hooks_set(NULL);
 }
 
@@ -5263,6 +5309,7 @@ main(void) {
     test_search_order_off_is_todays_order();
     test_search_dwell_6000();
     test_order_flag_cleared_on_evidence();
+    test_proven_2400_4_hold_spans_the_search_order();
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();

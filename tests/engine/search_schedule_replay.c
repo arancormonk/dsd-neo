@@ -159,6 +159,31 @@ parse_ms(const char* text, uint32_t* out) {
     return dsd_parse_uint32_strict(text, 10, 600000U, out) == 0 ? 0 : -1;
 }
 
+/* One option at argv[*i] (and its value, which moves *i on). 0 when it was taken. */
+static int
+parse_option(int argc, char** argv, int* i, schedule_args* args) {
+    const char* option = argv[*i];
+    if (strcmp(option, "--ordinary") == 0) {
+        args->ordinary = 1;
+        return 0;
+    }
+    if (*i + 1 >= argc) {
+        return -1;
+    }
+    const char* value = argv[++*i];
+    if (strcmp(option, "--expect") == 0) {
+        args->expect = value;
+        return 0;
+    }
+    if (strcmp(option, "--expect-profile") == 0) {
+        return dsd_parse_int_strict(value, 10, 0, DSD_FRAME_SYNC_SPS_PROFILE_COUNT - 1, &args->expect_profile);
+    }
+    if (strcmp(option, "--hold-ms") == 0) {
+        return parse_ms(value, &args->hold_ms);
+    }
+    return -1;
+}
+
 static int
 parse_args(int argc, char** argv, schedule_args* args) {
     DSD_MEMSET(args, 0, sizeof(*args));
@@ -170,20 +195,7 @@ parse_args(int argc, char** argv, schedule_args* args) {
     args->fixture = argv[1];
     int i = 4;
     for (; i < argc && strcmp(argv[i], "--") != 0; i++) {
-        if (strcmp(argv[i], "--expect") == 0 && i + 1 < argc) {
-            args->expect = argv[++i];
-        } else if (strcmp(argv[i], "--expect-profile") == 0 && i + 1 < argc) {
-            if (dsd_parse_int_strict(argv[++i], 10, 0, DSD_FRAME_SYNC_SPS_PROFILE_COUNT - 1, &args->expect_profile)
-                != 0) {
-                return -1;
-            }
-        } else if (strcmp(argv[i], "--ordinary") == 0) {
-            args->ordinary = 1;
-        } else if (strcmp(argv[i], "--hold-ms") == 0 && i + 1 < argc) {
-            if (parse_ms(argv[++i], &args->hold_ms) != 0) {
-                return -1;
-            }
-        } else {
+        if (parse_option(argc, argv, &i, args) != 0) {
             return -1;
         }
     }
@@ -329,8 +341,8 @@ main(int argc, char** argv) {
     schedule_args args;
     if (parse_args(argc, argv, &args) != 0) {
         DSD_FPRINTF(stderr,
-                    "usage: %s FIXTURE.iq.json OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--hold-ms MS] "
-                    "[-- DECODER ARGS...]\n",
+                    "usage: %s FIXTURE.iq.json OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N] "
+                    "[--hold-ms MS] [--ordinary] [-- DECODER ARGS...]\n",
                     argv[0]);
         return 2;
     }

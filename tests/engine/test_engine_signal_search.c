@@ -2128,8 +2128,8 @@ test_code_list_only_while_receiving(dsd_opts* o, dsd_state* s, const dsd_signal_
 
 /* Issue #804: the start profile (F5), the session's P25 site (F6) and its code list. */
 /* The frame sync's signal_search_probe answer (issue #804): 1 only while a visit to an Auto range probes, from the
-   acquisition reset its tune runs (which the hunt keeps) to the evidence that ends the probe (which clears what the hunt
-   kept); 0 for a span tune, a typed or analog range, the probe's analog fallback, a listening, held-off, ended, paused
+   acquisition reset its tune runs (which the hunt keeps) to the evidence that ends the probe (the hunt asks again when
+   its dwell is spent); 0 for a span tune, a typed or analog range, the probe's analog fallback, a listening, held-off, ended, paused
    or stopped visit. */
 static void
 test_probe_hook_answer(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
@@ -2146,15 +2146,16 @@ test_probe_hook_answer(dsd_opts* o, dsd_state* s, const dsd_signal_search_config
     land(o, s);
     assert(status.phase == DSD_SEARCH_IDENTIFYING && dsd_engine_signal_search_probe(o, s) == 1);
     /* Evidence the search refuses ends nothing. */
-    s->sps_hunt_search_order = 1;
     s->input_interrupted = 1;
     dsd_signal_search_note_evidence(s, "DMR", 1, 2, NULL);
-    assert(s->sps_hunt_search_order == 1 && dsd_engine_signal_search_probe(o, s) == 1);
+    assert(status.phase == DSD_SEARCH_IDENTIFYING && dsd_engine_signal_search_probe(o, s) == 1);
     s->input_interrupted = 0;
-    /* Admitted evidence ends the probe, and the order the hunt kept with it. */
+    /* Admitted evidence ends the probe: the hunt's next question gets 0. The engine writes nothing of the hunt's. */
+    s->sps_hunt_search_order = 1;
     dsd_signal_search_note_evidence(s, "DMR", 1, 2, NULL);
-    assert(status.phase == DSD_SEARCH_LISTENING && s->sps_hunt_search_order == 0);
-    assert(dsd_engine_signal_search_probe(o, s) == 0);
+    assert(status.phase == DSD_SEARCH_LISTENING && dsd_engine_signal_search_probe(o, s) == 0);
+    assert(s->sps_hunt_search_order == 1);
+    s->sps_hunt_search_order = 0;
     /* Left at Skip: the span tune after it answers 0. */
     act(o, s, DSD_SEARCH_ACTION_SKIP);
     assert(status.hit.ended && reset_probe_answer == 0 && dsd_engine_signal_search_probe(o, s) == 0);

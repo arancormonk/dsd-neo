@@ -4712,7 +4712,7 @@ frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* s
 static int
 frame_sync_sps_hunt_unlocked_next_index(const dsd_opts* opts, const dsd_state* state) {
     /* A Signal search probe identifying an Auto detection steps in the search order (issue #804); its answer was kept
-       when this profile was adopted, and evidence clears it. */
+       when this profile was adopted and asked again when its dwell was spent. */
     if (state->sps_hunt_search_order) {
         const int search_idx = frame_sync_sps_hunt_search_next_index(opts, state->sps_hunt_idx);
         if (search_idx >= 0) {
@@ -4796,7 +4796,15 @@ frame_sync_no_sync_sps_hunt_expire(const dsd_opts* opts, dsd_state* state) {
 
 int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    const int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    if (state->sps_hunt_counter >= dwell && state->sps_hunt_search_order) {
+        /* A Signal search probe's dwell is spent: ask again whether the probe still runs (issue #804). Evidence may have
+           ended it since the profile was adopted; the carrier that confirmed is then owed the ordinary dwell, and the
+           step after it the ordinary order. One question per expiry, never per symbol: the answer clears the flag or
+           the step that follows samples it again. */
+        frame_sync_sample_search_order(opts, state);
+        dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    }
     if (state->sps_hunt_counter < dwell) {
         return frame_sync_p25p1_cqpsk_trial_half_dwell(opts, state, dwell);
     }

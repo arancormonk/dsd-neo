@@ -694,11 +694,9 @@ dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protoco
         return;
     }
     c->activity = dsd_decode_now_mono_ms();
+    /* The frame sync's signal_search_probe answer is 0 from here: the hunt asks again when its dwell is spent, so a
+       carrier that just confirmed keeps its profile for the ordinary dwell (issue #804). */
     c->probing = 0;
-    /* The probe is over: the hunt goes back to its ordinary order and dwell now, not at its next step, so a carrier
-       that just confirmed keeps its profile for the full dwell (issue #804). The decoder's state is never const; the
-       evidence hook takes it so because protocols report from their read paths. */
-    ((dsd_state*)state)->sps_hunt_search_order = 0U;
     c->status.hit.confirmed = 1;
     c->status.hit.unresolved = 0;
     search_identified_protocol(c, state, protocol);

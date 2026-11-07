@@ -1343,8 +1343,9 @@ struct dsd_state {
     int sps_hunt_idx;
     /* 1 while a Signal search probe identifies an Auto detection (issue #804): the unlocked hunt then steps in the
      * search order and spends the search dwell (dsd_frame_sync_sps_hunt_dwell_passes()). The hunt samples
-     * dsd_frame_sync_hook_signal_search_probe() into it when it changes profile or resets its acquisition, never per
-     * symbol; the engine clears it when evidence ends the probe, so a listening visit gets the full dwell at once. */
+     * dsd_frame_sync_hook_signal_search_probe() into it when it changes profile or resets its acquisition, and again
+     * when a dwell it shortened is spent, never per symbol: a probe that evidence ended since leaves the carrier that
+     * confirmed its ordinary dwell, and the next step the ordinary order. */
     uint8_t sps_hunt_search_order;
     /* Parity toggle for the P25p1 modulation probe: which modulation the next hunt re-entry
      * into the 4800/4-level profile watches. Zero-init keeps the first re-entry on C4FM.

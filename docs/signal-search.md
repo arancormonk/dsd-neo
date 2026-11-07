@@ -60,17 +60,21 @@ the selected profile. An Auto probe tries the symbol profiles in the order that
 reaches the common systems first: 4800 symbols/s four-level (P25 Phase 1, DMR,
 NXDN96, YSF, M17) for about 1.1 seconds, 6000 symbols/s (P25 Phase 2) for 0.3
 seconds, held for as long as Phase 2 bursts keep arriving, then 2400 symbols/s
-(NXDN48, dPMR) for 1.1 seconds, 9600 symbols/s (ProVoice) and 4800 symbols/s binary
-(D-STAR). A profile that decodes frames keeps them coming, and the first confirmed
-protocol ends the probe; the rest of the visit runs the ordinary rotation. The
-three-second default leaves time for P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and
-M17: in replays landing at several points of a transmission, Phase 1 control
-channels, DMR, NXDN96, YSF and M17 confirmed within 0.6 seconds, Phase 1 voice within
-1.6, and P25 Phase 2 (with its scrambling code recovered on the channel), NXDN48 joined
-mid-call and dPMR within 2.4 seconds. ProVoice needs about five seconds and D-STAR about seven, so a
-range that should identify them needs a longer probe. Ranges saved before this
-release keep their two-second probe, which leaves P25 Phase 2 and NXDN48 joined
-mid-call often unresolved: raise them to three seconds or more in the range editor.
+(NXDN48, dPMR) for about 2.3 seconds, 9600 symbols/s (ProVoice) from about 3.7
+seconds and 4800 symbols/s binary (D-STAR) after that. A profile that decodes
+frames is held while they keep coming, and the first confirmed protocol ends the
+probe; the rest of the visit runs the ordinary rotation. The three-second default
+leaves time for P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and M17. In replays of the
+test captures landing at several points of a transmission, Phase 1 control
+channels, DMR, NXDN96, YSF and M17 confirmed within 0.6 seconds and Phase 1 voice
+usually within 1.6 (one capture whose first frames are not decodable confirmed
+only on a later landing); P25 Phase 2 (with its scrambling code recovered on the
+channel), NXDN48 joined mid-call and dPMR confirmed within 2.4 seconds, and real
+Phase 2 voice with added noise within 2.9. ProVoice needs about five seconds and
+D-STAR about seven, so a range that should identify them needs a longer probe.
+Ranges saved before this release keep their two-second probe, which leaves P25
+Phase 2 and NXDN48 joined mid-call often unresolved: raise them to three seconds or
+more in the range editor.
 
 A detection displays frequency and measured strength immediately, while its
 listening tune is still pending. While listening, the screen also shows the

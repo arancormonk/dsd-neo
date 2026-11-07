@@ -117,8 +117,8 @@ int dsd_frame_sync_hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_stat
 /** Whether a Signal search probe is identifying an Auto detection (issue #804): a visit landed on a range with Auto
  * identification, no protocol evidence yet, the probe time still running. While one is, the unlocked frame-sync SPS
  * hunt tries 4800/4 -> 6000/4 -> 2400/4 -> 9600/2 -> 4800/2, so P25 Phase 2 comes inside a short probe, and spends a
- * shorter dwell on 6000/4. 0 when nothing is installed. The hunt asks only when it steps or resets its acquisition,
- * and keeps the answer in dsd_state::sps_hunt_search_order, which the engine clears when evidence ends the probe. */
+ * shorter dwell on 6000/4. 0 when nothing is installed. The hunt asks only when it steps, resets its acquisition or
+ * spends a probe's dwell, never per symbol, and keeps the answer in dsd_state::sps_hunt_search_order. */
 int dsd_frame_sync_hook_signal_search_probe(const dsd_opts* opts, const dsd_state* state);
 
 /** Take the P25 SM tick guard on the decoder thread for a P25p1 chain step (frame_sync_p25p1_compare.c), unless the
