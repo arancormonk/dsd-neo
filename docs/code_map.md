@@ -8363,6 +8363,25 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   after such a segment. So nothing of the old channel's PDU acts on the new assignment, and `p25_p2_frame_reset()`
   zeroing the dispatch's `ts_counter` can no longer replay timeslots as phantom 4V bursts. The DUID-13 LCCH timeout
   re-evaluates its release verdict after the burst's MAC PDU (`p25p2_duid_lcch_release_due()`).
+- Signalling checks (issue #804). A FACCH (DUID 9/15), SACCH (3/12) or LCCH (4/13) gets a pure verdict
+  (`p25p2_acch_verdict`, `p25p2_frame_internal.h`) before anything acts on it: its kind, whether RS passed, how many
+  soft erasures the accepted decode used, and whether its real MAC checksum passed (`p25p2_acch_checksum_ok()`: CRC-12
+  over 144 bits for FACCH, 168 for SACCH; CRC-16 over 164 for LCCH), whatever `-F` says. The retry ladder
+  (`p25p2_acch_decode_ranked()`) erases the punctured symbols, then one more of the least reliable sent symbols at a
+  time, at most 4 for FACCH and 6 for SACCH: past those a random word passes RS somewhere on the ladder more often than
+  1e-6 per burst (the bound and its numbers are next to the constants). It keeps the first rung whose word passes RS
+  and its checksum, so a miscorrection the CRC rejects no longer hides a later rung that recovers the burst. When no
+  rung passes both, the first word that passed RS is dispatched, as before the checksum joined the ladder, so the
+  XCCH's own CRC check and `-F`'s fallback see what they always saw: a FACCH rejects every failed CRC, a SACCH's
+  PTT/END/ACTIVE need a CRC that passed, and only a MAC_SIGNAL whose second octet is zero (and under `-F` an LCCH
+  MAC_SIGNAL whose second octet is not) reaches `process_MAC_VPDU_crc()` with its failed verdict. Only a verdict with
+  RS, no soft erasures and the checksum proves the seed (scrambled bursts, `p25p2_note_seed_proven()`, after the
+  checksum and before the MAC PDU) and marks the carrier two-slot (`p25p2_note_tdma_carrier()`).
+- Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose
+  decode failed cannot make the next FACCH or SACCH of the window an LCCH (its CRC-16 path rejected valid bursts).
+  The MAC opcode is no service option: no burst writes it into `dmr_so`/`dmr_soR`, which carry the service options
+  voice classification reads. DUID 10 (a scrambled data channel burst, DATCH) is a known burst the decoder does not
+  read, not a DUID error, so two of them no longer abort a window before its SACCHs.
 - MAC_IDLE carrying a grant. The SACCH and FACCH MAC_IDLE handlers observe the IDLE, then dispatch its payload, then
   emit it. A grant the payload carries for the IDLE's slot is newer than the IDLE and keeps its policy route, service
   options and crypto state. The SM numbers each slot grant stamp from one counter (`p25_sm_slot_ctx_t.grant_seq`), and
@@ -8384,8 +8403,10 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   discards the playout before `p25_p2_frame_reset()`.
 
 Tests: `P25_P2_VOICE_OUTPUT` (end to end through the DUID dispatch, against a tagging stand-in vocoder),
-`P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_VPDU_GRANTS`,
-`P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`.
+`P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_ACCH_VERDICT` (windows
+built as a site sends them, `tests/protocol/p25/p25p2_burst_builder.h`, through the real RS, CRC and XCCH: the
+verdict, the ladder and its ceilings, `-F`, the burst kind, `dmr_so`, DUID 10), `P25_P2_VPDU_GRANTS`,
+`P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`, `DECODE_IQ_P25P2_CC` (no DUID 10 error on the real-air capture).
 
 Call frequency and access-code provenance (issue #575). A call's canonical `frequency_hz` and the live access codes
 (`dmr_color_code`, `dpmr_color_code`, `nxdn_last_ran`) are read as describing the carrier the call is decoded on, so:
@@ -8567,15 +8588,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),
     `NXDN_ELEMENT_BOUNDS`, `NXDN_FRAME_ROUTING`, `ENGINE_TRUNK_SCAN`, `ENGINE_NO_CARRIER_RESET`.
 - `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
-  received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
-  scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
+  received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its checks (a scrambled FACCH,
+  SACCH or LCCH whose Reed-Solomon decode and MAC checksum passed, `p25p2_process_facch()`/`p25p2_process_sacch()`
+  through the signalling verdict, since the FACCH code alone let about one wrong seed's burst in a thousand through
+  (issue #804); or an ESS whose Reed-Solomon check passed, `p25p2_process_ess()`; all through
   `p25p2_note_seed_proven()`; it proves the seed `p25p2_process_frame_scramble()` descrambled the buffered superframe
   with, so the seed in force is proven only while it is still that one: a broadcast decoded from an earlier burst of the
   same buffer may have replaced it; when the proof is first set it renders both slots before the burst's MAC PDU is
   dispatched, since that burst may carry the MAC_END_PTT that ends its call and an ended call no longer reads the live
-  NAC), or a network status broadcast that passed its CRC named it
-  (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder,
-  which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
+  NAC; the checksum is checked first and `-F` relaxes none of it), or a network status broadcast that passed its CRC
+  named it (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU
+  decoder, which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
   (`process_MAC_VPDU_crc()`): its grants and voice still act, but its system broadcasts change no system state
   (`p25p2_vpdu_system_tables_writable()`): the network status's WACN/SYSID/NAC and control channel anchor, the RFSS
   status's site, LRA and IDEN trust promotion, the IDEN updates (0x73/0x74/0x7D/0xF3) with their trust and the
@@ -8588,8 +8611,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`p25_sm_forget_selected_site()`) nor the no-carrier cleanup after generic trunk activity
   (`no_carrier_clear_stale_p25_return_hints_after_generic_activity()`) clears it; both still drop its proof. Every other
   proof needs a Reed-Solomon decode that succeeded with its parity check intact, which no option relaxes: a FACCH or
-  SACCH that needed the soft-erasure retry, or an ESS that needed `p25p2_ess_decode_with_soft_erasures()`'s erasures,
-  still decodes for its content but proves nothing, since erasures spend the code's check (the shortened RS(63,35)
+  SACCH that needed the soft-erasure retry (at most 4 or 6 extra erasures, see the P25 Phase 2 voice dispatch), or an
+  ESS that needed `p25p2_ess_decode_with_soft_erasures()`'s erasures, still decodes for its content but proves nothing,
+  since erasures spend the code's check (the shortened RS(63,35)
   ESS with all 28 parity symbols erased decodes any payload). And a slot's ESS_B that the carrier left
   (`p25_p2_ess_b_stale`, set when the carrier's decoding is forgotten, cleared by the next 4V burst's fragment) is not
   decoded at all: a 2V burst ahead of any 4V burst would read the old carrier's ALG, KID and MI from it, and
@@ -11637,8 +11661,9 @@ Qt Quick frontend (`src/ui/qt`):
   own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
   bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
   RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,
-  SACCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft erasures), or a whole
-  X2-TDMA voice superframe on one carrier with a further X2-TDMA sync word in its places, or one that follows another
+  SACCH, LCCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft erasures; a FACCH,
+  SACCH or LCCH also with its MAC checksum), or a whole X2-TDMA voice superframe on one carrier with a further X2-TDMA
+  sync word in its places, or one that follows another
   whole superframe on that carrier with no hunt gap (its sync word ends exactly 24 symbols after the last one ended,
   `dsd_state::x2tdma_superframe_*`, dropped by an acquisition reset), which is how direct mode, whose other timeslot
   carries no sync, proves it (X2-TDMA has no FEC to check). A sync loss (`noCarrier()`) keeps it.

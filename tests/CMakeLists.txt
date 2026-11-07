@@ -10187,6 +10187,43 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_p2_rs_shortened PRIVATE dsd-neo_fec)
 add_test(NAME P25_P2_RS_SHORTENED COMMAND dsd-neo_test_p25_p2_rs_shortened)
 
+# P25 P2 FACCH/SACCH/LCCH checksum verdict through the real RS, CRC and XCCH handlers (issue #804)
+add_executable(
+    dsd-neo_test_p25_p2_acch_verdict
+    protocol/p25/test_p25_p2_acch_verdict.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_acch_verdict
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real XCCH and frame processing reach the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_acch_verdict
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_acch_verdict
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+    )
+endif()
+add_test(NAME P25_P2_ACCH_VERDICT COMMAND dsd-neo_test_p25_p2_acch_verdict)
+
 # P25 P1 trunk SM core
 add_executable(dsd-neo_test_p25_p1_trunk_sm protocol/p25/test_p25_p1_trunk_sm.c)
 target_include_directories(
@@ -17775,7 +17812,15 @@ if(DSD_HAS_RADIO)
         ""
         6
     )
-    dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
+    # Every burst of this capture but its SACCHs is a scrambled data channel burst (DUID 10), a known kind: none is a
+    # DUID error, which would abort its window before the SACCHs that follow it (issue #804).
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P2_CC
+        p25p2_cc
+        -f2
+        "P25p2 SACCH"
+        "DUID ERR 10"
+    )
     # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_VOICE
