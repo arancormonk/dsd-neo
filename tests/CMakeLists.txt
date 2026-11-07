@@ -18004,6 +18004,22 @@ if(DSD_HAS_RADIO)
     # A -mq lock (Settings > Extra decoder arguments) keeps CQPSK on 4800/4; the unlocked hunt reads this capture too.
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC_LOCKED p25p1_cqpsk_cc P25 0 3000 -fa -mq)
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC p25p1_cqpsk_cc P25 0 3000 -fa)
+    # A fixture the replay refuses names no scratch file, and the run ends on the refusal with nothing removed that it
+    # did not name.
+    add_test(
+        NAME DECODE_IQ_SEARCH_SCHEDULE_MISSING_FIXTURE
+        COMMAND
+            dsd-neo_test_search_schedule_replay
+            "${CMAKE_CURRENT_BINARY_DIR}/search_schedule_missing.iq.json" 0 3000
+    )
+    set_tests_properties(
+        DECODE_IQ_SEARCH_SCHEDULE_MISSING_FIXTURE
+        PROPERTIES
+            LABELS "iq-decode"
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION
+                "SEARCH SCHEDULE: [^\n]*search_schedule_missing\\.iq\\.json"
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48_DEFAULT nxdn48 "" "Src=901")

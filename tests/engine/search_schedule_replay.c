@@ -346,8 +346,10 @@ main(int argc, char** argv) {
         return 2;
     }
     char dir[1024];
-    char json_path[1200];
-    char data_path[1200];
+    /* Empty until write_landing_fixture() names them: a fixture it refuses names neither, and the cleanup removes only
+       what was named. */
+    char json_path[1200] = "";
+    char data_path[1200] = "";
     if (dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_search_schedule") == NULL) {
         DSD_FPRINTF(stderr, "SEARCH SCHEDULE: cannot make a scratch directory\n");
         return 1;
@@ -356,8 +358,12 @@ main(int argc, char** argv) {
     if (rc == 0) {
         rc = run_engine(&args, json_path);
     }
-    (void)remove(json_path);
-    (void)remove(data_path);
+    if (json_path[0] != '\0') {
+        (void)remove(json_path);
+    }
+    if (data_path[0] != '\0') {
+        (void)remove(data_path);
+    }
     (void)dsd_test_rmdir(dir);
     if (rc != 0) {
         DSD_FPRINTF(stderr, "SEARCH SCHEDULE FAIL: the run returned %d\n", rc);
