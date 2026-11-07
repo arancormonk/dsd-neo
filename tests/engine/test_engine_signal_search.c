@@ -27,6 +27,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -1684,6 +1685,125 @@ test_auto_visit_starts_on_4800_c4fm(dsd_opts* o, dsd_state* s, const dsd_signal_
     put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
 }
 
+/* The front end a session starts on: its output rate now, whether it runs the analog family (or has a family switch
+   outstanding), and where a retune that carries the digital family lands, on the FSK discriminator and on the CQPSK
+   chain. DSD_NEO_CQPSK set lands CQPSK for a tune whose CQPSK state is no target's own choice. */
+static struct {
+    unsigned int live_hz, fsk_hz, cqpsk_hz;
+    int analog, env_cqpsk;
+} front_end;
+
+static unsigned int
+front_end_live_hz(void) {
+    return front_end.live_hz;
+}
+
+static int
+front_end_family_landing_after_pending(void) {
+    return front_end.analog;
+}
+
+static unsigned int
+front_end_rate_for_family(int f, int cqpsk_enable, int symbol_rate_hz, int cqpsk_explicit) {
+    if (f != DSD_RX_FAMILY_DIGITAL || symbol_rate_hz <= 0) {
+        return 0U;
+    }
+    const int cqpsk = cqpsk_explicit ? cqpsk_enable : (cqpsk_enable || front_end.env_cqpsk);
+    return cqpsk ? front_end.cqpsk_hz : front_end.fsk_hz;
+}
+
+/* Start sessions on a front end that answers with these rates through the stream metrics hooks. */
+static void
+use_front_end(unsigned int live_hz, unsigned int fsk_hz, unsigned int cqpsk_hz, int analog, int env_cqpsk) {
+    front_end.live_hz = live_hz;
+    front_end.fsk_hz = fsk_hz;
+    front_end.cqpsk_hz = cqpsk_hz;
+    front_end.analog = analog;
+    front_end.env_cqpsk = env_cqpsk;
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.output_rate_hz = front_end_live_hz;
+    hooks.family_landing_after_pending = front_end_family_landing_after_pending;
+    hooks.output_rate_for_family = front_end_rate_for_family;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+}
+
+/* Every Auto visit lands the digital family with C4FM, the search's own choice, so it is timed at the rate that landing
+   runs, never the rate the session's front end runs at Start (issue #804): a CQPSK session at 24 kHz whose FSK stream
+   resamples to 48 kHz (digital_resample=on) lands every visit on 4800/4 at 10 samples per symbol, and the frame-sync
+   hunt then never reads its 5 as 9600/2. */
+static void
+test_auto_visit_timed_for_its_landing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    /* live, FSK and CQPSK landing rates, analog at Start, DSD_NEO_CQPSK; the session's timing; the visit's sps/center. */
+    static const struct {
+        unsigned int live_hz, fsk_hz, cqpsk_hz;
+        int analog, env_cqpsk;
+        int held[4];
+        int sps, center;
+    } starts[] = {
+        /* CQPSK at 24 kHz, the FSK stream resampled to 48 kHz. */
+        {24000, 48000, 24000, 0, 0, {DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 5, 2, 1}, 10, 4},
+        /* The same with DSD_NEO_CQPSK set: the visit's C4FM is the search's own choice and stands over it. */
+        {24000, 48000, 24000, 0, 1, {DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 5, 2, 1}, 10, 4},
+        /* CQPSK at 24 kHz with no resampling: FSK lands at 24 kHz too. */
+        {24000, 24000, 24000, 0, 0, {DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 5, 2, 1}, 5, 2},
+        /* The analog monitor at 48 kHz at Start; the digital family lands at the 24 kHz complex rate. */
+        {48000, 24000, 24000, 1, 0, {DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0}, 5, 2},
+    };
+
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); ++i) {
+        use_front_end(starts[i].live_hz, starts[i].fsk_hz, starts[i].cqpsk_hz, starts[i].analog, starts[i].env_cqpsk);
+        const int* held = starts[i].held;
+        const dsd_signal_search_config one = tag_config(config, 81 + (uint64_t)i, 1, 0);
+        o->mod_cli_lock = 0;
+        put_timing(s, held[0], held[1], held[2], held[3]);
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        assert(status.phase == DSD_SEARCH_IDENTIFYING);
+        assert(retune_family.family == DSD_RX_FAMILY_DIGITAL && retune_family.cqpsk_explicit == 1);
+        assert(timing_is(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, starts[i].sps, starts[i].center, 0));
+        put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_9600_2, 5, 2, 0);
+        next_visit(o, s);
+        assert(status.phase == DSD_SEARCH_IDENTIFYING);
+        assert(timing_is(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, starts[i].sps, starts[i].center, 0));
+        stop_tag_session(o, s);
+        assert(timing_is(s, held[0], held[1], held[2], held[3]));
+    }
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    DSD_MEMSET(&front_end, 0, sizeof(front_end));
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+}
+
+/* A typed range's visit lands the digital family the same way, with the row's own modulation: the row is timed for
+   that landing too, not for the rate the session's CQPSK chain runs at when the row is entered. */
+static void
+test_typed_visit_timed_for_its_landing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    /* The range's digital value (P25, DMR, NXDN48); the visit's profile, sps, center and modulation at 48 kHz. */
+    static const int typed[3][5] = {
+        {2, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0},
+        {3, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 2},
+        {5, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0},
+    };
+    use_front_end(24000, 48000, 24000, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        const dsd_signal_search_config one = tag_config(config, 85 + (uint64_t)i, typed[i][0], 0);
+        o->mod_cli_lock = 0;
+        put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 5, 2, 1);
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        assert(status.phase == DSD_SEARCH_IDENTIFYING);
+        assert(retune_family.family == DSD_RX_FAMILY_DIGITAL && retune_family.cqpsk_explicit == 1);
+        assert(timing_is(s, typed[i][1], typed[i][2], typed[i][3], typed[i][4]));
+        next_visit(o, s);
+        assert(timing_is(s, typed[i][1], typed[i][2], typed[i][3], typed[i][4]));
+        stop_tag_session(o, s);
+        assert(timing_is(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 5, 2, 1));
+    }
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    DSD_MEMSET(&front_end, 0, sizeof(front_end));
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+}
+
 static void
 test_locked_tuple_kept(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     /* -mq: CQPSK on 4800/4. -m2: CQPSK on 6000/4, the P25 Phase 2 profile pinned. */
@@ -2266,6 +2386,8 @@ test_probe_hook_answer(dsd_opts* o, dsd_state* s, const dsd_signal_search_config
 static void
 test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     test_auto_visit_starts_on_4800_c4fm(o, s, config);
+    test_auto_visit_timed_for_its_landing(o, s, config);
+    test_typed_visit_timed_for_its_landing(o, s, config);
     test_locked_tuple_kept(o, s, config);
     test_code_does_not_leak_between_visits(o, s, config);
     test_iden_before_nsb_restored(o, s, config);

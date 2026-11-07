@@ -67,9 +67,16 @@ Generated (do not edit/commit):
     voice frame is read, and Stop restores the session's own flags (`ENGINE_SIGNAL_SEARCH`).
     An Auto visit restores that baseline's timing, so without a `-m` lock (`mod_cli_lock`) Start sets it to the
     4800/4 C4FM profile (`search_start_profile()`: `sps_hunt_idx`, `samplesPerSymbol` and `symbolCenter` for 4800
-    sym/s at `dsd_scan_mode_symbol_timing_rate_hz()`, `rf_mod` 0) whatever the session's hunt held or learned; a
-    locked baseline keeps its whole tuple (`-mq` its CQPSK, `-m2` its 6000/4 P25 Phase 2 pin), and Stop restores the
-    session's own (issue #804, `ENGINE_SIGNAL_SEARCH`).
+    sym/s, `rf_mod` 0) whatever the session's hunt held or learned; a locked baseline keeps its whole tuple (`-mq` its
+    CQPSK, `-m2` its 6000/4 P25 Phase 2 pin), and Stop restores the session's own (issue #804, `ENGINE_SIGNAL_SEARCH`).
+    Every visit's retune carries the digital family with its CQPSK state as the search's own choice, so it lands at the
+    rate `rtl_stream_output_rate_for_family()` predicts (read through the runtime hook, `search_visit_landing_hz()`),
+    which need not be the rate the front end runs before it: a CQPSK session at the complex rate whose FSK stream
+    resamples, or the analog family. The baseline is timed at that landing rate (the scan mode's timing rate only with
+    no prediction), and so is a typed range's row once `dsd_scan_mode_enter()` has timed it at the live rate
+    (`search_time_typed_visit()`). Timed at the earlier rate, a visit would start at the wrong samples per symbol, and
+    an Auto visit's 5 at 48 kHz reads as 9600/2 rather than 4800/4 (`test_auto_visit_timed_for_its_landing`,
+    `test_typed_visit_timed_for_its_landing`).
     The frame sync's `signal_search_probe` hook answers 1 while a visit to an Auto range probes
     (`dsd_engine_signal_search_probe()`: `visit`, `probing`, not stopping, the hit not ended, `digital == 1`), so a
     visit's tune, whose acquisition reset samples the answer, starts the hunt in the search order; admitted evidence

@@ -25,6 +25,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/signal_search.h>
@@ -264,6 +265,34 @@ search_open_audio(const search_coord* c, dsd_opts* opts, const dsd_state* state,
     return analog ? dsd_audio_ensure_analog_output(opts) : dsd_audio_ensure_digital_output(opts, state);
 }
 
+/* The rate a visit lands at with @p symbol_rate_hz and @p cqpsk: its retune carries the digital family with that CQPSK
+   state as the search's own choice (search_prepare_profile()), and the stream lands it from the same inputs it predicts
+   this by, the forced capture rate and digital_resample included. That can be a rate the front end does not run before
+   the landing, on the analog family or on CQPSK at the complex rate while the FSK stream resamples
+   (rtl_stream_output_rate_for_family()). 0 with no prediction. */
+static int
+search_visit_landing_hz(int symbol_rate_hz, int cqpsk) {
+    return (int)dsd_rtl_stream_metrics_hook_output_rate_for_family(DSD_RX_FAMILY_DIGITAL, cqpsk ? 1 : 0, symbol_rate_hz,
+                                                                   1);
+}
+
+/* A typed digital range's row (@p mode) is timed as scan mode enters it, at the rate the front end runs then unless a
+   family switch is already outstanding, which a visit's own retune is not yet: time it for the landing that retune
+   makes. An Auto row runs the baseline's timing (search_start_profile()); an analog row has no symbol clock. */
+static void
+search_time_typed_visit(const dsd_opts* opts, dsd_state* state, dsd_scan_mode mode) {
+    if (mode == DSD_SCAN_MODE_INHERIT || dsd_scan_mode_is_analog(mode)) {
+        return;
+    }
+    const dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
+    const int landing_hz =
+        profile.symbol_rate_hz > 0 ? search_visit_landing_hz(profile.symbol_rate_hz, state->rf_mod == 1) : 0;
+    if (landing_hz > 0) {
+        state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, landing_hz);
+        state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    }
+}
+
 static int
 search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int analog) {
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
@@ -275,6 +304,7 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
     if (dsd_scan_mode_enter(opts, state, mode)) {
         return -1;
     }
+    search_time_typed_visit(opts, state, mode);
     dsd_scan_option_values values;
     DSD_MEMSET(&values, 0, sizeof(values));
     values.present = DSD_SCAN_OPT_SQUELCH | DSD_SCAN_OPT_TONE;
@@ -465,13 +495,14 @@ search_coord_free(void* ptr) {
 /* Every Auto visit starts on the 4800/4 C4FM profile (issue #804): a visit restores the baseline Start captures, where
    the session's hunt may have stood on any profile, or with CQPSK learned. A -m lock is the user's own timing and
    modulation and stays whole: -mq keeps CQPSK, -m2 its 6000/4 P25 Phase 2 pin. Timed as the hunt times a profile, at
-   the rate the digital family runs at. */
+   the rate each visit lands at; with no prediction, the scan mode's timing rate. */
 static void
 search_start_profile(const dsd_opts* opts, dsd_state* state) {
     if (opts->mod_cli_lock) {
         return;
     }
-    const int rate_hz = dsd_scan_mode_symbol_timing_rate_hz(opts, state, 4800, 0);
+    const int landing_hz = search_visit_landing_hz(4800, 0);
+    const int rate_hz = landing_hz > 0 ? landing_hz : dsd_scan_mode_symbol_timing_rate_hz(opts, state, 4800, 0);
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, 4800, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
