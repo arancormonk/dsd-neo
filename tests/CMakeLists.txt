@@ -23187,6 +23187,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_signal_search.c
     ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+    ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
 )
 target_include_directories(
     dsd-neo_test_app_signal_search_provenance
@@ -23199,6 +23200,21 @@ target_link_libraries(
 add_test(
     NAME APP_SIGNAL_SEARCH_PROVENANCE
     COMMAND dsd-neo_test_app_signal_search_provenance
+)
+
+# Issue #802 B1: the Signal search family name of every sync type, in every build.
+add_executable(
+    dsd-neo_test_engine_signal_search_protocol
+    engine/test_engine_signal_search_protocol.c
+    ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
+)
+target_link_libraries(
+    dsd-neo_test_engine_signal_search_protocol
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME ENGINE_SIGNAL_SEARCH_PROTOCOL
+    COMMAND dsd-neo_test_engine_signal_search_protocol
 )
 
 # The native store keeps a failed history or avoid write owed until that file saves.
@@ -23251,6 +23267,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search
         engine/test_engine_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )
@@ -23271,6 +23288,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search_scene
         engine/test_engine_signal_search_scene.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )

@@ -83,33 +83,6 @@ dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const cha
     DSD_SNPRINTF(notice, sizeof(notice), "%s", message);
 }
 
-/* The engine's family names, as ENGINE_SIGNAL_SEARCH pins them for the real mapper. */
-const char*
-dsd_engine_signal_search_sync_protocol(int synctype) {
-    if (DSD_SYNC_IS_DMR(synctype)) {
-        return "DMR";
-    }
-    if (DSD_SYNC_IS_P25(synctype)) {
-        return "P25";
-    }
-    if (DSD_SYNC_IS_NXDN(synctype)) {
-        return "NXDN";
-    }
-    if (DSD_SYNC_IS_DPMR(synctype)) {
-        return "dPMR";
-    }
-    if (DSD_SYNC_IS_M17(synctype)) {
-        return "M17";
-    }
-    if (DSD_SYNC_IS_YSF(synctype)) {
-        return "YSF";
-    }
-    if (DSD_SYNC_IS_DSTAR(synctype)) {
-        return "D-STAR";
-    }
-    return NULL;
-}
-
 int
 dsd_app_command_submit(int id, const void* data, size_t size) {
     (void)id;
@@ -297,6 +270,7 @@ main(void) {
     status.hit.hit_id = 4;
     DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "P25");
     DSD_MEMSET(&call, 0, sizeof(call));
+    call.phase = DSD_CALL_PHASE_IDLE; // no call record: the NAC is the carrier's
     state->synctype = DSD_SYNC_P25P1_POS;
     state->nac = 0x293;
     observer(&status, &status.hit, observer_user);

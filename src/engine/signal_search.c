@@ -661,32 +661,6 @@ dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_si
     }
 }
 
-const char*
-dsd_engine_signal_search_sync_protocol(int synctype) {
-    if (DSD_SYNC_IS_DMR(synctype)) {
-        return "DMR";
-    }
-    if (DSD_SYNC_IS_P25(synctype)) {
-        return "P25";
-    }
-    if (DSD_SYNC_IS_NXDN(synctype)) {
-        return "NXDN";
-    }
-    if (DSD_SYNC_IS_DPMR(synctype)) {
-        return "dPMR";
-    }
-    if (DSD_SYNC_IS_M17(synctype)) {
-        return "M17";
-    }
-    if (DSD_SYNC_IS_YSF(synctype)) {
-        return "YSF";
-    }
-    if (DSD_SYNC_IS_DSTAR(synctype)) {
-        return "D-STAR";
-    }
-    return NULL;
-}
-
 /* "ALG 84 · KID 0001" with only the parts the call received over the air, "Encrypted" when its classification says
    encrypted, neither was received and checked signalling of the call itself says encrypted (enc_received: never a
    forced, inferred or key-loaded classification), "" for a call not known to be encrypted. */

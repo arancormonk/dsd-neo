@@ -111,9 +111,9 @@ Generated (do not edit/commit):
     record's, copied whole by `dsd_engine_signal_search_call()` (installed as the runtime call
     hook) from the slot a call note names, under the same receiving gate: the record must be
     ACTIVE, CRC-clean (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN,
-    dPMR, M17, YSF, D-STAR: `dsd_engine_signal_search_sync_protocol()`, public and in radio-off
-    builds, gives a sync type's name, NULL for ProVoice, EDACS, X2-TDMA, TETRA, analog and
-    none). The tuple is the most recent call on the hit: a note for the tuple's own call
+    dPMR, M17, YSF, D-STAR: `dsd_engine_signal_search_sync_protocol()` in
+    `signal_search_protocol.c`, public and in radio-off builds, gives a sync type's name, NULL
+    for ProVoice, EDACS, X2-TDMA, TETRA, analog and none; `ENGINE_SIGNAL_SEARCH_PROTOCOL`). The tuple is the most recent call on the hit: a note for the tuple's own call
     (slot and epoch) updates it, a call that began no earlier (`started_m`) replaces it whole
     on either slot, and an older call still running on the other slot leaves it, so two DMR
     slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
