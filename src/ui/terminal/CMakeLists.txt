@@ -61,11 +61,21 @@ endif()
 
 target_include_directories(
     dsd-neo_ui_terminal
-    PUBLIC ${PROJECT_SOURCE_DIR}/include ${CURSES_INCLUDE_DIRS}
+    PUBLIC ${PROJECT_SOURCE_DIR}/include
     PRIVATE
         ${_PUBLIC_INCLUDES}
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${PROJECT_SOURCE_DIR}/src/app_control
+)
+# curses is a system library: its headers stay system headers even when the
+# wide one is in a subdirectory (Debian and Ubuntu's ncursesw/curses.h is a link
+# to the root header). As a plain -I directory, GCC reports warnings inside the
+# curses macros, and GCC 9 then flags a false maybe-uninitialized in
+# mvwaddnstr(), which -Werror makes fatal.
+target_include_directories(
+    dsd-neo_ui_terminal
+    SYSTEM
+    PUBLIC ${CURSES_INCLUDE_DIRS}
 )
 
 target_link_libraries(
