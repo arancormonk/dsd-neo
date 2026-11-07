@@ -101,6 +101,9 @@ typedef struct {
        confirmed first: code recovery tries them on each digital visit (issue #804). Pause and Resume keep them. */
     uint64_t p2_codes[SEARCH_P2_CODES];
     size_t p2_code_count;
+    /* A decoder session ended during a visit: the session's P25 site is put back once its final call snapshots are
+       taken (dsd_engine_signal_search_release_site()). */
+    int site_owed;
 #ifdef USE_RADIO
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
@@ -545,8 +548,9 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         opts->dmr_stereo = 1;
     }
     search_start_profile(opts, state);
-    dsd_p25_site_snapshot_save(state, &c->session_site);
-    if (dsd_scan_mode_begin(opts, state) || dsd_engine_scan_own(state, 1, c, search_coord_free)) {
+    /* A session site saved without its channel map would empty the map at every departure: no search then. */
+    if (dsd_p25_site_snapshot_save(state, &c->session_site) || dsd_scan_mode_begin(opts, state)
+        || dsd_engine_scan_own(state, 1, c, search_coord_free)) {
         dsd_scan_mode_leave(opts, state);
         dsd_scan_settings_restore(&c->saved, opts, state);
         search_coord_free(c);
@@ -1547,10 +1551,13 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
     search_cancel_measurements(c);
     search_restore(c, opts, state);
     /* The session's own P25 site, once a boundary has closed the reception (a Stop, an input lost, a pause or a
-       failure). A decoder session ending during a visit keeps the visit's: its final call snapshots follow, and a call
-       still active is labelled with the code proven on its own carrier, never the session's (issue #804). */
+       failure). A decoder session ending during a visit keeps the visit's for now: its final call snapshots follow,
+       and a call still active is labelled with the code proven on its own carrier, never the session's. The engine's
+       teardown puts the session's back after them (dsd_engine_signal_search_release_site(), issue #804). */
     if (c->reception_ended) {
         search_restore_site(c, state);
+    } else {
+        c->site_owed = 1;
     }
     /* The session's frequency is the one the search started from, as after a Stop's restore tune: a session ending
        under the search autosaves its configuration next, which must not keep a visit's frequency. */
@@ -1563,4 +1570,21 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
 #endif
     c->status.phase = DSD_SEARCH_STOPPED;
     search_publish(c, 0);
+}
+
+void
+dsd_engine_signal_search_release_site(dsd_state* state) {
+#ifdef USE_RADIO
+    search_coord* c = state ? search_get(state) : NULL;
+    if (!c || !c->site_owed) {
+        return;
+    }
+    c->site_owed = 0;
+    search_restore_site(c, state);
+    /* The visit's proof was its carrier's; the final no-carrier pass has cleared it, and the session's code was never
+       proven here. */
+    state->p2_cc_verified = 0U;
+#else
+    (void)state;
+#endif
 }

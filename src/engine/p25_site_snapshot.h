@@ -50,9 +50,9 @@ typedef struct dsd_p25_site_snapshot {
     uint64_t trunk_chan_map_seq;
 } dsd_p25_site_snapshot;
 
-/** Save @p state's P25 site identity into @p snapshot, growing its channel map storage as needed (a failed growth
- * saves no channel map and says so). */
-void dsd_p25_site_snapshot_save(const dsd_state* state, dsd_p25_site_snapshot* snapshot);
+/** Save @p state's P25 site identity into @p snapshot, growing its channel map storage as needed. Returns 0, or -1 when
+ * that growth failed: the snapshot then holds no channel map, and the caller says what that means for it. */
+int dsd_p25_site_snapshot_save(const dsd_state* state, dsd_p25_site_snapshot* snapshot);
 /** Put @p snapshot's P25 site identity back on @p state: every field the snapshot holds, the channel map replacing the
  * one on the state. `p2_cc_verified` is left as it is. */
 void dsd_p25_site_snapshot_restore(dsd_state* state, const dsd_p25_site_snapshot* snapshot);

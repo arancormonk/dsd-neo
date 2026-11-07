@@ -193,9 +193,10 @@ recovers another, so only that system's Phase 2 channels decode.
 Each Auto visit starts on the 4800 symbols/s C4FM profile, whatever profile or
 modulation the decoder held when the search started. A modulation lock (`-m`) in the
 decoder's extra arguments is kept as given, and it confines identification to the
-profiles that share its timing: a lock such as `-mq` or `-mc` held on 4800 symbols/s
-never reaches P25 Phase 2, NXDN48, dPMR or ProVoice, and `-m2` holds 6000 symbols/s,
-where only P25 Phase 2 can be identified.
+profiles that share its timing at the receiver's output rate: at the usual 48 kHz, a
+lock such as `-mq` or `-mc` held on 4800 symbols/s never reaches P25 Phase 2, NXDN48,
+dPMR or ProVoice, and `-m2` holds 6000 symbols/s, where only P25 Phase 2 can be
+identified.
 
 A digital detection also shows the site it identified, from checked broadcasts heard
 during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SYSID,

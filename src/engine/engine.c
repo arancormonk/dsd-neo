@@ -4479,6 +4479,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_close_output_files(opts, state);
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
+    /* The final call snapshots are taken: a session that ended during a Signal search visit gets its own P25 site back
+       now, so the band plan export below never writes a visited system's IDEN tables (issue #804). */
+    dsd_engine_signal_search_release_site(state);
     // Before the scan coordinator goes: the parked targets' IDEN tables live in its snapshots.
     if (opts->p25_bandplan_export_file[0] != '\0') {
         const int rows = dsd_engine_p25_bandplan_export(opts, state, opts->p25_bandplan_export_file);

@@ -119,9 +119,12 @@ Generated (do not edit/commit):
     took before its network status is stamped with the code in force), so a hand-set `-X` code or an imported channel
     map comes back and nothing a visit learned reaches the next. The proof (`p2_cc_verified`) is never restored: the
     boundary cleared it, and a code proven on another carrier proves nothing here. A channel map that moved gets a new
-    `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it only once a boundary has closed the
-    reception; a decoder session that ends during a visit keeps the visit's code and proof for the final call
-    snapshots that follow. The coordinator also keeps the session's P25 Phase 2 code list (`p2_codes`, 16, most
+    `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it once a boundary has closed the reception;
+    a decoder session that ends during a visit keeps the visit's code and proof for the final call snapshots that
+    follow, and `dsd_engine_cleanup()` then puts the session's back, unproven, through
+    `dsd_engine_signal_search_release_site()`, before the `--p25-bandplan-export` write, so no visited system's IDEN
+    tables reach the exported band plan. A session site that cannot be saved whole (its channel map's storage) refuses
+    the start. The coordinator also keeps the session's P25 Phase 2 code list (`p2_codes`, 16, most
     recently confirmed first, a repeat moving to the front; Pause and Resume keep it, a new start begins empty):
     `dsd_engine_signal_search_p25p2_code()` (the runtime code hook) adds a code without a reserved field from any
     `dsd_p25p2_code_source` while a visit is receiving, and `dsd_engine_signal_search_p25p2_codes()` (the runtime codes

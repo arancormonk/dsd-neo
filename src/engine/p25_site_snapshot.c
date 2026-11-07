@@ -8,7 +8,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/runtime/log.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -54,16 +53,16 @@ p25_site_snapshot_chan_map_reserve(dsd_p25_site_snapshot* snapshot, size_t neede
  * already the exact sorted set of mapped channels, so this walks it directly rather than
  * scanning 64K slots.
  */
-static void
+static int
 p25_site_snapshot_save_chan_map(const dsd_state* state, dsd_p25_site_snapshot* snapshot) {
+    int rc = 0;
     uint32_t used = state->trunk_chan_map_used_count;
     if (used > (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {
         used = (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE;
     }
     if (used > 0 && p25_site_snapshot_chan_map_reserve(snapshot, (size_t)used) != 0) {
-        LOG_WARN("P25 site snapshot: could not capture %u mapped channels; the channel map will be relearned\n",
-                 (unsigned int)used);
         used = 0;
+        rc = -1;
     }
     for (uint32_t i = 0; i < used; i++) {
         const uint16_t chan = state->trunk_chan_map_used[i];
@@ -72,6 +71,7 @@ p25_site_snapshot_save_chan_map(const dsd_state* state, dsd_p25_site_snapshot* s
     }
     snapshot->trunk_chan_map_used_count = used;
     snapshot->trunk_chan_map_seq = state->trunk_chan_map_seq;
+    return rc;
 }
 
 /*
@@ -109,10 +109,10 @@ p25_site_snapshot_restore_chan_map(dsd_state* state, const dsd_p25_site_snapshot
     state->trunk_chan_map_seq = snapshot->trunk_chan_map_seq;
 }
 
-void
+int
 dsd_p25_site_snapshot_save(const dsd_state* state, dsd_p25_site_snapshot* snapshot) {
     if (!state || !snapshot) {
-        return;
+        return -1;
     }
     snapshot->p2_wacn = state->p2_wacn;
     snapshot->p2_sysid = state->p2_sysid;
@@ -131,7 +131,7 @@ dsd_p25_site_snapshot_save(const dsd_state* state, dsd_p25_site_snapshot* snapsh
     DSD_MEMCPY(snapshot->p25_iden_tdma, state->p25_iden_tdma, sizeof(snapshot->p25_iden_tdma));
     DSD_MEMCPY(snapshot->p25_bandplan_rows, state->p25_bandplan_rows, sizeof(snapshot->p25_bandplan_rows));
     snapshot->p25_bandplan_row_count = state->p25_bandplan_row_count;
-    p25_site_snapshot_save_chan_map(state, snapshot);
+    return p25_site_snapshot_save_chan_map(state, snapshot);
 }
 
 void

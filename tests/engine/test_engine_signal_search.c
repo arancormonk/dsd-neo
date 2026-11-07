@@ -1891,8 +1891,9 @@ test_verified_seed_at_start_not_restored_as_proof(dsd_opts* o, dsd_state* s, con
 }
 
 /* The decoder session ends under the search during a call: the final call snapshots come after the search's shutdown,
-   and no boundary has closed the visit, so its code and proof stay the call's own. Stopped with the input lost, the
-   reception closes first and the session's site comes back unproven. */
+   and no boundary has closed the visit, so its code and proof stay the call's own until the engine's teardown releases
+   the session's site. Stopped with the input lost, the reception closes first and the session's site comes back
+   unproven at once. */
 static void
 test_shutdown_during_active_call(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     dsd_signal_search_config one = tag_config(config, 86, 1, 0);
@@ -1908,6 +1909,13 @@ test_shutdown_during_active_call(dsd_opts* o, dsd_state* s, const dsd_signal_sea
     uint16_t nac = 0;
     assert(dsd_access_code_current(s, DSD_SYNC_P25P2_POS, 0, 0, &kind, &nac) == 1 && nac == (CODE_B & 0xFFFU));
     dsd_signal_search_visit_clear(); // the engine's teardown, after its last close
+    /* Then, before the band plan export, the session's site comes back unproven: no visited system's code or IDEN
+       tables outlive the session. Once. */
+    dsd_engine_signal_search_release_site(s);
+    assert(session_back(s, CODE_A, 0, 0));
+    s->p2_cc = 0x111;
+    dsd_engine_signal_search_release_site(s);
+    assert(s->p2_cc == 0x111);
 
     one = tag_config(config, 87, 1, 0);
     session_site(s, CODE_A, 0, 0);
@@ -1920,6 +1928,10 @@ test_shutdown_during_active_call(dsd_opts* o, dsd_state* s, const dsd_signal_sea
     assert(status.phase == DSD_SEARCH_STOPPED && boundary_code == CODE_B && boundary_proven);
     assert(session_back(s, CODE_A, 0, 0));
     assert(dsd_access_code_current(s, DSD_SYNC_P25P2_POS, 0, 0, &kind, &nac) == 0);
+    /* The Stop put it back already: the teardown owes nothing. */
+    s->p2_cc = 0x111;
+    dsd_engine_signal_search_release_site(s);
+    assert(s->p2_cc == 0x111);
     live = 1;
     session_site(s, 0, 0, 0);
 }

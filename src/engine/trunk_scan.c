@@ -1557,8 +1557,8 @@ trunk_scan_snapshot_chan_lookup(const void* ctx, uint16_t channel) {
 static void
 trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     free(snapshot->trunk_lcn_freq_ext);
-    /* Releases the channel map before the whole snapshot is zeroed; the zeroed site then takes its empty values. */
-    dsd_p25_site_snapshot_clear(&snapshot->site);
+    free(snapshot->site.chan_map_chan);
+    free(snapshot->site.chan_map_freq);
     DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
     dsd_p25_site_snapshot_clear(&snapshot->site);
     snapshot->dmr_mfid = -1;
@@ -1679,7 +1679,11 @@ trunk_scan_restore_enc_lockout_snapshot(dsd_state* state, const dsd_trunk_scan_s
 
 static void
 trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    dsd_p25_site_snapshot_save(state, &snapshot->site);
+    if (dsd_p25_site_snapshot_save(state, &snapshot->site) != 0) {
+        LOG_WARN("trunk scan: could not capture %u mapped channels for the parked target; its "
+                 "channel map will be relearned\n",
+                 (unsigned int)state->trunk_chan_map_used_count);
+    }
     snapshot->p2_cc_verified = state->p2_cc_verified;
     snapshot->trunk_recovery_protocol = state->trunk_recovery_protocol;
     DSD_MEMCPY(snapshot->p25_vc_freq, state->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
