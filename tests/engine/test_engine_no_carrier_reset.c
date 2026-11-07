@@ -7286,6 +7286,24 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     rc |= expect_true("access-codes: trunk scan still forgets the dPMR colour code", state->dpmr_color_code == -1);
     opts->trunk_scan_enabled = 0;
 
+    /* Issue #802: the no-carrier cleanup after generic trunk activity (a DMR sync on a trunking session with no
+       validated P25 owner) drops the Phase 2 proofs with the return hints, and keeps a hand-set seed. */
+    opts->trunk_enable = 1;
+    state->trunk_recovery_protocol = DSD_TRUNK_RECOVERY_UNKNOWN;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->p25_cc_is_tdma = 0;
+    state->p2_hardset = 1;
+    state->p2_cc = 0x123ULL;
+    state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
+    dsd_engine_reset_no_carrier_state(opts, state);
+    rc |= expect_true("access-codes: the generic-activity cleanup ran", state->p25_cc_is_tdma == 2);
+    rc |= expect_true("access-codes: the generic-activity cleanup drops the Phase 2 proofs",
+                      state->p2_cc_verified == 0U && state->p2_proven_nac == -1);
+    rc |= expect_true("access-codes: the generic-activity cleanup keeps the hand-set seed", state->p2_cc == 0x123ULL);
+    opts->trunk_enable = 0;
+    state->p2_hardset = 0;
+
     /* The forget both paths share, which app-control also runs on an accepted retune the user asks for: the DMR
        colour code goes with the confidence lock it pairs with, the NXDN RAN with its stand-in mark, and the Phase 2
        seed's proof without the seed. */

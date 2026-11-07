@@ -74,8 +74,34 @@ test_sync_protocol_names(void) {
     }
 }
 
+/* The family test the observer's access gate and the coordinator's call and access gates share: the sync type's family
+   name is a prefix of the hit's protocol, so NXDN matches NXDN48 and NXDN96; a sync type without a family, another
+   family, an empty or NULL protocol never match. */
+static void
+test_family_matches(void) {
+    assert(dsd_engine_signal_search_family_matches("P25", DSD_SYNC_P25P1_POS));
+    assert(dsd_engine_signal_search_family_matches("P25", DSD_SYNC_P25P2_NEG));
+    assert(dsd_engine_signal_search_family_matches("NXDN48", DSD_SYNC_NXDN_POS));
+    assert(dsd_engine_signal_search_family_matches("NXDN96", DSD_SYNC_NXDN_NEG));
+    assert(dsd_engine_signal_search_family_matches("DMR", DSD_SYNC_DMR_MS_VOICE));
+    assert(dsd_engine_signal_search_family_matches("dPMR", DSD_SYNC_DPMR_FS2_POS));
+    assert(dsd_engine_signal_search_family_matches("M17", DSD_SYNC_M17_LSF_POS));
+    assert(dsd_engine_signal_search_family_matches("YSF", DSD_SYNC_YSF_POS));
+    assert(dsd_engine_signal_search_family_matches("D-STAR", DSD_SYNC_DSTAR_HD_NEG));
+    assert(!dsd_engine_signal_search_family_matches("P25", DSD_SYNC_DMR_BS_VOICE_POS));
+    assert(!dsd_engine_signal_search_family_matches("DMR", DSD_SYNC_DPMR_FS1_POS));
+    assert(!dsd_engine_signal_search_family_matches("dPMR", DSD_SYNC_DMR_BS_DATA_NEG));
+    assert(!dsd_engine_signal_search_family_matches("NXDN48", DSD_SYNC_P25P2_POS));
+    assert(!dsd_engine_signal_search_family_matches("", DSD_SYNC_P25P1_POS));
+    assert(!dsd_engine_signal_search_family_matches(NULL, DSD_SYNC_P25P1_POS));
+    assert(!dsd_engine_signal_search_family_matches("TETRA", DSD_SYNC_TETRA_SB_POS));
+    assert(!dsd_engine_signal_search_family_matches("P25", DSD_SYNC_ANALOG));
+    assert(!dsd_engine_signal_search_family_matches("P25", DSD_SYNC_NONE));
+}
+
 int
 main(void) {
     test_sync_protocol_names();
+    test_family_matches();
     return 0;
 }

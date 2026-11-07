@@ -14,6 +14,8 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -162,6 +164,82 @@ test_ess_proof_notes_the_search(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A call on slot 0 heard on a carrier whose seed 0x456 is in force and proven, the latest proof having named
+   @p proven_nac; its row is rendered. */
+static const Event_History*
+open_call_under_proof(dsd_opts* opts, dsd_state* state, Event_History_I history[2], unsigned long long proven_nac,
+                      uint64_t target) {
+    seed_site(opts, state, 0x456ULL);
+    state->p2_cc_verified = 1U;
+    (void)dsd_state_note_p2_proven_nac(state, proven_nac);
+    DSD_MEMSET(history, 0, 2 * sizeof(history[0]));
+    init_event_history(&history[0], 0, 255);
+    init_event_history(&history[1], 0, 255);
+    state->event_history_s = history;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = target + 1U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(opts, state, 0U);
+    return &history[0].Event_History_Items[0];
+}
+
+static int
+slot0_call_phase(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? (int)call.phase : -1;
+}
+
+/* Issue #802: the slots are rendered again when a burst's proof changes the proven NAC, even with the seed's proof
+   already standing, before the burst's MAC PDU is dispatched. A seed proven by a network status naming it (0x456),
+   then a co-channel broadcast naming 0x293 that a call was heard under, then a burst descrambled with the seed: the
+   call's received NAC changed, so the render ends it as the receive identity's change ends any call (issue #637), with
+   its row reading the NAC it was heard with, and the call the burst's MAC PDU opens reads the seed's. With the proven
+   NAC unchanged, the same burst renders nothing new and the call goes on. */
+static int
+test_ess_proof_renders_the_slots_again(dsd_opts* opts, dsd_state* state) {
+    static Event_History_I history[2];
+    int rc = 0;
+
+    reset_session(opts, state);
+    const Event_History* row = open_call_under_proof(opts, state, history, 0x456ULL, 4100U);
+    rc |= expect_int("same NAC: the row reads it", row->access_code, 0x456);
+    receive_strong_ess(state);
+    p25p2_process_ess(opts, state, 0);
+    rc |= expect_int("same NAC: the call goes on", slot0_call_phase(state), DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("same NAC: the row still reads it", row->access_code, 0x456);
+    state->event_history_s = NULL;
+
+    reset_session(opts, state);
+    row = open_call_under_proof(opts, state, history, 0x293ULL, 4200U);
+    rc |= expect_int("co-channel NAC: the row reads it", row->access_code, 0x293);
+    receive_strong_ess(state);
+    p25p2_process_ess(opts, state, 0);
+    rc |= expect_int("the burst's proof ends the call", slot0_call_phase(state), DSD_CALL_PHASE_ENDED);
+    const Event_History* committed = &history[0].Event_History_Items[1];
+    rc |= expect_int("the ended call's row is committed", (long long)committed->target_id, 4200);
+    rc |= expect_int("the ended call's row reads the NAC it was heard with", committed->access_code, 0x293);
+    const dsd_call_observation next = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 4300U,
+        .policy_target_id = 4300U,
+        .ota_source_id = 4301U,
+    };
+    (void)dsd_call_state_observe(state, &next, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_event_sync_slot(opts, state, 0U);
+    rc |= expect_int("the next call's row is a NAC", row->access_code_kind, DSD_ACCESS_CODE_NAC);
+    rc |= expect_int("the next call's row reads the seed's NAC", row->access_code, 0x456);
+    state->event_history_s = NULL;
+    return rc;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -250,6 +328,7 @@ main(void) {
 
     dsd_signal_search_access_set(capture_access);
     rc |= test_ess_proof_notes_the_search(&opts, &state);
+    rc |= test_ess_proof_renders_the_slots_again(&opts, &state);
     dsd_signal_search_access_set(NULL);
 
     dsd_state_ext_free_all(&state);

@@ -670,8 +670,7 @@ search_access_note_applies(const search_coord* c, const dsd_state* state) {
     if (!c || !search_receiving(c, state) || !c->status.hit.confirmed) {
         return 0;
     }
-    const char* family = dsd_engine_signal_search_sync_protocol(state->synctype);
-    return family && strncmp(c->status.hit.protocol, family, strlen(family)) == 0;
+    return dsd_engine_signal_search_family_matches(c->status.hit.protocol, state->synctype);
 }
 
 void
@@ -729,7 +728,7 @@ search_call_admit(const search_coord* c, const dsd_state* state, uint8_t slot, d
     }
     const char* protocol = dsd_engine_signal_search_sync_protocol(record->protocol);
     const dsd_signal_search_hit* hit = &c->status.hit;
-    if (!protocol || (hit->protocol[0] && strncmp(hit->protocol, protocol, strlen(protocol)) != 0)) {
+    if (!protocol || (hit->protocol[0] && !dsd_engine_signal_search_family_matches(hit->protocol, record->protocol))) {
         return NULL;
     }
     return protocol;

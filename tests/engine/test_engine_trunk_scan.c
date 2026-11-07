@@ -7282,8 +7282,13 @@ test_target_switch_forgets_the_received_identity(void) {
         test_rc = 1;
     }
 
-    /* Both retunes of the next advance fail: the receiver stays on a, with the record a's visit received. */
+    /* Both retunes of the next advance fail: the receiver stays on a, with the record a's visit received, and with
+       the Phase 2 proofs a's carrier made (issue #802): the switch attempt forgot them, and the rollback puts them back
+       with the rest of a's saved state. */
     dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
+    state.p2_cc = 0x293ULL;
+    state.p2_cc_verified = 1U;
+    state.p2_proven_nac = 0x293;
     const dsd_received_identity before = state.rx_id;
     g_counting_tune_to_cc_failures_remaining = 2;
     trunk_scan_test_set_now(0.78);
@@ -7293,6 +7298,11 @@ test_target_switch_forgets_the_received_identity(void) {
         || state.rx_id.p25_wacn != before.p25_wacn || state.rx_id.p25_sysid != before.p25_sysid) {
         DSD_FPRINTF(stderr, "rx-id: a rolled-back switch did not restore the record: active=%zu valid=%08X\n",
                     dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+    if (state.p2_cc_verified != 1U || state.p2_proven_nac != 0x293) {
+        DSD_FPRINTF(stderr, "rx-id: a rolled-back switch did not restore the Phase 2 proofs: verified=%u proven=%d\n",
+                    (unsigned)state.p2_cc_verified, state.p2_proven_nac);
         test_rc = 1;
     }
 

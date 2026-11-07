@@ -561,7 +561,8 @@ test_network_status_proves_the_nac(void) {
 }
 
 /* Issue #802 B8: a hand-set seed (-X) stays the descrambler's, and a checked network status naming another NAC proves
-   that NAC on this carrier: a call reads the broadcast's NAC, never nothing. The latest proof wins. */
+   that NAC on this carrier: a call reads the broadcast's NAC, never nothing, also on a followed voice channel whose
+   control channel update the broadcast cannot take. The latest proof wins. */
 static int
 test_network_status_proves_the_nac_over_a_hand_set_seed(void) {
     int rc = 0;
@@ -600,6 +601,22 @@ test_network_status_proves_the_nac_over_a_hand_set_seed(void) {
         // The carrier goes: nothing is proven until the next carrier proves its own.
         dsd_state_forget_p2_proof(&g_state);
         rc |= expect_int("after the carrier: a call reads nothing", p2_nac_read(&g_state), -1);
+
+        // A followed voice channel (trunk_is_tuned) whose control channel update the broadcast cannot take: the seed
+        // and the system stay as they were, and the NAC the checked broadcast carries is still this carrier's.
+        reset();
+        g_opts.trunk_is_tuned = 1;
+        g_state.p2_hardset = 1;
+        g_state.p2_wacn = 0xBEE00;
+        g_state.p2_sysid = 0x1A3;
+        g_state.p2_cc = 0x123;
+        network_mac_nac(mac, opcodes[i], 0xABCDE, 0x2B4, 0x293);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("followed vc, update not taken: the system stays", (long)g_state.p2_wacn, 0xBEE00);
+        rc |= expect_int("followed vc, update not taken: the seed stays", (long)g_state.p2_cc, 0x123);
+        rc |= expect_int("followed vc, update not taken: the seed is unproven", g_state.p2_cc_verified, 0);
+        rc |= expect_int("followed vc, update not taken: a call reads 293", p2_nac_read(&g_state), 0x293);
+        rc |= expect_int("followed vc, update not taken: one note", g_access_notes, 1);
     }
     return rc;
 }

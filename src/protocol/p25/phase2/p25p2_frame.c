@@ -433,8 +433,10 @@ p2_dibit_buffer(dsd_opts* opts, dsd_state* state) {
    The seed's NAC is the carrier's proven NAC from here, the latest proof winning (issue #802): a network status naming
    another NAC may have proven that one before. A call's row reads the live NAC only while the call is active, and the
    burst that proves the seed may carry the MAC_END_PTT that ends it, dispatched right after: the slots are rendered
-   when the proof first sets or changes the NAC, before the burst's MAC PDU, so the row of the call that burst ends
-   keeps the NAC it proved. */
+   when the seed is newly verified or the proven NAC changes, before the burst's MAC PDU, so the row of the call that
+   burst ends keeps the NAC it proved. A change ends a call heard under the NAC before it, as any change of a call's
+   received identity does, with its row reading that NAC; the burst's MAC PDU then opens the next call under the new
+   one. */
 static void
 p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
     if (s_descramble_seed.valid && s_descramble_seed.wacn == state->p2_wacn

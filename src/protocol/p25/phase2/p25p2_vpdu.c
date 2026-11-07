@@ -3754,7 +3754,10 @@ p25p2_vpdu_apply_nsb_identity(dsd_state* state, int lwacn, int lsysid, int lcolo
         state->p2_cc_verified = 1U;
     }
     /* Whatever the seed: the NAC it carries is this carrier's (issue #802 B8). A hand-set seed (p2_hardset) stays the
-       descrambler's, unproven while the broadcast names another NAC, and a Phase 2 call reads the broadcast's. */
+       descrambler's, unproven while the broadcast names another NAC, and a Phase 2 call reads the broadcast's. Noted
+       here too, so a seed change above never leaves the record cleared while the rest of the broadcast is handled;
+       the caller notes it again for a broadcast whose control channel update was not taken, and a repeat is no new
+       value. */
     (void)p25_search_note_proven_nac(state, (unsigned long long)lcolorcode);
 }
 
@@ -3831,8 +3834,11 @@ p25p2_vpdu_iter_block_47(p25p2_vpdu_ctx* ctx) {
             } else {
                 p25p2_vpdu_log_rejected_nsb_cc("P25 NSB", cc_freq, channel);
             }
-            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
+            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. It proves this carrier's
+               NAC whether or not the control channel update above was taken (a followed voice channel's broadcast),
+               whatever seed is configured (issue #802 B8). */
             p25_search_note_network_nac(state, (uint16_t)lcolorcode);
+            (void)p25_search_note_proven_nac(state, (unsigned long long)lcolorcode);
             p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
         }
     }
@@ -3888,8 +3894,11 @@ p25p2_vpdu_iter_block_48(p25p2_vpdu_ctx* ctx) {
             } else {
                 p25p2_vpdu_log_rejected_nsb_cc("P25 NSB-EXT", nf1, channelt);
             }
-            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. */
+            /* The NAC first: another NAC drops the old system's parts, not this broadcast's. It proves this carrier's
+               NAC whether or not the control channel update above was taken (a followed voice channel's broadcast),
+               whatever seed is configured (issue #802 B8). */
             p25_search_note_network_nac(state, (uint16_t)lcolorcode);
+            (void)p25_search_note_proven_nac(state, (unsigned long long)lcolorcode);
             p25_search_note_network(state, (uint32_t)lwacn, (uint16_t)lsysid, (uint8_t)lra);
         }
     }

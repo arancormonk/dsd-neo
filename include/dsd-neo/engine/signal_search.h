@@ -57,6 +57,10 @@ void dsd_engine_signal_search_access(const dsd_state* state);
  * hit's protocol starts with when that sync type's protocol confirmed it ("NXDN" for NXDN48 and NXDN96); NULL for a
  * sync type the search does not identify by its calls (ProVoice, EDACS, X2-TDMA, TETRA, analog, none). */
 const char* dsd_engine_signal_search_sync_protocol(int synctype);
+/** Whether @p synctype is of the family of a hit whose protocol is @p hit_protocol: the sync type has a family name
+ * (dsd_engine_signal_search_sync_protocol()) and @p hit_protocol starts with it ("NXDN" for NXDN48 and NXDN96). 0 for a
+ * sync type with no family name, or a NULL @p hit_protocol. */
+int dsd_engine_signal_search_family_matches(const char* hit_protocol, int synctype);
 #ifdef __cplusplus
 }
 #endif

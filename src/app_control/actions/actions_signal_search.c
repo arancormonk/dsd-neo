@@ -49,8 +49,7 @@ static struct {
    protocol's site note publishes the hit too, while the decoder holds that protocol's code. */
 static int
 sync_is_hit_protocol(const dsd_signal_search_hit* hit) {
-    const char* family = dsd_engine_signal_search_sync_protocol(observer.state->synctype);
-    return family && strncmp(hit->protocol, family, strlen(family)) == 0;
+    return dsd_engine_signal_search_family_matches(hit->protocol, observer.state->synctype);
 }
 
 /* The access code of a confirmed hit, formatted here as the frontends show it, read only while the decoder is on the

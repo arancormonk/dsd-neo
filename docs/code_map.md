@@ -131,8 +131,9 @@ Generated (do not edit/commit):
     (journal version 2). The access note (`dsd_engine_signal_search_access()`, installed as the
     runtime access hook, issue #802 B7) republishes the hit as changed when a checked proof gives
     the decoder's current access code a new value: only while a visit is receiving, the hit is
-    confirmed and the current sync type's family (`dsd_engine_signal_search_sync_protocol()`) is
-    the hit's protocol, the decision `search_access_note_applies()` makes. It confirms nothing
+    confirmed and the current sync type's family is the hit's protocol
+    (`dsd_engine_signal_search_family_matches()`), the decision `search_access_note_applies()`
+    makes. It confirms nothing
     and changes no phase or activity, so the visit's quiet timing still runs from its last
     evidence; the observer then reads the code through its usual family gate. It exists for a
     P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols).
@@ -3969,8 +3970,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the same ACTIVE, protocol and CRC checks); periodic status refreshes cannot promote it from
     a subsequent unconfirmed sync, and keep the access code and tone the hit last had. It is
     read only while the decoder's sync type is of the hit's protocol family
-    (`dsd_engine_signal_search_sync_protocol()`, the coordinator's call-protocol names, a
-    prefix of the hit's protocol as "NXDN" is of NXDN48): another protocol's site note
+    (`dsd_engine_signal_search_family_matches()`: the coordinator's call-protocol name of the
+    sync type, `dsd_engine_signal_search_sync_protocol()`, is a prefix of the hit's protocol
+    as "NXDN" is of NXDN48; the coordinator's call and access gates use the same test): another protocol's site note
     publishes the hit as changed too, and then the code the hit carries stays (issue #802
     B1). M17's CAN read at the link setup frame is carried through the stream frames after
     it, whose sync type the LSF's call record does not answer. The received tone (issue
@@ -8621,15 +8623,19 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   descrambling key and is never reset for it.
 - A Phase 2 call's NAC is the carrier's proven NAC (`p2_proven_nac`, issue #802 B7/B8), -1 for none: the NAC the latest
   checked Phase 2 proof on this carrier named. `p25p2_note_seed_proven()` sets it to the seed a burst descrambled with,
-  and `p25p2_vpdu_apply_nsb_identity()` to the NAC a network status that passed its CRC carries, whatever seed is
-  configured (a hand-set seed stays the descrambler's, unproven while the broadcast names another NAC). The latest proof
+  and a network status that passed its CRC to the NAC it carries, whatever seed is configured (a hand-set seed stays
+  the descrambler's, unproven while the broadcast names another NAC) and whether or not its control channel update was
+  taken (a followed voice channel's broadcast): `p25p2_vpdu_apply_nsb_identity()` notes it, and the NSB blocks again
+  beside the unconditional `p25_search_note_network_nac()`. The latest proof
   wins: a hand-set A proven by a broadcast naming A, then a co-channel broadcast naming B, reads B, and a later burst
   descrambled with A reads A again. 0x000 and 0xFFF prove nothing and leave the record as it was. Both go through
   `p25_search_note_proven_nac()` (`p25_search_site.h`), which calls the Signal search access note whenever the record
   takes a new value, from none included, whether or not the broadcast's site text changed: a final 2V burst's ESS, or
   the burst carrying MAC_END_PTT, can prove the seed after the transmission's last evidence published the hit, and a
   final network status can change the NAC under an unchanged WACN and SYSID, whose site note then changes nothing. The
-  seed proof's slot render runs when the proven NAC first sets or changes. One helper,
+  seed proof's slot render runs when the seed is newly verified or the proven NAC first sets or changes, before the
+  burst's MAC PDU; a change ends a call heard under the NAC before it (the receive identity's change, issue #637), its
+  row reading that NAC, and the burst's MAC PDU opens the next call under the new one. One helper,
   `dsd_state_forget_p2_proof()` (`state.h`), clears it with `p2_cc_verified` at every site that drops the seed's proof
   (the carrier boundary's code forget, the no-carrier cleanup after generic trunk activity, a trunk scan target's
   restore, a Phase 1 NID or a network status that changes the seed, a CC selection's site forget, `-X`, the menu's
