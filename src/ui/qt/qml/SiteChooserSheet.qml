@@ -25,9 +25,6 @@ ModalSheet {
     // rows are rebuilt on every change.
     property string avoidFailedUid: ""
     property bool avoidFailedWanted: false
-    // Issue #801: the site whose Pin to Listen was refused, and why.
-    property string pinFailedUid: ""
-    property string pinFailure: ""
     readonly property int groupRow: (revision, savedSystems.rowForUid(groupUid))
     readonly property int nearest: (revision, prefs.lastFixAt > 0 ? savedSystems.nearestRow(groupRow, prefs.lastLat, prefs.lastLon) : -1)
     readonly property var nearestSite: (revision, savedSystems.get(nearest))
@@ -82,7 +79,6 @@ ModalSheet {
         groupUid = savedSystems.get(row).uid || "";
         notice = "";
         avoidFailedUid = "";
-        pinFailedUid = "";
         locationUpdated = false;
         refresh();
         visible = rows.length > 0;
@@ -119,10 +115,15 @@ ModalSheet {
         // Rebuilt either way, so the toggle shows what is saved.
         refresh();
     }
-    function togglePin(uid) {
+    // Issue #801: does what the button read (@a offeredPinned: Unpin). pin()'s
+    // refusal needs no line of its own: the sheet is modal, so nothing fills
+    // the row behind it, and a full row's Pin is disabled with the reason.
+    function togglePin(uid, offeredPinned) {
         userAction();
-        pinFailure = listenPins.toggle("site", uid);
-        pinFailedUid = pinFailure.length > 0 ? uid : "";
+        if (offeredPinned)
+            listenPins.unpin("site", uid);
+        else
+            listenPins.pin("site", uid);
     }
     function useLocation() {
         userAction();
@@ -305,13 +306,13 @@ ModalSheet {
                 text: action.text
                 accessibleName: action.accessibleName
                 enabled: action.enabled
-                onClicked: sheet.togglePin(siteRow.site.uid || "")
+                onClicked: sheet.togglePin(siteRow.site.uid || "", action.pinned)
             }
             ReadableText {
                 objectName: "sitePinReason" + siteRow.modelData
                 width: parent.width
                 visible: text.length > 0
-                text: sitePin.action.description || (sheet.pinFailedUid.length > 0 && sheet.pinFailedUid === siteRow.site.uid ? sheet.pinFailure : "")
+                text: sitePin.action.description
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.family: Theme.sans

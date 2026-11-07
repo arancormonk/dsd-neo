@@ -578,6 +578,38 @@ Item {
                     + JSON.stringify(counts.chains));
         }
 
+        // Issue #801 B3: Explore's face carries its frequency in its name. Edited in Explore's setup, Home hidden under
+        // it, the face renames nothing; shown again, it reads the new frequency.
+        function test_l_hidden_explore_face_stays_silent() {
+            testContext.setLifecyclePhase(0);
+            verify(!app.monitorMode);
+            var saved = {source: prefs.exploreSourceType, freq: prefs.exploreFreqMhz};
+            prefs.exploreSourceType = "rtltcp";
+            prefs.exploreFreqMhz = "851.5";
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            waitForRendering(home);
+            var face = findChild(home, "exploreStart");
+            compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 851.5 MHz");
+            app.exploreSetupOpen = true;
+            tryVerify(function () { return face.Accessible.ignored; }, 1000, "Home's face leaves the tree");
+            testContext.startAccessibilityCount();
+            prefs.exploreFreqMhz = "852.0125";
+            wait(50);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            var events = 0;
+            for (var type of Object.keys(counts.types))
+                events += testContext.accessibilityCountWithin(face, type);
+            app.exploreSetupOpen = false;
+            tryVerify(function () { return !face.Accessible.ignored; }, 1000);
+            var shown = face.Accessible.name;
+            prefs.exploreSourceType = saved.source;
+            prefs.exploreFreqMhz = saved.freq;
+            compare(events, 0, "the hidden face raised events: " + JSON.stringify(counts.chains));
+            compare(shown, "Explore the band, start on RTL-TCP from 852.0125 MHz");
+        }
+
         // Issue #782: the Spectrum is built at once on its first open, screen reader or not. Building it raises a hide
         // for each part created hidden, and Qt's Android bridge answers each with calls the main thread waits on, so
         // the first open under TalkBack stalls (a Qt limit, android/README.md "Known limits"). Building it a slice at a

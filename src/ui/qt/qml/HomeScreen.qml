@@ -83,7 +83,7 @@ Item {
     // Keep auto-start blocked throughout menu-to-confirmation transitions.
     readonly property bool managementSheetOpen: manageMenu.visible || scanMenu.visible || addSystemMenu.visible
         || removeSystem.visible || systemRemovalError.visible || removeScanList.visible || scanListRemovalError.visible
-        || scanTogether.visible || pinnedSheet.visible || exploreMenu.visible || searchMenu.visible || pinRefusal.visible
+        || scanTogether.visible || pinnedSheet.visible || exploreMenu.visible || searchMenu.visible
 
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
@@ -138,11 +138,15 @@ Item {
     function pinAction(kind, uid, objectName) {
         return Object.assign({key: "pin", objectName: objectName}, listenPins.action(kind, uid));
     }
-    // A Pin offered before the row filled behind it still says why it did not pin.
-    function togglePin(kind, uid) {
-        var refusal = listenPins.toggle(kind, uid);
-        if (refusal.length > 0)
-            pinRefusal.openFor(refusal);
+    // Does what the row said when it was offered (@a offeredPinned: it read
+    // Unpin), never the opposite. pin()'s refusal needs no notice here: the
+    // menus are modal, so nothing fills the row while one is open, and a full
+    // row's Pin is disabled with the reason.
+    function togglePin(kind, uid, offeredPinned) {
+        if (offeredPinned)
+            listenPins.unpin(kind, uid);
+        else
+            listenPins.pin(kind, uid);
     }
 
     // B5: a session's ending or failure is reported at the top of the body.
@@ -713,7 +717,7 @@ Item {
                 OutlineButton {
                     id: searchButton
                     objectName: "homeSignalSearch"
-                    width: parent.width - searchMore.width - 8
+                    width: searchMore.x - 8
                     text: qsTr("Signal search")
                     accessibleName: qsTr("Signal search across frequency ranges")
                     onClicked: screen.signalSearch()
@@ -724,6 +728,8 @@ Item {
                     icon: "more"
                     accessibleName: qsTr("More options for Signal search")
                     anchors.right: parent.right
+                    // On the axis of the cards' More buttons around it.
+                    anchors.rightMargin: Theme.cardPadding + 2
                     anchors.verticalCenter: parent.verticalCenter
                     onClicked: searchMenu.openFor()
                 }
@@ -743,21 +749,46 @@ Item {
                 readonly property string sourceLabel: screen.exploreSource === "rtltcp" ? qsTr("RTL-TCP") : screen.exploreSource === "airspy" ? qsTr("Airspy") : qsTr("USB dongle")
                 readonly property bool configured: prefs.exploreSourceType.length > 0
 
+                // The whole card is the tap target, More's spot aside (More takes
+                // its own press). Long-press manages the card, as a system card's does.
+                TapHandler {
+                    id: faceTap
+                    enabled: exploreFace.enabled
+                    onTapped: exploreFace.activate()
+                    onLongPressed: exploreMenu.openFor()
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: 1
+                    radius: Theme.radiusPanel - 1
+                    color: faceTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : "transparent"
+
+                    Behavior on color {
+                        ColorAnimation {
+                            duration: 120
+                        }
+                    }
+                }
+
                 // B3: the card's face is the button that starts Explore, beside
-                // More rather than around it, so a key pressed on More never
-                // reaches it. Its name carries both lines, which read nothing on
-                // their own, so nothing is said twice.
+                // More rather than around it: it stops short of More's column, so
+                // its focus ring and its bounds leave More out, and a key pressed
+                // on More never reaches it. Its name carries both lines, which
+                // read nothing on their own, so nothing is said twice.
                 Item {
                     id: exploreFace
 
                     objectName: "exploreStart"
-                    anchors.fill: parent
+                    width: exploreMore.x
+                    height: parent.height
                     enabled: !decoderHost.transitioning
                     readonly property bool navigationAllowed: Navigation.allows(exploreFace)
                     // Held while focused, and the gate read first: see OutlineButton.
                     activeFocusOnTab: (navigationAllowed && enabled && visible) || activeFocus
                     Accessible.role: Accessible.Button
-                    Accessible.name: exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
+                    // No name while out of the tree, as ReadableText: a frequency
+                    // changed in Explore's setup, Home hidden, renames nothing.
+                    Accessible.name: Accessible.ignored ? "" : exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
                     Accessible.focusable: navigationAllowed && visible
                     Accessible.ignored: !navigationAllowed || !visible
                     Accessible.onPressAction: activate()
@@ -778,25 +809,11 @@ Item {
                         radius: Theme.radiusPanel + 2
                     }
 
-                    Rectangle {
-                        anchors.fill: parent
-                        anchors.margins: 1
-                        radius: Theme.radiusPanel - 1
-                        color: faceTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : "transparent"
-
-                        Behavior on color {
-                            ColorAnimation {
-                                duration: 120
-                            }
-                        }
-                    }
-
                     Column {
                         id: exploreLabels
                         anchors.left: parent.left
-                        anchors.right: exploreCaret.left
+                        anchors.right: parent.right
                         anchors.leftMargin: Theme.cardPadding
-                        anchors.rightMargin: 12
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 4
 
@@ -823,36 +840,32 @@ Item {
                             elide: Text.ElideRight
                         }
                     }
+                }
 
-                    Caret {
-                        id: exploreCaret
+                // In More's column, under More: drawn, not read (the face's name
+                // says where a tap goes), and inside the card's tap target.
+                Caret {
+                    id: exploreCaret
 
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.cardPadding + 6
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: Theme.cardPadding
-                        // Larger than the default: at the size a filter pill uses it
-                        // reads as a speck against a full-width card, and this is the
-                        // only thing saying the card goes somewhere.
-                        width: 13
-                        height: 9
-                        // Points down at rotation 0; a quarter turn anticlockwise reads
-                        // as forward navigation.
-                        rotation: -90
-                        color: Theme.cyan
-                    }
-
-                    // Long-press manages the card, as a system card's does.
-                    TapHandler {
-                        id: faceTap
-                        onTapped: exploreFace.activate()
-                        onLongPressed: exploreMenu.openFor()
-                    }
+                    anchors.right: parent.right
+                    anchors.rightMargin: Theme.cardPadding + 6
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: Theme.cardPadding
+                    // Larger than the default: at the size a filter pill uses it
+                    // reads as a speck against a full-width card, and this is the
+                    // only thing saying the card goes somewhere.
+                    width: 13
+                    height: 9
+                    // Points down at rotation 0; a quarter turn anticlockwise reads
+                    // as forward navigation.
+                    rotation: -90
+                    color: Theme.cyan
                 }
 
                 // Issue #801 D5: a menu, as a system card's More opens: Edit
                 // connection and Pin to Listen. It never starts Explore.
                 IconButton {
+                    id: exploreMore
                     objectName: "exploreManageButton"
                     icon: "more"
                     accessibleName: qsTr("More options for Explore")
@@ -922,7 +935,7 @@ Item {
             else if (key === "sites")
                 screen.chooseSites(row);
             else if (key === "pin")
-                screen.togglePin("system", systemUid);
+                screen.togglePin("system", systemUid, actions[index].pinned);
             else if (key === "remove")
                 removeSystem.openFor(row);
             // Any other key does nothing; it used to fall through to Remove.
@@ -967,7 +980,7 @@ Item {
             else if (key === "together")
                 scanTogether.openFor(row);
             else if (key === "pin")
-                screen.togglePin("scan", listUid);
+                screen.togglePin("scan", listUid, actions[index].pinned);
             else if (key === "remove")
                 removeScanList.openFor(row);
         }
@@ -987,7 +1000,7 @@ Item {
             if (key === "edit")
                 screen.exploreSetup();
             else if (key === "pin")
-                screen.togglePin("explore", "");
+                screen.togglePin("explore", "", actions[index].pinned);
         }
     }
 
@@ -1001,19 +1014,7 @@ Item {
         }
         onTriggered: function (index) {
             if (actions[index].key === "pin")
-                screen.togglePin("search", "");
-        }
-    }
-
-    ConfirmDialog {
-        id: pinRefusal
-        objectName: "pinRefusal"
-        title: qsTr("Not pinned")
-        confirmText: qsTr("OK")
-        showCancel: false
-        function openFor(reason) {
-            message = reason;
-            open();
+                screen.togglePin("search", "", actions[index].pinned);
         }
     }
 

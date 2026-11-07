@@ -412,15 +412,6 @@ ListenPins::action(const QString& kind, const QString& uid) const {
             {QStringLiteral("description"), enabled ? QString() : text(Text::FullRefusal)}};
 }
 
-QString
-ListenPins::toggle(const QString& kind, const QString& uid) {
-    if (isPinned(kind, uid)) {
-        unpin(kind, uid);
-        return QString();
-    }
-    return pin(kind, uid);
-}
-
 /* The pins once rows @p first to @p last of the saved systems are gone. A site's pin goes with its row; a system's
    moves to a site of its group that stays, so the card stays pinned, else it goes. */
 QVariantList

@@ -593,30 +593,19 @@ Item {
         }
 
         // D3: six stored, every Pin to Listen is disabled with the reason, in each menu and the site chooser; Unpin
-        // stays. A Pin offered before the row filled refuses with the same reason instead of doing nothing.
+        // stays.
         function test_full_disables_pin_with_reason() {
             var reason = "Pinned is full (6). Unpin one first.";
-            var solo = addSystem("Solo", "rtltcp");
+            addSystem("Solo", "rtltcp");
             var sites = addGroup("rtltcp");
             var list = addList("Patrol");
             for (var i = 0; i < 5; ++i)
                 compare(listenPins.pin("scan", addList("List " + i)), "");
-            showHome();
-            var menu = openMenu(cardMore("Solo"), "savedSystemManageSheet");
-            var pin = findChild(menu, "pinSavedSystemButton");
-            verify(pin.enabled, "five stored: Pin is offered");
-            // Filled behind the open menu: the Pin offered says why it did not pin.
             compare(listenPins.pin("scan", list), "");
             verify(listenPins.full);
-            menu.activate(menu.actions.map(function (action) { return action.key; }).indexOf("pin"));
-            var refusal = homeItem("pinRefusal");
-            tryCompare(refusal, "visible", true);
-            compare(refusal.message, reason);
-            verify(findChild(app, "homeScreen").managementSheetOpen, "the notice holds Home");
-            refusal.confirm();
-            tryCompare(refusal, "visible", false);
-            verify(!listenPins.isPinned("system", solo));
-
+            showHome();
+            var menu;
+            var pin;
             var sources = [{opener: function () { return cardMore("Solo"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
                 {opener: function () { return cardMore("County"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
                 {opener: function () { return homeItem("signalSearchManageButton"); }, menu: "signalSearchManageSheet", pin: "pinSignalSearchButton"},
@@ -688,16 +677,13 @@ Item {
             }
         }
 
-        // The new menus and the refusal notice hold Home and auto-start as every Home sheet does.
+        // The new menus hold Home and auto-start as every Home sheet does.
         function test_new_menus_block_background() {
             prefs.exploreSourceType = "rtltcp";
             var home = showHome();
-            for (var name of ["exploreManageSheet", "signalSearchManageSheet", "pinRefusal"]) {
+            for (var name of ["exploreManageSheet", "signalSearchManageSheet"]) {
                 var sheet = homeItem(name);
-                if (name === "pinRefusal")
-                    sheet.openFor("Pinned is full (6). Unpin one first.");
-                else
-                    sheet.openFor();
+                sheet.openFor();
                 tryCompare(sheet, "visible", true);
                 verify(home.managementSheetOpen, name);
                 tryCompare(uiController, "autoStartBlocked", true);
@@ -713,6 +699,43 @@ Item {
                 tryCompare(uiController, "autoStartBlocked", false);
                 verify(!home.managementSheetOpen);
             }
+        }
+
+        // A menu row does what it said when it was offered, never the opposite: pins that change behind an open menu
+        // (only a test can, the menus being modal) leave a "Pin" pinning and an "Unpin" unpinning.
+        function test_menu_does_what_it_offered_data() {
+            return [{tag: "system", menu: "savedSystemManageSheet", kind: "system"},
+                {tag: "scan list", menu: "scanListManageSheet", kind: "scan"},
+                {tag: "Explore", menu: "exploreManageSheet", kind: "explore"},
+                {tag: "Signal search", menu: "signalSearchManageSheet", kind: "search"}];
+        }
+        function test_menu_does_what_it_offered(data) {
+            var uid = data.kind === "system" ? addSystem("Solo", "rtltcp") : data.kind === "scan" ? addList("Patrol") : "";
+            showHome();
+            var menu = homeItem(data.menu);
+            var open = function () {
+                if (data.kind === "system")
+                    menu.openFor(0, "Solo");
+                else if (data.kind === "scan")
+                    menu.openFor(0);
+                else
+                    menu.openFor();
+                tryCompare(menu, "visible", true);
+                return keys(menu).split(",").indexOf("pin");
+            };
+            var index = open();
+            compare(menu.actions[index].text, "Pin to Listen");
+            compare(listenPins.pin(data.kind, uid), "", "pinned behind the open menu");
+            menu.activate(index);
+            verify(listenPins.isPinned(data.kind, uid), "the offered Pin did not unpin");
+            compare(listenPins.count, 1);
+
+            index = open();
+            compare(menu.actions[index].text, "Unpin from Listen");
+            listenPins.unpin(data.kind, uid);
+            menu.activate(index);
+            verify(!listenPins.isPinned(data.kind, uid), "the offered Unpin did not pin");
+            compare(listenPins.count, 0);
         }
     }
 }

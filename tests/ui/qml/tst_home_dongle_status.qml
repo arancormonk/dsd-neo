@@ -133,6 +133,7 @@ Item {
                 compare(more.y, 0);
                 compare(card.width - (more.x + more.width / 2), Ui.Theme.cardPadding + 26);
                 compare(face.parent, more.parent, "the face is beside More, not around it");
+                verify(face.x + face.width <= more.x, "the face, and so its focus ring, stops short of More's column");
                 var scroll = findChild(home, "dongleScrollBody");
                 verify(waitForPolish(home));
                 scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height);
@@ -151,7 +152,7 @@ Item {
                 compare(exploreStarted.count, 0);
 
                 mousePress(face, face.width / 3, face.height / 2);
-                wait(1200);
+                wait(Qt.styleHints.mousePressAndHoldInterval + 300);
                 mouseRelease(face, face.width / 3, face.height / 2);
                 tryCompare(menu, "visible", true);
                 compare(exploreStarted.count, 0, "a long press opens the menu");
@@ -160,6 +161,10 @@ Item {
                 waitForRendering(home);
                 mouseClick(card, card.width / 3, card.height / 2);
                 compare(exploreStarted.count, 1);
+                // The caret, in More's column under More, is still the card's to tap.
+                mouseClick(card, card.width - Ui.Theme.cardPadding - 12, card.height - Ui.Theme.cardPadding - 4);
+                compare(exploreStarted.count, 2, "a tap on the caret starts");
+                compare(exploreEdited.count, 1);
             } finally {
                 prefs.exploreSourceType = oldSource;
             }

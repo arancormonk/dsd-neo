@@ -102,8 +102,6 @@ class ListenPins : public QObject {
      * (Text::FullRefusal), so every source shows the same reason the same way.
      */
     Q_INVOKABLE QVariantMap action(const QString& kind, const QString& uid) const;
-    /** @brief What action() offers: unpin() when pinned, else pin(). "" when done, else pin()'s refusal. */
-    Q_INVOKABLE QString toggle(const QString& kind, const QString& uid);
 
   Q_SIGNALS:
     void entriesChanged();

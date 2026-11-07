@@ -1852,9 +1852,9 @@ test_pin_full_refuses() {
 }
 
 /* Every source offers the same Pin to Listen: named for what it pins, Unpin once pinned (a group's card through any of
- * its sites), and disabled with the full reason while six are stored, except as Unpin. toggle() does what it offers. */
+ * its sites), and disabled with the full reason while six are stored, except as Unpin. */
 void
-test_pin_action_and_toggle() {
+test_pin_action() {
     PinsWorld w;
     const QString lead = w.system("County", 7, 1, "North");
     const QString second = w.system("County", 7, 2, "South");
@@ -1883,15 +1883,17 @@ test_pin_action_and_toggle() {
            offers("search", QString(), ListenPins::actionText(false), "Pin Signal search to Listen", false)
                && offers("explore", QString(), ListenPins::actionText(false), "Pin Explore to Listen", false));
 
-    expect("toggle: pins the card through a site", pins.toggle("system", second).isEmpty() && pins.count() == 1);
+    expect("action: pin the card through a site", pins.pin("system", second).isEmpty() && pins.count() == 1);
     expect("action: the card is Unpin through its lead",
            offers("system", lead, ListenPins::actionText(true), ListenPins::actionName(true, "County"), true));
     expect(
         "action: the card's sites are not pinned by it",
         offers("site", second, ListenPins::actionText(false), ListenPins::actionName(false, "County · South"), false));
-    expect("toggle: unpins the card through its lead", pins.toggle("system", lead).isEmpty() && pins.count() == 0);
-    expect("toggle: refuses what is not saved",
-           pins.toggle("scan", QStringLiteral("gone")) == ListenPins::text(T::NotFoundRefusal) && pins.count() == 0);
+    pins.unpin("system", lead);
+    expect(
+        "action: the card unpinned through its lead is Pin again",
+        pins.count() == 0
+            && offers("system", second, ListenPins::actionText(false), ListenPins::actionName(false, "County"), false));
 
     QVariantList six;
     for (int i = 0; i < 5; ++i) {
@@ -1906,9 +1908,8 @@ test_pin_action_and_toggle() {
                && refused.value("description").toString() == ListenPins::text(T::FullRefusal));
     expect("action: full, Unpin stays offered",
            offers("scan", list, ListenPins::actionText(true), "Unpin Patrol from Listen", true));
-    expect("toggle: full refuses a seventh",
-           pins.toggle("explore", QString()) == ListenPins::text(T::FullRefusal) && pins.count() == 6);
-    expect("toggle: full still unpins", pins.toggle("scan", list).isEmpty() && pins.count() == 5);
+    pins.unpin("scan", list);
+    expect("action: an unpin makes room", pins.count() == 5);
     expect("action: room again, Pin is offered",
            offers("explore", QString(), ListenPins::actionText(false), "Pin Explore to Listen", false));
 }
@@ -2285,7 +2286,7 @@ main(int argc, char** argv) {
     test_pinned_pref_round_trip();
     test_pin_unpin_is_pinned();
     test_pin_full_refuses();
-    test_pin_action_and_toggle();
+    test_pin_action();
     test_pins_survive_unreadable_store();
     test_prune_on_remove();
     test_system_pin_rehomes_to_sibling();
