@@ -172,9 +172,12 @@ p25p1_apply_nac_update(dsd_state* state, int new_nac) {
         state->p25_frame_nac = (uint16_t)new_nac;
         state->p25_frame_nac_valid = 1U;
     }
-    /* The seed's NAC follows the NID whatever state->nac holds: a seed NAC cleared by hand on this carrier comes back
-       from the next NID (issue #804). */
-    if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac) {
+    /* The seed's NAC follows a NID that names a new NAC, and comes back from the next NID once cleared by hand on this
+       carrier (issue #804). A repeat of the NAC state->nac holds leaves any other seed NAC alone: on a system whose
+       Phase 2 colour code differs from its Phase 1 control channel's NAC, a network status that passed its CRC set it,
+       and the control channel's NIDs must not undo that. */
+    if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac
+        && (state->p2_cc == 0ULL || new_nac != state->nac)) {
         state->p2_cc = (unsigned long long)new_nac;
         state->p2_cc_verified = 0U; // a Phase 1 NID proves no Phase 2 seed (issue #575)
     }

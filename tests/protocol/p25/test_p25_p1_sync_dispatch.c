@@ -502,14 +502,54 @@ test_nid_restores_cleared_p2_cc(void) {
     assert(state.p2_cc == 0x293ULL);
     assert(state.p2_cc_verified == 1U);
 
-    /* A NID naming another NAC than the seed's, state->nac already holding it, replaces the seed's and its proof. */
+    /* A NID naming another NAC than state->nac holds (a new carrier, or the first NID after a boundary zeroed it)
+       replaces a seed NAC that differs, and its proof. */
     reset_stub_state();
     g_new_nac = 0x293;
+    state.nac = 0;
     state.p2_cc = 0x111ULL;
     state.p2_cc_verified = 1U;
     dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.nac == 0x293);
     assert(state.p2_cc == 0x293ULL);
     assert(state.p2_cc_verified == 0U);
+}
+
+/* Issue #804: on a system whose Phase 1 control channel NAC differs from its Phase 2 colour code, a network status that
+   passed its CRC sets the seed's NAC to the colour code. Repeated NIDs of the control channel, their NAC the one
+   state->nac already holds, leave that seed and its proof alone. */
+static void
+test_nid_keeps_nsb_colour_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    g_new_nac = 0x293;
+    g_test_duid = 0x7U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.nac == 0x293 && state.p2_cc == 0x293ULL);
+
+    /* What p25p2_vpdu_apply_nsb_identity() leaves after a CRC-passed network status naming colour code 0x111. */
+    state.p2_wacn = 0xBEE00ULL;
+    state.p2_sysid = 0x164ULL;
+    state.p2_cc = 0x111ULL;
+    state.p2_cc_verified = 1U;
+
+    for (int i = 0; i < 3; i++) {
+        reset_stub_state();
+        g_new_nac = 0x293;
+        g_test_duid = 0x7U;
+        dsd_dispatch_handle_p25p1(&opts, &state);
+        assert(state.nac == 0x293);
+        assert(state.p2_cc == 0x111ULL);
+        assert(state.p2_cc_verified == 1U);
+        /* The NID still names the carrier's NAC and the frame's. */
+        assert(state.rx_id.access == 0x293U);
+        assert(state.p25_frame_nac_valid == 1U && state.p25_frame_nac == 0x293U);
+    }
 }
 
 static void
@@ -947,6 +987,7 @@ main(void) {
     test_p25p1_nid_correction_and_failure_state();
     test_p25p1_nac_update_guards();
     test_nid_restores_cleared_p2_cc();
+    test_nid_keeps_nsb_colour_code();
     test_frame_nac_validity();
     test_borrowed_nac_names_nothing();
     test_p25p1_mbe_output_and_resume_side_effects();
