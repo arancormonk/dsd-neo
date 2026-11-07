@@ -1835,6 +1835,7 @@ test_pin_full_refuses() {
            pins.pin("scan", extra) == ListenPins::text(ListenPins::Text::FullRefusal) && pins.count() == 6);
     expect("full: the refusal names the cap",
            ListenPins::text(ListenPins::Text::FullRefusal) == QStringLiteral("Pinned is full (6). Unpin one first."));
+    expect("full: the views read the same cap", pins.property("cap").toInt() == 6 && ListenPins::cap() == 6);
     expect("full: pinning what is pinned still succeeds", pins.pin("system", uids.first()).isEmpty());
 
     QVariantList missing;

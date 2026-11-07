@@ -142,6 +142,20 @@ Item {
             compareRefused(avoidedText("County"), sites[1]);
         }
 
+        // Auto-start of a last-started scan list that became a draft goes through the scan gate: refused as its card
+        // refuses it, before any USB request.
+        function test_auto_start_refuses_draft_list() {
+            var other = addList("Other");
+            var uid = addList("Draft", {sourceType: "usb", isDraft: true});
+            testContext.setScanTestUsb(true, false);
+            uiController.requestAutoStart("scan", uid, [other]);
+            compareRefused(draftText, uid);
+            compare(app.attemptedSource.kind, "scan");
+            compare(app.attemptedSource.companions, [other], "Retry starts the list with what it was started with");
+            verify(!app.awaitingUsbAccess, "a draft asks for no receiver");
+            compare(testContext.lastDeviceAccess().count, 0);
+        }
+
         // B6: a saved start that waits on USB access starts what is saved when access arrives, by uid.
         function test_usb_grant_revalidates_saved_start_data() {
             return [{tag: "removed"}, {tag: "avoided"}, {tag: "reindexed"}, {tag: "receiver edited"},
@@ -420,6 +434,8 @@ Item {
             tryCompare(sheet, "visible", true);
             verify(home.managementSheetOpen);
             waitForRendering(sheet);
+            verify(findChild(sheet, "pinnedSheetHint").text.startsWith("You can pin up to 6. "),
+                   "the hint names the cap the full refusal names");
             mouseClick(findChild(sheet, "pinnedSheetStart"));
             verify(!sheet.visible, "the sheet closed");
             var chooser = findChild(app, "siteChooserSheet");

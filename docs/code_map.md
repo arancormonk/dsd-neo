@@ -11981,26 +11981,29 @@ Qt Quick frontend (`src/ui/qt`):
   saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
   `explore` (no UID). The getter is the only validation (unparsable text, an unquoted hand edit QSettings returns as a
   list, unknown kinds, a malformed UUID, a scan UID empty or over 128 characters and repeats are dropped; at most
-  `AppPrefs::kPinnedCap`, 6), and the setter writes it sanitized and compact. `qt_ui.cpp` builds `ListenPins` over
-  `AppPrefs`, `SavedSystemsModel` and `ScanListsModel` after both load. `entries` holds every stored pin in order as
-  `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its group's lead and its
-  accessible name says whether a tap starts it or chooses a site (no site, or several, it can play), a site is
-  "system · site". `revision` moves on every entries change and on every row, data, sites or reset signal of either
-  model, because `isPinned()` follows groups: a system pin matches its group's card through any of its sites, and a row
-  in no group also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()` refuses a full
-  row ("Pinned is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`; `unpin()`
-  removes what `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model reset or when
-  pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting toward the cap,
-  until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they saved, prunes: a
-  `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group (`siblingRows()`
-  before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no `listenPins`
-  signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers each row's
-  group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV field, or a
-  library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the pin to the
-  group's lead and stores it; a group's last site keeps its pin. `action()` is every source's Pin to Listen (see "Pin
-  to Listen" above). User text lives in `ListenPins::text()`. The QML
-  fixture publishes it over the real `AppPrefs`, clears pins for each test file, and `testContext.resetPins()` clears
-  them between cases. Tests: `UI_QT_PERSISTENCE`.
+  `AppPrefs::kPinnedCap`, 6, which the constant `cap` property gives the views), and the setter writes it sanitized and
+  compact. A scan list whose UID is longer than 128 characters (only a hand-edited or foreign store holds one) cannot be
+  pinned: its Pin to Listen does nothing (a documented limit). `qt_ui.cpp`'s `load_listen_pins()` builds `ListenPins`
+  over `AppPrefs`, `SavedSystemsModel` and `ScanListsModel` after both load and before `prune_missing_csv_paths()`, so a
+  `system` pin whose row that startup cleanup takes out of its group follows the group as below. `entries` holds every
+  stored pin in order as `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its
+  group's lead and its accessible name says whether a tap starts it or chooses a site (no site, or several, it can
+  play), a site is "system · site". `revision` moves on every entries change and on every row, data, sites or reset
+  signal of either model, because `isPinned()` follows groups: a system pin matches its group's card through any of its
+  sites, and a row in no group also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()`
+  refuses a full row ("Pinned is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`;
+  `unpin()` removes what `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model
+  reset or when pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting
+  toward the cap, until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they
+  saved, prunes: a `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group
+  (`siblingRows()` before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no
+  `listenPins` signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers
+  each row's group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV
+  field, or a library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the
+  pin to the group's lead and stores it; a group's last site keeps its pin (also at startup, see `load_listen_pins()`
+  above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to Listen" above). User text
+  lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears pins for each test file,
+  and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
   systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder

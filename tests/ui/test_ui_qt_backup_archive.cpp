@@ -24,6 +24,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QObject>
 #include <QSet>
 #include <QStandardPaths>
 #include <QString>
@@ -306,6 +307,57 @@ test_startup_clears_missing_library_paths_twice() {
                systems.get(systems.count() - 1).value("groupCsvPath") == outside);
     }
     remove_file(kept);
+    for (const QString& store : stores) {
+        expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
+    }
+}
+
+/* Issue #801: the startup cleanup that takes a pinned system's row out of its RadioReference group (a library file the
+ * row names is gone) moves the pin to the group's lead, as an edit out of the group does. That needs the pins built
+ * before the cleanup runs, while they can still see the row's group. */
+void
+test_startup_cleanup_moves_a_system_pin_to_its_group() {
+    const QStringList stores{"saved_systems.json", "scan_lists.json"};
+    QMap<QString, QJsonArray> before;
+    for (const QString& store : stores) {
+        before.insert(store, dsd_qt::json_store_load_array(store));
+    }
+    const QString gone = dsd_qt::ImportedFilesModel::libraryRoot() + "/county-north.csv";
+    QString north;
+    QString south;
+    {
+        dsd_qt::SavedSystemsModel systems;
+        const auto site = [&systems](const QString& name, int siteId, const QString& groupCsv) {
+            expect("add a County site", systems.add({{"name", "County"},
+                                                     {"freqMhz", QStringLiteral("851.%1").arg(siteId)},
+                                                     {"rrSid", 7801},
+                                                     {"rrSiteId", siteId},
+                                                     {"siteName", name},
+                                                     {"groupCsvPath", groupCsv}}));
+            return systems.get(systems.count() - 1).value("uid").toString();
+        };
+        north = site("North", 1, gone);
+        south = site("South", 2, QString());
+        site("East", 3, QString());
+    }
+    dsd_qt::AppPrefs prefs;
+    prefs.setPinned({QVariantMap{{"kind", "system"}, {"uid", north}}});
+    {
+        TestHost host;
+        QObject owner;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        expect("the startup cleanup builds the pins",
+               dsd_qt::load_listen_pins(&prefs, &library, &systems, &scans, &owner) != nullptr);
+        expect("the cleanup takes North out of its group",
+               systems.get(systems.rowForUid(north)).value("groupCsvPath") == ""
+                   && systems.siblingRows(systems.rowForUid(north)).isEmpty());
+        const QVariantList pinned = prefs.pinned();
+        expect("the system pin moves to the group's lead",
+               pinned.size() == 1 && pinned.first().toMap().value("uid").toString() == south);
+    }
+    prefs.setPinned({});
     for (const QString& store : stores) {
         expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
     }
@@ -1769,6 +1821,7 @@ main(int argc, char** argv) {
     test_passphrases();
     test_host_document_copies();
     test_startup_clears_missing_library_paths_twice();
+    test_startup_cleanup_moves_a_system_pin_to_its_group();
     {
         TestHost host;
         const Fixture fixture = populate(host);

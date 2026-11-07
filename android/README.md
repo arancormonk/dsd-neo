@@ -2274,8 +2274,8 @@ size and stays in place while the list scrolls. It shows the pins that fit, in t
 whose system, site or scan list is not found right now (its saved file could not be read, say) stays pinned and still
 counts toward the 6: the row leaves it out, and the sheet shows it greyed out, to unpin, until it is found again.
 Removing a saved system, site or scan list unpins it; a pinned system moves to another of its sites when one site is
-removed. A pin never changes what auto-start resumes. The row is shown only while something is pinned, and pins are
-kept in backups.
+removed or edited out of the group. A pin never changes what auto-start resumes. The row is shown only while something
+is pinned, and pins are kept in backups.
 
 To pin something, choose **Pin to Listen**; once pinned, the same place offers **Unpin from Listen**:
 

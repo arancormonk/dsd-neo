@@ -78,7 +78,7 @@ ModalSheet {
     ReadableText {
         objectName: "pinnedSheetHint"
         width: parent.width
-        text: qsTr("You can pin up to 6. Use Pin to Listen in the More menu of a system, scan list, Signal search or Explore, or in a site list.")
+        text: qsTr("You can pin up to %1. Use Pin to Listen in the More menu of a system, scan list, Signal search or Explore, or in a site list.").arg(listenPins.cap)
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Theme.textSecondary

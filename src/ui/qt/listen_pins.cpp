@@ -13,6 +13,7 @@
 #include <QSet>
 #include <QVariant>
 #include <algorithm>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <iterator>
 #include <utility>
 #include "saved_systems_model.h"

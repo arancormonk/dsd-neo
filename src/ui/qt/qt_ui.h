@@ -11,12 +11,15 @@
 #ifndef DSD_NEO_SRC_UI_QT_QT_UI_H_
 #define DSD_NEO_SRC_UI_QT_QT_UI_H_
 
+class QObject;
 class QQmlApplicationEngine;
 
 namespace dsd_qt {
 
+class AppPrefs;
 class DecoderHost;
 class ImportedFilesModel;
+class ListenPins;
 class SavedSystemsModel;
 class ScanListsModel;
 
@@ -44,6 +47,16 @@ bool ui_load(QQmlApplicationEngine& engine, DecoderHost* host);
  * at a later one. A path outside the library is left as it is.
  */
 void prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* systems, ScanListsModel* scanLists);
+
+/**
+ * @brief Build the shortcuts pinned to Listen over the loaded models, then run prune_missing_csv_paths().
+ *
+ * ui_load() publishes what this returns, owned by @p owner. The pins are built first so they see each saved row's
+ * RadioReference group as stored: a system pin whose row the cleanup takes out of its group then moves to the group's
+ * lead, as it does when the row is edited out of the group (issue #801).
+ */
+ListenPins* load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
+                             ScanListsModel* scanLists, QObject* owner);
 
 } // namespace dsd_qt
 

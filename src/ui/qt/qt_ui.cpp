@@ -284,11 +284,12 @@ publish_input_context(QQmlContext* context, QObject* owner) {
     context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
 }
 
-/* Issue #801: the shortcuts pinned to Listen, resolved over both models once they have loaded. */
-static void
-publish_listen_pins(QQmlContext* context, AppPrefs* prefs, SavedSystemsModel* systems, ScanListsModel* scanLists,
-                    QObject* owner) {
-    context->setContextProperty(QStringLiteral("listenPins"), new ListenPins(prefs, systems, scanLists, owner));
+ListenPins*
+load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
+                 ScanListsModel* scanLists, QObject* owner) {
+    auto* pins = new ListenPins(prefs, systems, scanLists, owner);
+    prune_missing_csv_paths(importedFiles, systems, scanLists);
+    return pins;
 }
 
 bool
@@ -340,7 +341,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* recordingStatus = wire_recording_status(engine, host, controller, commands);
     wire_attachment(host, controller, prefs, systems, scanLists);
 
-    prune_missing_csv_paths(importedFiles, systems, scanLists);
+    auto* listenPins = load_listen_pins(prefs, importedFiles, systems, scanLists, &engine);
 
     wire_screen_policy(host, prefs);
 
@@ -379,7 +380,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
-    publish_listen_pins(context, prefs, systems, scanLists, &engine);
+    context->setContextProperty(QStringLiteral("listenPins"), listenPins);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
     publish_input_context(context, &engine);

@@ -41,6 +41,8 @@ class ListenPins : public QObject {
      * they were: whether a card is pinned follows its group (isPinned()), which no entry shows. A binding that calls
      * isPinned() reads this first, so it is evaluated again. */
     Q_PROPERTY(int revision READ revision NOTIFY revisionChanged)
+    /* How many pins Listen holds (kCap), for the copy that names it. */
+    Q_PROPERTY(int cap READ cap CONSTANT)
 
   public:
     static constexpr int kCap = AppPrefs::kPinnedCap;
@@ -77,6 +79,11 @@ class ListenPins : public QObject {
     int
     revision() const {
         return m_revision;
+    }
+
+    static int
+    cap() {
+        return kCap;
     }
 
     /**

@@ -610,12 +610,13 @@ Window {
             // refused here.
             if (row < 0)
                 return;
-            // B2: through the saved-system gate, so an avoided site is refused
-            // as its card would refuse it, not started.
+            // B2: through each kind's gate, so an avoided site or a list that
+            // became a draft is refused as its card would refuse it, before
+            // any USB request, not started.
             if (kind === "saved")
                 mainRoot.startSavedByUid(uid);
             else
-                mainRoot.startScanBundle(row, companions || []);
+                mainRoot.startScanByUid(uid, companions || [], "");
         }
     }
 
