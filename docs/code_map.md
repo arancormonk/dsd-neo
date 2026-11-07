@@ -8413,17 +8413,17 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   another located window at another slot, since a code solved under a mislabelled slot is a shifted code that decodes
   every burst mislabelled alike and a wrong code's verdict is the same at one slot (`P25_P2_SEED_RECOVER`). A carrier
   boundary, `p25p2_frame_forget_carrier()`, a contradicted window and any window on a proven carrier drop it; a
-  contradicted window, or one only continuity places, neither solves nor confirms. The confirmed code is committed like a checked network status:
-  WACN/SYSID through `p25_update_system_identity()`, the NAC into `p2_cc` (both clear `p2_cc_verified` on a change),
-  the line " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX" and
+  contradicted window, or one only continuity places, neither solves nor confirms. The confirmed code is committed
+  like a checked network status: WACN/SYSID through `p25_update_system_identity()`, the NAC into `p2_cc` (both clear
+  `p2_cc_verified` on a change), the line " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX" and
   `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)`; the window then descrambles with it and its
   confirming burst proves it through the verdict. Nothing else changes before the commit: no counter, MAC, proof,
   identity, event or evidence. Allocation: the tables once per process and the context once per decoder state (at its
-  first located window on an unproven carrier, freed with the state's extensions); nothing per window or burst.
-  Cost: a `p2_cc_verified` read and a slot lookup per window on a proven carrier; on an unproven one a few
-  microseconds per code tried and 30-45 us per worst-case solve in a release build. Documented limits: voice (4V C0 Golay, ESS) is not solved from, a
-  channel whose probe sees no clean scrambled FACCH/SACCH stays unresolved, and an I-ISCH-to-offset mapping that is
-  wrong systematically would also break decoding with a known code (the real-air fixture pins it).
+  first located window on an unproven carrier, freed with the state's extensions); nothing per window or burst. Cost:
+  a `p2_cc_verified` read and a slot lookup per window on a proven carrier; on an unproven one a few microseconds per
+  code tried and 30-45 us per worst-case solve in a release build. Documented limits: voice (4V C0 Golay, ESS) is not
+  solved from, a channel whose probe sees no clean scrambled FACCH/SACCH stays unresolved, and an I-ISCH-to-offset
+  mapping that is wrong systematically would also break decoding with a known code (the real-air fixture pins it).
 - Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose
   decode failed cannot make the next FACCH or SACCH of the window an LCCH (its CRC-16 path rejected valid bursts).
   The MAC opcode is no service option: no burst writes it into `dmr_so`/`dmr_soR`, which carry the service options

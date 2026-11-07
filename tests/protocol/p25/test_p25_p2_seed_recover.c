@@ -499,6 +499,7 @@ test_noise_never_accepted(void) {
     int rc = expect("noise: a wrong code waits", pending_code() == OTHER_CODE);
     int candidates = 0;
     int waiting_held = 0;
+    int waiting_candidates = 0;
     for (int w = 0; w < NOISE_WINDOWS; w++) {
         if (w == NOISE_WINDOWS_WAITING) {
             waiting_held = pending_code() == OTHER_CODE;
@@ -518,10 +519,13 @@ test_noise_never_accepted(void) {
         const uint64_t before = pending_code();
         p25p2_seed_recover_window(g_opts, g_state, 1, 0);
         const uint64_t after = pending_code();
-        candidates += after != 0U && after != before;
+        const int candidate = after != 0U && after != before;
+        candidates += candidate;
+        waiting_candidates += candidate && w < NOISE_WINDOWS_WAITING;
     }
     rc |= expect("noise confirms no waiting code and commits none", code_in_force() == 0U && g_code_notes == 0);
-    rc |= expect("the wrong code waited through its noise windows", candidates > 0 || waiting_held);
+    /* A candidate from one of those windows may replace it; one from a later window excuses nothing. */
+    rc |= expect("the wrong code waited through its noise windows", waiting_candidates > 0 || waiting_held);
     if (candidates > 0) {
         DSD_FPRINTF(stderr, "note: %d noise windows gave a candidate\n", candidates);
     }
