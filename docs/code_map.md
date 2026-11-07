@@ -11878,22 +11878,24 @@ Qt Quick frontend (`src/ui/qt`):
   group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
   the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
   keeps its avoid: its "1 site" chooser lifts it. Tests: `UI_QT_PERSISTENCE`.
-- Removing a library file (issue #801) runs in this order, and each step is safe to run again: `ImportsScreen.qml`'s
-  Remove file clears the path from saved systems (`SavedSystemsModel::clearCsvPath`), then from scan lists
-  (`ScanListsModel::clearCsvPath`), then calls `ImportedFilesModel::remove()`, which deletes the file (one already
-  gone counts as deleted) and its bundle before it saves the index without the row. File first, so a failure never
-  leaves a copy no row names: a file that will not delete keeps its row, and a row whose index save fails names a file
-  already gone, which the retry and the next load's prune finish. A scan list names library files in three fields:
-  its target CSV (cleared, the list becomes a draft) and its fallback `groupCsvPath`/`srcCsvPath` (emptied, the list
-  runs without it; an empty fallback is "none" to the starter and session args). `listsReferencingPath()` covers all
-  three; the remove sheet names target lists (`listsTargetingPath()`) and fallback lists
-  (`listsFallingBackOnPath()`) on separate lines, since removal does different things to each. The first step that returns false
-  stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only when all
-  three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
+- Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
+  systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
+  `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
+  before it saves the index without the row. File first, so a failure never leaves a copy no row names: a file that will
+  not delete keeps its row, and an index save that fails after the delete leaves the row listed, naming a missing file,
+  until a retry or the next load prunes it (the startup cleanup below then clears what names it;
+  `RadioReferenceModel::unwindImport()` can leave such a row the same way). The bundle folder's delete is best effort: a
+  failure there is neither reported nor retried, and the row goes once the file has. A scan list names library files in
+  three fields: its target CSV (cleared, the list becomes a draft) and its fallback `groupCsvPath`/`srcCsvPath`
+  (emptied, the list runs without it; an empty fallback is "none" to the starter and session args).
+  `listsReferencingPath()` covers all three; the remove sheet names target lists (`listsTargetingPath()`) and fallback
+  lists (`listsFallingBackOnPath()`) on separate lines, since removal does different things to each. The first step that
+  returns false stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only
+  when all three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
   (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
-  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists.
-  The library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an
-  earlier launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
+  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. The
+  library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an earlier
+  launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
   (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history

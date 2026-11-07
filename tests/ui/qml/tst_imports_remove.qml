@@ -42,8 +42,10 @@ Item {
                 if (scanLists.get(j).name === "Order list" || scanLists.get(j).name === "Fallback list")
                     scanLists.remove(j);
             }
-            while (importedFiles.count > 0)
+            // Bounded: a removal that fails (a path left blocked) must fail the case, not spin forever.
+            for (var k = importedFiles.count; k > 0 && importedFiles.count > 0; k--)
                 importedFiles.remove(0);
+            compare(importedFiles.count, 0, "the library did not empty");
         }
 
         // Opens the confirmation for @p path's row and confirms it, as a tap on Remove then Remove file does.
@@ -96,7 +98,7 @@ Item {
             block(path, true);
             removeFile(path);
             block(path, false);
-            compare(tc.screen.notice, "Could not delete the file. Remove it again to finish.");
+            compare(tc.screen.notice, "The file was not fully removed. Remove it again to finish.");
             verify(tc.screen.noticeIsProblem);
             compare(scanLists.listsReferencingPath(path).length, 0);
             verify(importedFiles.rowForPath(path) >= 0 && testContext.fileExists(path), "the row must stay");

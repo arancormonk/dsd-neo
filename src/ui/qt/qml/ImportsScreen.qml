@@ -638,7 +638,7 @@ Item {
                     return;
                 }
                 if (!importedFiles.remove(screen.actionRow)) {
-                    screen.notice = qsTr("Could not delete the file. Remove it again to finish.");
+                    screen.notice = qsTr("The file was not fully removed. Remove it again to finish.");
                     screen.noticeIsProblem = true;
                     return;
                 }

@@ -137,11 +137,14 @@ class ImportedFilesModel : public QAbstractListModel {
 
     Q_INVOKABLE QVariantMap channelProfiles(int row) const;
     /**
-     * @brief Delete the stored file (and its bundle), then the row. Persists immediately.
+     * @brief Delete the stored file and its bundle folder, then the row. Persists immediately.
      *
      * Returns false, keeping the row, when removal is refused (canRemove()), the file will not delete, or the index
-     * cannot be saved. Each step is safe to repeat, so calling it again finishes a removal that stopped part way; a
-     * file already gone counts as deleted. References to the path are the caller's to clear, before this call.
+     * cannot be saved; calling it again finishes the removal, and a file already gone counts as deleted. An index save
+     * that fails after the delete leaves the row listed, naming a missing file, until a retry or the next load prunes
+     * it (the startup cleanup then clears what names it). The bundle folder's delete is best effort: a failure there
+     * is neither reported nor retried, and the row goes once the file has. References to the path are the caller's
+     * to clear, before this call.
      */
     Q_INVOKABLE bool remove(int row);
     Q_INVOKABLE bool canRemove(int row) const;
