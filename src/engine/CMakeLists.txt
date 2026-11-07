@@ -66,6 +66,7 @@ target_sources(
         signal_search.c
         frame_sync_hooks_install.c
         p25_bandplan_export.c
+        p25_site_snapshot.c
         p25_optional_hooks_install.c
         scan_voice_gate.c
         slicer_thresholds.c

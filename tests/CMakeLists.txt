@@ -8319,6 +8319,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     # A target restore unlinks the call recordings waiting for their rows (issue #708).

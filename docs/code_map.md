@@ -704,6 +704,11 @@ missing-channel ledger from `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>` — so a
 control-channel state from one system is never reused on another. That is also why trunk scan rejects a global `-C`
 channel map or `--p25-bandplan` and imports each target's `chan_csv` through throwaway options and its
 `p25_bandplan_csv` straight from the path, so neither touches the live options.
+The P25 site part of a snapshot (the Phase 2 code and its hand-set flag, RFSS and site, the control channel and its
+TDMA flags, the IDEN tables, the band plan, the explicit TDMA channel flags, the channel identifier and the sparse
+channel map) is `dsd_p25_site_snapshot` in `src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once
+per session (see Signal search). Trunk scan keeps the session's hand-set flag across a restore, and keeps the code's
+proof, the NAC, the modulation and the call state in its own snapshot fields.
 The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator fills empty slots or replaces an
 untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_idens()`, TDMA first), and `dsd_engine_p25_bandplan_export()` in
