@@ -470,6 +470,31 @@ Item {
             verify(stripPins()[0] === buttons[0], "the first pin kept its button");
         }
 
+        // A sheet row's start keeps the whole name readable at 320 px and the largest text size Theme allows: a word
+        // wider than the room beside Unpin breaks inside the word rather than running past the button's edge.
+        function test_sheet_start_label_fits_its_button() {
+            root.width = 320;
+            root.height = 690;
+            Ui.Theme.fontScale = 1.6;
+            var name = "Countywide Public Safety Trunked Radio System";
+            pin("system", addSystem(name));
+            var sheet = openSheet();
+            var start = sheetRows("pinnedSheetStart")[0];
+            var label = null;
+            for (var child of start.children) {
+                if (child.text === name)
+                    label = child;
+            }
+            verify(label !== null, "the start's label");
+            verify(label.contentWidth > 0);
+            verify(label.contentWidth <= label.width + 0.5, "label " + label.contentWidth + " wider than its room " + label.width);
+            var r = label.mapToItem(start, (label.width - label.contentWidth) / 2, 0);
+            verify(r.x >= -0.5 && r.x + label.contentWidth <= start.width + 0.5, "the label runs past the button");
+            verify(label.contentHeight <= start.height, "the button is as tall as its lines");
+            verify(!label.truncated, "the whole name shows");
+            sheet.visible = false;
+        }
+
         // The sheet is a management sheet: open, nothing on the strip or the body behind it acts.
         function test_sheet_blocks_background() {
             pin("system", addSystem("Alpha"));

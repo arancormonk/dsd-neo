@@ -42,9 +42,9 @@ bool ui_load(QQmlApplicationEngine& engine, DecoderHost* host);
 /**
  * @brief Clear what saved systems and scan lists name of library files that are gone.
  *
- * ui_load() runs it once the models have loaded: the paths the library pruned this load, and every path into
- * ImportedFilesModel::libraryRoot() whose file no longer exists, so a clear whose save failed at one launch is done
- * at a later one. A path outside the library is left as it is.
+ * load_listen_pins() runs it, from ui_load(), once the models have loaded and the pins are built: the paths the
+ * library pruned this load, and every path into ImportedFilesModel::libraryRoot() whose file no longer exists, so a
+ * clear whose save failed at one launch is done at a later one. A path outside the library is left as it is.
  */
 void prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* systems, ScanListsModel* scanLists);
 

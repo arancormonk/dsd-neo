@@ -144,7 +144,9 @@ ModalSheet {
                     text: pinRow.parts[0]
                     accessibleName: pinRow.live ? pinRow.parts[1] : ""
                     Accessible.ignored: !navigationAllowed || !visible || !pinRow.live
-                    wrapMode: Text.WordWrap
+                    // OutlineButton's own Text.Wrap: whole words where they fit,
+                    // and a name word wider than the room beside Unpin (320 px,
+                    // large text) breaks rather than running past the edge.
                     enabled: pinRow.live && pinRow.found && !decoderHost.transitioning
                     onClicked: sheet.start(pinRow.key)
                 }
