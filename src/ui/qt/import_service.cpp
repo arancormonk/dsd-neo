@@ -343,7 +343,21 @@ ImportService::journalRemove(const QStringList& directories) {
     for (const QString& dir : directories) {
         entries.removeAll(QDir::cleanPath(dir));
     }
-    return entries.size() == before || json_store_save_array(journal_name(), QJsonArray::fromStringList(entries));
+    if (entries.size() == before) {
+        return true;
+    }
+    // Nothing journaled leaves no journal behind; a missing journal is an empty one.
+    return (entries.isEmpty() && QFile::remove(journalPath()))
+           || json_store_save_array(journal_name(), QJsonArray::fromStringList(entries));
+}
+
+bool
+ImportService::journalSetAside() {
+    const QString path = journalPath();
+    const QString aside = path + QStringLiteral(".bad");
+    QFile::remove(aside);
+    // A missing journal is an empty one, so the next commit starts a fresh journal.
+    return !QFileInfo::exists(path) || QFile::rename(path, aside);
 }
 
 QStringList

@@ -7,12 +7,14 @@
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include "../../src/app_control/trunk_scan_document_internal.h"
 #include "../test_support/test_support.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/file_compat.h"
+#include "dsd-neo/platform/posix_compat.h"
 
 /* --- Issue #521: per-target squelch --- */
 
@@ -498,6 +500,51 @@ test_bom_target_file_bundle(void) {
     assert(dsd_test_remove_temp_dir(dir, files) == 0);
 }
 
+/* --- Issue #832 (B9): a rewrite tells a destination it cannot write from an input it cannot use --- */
+
+static void
+test_rewrite_write_failure(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "trunk-scan-write-"));
+    write_file_in(dir, "keys.csv", "id,value\n01,ABCDEF0123\n");
+    write_file_in(dir, "targets.csv",
+                  "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n"
+                  "Mall,dmr-conventional,464125000,,500,,,keys.csv\n");
+    char path[DSD_TEST_PATH_MAX];
+    char destination[DSD_TEST_PATH_MAX];
+    char err[256] = {0};
+    DSD_SNPRINTF(path, sizeof path, "%s/targets.csv", dir);
+    const dsd_app_scan_csv_replacement replacement = {0, "keys.csv"};
+
+    /* No folder for the destination: nothing can be created there. */
+    DSD_SNPRINTF(destination, sizeof destination, "%s/missing/out.csv", dir);
+    errno = 0;
+    assert(dsd_app_scan_csv_rewrite(path, NULL, 0, destination, &replacement, 1, err, sizeof err)
+           == DSD_APP_SCAN_CSV_WRITE_FAILED);
+    assert(errno != 0 && err[0] != '\0');
+
+    /* A folder where the destination goes: the bytes are written, then cannot take its name; the temporary goes. */
+    DSD_SNPRINTF(destination, sizeof destination, "%s/out.csv", dir);
+    assert(dsd_mkdir(destination, 0700) == 0);
+    errno = 0;
+    assert(dsd_app_scan_csv_rewrite(path, NULL, 0, destination, &replacement, 1, err, sizeof err)
+           == DSD_APP_SCAN_CSV_WRITE_FAILED);
+    assert(errno != 0);
+    assert(dsd_test_rmdir(destination) == 0);
+
+    /* The input's own problems stay -1. */
+    const dsd_app_scan_csv_replacement unsafe = {0, "-keys.csv"};
+    assert(dsd_app_scan_csv_rewrite(path, NULL, 0, destination, &unsafe, 1, err, sizeof err) == -1);
+    char missing[DSD_TEST_PATH_MAX];
+    DSD_SNPRINTF(missing, sizeof missing, "%s/absent.csv", dir);
+    assert(dsd_app_scan_csv_rewrite(missing, NULL, 0, destination, &replacement, 1, err, sizeof err) == -1);
+    assert(dsd_app_scan_csv_rewrite(path, NULL, 0, destination, &replacement, 1, err, sizeof err) == 0);
+
+    /* Every file is one this test wrote: the failed writes left no temporary behind. */
+    const char* const files[] = {"keys.csv", "targets.csv", "out.csv", NULL};
+    assert(dsd_test_remove_temp_dir(dir, files) == 0);
+}
+
 /* --- Issue #637: previews note service names the filters reject --- */
 
 typedef struct {
@@ -648,6 +695,7 @@ main(void) {
     test_am_targets(path);
     test_nfm_target_tone_lists(path);
     test_trunk_scan_examples_validate();
+    test_rewrite_write_failure();
     test_bundle_checks_each_file_once();
     test_quoted_options_cells();
     test_bom_target_file_bundle();

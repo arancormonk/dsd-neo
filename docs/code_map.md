@@ -12411,8 +12411,31 @@ Qt Quick frontend (`src/ui/qt`):
   memory and answers `save` with a detail). Replacing a `group` or `trunkTargets` row is refused (`busy`) while the
   decoder runs, at the start and again at the commit: the engine writes talkgroup lists and reads target lists while it
   runs. Errors are `too_large` (`limitBytes`), `read`, `local` (`noSpace`), `format` (`detail`), `stale`, `busy`,
-  `save`, `path` and `cancelled`. `chan` and `trunkTargets` still build their bundles on the Qt thread and answer
-  through the same signal. The synchronous `importFile`/`updateFile`/`importBundle` run the same stage and commit at
+  `save`, `path` and `cancelled`. `chan` and `trunkTargets` import as bundles (`csv_bundle_import.{h,cpp}`): the
+  stage builds the primary and every companion it copies in a mirror of `imports/` inside the request's staging
+  folder (`<staging>/lib/`), the primary at its final relative path (a new bundle `bundles/<uuid>/<name>`, a target
+  list `bundles/<uuid>/targets.csv`, a replace the row's own path) and the companions in a new revision
+  `bundles/<uuid>/<rev>/`, so relative references resolve in the mirror as they will in the library and the validated
+  bytes are the published ones. Copies go through an `ImportFetch` on the request's transport, each capped at
+  `min(32 MiB, budget left)` within `kMaxBundleImportBytes` (64 MiB) in all: a copy the budget cut short is
+  `too_large` with `limitBytes` 64 MiB, a file over 32 MiB with 32 MiB and its name; a rewritten output over 32 MiB is
+  `too_large` too. The staged primary is read whole with its read error checked (a failed read never imports its
+  valid prefix), and a target rewrite that cannot write its destination (`dsd_app_scan_csv_rewrite()` returns
+  `DSD_APP_SCAN_CSV_WRITE_FAILED`) is `local`, not `format`. A map that names no companion is a plain file and commits
+  as one. The bundle commit journals its one new directory (a new root, or a revision in the row's root), makes it with
+  an exclusive `mkdir`, moves the companions in one by one (`dsd_rename_noreplace`), then publishes the primary (no
+  replace, in the new root) and saves the row, or replaces the row's file index-first as above; a failure removes the
+  directory, and the journal entry goes once the primary is in place. Unanswered companions answer `companions` with
+  `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread).
+  Target-list revisions the row's primary no longer reaches are reclaimed on the import worker
+  (`clean_bundle_revisions()`), after a successful bundle replace and once after `load()`, never while the decoder
+  runs. Only owned, registered roots, never through a link; a target list that no longer validates keeps every
+  revision, and so does the journal naming the revision or its root (listed, then the journal read, then the primary
+  parsed, so a commit finishing in between is seen). `load()` first settles the commit journal (`recoverJournal()`, before the prune; skipped when
+  the index cannot be read): a journaled directory under `imports/bundles/` with an owned name that no row references
+  (its bundle root, or a revision its primary reaches) is removed; an unreadable journal deletes nothing and is set
+  aside (`ImportService::journalSetAside()`, `import_journal.json.bad`) so later commits journal again. The
+  synchronous `importFile`/`updateFile`/`importBundle` run the same stage and commit at
   once (`ImportService::runNow`); `importGeneratedFile`/`refreshGeneratedFile` (RadioReference) do too, so a refresh
   shares the replace order and its rollback. Every library change bumps the model's `revision` and emits
   `entriesChanged`; `countChanged` stays for count changes. `registerTalkgroupList()` saves the index before it adds the
@@ -12445,9 +12468,9 @@ Qt Quick frontend (`src/ui/qt`):
   the cancel, the pool is left to finish it without the service (never deleted, as `closeRecordingWork()`), and no
   commit runs. The service is created before the models that use it, so as the engine's child it is destroyed first.
   The commit journal `<AppData>/import_journal.json` (`journalAdd`/`journalRemove`/`journalEntries`, Qt thread)
-  lists the clean absolute directories a commit creates until the index naming them is saved. A journal that cannot
-  be read, or holds anything but absolute paths, gives `ok = false` and takes no change, and callers then delete
-  nothing. Test: `UI_QT_IMPORT_SERVICE`.
+  lists the clean absolute directories a commit creates until the index naming them is saved (a journal left empty is
+  removed; a missing one is empty). A journal that cannot be read, or holds anything but absolute paths, gives
+  `ok = false` and takes no change, and callers then delete nothing. Test: `UI_QT_IMPORT_SERVICE`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`

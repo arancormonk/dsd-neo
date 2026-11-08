@@ -1240,7 +1240,8 @@ The stager copies the file into the new bundle revision, rewriting nested paths;
 it neither adopts nor moves the library entry. These independent copies let either
 library entry be removed without breaking the other. The complete bundle is validated
 before registration or replacing an existing map; a rejected update retains the prior
-files. Removing the bundle removes its owned copies. Target replacement and removal
+files. A map or target list and the companion files it copies may total 64 MiB, each
+file at most 32 MiB. Removing the bundle removes its owned copies. Target replacement and removal
 remain unavailable during an active or transitioning decoder session.
 
 `CsvImportFlow.pick()` (primary picker) and `begin()` (already selected document)

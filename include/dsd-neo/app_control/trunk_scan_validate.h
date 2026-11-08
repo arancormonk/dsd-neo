@@ -94,10 +94,16 @@ typedef struct {
     const char* relative_path;
 } dsd_app_scan_csv_replacement;
 
+/** dsd_app_scan_csv_rewrite()'s answer when the input and its replacements were fine but the destination could not be
+ * written; errno then says why (ENOSPC for a full disk). */
+enum { DSD_APP_SCAN_CSV_WRITE_FAILED = -2 };
+
 /** Reinspect and rewrite only dependency tokens into a new private destination.
  * Every reference must have exactly one replacement. Generated paths may contain
  * ASCII letters/digits, slash, dot, underscore and hyphen; no leading dash.
- * Caller owns staging/atomic publication. No raw CSV or options cross this API. */
+ * Caller owns staging/atomic publication. No raw CSV or options cross this API.
+ * Returns 0, DSD_APP_SCAN_CSV_WRITE_FAILED when only the destination write failed,
+ * else -1 (the input could not be read or parsed, or a replacement is invalid). */
 int dsd_app_scan_csv_rewrite(const char* path, const char* base_path, int channel_map, const char* destination,
                              const dsd_app_scan_csv_replacement* replacements, size_t count, char* err, size_t err_sz);
 

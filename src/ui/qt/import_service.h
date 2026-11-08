@@ -120,19 +120,29 @@ class ImportService : public QObject {
     bool busy() const;
 
     /*
-     * The commit journal (Qt thread): directories a commit creates, recorded before it creates them and dropped once
-     * the index that names them is saved. Paths are stored clean and absolute.
+     * The commit journal: directories a commit creates, recorded before it creates them and dropped once the index that
+     * names them is saved. Paths are stored clean and absolute. The Qt thread writes it; the file is replaced whole, so
+     * journalEntries() may also read it on the import worker (the revision cleanup does).
      */
 
     /** @brief Record @p directories; false when the journal cannot be read or saved (it is then left as it was). */
     static bool journalAdd(const QStringList& directories);
-    /** @brief Drop @p directories; false when the journal cannot be read or saved (it is then left as it was). */
+    /**
+     * @brief Drop @p directories; false when the journal cannot be read or saved (it is then left as it was). A journal
+     * left empty is removed.
+     */
     static bool journalRemove(const QStringList& directories);
     /**
      * @brief The recorded directories. @p ok is false when the journal cannot be read or holds anything but absolute
      * paths: a caller then deletes nothing. A missing journal is empty and ok.
      */
     static QStringList journalEntries(bool* ok);
+    /**
+     * @brief Move a journal that cannot be read aside to import_journal.json.bad (replacing an older one), so the next
+     * commit starts an empty one. What it named stays where it is: nothing proves the app made it. False when the
+     * journal could not be moved.
+     */
+    static bool journalSetAside();
 
   Q_SIGNALS:
     void busyChanged();

@@ -5,6 +5,7 @@
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <climits>
 #include <cstdio>
 #include <cstring>
@@ -533,6 +534,14 @@ replacementPaths(const Document& doc, const dsd_app_scan_csv_replacement* replac
     if (count != doc.refs.size() || (count && !replacements)) {
         return fail(err, size, "Select all companion files.");
     }
+    const size_t length = doc.bytes.data.size() - 1;
+    size_t end = 0;
+    for (const auto& r : doc.refs) {
+        if (r.offset < end || r.offset > length || r.length > length - r.offset) {
+            return fail(err, size, "Invalid companion replacement.");
+        }
+        end = r.offset + r.length;
+    }
     paths.resize(count, nullptr);
     for (size_t i = 0; i < count; ++i) {
         const auto& r = replacements[i];
@@ -561,15 +570,13 @@ struct Output {
     }
 };
 
+/* The references lie in order inside the document (replacementPaths() checked), so only a write can fail. */
 bool
 writeReplacements(FILE* fp, const Document& doc, const std::vector<const char*>& paths) {
     size_t copied = 0;
     const size_t size = doc.bytes.data.size() - 1;
     for (size_t i = 0; i < doc.refs.size(); ++i) {
         const auto& r = doc.refs[i];
-        if (r.offset < copied || r.offset > size || r.length > size - r.offset) {
-            return false;
-        }
         const auto replacement = r.prefix + paths[i];
         if (std::fwrite(doc.bytes.data.data() + copied, 1, r.offset - copied, fp) != r.offset - copied
             || std::fwrite(replacement.data(), 1, replacement.size(), fp) != replacement.size()) {
@@ -580,13 +587,27 @@ writeReplacements(FILE* fp, const Document& doc, const std::vector<const char*>&
     return std::fwrite(doc.bytes.data.data() + copied, 1, size - copied, fp) == size - copied;
 }
 
+/* A destination write's failure: DSD_APP_SCAN_CSV_WRITE_FAILED, with errno still saying why once @p output's temporary
+   file is gone. */
+int
+writeFailure(Output& output, char* err, size_t size, const char* reason) {
+    const int saved = errno;
+    if (output.path[0]) {
+        (void)dsd_remove_file(output.path);
+        output.path[0] = 0;
+    }
+    (void)fail(err, size, reason);
+    errno = saved;
+    return DSD_APP_SCAN_CSV_WRITE_FAILED;
+}
+
 int
 writeDocument(const Document& doc, const char* destination, const std::vector<const char*>& paths, char* err,
               size_t size) {
     Output output;
     output.file = dsd_fopen_private_temp_for_replace(destination, output.path, sizeof output.path, "wb");
     if (!output.file) {
-        return fail(err, size, "Cannot create private CSV staging file.");
+        return writeFailure(output, err, size, "Cannot create private CSV staging file.");
     }
     bool ok = writeReplacements(output.file, doc, paths);
     if (std::fclose(output.file)) {
@@ -594,7 +615,7 @@ writeDocument(const Document& doc, const char* destination, const std::vector<co
     }
     output.file = nullptr;
     if (!ok || dsd_replace_file_with_temp(output.path, destination)) {
-        return fail(err, size, "Cannot write complete target CSV.");
+        return writeFailure(output, err, size, "Cannot write complete target CSV.");
     }
     output.path[0] = 0;
     return 0;

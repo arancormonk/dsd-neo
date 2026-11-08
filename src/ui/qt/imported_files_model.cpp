@@ -3,10 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <QIODevice>
 #include <cerrno>
 #include <memory>
-#include <stddef.h>
+#include <qflags.h>
 #include <utility>
 #include "imported_files_model.h"
 
@@ -29,12 +28,9 @@
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/power.h>
-#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/scan_options.h>
 
-#include <QSaveFile>
-#include <QTemporaryFile>
 #include <dsd-neo/core/dmr_key_map.h>
 #include "backup_archive.h"
 #include "csv_bundle_import.h"
@@ -55,16 +51,6 @@ constexpr const char kStoreFileName[] = "imported_files.json";
 /* How many names a publish tries before it gives up: a free name can still be taken (by another process) before the
  * rename claims it. */
 constexpr int kPublishAttempts = 16;
-
-struct PrivateCsvBytes {
-    QByteArray bytes;
-
-    ~PrivateCsvBytes() {
-        if (!bytes.isEmpty()) {
-            DSD_SECURE_ZERO(bytes.data(), static_cast<size_t>(bytes.size()));
-        }
-    }
-};
 
 /* Every talkgroup-export destination this process handed out (Qt thread only). The engine may still write one after
    the export flow cancelled or retried, so no import may take its name. */
@@ -169,6 +155,150 @@ publish_new_file(const QString& staged, const QString& name, QString* published)
         skipped.insert(dir.absoluteFilePath(QFileInfo(destination).fileName()));
     }
     return QStringLiteral("local");
+}
+
+/*
+ * Bundles (#832): a channel map or target list and its companions, built on the worker in a mirror of the library
+ * inside the request's staging folder and moved into the library file by file at the commit.
+ */
+
+/* The staging folder's fetch: each document a bundle reads, copied by the request's transport into a fresh file. */
+ImportFetch
+make_fetch(const ImportJob& job) {
+    const QString inbox = QDir(job.stagingDir).filePath(QStringLiteral("in"));
+    auto next = std::make_shared<int>(0);
+    return [job, inbox, next](const QString& reference, const QString& hint, qint64 maxBytes) {
+        ImportFetchResult copy;
+        copy.path = inbox + QLatin1Char('/') + QString::number((*next)++);
+        copy.code = QDir().mkpath(inbox) ? job.transport->copy(job.id, reference, copy.path, maxBytes)
+                                         : DecoderHost::DocumentLocalFailed;
+        const ImportCopyProgress progress = job.transport->progress(job.id);
+        copy.name = sanitized_import_name(progress.displayName, hint);
+        copy.noSpace = progress.noSpace;
+        copy.bytes = copy.code == DecoderHost::DocumentCopied ? QFileInfo(copy.path).size() : 0;
+        return copy;
+    };
+}
+
+/* A bundle stage's answer: the result keys, plus "staged" (the mirror's primary) and "bundle" (its layout). */
+QVariantMap
+bundle_map(const CsvBundleImport& bundle, const QString& mirrorRoot) {
+    QVariantMap result{{QStringLiteral("ok"), bundle.error.isEmpty()},
+                       {QStringLiteral("error"), bundle.error},
+                       {QStringLiteral("detail"), bundle.detail},
+                       {QStringLiteral("name"), bundle.name},
+                       {QStringLiteral("required"), bundle.required},
+                       {QStringLiteral("requiredLabels"), bundle.requiredLabels},
+                       {QStringLiteral("requiredDetails"), bundle.requiredDetails}};
+    if (bundle.error == QLatin1String("too_large")) {
+        result.insert(QStringLiteral("limitBytes"), bundle.limitBytes);
+    } else if (bundle.error == QLatin1String("local")) {
+        result.insert(QStringLiteral("noSpace"), bundle.noSpace);
+    }
+    result.insert(QStringLiteral("staged"), mirrorRoot + QLatin1Char('/') + bundle.primaryRelative);
+    result.insert(QStringLiteral("bundle"), QVariantMap{{QStringLiteral("mirrorRoot"), mirrorRoot},
+                                                        {QStringLiteral("primary"), bundle.primaryRelative},
+                                                        {QStringLiteral("root"), bundle.rootRelative},
+                                                        {QStringLiteral("revision"), bundle.revisionRelative},
+                                                        {QStringLiteral("files"), bundle.stagedRelative},
+                                                        {QStringLiteral("newRoot"), bundle.newRoot}});
+    return result;
+}
+
+/* A bundle's stage, on the import worker: build it in the mirror, then validate the mirror's primary as the library
+   will hold it. */
+QVariantMap
+stage_bundle(const ImportJob& job, const QVariantMap& request) {
+    const QString type = request.value(QStringLiteral("type")).toString();
+    const BundleTarget target{QDir(job.stagingDir).filePath(QStringLiteral("lib")),
+                              request.value(QStringLiteral("primaryRelative")).toString(),
+                              request.value(QStringLiteral("existingRootRelative")).toString(), kMaxBundleImportBytes};
+    const ImportFetch fetch = make_fetch(job);
+    const QString reference = request.value(QStringLiteral("reference")).toString();
+    const QString fileName = request.value(QStringLiteral("fileName")).toString();
+    const QVariantMap companions = request.value(QStringLiteral("companions")).toMap();
+    const QVariantMap entries = request.value(QStringLiteral("libraryEntries")).toMap();
+    const CsvBundleImport bundle = type == QLatin1String("trunkTargets")
+                                       ? stage_trunk_csv_bundle(fetch, target, reference, fileName, companions, entries)
+                                       : stage_csv_bundle(fetch, target, reference, fileName, companions, entries);
+    QVariantMap result = bundle_map(bundle, target.mirrorRoot);
+    result.insert(QStringLiteral("type"), type);
+    if (!bundle.error.isEmpty()) {
+        return result;
+    }
+    int accepted = 0;
+    int skipped = 0;
+    QString detail;
+    if (!ImportedFilesModel::validate(result.value(QStringLiteral("staged")).toString(), type, &accepted, &skipped,
+                                      &detail)) {
+        result.insert(QStringLiteral("ok"), false);
+        result.insert(QStringLiteral("error"), QStringLiteral("format"));
+        result.insert(QStringLiteral("detail"), detail);
+        return result;
+    }
+    result.insert(QStringLiteral("accepted"), accepted);
+    result.insert(QStringLiteral("skipped"), skipped);
+    return result;
+}
+
+/* Take back the directories a bundle commit made, and their journal entries. */
+void
+discard_created(const QStringList& created) {
+    for (const QString& dir : created) {
+        QDir(dir).removeRecursively();
+    }
+    ImportService::journalRemove(created);
+}
+
+/* Make @p dir, which must not exist yet: an existing one is never taken for the commit's own. */
+bool
+make_new_dir(const QString& dir) {
+    const QFileInfo info(dir);
+    return QDir().mkpath(info.absolutePath())
+           && QDir(info.absolutePath())
+                  .mkdir(info.fileName(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+}
+
+/*
+ * The first part of a bundle commit: journal its new directory (a root, or a revision in an existing root), make it,
+ * and move every companion from the mirror into it. Returns the error ("" on success); @p created then lists the
+ * journaled directory. A bundle without companions has nothing to place.
+ */
+QString
+place_bundle_files(const QVariantMap& staged, QStringList* created) {
+    const QVariantMap layout = staged.value(QStringLiteral("bundle")).toMap();
+    const QString revision = layout.value(QStringLiteral("revision")).toString();
+    if (layout.value(QStringLiteral("root")).toString().isEmpty()) {
+        return {};
+    }
+    const QString library = ImportedFilesModel::libraryRoot() + QLatin1Char('/');
+    const bool newRoot = layout.value(QStringLiteral("newRoot")).toBool();
+    const QString dir = library + (newRoot ? layout.value(QStringLiteral("root")).toString() : revision);
+    if (!ImportService::journalAdd({dir})) {
+        return QStringLiteral("local");
+    }
+    if (!make_new_dir(dir)) {
+        ImportService::journalRemove({dir});
+        return QStringLiteral("local");
+    }
+    *created = QStringList{dir};
+    const QString mirror = layout.value(QStringLiteral("mirrorRoot")).toString() + QLatin1Char('/');
+    bool placed = !newRoot || make_new_dir(library + revision);
+    // Only the revision's files move here; the primary is published (or replaced) last.
+    for (const QString& file : layout.value(QStringLiteral("files")).toStringList()) {
+        if (placed && file.startsWith(revision + QLatin1Char('/'))) {
+            int sourceLeft = 0;
+            placed = dsd_rename_noreplace((mirror + file).toUtf8().constData(), (library + file).toUtf8().constData(),
+                                          &sourceLeft)
+                     == 0;
+        }
+    }
+    if (!placed) {
+        discard_created(*created);
+        created->clear();
+        return QStringLiteral("local");
+    }
+    return {};
 }
 
 } // namespace
@@ -349,33 +479,9 @@ ImportedFilesModel::appendRow(Row row) {
     return true;
 }
 
-static bool
-writePrivateCsv(const QString& path, const QByteArray& data) {
-    QSaveFile file(path);
-    return file.open(QIODevice::WriteOnly) && file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
-           && file.write(data) == data.size() && file.commit();
-}
-
 bool
 ImportedFilesModel::decoderBusy() const {
     return m_host && (m_host->sessionActive() || m_host->transitioning());
-}
-
-QString
-ImportedFilesModel::bundleReplacementError(int row, const QString& type) const {
-    if (row < 0) {
-        return {};
-    }
-    if (row >= count()) {
-        return "removed";
-    }
-    if (m_rows[row].type != type) {
-        return "format";
-    }
-    if (type == "trunkTargets" && decoderBusy()) {
-        return "busy";
-    }
-    return {};
 }
 
 QVariantMap
@@ -420,9 +526,9 @@ ImportedFilesModel::companionChoices(const QVariantMap& requirement) const {
 }
 
 QVariantMap
-ImportedFilesModel::companionDetails(const CsvBundleImport& bundle) const {
+ImportedFilesModel::companionDetails(const QVariantMap& requiredDetails) const {
     QVariantMap details;
-    for (auto i = bundle.requiredDetails.cbegin(); i != bundle.requiredDetails.cend(); ++i) {
+    for (auto i = requiredDetails.cbegin(); i != requiredDetails.cend(); ++i) {
         details.insert(i.key(), companionChoices(i.value().toMap()));
     }
     return details;
@@ -440,13 +546,24 @@ ImportedFilesModel::importBundle(const QString& reference, const QString& fileNa
         const QVariantMap refusal = importRefusal(type, QString(), &target);
         return refusal.isEmpty() ? importNow(reference, QString(), fileName, type, target, QVariantMap()) : refusal;
     }
-    const QString problem = bundleReplacementError(replaceRow, type);
-    if (!problem.isEmpty()) {
-        return {{"ok", false},
-                {"error", problem},
-                {"detail", problem == "busy" ? "Stop the decoder before replacing target files."
-                                             : "Cannot replace this imported file."}};
+    if (replaceRow >= count()) {
+        QVariantMap result = failure(QStringLiteral("path"));
+        result.insert(QStringLiteral("detail"), tr("Cannot replace this imported file."));
+        result.insert(QStringLiteral("type"), type);
+        return result;
     }
+    ImportTarget target;
+    QVariantMap refusal = importRefusal(type, replaceRow >= 0 ? m_rows[replaceRow].path : QString(), &target);
+    if (!refusal.isEmpty()) {
+        return refusal;
+    }
+    target.bundle = true;
+    return importBundleNow(bundleRequest(reference, fileName, type, companions, target), target);
+}
+
+QVariantMap
+ImportedFilesModel::bundleRequest(const QString& reference, const QString& fileName, const QString& type,
+                                  const QVariantMap& companions, const ImportTarget& target) const {
     QVariantMap libraryEntries;
     for (const auto& row : m_rows) {
         const QString path = QFileInfo(row.path).canonicalFilePath();
@@ -454,135 +571,35 @@ ImportedFilesModel::importBundle(const QString& reference, const QString& fileNa
             libraryEntries.insert(path, QVariantMap{{"type", row.type}, {"name", row.name}});
         }
     }
-    const Row previous = replaceRow >= 0 ? m_rows[replaceRow] : Row();
-    const auto bundle =
-        type == "trunkTargets"
-            ? stage_trunk_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot, libraryEntries)
-            : stage_csv_bundle(m_host, reference, fileName, companions, previous.bundleRoot, libraryEntries);
-    if (!bundle.error.isEmpty()) {
-        return {{"ok", false},
-                {"error", bundle.error},
-                {"detail", bundle.detail},
-                {"required", bundle.required},
-                {"requiredLabels", bundle.requiredLabels},
-                {"requiredDetails", companionDetails(bundle)}};
-    }
-    if (replaceRow < 0) {
-        auto result = adoptStoredFile(bundle.path, type, {{"bundleRoot", bundle.root}, {"name", bundle.name}});
-        if (!result.value("ok").toBool()) {
-            discard_csv_bundle(bundle);
-        }
-        return result;
-    }
-    return replaceBundle(replaceRow, bundle, type);
-}
-
-static bool
-replacementBundleBytes(const CsvBundleImport& bundle, const QString& destination, QByteArray& bytes) {
-    QFile staged(bundle.path);
-    if (!staged.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-    bytes = staged.readAll();
-    if (staged.error() != QFileDevice::NoError) {
-        return false;
-    }
-    staged.close();
-    if (!bundle.root.isEmpty()) {
-        const QString prefix = QDir(QFileInfo(destination).absolutePath()).relativeFilePath(bundle.root);
-        if (prefix != ".") {
-            bytes.replace((bundle.revision + '/').toUtf8(), (prefix + '/' + bundle.revision + '/').toUtf8());
+    QVariantMap request{{QStringLiteral("reference"), reference},
+                        {QStringLiteral("fileName"), fileName},
+                        {QStringLiteral("type"), type},
+                        {QStringLiteral("companions"), companions},
+                        {QStringLiteral("libraryEntries"), libraryEntries}};
+    const int row = target.path.isEmpty() ? -1 : rowForPath(target.path);
+    if (row >= 0) {
+        // Where the replaced row's files lie in the library, so the stage builds the new ones at the same places.
+        const QDir library(libraryRoot());
+        request.insert(QStringLiteral("primaryRelative"), QDir::cleanPath(library.relativeFilePath(m_rows[row].path)));
+        if (!m_rows[row].bundleRoot.isEmpty()) {
+            request.insert(QStringLiteral("existingRootRelative"),
+                           QDir::cleanPath(library.relativeFilePath(m_rows[row].bundleRoot)));
         }
     }
-    return true;
+    return request;
 }
 
 QVariantMap
-ImportedFilesModel::replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type) {
-    const Row previous = m_rows.at(replaceRow);
-    // Versioned companions are immutable. Only the existing primary path is
-    // replaced, so every saved reference changes together after validation.
-    PrivateCsvBytes storage;
-    auto& bytes = storage.bytes;
-    if (!replacementBundleBytes(bundle, previous.path, bytes)) {
-        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        return {{"ok", false}, {"error", "open"}};
+ImportedFilesModel::importBundleNow(const QVariantMap& request, const ImportTarget& target) {
+    QVariantMap result = failure(QStringLiteral("local"));
+    result.insert(QStringLiteral("type"), target.type);
+    if (m_imports) {
+        m_imports->runNow([&request](const ImportJob& job) { return stage_bundle(job, request); },
+                          [&](qint64, const QVariantMap& staged, bool cancelled) {
+                              result = commitStaged(staged, cancelled, target, QVariantMap());
+                          });
     }
-    QTemporaryFile check(QFileInfo(previous.path).absolutePath() + "/.bundle-check-XXXXXX.csv");
-    if (!check.open() || !check.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner)
-        || check.write(bytes) != bytes.size() || !check.flush()) {
-        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        return {{"ok", false}, {"error", "copy"}};
-    }
-    int accepted = 0, skipped = 0;
-    QString detail;
-    if (!validate(check.fileName(), type, &accepted, &skipped, &detail)) {
-        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        return {{"ok", false}, {"error", "format"}, {"detail", detail}};
-    }
-    QFile old(previous.path);
-    if (!old.open(QIODevice::ReadOnly)) {
-        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        return {{"ok", false}, {"error", "open"}};
-    }
-    PrivateCsvBytes backupStorage;
-    backupStorage.bytes = old.readAll();
-    if (old.error() != QFileDevice::NoError) {
-        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        return {{"ok", false}, {"error", "open"}};
-    }
-    const auto& backup = backupStorage.bytes;
-    old.close();
-    if (!writePrivateCsv(previous.path, bytes)) {
-        discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        return {{"ok", false}, {"error", "copy"}};
-    }
-    auto next = m_rows;
-    next[replaceRow].accepted = accepted;
-    next[replaceRow].skipped = skipped;
-    next[replaceRow].bundleRoot = bundle.root.isEmpty() ? previous.bundleRoot : bundle.root;
-    next[replaceRow].importedAt = realtimeSecsSinceEpoch();
-    next[replaceRow].origin.clear();
-    next[replaceRow].revision = m_revision + 1;
-    if (!saveRows(next)) {
-        if (writePrivateCsv(previous.path, backup)) {
-            discard_csv_bundle(bundle, !previous.bundleRoot.isEmpty());
-        }
-        return {{"ok", false}, {"error", "copy"}};
-    }
-    QFile::remove(bundle.path);
-    if (type == "trunkTargets") {
-        clean_trunk_csv_revisions(previous.path, bundle.root);
-    }
-    applyReplacement(replaceRow, std::move(next));
-    // Kept until the screens read the library's revision: they list entriesForType() again when the count changes.
-    Q_EMIT countChanged();
-    return {{"ok", true},           {"path", previous.path}, {"name", previous.name},           {"type", type},
-            {"accepted", accepted}, {"skipped", skipped},    {"error", accepted ? "" : "empty"}};
-}
-
-QVariantMap
-ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin) {
-    int accepted = 0;
-    int skipped = 0;
-    QString detail;
-    if (!validate(path, type, &accepted, &skipped, &detail)) {
-        // The copy landed but cannot be parsed as this type; a library row for
-        // it would just be a dead entry, so take the copy back out.
-        QFile::remove(path);
-        auto result = failure(QStringLiteral("open"));
-        result.insert(QStringLiteral("detail"), detail);
-        return result;
-    }
-    Row row = newRow(path, type, accepted, skipped, origin);
-    if (type == "trunkTargets" && !origin.value("name").toString().isEmpty()) {
-        row.name = origin.value("name").toString();
-    }
-    if (!appendRow(std::move(row))) {
-        QFile::remove(path);
-        return failure(QStringLiteral("open"));
-    }
-    return rowResult(m_rows.constLast());
+    return result;
 }
 
 ImportedFilesModel::Row
@@ -659,22 +676,25 @@ ImportedFilesModel::beginImport(const QString& reference, const QString& fileNam
     if (!refusal.isEmpty()) {
         return answerLater(refusal);
     }
-    if (type == QLatin1String("chan") || type == QLatin1String("trunkTargets")) {
-        // Bundles still build on the Qt thread; their answer comes the way every other one does.
-        return answerLater(
-            importBundle(reference, fileName, type, companions, replacePath.isEmpty() ? -1 : rowForPath(replacePath)));
-    }
     if (!m_imports) {
         QVariantMap result = failure(QStringLiteral("local"));
         result.insert(QStringLiteral("type"), type);
         return answerLater(result);
     }
+    // A channel map or a target list builds with its companions; any other type is one file.
+    target.bundle = type == QLatin1String("chan") || type == QLatin1String("trunkTargets");
+    ImportService::Stage stage = [reference, fileName, type](const ImportJob& job) {
+        return stage_single_file(job, reference, QString(), fileName, type);
+    };
+    if (target.bundle) {
+        stage = [request = bundleRequest(reference, fileName, type, companions, target)](const ImportJob& job) {
+            return stage_bundle(job, request);
+        };
+    }
     const bool before = importing();
-    const qint64 id = m_imports->submit(
-        [reference, fileName, type](const ImportJob& job) {
-            return stage_single_file(job, reference, QString(), fileName, type);
-        },
-        [self = QPointer<ImportedFilesModel>(this), target](qint64 request, const QVariantMap& staged, bool cancelled) {
+    const qint64 id =
+        m_imports->submit(std::move(stage), [self = QPointer<ImportedFilesModel>(this),
+                                             target](qint64 request, const QVariantMap& staged, bool cancelled) {
             if (self) {
                 self->finishImport(request, staged, cancelled, target);
             }
@@ -725,11 +745,20 @@ QVariantMap
 ImportedFilesModel::commitStaged(const QVariantMap& staged, bool cancelled, const ImportTarget& target,
                                  const QVariantMap& origin) {
     if (!cancelled && staged.value(QStringLiteral("ok")).toBool()) {
+        if (target.bundle) {
+            return commitBundle(staged, target);
+        }
         return target.path.isEmpty() ? commitNewFile(staged, origin) : commitReplacement(staged, target);
     }
     // A request cancelled before its stage, or one with no staging folder, staged no name.
     QVariantMap result = cancelled ? failure(QStringLiteral("cancelled")) : staged;
     result.remove(QStringLiteral("staged"));
+    result.remove(QStringLiteral("bundle"));
+    if (result.contains(QStringLiteral("requiredDetails"))) {
+        // The library's choices for each companion the bundle still needs.
+        result.insert(QStringLiteral("requiredDetails"),
+                      companionDetails(result.value(QStringLiteral("requiredDetails")).toMap()));
+    }
     result.insert(QStringLiteral("name"), staged.value(QStringLiteral("name")).toString());
     result.insert(QStringLiteral("type"), target.type);
     return result;
@@ -757,11 +786,17 @@ ImportedFilesModel::commitNewFile(const QVariantMap& staged, const QVariantMap& 
     return result;
 }
 
+int
+ImportedFilesModel::currentRow(const ImportTarget& target) const {
+    const int row = rowForPath(target.path);
+    return row >= 0 && m_rows[row].revision == target.revision && m_rows[row].type == target.type ? row : -1;
+}
+
 QVariantMap
 ImportedFilesModel::commitReplacement(const QVariantMap& staged, const ImportTarget& target) {
-    const int row = rowForPath(target.path);
+    const int row = currentRow(target);
     QVariantMap result = failure(QStringLiteral("stale"));
-    if (row >= 0 && m_rows[row].revision == target.revision && m_rows[row].type == target.type) {
+    if (row >= 0) {
         result = !target.refresh && replacementBusy(target.type) ? busy_failure(target.type)
                                                                  : replaceRowFile(row, staged, target.refresh);
     }
@@ -773,13 +808,105 @@ ImportedFilesModel::commitReplacement(const QVariantMap& staged, const ImportTar
 }
 
 QVariantMap
-ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refresh) {
+ImportedFilesModel::commitBundle(const QVariantMap& staged, const ImportTarget& target) {
+    const bool plain =
+        staged.value(QStringLiteral("bundle")).toMap().value(QStringLiteral("root")).toString().isEmpty();
+    if (target.path.isEmpty() && plain) {
+        // A channel map that names no companion is one file, stored under a free name.
+        return commitNewFile(staged, QVariantMap());
+    }
+    const int row = target.path.isEmpty() ? -1 : currentRow(target);
+    QVariantMap result;
+    if (!target.path.isEmpty() && row < 0) {
+        result = failure(QStringLiteral("stale"));
+    } else if (row >= 0 && replacementBusy(target.type)) {
+        result = busy_failure(target.type);
+    } else {
+        QStringList created;
+        const QString error = place_bundle_files(staged, &created);
+        result = !error.isEmpty() ? failure(error)
+                 : row < 0        ? publishBundle(staged, created)
+                                  : replaceBundleRow(row, staged, created);
+    }
+    if (!result.value(QStringLiteral("ok")).toBool()) {
+        result.insert(QStringLiteral("name"), staged.value(QStringLiteral("name")).toString());
+        result.insert(QStringLiteral("type"), target.type);
+    }
+    return result;
+}
+
+QVariantMap
+ImportedFilesModel::publishBundle(const QVariantMap& staged, const QStringList& created) {
+    const QVariantMap layout = staged.value(QStringLiteral("bundle")).toMap();
+    const QString type = staged.value(QStringLiteral("type")).toString();
+    const QString path = libraryRoot() + QLatin1Char('/') + layout.value(QStringLiteral("primary")).toString();
+    int sourceLeft = 0;
+    // The root is new and the commit's own, so the primary's name is free there.
+    if (dsd_rename_noreplace(staged.value(QStringLiteral("staged")).toString().toUtf8().constData(),
+                             path.toUtf8().constData(), &sourceLeft)
+        != 0) {
+        discard_created(created);
+        return failure(QStringLiteral("local"));
+    }
+    const QString root = libraryRoot() + QLatin1Char('/') + layout.value(QStringLiteral("root")).toString();
+    Row row = newRow(path, type, staged.value(QStringLiteral("accepted")).toInt(),
+                     staged.value(QStringLiteral("skipped")).toInt(), {{QStringLiteral("bundleRoot"), root}});
+    if (type == QLatin1String("trunkTargets")) {
+        // Every target list is stored as targets.csv in its own root; the row keeps the document's name.
+        row.name = staged.value(QStringLiteral("name")).toString();
+    }
+    if (!appendRow(std::move(row))) {
+        discard_created(created);
+        return failure(QStringLiteral("save"));
+    }
+    ImportService::journalRemove(created);
+    return rowResult(m_rows.constLast());
+}
+
+QVariantMap
+ImportedFilesModel::replaceBundleRow(int row, const QVariantMap& staged, const QStringList& created) {
+    QVariantMap replacement = staged;
+    const QString root = staged.value(QStringLiteral("bundle")).toMap().value(QStringLiteral("root")).toString();
+    if (!root.isEmpty()) {
+        replacement.insert(QStringLiteral("bundleRoot"), libraryRoot() + QLatin1Char('/') + root);
+    }
+    QVariantMap result = replaceRowFile(row, replacement, false, created);
+    if (result.value(QStringLiteral("ok")).toBool()) {
+        // Kept until the screens read the library's revision: they list entriesForType() again when the count changes.
+        Q_EMIT countChanged();
+        const Row& stored = m_rows[row];
+        if (!stored.bundleRoot.isEmpty()) {
+            reclaimRevisions({BundleRevisions{stored.path, stored.bundleRoot, stored.type}});
+        }
+    }
+    return result;
+}
+
+void
+ImportedFilesModel::reclaimRevisions(const QList<BundleRevisions>& bundles) {
+    // While the decoder runs it may still read an older revision's files (B5).
+    if (bundles.isEmpty() || !m_imports || decoderBusy()) {
+        return;
+    }
+    m_imports->submit(
+        [bundles](const ImportJob&) {
+            clean_bundle_revisions(bundles, &ImportService::journalEntries);
+            return QVariantMap();
+        },
+        [](qint64, const QVariantMap&, bool) {});
+}
+
+QVariantMap
+ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refresh, const QStringList& created) {
     auto next = m_rows;
     Row& stored = next[row];
     stored.importedAt = realtimeSecsSinceEpoch();
     stored.accepted = staged.value(QStringLiteral("accepted")).toInt();
     stored.skipped = staged.value(QStringLiteral("skipped")).toInt();
     stored.revision = m_revision + 1;
+    if (staged.contains(QStringLiteral("bundleRoot"))) {
+        stored.bundleRoot = staged.value(QStringLiteral("bundleRoot")).toString();
+    }
     if (!refresh) {
         // The bytes are the user's own now, so the row no longer came from
         // RadioReference. Keeping the provenance would leave "Refresh from
@@ -794,6 +921,7 @@ ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refr
     // The index first, the file last: a crash between them leaves the index's counts ahead of a file that is still
     // whole, never a path that names nothing, and the old bytes never need restoring.
     if (!saveRows(next)) {
+        discard_created(created);
         return failure(QStringLiteral("save"));
     }
     const QString path = stored.path;
@@ -802,17 +930,20 @@ ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refr
         != 0) {
         const bool noSpace = errno == ENOSPC;
         if (saveRows(m_rows)) {
+            discard_created(created);
             QVariantMap result = failure(QStringLiteral("local"));
             result.insert(QStringLiteral("noSpace"), noSpace);
             return result;
         }
         // The index on disk now holds the new state, so the rows in memory follow it; the file keeps its old bytes.
+        // The new directories stay journaled: the next start keeps the ones the index references.
         applyReplacement(row, std::move(next));
         QVariantMap result = failure(QStringLiteral("save"));
         result.insert(QStringLiteral("detail"),
                       tr("The file could not be replaced, and the library could not be put back as it was."));
         return result;
     }
+    ImportService::journalRemove(created);
     applyReplacement(row, std::move(next));
     return rowResult(m_rows[row]);
 }
@@ -943,9 +1074,7 @@ ImportedFilesModel::remove(int row) {
         return false;
     }
     if (!item.bundleRoot.isEmpty()) {
-        CsvBundleImport bundle;
-        bundle.root = item.bundleRoot;
-        discard_csv_bundle(bundle);
+        remove_bundle_root(item.bundleRoot);
     }
     auto next = m_rows;
     next.removeAt(row);
@@ -1073,13 +1202,21 @@ ImportedFilesModel::mapFromRow(const Row& row) {
 
 void
 ImportedFilesModel::load() {
-    QList<Row> rows;
-    const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName));
+    JsonStoreLoad status = JsonStoreLoad::Failed;
+    const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName), &status);
+    QList<Row> stored;
     for (const auto& value : array) {
-        if (!value.isObject()) {
-            continue;
+        if (value.isObject()) {
+            stored.append(rowFromMap(value.toObject().toVariantMap()));
         }
-        Row row = rowFromMap(value.toObject().toVariantMap());
+    }
+    // An index that cannot be read references nothing, which proves nothing about the journal.
+    if (status != JsonStoreLoad::Failed) {
+        recoverJournal(stored);
+    }
+    QList<Row> rows;
+    QList<BundleRevisions> bundles;
+    for (Row& row : stored) {
         // A copy Android or the user deleted behind the app's back must not
         // survive as a ghost row pointing nowhere.
         if (row.path.isEmpty() || !QFile::exists(row.path)) {
@@ -1088,8 +1225,8 @@ ImportedFilesModel::load() {
             }
             continue;
         }
-        if (row.type == "trunkTargets" && m_host && !m_host->sessionActive() && !m_host->transitioning()) {
-            clean_trunk_csv_revisions(row.path, row.bundleRoot);
+        if (!row.bundleRoot.isEmpty()) {
+            bundles.append(BundleRevisions{row.path, row.bundleRoot, row.type});
         }
         row.revision = ++m_revision;
         rows.append(row);
@@ -1105,6 +1242,55 @@ ImportedFilesModel::load() {
         // the index keeps advertising rows the library no longer has.
         save();
     }
+    reclaimRevisions(bundles);
+}
+
+namespace {
+/* Whether a row of @p rows references the journaled directory @p dir: as its bundle root, or as a revision of its root
+   that its primary reaches (or might: a primary that cannot be parsed keeps every revision). */
+bool
+journaled_dir_referenced(const QString& dir, const QList<BundleRevisions>& bundles) {
+    for (const auto& bundle : bundles) {
+        const QString root = QDir::cleanPath(bundle.root);
+        if (dir == root) {
+            return true;
+        }
+        QSet<QString> reached;
+        if (QFileInfo(dir).absolutePath() == root
+            && (!bundle_reached_revisions(bundle.path, root, bundle.type, &reached)
+                || reached.contains(QFileInfo(dir).fileName()))) {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+void
+ImportedFilesModel::recoverJournal(const QList<Row>& rows) {
+    bool ok = false;
+    const QStringList entries = ImportService::journalEntries(&ok);
+    if (!ok) {
+        // Nothing it names can be proven the app's now; it is set aside so later commits can journal again.
+        ImportService::journalSetAside();
+        return;
+    }
+    QList<BundleRevisions> bundles;
+    for (const Row& row : rows) {
+        if (!row.bundleRoot.isEmpty()) {
+            bundles.append(BundleRevisions{row.path, row.bundleRoot, row.type});
+        }
+    }
+    QStringList settled;
+    for (const QString& dir : entries) {
+        const bool owned = owned_bundle_root(dir) || owned_bundle_revision(dir);
+        // A crash between a commit's journal entry and its index save left this; nothing names it, so it goes.
+        if (owned && !journaled_dir_referenced(dir, bundles) && !QDir(dir).removeRecursively()) {
+            continue;
+        }
+        settled.append(dir);
+    }
+    ImportService::journalRemove(settled);
 }
 
 QStringList

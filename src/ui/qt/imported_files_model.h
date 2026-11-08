@@ -33,7 +33,7 @@
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
-struct CsvBundleImport;
+struct BundleRevisions;
 
 class DecoderHost;
 class ImportService;
@@ -244,12 +244,15 @@ class ImportedFilesModel : public QAbstractListModel {
         QString type;
         /* A RadioReference refresh: it keeps the row's provenance, and the decoder running does not hold it back. */
         bool refresh = false;
+        /* A channel map or target list: built with its companions, as a bundle. */
+        bool bundle = false;
     };
 
-    QVariantMap companionDetails(const CsvBundleImport& bundle) const;
+    QVariantMap companionDetails(const QVariantMap& requiredDetails) const;
     QVariantMap companionChoices(const QVariantMap& requirement) const;
-    QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
-    QString bundleReplacementError(int row, const QString& type) const;
+    /** What a bundle stage needs from the library, taken on the Qt thread: its rows' types and the replaced row. */
+    QVariantMap bundleRequest(const QString& reference, const QString& fileName, const QString& type,
+                              const QVariantMap& companions, const ImportTarget& target) const;
     bool decoderBusy() const;
     /** Whether replacing a row of @p type must wait: the running engine writes talkgroup lists, reads target lists. */
     bool replacementBusy(const QString& type) const;
@@ -260,13 +263,28 @@ class ImportedFilesModel : public QAbstractListModel {
     /** Run a single-file stage and its commit at once on the calling thread; the commit's result. */
     QVariantMap importNow(const QString& reference, const QString& providerName, const QString& hint,
                           const QString& type, const ImportTarget& target, const QVariantMap& origin);
+    /** Run a bundle's stage and its commit at once on the calling thread; the commit's result. */
+    QVariantMap importBundleNow(const QVariantMap& request, const ImportTarget& target);
     void finishImport(qint64 id, const QVariantMap& staged, bool cancelled, const ImportTarget& target);
     QVariantMap commitStaged(const QVariantMap& staged, bool cancelled, const ImportTarget& target,
                              const QVariantMap& origin);
     QVariantMap commitNewFile(const QVariantMap& staged, const QVariantMap& origin);
     QVariantMap commitReplacement(const QVariantMap& staged, const ImportTarget& target);
-    /** Replace row @p row's file with the staged copy: the index saved first, then the file moved over. */
-    QVariantMap replaceRowFile(int row, const QVariantMap& staged, bool refresh);
+    /** The row @p target began against, or -1 when it is gone or changed since. */
+    int currentRow(const ImportTarget& target) const;
+    /** A bundle's commit: its new directories journaled, made and filled, then the primary published or replaced. */
+    QVariantMap commitBundle(const QVariantMap& staged, const ImportTarget& target);
+    /** Record a new bundle whose directories @p created are filled: publish the primary, then save the row. */
+    QVariantMap publishBundle(const QVariantMap& staged, const QStringList& created);
+    QVariantMap replaceBundleRow(int row, const QVariantMap& staged, const QStringList& created);
+    /**
+     * Replace row @p row's file with the staged copy: the index saved first, then the file moved over. @p created are
+     * the journaled directories the commit made for it: removed when nothing was published, dropped from the journal
+     * once the file is in place, and left journaled when neither the move nor the rollback could be saved.
+     */
+    QVariantMap replaceRowFile(int row, const QVariantMap& staged, bool refresh, const QStringList& created = {});
+    /** Reclaim @p bundles' unreached revisions on the import worker; nothing while the decoder runs. */
+    void reclaimRevisions(const QList<BundleRevisions>& bundles);
     void updateImporting(bool before);
 
     struct Row {
@@ -314,12 +332,6 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     static QVariant provenanceRole(const Row& row, int role);
 
-    /**
-     * @brief Record a library row for a bundle primary already stored and validate it (the bundle import's tail): on
-     * a validation failure the copy is taken back out, because a row that cannot be parsed is a dead entry and nothing
-     * else would ever delete the file.
-     */
-    QVariantMap adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin);
     /** @brief Append @p row, saved first: false, with nothing changed, when the index cannot be saved. */
     bool appendRow(Row row);
     /** @brief Take @p next, which replaced row @p row, as the library, and notify. */
@@ -329,6 +341,12 @@ class ImportedFilesModel : public QAbstractListModel {
     static QVariantMap rowResult(const Row& row);
 
     void load();
+    /**
+     * @brief Settle the commit journal a crash left (load() only, before the prune): remove each journaled directory
+     * that @p rows do not reference (a row's bundle root, or a revision its primary reaches) and that lies under
+     * imports/bundles/ with an owned name. A journal that cannot be read deletes nothing and is set aside.
+     */
+    static void recoverJournal(const QList<Row>& rows);
     bool save() const;
     bool saveRows(const QList<Row>& rows) const;
 

@@ -506,6 +506,9 @@ test_journal() {
     CHECK(!ImportService::journalAdd({QStringLiteral("relative/dir")}) && entries(&ok) == QStringList({b, c}),
           "a relative directory is refused and nothing is recorded");
     CHECK(ImportService::journalRemove({b, c}) && entries(&ok).isEmpty() && ok, "the journal empties");
+    CHECK(!QFileInfo::exists(path), "an empty journal leaves no file behind");
+    CHECK(ImportService::journalAdd({a}) && entries(&ok) == QStringList({a}) && ok, "a new journal starts after it");
+    CHECK(ImportService::journalRemove({a}), "and empties again");
 
     for (const QByteArray& bad : {QByteArray("{not json"), QByteArray("{\"a\":1}"), QByteArray("[1]"),
                                   QByteArray("[\"\"]"), QByteArray("[\"relative\"]")}) {
@@ -516,6 +519,17 @@ test_journal() {
               "an unreadable journal takes no change");
         CHECK(read_file(path) == bad, "and is left as it was");
     }
+    // A journal that cannot be read is set aside, replacing an older one, and the next record starts a new one.
+    write_file(path + QStringLiteral(".bad"), "older");
+    write_file(path, "{not json");
+    CHECK(ImportService::journalSetAside() && read_file(path + QStringLiteral(".bad")) == "{not json"
+              && !QFileInfo::exists(path),
+          "an unreadable journal is set aside");
+    CHECK(ImportService::journalAdd({a}) && entries(&ok) == QStringList({a}) && ok, "later records journal again");
+    CHECK(ImportService::journalSetAside() && read_file(path + QStringLiteral(".bad")).contains(a.toUtf8()),
+          "setting aside always moves the journal");
+    CHECK(ImportService::journalSetAside(), "with no journal there is nothing to set aside");
+    QFile::remove(path + QStringLiteral(".bad"));
     QFile::remove(path);
 }
 

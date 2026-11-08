@@ -15,7 +15,6 @@
 #include <QSet>
 #include <QStringList>
 #include <QTextStream>
-#include <QVector>
 #include <Qt>
 #include <algorithm>
 #include <cmath>
@@ -27,6 +26,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <new>
+#include <stddef.h>
 #include <stdint.h>
 #include <utility>
 #include "known_frequency_index.h"
