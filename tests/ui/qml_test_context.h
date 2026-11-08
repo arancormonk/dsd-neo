@@ -4106,6 +4106,15 @@ class Setup : public QObject {
         }
     }
 
+    /** @brief Issue #646: Listen back on its default tab, through the real AppPrefs. A Home already built keeps the
+     *         tab it opened on. */
+    Q_INVOKABLE void
+    resetListenSection() {
+        if (m_app_prefs != nullptr) {
+            m_app_prefs->setListenSection(QStringLiteral("systems"));
+        }
+    }
+
     /** @brief No scan lists: an empty frame, and every switch and answer forgotten. */
     Q_INVOKABLE void
     resetScanLists() {
@@ -4475,6 +4484,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("searchPort")] = 1234;
         /* Closed, as on a fresh install (#718). */
         prefs[QStringLiteral("monitorDetailsExpanded")] = false;
+        /* Issue #646: Listen opens on Systems, as on a fresh install. */
+        prefs[QStringLiteral("listenSection")] = QStringLiteral("systems");
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
@@ -5010,6 +5021,8 @@ class Setup : public QObject {
         /* Issue #801: the production pins over the real AppPrefs (the settings file every case shares, whichever
          * `prefs` a case reads), cleared for each test file; resetPins() clears them between cases. */
         app_prefs->setPinned({});
+        /* Issue #646: the Listen tab too, on the same shared file; resetListenSection() between cases. */
+        app_prefs->setListenSection(QStringLiteral("systems"));
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);

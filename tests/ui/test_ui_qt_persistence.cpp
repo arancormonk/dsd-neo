@@ -891,6 +891,63 @@ test_screen_policy_prefs() {
     stored.remove(legacyKey);
 }
 
+/* Issue #646: the Listen tab last chosen, one of three ids, Systems for anything else. */
+void
+test_listen_section_pref() {
+    QSettings stored = prefs_file();
+    const QString key = QStringLiteral("listen/section");
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::listenSectionChanged, &prefs, [&changes]() { ++changes; });
+        expect("Listen opens on Systems by default", prefs.listenSection() == QStringLiteral("systems"));
+        prefs.setListenSection(QStringLiteral("systems"));
+        expect("choosing the default on a fresh install is not a change", changes == 0 && !stored.contains(key));
+        int want = 0;
+        for (const char* id : {"scanLists", "explore", "systems"}) {
+            const QString section = QLatin1String(id);
+            prefs.setListenSection(section);
+            ++want;
+            expect(qPrintable(QStringLiteral("%1 reads back and is stored").arg(section)),
+                   prefs.listenSection() == section && stored.value(key).toString() == section);
+            expect(qPrintable(QStringLiteral("%1 notifies once").arg(section)), changes == want);
+            prefs.setListenSection(section);
+            expect(qPrintable(QStringLiteral("%1 again does not notify").arg(section)), changes == want);
+        }
+        prefs.setListenSection(QStringLiteral("explore"));
+        ++want;
+        for (const char* text : {"bogus", "", "Systems"}) {
+            prefs.setListenSection(QLatin1String(text));
+            expect(qPrintable(QStringLiteral("\"%1\" is refused without a write").arg(QLatin1String(text))),
+                   changes == want && stored.value(key).toString() == QStringLiteral("explore")
+                       && prefs.listenSection() == QStringLiteral("explore"));
+        }
+    }
+    {
+        AppPrefs reloaded;
+        expect("the Listen tab persists across instances", reloaded.listenSection() == QStringLiteral("explore"));
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::listenSectionChanged, &reloaded, [&changes]() { ++changes; });
+        // A downgrade, a hand edit or a newer build's id reads as Systems, never as a tab this build lacks.
+        const QVariant damaged[] = {QStringLiteral("bogus"), QStringLiteral("Explore"), 2,
+                                    QStringList{QStringLiteral("explore"), QStringLiteral("systems")}};
+        for (const QVariant& value : damaged) {
+            stored.setValue(key, value);
+            expect(qPrintable(QStringLiteral("a stored %1 reads as Systems").arg(value.toString())),
+                   reloaded.listenSection() == QStringLiteral("systems"));
+        }
+        stored.setValue(key, QStringLiteral("bogus"));
+        expect("reading damage writes nothing and does not notify",
+               changes == 0 && stored.value(key).toString() == QStringLiteral("bogus"));
+        // The setter compares with what is stored, so the corrective write lands.
+        reloaded.setListenSection(QStringLiteral("systems"));
+        expect("choosing Systems over the damage writes it",
+               stored.value(key).toString() == QStringLiteral("systems") && changes == 1);
+    }
+    stored.remove(key);
+}
+
 /* Saved-system migration warnings so far. The log tap is installed once and never replaced, so what it counts into
  * must live as long as the process. */
 int g_migration_warnings = 0;
@@ -1393,6 +1450,8 @@ test_prefs_key_table(void) {
          "listen/acceptedStartTargets"},
         // Issue #801: the shortcuts pinned to Listen.
         {"pinned", QVariantList{QVariantMap{{QStringLiteral("kind"), QStringLiteral("search")}}}, "listen/pinned"},
+        // Issue #646: the Listen tab last chosen.
+        {"listenSection", QStringLiteral("explore"), "listen/section"},
     };
     QStringList covered;
     int writable = 0;
@@ -1476,6 +1535,7 @@ test_prefs_key_table(void) {
         QStringLiteral("listen/acceptedStartTargets"),
         QStringLiteral("listen/acceptedStartUid"),
         QStringLiteral("listen/lastStartedCompanions"),
+        QStringLiteral("listen/section"),
         QStringLiteral("location/lastAccuracyM"),
         QStringLiteral("location/lastFixAt"),
         QStringLiteral("location/lastLat"),
@@ -1488,6 +1548,7 @@ test_prefs_key_table(void) {
     const QStringList portable = AppPrefs::portableKeys();
     expect("portable keys are the table minus device-local",
            portable.size() + local.size() == names.size() && !portable.contains(QStringLiteral("ui/onboardingDone"))
+               && !portable.contains(QStringLiteral("listen/section"))
                && portable.contains(QStringLiteral("listen/keepAwake"))
                && portable.contains(QStringLiteral("listen/lastStartedUid"))
                && portable.contains(QStringLiteral("rr/appKey"))
@@ -1502,10 +1563,11 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("listen/pinned")));
 
     const QVariantMap before = AppPrefs::readPortable();
-    expect("readPortable returns only portable keys",
-           !before.isEmpty() && !before.contains(QStringLiteral("location/lastLat"))
-               && !before.contains(QStringLiteral("ui/onboardingDone"))
-               && !before.contains(QStringLiteral("monitor/detailsExpanded")));
+    expect("readPortable returns only portable keys", !before.isEmpty()
+                                                          && !before.contains(QStringLiteral("location/lastLat"))
+                                                          && !before.contains(QStringLiteral("ui/onboardingDone"))
+                                                          && !before.contains(QStringLiteral("monitor/detailsExpanded"))
+                                                          && !before.contains(QStringLiteral("listen/section")));
     for (auto it = before.constBegin(); it != before.constEnd(); ++it) {
         expect("readPortable key is portable", portable.contains(it.key()));
     }
@@ -1521,6 +1583,7 @@ test_prefs_key_table(void) {
     file.setValue(QStringLiteral("ui/onboardingDone"), true);
     file.setValue(QStringLiteral("location/lastLat"), 9.0);
     file.setValue(QStringLiteral("monitor/detailsExpanded"), true);
+    file.setValue(QStringLiteral("listen/section"), QStringLiteral("explore"));
     file.sync();
 
     QVariantMap incoming;
@@ -1529,6 +1592,7 @@ test_prefs_key_table(void) {
     incoming.insert(QStringLiteral("listen/keepAwake"), true);
     incoming.insert(QStringLiteral("ui/onboardingDone"), false);
     incoming.insert(QStringLiteral("monitor/detailsExpanded"), false);
+    incoming.insert(QStringLiteral("listen/section"), QStringLiteral("scanLists"));
     incoming.insert(QStringLiteral("not/a/key"), 1);
     incoming.insert(QStringLiteral("search/sourceType"), QStringLiteral("airspy"));
     incoming.insert(QStringLiteral("search/port"), 5555);
@@ -1540,9 +1604,11 @@ test_prefs_key_table(void) {
                                                 && after.value(QStringLiteral("listen/keepAwake")).toBool());
     expect("absent portable keys are removed",
            !after.contains(QStringLiteral("tuner/ppm")) && !after.contains(QStringLiteral("explore/host")));
-    expect("device-local keys are untouched", after.value(QStringLiteral("ui/onboardingDone")).toBool()
-                                                  && after.value(QStringLiteral("monitor/detailsExpanded")).toBool()
-                                                  && after.value(QStringLiteral("location/lastLat")).toInt() == 9);
+    expect("device-local keys are untouched",
+           after.value(QStringLiteral("ui/onboardingDone")).toBool()
+               && after.value(QStringLiteral("monitor/detailsExpanded")).toBool()
+               && after.value(QStringLiteral("location/lastLat")).toInt() == 9
+               && after.value(QStringLiteral("listen/section")).toString() == QStringLiteral("explore"));
     expect("unknown keys are ignored", !after.contains(QStringLiteral("not/a/key")));
     {
         AppPrefs fresh;
@@ -1561,6 +1627,12 @@ test_prefs_key_table(void) {
     }
     expect("empty replace clears portable keys",
            AppPrefs::replacePortable(QVariantMap()) && AppPrefs::readPortable().isEmpty());
+    {
+        // Issue #646: a restore without the Listen tab keeps the one this device chose.
+        const AppPrefs fresh;
+        expect("a restore without the Listen tab keeps the local one",
+               fresh.listenSection() == QStringLiteral("explore"));
+    }
 }
 
 /* Issue #801: what `listen/pinned` holds after a write that is not the app's own. */
@@ -2251,6 +2323,7 @@ main(int argc, char** argv) {
     test_app_prefs();
     test_receiver_prefs();
     test_screen_policy_prefs();
+    test_listen_section_pref();
     test_recording_prefs();
     test_analog_max_gap_pref();
     test_analog_preroll_pref();

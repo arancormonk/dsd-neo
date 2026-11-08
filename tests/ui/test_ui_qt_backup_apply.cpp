@@ -1273,6 +1273,8 @@ test_clean_apply(TestHost& host, const Backup& b, const Old& old) {
         dsd_qt::AppPrefs prefs;
         prefs.setAcceptedStartCompanions({"hospital-uid", "parks-uid"});
         prefs.setLastStartedCompanions({"hospital-uid"});
+        // Issue #646: the Listen tab this device last showed, which no backup carries.
+        prefs.setListenSection("scanLists");
     }
     Faults seen;
     const ApplyResult result = apply(&seen);
@@ -1282,6 +1284,7 @@ test_clean_apply(TestHost& host, const Backup& b, const Old& old) {
         expect("a restore forgets the scan session's other lists",
                prefs.acceptedStartCompanions().isEmpty() && prefs.lastStartedCompanions().isEmpty());
         expect("a backup without pinned shortcuts restores none", prefs.pinned().isEmpty());
+        expect("a restore keeps this device's Listen tab", prefs.listenSection() == "scanLists");
     }
     expect("the result carries the summary",
            result.summary.value("systems").toInt() == 2 && result.summary.value("libraryFiles").toInt() == 7);

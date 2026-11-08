@@ -442,6 +442,8 @@ populate(TestHost& host) {
                                                                          {"search/sourceType", "rtltcp"},
                                                                          {"search/host", "10.0.2.2"},
                                                                          {"search/port", 1235}}));
+    // Issue #646: the Listen tab this device last showed, which stays on it.
+    dsd_qt::AppPrefs().setListenSection("explore");
     return f;
 }
 
@@ -657,6 +659,8 @@ test_round_trip(const Fixture& f) {
     expect("snapshot holds the five stores", snapshot.stores.keys().size() == 5);
     expect("snapshot portable settings", snapshot.prefs.value("rr/username").toString() == "scanner"
                                              && !snapshot.prefs.contains("ui/onboardingDone"));
+    expect("the Listen tab stays on the device",
+           dsd_qt::AppPrefs().listenSection() == "explore" && !snapshot.prefs.contains("listen/section"));
     expect("snapshot avoids come from the in-memory list", snapshot.avoids == QList<quint32>({156800000U, 162550000U}));
     expect("snapshot app tag and time",
            snapshot.app == QString::fromUtf8(GIT_TAG) && snapshot.createdAt > 1700000000LL);
@@ -1366,13 +1370,14 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     prefs = forged.manifest.value("prefs").toObject();
     prefs.insert("ui/onboardingDone", true);
     prefs.insert("monitor/detailsExpanded", true);
+    prefs.insert("listen/section", "scanLists");
     prefs.insert("evil/key", QJsonArray{1});
     forged.manifest.insert("prefs", prefs);
     const auto parsed = dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root());
     expect("unknown and device-local settings are dropped",
            parsed.error == BackupError::None && !parsed.prefs.contains("ui/onboardingDone")
-               && !parsed.prefs.contains("monitor/detailsExpanded") && !parsed.prefs.contains("evil/key")
-               && parsed.prefs.value("rr/username") == "scanner");
+               && !parsed.prefs.contains("monitor/detailsExpanded") && !parsed.prefs.contains("listen/section")
+               && !parsed.prefs.contains("evil/key") && parsed.prefs.value("rr/username") == "scanner");
 
     for (const auto& value : {QJsonValue(0), QJsonValue(-1), QJsonValue(4294967296.0), QJsonValue(1.5),
                               QJsonValue("156800000"), QJsonValue(QJsonArray())}) {

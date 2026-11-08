@@ -105,6 +105,9 @@ class AppPrefs : public QObject {
      * phone's screen was arranged, so it stays on the device and out of backups. */
     Q_PROPERTY(bool monitorDetailsExpanded READ monitorDetailsExpanded WRITE setMonitorDetailsExpanded NOTIFY
                    monitorDetailsExpandedChanged)
+    /* Issue #646: the Listen tab last chosen ("systems", "scanLists" or "explore"), so Listen opens on it. How this
+     * phone's screen was arranged, like the one above: device-local. */
+    Q_PROPERTY(QString listenSection READ listenSection WRITE setListenSection NOTIFY listenSectionChanged)
     /* Call recording (issue #708). Every session the app starts records per call while recordCalls is on; Settings
      * also applies both switches to a running session. The limit is the recording store's, in decimal MB. */
     Q_PROPERTY(bool recordCalls READ recordCalls WRITE setRecordCalls NOTIFY recordCallsChanged)
@@ -293,6 +296,12 @@ class AppPrefs : public QObject {
     bool monitorDetailsExpanded() const;
     void setMonitorDetailsExpanded(bool on);
 
+    /** @brief The Listen tab to open on: "systems", "scanLists" or "explore"; anything else stored reads as "systems".
+     *         Device-local. */
+    QString listenSection() const;
+    /** @brief Store @p section if it is one of the three ids; any other text is refused and writes nothing. */
+    void setListenSection(const QString& section);
+
     /** @brief Record each call of every session the app starts (-P); off by default. */
     bool recordCalls() const;
     void setRecordCalls(bool on);
@@ -357,6 +366,7 @@ class AppPrefs : public QObject {
     void exploreChanged();
     void searchChanged();
     void monitorDetailsExpandedChanged();
+    void listenSectionChanged();
     void recordCallsChanged();
     void recordUnknownOnlyChanged();
     void recordingLimitMbChanged();

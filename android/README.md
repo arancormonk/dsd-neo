@@ -417,7 +417,7 @@ Record back on. Switch Record off again before **Apply** if that talkgroup shoul
   have its temporary files treated as unfinished recordings.
 - Encrypted calls record only as far as DSD-neo can play them, as before: a call it decrypts is recorded, and one it
   cannot decrypt records nothing; its History row shows ENC without a recording.
-- - A backup carries the Record calls, Only unknown talkgroups, Analog pause hold, NFM pre-roll and Storage limit
+- A backup carries the Record calls, Only unknown talkgroups, Analog pause hold, NFM pre-roll and Storage limit
   settings, never the recordings. A restored Storage limit lower than what the recordings on the phone take removes the
   oldest of them when DSD-neo next opens.
 

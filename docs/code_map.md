@@ -12288,8 +12288,10 @@ Qt Quick frontend (`src/ui/qt`):
     shows `startupOutcome` and matches the `BackupApply` reason strings of `backup_apply.cpp` through `qsTranslate()`,
     so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
   - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
-    (onboarding, the notification explanation and the last location fix are device-local), with
-    `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
+    (device-local: first-run state (`ui/onboardingDone`, `ui/notificationExplained`), the last location fix
+    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`) and the session
+    this device's service runs (`listen/acceptedStart*`, `listen/lastStartedCompanions`); `UI_QT_PERSISTENCE` pins the
+    set), with `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
     any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,
     and `configuration()` refuses it ("Open this decryption profile and save it again."). Its key files are written only
     below `<root>/decryption` reached through no symlink or junction (`privateWrite()`), so a link left under
@@ -12302,6 +12304,13 @@ Qt Quick frontend (`src/ui/qt`):
   - A list-valued portable preference is a JSON array held in a string (`listen/pinned`, issue #801), since a backup
     carries only scalars; its getter is its only validation, because a parse hook would fail the whole backup as
     damaged. A backup without the key restores no pins, and a rollback restores the old ones.
+  - `AppPrefs::listenSection` (`listen/section`, issue #646) is the Listen tab last chosen, held as a string id
+    (`systems`, `scanLists`, `explore`; the ids are persisted, so never rename one) rather than an index, so a build that
+    adds, removes or reorders tabs still reads old values. Anything else stored (a newer build's id, a hand edit, a
+    number, a list) reads as `systems`; the setter refuses any other text without writing and compares with the raw
+    stored value, so choosing `systems` over damage lands. Device-local: kept out of backups and kept on restore. The QML
+    fixture's `prefs` map carries it as `systems`; the real key is set back to `systems` for each test file, and
+    `testContext.resetListenSection()` does that between cases (a Home already built keeps its tab).
   - Whole numbers from stored or restored data (preferences, saved systems, scan lists, imported files, decryption
     profiles) are read through `stored_int.h` (`stored_int()`, `stored_int_or()`, `stored_uint32()`). A restore keeps a
     large JSON number as a 64-bit integer, and the settings file hands one back as text; `QVariant::toInt()` and
