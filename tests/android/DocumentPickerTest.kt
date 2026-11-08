@@ -32,9 +32,13 @@ private val drive = ComponentName("com.google.android.apps.docs", ".app.GetConte
 private val files = ComponentName("com.example.files", ".PickActivity")
 private val music = ComponentName("com.android.music", ".MusicPicker")
 
-/** Plays the activity: each launch is kept with its code, and the next refusal in line is thrown from it. */
+/**
+ * Plays the activity: each launch is kept with its code, and the next refusal in line is thrown from it; each code it is
+ * asked to close is kept.
+ */
 private class FakeHost : PickerHost {
     val launches = mutableListOf<Pair<PickerLaunch, Int>>()
+    val stopped = mutableListOf<Int>()
     val refusals = ArrayDeque<Exception?>()
     val handlers = mutableMapOf<String, Set<ComponentName>>()
     var queriesFail = false
@@ -43,6 +47,10 @@ private class FakeHost : PickerHost {
     override fun start(launch: PickerLaunch, code: Int) {
         launches += launch to code
         refusals.removeFirstOrNull()?.let { throw it }
+    }
+
+    override fun stop(code: Int) {
+        stopped += code
     }
 
     override fun getContentHandlers(type: String): Set<ComponentName> {
@@ -90,9 +98,13 @@ private fun answer(code: Int, resultCode: Int, data: Intent? = null): Boolean {
 
 private fun picked(uri: String) = Intent().also { it.data = Uri.parse(uri) }
 
-/** Runs the next post a worker made to the main looper, then everything it queued. */
+/**
+ * Waits until the name lookups and DownloadsSave's worker have run everything handed to them (each runs its tasks in
+ * order on one thread), then runs what they posted to the main looper. A worker that beats the test thread has its post
+ * run earlier, by the drain after a result.
+ */
 private fun awaitMain() {
-    (Handler.pending.poll(5, TimeUnit.SECONDS) ?: error("no post from the worker")).run()
+    for (worker in listOf(DocumentPicker.lookups, DownloadsSave.worker)) worker.submit {}.get(5, TimeUnit.SECONDS)
     Handler.drain()
 }
 
@@ -117,6 +129,7 @@ private fun openDocumentPicks() {
     val result = records()
     check(result.size == 1 && result[0].isPicked(1, PICKED, "a b.csv", false)) { "picked: $result" }
     check(Handler.timeouts.isEmpty()) { "the name deadline goes with the settle" }
+    check(host.stopped.isEmpty()) { "a picker that answered is not closed" }
     check(answer(host.lastCode, Activity.RESULT_OK, picked(PICKED)) && records().isEmpty()) {
         "a request settles once; a second result for its code is dropped"
     }
@@ -165,6 +178,7 @@ private fun getContentFallback() {
     }
     open(none, 4)
     check(none.launches.size == 1 && records().single().isUnavailable(4, "noPicker")) { "media-only devices: noPicker" }
+    check(none.stopped.isEmpty()) { "a launch that found no app has nothing to close" }
 
     // The fallback's own launch finds nothing, or fails; a query that fails; an OPEN_DOCUMENT launch that fails.
     val gone = FakeHost().apply {
@@ -244,10 +258,13 @@ private fun supersedeAndCancel() {
     val second = FakeHost()
     open(second, 31)
     check(records().single().isCancelled(30)) { "the replaced request is cancelled" }
+    check(first.stopped == listOf(first.lastCode)) { "the replaced request's picker is closed: ${first.stopped}" }
+    check(second.stopped.isEmpty() && second.launches.size == 1)
     check(answer(first.lastCode, Activity.RESULT_OK, picked(PICKED)) && records().isEmpty())
     check(answer(second.lastCode, Activity.RESULT_OK, picked(PICKED)))
     awaitMain()
     check(records().single().isPicked(31, PICKED, "a b.csv", false))
+    check(second.stopped.isEmpty()) { "a picker that answered is not closed" }
 
     // Records keep their order: the replaced request's, then the newer one's.
     val third = FakeHost()
@@ -256,15 +273,18 @@ private fun supersedeAndCancel() {
     open(fourth, 33)
     val ordered = records()
     check(ordered.size == 2 && ordered[0].isCancelled(32) && ordered[1].isUnavailable(33, "failed")) { "FIFO: $ordered" }
+    check(third.stopped == listOf(third.lastCode) && fourth.stopped.isEmpty()) { "a failed launch has nothing to close" }
 
     // A cancel ends the request with no record; its result, and other ids' cancels, change nothing.
     val cancelled = FakeHost()
     open(cancelled, 34)
     DocumentPicker.cancel(99)
     Handler.drain()
+    check(cancelled.stopped.isEmpty()) { "another id's cancel closes nothing" }
     DocumentPicker.cancel(34)
     Handler.drain()
     check(records().isEmpty() && Handler.timeouts.isEmpty())
+    check(cancelled.stopped == listOf(cancelled.lastCode)) { "a cancel closes the request's picker" }
     check(answer(cancelled.lastCode, Activity.RESULT_OK, picked(PICKED)) && records().isEmpty())
 }
 
@@ -301,7 +321,7 @@ private fun nameDeadline() {
         DocumentPicker.cancel(41)
         Handler.drain()
         check(DocumentPicker.lookups.queue.isEmpty()) { "a retired lookup leaves the queue" }
-        check(records().isEmpty())
+        check(records().isEmpty() && queued.stopped.isEmpty()) { "a picker that answered is not closed" }
 
         // A Download-folder save while the lookup thread is still stuck.
         val downloads = FakeDownloads()
@@ -332,14 +352,31 @@ private fun nameDeadline() {
 
 /** CREATE_DOCUMENT first; with no app for it, a Download-folder row, which is discarded when it comes too late. */
 private fun saveFallback() {
-    val host = FakeHost()
+    var asked = false
+    val host = FakeHost().apply { names = NameLookup { _, _ -> asked = true; "a b.csv" } }
     save(host, 50, "dsd-neo-backup-2026-11-08.dsdbak")
     val create = host.launches.single().first
     check(create is PickerLaunch.Create && create.title == "dsd-neo-backup-2026-11-08.dsdbak") { "CREATE_DOCUMENT" }
     check(create.mime == "application/octet-stream")
     check(answer(host.lastCode, Activity.RESULT_OK, picked(PICKED)))
-    awaitMain()
-    check(records().single().isPicked(50, PICKED, "a b.csv", false)) { "a save picker's document is no download" }
+    // No name lookup: the answer settles at once, named by the title asked for.
+    check(records().single().isPicked(50, PICKED, "dsd-neo-backup-2026-11-08.dsdbak", false)) {
+        "a save picker's document settles at once and is no download"
+    }
+    check(!asked && Handler.timeouts.isEmpty() && DocumentPicker.lookups.queue.isEmpty()) { "a save asks no name" }
+    // Its other answers are an open's.
+    val unreadable = FakeHost()
+    save(unreadable, 49)
+    check(answer(unreadable.lastCode, Activity.RESULT_OK, picked("file:///sdcard/Download/backup.dsdbak")))
+    check(records().single().isUnavailable(49, "unreadable"))
+    // Cancelled while the save picker is up: the picker is closed, so no document can be made there; were one still
+    // made, its answer is dropped.
+    val abandoned = FakeHost()
+    save(abandoned, 48)
+    DocumentPicker.cancel(48)
+    Handler.drain()
+    check(abandoned.stopped == listOf(abandoned.lastCode)) { "a cancelled save closes its picker" }
+    check(answer(abandoned.lastCode, Activity.RESULT_OK, picked(PICKED)) && records().isEmpty())
 
     val downloads = FakeDownloads()
     DocumentPicker.downloads = downloads
@@ -374,9 +411,11 @@ private fun saveFallback() {
         // Cancelled, or replaced, while the insert is held: no answer, and the row is discarded.
         downloads.inserts.clear()
         downloads.discarded.clear()
-        save(FakeHost().apply { refusals.add(ActivityNotFoundException()) }, 54)
+        val noPicker = FakeHost().apply { refusals.add(ActivityNotFoundException()) }
+        save(noPicker, 54)
         DocumentPicker.cancel(54)
         Handler.drain()
+        check(noPicker.stopped.isEmpty()) { "a save with no picker out closes nothing" }
         save(FakeHost().apply { refusals.add(ActivityNotFoundException()) }, 55)
         open(FakeHost(), 56)
         check(records().single().isCancelled(55))
@@ -512,8 +551,10 @@ private fun adapter() {
     Handler.drain()
     val launch = activity.launched.last()
     check(launch.first.action == Intent.ACTION_CREATE_DOCUMENT && launch.first.extras[Intent.EXTRA_TITLE] == "calls.zip")
+    check(activity.finished.isEmpty()) { "the answered pickers were never closed" }
     DocumentPicker.cancel(61)
     Handler.drain()
+    check(activity.finished == listOf(launch.second)) { "a cancel finishes the launch: ${activity.finished}" }
 
     // A provider row with no name, and one with none at all.
     check(ResolverNames(nameResolver(NameCursor(null))).displayName(PICKED, CancellationSignal()) == null)

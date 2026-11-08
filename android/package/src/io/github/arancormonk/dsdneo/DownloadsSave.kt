@@ -38,8 +38,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * (the last rows discarded are remembered for it), so it never reports a file the discard deletes. A row left pending
  * by a crash or a teardown abort stays hidden until MediaStore deletes it at its expiry.
  *
- * Every provider call runs on one worker thread of its own; the lock guards only the in-memory rows and names and is
- * never held across one.
+ * The provider calls (the insert, the publication's update and name read, every delete, the grant release) run on one
+ * worker thread of its own, with one exception: a settle that finds the worker shut down deletes the row it claimed
+ * itself, on the writer's thread. The lock guards only the in-memory rows and names and is never held across a
+ * provider call.
  */
 object DownloadsSave {
     private const val TAG = "dsd-neo"
@@ -68,7 +70,7 @@ object DownloadsSave {
     /** Wall-clock seconds, for an Android 10 row's expiry; the tests set it. */
     internal var nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 }
 
-    /** The one thread every MediaStore call here runs on. */
+    /** The one thread the MediaStore calls here run on; only [settle] with the worker shut down deletes off it. */
     internal val worker = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue()) { task ->
         Thread(task, "dsd-downloads").apply { isDaemon = true }
     }

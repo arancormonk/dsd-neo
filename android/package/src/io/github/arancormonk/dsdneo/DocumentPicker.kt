@@ -69,6 +69,9 @@ internal interface PickerHost {
     /** Starts [launch] for a result answered with [code]; throws ActivityNotFoundException when no app takes it. */
     fun start(launch: PickerLaunch, code: Int)
 
+    /** Closes the activity [start] launched with [code], if it is still up; its RESULT_CANCELED then comes as usual. */
+    fun stop(code: Int)
+
     /** The activities that answer GET_CONTENT + OPENABLE for [type]. */
     fun getContentHandlers(type: String): Set<ComponentName>
 
@@ -100,7 +103,10 @@ internal class LaunchCodes {
  * went on to. A result with no request waiting (after process death, or for a request since replaced) is dropped. Each
  * request settles exactly once, into one record: `picked` (with `downloads` for a Download-folder row), `cancelled` or
  * `unavailable` with its reason. A newer request settles the one it replaces as cancelled; [cancel] ends one with no
- * record. No persistable grant is taken: the flows read or write while the activity that got the result lives.
+ * record. Either way a picker the request still has out is closed, as the desktop path closes its dialog: left up, a
+ * save picked there would create an empty document nothing writes. A save picker's answer is named by the title it was
+ * asked for, as no save owner shows the name. No persistable grant is taken: the flows read or write while the
+ * activity that got the result lives.
  */
 object DocumentPicker {
     private const val NAME_DEADLINE_MS = 2_000L
@@ -125,6 +131,8 @@ object DocumentPicker {
 
     private class Request(val id: Long, val host: PickerHost) {
         var launchCode: Int? = null
+        // The title a CREATE_DOCUMENT launch asked for: its answer settles with it, with no name lookup.
+        var saveTitle: String? = null
         var deadline: Runnable? = null
         var signal: CancellationSignal? = null
         var lookup: Runnable? = null
@@ -176,6 +184,7 @@ object DocumentPicker {
     internal fun createWith(host: PickerHost, id: Long, title: String, mime: String) {
         main.post {
             val request = begin(host, id)
+            request.saveTitle = title
             when (launch(request, PickerLaunch.Create(title, mime))) {
                 Launched.NOT_FOUND -> saveToDownloads(request, title, mime)
                 Launched.FAILED -> finish(request, unavailable(id, "failed"))
@@ -189,11 +198,13 @@ object DocumentPicker {
         val request = active ?: return
         if (request.launchCode != code) return
         request.launchCode = null
+        val saveTitle = request.saveTitle
         when {
             !ok -> finish(request, cancelled(request.id))
             uri == null -> finish(request, unavailable(request.id, "noResult"))
             !uri.substringBefore(':', "").equals("content", ignoreCase = true) ->
                 finish(request, unavailable(request.id, "unreadable"))
+            saveTitle != null -> finish(request, picked(request.id, uri, saveTitle, false))
             else -> lookUpName(request, uri)
         }
     }
@@ -291,9 +302,13 @@ object DocumentPicker {
         }
     }
 
-    /** Stops everything [request] waits for; it is no longer the live request. */
+    /** Stops everything [request] waits for, the picker it has out included; it is no longer the live request. */
     private fun retire(request: Request) {
         if (active === request) active = null
+        request.launchCode?.let { code ->
+            // A picker that will not close changes nothing here: its result no longer matches a request.
+            try { request.host.stop(code) } catch (_: Exception) {}
+        }
         request.launchCode = null
         request.deadline?.let { main.removeCallbacks(it) }
         request.deadline = null
@@ -390,6 +405,8 @@ internal class ActivityPickerHost(private val activity: Activity) : PickerHost {
     override val names: NameLookup = ResolverNames(activity.applicationContext.contentResolver)
 
     override fun start(launch: PickerLaunch, code: Int) = activity.startActivityForResult(intentFor(launch), code)
+
+    override fun stop(code: Int) = activity.finishActivity(code)
 
     override fun getContentHandlers(type: String) = getContentHandlers(activity.packageManager, type)
 }

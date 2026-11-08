@@ -3,7 +3,8 @@ package android.app
 import android.content.Context
 import android.content.Intent
 
-// An activity that keeps each launch for a result, and refuses the actions a test names as the platform would.
+// An activity that keeps each launch for a result and each code it was asked to finish, and refuses the actions a test
+// names as the platform would.
 open class Activity : Context() {
     companion object {
         const val RESULT_CANCELED = 0
@@ -17,5 +18,11 @@ open class Activity : Context() {
     fun startActivityForResult(intent: Intent, requestCode: Int) {
         launched += intent to requestCode
         refusals[intent.action]?.let { throw it }
+    }
+
+    val finished = mutableListOf<Int>()
+
+    fun finishActivity(requestCode: Int) {
+        finished += requestCode
     }
 }

@@ -265,14 +265,12 @@ Android. The companion selection flow copies referenced files into a private bun
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 
-Picks go through the app's document picker (issue #829). A pick belongs to the screen
-that asked for it: leaving Imported files, the scan list editor or the wizard, or
-reopening the editor or the wizard for another item, cancels it. A file or "None"
-chosen for the same field while the picker is out wins over the pick that comes
-back later, and "Update" replaces the file it was started on, or says "That file
-changed while you were picking. Try again." when that file was removed meanwhile.
-When no picker can open, the import ends with the reason; on the companion sheet
-the reason shows above the companions and the files already chosen stay.
+Picks go through the app's document picker (issue #829). A pick belongs to the screen that asked for it: leaving
+Imported files, the scan list editor or the wizard, or reopening the editor or the wizard for another item, cancels it.
+A file or "None" chosen for the same field while the picker is out wins over the pick that comes back later, and
+"Update" replaces the file it was started on, or says "That file changed while you were picking. Try again." when that
+file was removed meanwhile. When no picker can open, the import ends with the reason; on the companion sheet the reason
+shows above the companions and the files already chosen stay.
 
 Both uses are reached through `DecoderHost` virtuals (`importContentUri` /
 `importDocument`); the desktop default of `importDocument` implements the same
@@ -1618,6 +1616,11 @@ module behind it, so androiddeployqt has nothing extra to package.
   by Android about a week later; it never shows as a finished file. On Android 10 the half-written file keeps its
   normal name, and a file manager that reads the folder directly (rather than through Android's media store) can list
   it until then.
+- **An empty file when Android closes DSD-neo during a save** (#829). If Android closes DSD-neo in the background while
+  a save picker (Back up, Export as zip, Save to file) is open, and a place is then chosen in that picker, the picker
+  makes an empty file there and DSD-neo, started again, ignores the pick. Delete that file and save again. While
+  DSD-neo runs, a save picker the app stops waiting for (the screen that asked for it closed) is closed too, so it
+  makes no file.
 - **arm64-v8a only.** armv7 would run scalar-only DSP and is out of scope.
 - **One decoder per process.** The service rejects a start unless it is idle.
 - **SoapySDR is not supported** and is not planned.

@@ -13619,6 +13619,11 @@ request code (1305) is never used.
   range and settles only the live launch's code, so the late `RESULT_CANCELED` Android sends for a launch that threw
   `ActivityNotFoundException` (the code is retired at the throw), a result after process death (no request) and one
   for a replaced request are dropped. Each request settles once; a newer one settles the one it replaces `cancelled`.
+  A request retired (cancelled or replaced) while its launch is out has that launch closed through
+  `PickerHost.stop(code)` (`Activity.finishActivity(code)`, on the main looper), as the desktop path closes its
+  `FileDialog`: left up, a save picked there would leave an empty document nothing writes. A launch that threw has no
+  code to close. The `CREATE_DOCUMENT` result that comes back after process death cannot be stopped (no request is
+  left to close it): its empty document stays (decided limit, `android/README.md` "Known limits").
   - Open: `ACTION_OPEN_DOCUMENT` + `CATEGORY_OPENABLE`, `*/*`. With no app for it, GET_CONTENT: `all` = the
     `GET_CONTENT` + OPENABLE handlers for `*/*`, `capable` = the union of the same query for `application/*`, `text/*`
     and `audio/*`. None capable: `noPicker`; one: GET_CONTENT `*/*` straight to it; several: `Intent.createChooser()`
@@ -13629,20 +13634,24 @@ request code (1305) is never used.
   - Save: `ACTION_CREATE_DOCUMENT` + OPENABLE, the type and `EXTRA_TITLE`. With no app for it, the row comes from
     `DocumentPicker.downloads` (`DownloadsFallback.insert(name, mime, onDone)`, answered from any thread and moved to
     the main looper) within 10 s: a row is `picked` with `downloads` and the requested name, none or the deadline
-    `noSavePicker`. A row that comes late, or for a request cancelled or replaced, goes to `DownloadsFallback.discard()`.
-    The default, `DownloadsFolder`, is `DownloadsSave` (below); before the host handed it the resolver it makes no
-    row.
+    `noSavePicker`. A row that comes late, or for a request cancelled or replaced, goes to
+    `DownloadsFallback.discard()`. The default, `DownloadsFolder`, is `DownloadsSave` (below); before the host handed
+    it the resolver it makes no row.
   - Result: `RESULT_OK` takes `data` or ClipData item 0; none is `noResult`, a scheme other than `content`
-    (any case) `unreadable`. The display name is a `DISPLAY_NAME` query on its own one-thread executor with a
+    (any case) `unreadable`. A save's document settles `picked` at once with the requested title (no save owner shows
+    the name). An open's display name is a `DISPLAY_NAME` query on its own one-thread executor with a
     `CancellationSignal`, through the application's resolver; a lookup task checks the signal before its provider
     call, a retired one is removed from the queue, and at the 2 s main-looper deadline the signal is cancelled and the
     decoded last path segment stands in. Any other result code is `cancelled`. The reference is `uri.toString()` as
     it came; no persistable grant is taken.
   - `proguard-rules.pro` keeps `open`, `create`, `cancel` and `pollResult`; the class constant sits in
     `decoder_host_android.cpp`, which calls them.
-- Download folder save (`DownloadsSave.kt`): the owner of the app's pending MediaStore rows. Every MediaStore and grant
-  call runs on its own one-thread executor; one lock guards only the in-memory rows (`pending`; `writing`, those a
-  write took) and the `published` names (the last 16, oldest evicted), and is never held across a provider call.
+- Download folder save (`DownloadsSave.kt`): the owner of the app's pending MediaStore rows. The MediaStore and grant
+  calls (insert, the publication's `update()` and name read, every delete, the grant release) run on its own
+  one-thread executor, except one: a `settle()` that finds the executor shut down (`RejectedExecutionException`)
+  deletes the row it claimed itself, on the writer's thread. One lock guards only the in-memory rows (`pending`;
+  `writing`, those a write took) and the `published` names (the last 16, oldest evicted), and is never held across a
+  provider call.
   - `insert()`: a `MediaStore.Downloads` row with `DISPLAY_NAME`, `MIME_TYPE`, `RELATIVE_PATH` `Download/DSD-neo` and
     `IS_PENDING` 1, plus `DATE_EXPIRES` now + 7 days on API 29 only (Android 11+ sets a pending row's expiry itself;
     Android 10 sets none but deletes expired rows in idle maintenance). MIME types: backup `application/octet-stream`,

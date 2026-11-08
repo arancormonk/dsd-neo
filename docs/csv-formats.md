@@ -34,7 +34,7 @@ entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail 
 While a session is running, open the monitor's session menu and choose **Edit saved system**; saving applies the files
 that changed to the live session immediately, including clearing a field to "None" — that unloads the channel map,
 talkgroup list, keys, or source ID list from the running session. This action is available only for a session this app
-instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the app and ends the session
+instance started, which under Qt 6.11.3 is every session: a recreated Activity restarts the app and ends the session
 (`android/README.md` "Known limits").
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
