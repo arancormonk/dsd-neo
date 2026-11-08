@@ -212,7 +212,7 @@ Item {
             compare(prefs.listenSection, "systems", "and that is the tab remembered");
         }
 
-        // Save detection from Signal search: the search stays on top; Listen shows Systems once it closes.
+        // Save as system from Signal search: the search stays on top; Listen shows Systems once it closes.
         function test_save_detection_keeps_signal_search_on_top() {
             home.showSection("explore");
             app.openSignalSearch();
