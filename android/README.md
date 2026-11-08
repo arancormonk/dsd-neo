@@ -1617,7 +1617,8 @@ module behind it, so androiddeployqt has nothing extra to package.
   itself) leaves the control holding Qt's keyboard focus, so the swipe back onto it
   gets no answer and TalkBack stays put until the screen is touched. This is a limit
   of Qt 6.11.2's Android bridge; letting the containers take the focus made other
-  swipes stick.
+  swipes stick. With Qt 6.11.3, swiping back and forth over Listen's title, pinned
+  shortcuts and list did not stick.
 - **The first Spectrum open with TalkBack on stalls for a few seconds** (#782).
   Building the screen makes Qt tell TalkBack about each hidden part, and Android's
   main thread waits on the app for each answer: about 2 seconds on an emulator
@@ -1628,7 +1629,9 @@ module behind it, so androiddeployqt has nothing extra to package.
 - **TalkBack can skip controls a disclosure has just shown** (#782). Right after
   expanding a section (the key sheet's "Advanced: session direct override") or
   adding a row, the first forward swipe can pass the new controls; Qt tells TalkBack
-  nothing when they appear. A second pass reaches them.
+  nothing when they appear. A second pass reaches them. Switching Listen tabs is not
+  affected: with Qt 6.11.3 the first swipe after a switch reached the new tab's
+  controls.
 - **TalkBack makes a silent stop at the start and end of a screen** (#782). Swiping
   past the last item or back past the first lands once on the window itself, which
   Qt's bridge gives no name.

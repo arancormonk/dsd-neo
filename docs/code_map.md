@@ -13351,13 +13351,16 @@ whether the new Qt lifts them. A change in what they show is a reason to revisit
 - **Container round trips (R-2).** On Home, swipe back from the Listen heading (onto the unnamed window node or
   "Scrollable content") and forward again; on the Monitor, from Stop listening onto "Recent calls" and back; on the
   Network sheet, from Done onto "Dialog" and back. Record which ways back stick until a touch. On 6.11.2 the Home case
-  sticks (`179bc9529` recheck 2).
+  sticks (`179bc9529` recheck 2). On 6.11.3 (issue #646, emulator) three round trips over the Listen heading, the
+  Pinned strip and the body did not stick; the Monitor and Network sheet cases were not rechecked.
 - **Spectrum first open (R-4).** TalkBack on at launch, scanning Local84, `log.looper.<uid>.main.slow=30`: open the
   Spectrum for the first time in three fresh launches. Record the watchdog stall and the main thread's messages of
   30 ms or more in the 15 s after. On 6.11.2: stalls of 2.09 s and 2.36 s, 41–48 messages, 5.6–5.9 s in total
   (`0b4f38981`); the first start after an install on a cold boot stalled 26.4 s.
 - **Newly shown controls.** In the key sheet, expand "Advanced: session direct override", then swipe forward once.
-  Record whether the newly shown controls are reached on the first pass. On 6.11.2 they are skipped once.
+  Record whether the newly shown controls are reached on the first pass. On 6.11.2 they are skipped once. On 6.11.3
+  (issue #646, emulator) the first forward swipe after a Listen tab switch reached the newly shown tab's controls 6
+  times of 6; the key sheet case was not rechecked, so the limit stands.
 - **Window node.** Swipe forward past a screen's last item and back past its first. Record whether a silent stop
   comes at the wrap. On 6.11.2 Android's host view is one, unnamed.
 
