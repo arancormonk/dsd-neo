@@ -103,22 +103,19 @@ dsd_fstat(int fd, dsd_stat_t* st) {
     return _fstat64(fd, st);
 }
 
+/* Every path below goes through one call, wide or ANSI, as dsd_win32_path_wide() chooses (file_compat.h's note). */
 int
 dsd_stat_path(const char* path, dsd_stat_t* st) {
-    /* A UTF-8 path (the app's own files, named in any script) goes through the wide call, whatever the ANSI code page;
-       one that is not UTF-8, or one the wide call does not find, through the ANSI call as before, so a command line's
-       path in the ANSI code page still works. The other path helpers here choose the same way. */
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (wide) {
-        const int rc = _wstat64(wide, st);
-        const int saved_errno = errno;
-        free(wide);
-        if (rc == 0 || saved_errno != ENOENT) {
-            errno = saved_errno;
-            return rc;
-        }
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : _stat64(path, st);
     }
-    return _stat64(path, st);
+    const int rc = _wstat64(wide, st);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return rc;
 }
 
 /* The POSIX errno for a GetDiskFreeSpaceExW() failure, as statvfs() would set it for the same path. */
@@ -134,11 +131,9 @@ dsd_free_space_errno(DWORD err) {
     }
 }
 
-wchar_t*
-dsd_win32_utf8_path_to_wide(const char* path) {
-    if (!dsd_utf8_is_valid(path)) {
-        return NULL;
-    }
+/* @p path, already known to be well-formed UTF-8, as UTF-16; NULL when memory runs out. */
+static wchar_t*
+dsd_win32_utf8_to_wide_checked(const char* path) {
     const int wide_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
     if (wide_len <= 0) {
         return NULL;
@@ -154,23 +149,47 @@ dsd_win32_utf8_path_to_wide(const char* path) {
     return wide;
 }
 
+wchar_t*
+dsd_win32_utf8_path_to_wide(const char* path) {
+    return dsd_utf8_is_valid(path) ? dsd_win32_utf8_to_wide_checked(path) : NULL;
+}
+
+int
+dsd_win32_path_wide(const char* path, wchar_t** out_wide) {
+    if (out_wide) {
+        *out_wide = NULL;
+    }
+    if (!path || !out_wide) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!dsd_utf8_is_valid(path)) {
+        return 0;
+    }
+    *out_wide = dsd_win32_utf8_to_wide_checked(path);
+    if (!*out_wide) {
+        errno = ENOMEM;
+        return -1;
+    }
+    return 1;
+}
+
 int
 dsd_remove_file(const char* path) {
     if (!path || path[0] == '\0') {
         errno = EINVAL;
         return -1;
     }
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (wide) {
-        const int rc = _wremove(wide);
-        const int saved_errno = errno;
-        free(wide);
-        if (rc == 0 || saved_errno != ENOENT) {
-            errno = saved_errno;
-            return rc;
-        }
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : remove(path);
     }
-    return remove(path);
+    const int rc = _wremove(wide);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return rc;
 }
 
 int64_t
@@ -179,15 +198,16 @@ dsd_path_free_bytes(const char* path) {
         errno = EINVAL;
         return -1;
     }
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (!wide) {
-        errno = EINVAL;
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind < 0) {
         return -1;
     }
     ULARGE_INTEGER available;
     available.QuadPart = 0;
-    /* GetDiskFreeSpaceExW() takes a folder: a file's path fails with ERROR_DIRECTORY (ENOTDIR). */
-    const BOOL ok = GetDiskFreeSpaceExW(wide, &available, NULL, NULL);
+    /* GetDiskFreeSpaceEx() takes a folder: a file's path fails with ERROR_DIRECTORY (ENOTDIR). */
+    const BOOL ok = kind > 0 ? GetDiskFreeSpaceExW(wide, &available, NULL, NULL)
+                             : GetDiskFreeSpaceExA(path, &available, NULL, NULL);
     const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     free(wide);
     if (!ok) {
@@ -300,22 +320,23 @@ dsd_win32_file_errno(DWORD err) {
     return EIO;
 }
 
-/* CreateFile(CREATE_NEW) of the final name itself, never a link's target; wide or ANSI as dsd_stat_path() chooses. */
+/* CreateFile(CREATE_NEW) of the final name itself, never a link's target. On a failure errno is set. */
 static HANDLE
 dsd_private_create_new(const char* path, DWORD access) {
     const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE;
     const DWORD attrs = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT;
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (wide) {
-        HANDLE handle = CreateFileW(wide, access, share, NULL, CREATE_NEW, attrs, NULL);
-        const DWORD err = handle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
-        free(wide);
-        if (handle != INVALID_HANDLE_VALUE || (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND)) {
-            SetLastError(err);
-            return handle;
-        }
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind < 0) {
+        return INVALID_HANDLE_VALUE;
     }
-    return CreateFileA(path, access, share, NULL, CREATE_NEW, attrs, NULL);
+    HANDLE handle = kind > 0 ? CreateFileW(wide, access, share, NULL, CREATE_NEW, attrs, NULL)
+                             : CreateFileA(path, access, share, NULL, CREATE_NEW, attrs, NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        errno = dsd_win32_file_errno(GetLastError());
+    }
+    free(wide);
+    return handle;
 }
 
 static int
@@ -328,7 +349,6 @@ dsd_private_create_exclusive(const char* path, int flags, int* out_opened) {
        POSIX O_CREAT | O_EXCL does, instead of creating a missing link target. */
     HANDLE handle = dsd_private_create_new(path, access);
     if (handle == INVALID_HANDLE_VALUE) {
-        errno = dsd_win32_file_errno(GetLastError());
         return -1;
     }
     if (out_opened) {
@@ -343,20 +363,44 @@ dsd_private_create_exclusive(const char* path, int flags, int* out_opened) {
     return fd;
 }
 
-/* _open() of a write mode, wide or ANSI as dsd_stat_path() chooses. */
+/* _open() of a write mode. */
 static int
 dsd_private_open_path(const char* path, int flags) {
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (wide) {
-        const int fd = _wopen(wide, flags, _S_IREAD | _S_IWRITE);
-        const int saved_errno = errno;
-        free(wide);
-        if (fd >= 0 || saved_errno != ENOENT) {
-            errno = saved_errno;
-            return fd;
-        }
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : _open(path, flags, _S_IREAD | _S_IWRITE);
     }
-    return _open(path, flags, _S_IREAD | _S_IWRITE);
+    const int fd = _wopen(wide, flags, _S_IREAD | _S_IWRITE);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return fd;
+}
+
+/* fopen() of a read mode; the mode is ASCII, widened character by character for _wfopen(). */
+static FILE*
+dsd_private_open_read(const char* path, const char* mode) {
+    wchar_t wide_mode[8];
+    size_t n = 0;
+    for (; mode[n] != '\0'; ++n) {
+        if (n + 1U >= sizeof wide_mode / sizeof wide_mode[0]) {
+            errno = EINVAL;
+            return NULL;
+        }
+        wide_mode[n] = (wchar_t)(unsigned char)mode[n];
+    }
+    wide_mode[n] = L'\0';
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? NULL : fopen(path, mode);
+    }
+    FILE* fp = _wfopen(wide, wide_mode);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return fp;
 }
 
 FILE*
@@ -369,7 +413,7 @@ dsd_fopen_private_ex(const char* path, const char* mode, int* out_opened) {
         return NULL;
     }
     if (mode[0] == 'r') {
-        FILE* fp = fopen(path, mode);
+        FILE* fp = dsd_private_open_read(path, mode);
         if (out_opened) {
             *out_opened = fp != NULL;
         }
@@ -441,26 +485,25 @@ dsd_existing_regular_attrs_ok(DWORD attrs) {
     return 0;
 }
 
-/* The attribute check, then the open, wide or ANSI as dsd_stat_path() chooses. */
+/* The attribute check, then the open. */
 static int
 dsd_open_existing_regular_path(const char* path, int flags) {
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (wide) {
-        int fd = -1;
-        if (dsd_existing_regular_attrs_ok(GetFileAttributesW(wide)) == 0) {
-            fd = _wopen(wide, flags);
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        if (kind < 0 || dsd_existing_regular_attrs_ok(GetFileAttributesA(path)) != 0) {
+            return -1;
         }
-        const int saved_errno = errno;
-        free(wide);
-        if (fd >= 0 || saved_errno != ENOENT) {
-            errno = saved_errno;
-            return fd;
-        }
+        return _open(path, flags);
     }
-    if (dsd_existing_regular_attrs_ok(GetFileAttributesA(path)) != 0) {
-        return -1;
+    int fd = -1;
+    if (dsd_existing_regular_attrs_ok(GetFileAttributesW(wide)) == 0) {
+        fd = _wopen(wide, flags);
     }
-    return _open(path, flags);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return fd;
 }
 
 static int
@@ -549,27 +592,40 @@ dsd_fsync_parent_dir(const char* path) {
     (void)path;
 }
 
+/* The rule for the two names of a move: 1 when both are UTF-8 (the wide call, with both wide copies, which the caller
+   frees), 0 when either is not (the ANSI call with both, as a command line's pair in the ANSI code page is), -1 with
+   errno set. */
+static int
+dsd_win32_path_pair_wide(const char* a, const char* b, wchar_t** out_a, wchar_t** out_b) {
+    *out_b = NULL;
+    const int kind_a = dsd_win32_path_wide(a, out_a);
+    if (kind_a <= 0) {
+        return kind_a;
+    }
+    const int kind_b = dsd_win32_path_wide(b, out_b);
+    if (kind_b <= 0) {
+        free(*out_a);
+        *out_a = NULL;
+    }
+    return kind_b;
+}
+
 int
 dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     if (!tmp_path || tmp_path[0] == '\0' || !final_path || final_path[0] == '\0') {
         errno = EINVAL;
         return -1;
     }
-    /* Both names in UTF-8 (the app's own files, in any script) move through the wide call; a name in the ANSI code
-       page, or one the wide call does not find, through the ANSI one, as before. */
-    wchar_t* wide_tmp = dsd_win32_utf8_path_to_wide(tmp_path);
-    wchar_t* wide_final = wide_tmp ? dsd_win32_utf8_path_to_wide(final_path) : NULL;
-    BOOL moved = FALSE;
-    DWORD err = ERROR_FILE_NOT_FOUND;
-    if (wide_tmp && wide_final) {
-        moved = MoveFileExW(wide_tmp, wide_final, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
-        err = moved ? ERROR_SUCCESS : GetLastError();
+    wchar_t* wide_tmp = NULL;
+    wchar_t* wide_final = NULL;
+    const int kind = dsd_win32_path_pair_wide(tmp_path, final_path, &wide_tmp, &wide_final);
+    if (kind < 0) {
+        return -1;
     }
+    const DWORD flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED;
+    const BOOL moved = kind > 0 ? MoveFileExW(wide_tmp, wide_final, flags) : MoveFileExA(tmp_path, final_path, flags);
     free(wide_tmp);
     free(wide_final);
-    if (!moved && (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)) {
-        moved = MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
-    }
     if (!moved) {
         errno = EACCES;
         return -1;
@@ -577,10 +633,9 @@ dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     return 0;
 }
 
-/* The ANSI form of dsd_rename_noreplace(), for a name that is not UTF-8 or that the wide call does not find. The CRT's
-   rename() refuses an existing destination and keeps the CRT's own path conversion (a UTF-8 locale included), which
-   MoveFileExA() would not. It reports that refusal as EACCES, the errno of every other denial too, so the native error
-   the same call left tells them apart. */
+/* The ANSI form of dsd_rename_noreplace(), for a pair that is not UTF-8. The CRT's rename() refuses an existing
+   destination and keeps the CRT's own path conversion, which MoveFileExA() would not. It reports that refusal as
+   EACCES, the errno of every other denial too, so the native error the same call left tells them apart. */
 static int
 dsd_rename_noreplace_ansi(const char* from, const char* to) {
     _doserrno = 0;
@@ -604,24 +659,21 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     }
     /* MoveFileExW() without MOVEFILE_REPLACE_EXISTING refuses an existing destination (ERROR_ALREADY_EXISTS or
        ERROR_FILE_EXISTS, so EEXIST) and, within one volume, renames a link itself. MOVEFILE_COPY_ALLOWED keeps what the
-       CRT's rename() did for a destination on another volume. Two UTF-8 names (the app's own files, in any script) move
-       through it; otherwise, or when the wide call does not find a name, the ANSI form, as dsd_stat_path() chooses. */
-    wchar_t* wide_from = dsd_win32_utf8_path_to_wide(from);
-    wchar_t* wide_to = wide_from ? dsd_win32_utf8_path_to_wide(to) : NULL;
-    DWORD err = ERROR_FILE_NOT_FOUND;
-    if (wide_from && wide_to) {
-        err = MoveFileExW(wide_from, wide_to, MOVEFILE_COPY_ALLOWED) ? ERROR_SUCCESS : GetLastError();
+       CRT's rename() did for a destination on another volume. */
+    wchar_t* wide_from = NULL;
+    wchar_t* wide_to = NULL;
+    const int kind = dsd_win32_path_pair_wide(from, to, &wide_from, &wide_to);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : dsd_rename_noreplace_ansi(from, to);
     }
+    const DWORD err = MoveFileExW(wide_from, wide_to, MOVEFILE_COPY_ALLOWED) ? ERROR_SUCCESS : GetLastError();
     free(wide_from);
     free(wide_to);
-    if (err == ERROR_SUCCESS) {
-        return 0;
-    }
-    if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) {
+    if (err != ERROR_SUCCESS) {
         errno = dsd_win32_file_errno(err);
         return -1;
     }
-    return dsd_rename_noreplace_ansi(from, to);
+    return 0;
 }
 
 /* dsd_path_exists_nofollow()'s answer from one GetFileAttributes() result, whose GetLastError() this reads on a
@@ -641,25 +693,42 @@ dsd_path_exists_nofollow(const char* path) {
         errno = EINVAL;
         return -1;
     }
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (wide) {
-        const int answer = dsd_path_exists_answer(GetFileAttributesW(wide));
-        const int saved_errno = errno;
-        free(wide);
-        if (answer != 0) {
-            errno = saved_errno;
-            return answer;
-        }
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : dsd_path_exists_answer(GetFileAttributesA(path));
     }
-    return dsd_path_exists_answer(GetFileAttributesA(path));
+    const int answer = dsd_path_exists_answer(GetFileAttributesW(wide));
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return answer;
 }
 
-int
-dsd_path_canonical(const char* path, char* out, size_t out_size) {
-    if (!path || path[0] == '\0' || !out || out_size == 0) {
-        errno = EINVAL;
+/* The canonical form of a UTF-8 path, given back in UTF-8. */
+static int
+dsd_path_canonical_wide(const wchar_t* wide, char* out, size_t out_size) {
+    wchar_t full[_MAX_PATH];
+    if (_wfullpath(full, wide, _MAX_PATH) == NULL) {
+        errno = ENAMETOOLONG;
         return -1;
     }
+    struct _stat64 st;
+    if (_wstat64(full, &st) != 0) {
+        return -1;
+    }
+    const int cap = out_size > (size_t)INT_MAX ? INT_MAX : (int)out_size;
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, full, -1, out, cap, NULL, NULL) <= 0) {
+        const DWORD err = GetLastError();
+        out[0] = '\0';
+        errno = err == ERROR_INSUFFICIENT_BUFFER ? ENAMETOOLONG : EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static int
+dsd_path_canonical_ansi(const char* path, char* out, size_t out_size) {
     char full[_MAX_PATH];
     if (_fullpath(full, path, sizeof full) == NULL) {
         errno = ENAMETOOLONG;
@@ -676,6 +745,24 @@ dsd_path_canonical(const char* path, char* out, size_t out_size) {
         return -1;
     }
     return 0;
+}
+
+int
+dsd_path_canonical(const char* path, char* out, size_t out_size) {
+    if (!path || path[0] == '\0' || !out || out_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : dsd_path_canonical_ansi(path, out, out_size);
+    }
+    const int rc = dsd_path_canonical_wide(wide, out, out_size);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return rc;
 }
 
 static int
@@ -715,14 +802,64 @@ dsd_open_resolved_local_entry(const struct _finddata_t* data, char* out, size_t 
     return result;
 }
 
-FILE*
-dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size) {
-    if (!out || out_size == 0 || dsd_local_file_name_is_unsafe(requested)) {
-        errno = EINVAL;
+/* The walk's end: a failed close drops the stream it found, else errno is the walk's answer. */
+static FILE*
+dsd_local_find_finish(intptr_t handle, FILE* result, int saved_errno) {
+    if (_findclose(handle) != 0 && result) {
+        int close_errno = errno;
+        fclose(result);
+        errno = close_errno;
         return NULL;
     }
-    out[0] = '\0';
+    errno = saved_errno;
+    return result;
+}
 
+/* A UTF-8 name, matched among the current folder's entries by its UTF-16 form. */
+static FILE*
+dsd_open_resolved_local_entry_wide(const struct _wfinddata_t* data, const char* requested, char* out, size_t out_size,
+                                   int* saved_errno) {
+    if ((data->attrib & _A_SUBDIR) != 0) {
+        *saved_errno = EINVAL;
+        return NULL;
+    }
+    DWORD attrs = GetFileAttributesW(data->name);
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        *saved_errno = EINVAL;
+        return NULL;
+    }
+    if (dsd_copy_resolved_local_name(requested, out, out_size) != 0) {
+        *saved_errno = errno;
+        return NULL;
+    }
+
+    FILE* result = _wfopen(data->name, L"r");
+    *saved_errno = result ? 0 : (errno ? errno : EINVAL);
+    return result;
+}
+
+static FILE*
+dsd_fopen_existing_local_wide(const wchar_t* wide_requested, const char* requested, char* out, size_t out_size) {
+    struct _wfinddata_t data;
+    intptr_t handle = _wfindfirst(L"*", &data);
+    if (handle == -1) {
+        return NULL;
+    }
+
+    FILE* result = NULL;
+    int saved_errno = ENOENT;
+    do {
+        if (wcscmp(data.name, wide_requested) != 0) {
+            continue;
+        }
+        result = dsd_open_resolved_local_entry_wide(&data, requested, out, out_size, &saved_errno);
+        break;
+    } while (_wfindnext(handle, &data) == 0);
+    return dsd_local_find_finish(handle, result, saved_errno);
+}
+
+static FILE*
+dsd_fopen_existing_local_ansi(const char* requested, char* out, size_t out_size) {
     struct _finddata_t data;
     intptr_t handle = _findfirst("*", &data);
     if (handle == -1) {
@@ -738,13 +875,25 @@ dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size)
         result = dsd_open_resolved_local_entry(&data, out, out_size, &saved_errno);
         break;
     } while (_findnext(handle, &data) == 0);
+    return dsd_local_find_finish(handle, result, saved_errno);
+}
 
-    if (_findclose(handle) != 0 && result) {
-        int close_errno = errno;
-        fclose(result);
-        errno = close_errno;
+FILE*
+dsd_fopen_existing_local_file(const char* requested, char* out, size_t out_size) {
+    if (!out || out_size == 0 || dsd_local_file_name_is_unsafe(requested)) {
+        errno = EINVAL;
         return NULL;
     }
+    out[0] = '\0';
+
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(requested, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? NULL : dsd_fopen_existing_local_ansi(requested, out, out_size);
+    }
+    FILE* result = dsd_fopen_existing_local_wide(wide, requested, out, out_size);
+    const int saved_errno = errno;
+    free(wide);
     errno = saved_errno;
     return result;
 }
@@ -789,46 +938,33 @@ dsd_dir_report_wide_entry(const WIN32_FIND_DATAW* data, dsd_dir_list_cb cb, void
     return cb(name, user);
 }
 
-// dsd_dir_list()'s answer when the wide walk did not find the folder: the ANSI walk is tried next.
-enum { DSD_DIR_LIST_WIDE_NOT_FOUND = 1 };
-
-// The "<dir>\*" search pattern, wide; NULL when @p dir is not UTF-8 or memory runs out.
+// The "<dir>\*" search pattern for a wide folder name; NULL when memory runs out.
 static wchar_t*
-dsd_dir_list_wide_pattern(const char* dir) {
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(dir);
-    if (!wide) {
-        return NULL;
-    }
-    const size_t len = wcslen(wide);
+dsd_dir_list_wide_pattern(const wchar_t* wide_dir) {
+    const size_t len = wcslen(wide_dir);
     wchar_t* pattern = (wchar_t*)calloc(len + 3U, sizeof(wchar_t));
     if (pattern) {
-        DSD_MEMCPY(pattern, wide, len * sizeof(wchar_t));
+        DSD_MEMCPY(pattern, wide_dir, len * sizeof(wchar_t));
         pattern[len] = L'\\';
         pattern[len + 1U] = L'*';
     }
-    free(wide);
     return pattern;
 }
 
 // A UTF-8 folder (the app's own, named in any script) is walked with the wide
 // calls and its entries reported by UTF-8 names, whatever the ANSI code page.
-//
-// @return 0 or -1 as dsd_dir_list() answers, or DSD_DIR_LIST_WIDE_NOT_FOUND when
-//         the folder is not UTF-8 or the wide call does not find it.
 static int
-dsd_dir_list_wide(const char* dir, dsd_dir_list_cb cb, void* user) {
-    wchar_t* pattern = dsd_dir_list_wide_pattern(dir);
+dsd_dir_list_wide(const wchar_t* wide_dir, dsd_dir_list_cb cb, void* user) {
+    wchar_t* pattern = dsd_dir_list_wide_pattern(wide_dir);
     if (!pattern) {
-        return DSD_DIR_LIST_WIDE_NOT_FOUND;
+        errno = ENOMEM;
+        return -1;
     }
     WIN32_FIND_DATAW data;
     HANDLE handle = FindFirstFileW(pattern, &data);
     const DWORD first_err = handle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
     free(pattern);
     if (handle == INVALID_HANDLE_VALUE) {
-        if (first_err == ERROR_FILE_NOT_FOUND || first_err == ERROR_PATH_NOT_FOUND) {
-            return DSD_DIR_LIST_WIDE_NOT_FOUND;
-        }
         errno = dsd_win32_file_errno(first_err);
         return -1;
     }
@@ -852,7 +988,7 @@ dsd_dir_list_wide(const char* dir, dsd_dir_list_cb cb, void* user) {
     return list_errno == 0 ? 0 : -1;
 }
 
-// A folder named in the ANSI code page (a command line's), or one the wide walk did not find.
+// A folder named in the ANSI code page (a command line's): ANSI names.
 static int
 dsd_dir_list_ansi(const char* dir, dsd_dir_list_cb cb, void* user) {
     // The C source text is "%s\\*": two backslashes here produce one at runtime,
@@ -905,11 +1041,16 @@ dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user) {
         errno = EINVAL;
         return -1;
     }
-    const int wide_rc = dsd_dir_list_wide(dir, cb, user);
-    if (wide_rc != DSD_DIR_LIST_WIDE_NOT_FOUND) {
-        return wide_rc;
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(dir, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : dsd_dir_list_ansi(dir, cb, user);
     }
-    return dsd_dir_list_ansi(dir, cb, user);
+    const int rc = dsd_dir_list_wide(wide, cb, user);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return rc;
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed

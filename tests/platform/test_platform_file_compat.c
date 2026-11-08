@@ -818,6 +818,69 @@ test_rmdir(const char* path) {
 }
 
 static int
+test_is_dir(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    DWORD attrs = INVALID_FILE_ATTRIBUTES;
+    if (g_test_ansi_names) {
+        attrs = GetFileAttributesA(path);
+    } else {
+        wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+        if (!wide) {
+            return 0;
+        }
+        attrs = GetFileAttributesW(wide);
+        free(wide);
+    }
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+/* The test's working folder, saved while it works inside a test folder. */
+typedef struct {
+#if DSD_PLATFORM_WIN_NATIVE
+    wchar_t dir[DSD_TEST_PATH_MAX];
+#else
+    char dir[DSD_TEST_PATH_MAX];
+#endif
+} test_saved_cwd;
+
+static int
+test_cwd_enter(test_saved_cwd* saved, const char* dir) {
+#if DSD_PLATFORM_WIN_NATIVE
+    if (_wgetcwd(saved->dir, DSD_TEST_PATH_MAX) == NULL) {
+        return -1;
+    }
+    if (g_test_ansi_names) {
+        return _chdir(dir);
+    }
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(dir);
+    if (!wide) {
+        return -1;
+    }
+    const int rc = _wchdir(wide);
+    free(wide);
+    return rc;
+#else
+    if (getcwd(saved->dir, sizeof saved->dir) == NULL) {
+        return -1;
+    }
+    return chdir(dir);
+#endif
+}
+
+static int
+test_cwd_leave(const test_saved_cwd* saved) {
+#if DSD_PLATFORM_WIN_NATIVE
+    return _wchdir(saved->dir);
+#else
+    return chdir(saved->dir);
+#endif
+}
+
+static int
 file_text_is(const char* path, const char* text) {
     FILE* fp = test_fopen_read(path);
     if (!fp) {
@@ -1015,12 +1078,89 @@ expect_non_ascii_dir_list(const char* dir, const char* leaf) {
 
 static int
 expect_non_ascii_exists(const char* dir, const char* file, const char* missing) {
-    if (dsd_path_exists_nofollow(dir) != 1 || dsd_path_exists_nofollow(file) != 1
-        || dsd_path_exists_nofollow(missing) != 0) {
+    int ok = dsd_path_exists_nofollow(dir) == 1 && dsd_path_exists_nofollow(file) == 1;
+    errno = 0;
+    ok = ok && dsd_path_exists_nofollow(missing) == 0 && errno == ENOENT;
+    if (!ok) {
         DSD_FPRINTF(stderr, "non-ASCII: dsd_path_exists_nofollow did not tell the names apart\n");
         return 1;
     }
     return 0;
+}
+
+static int
+expect_non_ascii_read_and_canonical(const char* dir, const char* file) {
+    int rc = 0;
+    FILE* fp = dsd_fopen_private(file, "rb");
+    char buf[16] = {0};
+    if (!fp || fread(buf, 1, sizeof buf - 1U, fp) != 6U || strcmp(buf, "onetwo") != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_fopen_private rb did not read the file\n");
+        rc = 1;
+    }
+    if (fp) {
+        (void)fclose(fp);
+    }
+    char canonical[DSD_TEST_PATH_MAX];
+    const size_t dir_len = strlen(dir);
+    if (dsd_path_canonical(dir, canonical, sizeof canonical) != 0 || strlen(canonical) <= dir_len
+        || strcmp(canonical + strlen(canonical) - dir_len, dir) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_path_canonical did not resolve the folder\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+expect_non_ascii_local_file(const char* dir, const char* leaf) {
+    test_saved_cwd saved;
+    if (test_cwd_enter(&saved, dir) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: the test could not enter its folder\n");
+        return 1;
+    }
+    char resolved[DSD_TEST_PATH_MAX];
+    FILE* fp = dsd_fopen_existing_local_file(leaf, resolved, sizeof resolved);
+    char buf[16] = {0};
+    int ok = fp != NULL && fread(buf, 1, sizeof buf - 1U, fp) == 6U && strcmp(buf, "onetwo") == 0;
+    ok = ok && strcmp(resolved, leaf) == 0;
+    if (fp) {
+        (void)fclose(fp);
+    }
+    if (!ok) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_fopen_existing_local_file did not open the file\n");
+    }
+    if (test_cwd_leave(&saved) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: the test could not leave its folder\n");
+        ok = 0;
+    }
+    return ok ? 0 : 1;
+}
+
+static int
+expect_non_ascii_folders(const char* dir) {
+    char sub[DSD_TEST_PATH_MAX];
+    char tmpl[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(sub, sizeof sub, dir, "sub") != 0
+        || dsd_test_path_join(tmpl, sizeof tmpl, dir, "t_XXXXXX") != 0) {
+        return 1;
+    }
+    int rc = 0;
+    if (dsd_mkdir(sub, 0700) != 0 || !test_is_dir(sub)) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_mkdir did not make the folder\n");
+        rc = 1;
+    }
+    if (dsd_test_rmdir(sub) != 0 || test_is_dir(sub)) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_test_rmdir did not remove the folder\n");
+        rc = 1;
+    }
+    if (!dsd_mkdtemp(tmpl) || !test_is_dir(tmpl) || dsd_test_rmdir(tmpl) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_mkdtemp did not make the folder\n");
+        rc = 1;
+    }
+    if (dsd_path_free_bytes(dir) < 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_path_free_bytes did not read the folder's volume\n");
+        rc = 1;
+    }
+    return rc;
 }
 
 static int
@@ -1044,6 +1184,9 @@ expect_named_dir_helpers(const char* dir, const char* leaf, const char* excl_lea
     rc |= expect_non_ascii_stat_and_open(file);
     rc |= expect_non_ascii_dir_list(dir, leaf);
     rc |= expect_non_ascii_exists(dir, file, missing);
+    rc |= expect_non_ascii_read_and_canonical(dir, file);
+    rc |= expect_non_ascii_local_file(dir, leaf);
+    rc |= expect_non_ascii_folders(dir);
     if (expect_rename_noreplace_in(dir) != 0) {
         DSD_FPRINTF(stderr, "non-ASCII: dsd_rename_noreplace failed in the folder\n");
         rc = 1;
@@ -1054,24 +1197,53 @@ expect_named_dir_helpers(const char* dir, const char* leaf, const char* excl_lea
     return rc;
 }
 
+/* Latin and CJK, then Hangul: on a double-byte ANSI code page (949, Korean) the narrow calls read a Hangul UTF-8 path
+   as an invalid name, so a missing file there must still answer "confirmed absent" through the wide call alone. */
 static int
 expect_non_ascii_dir_helpers(void) {
-    return expect_named_dir_helpers("dsd_neo_wide_\xC3\xBC\xE6\x97\xA5", "f_\xC3\xA9.tmp", "x_\xC3\xA9.tmp");
+    int rc = expect_named_dir_helpers("dsd_neo_wide_\xC3\xBC\xE6\x97\xA5", "f_\xC3\xA9.tmp", "x_\xC3\xA9.tmp");
+    rc |= expect_named_dir_helpers("dsd_neo_wide_\xEB\xB0\x95\xEC\xA7\x80\xEB\xAF\xBC", "f_\xEB\xB0\x95.tmp",
+                                   "x_\xEB\xB0\x95.tmp");
+    return rc;
 }
 
 #if DSD_PLATFORM_WIN_NATIVE
-/* A path in the ANSI code page (a command line's) still reaches its file through the ANSI calls: one that is not UTF-8,
-   and one that is UTF-8 by chance but names nothing in the wide calls. Code page 1252 (the CI runner's) names both. */
+/* A path that is not UTF-8 (a command line's, in the ANSI code page) reaches its file through the ANSI calls. Code page
+   1252 (the CI runner's) names it: \xE9 is "é" there and no UTF-8. */
 static int
 expect_ansi_dir_helpers(void) {
     if (GetACP() != 1252U) {
         return 0;
     }
     g_test_ansi_names = 1;
-    int rc = expect_named_dir_helpers("dsd_neo_ansi_\xE9", "f_\xE9.tmp", "x_\xE9.tmp");
-    rc |= expect_named_dir_helpers("dsd_neo_ansi_\xC3\xBC", "f_\xC3\xA9.tmp", "x_\xC3\xA9.tmp");
+    const int rc = expect_named_dir_helpers("dsd_neo_ansi_\xE9", "f_\xE9.tmp", "x_\xE9.tmp");
     g_test_ansi_names = 0;
     return rc;
+}
+
+/* Never both: a UTF-8 path the wide call finds nothing at is not read again in the ANSI code page, where the same bytes
+   name another folder (code page 1252 reads the UTF-8 "u umlaut" as A-tilde and a 1/4 sign) or, on a double-byte code
+   page, split the path apart. */
+static int
+expect_utf8_path_never_read_as_ansi(void) {
+    if (GetACP() != 1252U) {
+        return 0;
+    }
+    const char* ansi_dir = "dsd_neo_ansi_\xC3\xBC";
+    (void)_rmdir(ansi_dir);
+    if (_mkdir(ansi_dir) != 0) {
+        return 1;
+    }
+    dsd_stat_t st;
+    errno = 0;
+    int ok = dsd_path_exists_nofollow(ansi_dir) == 0 && errno == ENOENT;
+    errno = 0;
+    ok = ok && dsd_stat_path(ansi_dir, &st) != 0 && errno == ENOENT;
+    ok = _rmdir(ansi_dir) == 0 && ok;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "a UTF-8 path was read again in the ANSI code page\n");
+    }
+    return ok ? 0 : 1;
 }
 #endif
 
@@ -1245,6 +1417,7 @@ main(void) {
     rc |= expect_path_exists_nofollow();
 #if DSD_PLATFORM_WIN_NATIVE
     rc |= expect_ansi_dir_helpers();
+    rc |= expect_utf8_path_never_read_as_ansi();
 #else
     rc |= expect_path_exists_nofollow_links_and_unknown();
     rc |= expect_rejects_symlink();
