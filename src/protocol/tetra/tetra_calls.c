@@ -2260,8 +2260,10 @@ calls_leave_lost_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
 }
 
 /* N.213 / N.212 / T.212 on an ACCESS-ASSIGN PDU of the followed channel in frames 1 to 17 (clause 23.8.2.3.2), with the
- * call's downlink usage marker @p um. One the home cell's CRC evidence does not @p corroborate counts toward no run
- * (tetra_sm_aach_corroborated()): the AACH has no CRC, and another cell's can correct into the call's marker. */
+ * call's downlink usage marker @p um. One with the marker that the home cell's CRC evidence does not @p corroborate
+ * (tetra_sm_aach_corroborated()) counts for nothing positive: it breaks the run, and neither restarts T.212 nor
+ * clears the N.212 count, so it keeps no permission alive. The AACH has no CRC, and another cell's can correct into
+ * the call's marker. */
 static void
 aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* g, unsigned header, unsigned f1,
                         const tetra_call_t* c, int corroborated) {
@@ -2280,12 +2282,14 @@ aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_gran
         }
         return;
     }
+    if (!corroborated) {
+        cf->rx_run = 0;
+        return;
+    }
     const int successive = cf->rx_run > 0u
                            && slots_between(cf->rx_run_start, ts->tdma_slot_start)
                                   == next_channel_slot(cf->rx_run_tn, cf->rx_run_fn, slots);
-    if (!corroborated) {
-        cf->rx_run = 0;
-    } else if (!successive) {
+    if (!successive) {
         cf->rx_run = 1;
     } else if (cf->rx_run < UINT8_MAX) {
         cf->rx_run++;

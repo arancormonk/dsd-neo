@@ -10,6 +10,8 @@
 #ifndef DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MM_PDU_H_
 #define DSD_NEO_SRC_PROTOCOL_TETRA_TETRA_MM_PDU_H_
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -266,6 +268,13 @@ int tetra_mm_decode(const uint8_t* bits, int nbits, tetra_mm_pdu* out);
  * A.46: KSG number, security class 0 for class 2 and 1 for class 3, then the SCK number of a class 2 cell) that cipher
  * control @p control announces; "" with cipher control off. Uplink and downlink PDUs carry the same element. */
 void tetra_mm_cipher_detail(uint8_t control, uint16_t params, char* out, size_t cap);
+
+/**
+ * @brief tetra_mm_dispatch() for an MM PDU in a TM-SDU that came with another cell's channel allocation
+ * (tetra_mac_sdu_other_cell()) when @p print_only: it is decoded and printed as ever, and writes none of this cell's
+ * state (the D-MM STATUS shown, the TEA a network uses). tetra_mm_dispatch() is this with 0.
+ */
+void tetra_mm_dispatch_as(const uint8_t* bits, int nbits, int cc, int print_only, dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus
 }

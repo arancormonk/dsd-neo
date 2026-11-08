@@ -41,7 +41,8 @@ typedef struct {
     dsd_state* state;
     tetra_state_t* ts;
     int cc;
-    int nbits; /* bits in the PDU, for the truncation notes */
+    int nbits;          /* bits in the PDU, for the truncation notes */
+    uint8_t print_only; /* the PDU came with another cell's channel allocation: printed, this cell's state untouched */
 } mm_ctx;
 
 static uint8_t
@@ -606,7 +607,7 @@ mm_otar_provides_tmo_sck(const tetra_mm_otar_t* o) {
  * algorithm of no trunked traffic. */
 static void
 mm_otar_remember_ksg(const mm_ctx* ctx, const tetra_mm_otar_t* o) {
-    if (o->subtype != 2u && o->subtype != 4u) {
+    if (ctx->print_only || (o->subtype != 2u && o->subtype != 4u)) {
         return;
     }
     if (o->subtype == 2u && !mm_otar_provides_tmo_sck(o)) {
@@ -839,7 +840,7 @@ tetra_mm_cipher_detail(uint8_t control, uint16_t params, char* out, size_t cap) 
  * extension there is the MS's MNI. */
 static void
 mm_cipher_remember_ksg(const mm_ctx* ctx, uint8_t control, uint16_t params) {
-    if (control && ctx->ts->net_known && !ctx->ts->dmo) {
+    if (control && !ctx->print_only && ctx->ts->net_known && !ctx->ts->dmo) {
         (void)tetra_air_ksg_remember(ctx->state, ctx->ts->mcc, ctx->ts->mnc, (uint8_t)((params >> 6) & 0xFu));
     }
 }
@@ -1022,8 +1023,10 @@ static void
 mm_report_status(const mm_ctx* ctx, const tetra_mm_pdu* pdu) {
     DSD_FPRINTF(stderr, "[TETRA MM D-MM-STATUS] CC=%d status=%u (%s)\n", ctx->cc, (unsigned)pdu->status.status,
                 tetra_mm_status_name(pdu->status.status));
-    ctx->ts->mm_status_code = pdu->status.status;
-    ctx->ts->mm_status_valid = 1;
+    if (!ctx->print_only) {
+        ctx->ts->mm_status_code = pdu->status.status;
+        ctx->ts->mm_status_valid = 1;
+    }
 }
 
 /* Table 16.27 MM PDU/FUNCTION NOT SUPPORTED: the not-supported PDU type and the O-bit. The type 2 sub-PDU type that
@@ -1079,6 +1082,11 @@ tetra_mm_decode(const uint8_t* bits, int nbits, tetra_mm_pdu* out) {
 
 void
 tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
+    tetra_mm_dispatch_as(bits, nbits, cc, 0, opts, state);
+}
+
+void
+tetra_mm_dispatch_as(const uint8_t* bits, int nbits, int cc, int print_only, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !bits || nbits < 4) {
         return;
@@ -1086,7 +1094,7 @@ tetra_mm_dispatch(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_st
     tetra_mm_pdu pdu;
     const int complete = tetra_mm_decode(bits, nbits, &pdu);
     const mm_kind* const kind = &k_mm_kinds[pdu.type & 15u];
-    const mm_ctx ctx = {opts, state, ts, cc, nbits};
+    const mm_ctx ctx = {opts, state, ts, cc, nbits, (uint8_t)(print_only != 0)};
     if (!kind->decode) {
         TETRA_LOG_PAYLOAD(ts, "[TETRA MM] CC=%d reserved PDU type %u (%d bits)\n", cc, (unsigned)pdu.type, nbits);
     } else if (complete) {

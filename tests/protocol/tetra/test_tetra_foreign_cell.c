@@ -30,8 +30,10 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_mle.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -1267,7 +1269,7 @@ test_home_reallocation_still_followed(void) {
  * Allocations of another cell, and the AACH beside the home cell's CRC evidence.
  * ------------------------------------------------------------------------------------------------------------- */
 
-enum { UM_OTHER = 33, LABEL_OTHER = 0x155 };
+enum { UM_OTHER = 33, LABEL_OTHER = 0x155, ISSI_MS = 0x123456 };
 
 /* What A's call record holds that a PDU's address assigns, besides its allocation (follow_view). */
 typedef struct {
@@ -1384,6 +1386,59 @@ test_cell_change_allocation_logged_only(void) {
     assert(g_tunes == 0 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
     assert(tetra_calls_peek(s.state, CALL_B) == NULL);
     close_session(&s);
+}
+
+/* An MS's MAC-RESOURCE carrying the MM PDU @p mm with an allocation of timeslot 2 of G, of another cell with
+ * @p cell_change: an SCH/HD block. */
+static void
+mm_block(ttb_block* b, const ttb_block* mm, uint32_t cell_change) {
+    const mac_addr ms = {TETRA_MAC_ADDR_SSI, ISSI_MS, 0U};
+    const int start = resource_to(b, &ms);
+    ttb_resource_flags(b, 1);
+    allocation(b, 0x4U, CARR_G, 0, cell_change);
+    ttb_put(b, 2, 4); /* BL-UDATA */
+    ttb_put(b, TETRA_MLE_PD_MM, 3);
+    ttb_put_bits(b, mm->bits, mm->n);
+    ttb_close_resource(b, start);
+    ttb_finish(b, TTB_SCH_HD_BITS, -1);
+}
+
+/* An MM PDU that came with another cell's allocation is printed and writes none of this cell's state: a D-MM STATUS is
+ * not the status the frontends show, and the ciphering parameters of a D-LOCATION UPDATE COMMAND name no TEA for the
+ * network (regression: both were taken as this cell's). With an allocation of this cell both are taken (control). */
+static void
+test_cell_change_mm_writes_nothing(void) {
+    for (uint32_t cell_change = 0U; cell_change <= 1U; cell_change++) {
+        reset_backend();
+        session s = open_on_a();
+        follow_a(&s, CARR_F);
+        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        assert(!ts->mm_status_valid && tetra_air_ksg_seen(s.state, MCC, MNC) == 0U);
+        ttb_block status = {0};
+        ttb_put(&status, TETRA_MM_D_MM_STATUS, 4);
+        ttb_put(&status, 0x2D, 6); /* status downlink */
+        ttb_block command = {0};
+        ttb_put(&command, TETRA_MM_D_LOCATION_UPDATING_COMMAND, 4);
+        ttb_put(&command, 0, 1);               /* group identity report */
+        ttb_put(&command, 1, 1);               /* cipher control on */
+        ttb_put(&command, (1U << 6) | 2U, 10); /* KSG number 1 (TEA2), class 2, SCKN 3 (EN 300 392-7 table A.46) */
+        ttb_put(&command, 0, 1);               /* O-bit */
+        ttb_block b = {0};
+        ttb_block c = {0};
+        mm_block(&b, &status, cell_change);
+        mm_block(&c, &command, cell_change);
+        advance(&s, 0.2);
+        assert(cell_ndb(&s, &k_cell_a, &b, &c) == 1);
+        if (cell_change) {
+            assert(!ts->mm_status_valid);
+            assert(tetra_air_ksg_seen(s.state, MCC, MNC) == 0U);
+        } else {
+            assert(ts->mm_status_valid && ts->mm_status_code == 0x2DU);
+            assert(tetra_air_ksg_seen(s.state, MCC, MNC) == 0x2U);
+        }
+        assert(g_tunes == 1 && g_returns == 0 && tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
+        close_session(&s);
+    }
 }
 
 /* The next burst is read in the next slot of timeslot @p tn in frames 1 to 17 after the TDMA clock's (255 symbols a
@@ -1597,6 +1652,38 @@ test_aach_run_needs_home_evidence(void) {
     close_session(&s);
 }
 
+/* Receive permission is kept by AACHs with the call's marker only while the home cell's CRC evidence is fresh. Given
+ * beside the home's SYNC, then left with the other cell's AACHs alone more than TETRA_SM_GRANT_TIMEOUT_S after that
+ * SYNC, it lapses on T.212: those AACHs restart no T.212 and clear no N.212 count (regression: each restarted T.212, so
+ * the permission lasted as long as the other cell sent). With the home's SYNC among them it is kept (control). */
+static void
+test_rx_perm_lapses_without_home_evidence(void) {
+    for (int fresh = 0; fresh <= 1; fresh++) {
+        reset_backend();
+        session s = open_on(&k_vec_home, 0);
+        s.opts->trunk_hangtime = 30.0F;
+        follow_marked(&s);
+        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        advance(&s, 0.1);
+        speech(&s);
+        three_other_aachs(&s);
+        assert(ts->confirm.rx_perm);
+        if (!fresh) {
+            advance(&s, 4.5);
+        }
+        for (int i = 1; i <= 30; i++) { /* 30 slots of timeslot 2: past T.212 (72 slots) */
+            advance(&s, 0.05);
+            if (fresh && i % 10 == 0) {
+                assert(cell_sync_burst(&s, &k_vec_home, 0U, NULL, 0) == 1);
+            }
+            aach_on_air(&s, VEC_OTHER_PDU, seed_of(&k_vec_other));
+        }
+        tetra_sm_tick(s.opts, s.state);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && ts->confirm.rx_perm == (uint8_t)fresh);
+        close_session(&s);
+    }
+}
+
 /* A live home carrier: the call's channel sends its marker in the AACH of every slot and its SYNC once a second. A call
  * set up and silent keeps its channel as long as that goes on, 10 s here, and the grant timeout returns home
  * TETRA_SM_GRANT_TIMEOUT_S after the last SYNC (control: as on main). */
@@ -1670,8 +1757,10 @@ main(void) {
     test_home_reallocation_still_followed();
     test_cell_change_allocation_logged_only();
     test_cell_change_in_a_mac_end();
+    test_cell_change_mm_writes_nothing();
     test_aach_cannot_outlive_home_evidence();
     test_aach_run_needs_home_evidence();
+    test_rx_perm_lapses_without_home_evidence();
     test_live_home_carrier_keeps_a_silent_call();
     test_adverse_aach_ends_the_call();
     printf("TETRA foreign cell: OK\n");
