@@ -404,7 +404,6 @@ SignalSearchModel::arm() {
     if (!enabled) {
         return tr("Enable at least one range.");
     }
-    m_pending.avoid_count = (uint32_t)dsd_app_signal_search_avoids_get(m_pending.avoids, DSD_SEARCH_MAX_AVOIDS);
     /* The engine's own aggregate rules, so a start it would reject is never submitted (the channel total included). */
     char configError[192];
     if (dsd_signal_search_validate_config(&m_pending, configError, sizeof(configError)) != 0) {

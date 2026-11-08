@@ -60,7 +60,7 @@ Generated (do not edit/commit):
     capture measurement, tagged asynchronous tuning, identification and listening on
     the decoder thread. Its private owner shares the stable trunk-scan extension slot
     through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
-    owners, suppresses visited frequencies per pass and retains native session avoids.
+    owners, suppresses visited frequencies per pass and keeps two avoid lists (below).
     Its decoder baseline is the CONFIG-profile Auto preset, which leaves the DMR dispatch
     flags as the session had them; when a mono preset (`-f1`) has turned both off, the
     baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
@@ -109,13 +109,28 @@ Generated (do not edit/commit):
     guards under `dsd_engine_carrier_boundary()` in Protocols): nothing of it plays,
     publishes, captures or reports evidence. An analog visit's
     500 ms quiet timing starts only at the monitor's first verdict on the landed channel
-    (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
-    lifts a session avoid by frequency; `DSD_SEARCH_ACTION_AVOID_FREQUENCY` (appended, hit ID
-    may be 0) adds one, a duplicate succeeding and the frequency being visited being left as
-    `AVOID` leaves it. A full session list refuses either avoid and publishes "The avoid list
-    is full" in `status.message` (in the ERROR phase the search error stays instead); any
-    action that takes effect, or the next visit's tune (`search_queue_tune()`), clears an
-    earlier refusal, and an ERROR phase keeps its message. `dsd_engine_signal_search_target()` validates an action
+    (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s.
+    Avoids (issue #828): a start carries none. The coordinator excludes the union of the store's permanent avoids,
+    this session's avoids and the per-pass suppressed frequencies (`search_excluded()`), and a frequency is in one
+    avoid list at most, each with room for 1,024 (`DSD_SEARCH_MAX_AVOIDS`). Both lists are the runtime's
+    (`signal_search_avoids.h`, Runtime): the coordinator caches the permanent one with its revision and refreshes it
+    (`search_refresh_permanent()`) at the start of every tick, every control action and every in-frame yield check, in
+    any phase but STOPPED; unchanged, that is one atomic load. On a change it takes a snapshot, drops now-permanent
+    frequencies from the session list (publishing it) and, when the un-ended visited hit's frequency is now permanent,
+    sets `skip`, so the tick retires the hit and leaves; through the yield check this leaves a held visit that decodes
+    without a break, with no command queued (`test_permanent_leaves_held_visit`). A change that names no visit cuts no
+    frame. `AVOID`, `AVOID_PERMANENT` and `DSD_SEARCH_ACTION_AVOID_FREQUENCY` (appended, hit ID may be 0) on a
+    frequency that is now permanent succeed, add nothing and drop a session copy, leaving the visit they name; any other
+    frequency joins the session list (a duplicate succeeding), and the visit to it is left. `AVOID_PERMANENT` adds
+    nothing to the permanent list itself: the store has added it before the action runs. `DSD_SEARCH_ACTION_UNAVOID`
+    (Stop avoiding) lifts a session avoid by frequency, so a permanent one stays excluded. Each action is judged against
+    the lists as they stand when the decoder runs it, which the screens read too. The coordinator alone writes the
+    runtime session list, at every change of its own (`search_publish_session_avoids()`), and clears it (session 0)
+    when the session fails (`search_error()`) or stops (`dsd_engine_signal_search_shutdown()`); in ERROR it refuses
+    every session avoid action and keeps its error, so nothing is published for a failed or stopped session. Pause,
+    Resume and a paused restart with edited ranges keep both lists. A full session list refuses an avoid and publishes
+    "The avoid list is full" in `status.message`; any action that takes effect, or the next visit's tune
+    (`search_queue_tune()`), clears an earlier refusal, and an ERROR phase keeps its message (`ENGINE_SIGNAL_SEARCH`). `dsd_engine_signal_search_target()` validates an action
     against the live coordinator without acting and gives the frequency it acts on;
     `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
     the running session's status. The coordinator keeps the visit's checked site record
@@ -2875,6 +2890,15 @@ suite runs under this compiler.
     not control channel activity, named by the current Phase 2 synctype and the MAC's slot), never from a NID, an
     ISCH/DUID structure or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share
     of random input (`P25_P1_TSBK_SEQUENCE`, `P25_P2_ACCH_VERDICT`; limit in docs/signal-search.md).
+    The Signal search avoid lists (issue #828, `signal_search_avoids.h/.c`): one permanent list, written only by the
+    app-control store (`dsd_signal_search_avoids_permanent_set()`), and one session list, written only by the engine
+    coordinator (`dsd_signal_search_avoids_session_set()`, session 0 clears it). Each holds at most
+    `DSD_SEARCH_MAX_AVOIDS` frequencies, normalised on every set (0 and repeats dropped, order kept, linear time), and
+    has its own revision, which moves only when the list (or the session list's session) changes. Readers take a list
+    whole with its revision under one lazily initialised mutex (`_permanent_snapshot()`, `_session_get()`); the
+    revision getters are one atomic load, so a decoder tick that finds nothing changed costs one load. Both start
+    empty at revision 0; a lock that fails to initialise leaves both reading empty. No Qt or `USE_RADIO` dependency
+    (`RUNTIME_SIGNAL_SEARCH_AVOIDS`, also under TSan).
     It does not own radio I/O, persistence or Qt state.
   - Readout text (`include/dsd-neo/runtime/number_text.h`, issue #669): `dsd_number_text()` formats with the platform
     printf and drops the sign of a text whose digits are all zero (`-0.0` → `0.0`, any radix; `nan`/`inf` untouched),

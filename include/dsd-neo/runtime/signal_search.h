@@ -114,11 +114,12 @@ typedef struct {
     uint32_t frequencies[DSD_SEARCH_MAX_CANDIDATES];
 } dsd_signal_search_span;
 
+/** A start carries no avoids: the running search reads the permanent and session lists from
+ * <dsd-neo/runtime/signal_search_avoids.h> as they stand (issue #828). */
 typedef struct {
     uint64_t session_id;
-    uint32_t range_count, avoid_count;
+    uint32_t range_count;
     dsd_signal_search_range ranges[DSD_SEARCH_MAX_RANGES];
-    uint32_t avoids[DSD_SEARCH_MAX_AVOIDS];
 } dsd_signal_search_config;
 
 typedef enum {
@@ -127,12 +128,17 @@ typedef enum {
     DSD_SEARCH_ACTION_RESUME,
     DSD_SEARCH_ACTION_HOLD,
     DSD_SEARCH_ACTION_SKIP,
+    /** Avoid the hit being visited for the rest of the session, and leave it. A frequency that is a permanent avoid
+     * takes no room in the session list: the action succeeds, adds nothing and drops a session copy. A full session
+     * list refuses and says so in the status message; a failed search refuses every session avoid action. */
     DSD_SEARCH_ACTION_AVOID,
+    /** As DSD_SEARCH_ACTION_AVOID: the app-control store has made the frequency permanent first, so the search finds it
+     * in the permanent list and only leaves the visit. */
     DSD_SEARCH_ACTION_AVOID_PERMANENT,
-    /** Lift a session avoid by frequency_hz; not tied to a hit. */
+    /** Lift a session avoid by frequency_hz; not tied to a hit. A permanent avoid stays excluded. */
     DSD_SEARCH_ACTION_UNAVOID,
-    /** Avoid frequency_hz for the rest of the session (a history row: hit_id may be 0). Visiting it now leaves it, as
-     * DSD_SEARCH_ACTION_AVOID does; a full avoid list refuses and says so in the status message. */
+    /** Avoid frequency_hz for the rest of the session (a history row: hit_id may be 0), as DSD_SEARCH_ACTION_AVOID
+     * does: visiting it now leaves it. */
     DSD_SEARCH_ACTION_AVOID_FREQUENCY
 } dsd_signal_search_action;
 

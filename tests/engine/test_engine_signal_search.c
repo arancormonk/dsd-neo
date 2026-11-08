@@ -26,12 +26,15 @@
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -376,7 +379,6 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     live = 1;
     carrier = 0;
     config->session_id = 44;
-    config->avoid_count = 0;
     config->ranges[0].digital = 0;
     config->ranges[0].max_visit_ms = 0;
     assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
@@ -709,7 +711,6 @@ test_status_names_running_range(dsd_opts* o, dsd_state* s, dsd_signal_search_con
     o->rtlsdr_center_freq = 100000000;
     dsd_signal_search_config two = *config;
     two.session_id = 54;
-    two.avoid_count = 0;
     two.range_count = 2;
     DSD_SNPRINTF(two.ranges[0].name, sizeof(two.ranges[0].name), "%s", "Air band");
     two.ranges[0].digital = 0;
@@ -767,7 +768,6 @@ test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* con
     o->rtlsdr_center_freq = 100000000;
     dsd_signal_search_config one = *config;
     one.session_id = 55;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -867,11 +867,14 @@ test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* con
     assert(status.message[0] == '\0');
     dsd_engine_signal_search_notice(s, 55, "The permanent avoid list is full");
     assert(strcmp(status.message, "The permanent avoid list is full") == 0);
-    // A failed search keeps its error: a full list refuses without replacing it.
+    // A failed search keeps its error: its full session list went with it, and a session avoid is refused without
+    // replacing the error.
     act(o, s, DSD_SEARCH_ACTION_SKIP);
     failed = 1;
     land(o, s);
     assert(status.phase == DSD_SEARCH_ERROR && status.message[0] != '\0');
+    uint64_t avoid_session = 1;
+    assert(dsd_signal_search_avoids_session_get(&avoid_session, NULL, 0) == 0 && avoid_session == 0);
     char search_error_text[sizeof(status.message)];
     DSD_SNPRINTF(search_error_text, sizeof(search_error_text), "%s", status.message);
     by_frequency.frequency_hz = 300000000;
@@ -990,7 +993,6 @@ test_site_notes_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     o->rtlsdr_center_freq = 100000000;
     dsd_signal_search_config one = *config;
     one.session_id = 61;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -1099,7 +1101,6 @@ test_access_note_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_confi
     one.session_id = 63;
     const int saved_sync = s->synctype;
     const int saved_sps = s->sps_hunt_idx;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -1219,7 +1220,6 @@ test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     DSD_MEMSET(calls, 0, sizeof(calls));
     dsd_signal_search_config one = *config;
     one.session_id = 62;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -1416,7 +1416,6 @@ static dsd_signal_search_config
 tag_config(const dsd_signal_search_config* base, uint64_t session, int digital, uint32_t max_visit_ms) {
     dsd_signal_search_config one = *base;
     one.session_id = session;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].enabled = 1;
     one.ranges[0].start_hz = 100000000;
@@ -3067,6 +3066,262 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_probe_hook_answer(o, s, config);
 }
 
+/* The runtime session list as the engine last published it: its length, with its session in @p session. */
+static uint32_t avoided[DSD_SEARCH_MAX_AVOIDS];
+
+static size_t
+session_avoids(uint64_t* session) {
+    return dsd_signal_search_avoids_session_get(session, avoided, DSD_SEARCH_MAX_AVOIDS);
+}
+
+/* The store's permanent avoids, written as the app-control store writes them; a 0 is no frequency. */
+static void
+set_permanent(uint32_t first, uint32_t second) {
+    const uint32_t list[2] = {first, second};
+    dsd_signal_search_avoids_permanent_set(list, 2);
+}
+
+/* A by-frequency action on the running session. */
+static int
+control_frequency(dsd_opts* o, dsd_state* s, int action, uint32_t frequency) {
+    const dsd_signal_search_control a = {status.session_id, 0, action, frequency};
+    return dsd_engine_signal_search_control(o, s, &a);
+}
+
+/* The store's permanent avoids and this session's are two lists of 1,024 each (issue #828): a full permanent list
+   leaves the session all its room, and an avoid of a permanent frequency needs none. */
+static void
+test_avoid_lists_room(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static uint32_t permanent[DSD_SEARCH_MAX_AVOIDS];
+    for (uint32_t i = 0; i < DSD_SEARCH_MAX_AVOIDS; ++i) {
+        permanent[i] = 200000000U + i * 12500U;
+    }
+    dsd_signal_search_avoids_permanent_set(permanent, DSD_SEARCH_MAX_AVOIDS);
+    const dsd_signal_search_config one = tag_config(config, 97, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    uint32_t frequency = 300000000;
+    for (uint32_t i = 0; i < DSD_SEARCH_MAX_AVOIDS; ++i, frequency += 12500) {
+        assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, frequency) == 0);
+    }
+    assert(status.message[0] == '\0');
+    uint64_t session = 0;
+    assert(session_avoids(&session) == DSD_SEARCH_MAX_AVOIDS && session == 97 && avoided[0] == 300000000);
+    // The 1,025th session avoid has no room, and says so.
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, frequency) < 0);
+    assert(strcmp(status.message, "The avoid list is full") == 0);
+    // A permanent frequency takes no room: accepted, and nothing is added.
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, permanent[DSD_SEARCH_MAX_AVOIDS - 1]) == 0);
+    assert(session_avoids(&session) == DSD_SEARCH_MAX_AVOIDS && status.message[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* A frequency is in at most one list (issue #828): an avoid of a permanent frequency adds nothing to the session list
+   and drops a session copy, Stop avoiding (UNAVOID) never lifts a permanent avoid, and the store's changes reach the
+   running search at its next action or tick: an added one is excluded, and leaves the visit it names; a removed one is
+   measured again. */
+static void
+test_session_avoid_of_permanent(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 98, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    uint64_t session = 0;
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 1 && session == 98 && avoided[0] == 100012500);
+    // Made permanent: the next action finds it so, and the session copy goes.
+    set_permanent(100012500, 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 0 && session == 98);
+    // Stop avoiding lifts only a session avoid: the permanent one stays excluded (below).
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_UNAVOID, 100012500) == 0);
+    // The hit being visited, already permanent: Avoid permanently leaves the visit and adds nothing.
+    set_permanent(100012500, 100025000);
+    act(o, s, DSD_SEARCH_ACTION_AVOID_PERMANENT);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && session_avoids(&session) == 0);
+    // Both permanent frequencies are excluded: only 100.000 MHz is visited, this pass and the next.
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100000000);
+    land(o, s);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.pass == 2);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100000000);
+    // A permanent avoid removed mid-search is measured again.
+    set_permanent(100025000, 0);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100012500);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    // One added for the visit, with no action: the next tick leaves it.
+    set_permanent(100025000, 100012500);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && session_avoids(&session) == 0);
+    land(o, s);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* A permanent avoid made for the hit being visited leaves it at once (issue #828), held and decoded without a break
+   too: the in-frame yield check finds the store's change with no command queued and no main-loop tick, and the tick it
+   returns to leaves the visit. A change that does not name the visit cuts no frame. */
+static void
+test_permanent_leaves_held_visit(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 99, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_HELD);
+    carrier = 1;
+    assert(!dsd_runtime_controls_pending() && !dsd_engine_signal_search_should_yield(o, s));
+    set_permanent(200000000, 0);
+    assert(!dsd_engine_signal_search_should_yield(o, s));
+    const uint64_t hit = status.hit.hit_id;
+    set_permanent(200000000, status.hit.frequency_hz);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    // The yield check only asks for the tick: the hit is retired there.
+    assert(status.phase == DSD_SEARCH_HELD && status.hit.hit_id == hit && !status.hit.ended);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id == hit && status.hit.ended);
+    carrier = 0;
+    land(o, s);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* Paused, the search still takes the store's changes, and a Resume with edited ranges keeps both lists (issue #828). */
+static void
+test_paused_search_keeps_both_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 77, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100000000) == 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED);
+    set_permanent(100012500, 200000000);
+    tick(o, s);
+    uint64_t session = 0;
+    assert(session_avoids(&session) == 1 && session == 77 && avoided[0] == 100000000);
+    DSD_SNPRINTF(one.ranges[0].name, sizeof(one.ranges[0].name), "%s", "Edited");
+    char error[192];
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING && strcmp(status.range_name, "Edited") == 0);
+    assert(session_avoids(&session) == 1 && session == 77 && avoided[0] == 100000000);
+    // The session avoid and the permanent one stay excluded: only 100.025 MHz is visited, this pass and the next.
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100025000);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    const uint64_t pass = status.pass;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.pass == pass + 1);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100025000);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* The session list is the running session's alone (issue #828): a search that fails or stops clears the runtime list
+   and publishes no session avoid after that; a failed search refuses session avoids and keeps its error. */
+static void
+test_session_list_ends_with_session(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 79, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    uint64_t session = 0;
+    assert(session_avoids(&session) == 1 && session == 79);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    failed = 1;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && status.message[0] != '\0');
+    assert(session_avoids(&session) == 0 && session == 0);
+    char search_error_text[sizeof(status.message)];
+    DSD_SNPRINTF(search_error_text, sizeof(search_error_text), "%s", status.message);
+    const uint64_t revision = dsd_signal_search_avoids_session_revision();
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 300000000) < 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_UNAVOID, 200000000) < 0);
+    set_permanent(200000000, 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && strcmp(status.message, search_error_text) == 0);
+    assert(dsd_signal_search_avoids_session_revision() == revision && session_avoids(&session) == 0);
+    failed = 0;
+    stop_tag_session(o, s);
+    assert(dsd_signal_search_avoids_session_revision() == revision);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+
+    const dsd_signal_search_config two = tag_config(config, 82, 0, 0);
+    start_tag_session(o, s, &two);
+    visit_strongest(o, s);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    assert(session_avoids(&session) == 1 && session == 82);
+    stop_tag_session(o, s);
+    assert(session_avoids(&session) == 0 && session == 0);
+}
+
+/* Taps interleaved with the store's changes (issue #828): each action is judged against the lists as they stand when
+   the decoder runs it. A session avoid run after a permanent avoid was made and removed again adds the frequency to the
+   session list; one run while it was permanent adds nothing, and the removal then leaves it in neither list, so it is
+   measured again. */
+static void
+test_avoid_interleaving(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 44, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100025000);
+    uint64_t session = 0;
+    // Made permanent and removed again before the decoder runs the session avoid: it is a session avoid.
+    set_permanent(100012500, 0);
+    set_permanent(0, 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 1 && avoided[0] == 100012500);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_UNAVOID, 100012500) == 0);
+    assert(session_avoids(&session) == 0);
+    // Made permanent, the session avoid run, then removed: in neither list.
+    set_permanent(100012500, 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 0);
+    set_permanent(0, 0);
+    tick(o, s);
+    assert(session_avoids(&session) == 0);
+    // So the next measurement visits it (100.025 MHz was visited this pass).
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100012500);
+    land(o, s);
+    stop_tag_session(o, s);
+}
+
+static void
+test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    test_avoid_lists_room(o, s, config);
+    test_session_avoid_of_permanent(o, s, config);
+    test_permanent_leaves_held_visit(o, s, config);
+    test_paused_search_keeps_both_lists(o, s, config);
+    test_session_list_ends_with_session(o, s, config);
+    test_avoid_interleaving(o, s, config);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -3257,6 +3512,7 @@ main(void) {
     test_rejected_code_site(o, s, &config);
     test_rejected_code_p25p2_slot(o, s, &config);
     test_p25_site_and_codes(o, s, &config);
+    test_avoid_lists(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

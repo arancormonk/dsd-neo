@@ -30,6 +30,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
@@ -84,6 +85,15 @@ typedef struct {
     dsd_airspy_config saved_airspy;
     uint32_t suppressed[DSD_SEARCH_MAX_CHANNELS];
     size_t suppressed_count;
+    /* The store's permanent avoids as of permanent_revision (the runtime list), taken at each tick, action and in-frame
+       yield check when the revision moved (search_refresh_permanent()); issue #828. */
+    uint32_t permanent[DSD_SEARCH_MAX_AVOIDS];
+    size_t permanent_count;
+    uint64_t permanent_revision;
+    /* This session's own avoids, never a permanent one, so each list has its full room; published to the runtime
+       session list at every change and cleared there when the session stops or fails. */
+    uint32_t session_avoids[DSD_SEARCH_MAX_AVOIDS];
+    size_t session_avoid_count;
     uint64_t request, next_hit, acquired, probe_started, activity, tune_started, last_publish;
     uint64_t measurement_started;
     /* Decode-clock landing of the current visit; quiet timing of an analog visit starts at the monitor's first verdict. */
@@ -147,6 +157,63 @@ dsd_engine_signal_search_active(const dsd_state* state) {
     return c && c->status.phase != DSD_SEARCH_STOPPED;
 }
 
+static int
+search_contains(const uint32_t* values, size_t n, uint32_t value) {
+    for (size_t i = 0; i < n; ++i) {
+        if (values[i] == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The screens read this session's avoids from the runtime list, which only the coordinator writes. */
+static void
+search_publish_session_avoids(const search_coord* c) {
+    dsd_signal_search_avoids_session_set(c->status.session_id, c->session_avoids, c->session_avoid_count);
+}
+
+/* A session that stops or fails takes its avoids with it, and nothing is published for it after that. */
+static void
+search_clear_session_avoids(search_coord* c) {
+    c->session_avoid_count = 0;
+    dsd_signal_search_avoids_session_set(0, NULL, 0);
+}
+
+/* The visit to @p frequency, if one is under way, is left at the next tick. */
+static void
+search_leave_visit_to(search_coord* c, uint32_t frequency) {
+    if (c->visit && !c->status.hit.ended && c->status.hit.frequency_hz == frequency) {
+        c->skip = 1;
+    }
+}
+
+/* Take the store's permanent avoids when they changed (one atomic load when they did not): a frequency now permanent
+   leaves the session list, so it is in one list only, and a visit to one is left at the next tick, which retires the
+   hit. Runs on the decoder thread at each tick, action and in-frame yield check, in every phase the coordinator is
+   in; a failed or paused search has no visit and, failed, no session list. */
+static void
+search_refresh_permanent(search_coord* c) {
+    if (dsd_signal_search_avoids_permanent_revision() == c->permanent_revision) {
+        return;
+    }
+    c->permanent_count =
+        dsd_signal_search_avoids_permanent_snapshot(c->permanent, DSD_SEARCH_MAX_AVOIDS, &c->permanent_revision);
+    size_t kept = 0;
+    for (size_t i = 0; i < c->session_avoid_count; ++i) {
+        if (!search_contains(c->permanent, c->permanent_count, c->session_avoids[i])) {
+            c->session_avoids[kept++] = c->session_avoids[i];
+        }
+    }
+    if (kept != c->session_avoid_count) {
+        c->session_avoid_count = kept;
+        search_publish_session_avoids(c);
+    }
+    if (search_contains(c->permanent, c->permanent_count, c->status.hit.frequency_hz)) {
+        search_leave_visit_to(c, c->status.hit.frequency_hz);
+    }
+}
+
 static void
 search_end_hit(search_coord* c) {
     if (c->status.hit.hit_id && !c->status.hit.ended) {
@@ -173,6 +240,7 @@ static void
 search_error(search_coord* c, const char* message) {
     search_end_hit(c);
     search_cancel_measurements(c);
+    search_clear_session_avoids(c);
     c->stopping = 0;
     rtl_signal_search_bypass(1);
     c->status.phase = DSD_SEARCH_ERROR;
@@ -181,18 +249,9 @@ search_error(search_coord* c, const char* message) {
 }
 
 static int
-search_contains(const uint32_t* values, size_t n, uint32_t value) {
-    for (size_t i = 0; i < n; ++i) {
-        if (values[i] == value) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int
 search_excluded(const search_coord* c, uint32_t f) {
-    return search_contains(c->config.avoids, c->config.avoid_count, f)
+    return search_contains(c->permanent, c->permanent_count, f)
+           || search_contains(c->session_avoids, c->session_avoid_count, f)
            || search_contains(c->suppressed, c->suppressed_count, f);
 }
 
@@ -442,8 +501,7 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
 
 static int
 search_valid_config(const dsd_signal_search_config* config) {
-    return config && config->session_id && config->range_count && config->range_count <= DSD_SEARCH_MAX_RANGES
-           && config->avoid_count <= DSD_SEARCH_MAX_AVOIDS;
+    return config && config->session_id && config->range_count && config->range_count <= DSD_SEARCH_MAX_RANGES;
 }
 
 static int
@@ -556,7 +614,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     }
     search_coord* previous = search_get(state);
     if (previous && previous->status.phase == DSD_SEARCH_PAUSED) {
-        /* Keep the native session's avoids, including those made before an Activity recreation. */
+        /* Keep the native session's avoids, including those made before an Activity recreation: both lists live in the
+           coordinator and the runtime, never in a start. */
         previous->config.range_count = config->range_count;
         DSD_MEMCPY(previous->config.ranges, config->ranges, sizeof(config->ranges));
         previous->status.range_index = previous->status.channel_index = 0;
@@ -1081,6 +1140,9 @@ dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state) {
     if (!c || c->status.phase == DSD_SEARCH_STOPPED) {
         return 0;
     }
+    /* A held visit decoding without a break never reaches the main loop: a permanent avoid made for it is found here,
+       and the tick this returns to leaves it. A change that names no visit cuts no frame. */
+    search_refresh_permanent(c);
     if (dsd_runtime_controls_pending() || c->skip || c->stopping) {
         return 1;
     }
@@ -1132,19 +1194,35 @@ dsd_engine_signal_search_target(const dsd_state* state, const dsd_signal_search_
 }
 
 #ifdef USE_RADIO
-/* Avoid @p frequency for the rest of the session, leaving it if it is being visited; -1 when the avoid list is full.
-   Avoiding a frequency already avoided succeeds. */
+/* Lift @p frequency from the session list, if it is there, keeping the others in order. */
+static void
+search_session_remove(search_coord* c, uint32_t frequency) {
+    for (size_t i = 0; i < c->session_avoid_count; ++i) {
+        if (c->session_avoids[i] == frequency) {
+            DSD_MEMMOVE(&c->session_avoids[i], &c->session_avoids[i + 1],
+                        (c->session_avoid_count - i - 1) * sizeof(c->session_avoids[0]));
+            --c->session_avoid_count;
+            search_publish_session_avoids(c);
+            return;
+        }
+    }
+}
+
+/* Avoid @p frequency for the rest of the session, leaving it if it is being visited; -1 when the session's avoid list
+   is full. A permanent avoid takes no room: it is excluded already, and a session copy goes, so a frequency is in one
+   list at most. Avoiding a frequency already avoided succeeds. */
 static int
 search_avoid(search_coord* c, uint32_t frequency) {
-    if (!search_contains(c->config.avoids, c->config.avoid_count, frequency)) {
-        if (c->config.avoid_count == DSD_SEARCH_MAX_AVOIDS) {
+    if (search_contains(c->permanent, c->permanent_count, frequency)) {
+        search_session_remove(c, frequency);
+    } else if (!search_contains(c->session_avoids, c->session_avoid_count, frequency)) {
+        if (c->session_avoid_count == DSD_SEARCH_MAX_AVOIDS) {
             return -1;
         }
-        c->config.avoids[c->config.avoid_count++] = frequency;
+        c->session_avoids[c->session_avoid_count++] = frequency;
+        search_publish_session_avoids(c);
     }
-    if (c->visit && !c->status.hit.ended && c->status.hit.frequency_hz == frequency) {
-        c->skip = 1;
-    }
+    search_leave_visit_to(c, frequency);
     return 0;
 }
 
@@ -1158,28 +1236,29 @@ search_pause(search_coord* c) {
     c->status.phase = DSD_SEARCH_PAUSED;
 }
 
-/* Lifting an avoid that is not there is not an error: the caller's list and the session's agree afterwards. */
-static void
+/* Lift a session avoid; a permanent one stays excluded. Lifting an avoid that is not there is not an error: the
+   caller's list and the session's agree afterwards. A failed search has no session list and refuses. */
+static int
 search_unavoid(search_coord* c, uint32_t frequency) {
-    for (uint32_t i = 0; i < c->config.avoid_count; ++i) {
-        if (c->config.avoids[i] == frequency) {
-            c->config.avoids[i] = c->config.avoids[--c->config.avoid_count];
-            return;
-        }
+    if (c->status.phase == DSD_SEARCH_ERROR) {
+        return -1;
     }
+    search_session_remove(c, frequency);
+    return 0;
 }
 
 /* Avoid the hit being visited, or the action's frequency; a refusal is the frontends' to show: the queue only said the
-   command was taken. A failed search keeps its error, which says more. */
+   command was taken. A failed search refuses and keeps its error, which says more: its session list went with it. */
 static int
 search_avoid_action(search_coord* c, const dsd_signal_search_control* action) {
+    if (c->status.phase == DSD_SEARCH_ERROR) {
+        return -1;
+    }
     /* A valid AVOID names the hit being visited, so it is left as well. */
     if (search_avoid(c, action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY ? action->frequency_hz
                                                                             : c->status.hit.frequency_hz)) {
-        if (c->status.phase != DSD_SEARCH_ERROR) {
-            DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
-            search_publish(c, 0);
-        }
+        DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
+        search_publish(c, 0);
         return -1;
     }
     return 0;
@@ -1219,7 +1298,7 @@ search_apply_action(search_coord* c, const dsd_signal_search_control* action) {
         case DSD_SEARCH_ACTION_AVOID_PERMANENT:
         case DSD_SEARCH_ACTION_AVOID_FREQUENCY: return search_avoid_action(c, action);
         case DSD_SEARCH_ACTION_SKIP: c->skip = 1; return 0;
-        case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); return 0;
+        case DSD_SEARCH_ACTION_UNAVOID: return search_unavoid(c, action->frequency_hz);
         default: return -1;
     }
 }
@@ -1235,6 +1314,8 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
     }
     (void)opts;
 #ifdef USE_RADIO
+    /* Each action is judged against the lists as they stand when the decoder runs it. */
+    search_refresh_permanent(c);
     if (search_apply_action(c, action) != 0) {
         return -1;
     }
@@ -1627,6 +1708,7 @@ dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     return 0;
 #else
+    search_refresh_permanent(c);
     const int rc = search_tick(c, opts, state);
     if (c->status.phase == DSD_SEARCH_PAUSED || c->status.phase == DSD_SEARCH_ERROR) {
         search_end_reception(c, opts, state);
@@ -1647,6 +1729,7 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
         return;
     }
     search_end_hit(c);
+    search_clear_session_avoids(c);
 #ifdef USE_RADIO
     search_cancel_measurements(c);
     search_restore(c, opts, state);

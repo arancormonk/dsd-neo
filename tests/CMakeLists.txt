@@ -6268,6 +6268,24 @@ add_test(
     COMMAND dsd-neo_test_runtime_signal_search_visit_init_failure
 )
 
+# The Signal search avoid lists: normalising, revisions only on a change, whole snapshots across threads (issue #828).
+add_executable(
+    dsd-neo_test_runtime_signal_search_avoids
+    runtime/test_runtime_signal_search_avoids.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_avoids
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_avoids
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_AVOIDS
+    COMMAND dsd-neo_test_runtime_signal_search_avoids
+)
+
 add_executable(
     dsd-neo_test_runtime_udp_audio_hooks
     runtime/test_runtime_udp_audio_hooks.c
