@@ -159,6 +159,9 @@ Item {
             {file: "ImportsScreen"},
             {file: "KeySheet"},
             {file: "LicensesScreen"},
+            // Issue #646: the Listen tabs as Listen fills them.
+            {file: "ListenTabs", properties: {model: [{id: "systems", label: "Systems"}, {id: "scanLists", label: "Scan lists"},
+                {id: "explore", label: "Explore"}], currentId: "systems"}},
             {file: "MonitorScreen"},
             {file: "NetworkSheet"},
             {file: "OnboardingScreen"},

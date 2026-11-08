@@ -13481,6 +13481,17 @@ tabs, page tabs marked selected, were heard by name alone; checkable and checked
 radio button"). `BottomNav` keeps `selected` set for platforms that read it. Names carry no role or position words.
 Tests: `tst_bottom_nav_a11y.qml`.
 
+The Listen tabs (`qml/ListenTabs.qml`, issue #646) are Material primary tabs in the app's tokens: `model` of
+`{id, label}`, the caller's `currentId`, and `selected(id)` only for a change of tab. Each tab (`listenTab_<id>`) is
+the radio button above, with `selected` too. The strip is one Tab stop, the current tab:
+`activeFocusOnTab: (gate && current) || activeFocus`. Left/Right (no wrap), Home/End, Return, keypad Enter, Space,
+a tap and an accessibility press all go through the tab's one guarded `choose()` (`Navigation.allows()`, `enabled`,
+`visible`). With the focus in the strip, `choose()` moves the focus to the tab before it reports the choice, and a
+`currentId` the caller changes takes the focus along, so a settled strip has one Tab stop. `focusCurrent()` puts the
+focus on the current tab when it can take it. The labels are `WholeWordLabel`s at one shared size. The strip's height,
+`max(Theme.minimumTouchSize, tallest label + 24)`, measures each label laid out in the selected weight, so choosing a
+tab never changes it. There is no Flickable and no named container (R-2). Tests: `tst_listen_tabs.qml`.
+
 Accessibility churn (issue #782). On Android, Qt 6.11.3's accessibility bridge turns each ObjectShow or ObjectHide into
 a main-thread task that makes 8 blocking round trips to the Qt thread, so a screen that creates or toggles accessible
 items on every metrics tick stalls the app (the bridge runs only under TalkBack now, "Android foundation integration

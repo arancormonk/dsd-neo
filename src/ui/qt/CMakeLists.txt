@@ -143,6 +143,7 @@ qt_add_resources(
         qml/ReadableText.qml
         qml/SpeechPacer.qml
         qml/LiveText.qml
+        qml/ListenTabs.qml
         qml/StableRows.qml
         qml/ScreenReaderFocusRelease.qml
         qml/ModalSheet.qml
