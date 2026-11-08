@@ -13670,11 +13670,13 @@ request code (1305) is never used.
     `DocumentTransfer.isAborted` is set and the writer still waits: `update(IS_PENDING=0` (+ `DATE_EXPIRES` null on API
     29)`)` must change 1 row, then the `DISPLAY_NAME` read back (MediaStore renames a clash then) must be non-empty; any
     failure deletes the row (`ContentResolver.delete()`). The writer waits in 100 ms slices and gives up at the teardown
-    abort, or on a cancel that comes before the publication began (that task then deletes); a cancel once `update()`
-    began is too late, and the save stands. `update()` and `delete()` take no signal, so teardown never joins one; an
-    interrupt of the writer counts as a cancel and stays raised. After the abort, a publication that already began
-    still completes on the worker although the save reported failure (the process is ending; the file is whole). A row
-    left pending by a crash or an abort is hidden and expires (decided limit, `android/README.md`).
+    abort, or on a cancel that comes before the publication began (that task then deletes); both are checked before the
+    first slice, so a settle that comes cancelled (an export cancelled before it began settles with a cancelled signal,
+    as no later Cancel can reach it) or after the abort never waits, even behind a held provider call. A cancel once
+    `update()` began is too late, and the save stands. `update()` and `delete()` take no signal, so teardown never joins
+    one; an interrupt of the writer counts as a cancel and stays raised. After the abort, a publication that already
+    began still completes on the worker although the save reported failure (the process is ending; the file is whole). A
+    row left pending by a crash or an abort is hidden and expires (decided limit, `android/README.md`).
   - `discard()` never blocks: it claims, remembers and queues the delete; with no worker it deletes nothing (an
     insert answers empty, a settle deletes its claimed row itself). `publishedName()` is a lock-only read.
   - Host: `savedDocumentName()` and `discardPendingDownload()` call `publishedName()` / `discard()` (any thread); the

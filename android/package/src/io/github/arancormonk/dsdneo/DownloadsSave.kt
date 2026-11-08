@@ -168,8 +168,9 @@ object DownloadsSave {
      * else delete it. A document that is no pending row is left alone, unless a discard took it (see [take]).
      *
      * The work runs on the worker, and the caller waits for it in slices: it gives up at the teardown abort, or when
-     * [signal] (the write's own) is cancelled before the publication began, and the row is then deleted instead. A
-     * cancel that comes once the publication began is too late: the document is saved.
+     * [signal] (the write's own) is cancelled before the publication began, and the row is then deleted instead. Both
+     * are checked before the first slice, so a settle that comes already cancelled or after the abort returns at once
+     * and leaves the delete queued. A cancel that comes once the publication began is too late: the document is saved.
      *
      * @return whether the document stands: true when its row was published, or when it is no row of this app's and no
      *     discard took it.
@@ -210,11 +211,23 @@ object DownloadsSave {
         }
     }
 
-    /** An interrupt counts as a cancel: it ends the wait unless the publication began, and stays raised. */
+    /**
+     * An interrupt counts as a cancel: it ends the wait unless the publication began, and stays raised. The abort and
+     * the cancel are checked before each slice, so a settle that comes already cancelled or aborted never waits on the
+     * worker.
+     */
     private fun await(task: Future<Boolean>, settlement: Settlement, signal: CancellationSignal?): Boolean {
         var interrupted = false
         try {
             while (true) {
+                if (DocumentTransfer.isAborted) {
+                    // Teardown: whatever the worker is doing goes on without this thread.
+                    settlement.abandon()
+                    return false
+                }
+                if ((interrupted || signal?.isCanceled == true) && settlement.abandon()) {
+                    return false
+                }
                 try {
                     return task.get(WAIT_SLICE_MS, TimeUnit.MILLISECONDS)
                 } catch (_: TimeoutException) {
@@ -224,14 +237,6 @@ object DownloadsSave {
                     return false
                 } catch (_: InterruptedException) {
                     interrupted = true
-                }
-                if (DocumentTransfer.isAborted) {
-                    // Teardown: whatever the worker is doing goes on without this thread.
-                    settlement.abandon()
-                    return false
-                }
-                if ((interrupted || signal?.isCanceled == true) && settlement.abandon()) {
-                    return false
                 }
             }
         } finally {

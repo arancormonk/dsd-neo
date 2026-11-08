@@ -102,7 +102,9 @@ object RecordingExport {
             if (id <= cancelledThrough) null else Transfer(id, CancellationSignal()).also { current = it }
         }
         if (transfer == null) {
-            DownloadsSave.settle(resolver, uriText, false, null)
+            // Already cancelled: the row's delete is queued and nothing waits for it, since no Cancel can reach a
+            // transfer that never became the current one.
+            DownloadsSave.settle(resolver, uriText, false, CancellationSignal().apply { cancel() })
             return arrayOf(CANCELLED.toString())
         }
         var result = FAILED

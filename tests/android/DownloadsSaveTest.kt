@@ -288,7 +288,25 @@ private fun recordingTransferSettles() {
     val earlyId = ++nextId
     RecordingExport.cancel(earlyId)
     check(transfer(early, id = earlyId) == RecordingExport.CANCELLED) { "cancelled before it began" }
+    drainWorker()
     check(rows.callsFor(early) == listOf("insert $early", "delete $early")) { "never opened, deleted" }
+
+    // Cancelled before it began while the worker is held in another call: no Cancel can reach it any more, so it never
+    // waits for the worker; its row goes once the worker is free.
+    val stuck = row()
+    val stuckId = ++nextId
+    RecordingExport.cancel(stuckId)
+    val freed = holdWorker()
+    var stuckAnswer = -1
+    val cancelling = Thread { stuckAnswer = transfer(stuck, id = stuckId) }
+    cancelling.start()
+    cancelling.join(5_000)
+    val returned = !cancelling.isAlive
+    freed.countDown()
+    cancelling.join(5_000)
+    check(returned && stuckAnswer == RecordingExport.CANCELLED) { "a pre-cancelled export never waits on the worker" }
+    drainWorker()
+    check(rows.callsFor(stuck) == listOf("insert $stuck", "delete $stuck")) { "${rows.callsFor(stuck)}" }
 
     val gone = row()
     check(transfer(gone, arrayOf(File(scratch, "gone.wav").path)) == RecordingExport.MISSING && deleted(gone))
@@ -359,6 +377,8 @@ private fun recordingTransferSettles() {
         }
         copying.join(5_000)
         check(!copying.isAlive && answer == RecordingExport.CANCELLED) { "a cancel during the copy cancels" }
+        // A cancelled export does not wait for its row's delete.
+        drainWorker()
         check(deleted(midway) && rows.callsFor(midway).none { it.startsWith("update") }) { "${rows.callsFor(midway)}" }
     }
     check(DownloadsSave.pendingCount() == 0 && DocumentCopies.transfersInFlight() == 0)
