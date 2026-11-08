@@ -6427,7 +6427,8 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
 endif()
 
 # call_state.c is built in with DSD_NEO_TEST_HOOKS, ahead of dsd-neo_core's copy, so a test can fail the call state's
-# allocation under the analog tracker's BEGIN (issue #667).
+# allocation under the analog tracker's BEGIN (issue #667). analog_rx.c is built in the same way, ahead of dsd-neo_dsp's
+# copy, so the AM call test sets the clock the tap tells a paused input by.
 add_executable(
     dsd-neo_test_core_receive
     core/test_core_receive.c
@@ -6435,6 +6436,7 @@ add_executable(
     ../src/engine/analog_preroll.c
     ../src/app_control/receive_view.c
     ../src/core/util/call_state.c
+    ../src/dsp/analog_rx.c
 )
 target_link_libraries(
     dsd-neo_test_core_receive
@@ -6445,6 +6447,7 @@ target_include_directories(
     PRIVATE
         ${PROJECT_SOURCE_DIR}/src/core/file
         ${PROJECT_SOURCE_DIR}/src/core/util
+        ${PROJECT_SOURCE_DIR}/src/dsp
         ${PROJECT_SOURCE_DIR}/src/engine
 )
 # The NFM pre-roll's allocation failure seam (issue #668).
