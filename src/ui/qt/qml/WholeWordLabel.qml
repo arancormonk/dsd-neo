@@ -50,6 +50,10 @@ Text {
         property real pixelSize: label.scaledPixelSize
         property bool wordsFit: true
         property string family: ""
+        // Set once the label is built. A change handler can run while its
+        // caller's properties are still being set, when script globals such
+        // as Math are not reachable yet; the first fit runs on completion.
+        property bool built: false
     }
 
     FontMetrics {
@@ -70,6 +74,8 @@ Text {
         return widest;
     }
     function refit() {
+        if (!fit.built)
+            return;
         fit.family = font.family;
         var full = scaledPixelSize;
         var floor = Math.min(basePixelSize, full);
@@ -107,5 +113,8 @@ Text {
         if (label.font.family !== fit.family)
             label.refit();
     }
-    Component.onCompleted: refit()
+    Component.onCompleted: {
+        fit.built = true;
+        refit();
+    }
 }

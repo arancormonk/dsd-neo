@@ -13454,9 +13454,10 @@ a shrunk label never sits beside larger ones. A word that still does not fit at 
 one elided line (Qt elides only the last line it lays out), and the control's accessible name keeps the whole text.
 Words are measured at `measureWeight`, the heaviest weight the label is shown in, so selecting a segment never changes
 its size, and a `FontMetrics` measures at the rounded size a `Text` draws (`Qt.font` truncates a fractional size). The
-fit runs when the text, width or text size changes, never per frame; a control sizes from the label's `height`. Tests:
-`tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every `SegmentedControl` label set in
-the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
+fit runs once the label is built and then when the text, width or text size changes, never per frame: a change handler
+that runs while a caller still sets its properties finds `Math` undefined. A control sizes from the label's `height`.
+Tests: `tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every `SegmentedControl` label
+set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
 
 A control a keyboard can press takes Return, keypad Enter (`Keys.onEnterPressed`) and Space, each through the control's
 one guarded activation function (`enabled`, `Navigation.allows()` and any gate of its own), as its accessibility press
