@@ -992,6 +992,25 @@ Item {
             verify(body().contentY <= body().originY + body().contentHeight - body().height + 0.5, "inside the range");
         }
 
+        // The section's range can still grow after the place is put back, in the same turn (here the text size
+        // changes as the tab is chosen, and the cards' label columns lay out again only on the next polish): a deep
+        // place clamped short of the old range is put back once more when the range has grown.
+        function test_place_kept_when_the_range_grows_late() {
+            addSystems(30);
+            Ui.Theme.fontScale = 1.6;
+            settle();
+            body().contentY = body().originY + body().contentHeight - body().height;
+            var deep = body().contentY;
+            choose("explore");
+            Ui.Theme.fontScale = 1.0;
+            settle();
+            Ui.Theme.fontScale = 1.6;
+            home.showSection("systems");
+            settle();
+            waitFrames(2);
+            compare(body().contentY, deep, "Systems back at its place once the range has grown back");
+        }
+
         // A tab chosen while Home is hidden is put back where it was once Home shows again, not before.
         function test_restore_waits_while_hidden() {
             addSystems(30);

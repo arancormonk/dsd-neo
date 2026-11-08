@@ -229,6 +229,7 @@ Item {
         restorePending = false;
         ++restoreGeneration;
         restoreTimer.stop();
+        restoreAgainTimer.stop();
     }
     // Puts the shown tab's place back a turn after the choice, once Home is
     // shown (a hidden Home waits to be shown again). It lays the section and
@@ -242,6 +243,12 @@ Item {
         sectionItem(section).forceLayout();
         content.forceLayout();
         restorePending = false;
+        applySectionPlace();
+        restoreAgainTimer.generation = restoreGeneration;
+        restoreAgainTimer.applied = scrollBody.contentY;
+        restoreAgainTimer.restart();
+    }
+    function applySectionPlace() {
         var place = sectionScroll[section];
         scrollBody.contentY = clampedScroll(place === undefined ? scrollBody.originY : place);
         if (!tabsFixed && holdsFocus(listenTabs))
@@ -253,6 +260,21 @@ Item {
         // The choice this restore is for (restoreGeneration).
         property int generation: 0
         onTriggered: screen.restoreSection()
+    }
+    // Once more a turn later: nested geometry still owed a polish (a card's
+    // labels after a text-size change in the same turn) can grow the range
+    // after the place was put back, which then stopped short. Dropped when
+    // another choice or revealTop() came since, or anything moved the body.
+    Timer {
+        id: restoreAgainTimer
+        interval: 0
+        property int generation: 0
+        property real applied: 0
+        onTriggered: {
+            if (generation === screen.restoreGeneration && screen.visible && !scrollBody.moving
+                    && Math.abs(scrollBody.contentY - applied) < 0.5)
+                screen.applySectionPlace();
+        }
     }
     // Forgets every tab's place and any scroll still owed, as a new Home
     // starts. For tests, which reuse one Home across cases.

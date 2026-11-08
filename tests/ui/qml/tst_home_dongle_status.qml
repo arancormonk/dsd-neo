@@ -349,9 +349,9 @@ Item {
             verify(contains({x: 0, y: 0, w: home.width, h: home.height}, rectOf(pill)), "the pill stays on screen");
         }
 
-        // Issue #646 B3: revealTop() wins over Home's other deferred scroll writers. A tab's place still owed and a
-        // focus reveal still pending are dropped, the top becomes the tab's place, and a focus handed back later (a
-        // sheet restoring its opener) does not scroll it away.
+        // Issue #646 B3: revealTop() wins over Home's other deferred scroll writers. A tab's place still owed is
+        // dropped (a focus move while it is owed arms nothing), and so is a focus reveal still pending; the top becomes
+        // the tab's place, and a focus handed back later (a sheet restoring its opener) does not scroll it away.
         function test_reveal_top() {
             root.width = 360;
             root.height = 400;
@@ -368,17 +368,17 @@ Item {
                 }
             })(findChild(home, "listenSystemsSection"));
             compare(plays.length, 4);
+            // A place still owed.
             body.contentY = body.contentHeight - body.height;
             verify(body.contentY > 0);
             home.showSection("explore");
             home.showSection("systems");
             verify(home.restorePending, "Systems' place is owed");
-            plays[3].forceActiveFocus();
             home.revealTop();
             compare(body.contentY, body.originY);
             verify(!home.restorePending, "the owed place is dropped");
             waitFrames(3);
-            compare(body.contentY, body.originY, "nothing pending scrolled the top away");
+            compare(body.contentY, body.originY, "nothing owed scrolled the top away");
             verify(plays[2].mapToItem(body, 0, 0).y > body.height, "the control handed the focus is out of view at the top");
             plays[2].forceActiveFocus();
             waitFrames(3);
@@ -387,6 +387,14 @@ Item {
             home.showSection("systems");
             waitFrames(3);
             compare(body.contentY, body.originY, "the top is Systems' place now");
+
+            // A focus reveal still pending: the keyboard reached a control out of view, and the refusal came first.
+            verify(!home.restorePending && !home.focusRevealHeld, "nothing owed, nothing held");
+            verify(plays[3].mapToItem(body, 0, 0).y > body.height, "the focused control is out of view at the top");
+            plays[3].forceActiveFocus();
+            home.revealTop();
+            waitFrames(3);
+            compare(body.contentY, body.originY, "the pending reveal was dropped");
             root.forceActiveFocus();
         }
 

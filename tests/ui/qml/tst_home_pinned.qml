@@ -242,11 +242,17 @@ Item {
         }
 
         // [r2-5] A refusal is revealed with the body scrolled, on both hosts, also over a failure already showing.
+        // Issue #646 B3: when the refusal lands, either a tab's place is still owed or a keyboard focus reveal is still
+        // pending; revealTop() drops either.
         function test_refusal_revealed_when_scrolled_data() {
-            return [{tag: "desktop", brokered: false, replacing: false},
-                {tag: "desktop replacing a failure", brokered: false, replacing: true},
-                {tag: "brokered", brokered: true, replacing: false},
-                {tag: "brokered replacing a failure", brokered: true, replacing: true}];
+            var rows = [];
+            for (var pending of ["restore", "reveal"]) {
+                rows.push({tag: "desktop, " + pending + " pending", brokered: false, replacing: false, pending: pending},
+                    {tag: "desktop replacing a failure, " + pending + " pending", brokered: false, replacing: true, pending: pending},
+                    {tag: "brokered, " + pending + " pending", brokered: true, replacing: false, pending: pending},
+                    {tag: "brokered replacing a failure, " + pending + " pending", brokered: true, replacing: true, pending: pending});
+            }
+            return rows;
         }
         function test_refusal_revealed_when_scrolled(data) {
             for (var i = 0; i < 12; ++i)
@@ -262,10 +268,6 @@ Item {
             waitForRendering(home);
             body.contentY = body.contentHeight - body.height;
             verify(body.contentY > body.originY + 100, "the body scrolled");
-            // Issue #646 B3: a tab's place still owed and a focus reveal still pending when the refusal lands.
-            home.showSection("explore");
-            home.showSection("systems");
-            verify(home.restorePending, "Systems' place is owed");
             var plays = [];
             (function look(node) {
                 for (var child of node.children) {
@@ -274,7 +276,29 @@ Item {
                     look(child);
                 }
             })(findChild(home, "listenSystemsSection"));
-            plays[plays.length - 1].forceActiveFocus();
+            if (data.pending === "restore") {
+                home.showSection("explore");
+                home.showSection("systems");
+                verify(home.restorePending, "Systems' place is owed");
+            } else {
+                // A Play out of view both here and at the top: its reveal would scroll the failure card away.
+                var away = plays.filter(function (play) {
+                    var y = play.mapToItem(body.contentItem, 0, 0).y;
+                    return y + play.height < body.contentY - 100 && y > body.originY + body.height + 100;
+                });
+                verify(away.length > 0, "a Play out of view at both places");
+                // The keyboard is in Main's window, on Home (outside the body, so nothing is revealed yet).
+                app.requestActivate();
+                tryCompare(app, "active", true);
+                tryVerify(function () {
+                    home.forceActiveFocus();
+                    return home.activeFocus;
+                }, 2000, "Main's window takes the keyboard");
+                var at = body.contentY;
+                away[0].forceActiveFocus();
+                compare(body.contentY, at, "the reveal has not run yet");
+                verify(!home.restorePending && away[0].activeFocus, "a focus reveal is pending");
+            }
             app.startSystem(savedSystems.rowForUid(sites[1]));
             compareRefused(avoidedText("County"), sites[1]);
             compare(body.contentY, body.originY, "the failure card is in view");

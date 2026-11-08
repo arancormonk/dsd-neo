@@ -10723,15 +10723,17 @@ Qt Quick frontend (`src/ui/qt`):
   restore waits while Home is hidden (`onVisibleChanged` re-arms it), lays the section and the body column out itself
   (`forceLayout()`), then sets the place clamped to `[originY, originY + contentHeight - height]`; a tab not left yet
   opens at its top. With the keyboard focus on the tabs in the body it then reveals them, so a keyboard choice keeps
-  the strip in view. Deferred scroll writers, highest first: `revealTop()` (cancels a pending restore and focus
-  reveal, scrolls to the top, records it as the shown tab's place, and sets `focusRevealHeld`, which drops focus
-  reveals until the user scrolls, `movementStarted`, or moves the focus by key, the new focus item being the old
-  one's `nextItemInFocusChain()` either way, so a sheet handing focus back to its opener cannot scroll a failure card
-  away), a keyboard tab choice revealing the strip, the section restore, then plain focus reveal (none starts while a
-  restore is owed). `resetScrollMemory()` forgets the places and anything owed, for tests that reuse one Home. The
-  body holds the status cards (backup result, USB
-  details, failure, replay completion) on every tab, then three section Columns, `listenSystemsSection` (Add a system
-  and hint, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
+  the strip in view. A second owned timer, `restoreAgainTimer` (interval 0, same generation), puts the place back once
+  more a turn later, unless another choice, `revealTop()` or any other scroll came in between: nested geometry still
+  owed a polish (a card's labels after a text-size change in that turn) can grow the range after the first pass.
+  Deferred scroll writers, highest first: `revealTop()` (cancels a pending restore and focus reveal, scrolls to the top,
+  records it as the shown tab's place, and sets `focusRevealHeld`, which drops focus reveals until the user scrolls,
+  `movementStarted`, or moves the focus by key, the new focus item being the old one's `nextItemInFocusChain()` either
+  way, so a sheet handing focus back to its opener cannot scroll a failure card away), a keyboard tab choice revealing
+  the strip, the section restore, then plain focus reveal (none starts while a restore is owed). `resetScrollMemory()`
+  forgets the places and anything owed, for tests that reuse one Home. The body holds the status cards (backup result,
+  USB details, failure, replay completion) on every tab, then three section Columns, `listenSystemsSection` (Add a
+  system and hint, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
   `listenExploreSection` (the Signal search row, then `exploreCard`). Each is `visible` and `enabled` only while its
   tab is current, and its height is `shown ? implicitHeight : 0`, keyed on the tab, never on `visible` (B1). Disabled,
   a hidden section's controls take no focus, key or press (Qt keeps focus and key delivery on an item that only goes
@@ -10749,12 +10751,13 @@ Qt Quick frontend (`src/ui/qt`):
   pins in the body and 360 x 740 fixed with the Tab order, one title in both placements on both hosts, live resize,
   font change and the widest (wrapped) receiver label across the threshold flipping once with the rendered fixed
   region at most half, focus kept across a move, one line under the fixed region; per-tab places, rapid switches
-  and a switch during a fling remembering no clamp, a restore waiting while hidden, a keyboard choice in the body
+  and a switch during a fling remembering no clamp, the place kept when the range grows after the restore in its turn,
+  a restore waiting while hidden, a keyboard choice in the body
   keeping the tabs in view, `revealTop()` cancelling an owed restore and holding off focus reveals; the migrated
   Home suites select the tab a case needs; `tst_home_dongle_status.qml` `test_reveal_top` and
-  `tst_home_pinned.qml` `test_refusal_revealed_when_scrolled` run `revealTop()` against an owed restore and a
-  focus handed back later), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on each tab;
-  `tst_a11y_scan_churn.qml`: the Explore face on a hidden tab raises nothing).
+  `tst_home_pinned.qml` `test_refusal_revealed_when_scrolled` run `revealTop()` against an owed restore, a
+  pending focus reveal and a focus handed back later), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on
+  each tab; `tst_a11y_scan_churn.qml`: the Explore face on a hidden tab raises nothing).
 - Pinned strip and sheet (issue #801; the pins themselves are `listen_pins.{h,cpp}`, below). `qml/HomeScreen.qml` places
   `pinnedStrip` between `listenHeader` and the scroll body, on the content column, 8 px under the header. The order is
   title, strip, Listen tabs, body on both hosts: `fixedTitle` (`pinnedHeader`, the strip shown or the fixed Listen
