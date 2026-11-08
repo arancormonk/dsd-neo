@@ -18317,7 +18317,7 @@ check_shared_pair(dsd_trunk_scan_target* a, dsd_trunk_scan_target* b, size_t* di
     lists[1].count = 1U;
     size_t row_targets[2] = {9U, 9U};
     err[0] = '\0';
-    const int rc = dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, distinct, err, err_sz);
+    const int rc = dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, 2U, distinct, err, err_sz);
     if (rc == 0 && (row_targets[0] != 0U || row_targets[1] != 0U)) {
         return -2;
     }
@@ -18620,7 +18620,7 @@ test_lists_budget_counts_distinct_targets(void) {
     char err[512] = {0};
     size_t distinct = 0U;
     int test_rc = 0;
-    if (dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, &distinct, err, sizeof err) != 0
+    if (dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, half * 2U, &distinct, err, sizeof err) != 0
         || distinct != half) {
         DSD_FPRINTF(stderr, "two shared lists over half the budget: distinct %zu (want %zu), err \"%s\"\n", distinct,
                     half, err);
@@ -18636,6 +18636,38 @@ test_lists_budget_counts_distinct_targets(void) {
     free(rows);
     free(row_targets);
     return test_rc;
+}
+
+/* A row_targets with room for fewer entries than the lists hold rows is refused before the merge writes into it. */
+static int
+test_lists_short_row_targets_refused(void) {
+    static dsd_trunk_scan_target rows[2];
+    DSD_MEMSET(rows, 0, sizeof rows);
+    for (size_t i = 0; i < 2U; i++) {
+        DSD_SNPRINTF(rows[i].id, sizeof rows[i].id, "t%zu", i);
+        rows[i].type = DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
+        rows[i].frequency_hz = (uint32_t)(851000000U + i);
+        rows[i].csv_row = (unsigned int)(i + 2U);
+    }
+    dsd_trunk_scan_target_list lists[2] = {{&rows[0], 1U, 1U}, {&rows[1], 1U, 1U}};
+    static const char* const names[] = {"first", "second"};
+    size_t row_targets[3] = {7U, 7U, 7U};
+    char err[512] = {0};
+    size_t distinct = 9U;
+    const int rc = dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, 1U, &distinct, err, sizeof err);
+    if (rc != -1 || distinct != 0U || strcmp(err, "failed to merge the trunk scan target lists") != 0
+        || row_targets[0] != 7U || row_targets[1] != 7U || row_targets[2] != 7U) {
+        DSD_FPRINTF(stderr, "short row_targets: rc %d distinct %zu err \"%s\" entries %zu %zu %zu\n", rc, distinct, err,
+                    row_targets[0], row_targets[1], row_targets[2]);
+        return 1;
+    }
+    if (dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, 2U, &distinct, err, sizeof err) != 0
+        || distinct != 2U || row_targets[0] != 0U || row_targets[1] != 1U || row_targets[2] != 7U) {
+        DSD_FPRINTF(stderr, "exact row_targets: distinct %zu err \"%s\" entries %zu %zu %zu\n", distinct, err,
+                    row_targets[0], row_targets[1], row_targets[2]);
+        return 1;
+    }
+    return 0;
 }
 
 /* A target in two lists that both start off: --trunk-scan-hold names every list that holds it. A target whose owner
@@ -21728,6 +21760,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_shared_row_set_options_any_order);
     rc |= run_with_default_tune_hook(test_lists_shared_row_key_file_named_two_ways);
     rc |= run_with_default_tune_hook(test_lists_budget_counts_distinct_targets);
+    rc |= run_with_default_tune_hook(test_lists_short_row_targets_refused);
     rc |= run_with_default_tune_hook(test_hold_on_shared_target_lists_off);
     rc |= run_with_default_tune_hook(test_lists_union_target_cap);
     rc |= run_with_default_tune_hook(test_lists_build_failure_in_list_two_cleans_up);

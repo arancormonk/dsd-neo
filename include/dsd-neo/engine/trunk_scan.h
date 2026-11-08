@@ -143,11 +143,14 @@ int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_
  * @param row_targets NULL, or room for one entry per row of every list, list after list: row r of list l gets the
  * index of its target in the session's targets, which are the rows that load a new target, in list order and then row
  * order. A row is new exactly when its index is the number of targets before it.
+ * @param row_target_count The entries @p row_targets holds (ignored when it is NULL); fewer than the rows is a
+ * refusal.
  * @param distinct NULL, or set to the number of distinct targets (0 on a refusal).
  * @return 0 when they can; -1 otherwise.
  */
 int dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
-                                      size_t* row_targets, size_t* distinct, char* err, size_t err_sz);
+                                      size_t* row_targets, size_t row_target_count, size_t* distinct, char* err,
+                                      size_t err_sz);
 
 /** Shared lexical splitter for target import/relocation. Modifies line in place. */
 int dsd_trunk_scan_split_csv_fields(char* line, char** fields, size_t max_fields, size_t* out_count);

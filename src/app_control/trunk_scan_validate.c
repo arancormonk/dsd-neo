@@ -64,7 +64,7 @@ validate_lists_together(const char* const* paths, const char* const* labels, siz
     }
     *total = 0U;
     if (rc == 0) {
-        rc = dsd_trunk_scan_check_target_lists(lists, labels, count, NULL, total, err, err_sz);
+        rc = dsd_trunk_scan_check_target_lists(lists, labels, count, NULL, 0U, total, err, err_sz);
     }
     for (size_t i = 0; i < loaded; i++) {
         /* Reset owns the key erasure as well as the allocation. */

@@ -1755,7 +1755,7 @@ scan_row_ref_compare(const void* left, const void* right) {
     return (x->row > y->row) - (x->row < y->row);
 }
 
-/* The earliest row with @p id among the @p count sorted entries of @p index, which hold it. */
+/* The earliest row with @p id among the @p count sorted entries of @p index, or NULL when none has it. */
 static const scan_row_ref*
 scan_row_ref_first(const scan_row_ref* index, size_t count, const char* id) {
     size_t lo = 0U;
@@ -1768,7 +1768,7 @@ scan_row_ref_first(const scan_row_ref* index, size_t count, const char* id) {
             hi = mid;
         }
     }
-    return &index[lo];
+    return lo < count && strcmp(index[lo].id, id) == 0 ? &index[lo] : NULL;
 }
 
 /* The lists dsd_trunk_scan_check_target_lists() merges, as it walks them. */
@@ -1779,6 +1779,7 @@ typedef struct {
     size_t rows;                              /* the rows of every list */
     scan_row_ref* index;                      /* every row, built once and sorted (scan_row_ref_compare()) */
     size_t* row_targets;                      /* each row's target, list after list */
+    size_t row_target_count;                  /* the entries row_targets holds, which bound every index into it */
     size_t distinct;                          /* targets so far */
 } scan_list_merge;
 
@@ -1809,12 +1810,12 @@ scan_merge_list_rows(scan_list_merge* m, size_t l, char* err, size_t err_sz) {
         const dsd_trunk_scan_target* row = &list->targets[r];
         const scan_row_ref* first = scan_row_ref_first(m->index, m->rows, row->id);
         const size_t at = m->offsets[l] + r;
-        const size_t first_at = m->offsets[first->list] + first->row;
-        /* Both rows are in the index the rows were counted for. */
-        if (at >= m->rows || first_at > at) {
+        /* Every row is in the index, its earliest row comes no later, and both have room in row_targets. */
+        if (first == NULL || at >= m->row_target_count || m->offsets[first->list] + first->row > at) {
             scan_set_error(err, err_sz, "failed to merge the trunk scan target lists");
             return -1;
         }
+        const size_t first_at = m->offsets[first->list] + first->row;
         if (first_at == at) {
             m->row_targets[at] = m->distinct++;
             continue;
@@ -1870,7 +1871,8 @@ scan_merge_lists_in_order(scan_list_merge* m, size_t count, char* err, size_t er
 
 int
 dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
-                                  size_t* row_targets, size_t* distinct, char* err, size_t err_sz) {
+                                  size_t* row_targets, size_t row_target_count, size_t* distinct, char* err,
+                                  size_t err_sz) {
     if (distinct != NULL) {
         *distinct = 0U;
     }
@@ -1890,11 +1892,17 @@ dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const
         m.offsets[l] = m.rows;
         m.rows += lists[l].count;
     }
+    if (row_targets != NULL && row_target_count < m.rows) {
+        scan_set_error(err, err_sz, "failed to merge the trunk scan target lists");
+        return -1;
+    }
     size_t* own_targets = NULL;
     if (row_targets == NULL) {
-        own_targets = (size_t*)calloc(m.rows > 0U ? m.rows : 1U, sizeof *own_targets);
+        row_target_count = m.rows > 0U ? m.rows : 1U;
+        own_targets = (size_t*)calloc(row_target_count, sizeof *own_targets);
     }
     m.row_targets = row_targets != NULL ? row_targets : own_targets;
+    m.row_target_count = row_target_count;
     int rc = m.row_targets != NULL ? scan_list_merge_index(&m, count) : -1;
     if (rc != 0) {
         scan_set_error(err, err_sz, "failed to allocate the trunk scan target lists");
@@ -6031,14 +6039,16 @@ trunk_scan_load_lists(const dsd_opts* opts, dsd_trunk_scan_target_list* out, tru
         rc = trunk_scan_load_list_csv(names[loaded], opts, &lists[loaded], err, err_sz);
         rows += lists[loaded].count;
     }
-    size_t* row_targets = rc == 0 ? (size_t*)calloc(rows > 0U ? rows : 1U, sizeof *row_targets) : NULL;
+    const size_t row_target_count = rows > 0U ? rows : 1U;
+    size_t* row_targets = rc == 0 ? (size_t*)calloc(row_target_count, sizeof *row_targets) : NULL;
     if (rc == 0 && row_targets == NULL) {
         scan_set_error(err, err_sz, "failed to allocate trunk scan targets");
         rc = -1;
     }
     size_t distinct = 0U;
     if (rc == 0) {
-        rc = dsd_trunk_scan_check_target_lists(lists, names, (size_t)count, row_targets, &distinct, err, err_sz);
+        rc = dsd_trunk_scan_check_target_lists(lists, names, (size_t)count, row_targets, row_target_count, &distinct,
+                                               err, err_sz);
     }
     if (rc == 0) {
         rc = trunk_scan_merge_lists(opts, lists, count, row_targets, distinct, out, merged, err, err_sz);
