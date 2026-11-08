@@ -1017,6 +1017,15 @@ test_async_import_outcomes() {
     const QVariantMap format = importAndWait(model, badMap, "tg-keys.csv", "dmrTgKeys");
     expect("a file its type cannot parse is a format failure with its detail",
            !format.value("ok").toBool() && format.value("error") == "format" && format.contains("detail"));
+    // The parser's own reason, naming the file as the user knows it, never the staging copy.
+    const QString why = format.value("detail").toString();
+    expect("a format failure says why the parser refused the file",
+           why.contains("tg-keys.csv") && why.contains("no mappings") && !why.contains(staging) && why.at(0).isUpper());
+    const QString badMode = source.filePath("bad-mode.csv");
+    expect("bad mode fixture", write_file(badMode, "channel,frequency,mode\n1,851012500,warp\n"));
+    const QString mode = importAndWait(model, badMode, "bad-mode.csv", "chan").value("detail").toString();
+    expect("a channel map's reason names its row and the bad mode",
+           mode.startsWith("Channel map file 'bad-mode.csv' row 2: invalid mode") && !mode.contains(staging));
     const QVariantMap unknown = importAndWait(model, groups, "county.csv", "futureType");
     expect("an unknown type is refused through the same answer",
            !unknown.value("ok").toBool() && unknown.value("error") == "format");

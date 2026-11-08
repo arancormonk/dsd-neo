@@ -13,6 +13,7 @@
 #include <cstring>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
+#include <thread>
 #include "test_env.h"
 
 typedef struct capture_stderr {
@@ -173,6 +174,32 @@ test_log_write_ignores_null_format(void) {
     assert(out[0] == '\0');
 }
 
+/* #832: a parser's reason, kept for the caller that ran it: this thread's first error only, still logged. */
+static void
+test_log_capture_keeps_this_threads_first_error(void) {
+    char reason[32] = "stale";
+    char logged[256];
+    set_env_flag("DSD_FORCE_ASCII", nullptr);
+    set_env_flag("DSD_FORCE_UTF8", "1");
+
+    capture_stderr capture = capture_stderr_begin();
+    dsd_neo_log_capture_error(reason, sizeof(reason));
+    assert(reason[0] == '\0');
+    dsd_neo_log_write(LOG_LEVEL_WARN, "a warning\n");
+    std::thread other([] { dsd_neo_log_write(LOG_LEVEL_ERROR, "another thread\n"); });
+    other.join();
+    assert(reason[0] == '\0');
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "row %d: a reason far longer than the buffer\n", 3);
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "a later error\n");
+    dsd_neo_log_capture_error(nullptr, 0);
+    dsd_neo_log_write(LOG_LEVEL_ERROR, "after the capture\n");
+    capture_stderr_end(&capture, logged, sizeof(logged));
+
+    assert(std::strcmp(reason, "row 3: a reason far longer than") == 0);
+    assert(std::strstr(logged, "row 3: a reason") != nullptr && std::strstr(logged, "a later error") != nullptr
+           && std::strstr(logged, "after the capture") != nullptr);
+}
+
 int
 main(void) {
     test_log_sink_resolves_from_environment_once();
@@ -183,6 +210,7 @@ main(void) {
     test_log_write_formats_and_preserves_utf8_when_supported();
     test_log_write_applies_ascii_fallback_when_unicode_disabled();
     test_log_write_ignores_null_format();
+    test_log_capture_keeps_this_threads_first_error();
     set_env_flag("DSD_FORCE_ASCII", nullptr);
     set_env_flag("DSD_FORCE_UTF8", nullptr);
 

@@ -7,6 +7,7 @@
 #define DSD_NEO_LOG_H
 
 #include <dsd-neo/platform/platform.h>
+#include <stddef.h>
 
 /**
  * @file
@@ -53,6 +54,16 @@ extern "C" {
  * text is borrowed for the duration of the callback; callbacks must not throw. */
 typedef void (*dsd_neo_log_tap_fn)(dsd_neo_log_level_t level, const char* text, void* ctx);
 void dsd_neo_log_set_tap(dsd_neo_log_tap_fn fn, void* ctx);
+
+/**
+ * @brief Keep a copy of the calling thread's first error message from now on, as well as logging it.
+ *
+ * For a caller that runs a parser and wants to say why it refused a file: the parsers report the reason only through
+ * LOG_ERROR. @p buf receives the first LOG_LEVEL_ERROR message this thread writes (NUL-terminated, truncated to
+ * @p size) and is emptied now; later errors leave it as it is. Other threads are not captured. Pass NULL to stop,
+ * before @p buf goes away.
+ */
+void dsd_neo_log_capture_error(char* buf, size_t size);
 
 /**
  * @brief Write a formatted log message to the active log sink.

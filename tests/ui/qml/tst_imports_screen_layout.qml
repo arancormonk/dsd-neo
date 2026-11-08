@@ -363,7 +363,8 @@ Item {
             importTc.flow.begin(bad, "imports-bad-map.csv", "dmrTgKeys", importTc.screen.importContext());
             tryCompare(importTc.flow, "active", false);
             verify(importTc.screen.noticeIsProblem);
-            verify(importTc.screen.notice.length > 0 && importTc.screen.notice !== read, "a format failure reads apart: " + importTc.screen.notice);
+            // The parser's own reason, not only "is not a valid ...".
+            compare(importTc.screen.notice, "DMR TG key ID map CSV 'imports-bad-map.csv' contains no mappings.");
 
             // The row is removed while its update copies.
             var target = testContext.importNow(groups("imports-stale.csv", 1), "group");

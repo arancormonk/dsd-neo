@@ -29,6 +29,7 @@
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_options.h>
 
 #include <dsd-neo/core/dmr_key_map.h>
@@ -90,6 +91,16 @@ copy_failure(int code, const ImportCopyProgress& copy) {
     }
 }
 
+/* A parser's reason names the file by the path it read, which the user knows as @p name. */
+QString
+named_reason(QString detail, const QString& path, const QString& name) {
+    const QString canonical = QFileInfo(path).canonicalFilePath();
+    if (!canonical.isEmpty() && canonical != path) {
+        detail.replace(canonical, name);
+    }
+    return detail.replace(path, name);
+}
+
 /*
  * A single file's stage, on the import worker: copy the document into the request's staging folder and validate it
  * there. @p providerName names the copy when set (a generated file); a pick takes the name its provider reports, else
@@ -111,7 +122,7 @@ stage_single_file(const ImportJob& job, const QString& reference, const QString&
         QString detail;
         if (!ImportedFilesModel::validate(staged, type, &accepted, &skipped, &detail)) {
             result = failure(QStringLiteral("format"));
-            result.insert(QStringLiteral("detail"), detail);
+            result.insert(QStringLiteral("detail"), named_reason(detail, staged, name));
         } else {
             result = {{QStringLiteral("ok"), true},
                       {QStringLiteral("staged"), staged},
@@ -211,11 +222,11 @@ stage_bundle(const ImportJob& job, const QVariantMap& request) {
     int accepted = 0;
     int skipped = 0;
     QString detail;
-    if (!ImportedFilesModel::validate(result.value(QStringLiteral("staged")).toString(), type, &accepted, &skipped,
-                                      &detail)) {
+    const QString staged = result.value(QStringLiteral("staged")).toString();
+    if (!ImportedFilesModel::validate(staged, type, &accepted, &skipped, &detail)) {
         result.insert(QStringLiteral("ok"), false);
         result.insert(QStringLiteral("error"), QStringLiteral("format"));
-        result.insert(QStringLiteral("detail"), detail);
+        result.insert(QStringLiteral("detail"), named_reason(detail, staged, bundle.name));
         return result;
     }
     result.insert(QStringLiteral("accepted"), accepted);
@@ -355,6 +366,43 @@ ImportedFilesModel::knownTypes() {
             QStringLiteral("p25Bandplan"), QStringLiteral("src"),        QStringLiteral("trunkTargets")};
 }
 
+namespace {
+
+/* Dry-run @p local with the parser of library type @p type (any type but trunkTargets); the parser's return code. */
+int
+validate_csv_kind(const QByteArray& local, const QString& type, dsd_csv_validation* counts) {
+    if (type == QLatin1String("chan")) {
+        return dsd_csv_validate_chan_file(local.constData(), counts);
+    }
+    if (type == QLatin1String("group")) {
+        return dsd_csv_validate_group_file(local.constData(), counts);
+    }
+    if (type == QLatin1String("keysDec")) {
+        return dsd_csv_validate_key_file_dec(local.constData(), counts);
+    }
+    if (type == QLatin1String("keysHex")) {
+        return dsd_csv_validate_key_file_hex(local.constData(), counts);
+    }
+    if (type == QLatin1String("vertexKeys")) {
+        return dsd_csv_validate_vertex_file(local.constData(), counts);
+    }
+    if (type == QLatin1String("dmrTgKeys")) {
+        dsd_dmr_key_map map = {};
+        const int rc = dsd_dmr_key_map_load(local.constData(), &map);
+        counts->accepted = counts->total = static_cast<unsigned int>(map.count);
+        return rc;
+    }
+    if (type == QLatin1String("p25Bandplan")) {
+        return dsd_csv_validate_p25_bandplan_file(local.constData(), counts);
+    }
+    if (type == QLatin1String("src")) {
+        return dsd_csv_validate_src_file(local.constData(), counts);
+    }
+    return -1;
+}
+
+} // namespace
+
 bool
 ImportedFilesModel::validate(const QString& path, const QString& type, int* accepted, int* skipped, QString* detail) {
     if (detail) {
@@ -374,28 +422,18 @@ ImportedFilesModel::validate(const QString& path, const QString& type, int* acce
         return result == 0;
     }
     dsd_csv_validation counts = {0U, 0U, 0U};
-    const QByteArray local = path.toUtf8();
-    int rc = -1;
-    if (type == QLatin1String("chan")) {
-        rc = dsd_csv_validate_chan_file(local.constData(), &counts);
-    } else if (type == QLatin1String("group")) {
-        rc = dsd_csv_validate_group_file(local.constData(), &counts);
-    } else if (type == QLatin1String("keysDec")) {
-        rc = dsd_csv_validate_key_file_dec(local.constData(), &counts);
-    } else if (type == QLatin1String("keysHex")) {
-        rc = dsd_csv_validate_key_file_hex(local.constData(), &counts);
-    } else if (type == QLatin1String("vertexKeys")) {
-        rc = dsd_csv_validate_vertex_file(local.constData(), &counts);
-    } else if (type == QLatin1String("dmrTgKeys")) {
-        dsd_dmr_key_map map = {};
-        rc = dsd_dmr_key_map_load(local.constData(), &map);
-        counts.accepted = counts.total = static_cast<unsigned int>(map.count);
-    } else if (type == QLatin1String("p25Bandplan")) {
-        rc = dsd_csv_validate_p25_bandplan_file(local.constData(), &counts);
-    } else if (type == QLatin1String("src")) {
-        rc = dsd_csv_validate_src_file(local.constData(), &counts);
-    }
+    // The parsers give their reason for refusing a file only to the log: keep it for the import's answer.
+    char reason[512] = {};
+    dsd_neo_log_capture_error(reason, sizeof reason);
+    const int rc = validate_csv_kind(path.toUtf8(), type, &counts);
+    dsd_neo_log_capture_error(nullptr, 0);
     if (rc != 0) {
+        if (detail) {
+            *detail = QString::fromUtf8(reason).trimmed();
+            if (!detail->isEmpty()) {
+                (*detail)[0] = detail->at(0).toUpper();
+            }
+        }
         return false;
     }
     *accepted = static_cast<int>(counts.accepted);
