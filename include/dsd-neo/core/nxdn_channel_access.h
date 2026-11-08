@@ -32,6 +32,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -199,11 +200,33 @@ dsd_nxdn_site_latch(dsd_state* state, uint32_t location_id) {
     }
 }
 
-/** Note that Type-C trunking decoded here: composite control channel frames are read as Type-C from now on. */
+/**
+ * Note that Type-C trunking decoded here: composite control channel frames are read as Type-C from now on. Until now a
+ * composite control channel's SRV_INFO could only have been read with the Type-D layout, which names an IDAS System ID
+ * and Site Code out of a Type-C Location ID: whatever IDAS identity the decoder holds is dropped with the Type-D
+ * reading.
+ */
 static inline void
 dsd_nxdn_note_type_c(dsd_state* state) {
+    if (!state || state->nxdn_site.type_c != 0U) {
+        return;
+    }
+    state->nxdn_site.type_c = 1U;
+    state->nxdn_idas_system_id = 0U;
+    state->nxdn_idas_site_code = 0U;
+    dsd_rxid_forget_nxdn_typed_system(state);
+}
+
+/**
+ * The operator moved the receiver (a tune, a source or input change, a scan step: dsd_engine_carrier_boundary(), never a
+ * retune within a trunked system): the next carrier may be another system, a Type-D one among them, so what this one
+ * said of the system type, and when another channel's control traffic was last heard on a followed channel, go.
+ */
+static inline void
+dsd_nxdn_forget_carrier_system(dsd_state* state) {
     if (state) {
-        state->nxdn_site.type_c = 1U;
+        state->nxdn_site.type_c = 0U;
+        state->nxdn_site.foreign_control_m = 0.0;
     }
 }
 
@@ -211,6 +234,17 @@ dsd_nxdn_note_type_c(dsd_state* state) {
 static inline int
 dsd_nxdn_type_c(const dsd_state* state) {
     return state && state->nxdn_site.type_c != 0U;
+}
+
+/**
+ * Whether two frequencies name one NXDN channel: closer than half the 6.25 kHz NXDN48 raster. The followed frequency is
+ * a grant's computed one, while the control channel fields can hold the tuner's (a trunk-scan park a few kHz off, a
+ * rounding rig, an off-channel start): a call on the control channel must not read as another channel's.
+ */
+static inline int
+dsd_nxdn_same_channel(long int a, long int b) {
+    const long int diff = a > b ? a - b : b - a;
+    return a != 0 && b != 0 && diff < 3125L;
 }
 
 /**
@@ -226,7 +260,9 @@ dsd_nxdn_control_heard_is_foreign(const dsd_opts* opts, const dsd_state* state) 
         return 0;
     }
     const long int followed = state->trunk_vc_freq[0];
-    return followed == 0 || (followed != state->p25_cc_freq && followed != state->trunk_cc_freq);
+    return followed == 0
+           || (!dsd_nxdn_same_channel(followed, state->p25_cc_freq)
+               && !dsd_nxdn_same_channel(followed, state->trunk_cc_freq));
 }
 
 /**

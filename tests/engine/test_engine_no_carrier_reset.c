@@ -7219,6 +7219,45 @@ test_dmr_ras_carrier_lifetime(void) {
     return rc;
 }
 
+/*
+ * NXDN's system type is the carrier's: an operator move (a tune, a source or input change, a scan step) may land on a
+ * Type-D repeater, whose frames must not read as a composite control channel's, so the Type-C context and the foreign
+ * control stamp go with trunking on as off. A stream gap stays on the carrier, and keeps them; this site stays with
+ * trunking on (only the untrunked forget drops it).
+ */
+static int
+test_operator_boundary_forgets_the_nxdn_system_type(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->trunk_enable = 1;
+    dsd_nxdn_site_latch(state, (2U << 12) | 0x21U);
+    dsd_nxdn_note_type_c(state);
+    state->nxdn_site.foreign_control_m = 42.0;
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    rc |= expect_true("nxdn-system-type: a stream gap keeps the Type-C context",
+                      dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) > 0.0);
+    static const dsd_carrier_boundary_kind k_kinds[] = {
+        DSD_CARRIER_BOUNDARY_TUNE,
+        DSD_CARRIER_BOUNDARY_SOURCE,
+        DSD_CARRIER_BOUNDARY_INPUT_SWITCH,
+        DSD_CARRIER_BOUNDARY_SCAN_STEP,
+    };
+    for (size_t i = 0; i < sizeof(k_kinds) / sizeof(k_kinds[0]); i++) {
+        dsd_nxdn_note_type_c(state);
+        state->nxdn_site.foreign_control_m = 42.0;
+        dsd_engine_carrier_boundary(opts, state, k_kinds[i], 0);
+        rc |= expect_true("nxdn-system-type: an operator move forgets the Type-C context",
+                          !dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) == 0.0);
+        rc |= expect_true("nxdn-system-type: trunking keeps this site", dsd_nxdn_site_is(state, (2U << 12) | 0x21U));
+    }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_carrier_boundary_forgets_the_access_codes(void) {
     dsd_opts* opts = NULL;
@@ -12805,6 +12844,7 @@ main(void) {
     rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
+    rc |= test_operator_boundary_forgets_the_nxdn_system_type();
     rc |= test_received_identity_lifetime();
     rc |= test_dmr_ras_carrier_lifetime();
     rc |= test_carrier_boundary_restarts_the_evidence();

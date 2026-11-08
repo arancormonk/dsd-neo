@@ -3551,6 +3551,8 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
        DMR RAS evidence. */
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
+    /* Nor does what it said of its NXDN system type: a Type-D repeater tuned next must not read as RTCH_C. */
+    dsd_nxdn_forget_carrier_system(state);
     state->carrier_seq++;
     /* Nor is a frame whose sync the hunt finds next, while what it reads back was buffered on the carrier left. */
     dsd_state_note_carrier_change(state);

@@ -8763,8 +8763,13 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   0x71, 0x73, 0x75 and 0x77 are also Type-D RTCH2 values; `nxdn_frame.c` reads them as RTCH_C (SACCH, FACCH1, FACCH2,
   UDCH, as an RTCH's; plus the idle 0x79) once the session decoded Type-C trunking (`dsd_nxdn_type_c()`: a CRC-good CAC,
   a CCH_INFO, or a SITE_INFO on a frame not read as Type-D, messages Type-D does not send), and as Type-D until then.
+  Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as
+  Type-D left. The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never a retune within a
+  trunked system or a stream gap) forgets it with the foreign control stamp (`dsd_nxdn_forget_carrier_system()`).
 - NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
-  on, a voice channel tuned, and the followed frequency not this site's control channel). A CAC (decided in
+  on, a voice channel tuned, and the followed frequency not this site's control channel; compared by channel,
+  `dsd_nxdn_same_channel()`: closer than half the 6.25 kHz raster, since the control channel fields may hold the
+  tuner's value while the followed one is a grant's computed frequency). A CAC (decided in
   `nxdn_handle_cac()`) or an RTCH_C frame (decided in `nxdn_frame()` before its channels decode) heard there sets
   `dsd_state::nxdn_frame_foreign` while it decodes: its checks confirm nothing and stamp
   `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with

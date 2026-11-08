@@ -15,6 +15,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -210,6 +211,52 @@ static void
 send_frame(dsd_opts* opts, dsd_state* state, uint8_t lich, uint8_t ran, const uint8_t* facch_a,
            const uint8_t* facch_b) {
     build_frame(lich, ran, facch_a, facch_b);
+    (void)nxdn_frame(opts, state);
+}
+
+/*
+ * An outbound CAC frame (LICH 0x01, TS 1-A §4.5.6): structure and RAN, the 147-bit message, CRC-16 to 171 bits, four
+ * tail bits, coded, punctured to 300 (two of every 14) and permuted, then scrambled. The CRC is the one value that
+ * leaves crc16cac() at 0 over the whole block, as the decoder checks it.
+ */
+static void
+send_cac_frame(dsd_opts* opts, dsd_state* state, uint8_t ran, const uint8_t* elements, size_t bits) {
+    uint8_t trellis[175];
+    uint8_t coded[350];
+    uint8_t punctured[300];
+    uint8_t frame_bits[364];
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    DSD_MEMSET(frame_bits, 0, sizeof(frame_bits));
+    put_bits(trellis, 2U, ran, 6U);
+    DSD_MEMCPY(&trellis[8], elements, bits);
+    for (uint32_t crc = 0U; crc <= 0xFFFFU; crc++) {
+        put_bits(trellis, 155U, crc, 16U);
+        if (crc16cac(trellis, 171) == 0U) {
+            break;
+        }
+    }
+    conv_encode(trellis, 175U, coded);
+    size_t n = 0;
+    for (size_t k = 0; k < 25U; k++) {
+        for (size_t j = 0; j < 14U; j++) {
+            if (j != 3U && j != 11U) {
+                punctured[n++] = coded[(k * 14U) + j];
+            }
+        }
+    }
+    const uint8_t lich_full = 0x02U; // LICH 0x01 with its parity bit (0)
+    for (size_t i = 0; i < 8U; i++) {
+        frame_bits[2U * i] = (uint8_t)((lich_full >> (7U - i)) & 1U);
+        frame_bits[(2U * i) + 1U] = 1U;
+    }
+    for (size_t i = 0; i < 300U; i++) {
+        frame_bits[16U + i] = punctured[PERM_12_25[i]];
+    }
+    for (size_t i = 0; i < 182U; i++) {
+        g_frame[i] = (uint8_t)((frame_bits[2U * i] << 1U) | frame_bits[(2U * i) + 1U]);
+    }
+    nxdn_descramble_with_seed(g_frame, 182, 0U);
+    g_frame_pos = 0U;
     (void)nxdn_frame(opts, state);
 }
 
@@ -498,6 +545,37 @@ test_foreign_composite_on_followed_channel(dsd_opts* opts, dsd_state* state) {
 }
 
 /*
+ * Site B's control channel on F through the whole frame path: its CAC frame (LICH 0x01) is decided foreign in
+ * nxdn_frame() before it decodes, so it neither stamps the carrier as active nor names anything, and it is heard as
+ * another channel's control traffic.
+ */
+static int
+test_foreign_cac_frame_on_followed_channel(dsd_opts* opts, dsd_state* state) {
+    uint8_t site[160];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    state->last_cc_sync_time = 0;
+    state->last_cc_sync_time_m = 0.0;
+    site_info(site, SITE_B);
+    send_cac_frame(opts, state, 0x22U, site, 144U);
+    rc |= expect_long("foreign CAC frame: carrier sync not stamped", (long)state->last_cc_sync_time, 0L);
+    rc |= expect_long("foreign CAC frame: control sync not stamped", state->last_cc_sync_time_m > 0.0, 0L);
+    rc |= expect_followed_call_untouched("foreign CAC frame", state, opts);
+
+    /* Control: the same frame on site A's control channel, untuned, is the site's own and keeps the carrier active. */
+    follow_call_to_f(opts, state);
+    opts->trunk_is_tuned = 0;
+    opts->rtlsdr_center_freq = CC_A_HZ;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    state->last_cc_sync_time = 0;
+    site_info(site, SITE_A);
+    send_cac_frame(opts, state, 0x21U, site, 144U);
+    rc |= expect_long("own CAC frame: carrier sync stamped", state->last_cc_sync_time != 0, 1L);
+    rc |= expect_long("own CAC frame: not foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0, 0L);
+    return rc;
+}
+
+/*
  * Control: a call on site A's control channel itself (composite operation: the followed frequency is the control
  * channel) is the site's own. Its SRV_INFO keeps the site, its voice plays, and nothing is heard as foreign.
  */
@@ -514,6 +592,50 @@ test_call_on_this_sites_composite_control_channel(dsd_opts* opts, dsd_state* sta
     rc |= expect_long("own composite call: this site", dsd_nxdn_site_is(state, SITE_A), 1L);
     rc |= expect_long("own composite call: voice plays", state->last_vc_sync_time != 0, 1L);
     rc |= expect_long("own composite call: not foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0, 0L);
+
+    /* The control channel fields hold the tuner's value 2.5 kHz off the channel the grant computed (a park a few kHz
+       off, a rounding rig): the same channel, still the site's own call. */
+    follow_call_to_f(opts, state);
+    opts->rtlsdr_center_freq = CC_A_HZ;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = CC_A_HZ;
+    state->p25_cc_freq = CC_A_HZ + 2500;
+    state->trunk_cc_freq = CC_A_HZ + 2500;
+    send_frame(opts, state, LICH_COMPOSITE_VOICE, 0x21U, NULL, NULL);
+    rc |= expect_long("own composite call, CC 2.5 kHz off: voice plays", state->last_vc_sync_time != 0, 1L);
+    rc |= expect_long("own composite call, CC 2.5 kHz off: not foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0,
+                      0L);
+
+    /* One 6.25 kHz channel away is another channel: foreign. */
+    follow_call_to_f(opts, state);
+    opts->rtlsdr_center_freq = CC_A_HZ + 6250;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = CC_A_HZ + 6250;
+    send_frame(opts, state, LICH_COMPOSITE_VOICE, 0x21U, NULL, NULL);
+    rc |= expect_long("composite call one channel off: no voice", (long)state->last_vc_sync_time, 0L);
+    rc |= expect_long("composite call one channel off: foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
+    return rc;
+}
+
+/*
+ * A composite control channel's SRV_INFO read as Type-D before anything said Type-C named an IDAS System ID and Site
+ * Code out of a Type-C Location ID; once Type-C is known that misreading is dropped, from the state and the received
+ * identity. A Type-D system's IDAS identity is only dropped if the session then decodes Type-C there.
+ */
+static int
+test_type_c_drops_the_type_d_misreading(dsd_opts* opts, dsd_state* state) {
+    uint8_t srv[80];
+    uint8_t cch[80];
+    int rc = 0;
+    clear_state(opts, state);
+    srv_info(srv, SITE_A);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, srv, NULL);
+    rc |= expect_long("misread: IDAS system named", state->nxdn_idas_system_id != 0U, 1L);
+    rc |= expect_long("misread: typed system recorded", (state->rx_id.valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U, 1L);
+
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    rc |= expect_long("Type-C known", dsd_nxdn_type_c(state), 1L);
+    rc |= expect_no_type_d_identity("Type-C drops the misreading", state);
+    rc |= expect_long("Type-C drops the typed system", (state->rx_id.valid & DSD_RXID_NXDN_TYPED_SYSTEM) != 0U, 0L);
     return rc;
 }
 
@@ -539,6 +661,8 @@ main(void) {
     rc |= test_foreign_cac_on_followed_channel(opts, state);
     rc |= test_foreign_composite_on_followed_channel(opts, state);
     rc |= test_call_on_this_sites_composite_control_channel(opts, state);
+    rc |= test_foreign_cac_frame_on_followed_channel(opts, state);
+    rc |= test_type_c_drops_the_type_d_misreading(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 
