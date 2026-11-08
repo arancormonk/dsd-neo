@@ -244,6 +244,19 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     QVariantMap commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance = true);
 
+    /**
+     * @brief Replace a row's file with the validated @p source and commit the
+     *        row, or roll the file back when the commit fails.
+     *
+     * The backup, install and commit-or-rollback run under the managed-file
+     * lock (<dsd-neo/core/managed_file.h>), which the decoder's group list
+     * writer takes too. The rollback restores the backup only over the bytes
+     * this replacement installed: a file changed since is kept, and the
+     * update reports failure either way.
+     */
+    QVariantMap replaceRowFile(int row, const Row& snapshot, const QString& source, int accepted, int skipped,
+                               bool keepProvenance);
+
     void load();
     bool save() const;
     bool saveRows(const QList<Row>& rows) const;

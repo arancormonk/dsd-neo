@@ -5031,7 +5031,10 @@ if(DSD_ENABLE_QT_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/core/file
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
