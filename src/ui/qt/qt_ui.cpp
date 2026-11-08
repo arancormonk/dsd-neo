@@ -10,7 +10,6 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
-#include <QFileInfo>
 #include <QFontDatabase>
 #include <QLatin1String>
 #include <QObject>
@@ -38,6 +37,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
+#include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
 #include "metrics_model.h"
@@ -259,10 +259,11 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     QStringList gone = importedFiles->takePrunedPaths();
     // The library saves its prune before anything here runs, so a clear that fails is not in the next launch's
     // pruned list. Every reference into the library to a file that is gone is cleared as well, which retries it at
-    // each launch until it saves (issue #801). Files outside the library are the user's own and stay named.
+    // each launch until it saves (issue #801). Files outside the library are the user's own and stay named, and so
+    // does a file whose absence is not confirmed (a folder that cannot be searched for now, issue #828).
     const QString root = QDir::cleanPath(ImportedFilesModel::libraryRoot()) + QLatin1Char('/');
     for (const QString& path : systems->csvPaths() + scanLists->csvPaths()) {
-        if (!gone.contains(path) && QDir::cleanPath(path).startsWith(root) && !QFileInfo::exists(path)) {
+        if (!gone.contains(path) && QDir::cleanPath(path).startsWith(root) && json_store_definitely_missing(path)) {
             gone.append(path);
         }
     }

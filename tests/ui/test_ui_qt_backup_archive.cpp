@@ -52,6 +52,10 @@
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include "app_prefs.h"
 #include "backup_archive.h"
 #include "backup_archive_rules.h"
@@ -312,6 +316,53 @@ test_startup_clears_missing_library_paths_twice() {
         expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
     }
 }
+
+#ifndef _WIN32
+/* Issue #828 (E6): a library file in a folder that cannot be searched is not known to be gone, so the startup cleanup
+ * leaves every reference to it. Only a confirmed absence clears one. */
+void
+test_startup_keeps_paths_it_cannot_check() {
+    if (geteuid() == 0) {
+        DSD_FPRINTF(stderr, "note: running as root, the unsearchable-folder cleanup case is skipped\n");
+        return;
+    }
+    const QStringList stores{"imported_files.json", "saved_systems.json", "scan_lists.json"};
+    QMap<QString, QJsonArray> before;
+    for (const QString& store : stores) {
+        before.insert(store, dsd_qt::json_store_load_array(store));
+    }
+    const QString folder = dsd_qt::ImportedFilesModel::libraryRoot() + "/locked";
+    const QString hidden = folder + "/hidden.csv";
+    expect("write the hidden file", QDir().mkpath(folder) && write_file(hidden, "TG,Mode,Name\n1,D,Dispatch\n"));
+    {
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        expect("a system names it", systems.add({{"name", "Hidden"}, {"sourceType", "usb"}, {"groupCsvPath", hidden}}));
+        expect("a list names it", scans.add({{"name", "Hidden"}, {"groupCsvPath", hidden}}));
+    }
+    expect("the index names it",
+           dsd_qt::json_store_save_array(
+               "imported_files.json",
+               QJsonArray{QJsonObject{{"name", "hidden.csv"}, {"path", hidden}, {"type", "group"}}}));
+    expect("the folder is locked", chmod(QFile::encodeName(folder).constData(), 0000) == 0);
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        expect("the library keeps its row", library.rowCount() == 1);
+        expect("the system still names it", systems.get(systems.count() - 1).value("groupCsvPath") == hidden);
+        expect("the list still names it", scans.get(scans.count() - 1).value("groupCsvPath") == hidden);
+    }
+    expect("the folder is unlocked", chmod(QFile::encodeName(folder).constData(), 0700) == 0);
+    remove_file(hidden);
+    expect("the folder is removed", QDir().rmdir(folder));
+    for (const QString& store : stores) {
+        expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
+    }
+}
+#endif
 
 /* Issue #801: the startup cleanup that takes a pinned system's row out of its RadioReference group (a library file the
  * row names is gone) moves the pin to the group's lead, as an edit out of the group does. That needs the pins built
@@ -1844,6 +1895,9 @@ main(int argc, char** argv) {
     test_passphrases();
     test_host_document_copies();
     test_startup_clears_missing_library_paths_twice();
+#ifndef _WIN32
+    test_startup_keeps_paths_it_cannot_check();
+#endif
     test_startup_cleanup_moves_a_system_pin_to_its_group();
     {
         TestHost host;

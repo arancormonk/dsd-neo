@@ -12610,8 +12610,12 @@ Qt Quick frontend (`src/ui/qt`):
   (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
   every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. The
   library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an earlier
-  launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
-  (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
+  launch. A missing file outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
+  library's load and in that cleanup alike (`json_store_definitely_missing()`, issue #828): a file whose stat fails
+  any other way (a folder that cannot be searched for now) keeps its row and every reference. Tests:
+  `UI_QT_IMPORTED_FILES` (`test_remove_finishes_on_retry`, `test_unsearchable_copy_is_not_pruned`),
+  `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`,
+  `test_startup_keeps_paths_it_cannot_check`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).

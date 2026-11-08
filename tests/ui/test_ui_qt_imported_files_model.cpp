@@ -35,6 +35,10 @@
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <cstdlib>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
@@ -738,6 +742,42 @@ test_unreadable_index_is_kept() {
     expect("unreadable index: the new index has the import",
            dsd_qt::json_store_load_array(QStringLiteral("imported_files.json")).size() == 1);
 }
+
+#ifndef _WIN32
+/* E6: a stored copy in a folder that cannot be searched is not known to be gone. Its row stays and is not handed on
+ * for its references to be cleared; only a confirmed absence prunes it. */
+void
+test_unsearchable_copy_is_not_pruned() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    const QString folder =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/locked");
+    const QString path = folder + QStringLiteral("/county.csv");
+    expect("unsearchable: folder", QDir().mkpath(folder) && write_file(path, "TG,Mode,Name\n1,D,One\n"));
+    QJsonObject row;
+    row.insert(QStringLiteral("name"), QStringLiteral("county.csv"));
+    row.insert(QStringLiteral("path"), path);
+    row.insert(QStringLiteral("type"), QStringLiteral("group"));
+    expect("unsearchable: index", dsd_qt::json_store_save_array(QStringLiteral("imported_files.json"), {row}));
+    const QString index = dsd_qt::json_store_path(QStringLiteral("imported_files.json"));
+    const QByteArray stored = read_file(index);
+    if (geteuid() == 0) {
+        DSD_FPRINTF(stderr, "note: running as root, the unsearchable-folder case is skipped\n");
+    } else {
+        expect("unsearchable: locked", chmod(QFile::encodeName(folder).constData(), 0000) == 0);
+        {
+            dsd_qt::ImportedFilesModel model(&host);
+            expect("unsearchable: the row stays", model.rowCount() == 1 && model.takePrunedPaths().isEmpty());
+        }
+        expect("unsearchable: unlocked", chmod(QFile::encodeName(folder).constData(), 0700) == 0);
+        expect("unsearchable: the index is not rewritten", read_file(index) == stored);
+    }
+    expect("unsearchable: the copy is removed", QFile::remove(path));
+    dsd_qt::ImportedFilesModel model(&host);
+    expect("unsearchable: a confirmed absence prunes",
+           model.rowCount() == 0 && model.takePrunedPaths() == QStringList{path});
+}
+#endif
 
 void
 test_export_registration_in_place() {
@@ -1766,6 +1806,9 @@ main(int argc, char** argv) {
     test_legacy_store_without_provenance();
     test_store_past_int_range();
     test_unreadable_index_is_kept();
+#ifndef _WIN32
+    test_unsearchable_copy_is_not_pruned();
+#endif
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

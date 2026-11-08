@@ -881,8 +881,9 @@ ImportedFilesModel::load() {
         }
         Row row = rowFromMap(value.toObject().toVariantMap());
         // A copy Android or the user deleted behind the app's back must not
-        // survive as a ghost row pointing nowhere.
-        if (row.path.isEmpty() || !QFile::exists(row.path)) {
+        // survive as a ghost row pointing nowhere. Only a confirmed absence
+        // drops it: a folder that cannot be searched for now is no proof.
+        if (row.path.isEmpty() || json_store_definitely_missing(row.path)) {
             if (!row.path.isEmpty() && !m_pruned_paths.contains(row.path)) {
                 m_pruned_paths.append(row.path);
             }
