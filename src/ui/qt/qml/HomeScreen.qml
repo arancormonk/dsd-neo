@@ -628,6 +628,10 @@ Item {
                     readonly property var playableSites: siblings.filter(function (row) {
                         return !savedSystems.get(row).avoidSite;
                     })
+                    // Play's own condition, which the site button lines up
+                    // against: never Play's `visible`, which also goes false
+                    // while Main hides Home (issue #646 B1).
+                    readonly property bool playShown: siblings.length === 0 || playableSites.length === 1
                     property bool refreshHint: (screen.siteRevision, screen.needsSiteRefresh(index))
 
                     // Issue #646 B8: as tall as what it holds, so larger text grows
@@ -706,7 +710,7 @@ Item {
                         width: implicitWidth
                         anchors.right: parent.right
                         anchors.verticalCenter: play.verticalCenter
-                        anchors.rightMargin: play.visible ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
+                        anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
                         text: card.siblings.length === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(card.siblings.length)
                         visible: card.hasSites
                         onClicked: screen.chooseSites(card.index)
@@ -715,7 +719,7 @@ Item {
                         id: play
                         accessibleName: card.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
                         objectName: "savedSystemPlay"
-                        visible: card.siblings.length === 0 || card.playableSites.length === 1
+                        visible: card.playShown
                         anchors.right: parent.right
                         anchors.rightMargin: Theme.cardPadding
                         anchors.top: parent.top

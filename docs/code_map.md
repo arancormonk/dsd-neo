@@ -10731,21 +10731,22 @@ Qt Quick frontend (`src/ui/qt`):
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
-- Listen body layout (issue #646 B1, B8, B3). In `qml/HomeScreen.qml` a saved-system card is shown on its own
-  condition, `readonly property bool shown` (no sites, or the first of its group), and its height is `shown ?
-  fullHeight : 0`, never keyed on `visible`, which also goes false while Main hides Home: a collapsing card would cut
-  the body's range and Flickable would clamp the scroll position. `fullHeight` follows the content: the label column
-  is centred 10 px above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
+- Listen body layout (issue #646 B1, B8, B3). In `qml/HomeScreen.qml` a saved-system card is shown on its own condition,
+  `readonly property bool shown` (no sites, or the first of its group), and its height is `shown ? fullHeight : 0`,
+  never keyed on `visible`, which also goes false while Main hides Home: a collapsing card would cut the body's range
+  and Flickable would clamp the scroll position. `fullHeight` follows the content: the label column is centred 10 px
+  above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
   `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
   refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
-  lowest. A card without the hint is 122 px at normal text, as
-  before, and grows at large text. Keyboard focus moving onto a control in the body restarts the owned
-  `revealFocusTimer`, which reveals `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem,
-  item)`; the timer lets a stronger scroll writer cancel a pending reveal. `Theme.revealFocus` maps the target into
-  `scroll.contentItem`, so a content column that starts below the top (Home's starts 7 or 18 px down) is scrolled far
-  enough; every other caller's column starts at 0. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_layout_fixes.qml`: range
-  and place held through frames drawn while hidden, refresh-hint and plain cards at 320 px x 1.0/1.6/2.0, Tab through
-  12 systems at 411 x 700 on both hosts, the helper with an offset column; the scroll-across-tabs cases in
+  lowest. A card without the hint is 122 px at normal text, as before, and grows at large text. The site button lines up
+  against Play's own condition (`playShown`), not Play's `visible`, so a hidden card's site button stays clear of Play.
+  Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
+  `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
+  scroll writer cancel a pending reveal. `Theme.revealFocus` maps the target into `scroll.contentItem`, so a content
+  column that starts below the top (Home's starts 7 or 18 px down) is scrolled far enough; every other caller's column
+  starts at 0. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_layout_fixes.qml`: range and place held through frames drawn
+  while hidden, refresh-hint and plain cards at 320 px x 1.0/1.6/2.0, Tab through 12 systems at 411 x 700 on both hosts,
+  the helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
   `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";

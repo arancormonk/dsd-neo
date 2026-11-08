@@ -164,6 +164,26 @@ Item {
             compare(body().contentY, scrolled, "the place when shown again");
         }
 
+        // B1 too: a site group's card keeps its site button where it was, clear of Play, through the hidden body's
+        // layout passes. It used to line up against Play's `visible`, which goes false with Home.
+        function test_site_button_kept_while_hidden() {
+            addSystem("County", {siteName: "North", rrSid: 12, rrSiteId: 100});
+            verify(waitForPolish(home));
+            waitForRendering(home);
+            var card = cardNamed("County");
+            var sites = findChild(card, "homeSiteChooserButton");
+            var play = findChild(card, "savedSystemPlay");
+            verify(sites.visible && play.visible);
+            var x = sites.x;
+            verify(x + sites.width <= play.x, "the site button left of Play");
+            home.visible = false;
+            waitFrames(3);
+            compare(sites.x, x, "the hidden card's site button kept its place");
+            home.visible = true;
+            verify(waitForPolish(home));
+            compare(sites.x, x, "and shown again");
+        }
+
         // B8: a card with the refresh hint holds its labels, its actions and the hint without any two meeting, at
         // every text size, on the narrowest phone.
         function test_refresh_hint_card_holds_its_parts_data() {
