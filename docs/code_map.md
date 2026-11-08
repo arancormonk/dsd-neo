@@ -13529,7 +13529,8 @@ Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under
 request code (1305) is never used.
 
 - Requests (`decoder_host_android_documents.cpp`, Qt thread): each takes the base host's next id and becomes the live
-  one (`m_document_request`); a live one it replaces is answered `documentPickCancelled`, queued. The JNI shims in
+  one (`m_document_request`); a live one it replaces is cancelled in `DocumentPicker` too (so the two agree even when
+  the new request never reaches it) and answered `documentPickCancelled`, queued. The JNI shims in
   `decoder_host_android.cpp` (`platformOpenDocument()`, `platformSaveDocument()`) hand `DocumentPicker.open()` /
   `create()` Qt's context only when `QAndroidApplication::isActivityContext()`; false there, or a call that failed
   (both Kotlin entries return true), answers `documentPickUnavailable(id, "failed")`, queued, unless the request was
@@ -13568,7 +13569,8 @@ request code (1305) is never used.
   - `proguard-rules.pro` keeps `open`, `create`, `cancel` and `pollResult`; the class constant sits in
     `decoder_host_android.cpp`, which calls them.
 - Tests: `ANDROID_DOCUMENT_PICKER_JVM` (`docs/testing.md`), `UI_QT_ANDROID_HOST` (`check_document_pick_record()`,
-  `check_document_requests()`). The launches themselves need an emulator: DocumentsUI on and off (the family queries must
+  `check_document_requests()`, `check_document_reentrant_drain()`: a request made from an answer's slot during
+  the drain stays live and is answered by its record later in the same drain). The launches themselves need an emulator: DocumentsUI on and off (the family queries must
   never return the two photo-picker aliases), a chooser pick, re-entry and process death while a picker is up.
 
 #### Accessibility bridge (issue #782)

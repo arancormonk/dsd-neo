@@ -113,7 +113,7 @@ object DocumentPicker {
     private val records = ArrayDeque<String>()
 
     /** One thread for display-name lookups, so a provider that never answers delays only later names. */
-    internal var lookups = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue()) { task ->
+    internal val lookups = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue()) { task ->
         Thread(task, "dsd-picker-names").apply { isDaemon = true }
     }
     internal var downloads: DownloadsFallback = NoDownloadsFallback

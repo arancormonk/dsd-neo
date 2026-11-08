@@ -449,8 +449,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void setStatus(const QString& text);
     void refreshLocation();
     /**
-     * @brief Make @p id the live document request (#829). One it replaces is answered documentPickCancelled(),
-     * queued; its own record is dropped when it comes.
+     * @brief Make @p id the live document request (#829). One it replaces is cancelled on the platform and answered
+     * documentPickCancelled(), queued; a record of its own that still comes is dropped.
      */
     void beginDocumentRequest(qint64 id);
     /** @brief Answer @p id documentPickUnavailable(@p reason), queued, unless it is no longer the live request then. */

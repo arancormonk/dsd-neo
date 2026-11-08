@@ -103,6 +103,9 @@ DecoderHostAndroid::beginDocumentRequest(qint64 id) {
     const qint64 replaced = m_document_request;
     m_document_request = id;
     if (replaced != 0) {
+        /* The platform drops it too, so its record (and a Download-folder row it holds) is never left waiting when the
+         * new request does not reach the platform. A request that does would replace it there anyway. */
+        platformCancelDocument(replaced);
         QMetaObject::invokeMethod(
             this, [this, replaced] { Q_EMIT documentPickCancelled(replaced); }, Qt::QueuedConnection);
     }

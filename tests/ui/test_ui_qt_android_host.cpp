@@ -762,9 +762,11 @@ check_document_requests() {
               && picker().saved == QStringList{QString::number(save) + QStringLiteral(" calls.zip application/zip")},
           "both requests reach the platform with their id, name and type");
     check(host.answers.isEmpty(), "nothing is answered inside a request");
+    check(picker().cancelled == QList<qint64>{open}, "the replaced request is cancelled on the platform too");
     QCoreApplication::processEvents();
     check(host.answers == QStringList{QStringLiteral("cancelled %1").arg(open)},
           "the replaced request is answered cancelled, queued");
+    picker().cancelled.clear();
 
     picker().records =
         QStringList{QStringLiteral(R"({"id":%1,"kind":"cancelled"})").arg(open), picked_record(save, row_uri(), true),
@@ -809,6 +811,51 @@ check_document_requests() {
     host.refresh();
     check(host.answers.last() == QStringLiteral("unavailable %1 noPicker").arg(latest),
           "the newer request is answered");
+
+    /* A request the platform took, replaced by one it could not take: the platform still learns that the first one
+     * went, so both sides agree that nothing it may still answer is live. */
+    host.answers.clear();
+    picker().cancelled.clear();
+    const qint64 taken = host.requestOpenDocument();
+    picker().takes = false;
+    const qint64 untaken = host.requestOpenDocument();
+    picker().takes = true;
+    check(picker().cancelled == QList<qint64>{taken},
+          "a request replaced by a refused one is cancelled on the platform");
+    QCoreApplication::processEvents();
+    check(host.answers
+              == QStringList{QStringLiteral("cancelled %1").arg(taken),
+                             QStringLiteral("unavailable %1 failed").arg(untaken)},
+          "the replaced request is cancelled and the refused one unavailable, each once");
+}
+
+/*
+ * #829: a flow that asks again from inside an answer ("Choose another file", a retry) does so during refresh()'s
+ * drain. The new request stays live, and its own record later in the same drain answers it.
+ */
+static void
+check_document_reentrant_drain() {
+    picker() = PlatformPicker();
+    PickerHost host;
+    const qint64 first = host.requestOpenDocument();
+    qint64 again = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickCancelled, &host, [&host, &again, first](qint64 id) {
+        if (id == first && again == 0) {
+            again = host.requestOpenDocument();
+        }
+    });
+    // Ids go up by one, so the record for the request the slot will make can wait in the same drain.
+    picker().records = QStringList{QStringLiteral(R"({"id":%1,"kind":"cancelled"})").arg(first),
+                                   picked_record(first + 1, picked_uri(), false)};
+    host.refresh();
+    check(again == first + 1 && picker().opened == QList<qint64>({first, again}),
+          "the answer's slot made a new request inside the drain");
+    check(host.answers
+              == QStringList{QStringLiteral("cancelled %1").arg(first),
+                             QStringLiteral("picked %1 ").arg(again) + picked_uri() + QStringLiteral(" a b.csv 0")},
+          "the new request stays live and its record later in the same drain answers it");
+    QCoreApplication::processEvents();
+    check(host.answers.size() == 2, "nothing else is answered afterwards");
 }
 
 static QByteArray
@@ -2566,6 +2613,7 @@ main(int argc, char** argv) {
     check_location_record();
     check_document_pick_record();
     check_document_requests();
+    check_document_reentrant_drain();
     check_document_dispatch();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();

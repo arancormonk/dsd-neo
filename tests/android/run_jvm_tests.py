@@ -689,7 +689,10 @@ def document_picker_wiring():
     for intent in intents:
         if set(re.findall(r'<(\w+)\s+android:(\w+)="([^"]*)"', intent)) == wanted:
             return None
-    return "AndroidManifest.xml: <queries> needs the <intent> GET_CONTENT + OPENABLE with mimeType */*, and nothing else in it"
+    return (
+        "AndroidManifest.xml: <queries> needs an <intent> with exactly GET_CONTENT + OPENABLE + mimeType */*, which the "
+        "GET_CONTENT fallback's handler queries see other apps through"
+    )
 
 
 def launch_record_plumbing(facts):
