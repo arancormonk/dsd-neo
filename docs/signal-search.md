@@ -444,8 +444,9 @@ The first time that file has to be saved, it is renamed to
 written beside it, so nothing in it is lost; the app then names the kept file.
 A run that saves nothing leaves the file where it is, so a problem that goes
 away (a permission fixed, a storage error) reads normally at the next start. A
-folder or other non-file at that name is never moved or replaced: saving it
-stays reported until it is gone. While a kept version 2 journal exists and no
+link at that name is renamed itself, never what it points to. A folder, FIFO or
+other special file there is never moved or replaced: saving it stays reported
+until it is gone. While a kept version 2 journal exists and no
 new one does, the earlier releases' journal is not read again, so an
 interrupted save cannot bring old detections back. The earlier releases'
 journal is never moved: if it can't be read, the app says so and leaves it as

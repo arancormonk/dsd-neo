@@ -676,19 +676,25 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     return 0;
 }
 
-/* dsd_path_exists_nofollow()'s answer from one GetFileAttributes() result, whose GetLastError() this reads on a
+/* dsd_path_type_nofollow()'s answer from one GetFileAttributes() result, whose GetLastError() this reads on a
    failure. GetFileAttributes() describes a link or junction itself, never its target. */
 static int
-dsd_path_exists_answer(DWORD attrs) {
-    if (attrs != INVALID_FILE_ATTRIBUTES) {
-        return 1;
+dsd_path_type_answer(DWORD attrs, dsd_path_type* out_type) {
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        errno = dsd_win32_file_errno(GetLastError());
+        return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
     }
-    errno = dsd_win32_file_errno(GetLastError());
-    return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
+    if (out_type) {
+        *out_type = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) ? DSD_PATH_TYPE_LINK
+                    : (attrs & FILE_ATTRIBUTE_DIRECTORY)   ? DSD_PATH_TYPE_DIR
+                    : (attrs & FILE_ATTRIBUTE_DEVICE)      ? DSD_PATH_TYPE_OTHER
+                                                           : DSD_PATH_TYPE_FILE;
+    }
+    return 1;
 }
 
 int
-dsd_path_exists_nofollow(const char* path) {
+dsd_path_type_nofollow(const char* path, dsd_path_type* out_type) {
     if (!path || path[0] == '\0') {
         errno = EINVAL;
         return -1;
@@ -696,13 +702,18 @@ dsd_path_exists_nofollow(const char* path) {
     wchar_t* wide = NULL;
     const int kind = dsd_win32_path_wide(path, &wide);
     if (kind <= 0) {
-        return kind < 0 ? -1 : dsd_path_exists_answer(GetFileAttributesA(path));
+        return kind < 0 ? -1 : dsd_path_type_answer(GetFileAttributesA(path), out_type);
     }
-    const int answer = dsd_path_exists_answer(GetFileAttributesW(wide));
+    const int answer = dsd_path_type_answer(GetFileAttributesW(wide), out_type);
     const int saved_errno = errno;
     free(wide);
     errno = saved_errno;
     return answer;
+}
+
+int
+dsd_path_exists_nofollow(const char* path) {
+    return dsd_path_type_nofollow(path, NULL);
 }
 
 /* The canonical form of a UTF-8 path, given back in UTF-8. */

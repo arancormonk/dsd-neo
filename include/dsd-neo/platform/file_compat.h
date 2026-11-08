@@ -260,6 +260,27 @@ int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left)
  */
 int dsd_path_exists_nofollow(const char* path);
 
+/** What a name is, never following a link at it (dsd_path_type_nofollow()). */
+typedef enum {
+    DSD_PATH_TYPE_FILE,  /**< a regular file */
+    DSD_PATH_TYPE_DIR,   /**< a folder that is not itself a link */
+    DSD_PATH_TYPE_LINK,  /**< a symbolic link, dangling or not, whatever it names; on Windows any reparse point (a
+                              symbolic link or a junction, file or folder) */
+    DSD_PATH_TYPE_OTHER, /**< a FIFO, socket or device */
+} dsd_path_type;
+
+/**
+ * @brief dsd_path_exists_nofollow(), also telling what the name is.
+ *
+ * Renaming the name moves a link itself, never its target, so a caller that may move a file aside but must leave a
+ * real folder or FIFO alone decides by this, not by dsd_stat_path(), which follows the link.
+ *
+ * @param path      Path to probe.
+ * @param out_type  Optional. Receives the type when the answer is 1; left as it was otherwise.
+ * @return As dsd_path_exists_nofollow(), with the same errno.
+ */
+int dsd_path_type_nofollow(const char* path, dsd_path_type* out_type);
+
 /**
  * @brief The absolute, canonical path of an existing file or folder.
  *

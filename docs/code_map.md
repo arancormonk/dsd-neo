@@ -1221,7 +1221,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   - No-follow existence probe (issue #828): `dsd_path_exists_nofollow()` answers for the name itself (`lstat()`,
     `GetFileAttributes()`): 1 for any type, a dangling link included; 0 only for a confirmed absence (ENOENT,
     ENOTDIR); -1 with errno when it cannot tell (EACCES on an unsearchable parent), which a caller that must not lose
-    a file reads as "may exist"
+    a file reads as "may exist". `dsd_path_type_nofollow()` gives the same answer plus what the name is (file, folder,
+    link, other): a link, dangling or not, whatever it names (on Windows any reparse point: symbolic link or
+    junction), is a link, never its target's type, so a caller moving a file aside moves a link itself and leaves
+    only a real folder or FIFO alone
   - Windows paths (issue #828): the app's own files sit under the user's profile, named in any script. One rule,
     `dsd_win32_path_wide()` (`file_compat.h`'s file note), picks one call per path: well-formed UTF-8 goes through the
     wide call only, whatever the ANSI code page and CRT locale; anything else (a command line's path in the ANSI code
@@ -4158,8 +4161,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     `dsd_rename_noreplace()` to `<name>.unreadable-N` (first free N of 1..99; a source
     left behind counts as kept), then replaces it. A failed temp or move changes nothing
     (the write stays owed and the mark stays); the path confirmed absent at the move
-    clears the mark (state MISSING); a folder, FIFO or socket there (or a link to one) and
-    an unknown existence are never moved or replaced; a failed replacement after the move
+    clears the mark (state MISSING); a link there is moved itself, whatever it names
+    (`dsd_path_type_nofollow()`); a real folder, FIFO, socket or device and an unknown
+    existence are never moved or replaced; a failed replacement after the move
     leaves the state KEPT and its retry only writes. Lazy: a run that writes nothing moves
     nothing. A marked history is always compacted, never appended to. A missing version 2
     journal reads the version 1 rows only when none of `<v2>.unreadable-1..99` exists
@@ -4169,7 +4173,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     same crash loads it empty with the original kept (documented limit). A version 1
     journal that cannot be read whole is only reported (its rows before the failure
     migrate). `dsd_app_signal_search_store_open()` first removes its own
-    `<v2 or avoids>.tmp.XXXXXX` leftovers (`sweep_temps()`, exact names only). History
+    `<v2 or avoids>.tmp.XXXXXX` leftovers (`sweep_temps()`, exact names only; it lists
+    `folder_of()`, which keeps a root's separator, `C:\` not `C:`). History
     and permanent avoids are separate files with separate write state: one whose write
     failed stays owed until its own write succeeds, so saving the other neither retires
     it nor clears the message. Each later worker pass, flush and close

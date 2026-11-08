@@ -408,19 +408,19 @@ probe_kept(const std::string& name, int n) {
 enum class Aside { None, Kept, Gone, Refused };
 
 /* Renames the marked @p path, never following it, to its first free kept name, which @p kept receives as a base name.
-   Gone when the path is confirmed absent (removed behind the store's back: nothing is left to keep). Refused, leaving
-   everything as it was, when it cannot be told whether the path exists, when it is a folder, FIFO or socket (or a link
-   to one), which is never moved or replaced, or when no kept name is free. A no-replace rename that made the new name
-   but could not remove the old one (its out_source_left) has still kept the file: the replacement then takes the old
-   name. */
+   A file or a link (whatever it names: the link itself moves) is moved. Gone when the path is confirmed absent
+   (removed behind the store's back: nothing is left to keep). Refused, leaving everything as it was, when it cannot be
+   told whether the path exists, when it is a real folder, FIFO, socket or device, which is never moved or replaced, or
+   when no kept name is free. A no-replace rename that made the new name but could not remove the old one (its
+   out_source_left) has still kept the file: the replacement then takes the old name. */
 Aside
 keep_aside(const std::string& path, std::string& kept) {
-    const int present = dsd_path_exists_nofollow(path.c_str());
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    const int present = dsd_path_type_nofollow(path.c_str(), &type);
     if (present == 0) {
         return Aside::Gone;
     }
-    dsd_stat_t st;
-    if (present < 0 || (dsd_stat_path(path.c_str(), &st) == 0 && !dsd_stat_is_regular(&st))) {
+    if (present < 0 || (type != DSD_PATH_TYPE_FILE && type != DSD_PATH_TYPE_LINK)) {
         return Aside::Refused;
     }
     for (int n = 1; n <= kept_limit; ++n) {
@@ -499,18 +499,26 @@ collect_temp(const char* name, void* user) {
     return 0;
 }
 
+/* The folder holding @p path, to list it: "." for a bare name, else the path before its name without the separator,
+   except at a root ("/", "C:\\"), which keeps it: "C:" alone names that drive's current folder, not its root. */
+std::string
+folder_of(const std::string& path) {
+    const size_t start = name_start(path);
+    if (start == 0) {
+        return ".";
+    }
+    const bool root = start == 1 || (start == 3 && path[1] == ':');
+    return path.substr(0, root ? start : start - 1);
+}
+
 /* Removes those of @p targets, which share one folder. Nothing else there is touched. */
 void
 sweep_temps(const std::vector<std::string>& targets) {
     if (targets.empty()) {
         return;
     }
-    const size_t start = name_start(targets.front());
-    const std::string prefix = targets.front().substr(0, start);
-    std::string folder = prefix.empty() ? std::string(".") : prefix.substr(0, start - 1);
-    if (folder.empty()) {
-        folder = prefix; // the root folder
-    }
+    const std::string prefix = targets.front().substr(0, name_start(targets.front()));
+    const std::string folder = folder_of(targets.front());
     TempSweep sweep;
     for (const std::string& target : targets) {
         sweep.prefixes.push_back(base_name(target) + ".tmp.");
@@ -970,6 +978,11 @@ dsd_app_signal_search_store_test_fail_read(int which, long after) {
 extern "C" void
 dsd_app_signal_search_store_test_fail_probe(int n) {
     test_hooks.fail_probe = n;
+}
+
+extern "C" void
+dsd_app_signal_search_store_test_folder_of(const char* path, char* out, size_t cap) {
+    DSD_SNPRINTF(out, cap, "%s", folder_of(path).c_str());
 }
 
 extern "C" void

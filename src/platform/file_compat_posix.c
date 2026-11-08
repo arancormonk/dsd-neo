@@ -481,16 +481,27 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
 }
 
 int
-dsd_path_exists_nofollow(const char* path) {
+dsd_path_type_nofollow(const char* path, dsd_path_type* out_type) {
     if (!path || path[0] == '\0') {
         errno = EINVAL;
         return -1;
     }
     struct stat st;
-    if (lstat(path, &st) == 0) {
-        return 1;
+    if (lstat(path, &st) != 0) {
+        return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
     }
-    return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
+    if (out_type) {
+        *out_type = S_ISLNK(st.st_mode)   ? DSD_PATH_TYPE_LINK
+                    : S_ISREG(st.st_mode) ? DSD_PATH_TYPE_FILE
+                    : S_ISDIR(st.st_mode) ? DSD_PATH_TYPE_DIR
+                                          : DSD_PATH_TYPE_OTHER;
+    }
+    return 1;
+}
+
+int
+dsd_path_exists_nofollow(const char* path) {
+    return dsd_path_type_nofollow(path, NULL);
 }
 
 static int

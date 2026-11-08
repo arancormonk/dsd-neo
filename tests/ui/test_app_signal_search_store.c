@@ -770,6 +770,28 @@ expect_not_a_file(const char* root, const char* leaf, int fifo) {
     assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
 }
 
+/* The sweep lists the folder the store's files are in: a root keeps its separator, since a drive letter alone ("C:")
+   names that drive's current folder. */
+static int
+folder_is(const char* path, const char* want) {
+    char folder[DSD_TEST_PATH_MAX];
+    dsd_app_signal_search_store_test_folder_of(path, folder, sizeof(folder));
+    return strcmp(folder, want) == 0;
+}
+
+static void
+expect_sweep_folder(void) {
+    assert(folder_is("history", "."));
+    assert(folder_is("dir/history", "dir"));
+    assert(folder_is("/a/b/history", "/a/b"));
+    assert(folder_is("/history", "/"));
+    assert(folder_is("C:/history", "C:/"));
+#if DSD_PLATFORM_WIN_NATIVE
+    assert(folder_is("C:\\history", "C:\\"));
+    assert(folder_is("C:\\Users\\history", "C:\\Users"));
+#endif
+}
+
 /* Opening removes this store's own temporary files a crash left, and nothing else. */
 static void
 expect_temp_sweep(const char* root) {
@@ -858,6 +880,30 @@ posix_cases(const char* root) {
     assert(file_is(target, target_before, target_bytes));
     assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
 
+    // A link to a folder is still a link: it is moved aside itself, the folder is never touched, and the write goes
+    // through.
+    store_dir(&p, root, "linkdir");
+    assert(dsd_test_path_join(target, sizeof(target), p.dir, "target") == 0);
+    assert(dsd_mkdir(target, 0700) == 0);
+    assert(symlink("target", p.v2) == 0);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    publish(48);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_KEPT, "history.v2.unreadable-1"));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 1);
+    dsd_app_signal_search_store_close();
+    kept_path(kept, sizeof(kept), p.v2, 1);
+    const ssize_t dir_len = readlink(kept, link_text, sizeof(link_text) - 1);
+    assert(dir_len == 6 && memcmp(link_text, "target", 6) == 0);
+    {
+        struct stat st;
+        assert(lstat(target, &st) == 0 && S_ISDIR(st.st_mode));
+    }
+    assert(dsd_test_rmdir(target) == 0);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+
     store_dir(&p, root, "sourceleft");
     write_bytes(p.avoids, "[x]", 3);
     assert(dsd_app_signal_search_store_open(p.journal) == 0);
@@ -884,6 +930,7 @@ unreadable_cases(const char* root) {
     v1_unreadable_cases(root);
     expect_per_file_states(root);
     expect_not_a_file(root, "diravoids", 0);
+    expect_sweep_folder();
     expect_temp_sweep(root);
 #if !DSD_PLATFORM_WIN_NATIVE
     posix_cases(root);

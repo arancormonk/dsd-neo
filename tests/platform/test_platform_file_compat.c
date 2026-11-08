@@ -1081,6 +1081,9 @@ expect_non_ascii_exists(const char* dir, const char* file, const char* missing) 
     int ok = dsd_path_exists_nofollow(dir) == 1 && dsd_path_exists_nofollow(file) == 1;
     errno = 0;
     ok = ok && dsd_path_exists_nofollow(missing) == 0 && errno == ENOENT;
+    dsd_path_type dir_type = DSD_PATH_TYPE_OTHER, file_type = DSD_PATH_TYPE_OTHER;
+    ok = ok && dsd_path_type_nofollow(dir, &dir_type) == 1 && dir_type == DSD_PATH_TYPE_DIR;
+    ok = ok && dsd_path_type_nofollow(file, &file_type) == 1 && file_type == DSD_PATH_TYPE_FILE;
     if (!ok) {
         DSD_FPRINTF(stderr, "non-ASCII: dsd_path_exists_nofollow did not tell the names apart\n");
         return 1;
@@ -1267,6 +1270,16 @@ expect_path_exists_nofollow(void) {
     ok = ok && dsd_path_exists_nofollow(file) == 1 && dsd_path_exists_nofollow(dir) == 1;
     errno = 0;
     ok = ok && dsd_path_exists_nofollow(missing) == 0 && errno == ENOENT;
+    /* The type probe answers alike, says what the name is, and leaves the type alone when there is no name. */
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    ok = ok && dsd_path_type_nofollow(file, &type) == 1 && type == DSD_PATH_TYPE_FILE;
+    ok = ok && dsd_path_type_nofollow(dir, &type) == 1 && type == DSD_PATH_TYPE_DIR;
+    ok = ok && dsd_path_type_nofollow(dir, NULL) == 1;
+    type = DSD_PATH_TYPE_LINK;
+    errno = 0;
+    ok = ok && dsd_path_type_nofollow(missing, &type) == 0 && errno == ENOENT && type == DSD_PATH_TYPE_LINK;
+    errno = 0;
+    ok = ok && dsd_path_type_nofollow("", &type) == -1 && errno == EINVAL && type == DSD_PATH_TYPE_LINK;
     errno = 0;
 #if DSD_PLATFORM_WIN_NATIVE
     /* Windows names a file used as a folder as a missing path. */
@@ -1278,6 +1291,36 @@ expect_path_exists_nofollow(void) {
     ok = dsd_test_rmdir(dir) == 0 && ok;
     return ok ? 0 : 1;
 }
+
+#if DSD_PLATFORM_WIN_NATIVE
+#ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+#endif
+/* A symbolic link to a folder is a reparse point, a link, not a folder. Creating one needs the privilege or developer
+   mode; without either the case is skipped. */
+static int
+expect_path_type_reparse_point(void) {
+    const wchar_t* folder = L"dsd_neo_type_folder.tmp";
+    const wchar_t* link_name = L"dsd_neo_type_link.tmp";
+    (void)RemoveDirectoryW(link_name);
+    (void)RemoveDirectoryW(folder);
+    if (!CreateDirectoryW(folder, NULL)) {
+        return 1;
+    }
+    int ok = 1;
+    if (CreateSymbolicLinkW(link_name, folder,
+                            SYMBOLIC_LINK_FLAG_DIRECTORY | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
+        dsd_path_type type = DSD_PATH_TYPE_DIR;
+        ok = dsd_path_type_nofollow("dsd_neo_type_link.tmp", &type) == 1 && type == DSD_PATH_TYPE_LINK;
+        ok = RemoveDirectoryW(link_name) && ok;
+    } else {
+        DSD_FPRINTF(stderr, "skipping the reparse point type case: no symbolic link (error %lu)\n",
+                    (unsigned long)GetLastError());
+    }
+    ok = RemoveDirectoryW(folder) && ok;
+    return ok ? 0 : 1;
+}
+#endif
 
 #if !DSD_PLATFORM_WIN_NATIVE
 /* Whether the filesystem holding @p dir takes hard links: some (FAT-like, some FUSE) do not, and the fallback then
@@ -1372,7 +1415,21 @@ expect_path_exists_nofollow_links_and_unknown(void) {
     (void)remove(link_name);
     int ok = symlink("dsd_neo_exists_no_target.tmp", link_name) == 0;
     ok = ok && dsd_path_exists_nofollow(link_name) == 1;
+    dsd_path_type type = DSD_PATH_TYPE_FILE;
+    ok = ok && dsd_path_type_nofollow(link_name, &type) == 1 && type == DSD_PATH_TYPE_LINK;
     (void)remove(link_name);
+    /* A link to a folder is a link, and a FIFO is neither a file nor a folder. */
+    const char* folder = "dsd_neo_exists_folder.tmp";
+    const char* fifo = "dsd_neo_exists_fifo.tmp";
+    (void)dsd_test_rmdir(folder);
+    (void)remove(fifo);
+    ok = ok && dsd_mkdir(folder, 0700) == 0 && symlink(folder, link_name) == 0;
+    type = DSD_PATH_TYPE_FILE;
+    ok = ok && dsd_path_type_nofollow(link_name, &type) == 1 && type == DSD_PATH_TYPE_LINK;
+    ok = ok && mkfifo(fifo, 0600) == 0 && dsd_path_type_nofollow(fifo, &type) == 1 && type == DSD_PATH_TYPE_OTHER;
+    (void)remove(link_name);
+    (void)remove(fifo);
+    ok = dsd_test_rmdir(folder) == 0 && ok;
     if (geteuid() != 0) {
         (void)dsd_test_rmdir(locked);
         ok = ok && dsd_mkdir(locked, 0700) == 0 && chmod(locked, 0600) == 0;
@@ -1416,6 +1473,7 @@ main(void) {
     rc |= expect_non_ascii_dir_helpers();
     rc |= expect_path_exists_nofollow();
 #if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_path_type_reparse_point();
     rc |= expect_ansi_dir_helpers();
     rc |= expect_utf8_path_never_read_as_ansi();
 #else
