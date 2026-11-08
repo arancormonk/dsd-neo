@@ -857,7 +857,7 @@ posix_cases(const char* root) {
         assert(chmod(kept, 0600) == 0 && file_is(kept, before, n));
         assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
     } else {
-        (void)fprintf(stderr, "skipping the unreadable-mode case: running as root\n");
+        (void)DSD_FPRINTF(stderr, "skipping the unreadable-mode case: running as root\n");
     }
 
     store_dir(&p, root, "symlink");
