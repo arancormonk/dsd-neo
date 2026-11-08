@@ -44,6 +44,7 @@
 #include <time.h>
 #include "analog_call_test_support.h"
 #include "analog_preroll.h"
+#include "analog_rx_internal.h"
 #include "test_support.h"
 #include "wav_segment_test_support.h"
 
@@ -3484,8 +3485,25 @@ hold_take_one_named(const hold_rig* r, const char* mode) {
     }
 }
 
+/* The monotonic ms the analog tap reads to tell a paused live input. It stays on the real clock's scale, where the
+   tick compares the tap's stale deadline, but a stream moves it only by the blocks it delivers: a runner that stalls
+   the test between two reads is no pause of the input. */
+static uint64_t g_hold_tap_now_ms;
+
+static uint64_t
+hold_tap_now_ms(void) {
+    return g_hold_tap_now_ms;
+}
+
+/* A live stream starts delivering now, on the real clock. */
+static void
+hold_tap_stream_starts(void) {
+    g_hold_tap_now_ms = dsd_realtime_mono_ms();
+}
+
 /* @p blocks RECEPTION blocks of @p value, each read by the real analog tap first, as the symbol path hands it over, so
-   the tap publishes the carrier and the input's own stale deadline. */
+   the tap publishes the carrier and the input's own stale deadline. Each block arrives its own span after the one
+   before it. */
 static void
 hold_tapped(hold_rig* r, int blocks, int value) {
     static float block[HOLD_BLOCK];
@@ -3493,6 +3511,7 @@ hold_tapped(hold_rig* r, int blocks, int value) {
         block[i] = (float)value;
     }
     for (int i = 0; i < blocks; i++) {
+        g_hold_tap_now_ms += (uint64_t)HOLD_BLOCK * 1000U / (uint64_t)r->rate;
         dsd_analog_rx_tap(r->opts, r->state, block, HOLD_BLOCK);
         hold_feed(r, DSD_ANALOG_CALL_RECEPTION, value);
     }
@@ -3516,6 +3535,8 @@ test_am_call(void) {
     r.opts->rtl_pwr = 1.0; /* the channel power the level squelch compares: over -60 dB */
     const uint64_t commits = r.history[0].push_seq;
     const double first_m = hold_now_m(&r);
+    dsd_analog_rx_test_set_clock(hold_tap_now_ms);
+    hold_tap_stream_starts();
     hold_tapped(&r, 24, 1000);
     assert(!dsd_engine_analog_call_active(r.state));
     hold_tapped(&r, 1, 1000);
@@ -3543,6 +3564,7 @@ test_am_call(void) {
 
     /* The stream comes back: the tap's read past its deadline starts its reception over, and a new call begins. Its
        first block carries the moved epoch and is dropped (issue #668, B7), so the call needs one block more. */
+    hold_tap_stream_starts();
     hold_tapped(&r, 25, 1000);
     assert(!dsd_engine_analog_call_active(r.state));
     hold_tapped(&r, 1, 1000);
@@ -3550,6 +3572,7 @@ test_am_call(void) {
     dsd_engine_analog_call_end(r.opts, r.state);
     assert(r.history[0].push_seq == commits + 2U);
     hold_take_one_named(&r, "AM");
+    dsd_analog_rx_test_set_clock(NULL);
     hold_close(&r);
 }
 
