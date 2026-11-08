@@ -237,6 +237,14 @@ bsch_identity_change(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const 
 }
 
 void
+tetra_bsch_forget_cell(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts) {
+        bsch_forget_cell(opts, state, ts);
+    }
+}
+
+void
 tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, int la_present, uint16_t la) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (!ts) {

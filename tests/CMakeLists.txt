@@ -14303,6 +14303,31 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
     )
 endforeach()
 
+# A followed call returns to the control channel it left when another cell is decoded on its traffic carrier
+# (discussion #748): the real BSCH parser, MAC, call records and trunking state machine.
+add_executable(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    protocol/tetra/test_tetra_foreign_cell.c
+)
+target_include_directories(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    PRIVATE dsd-neo_proto_tetra dsd-neo_fec dsd-neo_test_support
+)
+add_test(
+    NAME PROTOCOL_TETRA_FOREIGN_CELL
+    COMMAND dsd-neo_test_protocol_tetra_foreign_cell
+)
+set_tests_properties(
+    PROTOCOL_TETRA_FOREIGN_CELL
+    PROPERTIES LABELS "protocol;tetra"
+)
+
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
 # the hooks on, ahead of the library's.
 target_sources(

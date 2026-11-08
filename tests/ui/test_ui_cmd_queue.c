@@ -7669,6 +7669,81 @@ test_manual_tunes_hand_a_tetra_return_over(void) {
     return rc;
 }
 
+/* Another TETRA cell decoded on the followed call's traffic carrier rewrites the session's control channel: its SYSINFO
+   names its own main carrier, its BSCH clears the one there was. Return to CC, a skip and a lockout still tune the
+   control channel the follow started from, and the session's control channel is that one again afterwards
+   (regression: main tuned the other cell's control channel, or with none left took no Return to CC at all). So do
+   they once trunking turned off kept the receiver on the traffic channel while the other cell was taken on there and
+   the trunk command turned it on again. */
+static int
+test_manual_tunes_after_another_tetra_cell_go_home(void) {
+    enum { CASE_RETURN, CASE_SKIP, CASE_LOCKOUT, CASE_COUNT };
+
+    enum { CC_RENAMED, CC_CLEARED, CC_UNTRUNKED, CC_COUNT };
+
+    static const char* const names[] = {"return-to-CC", "skip", "lockout"};
+    static const char* const heard[] = {
+        "another cell's SYSINFO",
+        "another cell's BSCH",
+        "another cell taken on while untrunked",
+    };
+    static const int commands[] = {DSD_APP_CMD_RETURN_CC, DSD_APP_CMD_SKIP_SLOT, DSD_APP_CMD_LOCKOUT_SLOT};
+    const long home_hz = 380012500L;
+    const long other_hz = 381012500L;
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    char tag[128];
+    for (int k = CASE_RETURN; k < CASE_COUNT; k++) {
+        for (int h = CC_RENAMED; h < CC_COUNT; h++) {
+            init_test_context(&opts, &state);
+            dsd_trunk_tuning_requests_reset();
+            reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+            DSD_SNPRINTF(tag, sizeof tag, "%s after %s: TETRA follows a call", names[k], heard[h]);
+            rc |= expect_true(tag, tetra_follow_a_call(&opts, &state, DSD_TRUNK_TUNE_RESULT_OK));
+            if (h == CC_UNTRUNKED) {
+                opts.trunk_enable = 0;
+                tetra_sm_tick(&opts, &state);
+            }
+            state.trunk_cc_freq = h == CC_CLEARED ? 0L : other_hz;
+            if (h == CC_UNTRUNKED) {
+                DSD_SNPRINTF(tag, sizeof tag, "%s after %s: trunk on drained", names[k], heard[h]);
+                rc |= expect_true(tag, dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1) > 0
+                                           && dsd_app_drain_cmds(&opts, &state) == 1);
+                DSD_SNPRINTF(tag, sizeof tag, "%s after %s: trunk on puts the control channel back", names[k],
+                             heard[h]);
+                rc |= expect_true(tag, opts.trunk_enable == 1 && state.trunk_cc_freq == home_hz);
+            }
+            if (k != CASE_RETURN) {
+                const dsd_call_observation call = {
+                    .protocol = DSD_SYNC_TETRA_NDB_POS,
+                    .slot = 0,
+                    .kind = DSD_CALL_KIND_GROUP_VOICE,
+                    .ota_target_id = 0x100U,
+                    .policy_target_id = 0x100U,
+                    .ota_source_id = 0x2222U,
+                    .observed_m = dsd_decode_now_mono_s(),
+                };
+                rc |= expect_true("TETRA call seeded",
+                                  dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+            }
+            const int submitted =
+                k == CASE_RETURN ? dsd_app_command_action(commands[k]) : dsd_app_command_set_u8(commands[k], 0U);
+            DSD_SNPRINTF(tag, sizeof tag, "%s after %s: drained", names[k], heard[h]);
+            rc |= expect_true(tag, submitted > 0 && dsd_app_drain_cmds(&opts, &state) == 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s after %s: tunes the control channel the follow left", names[k], heard[h]);
+            rc |= expect_true(tag, g_io_control_tune_calls == 1 && g_io_control_tune_freq == (uint32_t)home_hz);
+            DSD_SNPRINTF(tag, sizeof tag, "%s after %s: rests there", names[k], heard[h]);
+            rc |= expect_true(tag, state.trunk_cc_freq == home_hz && tetra_sm_get_state(&state) == TETRA_SM_ON_CC
+                                       && !tetra_sm_followed(&state, NULL) && tetra_sm_return_cc_hz(&state) == 0);
+            freeState(&state);
+        }
+    }
+    dsd_trunk_tuning_requests_reset();
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
 /*
  * Per-row keys through the command queue: a channel cycle onto a keyed row
  * installs its set under -Y, a runtime key import while parked lands in the
@@ -28498,6 +28573,7 @@ main(void) {
     rc |= test_manual_moves_hand_a_dmr_follow_over();
     rc |= test_return_cc_and_mode_change_hand_tetra_over();
     rc |= test_manual_tunes_hand_a_tetra_return_over();
+    rc |= test_manual_tunes_after_another_tetra_cell_go_home();
     rc |= test_scan_row_keys_commands();
 #endif
 #ifdef USE_RADIO

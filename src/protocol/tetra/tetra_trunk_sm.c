@@ -15,6 +15,11 @@
  * A session started on a secondary carrier of the cell learns the main carrier from its SYSINFO, which every carrier
  * broadcasts, and moves there once (tetra_sm_after_burst()): the MCCH, where calls are set up, is on the main carrier
  * (EN 300 392-2 clauses 3.1, 19.3.2.1.1, 23.3.1.2.1).
+ *
+ * A follow returns to the control channel it started from, the home (tetra_sm_home): after an assigned channel the MS
+ * returns to the MCCH it was using before the assignment (clause 23.3.1.2.1.2), and nothing on the traffic carrier
+ * names it. Another cell can be decoded there and its SYNC and SYSINFO rewrite state->trunk_cc_freq, so every way back
+ * reads the home instead (tetra_sm_return_cc_hz()).
  */
 
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -27,6 +32,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
+#include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -92,7 +98,9 @@ sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts
     r.tuning.p25_last_vc_tune_time_m = state->p25_last_vc_tune_time_m;
     r.receiver.center_hz = opts->rtlsdr_center_freq;
     r.receiver.p25_cc_freq = state->p25_cc_freq;
+    r.receiver.trunk_cc_freq = state->trunk_cc_freq;
     r.followed = ts->sm.followed;
+    r.home = ts->sm.home;
     r.t_tune_m = ts->sm.t_tune_m;
     r.t_voice_m = ts->sm.t_voice_m;
     r.t_maint_m = ts->sm.t_maint_m;
@@ -119,6 +127,9 @@ sm_restore_receiver(dsd_opts* opts, dsd_state* state, const tetra_sm_receiver_sn
     if (state->p25_cc_freq == r->staged_p25_cc_freq) {
         state->p25_cc_freq = r->p25_cc_freq;
     }
+    if (state->trunk_cc_freq == r->staged_trunk_cc_freq) {
+        state->trunk_cc_freq = r->trunk_cc_freq;
+    }
 }
 
 static void
@@ -134,6 +145,11 @@ sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_r
     state->p25_last_vc_tune_time = r->tuning.p25_last_vc_tune_time;
     state->p25_last_vc_tune_time_m = r->tuning.p25_last_vc_tune_time_m;
     ts->sm.followed = r->followed;
+    ts->sm.home = r->home;
+    if (r->state != (uint8_t)TETRA_SM_TUNED) {
+        /* Nothing followed any more, so nothing to return from: a failed return puts TUNED back and keeps it. */
+        ts->sm.return_required = 0;
+    }
     ts->sm.followed_retired = r->followed_retired;
     ts->sm.t_tune_m = r->t_tune_m;
     ts->sm.t_voice_m = r->t_voice_m;
@@ -171,8 +187,28 @@ sm_release_shared_tuning(dsd_opts* opts, dsd_state* state) {
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
 }
 
+/* A follow that starts off the control channel takes the cell it starts on as its home: the control channel every way
+ * back goes to, and the identity the cell had then. */
+static void
+sm_take_home(const dsd_state* state, tetra_state_t* ts) {
+    tetra_sm_home* const home = &ts->sm.home;
+    DSD_MEMSET(home, 0, sizeof *home);
+    home->cc_hz = state->trunk_cc_freq;
+    home->mcc = ts->mcc;
+    home->mnc = ts->mnc;
+    home->colour = ts->colour;
+    home->net_known = ts->net_known;
+    home->la = ts->la;
+    home->la_known = ts->sysinfo_known;
+    home->valid = (uint8_t)(home->cc_hz > 0);
+}
+
+/* A reallocation of the followed call (TUNED before) keeps the home. */
 static void
 sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
+    if (ts->sm.state != (uint8_t)TETRA_SM_TUNED) {
+        sm_take_home(state, ts);
+    }
     ts->sm.followed = *grant;
     ts->sm.followed.timeslots &= 0x0Fu;
     ts->sm.followed.carrier &= 0x0FFFu;
@@ -185,10 +221,13 @@ sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
 }
 
 /* The call stays in the call records (tetra_calls.h), which age it; its canonical call and its talkgroup-policy route
- * go with the following. @p opts is NULL when the engine ended and committed the canonical calls itself. */
+ * go with the following, and so does the home. @p opts is NULL when the engine ended and committed the canonical calls
+ * itself. */
 static void
 sm_unfollow(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     DSD_MEMSET(&ts->sm.followed, 0, sizeof ts->sm.followed);
+    DSD_MEMSET(&ts->sm.home, 0, sizeof ts->sm.home);
+    ts->sm.return_required = 0;
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
     ts->sm.t_maint_m = 0.0;
@@ -219,6 +258,7 @@ sm_stage_pending(const dsd_opts* opts, const dsd_state* state, tetra_state_t* ts
     ts->sm.pending_prev = *prev;
     ts->sm.pending_prev.receiver.staged_center_hz = opts->rtlsdr_center_freq;
     ts->sm.pending_prev.receiver.staged_p25_cc_freq = state->p25_cc_freq;
+    ts->sm.pending_prev.receiver.staged_trunk_cc_freq = state->trunk_cc_freq;
     ts->sm.pending_request_id = request_id;
     ts->sm.pending_kind = kind;
 }
@@ -307,16 +347,33 @@ sm_forget_moves(tetra_state_t* ts) {
 }
 
 /* Trunking turned on again starts the moves to the main carrier over: the operator may have fixed what stopped them.
- * The tick, the SYSINFO entry and the burst's end note trunking before anything else, a request in flight included;
- * the trunk commands forget the moves themselves when they turn trunking on (tetra_sm_forget_moves()), so a toggle
+ * While TUNED it also ends the follow: the call was let go when trunking went off (sm_hold_untrunked()), and what the
+ * carrier delivered since (another cell, direct mode, another location area) cannot be trusted, so the next tick
+ * returns home (return_required), and the control channel the session reads is the home's again from here. */
+static void
+sm_trunking_back_on(dsd_state* state, tetra_state_t* ts) {
+    ts->sm.acq.trunk_off = 0;
+    sm_forget_moves(ts);
+    if (ts->sm.state != (uint8_t)TETRA_SM_TUNED || !ts->sm.home.valid) {
+        return;
+    }
+    ts->sm.return_required = 1;
+    state->trunk_cc_freq = ts->sm.home.cc_hz;
+    if (sm_narrates(ts, 1)) {
+        DSD_FPRINTF(stderr, "[TETRA SM] trunking on again: returning to the control channel %ld Hz\n",
+                    ts->sm.home.cc_hz);
+    }
+}
+
+/* The tick, the grant and SYSINFO entries and the burst's end note trunking before anything else, a request in flight
+ * included; the trunk commands note it themselves when they turn trunking on (tetra_sm_on_trunking_on()), so a toggle
  * none of those sees counts too. */
 static void
-sm_note_trunking(const dsd_opts* opts, tetra_state_t* ts) {
+sm_note_trunking(const dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     if (opts->trunk_enable != 1) {
         ts->sm.acq.trunk_off = 1;
     } else if (ts->sm.acq.trunk_off) {
-        ts->sm.acq.trunk_off = 0;
-        sm_forget_moves(ts);
+        sm_trunking_back_on(state, ts);
     }
 }
 
@@ -447,11 +504,49 @@ sm_request_cc_return(dsd_opts* opts, dsd_state* state, uint64_t* request_id) {
     return result;
 }
 
+/* Holding a follow: TUNED, or a grant or return of its own in flight. */
+static int
+sm_holds_follow(const tetra_sm_t* sm) {
+    return sm->state == (uint8_t)TETRA_SM_TUNED
+           || (sm->pending_request_id != 0U
+               && (sm->pending_kind == SM_PENDING_GRANT || sm->pending_kind == SM_PENDING_RETURN));
+}
+
+/* The home control channel while holding a follow with one; 0 otherwise. */
+static long
+sm_home_hz(const tetra_sm_t* sm) {
+    return sm->home.valid && sm_holds_follow(sm) ? sm->home.cc_hz : 0;
+}
+
+/* Stop following on the control channel's carrier @p home_hz (0: none known), or with no control channel to go to:
+ * the receiver stays. After trunking came back on (return_required) the carrier's state is forgotten as at a change of
+ * cell, so what was taken on there while untrunked (another cell, direct mode) goes and the home cell's SYNC and
+ * SYSINFO are taken on again. */
+static void
+sm_release_in_place(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, long home_hz, const char* reason) {
+    const int forget = ts->sm.return_required;
+    sm_release_shared_tuning(opts, state);
+    sm_unfollow(opts, state, ts);
+    if (forget) {
+        tetra_forget_carrier(state);
+        tetra_bsch_forget_cell(opts, state);
+    }
+    if (home_hz > 0) {
+        state->trunk_cc_freq = home_hz;
+    }
+    sm_set_state(state, ts, sm_rest_state(opts, state), reason);
+}
+
 /* Return to the control channel, or stop following on its carrier. Returns 1 when the call was let go (the return
  * done or in flight), 0 when the call is kept: the backend refused or deferred the return, or trunking is off. With
  * trunking off the receiver stays where it is, as DMR's and P25's machines leave it, which do not tick then: the
  * engine's return tunes nothing without trunking (dsd_engine_return_to_cc_request()) yet answers OK, so a return asked
- * for then would report the receiver back on the control channel while it is still on the traffic channel. */
+ * for then would report the receiver back on the control channel while it is still on the traffic channel.
+ *
+ * The control channel is the home's (tetra_sm_return_cc_hz()), whatever was decoded on the traffic carrier since. The
+ * shared return takes no target and goes to state->trunk_cc_freq, so that is set to the home for the request; one
+ * refused or deferred puts it back at once, and the rollback of one in flight puts it back if it fails and nobody
+ * changed it since (sm_restore_receiver()). */
 static int
 sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reason) {
     if (opts->trunk_enable != 1) {
@@ -461,18 +556,18 @@ sm_release(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const char* reas
         }
         return 0;
     }
-    const long cc = state->trunk_cc_freq;
+    const long home_hz = sm_home_hz(&ts->sm);
+    const long cc = home_hz > 0 ? home_hz : state->trunk_cc_freq;
     if (cc <= 0 || ts->sm.followed.freq_hz == cc) {
-        /* A traffic timeslot of the control channel's carrier, or no control channel to go to: the receiver stays. */
-        sm_release_shared_tuning(opts, state);
-        sm_unfollow(opts, state, ts);
-        sm_set_state(state, ts, sm_rest_state(opts, state), reason);
+        sm_release_in_place(opts, state, ts, home_hz, reason);
         return 1;
     }
     const tetra_sm_rollback prev = sm_capture(opts, state, ts);
+    state->trunk_cc_freq = cc;
     uint64_t request_id = 0U;
     const dsd_trunk_tune_result result = sm_request_cc_return(opts, state, &request_id);
     if (!dsd_trunk_tune_result_is_ok(result)) {
+        state->trunk_cc_freq = prev.receiver.trunk_cc_freq;
         if (sm_narrates(ts, 1)) {
             DSD_FPRINTF(stderr, "[TETRA SM] return to the control channel (%s) %s; call kept\n", reason,
                         result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? "deferred" : "refused");
@@ -706,7 +801,7 @@ tetra_sm_after_burst(dsd_opts* opts, dsd_state* state) {
     if (!opts || !ts || ts->sm.acq.staged_hz == 0) {
         return;
     }
-    sm_note_trunking(opts, ts);
+    sm_note_trunking(opts, state, ts);
     const long hz = ts->sm.acq.staged_hz;
     ts->sm.acq.staged_hz = 0;
     /* A carrier reset since the SYSINFO (a tune completed in the burst) leaves it naming nothing about this carrier. */
@@ -729,6 +824,14 @@ tetra_sm_forget_moves(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
     if (ts) {
         sm_forget_moves(ts);
+    }
+}
+
+void
+tetra_sm_on_trunking_on(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts) {
+        sm_trunking_back_on(state, ts);
     }
 }
 
@@ -779,7 +882,7 @@ tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state) {
     if (!ts) {
         return;
     }
-    sm_note_trunking(opts, ts);
+    sm_note_trunking(opts, state, ts);
     if (!sm_settle_at_entry(opts, state, ts)) {
         return;
     }
@@ -812,9 +915,16 @@ tetra_sm_on_grant(dsd_opts* opts, dsd_state* state, const tetra_sm_grant* grant)
     if (!ts) {
         return 0;
     }
+    sm_note_trunking(opts, state, ts);
     if (!sm_settle_at_entry(opts, state, ts)) {
         if (sm_narrates(ts, 3)) {
             DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: a tune is in flight\n");
+        }
+        return 0;
+    }
+    if (ts->sm.return_required) {
+        if (sm_narrates(ts, 2)) {
+            DSD_FPRINTF(stderr, "[TETRA SM] grant ignored: returning to the control channel first\n");
         }
         return 0;
     }
@@ -866,7 +976,7 @@ tetra_sm_note_voice(dsd_state* state, uint8_t tn) {
     /* Speech whose CRC passed is reception activity, whichever timeslot it is on. */
     dsd_mark_vc_sync(state);
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U) {
+    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U || ts->sm.return_required) {
         return;
     }
     /* Only a followed timeslot (bit 3 of the bitmap is timeslot 1, EN 300 392-2 table 21.80) keeps the channel: speech
@@ -880,7 +990,8 @@ tetra_sm_note_voice(dsd_state* state, uint8_t tn) {
 void
 tetra_sm_note_maintenance(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U || ts->sm.t_voice_m > 0.0) {
+    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U || ts->sm.t_voice_m > 0.0
+        || ts->sm.return_required) {
         return;
     }
     ts->sm.t_maint_m = dsd_decode_now_mono_s();
@@ -918,6 +1029,11 @@ sm_tick_tuned(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         sm_hold_untrunked(state, ts);
         return;
     }
+    if (ts->sm.return_required) {
+        /* Again after a return refused, deferred or failed. */
+        (void)sm_release(opts, state, ts, "trunking on again");
+        return;
+    }
     const double now_m = dsd_decode_now_mono_s();
     if (ts->sm.t_voice_m > 0.0) {
         /* Hangtime counts from the end of speech: the first speech gap longer than a frame 18 slot. */
@@ -951,7 +1067,7 @@ sm_tick_acquiring(tetra_state_t* ts) {
 
 static void
 sm_tick(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
-    sm_note_trunking(opts, ts);
+    sm_note_trunking(opts, state, ts);
     if (!sm_settle_pending(opts, state, ts)) {
         return;
     }
@@ -1021,6 +1137,17 @@ tetra_sm_owns_return(const dsd_state* state) {
     return ts
            && (ts->sm.state == (uint8_t)TETRA_SM_TUNED || ts->sm.state == (uint8_t)TETRA_SM_ACQUIRING
                || ts->sm.pending_request_id != 0U);
+}
+
+long
+tetra_sm_return_cc_hz(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts ? sm_home_hz(&ts->sm) : 0;
+}
+
+int
+tetra_sm_guarding(const dsd_opts* opts, const dsd_state* state) {
+    return opts && opts->trunk_enable == 1 && tetra_sm_return_cc_hz(state) > 0;
 }
 
 int

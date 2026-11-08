@@ -59,8 +59,9 @@ trunk_enable_on(dsd_opts* opts, dsd_state* state) {
      * scope is never this command's to leave. */
     p25_sm_tick_guard_enter();
     if (opts->trunk_enable != 1) {
-        /* Trunking turned on again: the TETRA machine's moves to a main carrier start over. */
-        tetra_sm_forget_moves(state);
+        /* Trunking turned on again: the TETRA machine's moves to a main carrier start over, and a call it kept the
+           channel of while trunking was off returns to the control channel it was followed from. */
+        tetra_sm_on_trunking_on(state);
     }
     opts->trunk_enable = 1;
     if (opts->trunk_scan_enabled != 1) {

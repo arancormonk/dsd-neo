@@ -3269,10 +3269,14 @@ apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts, dsd_state* 
 #endif
 
 /* Through the shared chain rather than a fourth copy of the same ternary: the retune and
-   tune commands here have to name the control channel the status surfaces name. */
+   tune commands here have to name the control channel the status surfaces name. A TETRA
+   follow goes back to the control channel it started from (tetra_sm_return_cc_hz()),
+   whatever another cell decoded on the traffic carrier wrote to trunk_cc_freq since; the
+   call view reads no protocol state, and a frontend snapshot carries none. */
 static long
 current_cc_freq(const dsd_state* state) {
-    return dsd_app_cc_freq(state);
+    const long tetra_home = tetra_sm_return_cc_hz(state);
+    return tetra_home > 0 ? tetra_home : dsd_app_cc_freq(state);
 }
 
 static void
@@ -3550,6 +3554,17 @@ hand_tetra_sm_over(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A manual return to the control channel a TETRA follow started from (@p tetra_home, tetra_sm_return_cc_hz() read
+   before the tune; 0 for none): the session's control channel is that one again, whatever another cell decoded on the
+   traffic carrier wrote there, before the machine comes to rest on it. */
+static void
+hand_tetra_sm_home(const dsd_opts* opts, dsd_state* state, long tetra_home) {
+    if (tetra_home > 0) {
+        state->trunk_cc_freq = tetra_home;
+    }
+    hand_tetra_sm_over(opts, state);
+}
+
 /* Whether the P25 SM owns this trunk. When it does, the tune, the decoder resets and
  * the SM handoff run under the watchdog guard as one step, like every other CC
  * retune (p25_sm_select_control_channel(), the no-carrier return): a watchdog tick
@@ -3580,6 +3595,7 @@ run_manual_retune_guarded(dsd_opts* opts, dsd_state* state, manual_retune_step_f
 static int
 apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     const long freq = current_cc_freq(state);
+    const long tetra_home = tetra_sm_return_cc_hz(state);
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
@@ -3594,7 +3610,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "return-to-cc");
     }
     hand_dmr_sm_over(opts, state, 0, freq, request_id);
-    hand_tetra_sm_over(opts, state);
+    hand_tetra_sm_home(opts, state, tetra_home);
     LOG_INFO("User Activated Return to CC\n");
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3609,7 +3625,7 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
-    if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
+    if (opts->trunk_enable != 1 || current_cc_freq(state) == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
     return run_manual_retune_guarded(opts, state, apply_manual_return_to_cc_locked);
@@ -3625,6 +3641,7 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     const int sym_rate = cc_symbol_rate(opts, state, 1);
+    const long tetra_home = tetra_sm_return_cc_hz(state);
     if (opts->trunk_enable == 1) {
         cc_freq = current_cc_freq(state);
         if (cc_freq != 0
@@ -3636,7 +3653,7 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     reset_call_tracking(opts, state, 1);
     if (cc_freq != 0) {
         /* Before the no-carrier pass, which would tick a machine that still owns the return. */
-        hand_tetra_sm_over(opts, state);
+        hand_tetra_sm_home(opts, state, tetra_home);
     }
     if (opts->trunk_enable == 1) {
         dsd_engine_no_carrier_locked(opts, state);

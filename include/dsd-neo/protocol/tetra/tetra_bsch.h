@@ -39,6 +39,13 @@ extern "C" {
  * cell drops the hyperframe number, which belongs to the cell. Returns 1 when the PDU was read. */
 int tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state);
 
+/* Forget the cell being received as a BSCH of another cell does (its SYSINFO, timebase, partial TM-SDUs, the channels
+ * and labels it allocated, the carrier's speech and the followed call's proof), keeping the network identity and
+ * scrambling seed, which the next BSCH sets: what a carrier delivered while it could not be trusted goes, and the cell
+ * on it is taken on again from its SYNC and SYSINFO (tetra_trunk_sm.c, trunking turned back on). A control channel
+ * the forgotten SYSINFO gave goes with it. Never creates TETRA state. */
+void tetra_bsch_forget_cell(dsd_opts* opts, dsd_state* state);
+
 /* A SYSINFO of the cell being received names its main carrier, @p main_carrier_hz (0 when it names none), and, when
  * @p la_present, its location area @p la (EN 300 392-2 clause 21.4.4.1, D-MLE-SYSINFO clause 18.4.2.2). Cells of a
  * network may share a colour code, which a BSCH alone tells them apart by: a main carrier or a location area other
