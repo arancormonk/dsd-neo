@@ -46,6 +46,7 @@
 #include "radio_reference_model.h"
 #include "recording_status.h"
 #include "recording_store.h"
+#include "replay_store.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -313,6 +314,19 @@ start_imports(QQmlApplicationEngine& engine, const DecoderHost* host) {
     return new ImportService(host->importTransport(), &engine);
 }
 
+ReplayStore*
+load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* systems, backup::ApplyOutcome restore,
+             QObject* owner) {
+    auto* replays = new ReplayStore(host, imports, owner);
+    systems->setReplayStore(replays);
+    // A restore still waiting (Deferred) or stopped part-way (Stuck) may yet replace saved_systems.json, so what it
+    // names now says nothing about what the user keeps.
+    if (restore != backup::ApplyOutcome::Deferred && restore != backup::ApplyOutcome::Stuck) {
+        replays->reclaim(*systems, systems->storeLoaded());
+    }
+    return replays;
+}
+
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
@@ -328,6 +342,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
     (void)systems->migrateCachedReplayFiles(host);
+    auto* replays = load_replays(host, imports, systems, restoreOutcome.outcome, &engine);
     sessionArgs->setSavedSystems(systems);
 
     // WP-S1: persisted lists and the pre-start validation facade.
@@ -389,6 +404,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("scanListStarter"), scanListStarter);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("imports"), imports);
+    context->setContextProperty(QStringLiteral("replayFiles"), replays);
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     publish_recording_context(context, recordings, recordingStatus);

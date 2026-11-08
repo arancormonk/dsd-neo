@@ -18,6 +18,7 @@
 #include <QHash>
 #include <QMap> // IWYU pragma: keep -- QVariantMap is a QMap; the stage and commit signatures carry it by value.
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -27,6 +28,7 @@
 
 #include "document_import_transport.h"
 
+class QDir;
 class QThreadPool;
 
 namespace dsd_qt {
@@ -79,6 +81,18 @@ class ImportService : public QObject {
     static void sweepStaging();
     /** @brief `<AppData>/import_journal.json`. */
     static QString journalPath();
+
+    /**
+     * @brief Move the staged file @p staged into @p dir under a free form of @p name (unique_import_destination(),
+     * skipping @p reserved), never over an existing file, on the Qt thread at a commit.
+     *
+     * dsd_rename_noreplace() claims the name, so a name taken in between moves on to the next one (a bounded number of
+     * tries). @p dir must exist on the staging folder's volume.
+     *
+     * @return true with @p published set, else false (no free name, or the move failed); @p staged is then left.
+     */
+    static bool publish(const QString& staged, const QDir& dir, const QString& name, const QSet<QString>& reserved,
+                        QString* published);
 
     /**
      * @brief Queue a request: @p stage runs on the worker (requests run one at a time, in order), then @p commit on

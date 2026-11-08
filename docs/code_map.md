@@ -12472,7 +12472,29 @@ Qt Quick frontend (`src/ui/qt`):
   The commit journal `<AppData>/import_journal.json` (`journalAdd`/`journalRemove`/`journalEntries`, Qt thread)
   lists the clean absolute directories a commit creates until the index naming them is saved (a journal left empty is
   removed; a missing one is empty). A journal that cannot be read, or holds anything but absolute paths, gives
-  `ok = false` and takes no change, and callers then delete nothing. Test: `UI_QT_IMPORT_SERVICE`.
+  `ok = false` and takes no change, and callers then delete nothing. `ImportService::publish()` moves a staged file
+  into a folder under a free name (`unique_import_destination`, then `dsd_rename_noreplace`, the next name on `EEXIST`)
+  for the library's and the replay store's commits. Test: `UI_QT_IMPORT_SERVICE`.
+  `replay_store.{h,cpp}` (`replayFiles`) owns the replay captures picked in the wizard (#832).
+  `beginReplayImport(reference, fileName)` answers `replayImportFinished(id, result)` once, queued: a local reference
+  (file URL or absolute path) with its plain path, never copied; anything else is copied by the import service into its
+  staging folder, at most the free space of `<AppData>/replays/` (`dsd_path_free_bytes`) less `kReserveBytes` (512 MiB;
+  no cap when free space cannot be read), then published into `replays/` (`ImportService::publish`) and recorded pending
+  before the answer. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`), `local` (`noSpace`),
+  `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`); `copying`, `copyName`,
+  `copyBytes` and `copyTotal` (-1 unknown) come from `ImportService::progress(id)`, read every 250 ms while it runs, and
+  `progressChanged` fires only on a change. The manifest `<AppData>/replay_copies.json` (`[{path, state}]`, Qt thread)
+  lists every copy the store made, pending or kept. `SavedSystemsModel` (given the store by `setReplayStore()`) adopts a
+  copy (pending → kept) before it saves a system that newly names it, refusing the save when that cannot be written, and
+  releases one (kept → pending) only after the save of the remove or edit that left no system naming it (canonical
+  compare); a release that fails keeps the copy. `qt_ui.cpp`'s `load_replays()` makes the store after the saved systems
+  load and runs `reclaim()`: a pending copy no saved system names is deleted (a regular file directly in `replays/`,
+  never through a link) and leaves the manifest, but nothing is deleted when `saved_systems.json` did not load cleanly
+  (`storeLoaded()`, from `JsonStoreLoad`), the decoder is busy (`engineBusy()`), or the startup restore apply came back
+  `Deferred` or `Stuck` (no reclaim at that start). A manifest that cannot be read deletes nothing and is set aside to
+  `replay_copies.json.bad`, so later copies are recorded again. A restore clears `filePath` but never touches `replays/`
+  or the manifest, so a kept copy stays kept (unreferenced, never reclaimed); copies in `imports/` from older versions
+  are not listed and never touched. Test: `UI_QT_REPLAY_STORE`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
@@ -12514,7 +12536,9 @@ Qt Quick frontend (`src/ui/qt`):
   a CSV field, or the removal of a library file it names, zeroes both and also clears `avoidSite`, because only the
   group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
   the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
-  keeps its avoid: its "1 site" chooser lifts it. Tests: `UI_QT_PERSISTENCE`.
+  keeps its avoid: its "1 site" chooser lifts it. A replay copy in `replays/` a row gains is adopted before the save
+  and one no row names after a saved edit or remove is released (`replay_store.{h,cpp}`). Tests: `UI_QT_PERSISTENCE`,
+  `UI_QT_REPLAY_STORE`.
 - `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
   `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
   saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or

@@ -48,10 +48,6 @@ namespace {
 
 constexpr const char kStoreFileName[] = "imported_files.json";
 
-/* How many names a publish tries before it gives up: a free name can still be taken (by another process) before the
- * rename claims it. */
-constexpr int kPublishAttempts = 16;
-
 /* Every talkgroup-export destination this process handed out (Qt thread only). The engine may still write one after
    the export flow cancelled or retried, so no import may take its name. */
 QSet<QString>&
@@ -135,26 +131,11 @@ stage_single_file(const ImportJob& job, const QString& reference, const QString&
 QString
 publish_new_file(const QString& staged, const QString& name, QString* published) {
     const QDir dir(ImportedFilesModel::libraryRoot());
-    if (!QDir().mkpath(dir.absolutePath())) {
+    if (!QDir().mkpath(dir.absolutePath())
+        || !ImportService::publish(staged, dir, name, reserved_exports(), published)) {
         return QStringLiteral("local");
     }
-    QSet<QString> skipped = reserved_exports();
-    for (int attempt = 0; attempt < kPublishAttempts; attempt++) {
-        const QString destination = unique_import_destination(dir, name, skipped);
-        if (destination.isEmpty()) {
-            break;
-        }
-        int sourceLeft = 0;
-        if (dsd_rename_noreplace(staged.toUtf8().constData(), destination.toUtf8().constData(), &sourceLeft) == 0) {
-            *published = destination;
-            return {};
-        }
-        if (errno != EEXIST) {
-            break;
-        }
-        skipped.insert(dir.absoluteFilePath(QFileInfo(destination).fileName()));
-    }
-    return QStringLiteral("local");
+    return {};
 }
 
 /*

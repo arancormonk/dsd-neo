@@ -1,0 +1,654 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/* Unit tests: the replay store (#832). A replay picked in the wizard copies on the import worker into replays/ (a
+ * local file is answered with its path), within the free space less the reserve, with progress and cancel; the copy
+ * is recorded pending, saved systems adopt and release it, and a later start deletes only pending copies no saved
+ * system names, and nothing when a store cannot be read, the decoder runs or a restore is unfinished. */
+
+#include <QByteArray>
+#include <QChar>
+#include <QCoreApplication>
+#include <QDir>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QHash>
+#include <QIODevice>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
+#include <QList>
+#include <QMap>
+#include <QObject>
+#include <QSet>
+#include <QString>
+#include <QStringList>
+#include <QThread>
+#include <QUrl>
+#include <QVariant>
+#include <QVariantMap>
+#include <QtGlobal>
+#include <condition_variable>
+#include <cstdio>
+#include <functional>
+#include <initializer_list>
+#include <memory>
+#include <mutex>
+#include <qflags.h>
+#include <utility>
+
+#include "../test_support/qt_test_paths.h"
+#include "../test_support/test_support.h"
+#include "backup_apply.h"
+#include "decoder_host.h"
+#include "document_import_transport.h"
+#include "import_service.h"
+#include "json_store.h"
+#include "qt_ui.h"
+#include "replay_store.h"
+#include "saved_systems_model.h"
+
+using dsd_qt::DecoderHost;
+using dsd_qt::DocumentImportTransport;
+using dsd_qt::ImportCopyProgress;
+using dsd_qt::ImportService;
+using dsd_qt::ReplayStore;
+using dsd_qt::SavedSystemsModel;
+
+namespace {
+
+int failures = 0;
+
+void
+check_at(bool ok, int line, const char* why) {
+    if (!ok) {
+        ++failures;
+        std::fprintf(stderr, "test_ui_qt_replay_store.cpp:%d: %s\n", line, why);
+    }
+}
+
+#define CHECK(cond, why) check_at((cond), __LINE__, (why))
+
+void
+write_file(const QString& path, const QByteArray& bytes) {
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    CHECK(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "a fixture file is written");
+}
+
+QByteArray
+read_file(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+/* Run the event loop until @p done holds; false after about five seconds. */
+bool
+wait_until(const std::function<bool()>& done) {
+    for (int i = 0; i < 2500; ++i) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents);
+        if (done()) {
+            return true;
+        }
+        QThread::msleep(2);
+    }
+    return done();
+}
+
+/* What @p body printed to stderr (the library's log lines), kept off the test's output. */
+QByteArray
+captured_stderr(const std::function<void()>& body) {
+    dsd_test_capture_stderr capture;
+    if (dsd_test_capture_stderr_begin(&capture, "replay_store_log") != 0) {
+        body();
+        return {};
+    }
+    body();
+    (void)dsd_test_capture_stderr_end(&capture);
+    char text[4096];
+    return dsd_test_capture_stderr_read(&capture, text, sizeof(text)) == 0 ? QByteArray(text) : QByteArray();
+}
+
+bool
+staging_empty() {
+    return QDir(ImportService::stagingRoot())
+        .entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
+        .isEmpty();
+}
+
+QStringList
+replay_files() {
+    return QDir(ReplayStore::replaysRoot()).entryList(QDir::Files | QDir::Hidden | QDir::System);
+}
+
+/* The manifest as path → state; "unreadable" under the empty key when it is not a clean array of entries. */
+QMap<QString, QString>
+manifest() {
+    QMap<QString, QString> states;
+    QFile file(ReplayStore::manifestPath());
+    if (!file.exists()) {
+        return states;
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(read_file(file.fileName()));
+    if (!doc.isArray()) {
+        states.insert(QString(), QStringLiteral("unreadable"));
+        return states;
+    }
+    for (const auto& value : doc.array()) {
+        const QJsonObject entry = value.toObject();
+        states.insert(entry.value(QStringLiteral("path")).toString(), entry.value(QStringLiteral("state")).toString());
+    }
+    return states;
+}
+
+/* Every store and folder the tests write, gone. */
+void
+reset_data() {
+    QDir(ReplayStore::replaysRoot()).removeRecursively();
+    QDir(ImportService::stagingRoot()).removeRecursively();
+    QFile::remove(ReplayStore::manifestPath());
+    QFile::remove(ReplayStore::manifestPath() + QStringLiteral(".bad"));
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("saved_systems.json")));
+}
+
+QString
+sources_dir() {
+    return dsd_qt::json_store_root() + QStringLiteral("/test-sources");
+}
+
+/* A host whose decoder is busy on request. */
+class TestHost : public DecoderHost {
+  public:
+    bool busy = false;
+
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    bool
+    start(const QStringList&) override {
+        return false;
+    }
+
+    void
+    stop() override {}
+
+    bool
+    engineBusy() const override {
+        return busy;
+    }
+};
+
+/*
+ * The provider stand-in. content://test/<name> copies sources_dir()/<name> as a provider would (name and size
+ * first); content://full/<name> writes part of a copy and fails for want of space; content://hold/<name> reports
+ * progress and waits for its cancel. A local path copies as the base transport does, held first while holdLocal is
+ * set.
+ */
+class FakeTransport : public DocumentImportTransport {
+  public:
+    int
+    copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) override {
+        noteCopy(reference);
+        if (reference.startsWith(QStringLiteral("content://test/"))) {
+            return DocumentImportTransport::copy(request, sources_dir() + QLatin1Char('/') + reference.mid(15),
+                                                 destPath, maxBytes);
+        }
+        if (reference.startsWith(QStringLiteral("content://full/"))) {
+            write_file(destPath, QByteArray(100, 'x'));
+            setFake(request, {reference.mid(15), 100, 4096, true});
+            return DecoderHost::DocumentLocalFailed;
+        }
+        if (reference.startsWith(QStringLiteral("content://hold/"))) {
+            setFake(request, {reference.mid(15), 1234, 5678, false});
+            std::unique_lock<std::mutex> guard(m_lock);
+            m_wake.wait(guard, [this, request]() { return m_cancelled.contains(request); });
+            return DecoderHost::DocumentCancelled;
+        }
+        {
+            std::unique_lock<std::mutex> guard(m_lock);
+            m_wake.wait(guard, [this, request]() { return !m_holdLocal || m_cancelled.contains(request); });
+        }
+        return DocumentImportTransport::copy(request, reference, destPath, maxBytes);
+    }
+
+    void
+    cancel(qint64 request) override {
+        {
+            const std::lock_guard<std::mutex> guard(m_lock);
+            m_cancelled.insert(request);
+        }
+        m_wake.notify_all();
+        DocumentImportTransport::cancel(request);
+    }
+
+    ImportCopyProgress
+    progress(qint64 request) const override {
+        {
+            const std::lock_guard<std::mutex> guard(m_lock);
+            const auto found = m_fake.constFind(request);
+            if (found != m_fake.constEnd()) {
+                return *found;
+            }
+        }
+        return DocumentImportTransport::progress(request);
+    }
+
+    void
+    forget(qint64 request) override {
+        {
+            const std::lock_guard<std::mutex> guard(m_lock);
+            m_fake.remove(request);
+            m_cancelled.remove(request);
+        }
+        DocumentImportTransport::forget(request);
+    }
+
+    void
+    setHoldLocal(bool hold) {
+        {
+            const std::lock_guard<std::mutex> guard(m_lock);
+            m_holdLocal = hold;
+        }
+        m_wake.notify_all();
+    }
+
+    /* Each reference a copy was asked for, and whether every copy ran off the main thread. */
+    QStringList
+    copies() const {
+        const std::lock_guard<std::mutex> guard(m_lock);
+        return m_copies;
+    }
+
+    bool
+    allOffMainThread() const {
+        const std::lock_guard<std::mutex> guard(m_lock);
+        return m_offMain;
+    }
+
+    int
+    holding() const {
+        const std::lock_guard<std::mutex> guard(m_lock);
+        return m_holding;
+    }
+
+  private:
+    void
+    noteCopy(const QString& reference) {
+        const std::lock_guard<std::mutex> guard(m_lock);
+        m_copies.append(reference);
+        m_offMain = m_offMain && QThread::currentThread() != QCoreApplication::instance()->thread();
+        m_holding += m_holdLocal ? 1 : 0;
+    }
+
+    void
+    setFake(qint64 request, const ImportCopyProgress& progress) {
+        const std::lock_guard<std::mutex> guard(m_lock);
+        m_fake.insert(request, progress);
+    }
+
+    mutable std::mutex m_lock;
+    std::condition_variable m_wake;
+    QHash<qint64, ImportCopyProgress> m_fake; // guarded by m_lock
+    QSet<qint64> m_cancelled;                 // guarded by m_lock
+    QStringList m_copies;                     // guarded by m_lock
+    bool m_holdLocal = false;                 // guarded by m_lock
+    bool m_offMain = true;                    // guarded by m_lock
+    int m_holding = 0;                        // guarded by m_lock
+};
+
+/* One store over one service, with what it answered. */
+struct Rig {
+    std::shared_ptr<FakeTransport> transport = std::make_shared<FakeTransport>();
+    TestHost host;
+    std::unique_ptr<ImportService> service;
+    std::unique_ptr<ReplayStore> store;
+    QMap<int, QVariantMap> answers;
+    int progressSignals = 0;
+
+    Rig() : service(new ImportService(transport)), store(new ReplayStore(&host, service.get())) {
+        QObject::connect(store.get(), &ReplayStore::replayImportFinished,
+                         [this](int id, const QVariantMap& result) { answers.insert(id, result); });
+        QObject::connect(store.get(), &ReplayStore::progressChanged, [this]() { ++progressSignals; });
+    }
+
+    /* Begin an import and wait for its answer. */
+    QVariantMap
+    import(const QString& reference, const QString& name) {
+        const int id = store->beginReplayImport(reference, name);
+        CHECK(id > 0, "an import has a positive id");
+        CHECK(!answers.contains(id), "an import is answered later, never inside the call");
+        CHECK(wait_until([this, id]() { return answers.contains(id); }), "the import is answered");
+        return answers.value(id);
+    }
+};
+
+QVariantMap
+replay_system(const QString& name, const QString& path) {
+    return {{QStringLiteral("name"), name},
+            {QStringLiteral("sourceType"), QStringLiteral("file")},
+            {QStringLiteral("filePath"), path}};
+}
+
+/* I5: a local file is answered with its plain path, queued, and never copied or recorded. */
+void
+test_local_reference_answers_its_path() {
+    reset_data();
+    Rig rig;
+    const QString local = sources_dir() + QStringLiteral("/local capture.wav");
+    write_file(local, QByteArray("local"));
+    QVariantMap result = rig.import(QUrl::fromLocalFile(local).toString(), QStringLiteral("local capture.wav"));
+    CHECK(result.value(QStringLiteral("ok")).toBool(), "a local file URL is answered ok");
+    CHECK(result.value(QStringLiteral("path")).toString() == local, "a file URL is answered with its plain path");
+    result = rig.import(local, QStringLiteral("local capture.wav"));
+    CHECK(result.value(QStringLiteral("path")).toString() == local, "an absolute path is answered as it is");
+    CHECK(rig.transport->copies().isEmpty() && replay_files().isEmpty(), "a local file is never copied");
+    CHECK(manifest().isEmpty(), "a local file is never recorded");
+}
+
+/* A provider's document copies on the worker into replays/, under its provider's name, and is recorded pending. */
+void
+test_copy_is_recorded_pending() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/capture.wav"), QByteArray("replay bytes"));
+    Rig rig;
+    const int id = rig.store->beginReplayImport(QStringLiteral("content://test/capture.wav"), QStringLiteral("hint"));
+    CHECK(rig.store->copying(), "copying from the start");
+    CHECK(wait_until([&rig, id]() { return rig.answers.contains(id); }), "the copy is answered");
+    const QVariantMap result = rig.answers.value(id);
+    const QString path = result.value(QStringLiteral("path")).toString();
+    CHECK(result.value(QStringLiteral("ok")).toBool(), "the copy is ok");
+    CHECK(path == ReplayStore::replaysRoot() + QStringLiteral("/capture.wav"), "named by its provider in replays/");
+    CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("capture.wav"), "the name is answered");
+    CHECK(read_file(path) == "replay bytes", "the copy holds the document");
+    CHECK(manifest().value(path) == QStringLiteral("pending"), "the copy is recorded pending");
+    CHECK(!rig.store->copying(), "not copying once answered");
+    CHECK(rig.progressSignals > 0, "progress was announced");
+    CHECK(wait_until(staging_empty), "the staging folder is removed");
+    // The same name again takes a free form of it.
+    const QVariantMap again = rig.import(QStringLiteral("content://test/capture.wav"), QStringLiteral("hint"));
+    CHECK(again.value(QStringLiteral("path")).toString()
+              == ReplayStore::replaysRoot() + QStringLiteral("/capture (2).wav"),
+          "a second copy takes a free name");
+}
+
+/* B1: a re-picked copy nobody saved is deleted at the next start; the saved one is kept. */
+void
+test_repicked_copy_is_reclaimed() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/a.wav"), QByteArray("a"));
+    write_file(sources_dir() + QStringLiteral("/b.wav"), QByteArray("b"));
+    {
+        Rig rig;
+        SavedSystemsModel systems;
+        systems.setReplayStore(rig.store.get());
+        const QString a = rig.import(QStringLiteral("content://test/a.wav"), QString()).value("path").toString();
+        const QString b = rig.import(QStringLiteral("content://test/b.wav"), QString()).value("path").toString();
+        CHECK(systems.add(replay_system(QStringLiteral("Replay"), b)), "the system is saved");
+        CHECK(manifest().value(b) == QStringLiteral("kept"), "the saved copy is kept");
+        CHECK(manifest().value(a) == QStringLiteral("pending"), "the re-picked copy stays pending");
+    }
+    // The next start.
+    Rig rig;
+    SavedSystemsModel systems;
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(replay_files() == QStringList{QStringLiteral("b.wav")}, "only the saved copy is left");
+    CHECK(manifest().size() == 1 && manifest().value(ReplayStore::replaysRoot() + QStringLiteral("/b.wav")) == "kept",
+          "the reclaimed copy leaves the manifest");
+}
+
+/* Adopt is written before the save: a save that fails then leaves the copy kept and unreferenced, never deleted. */
+void
+test_failed_save_after_adopt_keeps_the_copy() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/c.wav"), QByteArray("c"));
+    QString c;
+    {
+        Rig rig;
+        SavedSystemsModel systems;
+        systems.setReplayStore(rig.store.get());
+        c = rig.import(QStringLiteral("content://test/c.wav"), QString()).value("path").toString();
+        const QString store = dsd_qt::json_store_path(QStringLiteral("saved_systems.json"));
+        CHECK(QDir().mkpath(store), "the saved systems store is blocked");
+        CHECK(!systems.add(replay_system(QStringLiteral("Blocked"), c)), "the save fails");
+        CHECK(QDir(store).removeRecursively(), "the store is unblocked");
+        CHECK(manifest().value(c) == QStringLiteral("kept"), "the copy was adopted before the save");
+    }
+    Rig rig;
+    SavedSystemsModel systems;
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(QFileInfo::exists(c), "a kept copy nobody names survives");
+}
+
+/* A manifest that cannot be read refuses the save that would name a copy, and is set aside at the next start. */
+void
+test_unreadable_manifest() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/d.wav"), QByteArray("d"));
+    Rig rig;
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    const QString d = rig.import(QStringLiteral("content://test/d.wav"), QString()).value("path").toString();
+    write_file(ReplayStore::manifestPath(), QByteArray("[{"));
+    bool added = true;
+    const QByteArray log =
+        captured_stderr([&]() { added = systems.add(replay_system(QStringLiteral("Unrecorded"), d)); });
+    CHECK(!added, "nothing is saved naming an unadopted copy");
+    CHECK(log.contains("could not be marked as used"), "the refusal is logged");
+    CHECK(systems.count() == 0, "no row was added");
+    CHECK(systems.add(replay_system(QStringLiteral("Elsewhere"), QStringLiteral("/elsewhere/capture.wav"))),
+          "a path outside replays/ saves without the manifest");
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(QFileInfo::exists(d), "an unreadable manifest deletes nothing");
+    CHECK(read_file(ReplayStore::manifestPath() + QStringLiteral(".bad")) == "[{", "it is set aside");
+    CHECK(!QFileInfo::exists(ReplayStore::manifestPath()), "later copies start a fresh manifest");
+    CHECK(systems.add(replay_system(QStringLiteral("Unlisted"), d)), "a copy the manifest no longer lists saves");
+}
+
+/* Release comes after the save that dropped the last system naming the copy, on a remove and on an edit. */
+void
+test_release_after_remove_and_edit() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/e.wav"), QByteArray("e"));
+    write_file(sources_dir() + QStringLiteral("/f.wav"), QByteArray("f"));
+    Rig rig;
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    const QString e = rig.import(QStringLiteral("content://test/e.wav"), QString()).value("path").toString();
+    const QString f = rig.import(QStringLiteral("content://test/f.wav"), QString()).value("path").toString();
+    CHECK(systems.add(replay_system(QStringLiteral("One"), e)) && systems.add(replay_system(QStringLiteral("Two"), e)),
+          "two systems name one copy");
+    CHECK(systems.remove(0) && manifest().value(e) == QStringLiteral("kept"), "still kept while one names it");
+    const QString store = dsd_qt::json_store_path(QStringLiteral("saved_systems.json"));
+    const QByteArray saved = read_file(store);
+    CHECK(QFile::remove(store) && QDir().mkpath(store), "the saved systems store is blocked");
+    CHECK(!systems.remove(0), "the remove fails");
+    CHECK(manifest().value(e) == QStringLiteral("kept"), "a remove that did not save releases nothing");
+    CHECK(!systems.update(0, {{QStringLiteral("filePath"), f}}), "the edit fails");
+    CHECK(manifest().value(e) == QStringLiteral("kept"), "an edit that did not save releases nothing");
+    CHECK(QDir(store).removeRecursively(), "the store is unblocked");
+    write_file(store, saved);
+    CHECK(systems.update(0, {{QStringLiteral("filePath"), f}}), "the edit saves");
+    CHECK(manifest().value(f) == QStringLiteral("kept"), "the new copy is kept");
+    CHECK(manifest().value(e) == QStringLiteral("pending"), "the copy no system names is released");
+    CHECK(systems.remove(0) && manifest().value(f) == QStringLiteral("pending"), "a remove releases its copy");
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(replay_files().isEmpty() && manifest().isEmpty(), "released copies are reclaimed at the next start");
+}
+
+/* A restore clears filePath but keeps the files: a kept copy stays kept. A restore waiting or stopped part-way skips
+   the reclaim at that start. */
+void
+test_restore_keeps_kept_copies() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/k.wav"), QByteArray("k"));
+    write_file(sources_dir() + QStringLiteral("/p.wav"), QByteArray("p"));
+    QString kept;
+    QString pending;
+    {
+        Rig rig;
+        SavedSystemsModel systems;
+        systems.setReplayStore(rig.store.get());
+        kept = rig.import(QStringLiteral("content://test/k.wav"), QString()).value("path").toString();
+        pending = rig.import(QStringLiteral("content://test/p.wav"), QString()).value("path").toString();
+        CHECK(systems.add(replay_system(QStringLiteral("Kept"), kept)), "the system is saved");
+    }
+    // What the restore leaves: the same system, its filePath cleared.
+    QJsonArray rows = dsd_qt::json_store_load_array(QStringLiteral("saved_systems.json"));
+    QJsonObject row = rows.at(0).toObject();
+    row.insert(QStringLiteral("filePath"), QString());
+    rows.replace(0, row);
+    CHECK(dsd_qt::json_store_save_array(QStringLiteral("saved_systems.json"), rows), "the restored store is written");
+    Rig rig;
+    QObject owner;
+    for (const auto outcome : {dsd_qt::backup::ApplyOutcome::Deferred, dsd_qt::backup::ApplyOutcome::Stuck}) {
+        SavedSystemsModel systems;
+        CHECK(dsd_qt::load_replays(&rig.host, rig.service.get(), &systems, outcome, &owner) != nullptr,
+              "the store loads");
+        CHECK(QFileInfo::exists(pending), "an unfinished restore skips the reclaim");
+    }
+    SavedSystemsModel systems;
+    (void)dsd_qt::load_replays(&rig.host, rig.service.get(), &systems, dsd_qt::backup::ApplyOutcome::Applied, &owner);
+    CHECK(QFileInfo::exists(kept), "a kept copy outlives the restore");
+    CHECK(!QFileInfo::exists(pending), "a pending copy goes after an applied restore");
+}
+
+/* Nothing is deleted when the saved systems store cannot be read, or while the decoder runs. */
+void
+test_unsafe_starts_delete_nothing() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/q.wav"), QByteArray("q"));
+    Rig rig;
+    QObject owner;
+    const QString q = rig.import(QStringLiteral("content://test/q.wav"), QString()).value("path").toString();
+    write_file(dsd_qt::json_store_path(QStringLiteral("saved_systems.json")), QByteArray("[1,"));
+    {
+        SavedSystemsModel corrupt;
+        CHECK(!corrupt.storeLoaded(), "a malformed store does not load cleanly");
+        (void)dsd_qt::load_replays(&rig.host, rig.service.get(), &corrupt, dsd_qt::backup::ApplyOutcome::None, &owner);
+        CHECK(QFileInfo::exists(q), "a corrupt saved systems store deletes nothing");
+    }
+    QFile::remove(dsd_qt::json_store_path(QStringLiteral("saved_systems.json")));
+    SavedSystemsModel systems;
+    CHECK(systems.storeLoaded(), "an absent store is a clean one");
+    rig.host.busy = true;
+    (void)dsd_qt::load_replays(&rig.host, rig.service.get(), &systems, dsd_qt::backup::ApplyOutcome::None, &owner);
+    CHECK(QFileInfo::exists(q), "nothing is deleted while the decoder runs");
+    rig.host.busy = false;
+    (void)dsd_qt::load_replays(&rig.host, rig.service.get(), &systems, dsd_qt::backup::ApplyOutcome::None, &owner);
+    CHECK(!QFileInfo::exists(q), "an idle clean start reclaims it");
+}
+
+/* The copy must leave kReserveBytes free: a document larger than the rest is too_large, with what it needs. */
+void
+test_not_enough_space() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/big.wav"), QByteArray(100, 'b'));
+    Rig rig;
+    rig.store->setFreeSpace([](const QString&) { return ReplayStore::kReserveBytes + 10; });
+    QVariantMap result = rig.import(QStringLiteral("content://test/big.wav"), QString());
+    CHECK(result.value(QStringLiteral("error")).toString() == QStringLiteral("too_large"), "too large for the space");
+    CHECK(result.value(QStringLiteral("neededBytes")).toLongLong() == 100 + ReplayStore::kReserveBytes,
+          "it needs its size and the reserve");
+    CHECK(result.value(QStringLiteral("freeBytes")).toLongLong() == ReplayStore::kReserveBytes + 10,
+          "the free space is answered");
+    CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("big.wav"), "the name is answered");
+    rig.store->setFreeSpace([](const QString&) { return ReplayStore::kReserveBytes / 2; });
+    result = rig.import(QStringLiteral("content://test/big.wav"), QString());
+    CHECK(result.value(QStringLiteral("error")).toString() == QStringLiteral("too_large"), "less than the reserve");
+    CHECK(replay_files().isEmpty() && manifest().isEmpty(), "nothing is kept of a refused copy");
+    rig.store->setFreeSpace([](const QString&) { return ReplayStore::kReserveBytes + 100; });
+    CHECK(rig.import(QStringLiteral("content://test/big.wav"), QString()).value("ok").toBool(), "an exact fit copies");
+}
+
+/* A disk that fills during the copy: local with noSpace, and its staging folder goes. */
+void
+test_no_space_during_copy() {
+    reset_data();
+    Rig rig;
+    const QVariantMap result = rig.import(QStringLiteral("content://full/huge.wav"), QString());
+    CHECK(result.value(QStringLiteral("error")).toString() == QStringLiteral("local"), "a full disk is local");
+    CHECK(result.value(QStringLiteral("noSpace")).toBool(), "for want of space");
+    CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("huge.wav"), "the name is answered");
+    CHECK(wait_until(staging_empty), "the part written in staging is removed");
+    CHECK(replay_files().isEmpty() && manifest().isEmpty(), "nothing is published");
+}
+
+/* Cancel answers cancelled; progress is read while the copy runs; a new import cancels the running one. */
+void
+test_cancel_and_progress() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/g.wav"), QByteArray("g"));
+    Rig rig;
+    const int id = rig.store->beginReplayImport(QStringLiteral("content://hold/held.wav"), QString());
+    CHECK(wait_until([&rig]() { return rig.store->copyBytes() == 1234 && rig.store->copyTotal() == 5678; }),
+          "the running copy's progress is read");
+    CHECK(rig.store->copyName() == QStringLiteral("held.wav") && rig.store->copying(), "copying held.wav");
+    rig.store->cancelReplayImport();
+    CHECK(wait_until([&rig, id]() { return rig.answers.contains(id); }), "a cancelled copy is answered");
+    CHECK(rig.answers.value(id).value(QStringLiteral("error")).toString() == QStringLiteral("cancelled"), "cancelled");
+    CHECK(!rig.store->copying(), "no copy runs");
+    const int held = rig.store->beginReplayImport(QStringLiteral("content://hold/held.wav"), QString());
+    const QVariantMap next = rig.import(QStringLiteral("content://test/g.wav"), QString());
+    CHECK(rig.answers.value(held).value(QStringLiteral("error")).toString() == QStringLiteral("cancelled"),
+          "a new import cancels the running one");
+    CHECK(next.value(QStringLiteral("ok")).toBool() && replay_files() == QStringList{QStringLiteral("g.wav")},
+          "and copies");
+}
+
+/* The service goes first at teardown (it is the engine's first child): a store left with a copy running is fine. */
+void
+test_teardown_service_first() {
+    reset_data();
+    Rig rig;
+    (void)rig.store->beginReplayImport(QStringLiteral("content://hold/held.wav"), QString());
+    CHECK(wait_until([&rig]() { return rig.store->copyBytes() == 1234; }), "the copy runs");
+    rig.service.reset();
+    rig.store.reset();
+    CHECK(rig.answers.isEmpty(), "no answer after teardown");
+}
+
+void
+test_names() {
+    const QString root = ReplayStore::replaysRoot();
+    CHECK(ReplayStore::names({root + QStringLiteral("/./x.wav")}, root + QStringLiteral("/x.wav")),
+          "a spelling of the same path names it");
+    CHECK(!ReplayStore::names({root + QStringLiteral("/y.wav")}, root + QStringLiteral("/x.wav")), "another path");
+}
+
+} // namespace
+
+int
+main(int argc, char** argv) {
+    QCoreApplication app(argc, argv);
+    dsd_test_qt_isolate_paths();
+    test_names();
+    test_local_reference_answers_its_path();
+    test_copy_is_recorded_pending();
+    test_repicked_copy_is_reclaimed();
+    test_failed_save_after_adopt_keeps_the_copy();
+    test_unreadable_manifest();
+    test_release_after_remove_and_edit();
+    test_restore_keeps_kept_copies();
+    test_unsafe_starts_delete_nothing();
+    test_not_enough_space();
+    test_no_space_during_copy();
+    test_cancel_and_progress();
+    test_teardown_service_first();
+    if (failures != 0) {
+        std::fprintf(stderr, "%d failure(s)\n", failures);
+        return 1;
+    }
+    std::fprintf(stderr, "OK\n");
+    return 0;
+}

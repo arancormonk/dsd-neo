@@ -20,6 +20,7 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -27,9 +28,11 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
 class DecoderHost;
+class ReplayStore;
 
 class SavedSystemsModel : public QAbstractListModel {
     Q_OBJECT
@@ -76,6 +79,21 @@ class SavedSystemsModel : public QAbstractListModel {
      * QString copies cannot promise erasure. Never log or export the returned value. */
     QString keyValueForUid(const QString& uid) const;
     bool migrateCachedReplayFiles(DecoderHost* host);
+
+    /**
+     * @brief The replay copies' owner (#832): add() and update() adopt a copy a row gains before they save, update()
+     * and remove() release one no row names any more after they saved. Without one, file paths are only stored.
+     */
+    void setReplayStore(ReplayStore* replays);
+
+    /** @brief Whether saved_systems.json read cleanly, or was absent, at load: what a deletion on its contents needs. */
+    bool
+    storeLoaded() const {
+        return m_storeLoaded;
+    }
+
+    /** @brief Every non-empty filePath the systems hold (a replay's file), each once. */
+    QStringList filePaths() const;
 
     /**
      * @brief @p candidate in the form this model stores a UID (a brace-less UUID), or empty when it is no UUID.
@@ -245,8 +263,14 @@ class SavedSystemsModel : public QAbstractListModel {
     void load();
     bool save() const;
     bool saveRows(const QList<Row>& rows) const;
+    /** Adopt @p path before a save names it; false when the replay store could not (nothing may be saved). */
+    bool adoptReplay(const QString& path);
+    /** After a saved change: release @p path when no row names it any more. */
+    void releaseReplayIfUnused(const QString& path);
 
     QList<Row> m_rows;
+    QPointer<ReplayStore> m_replays;
+    bool m_storeLoaded = true;
     /* The one real clock, in ms since the Unix epoch, that touch() stamps lastHeard from and realtimeNowMs() ages it
        against. */
     qint64 (*m_realtime_now_ms)();

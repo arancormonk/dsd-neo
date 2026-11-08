@@ -54,6 +54,7 @@ target_sources(
         recording_journal.cpp
         recording_status.cpp
         recording_store.cpp
+        replay_store.cpp
         site_groups.cpp # WP-D4
         saved_systems_model.cpp
         scan_avoid_list_model.cpp

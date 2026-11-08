@@ -5,6 +5,7 @@
 
 #include "import_service.h"
 
+#include <QByteArray>
 #include <QChar>
 #include <QDir>
 #include <QFile>
@@ -17,11 +18,15 @@
 #include <QVariant>
 #include <Qt>
 #include <atomic>
+#include <cerrno>
 #include <deque>
 #include <mutex>
 #include <qflags.h>
 #include <utility>
 
+#include <dsd-neo/platform/file_compat.h>
+
+#include "import_names.h"
 #include "json_store.h"
 #include "teardown_trace.h"
 
@@ -35,6 +40,10 @@ journal_name() {
 }
 
 std::atomic<qint64> g_next_request{0};
+
+/* How many names a publish tries before it gives up: a free name can still be taken (by another process) before the
+ * rename claims it. */
+constexpr int kPublishAttempts = 16;
 
 /* Workers a teardown stopped waiting for. Deleting one would wait for its job, so each stays, unreachable from any
    service, until its job ends and the process exits. */
@@ -170,6 +179,28 @@ ImportService::sweepStaging() {
 QString
 ImportService::journalPath() {
     return json_store_path(journal_name());
+}
+
+bool
+ImportService::publish(const QString& staged, const QDir& dir, const QString& name, const QSet<QString>& reserved,
+                       QString* published) {
+    QSet<QString> skipped = reserved;
+    for (int attempt = 0; attempt < kPublishAttempts; attempt++) {
+        const QString destination = unique_import_destination(dir, name, skipped);
+        if (destination.isEmpty()) {
+            break;
+        }
+        int sourceLeft = 0;
+        if (dsd_rename_noreplace(staged.toUtf8().constData(), destination.toUtf8().constData(), &sourceLeft) == 0) {
+            *published = destination;
+            return true;
+        }
+        if (errno != EEXIST) {
+            break;
+        }
+        skipped.insert(dir.absoluteFilePath(QFileInfo(destination).fileName()));
+    }
+    return false;
 }
 
 qint64

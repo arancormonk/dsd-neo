@@ -4625,6 +4625,10 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         # Issue #801: the pinned Listen shortcuts, over both models.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
@@ -4649,6 +4653,8 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_decryption_profiles.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
@@ -4748,6 +4754,10 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
@@ -4912,6 +4922,8 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
@@ -4945,6 +4957,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
     )
@@ -5033,6 +5047,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_import_service
         ui/test_ui_qt_import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -5040,7 +5055,10 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_import_service
         PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_import_service PRIVATE Qt6::Gui)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_import_service
+        PRIVATE Qt6::Gui dsd-neo_platform
+    )
     target_compile_definitions(
         dsd-neo_test_ui_qt_import_service
         PRIVATE QT_NO_KEYWORDS
@@ -5053,6 +5071,28 @@ if(DSD_ENABLE_QT_UI)
         NAME UI_QT_IMPORT_SERVICE
         COMMAND dsd-neo_test_ui_qt_import_service
     )
+
+    # Replay captures picked in the wizard (#832): copies on the import worker into replays/ with the free-space
+    # budget, progress and cancel, the pending/kept manifest, the startup reclaim and its guards. It links the whole UI
+    # library (load_replays() is ui_load()'s), so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_replay_store
+        ui/test_ui_qt_replay_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_replay_store
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_replay_store
+        PRIVATE dsd-neo_ui_qt dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_replay_store
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_replay_store PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_REPLAY_STORE COMMAND dsd-neo_test_ui_qt_replay_store)
 
     # The imported-files layer behind the CSV pickers: DecoderHost's desktop
     # importDocument() copy/unique-ify/replace semantics and the library model
@@ -5393,6 +5433,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
@@ -8937,6 +8978,7 @@ foreach(
     dsd-neo_test_ui_qt_backup_archive
     dsd-neo_test_ui_qt_backup_apply
     dsd-neo_test_ui_qt_backup_model
+    dsd-neo_test_ui_qt_replay_store
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(
@@ -22109,6 +22151,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
         # WP-D1: exercise the real bridge through the retained export result.
@@ -22861,6 +22905,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -22914,6 +22960,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
     )
