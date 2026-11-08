@@ -899,12 +899,12 @@ tetra_sb_soft_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
 }
 
 /* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when block 2 is to be
-   decoded as the cell's, 0 when the burst is not the cell's. A DMO system code that only the soft decision decoded is
-   a DSB (tetra_sb_soft_dsb()). A BSCH that failed its CRC still sits in the slot after the last burst's: the TDMA clock
-   runs to it on the symbol count, as for a normal burst, so block 2 is decoded in its own timeslot rather than the last
-   burst's. So does one of another cell on the followed carrier (TETRA_BSCH_FOREIGN), whose burst is that cell's: its
-   block 2 is scrambled with another colour code and is not decoded, and the BSCH is no evidence about the carrier nor
-   sets its polarity. */
+   decoded as the cell's, 0 when block 2 is not a trunked block of the cell (a DSB, or another cell's burst). A DMO
+   system code that only the soft decision decoded is a DSB (tetra_sb_soft_dsb()). A BSCH that failed its CRC still sits
+   in the slot after the last burst's: the TDMA clock runs to it on the symbol count, as for a normal burst, so block 2
+   is decoded in its own timeslot rather than the last burst's. So does one of another cell on the followed carrier
+   (TETRA_BSCH_FOREIGN), whose burst is that cell's: its block 2 is scrambled with another colour code and is not
+   decoded, and the BSCH is no evidence about the carrier nor sets its polarity. */
 static int
 tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     uint8_t decoded[SB_TYPE2];

@@ -20,6 +20,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -515,6 +516,7 @@ typedef struct {
     int proven;
     uint8_t rx_perm;
     uint8_t published;
+    dsd_call_phase call_phase;
     int candidates;
     long trunk_cc_hz;
     long dl_carrier_hz;
@@ -542,6 +544,9 @@ view_of(const session* s) {
     v.proven = tetra_confirm_followed_call_proven(s->state);
     v.rx_perm = ts->confirm.rx_perm;
     v.published = ts->calls.published;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    v.call_phase = dsd_call_state_get(s->state, 0U, &call) == 1 ? call.phase : DSD_CALL_PHASE_IDLE;
     const dsd_trunk_cc_candidates* const cand = dsd_trunk_cc_candidates_peek(s->state);
     v.candidates = cand ? cand->count : 0;
     v.trunk_cc_hz = s->state->trunk_cc_freq;
@@ -558,8 +563,8 @@ view_of(const session* s) {
 }
 
 /* Nothing of the follow or of the home cell changed: still following A's call on its channel, its record, allocation,
- * proof, receive permission and publication, the trunking candidates, the session's control channel (A's), cell,
- * location area, network, colour code, scrambling seed, received identity and the carrier's polarity. */
+ * proof, receive permission, publication and canonical call, the trunking candidates, the session's control channel
+ * (A's), cell, location area, network, colour code, scrambling seed, received identity and the carrier's polarity. */
 static void
 assert_unchanged(const session* s, const follow_view* before) {
     const follow_view now = view_of(s);
@@ -568,7 +573,7 @@ assert_unchanged(const session* s, const follow_view* before) {
     assert(now.record == before->record && now.alloc.carrier == before->alloc.carrier);
     assert(now.alloc.timeslots == before->alloc.timeslots && now.alloc.freq_hz == before->alloc.freq_hz);
     assert(now.proven == before->proven && now.rx_perm == before->rx_perm && now.published == before->published);
-    assert(now.candidates == before->candidates);
+    assert(now.call_phase == before->call_phase && now.candidates == before->candidates);
     assert(now.trunk_cc_hz == hz(CARR_A_CC) && now.trunk_cc_hz == before->trunk_cc_hz);
     assert(now.dl_carrier_hz == before->dl_carrier_hz && now.la == before->la && now.calls_la == before->calls_la);
     assert(now.mcc == before->mcc && now.mnc == before->mnc && now.colour == before->colour);
@@ -1068,35 +1073,39 @@ test_foreign_sync_burst_is_not_taken(void) {
     close_session(&s);
 }
 
-/* Cell B, of another colour code, allocates the followed timeslot of F to a call of its own, then grants a call of the
- * group the operator holds on G. B's SYNC is not taken on, so its D-SETUPs fail their CRC under A's scrambling, as at
- * an MS, and nothing of them is acted on: no tune, no record of B's calls, and the follow, A's record, proof, receive
- * permission and publication unchanged (regression: B's SYNC set B's scrambling and its SYSINFO named its control
- * channel; its first D-SETUP took the followed timeslot over for B's call, and the held group's grant tuned to G). */
+/* Cell B, of another colour code, either allocates the followed timeslot of F to a call of its own, or grants a call of
+ * the group the operator holds on G, each in a session of its own. B's SYNC is not taken on, so its D-SETUP fails its
+ * CRC under A's scrambling, as at an MS, and nothing of it is acted on: no tune, no record of B's call, and the follow,
+ * A's record, proof, receive permission and publication unchanged (regression: B's SYNC set B's scrambling and its
+ * SYSINFO named its control channel; B's D-SETUP took the followed timeslot over for B's call, or the held group's
+ * grant tuned to G). */
 static void
 test_other_colour_signalling_is_not_acted_on(void) {
-    reset_backend();
-    session s = open_on_a();
-    follow_a(&s, CARR_F);
-    s.state->tg_hold = GSSI_HELD;
-    const cell b = {MCC, MNC, COL_B};
-    const follow_view before = view_of(&s);
-    const int tunes = g_tunes;
-    ttb_block si = {0};
-    ttb_sysinfo(&si, CARR_H, 4U, 2U, LA_A);
-    advance(&s, 0.2);
-    (void)cell_sync_burst(&s, &b, 0U, &si, 0);
-    ttb_block here = {0};
-    ttb_block there = {0};
-    setup_block(&here, GSSI_B, CALL_B, 0x4U, CARR_F, 0);
-    setup_block(&there, GSSI_HELD, CALL_B + 1U, 0x4U, CARR_G, 0);
-    const int proven = cell_ndb(&s, &b, &here, NULL) + cell_ndb(&s, &b, &there, NULL);
-    assert(g_tunes == tunes && g_returns == 0);
-    assert(tetra_calls_peek(s.state, CALL_B) == NULL && tetra_calls_peek(s.state, CALL_B + 1U) == NULL);
-    assert_unchanged(&s, &before);
-    assert(proven == 0);
-    assert_home_is_a(&s);
-    close_session(&s);
+    for (int elsewhere = 0; elsewhere <= 1; elsewhere++) {
+        reset_backend();
+        session s = open_on_a();
+        follow_a(&s, CARR_F);
+        s.state->tg_hold = GSSI_HELD;
+        const cell b = {MCC, MNC, COL_B};
+        const follow_view before = view_of(&s);
+        const int tunes = g_tunes;
+        ttb_block si = {0};
+        ttb_sysinfo(&si, CARR_H, 4U, 2U, LA_A);
+        advance(&s, 0.2);
+        (void)cell_sync_burst(&s, &b, 0U, &si, 0);
+        ttb_block setup = {0};
+        if (elsewhere) {
+            setup_block(&setup, GSSI_HELD, CALL_B, 0x4U, CARR_G, 0);
+        } else {
+            setup_block(&setup, GSSI_B, CALL_B, 0x4U, CARR_F, 0);
+        }
+        assert(cell_ndb(&s, &b, &setup, NULL) == 0);
+        assert(g_tunes == tunes && g_returns == 0);
+        assert(tetra_calls_peek(s.state, CALL_B) == NULL);
+        assert_unchanged(&s, &before);
+        assert_home_is_a(&s);
+        close_session(&s);
+    }
 }
 
 /* A direct mode synchronisation burst on the followed carrier, received inverted and read from its hard decisions or
@@ -1154,6 +1163,7 @@ test_home_location_area_learned_on_the_carrier(void) {
     assert_home_is_a(&s);
 
     const follow_view before = view_of(&s);
+    assert(before.call_phase == DSD_CALL_PHASE_ACTIVE);
     ttb_block other = {0};
     ttb_sysinfo(&other, CARR_A_CC, 4U, 2U, LA_B);
     advance(&s, 0.1);
