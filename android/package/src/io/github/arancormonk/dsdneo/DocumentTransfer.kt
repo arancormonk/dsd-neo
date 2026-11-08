@@ -10,20 +10,24 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * The stream half of the backup's document copies (#580), free of Android so the JVM tests run it.
+ * The stream half of the document copies (the backup's, #580, and the imports', #832), free of Android so the JVM tests
+ * run it.
  *
  * [DocumentCopies] opens the document and the local file; this moves the bytes. The size cap is counted on what was
  * actually read, because a provider's declared size is only a hint, and every chunk first checks the process-wide
- * abort that teardown raises.
+ * abort that teardown raises, then the copy's own [Steps].
  */
 object DocumentTransfer {
-    /** DocumentCopies.copyDocumentToFile() results. Must match DecoderHost::DocumentCopy. */
+    /** DocumentCopies.copyDocumentToFile() and copyImportDocument() results. Must match DecoderHost::DocumentCopy. */
     const val COPIED = 0
     const val TOO_LARGE = 1
     const val FAILED = 2
 
     /** The document could be read, but this device could not write the copy: a temp file, a write or the rename. */
     const val LOCAL_FAILED = 3
+
+    /** The import request the copy belongs to was cancelled. Only import copies answer it; an abort is FAILED. */
+    const val CANCELLED = 4
 
     /** A failure on the local side of a copy (the file DSD-neo writes), not on the document's. */
     class LocalFailure(cause: IOException) : IOException(cause.message, cause)
@@ -51,6 +55,22 @@ object DocumentTransfer {
 
     const val CHUNK_BYTES = 64 * 1024
 
+    /** What one copy does around each chunk: its own stop, and a count of the bytes it wrote. */
+    interface Steps {
+        /** Throw to stop the copy; called before every chunk is read. */
+        fun check()
+
+        /** [bytes] more were written. */
+        fun copied(bytes: Int)
+    }
+
+    /** The steps of a copy with no stop of its own and nobody counting: the backup's. */
+    object NoSteps : Steps {
+        override fun check() {}
+
+        override fun copied(bytes: Int) {}
+    }
+
     @Volatile
     private var aborted = false
 
@@ -70,19 +90,21 @@ object DocumentTransfer {
     }
 
     /**
-     * Copy [input] to [output], at most [maxBytes] of it.
+     * Copy [input] to [output], at most [maxBytes] of it, telling [steps] of each chunk.
      *
      * @return the bytes copied, or -1 once [input] holds more than [maxBytes]; no chunk that crosses the cap is
      *     written.
-     * @throws IOException on a read or write error, or once [abort] was called (checked before every chunk).
+     * @throws IOException on a read or write error, or once [abort] was called (checked before every chunk); whatever
+     *     [Steps.check] throws.
      */
-    fun copyCapped(input: InputStream, output: OutputStream, maxBytes: Long): Long {
+    fun copyCapped(input: InputStream, output: OutputStream, maxBytes: Long, steps: Steps = NoSteps): Long {
         val buffer = ByteArray(CHUNK_BYTES)
         var total = 0L
         while (true) {
             if (aborted) {
                 throw IOException("document transfers were aborted")
             }
+            steps.check()
             val n = input.read(buffer)
             if (n < 0) {
                 return total
@@ -92,6 +114,7 @@ object DocumentTransfer {
             }
             output.write(buffer, 0, n)
             total += n
+            steps.copied(n)
         }
     }
 }

@@ -6,13 +6,16 @@
 package io.github.arancormonk.dsdneo
 
 import android.content.ContentResolver
+import android.database.Cursor
 import android.net.Uri
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.system.ErrnoException
 import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
@@ -20,15 +23,16 @@ import java.io.IOException
 import java.io.OutputStream
 
 /**
- * The backup's document copies (#580): the Android half that DecoderHostAndroid calls over JNI.
+ * The backup's document copies (#580) and the imports' (#832): the Android half that DecoderHostAndroid calls over JNI.
  *
- * Both copies run on the Qt backup worker thread, never on a main thread. The Qt side calls them straight from that
- * thread and must not wait on either main thread, which teardown may be blocking. They use the application's
+ * The copies run on the Qt backup or import worker thread, never on a main thread. The Qt side calls them straight
+ * from that thread and must not wait on either main thread, which teardown may be blocking. They use the application's
  * ContentResolver, because the Activity may be finishing.
  *
  * Each transfer registers a CancellationSignal and passes it to every provider call it makes. [abort], at teardown,
  * cancels those calls (a size lookup, or an open a cloud provider holds while it downloads), stops the byte copy at
- * its next chunk, and refuses every later transfer.
+ * its next chunk, and refuses every later transfer. An import copy can also be cancelled on its own, by its request id
+ * ([cancelImport]).
  *
  * A write into a document is a [DocumentWrite] ([beginWrite]): the backup's save and the call recording exports
  * (#708, RecordingExport) settle, close, report and delete a document the same way.
@@ -38,6 +42,49 @@ object DocumentCopies {
 
     /** The signals of the transfers in flight; also the lock that orders a transfer's start against [abort]. */
     private val inFlight = HashSet<CancellationSignal>()
+
+    /** The import requests by id, until [forgetImport]; under [inFlight]'s lock. */
+    private val imports = HashMap<Long, ImportRequest>()
+
+    /** Opens the local file a copy writes. The tests swap it to fill the disk. */
+    @Volatile
+    internal var localOutput: (File) -> OutputStream = { FileOutputStream(it) }
+
+    /**
+     * One import request: whether it was cancelled, and its latest copy. A CSV and its companion files are copied one
+     * after another under the same request, so a cancel stops the copy running and refuses every later one. Its
+     * fields are guarded by [inFlight].
+     */
+    private class ImportRequest {
+        var cancelled = false
+        var copy: ImportCopy? = null
+    }
+
+    /** One copy of [owner]: its signal, and what it found and did ([importProgress], [importName], [importNoSpace]). */
+    private class ImportCopy(val owner: ImportRequest) : DocumentTransfer.Steps {
+        val signal = CancellationSignal()
+
+        /** Guarded by [inFlight]. */
+        var running = true
+
+        @Volatile
+        var name: String? = null
+
+        @Volatile
+        var declared = -1L
+
+        @Volatile
+        var bytes = 0L
+
+        @Volatile
+        var noSpace = false
+
+        override fun check() = signal.throwIfCanceled()
+
+        override fun copied(bytes: Int) {
+            this.bytes += bytes // Only the copying thread writes it.
+        }
+    }
 
     /**
      * Cancel every transfer in flight and refuse every later one, for the rest of the process.
@@ -79,15 +126,124 @@ object DocumentCopies {
      */
     @JvmStatic
     fun copyDocumentToFile(resolver: ContentResolver, uriText: String, destPath: String, maxBytes: Long): Int {
-        val directory = File(destPath).parentFile
-        if (destPath.isEmpty() || maxBytes < 0 || directory == null) {
+        if (!copyable(destPath, maxBytes)) {
             return DocumentTransfer.FAILED
         }
         val signal = begin() ?: return DocumentTransfer.FAILED
+        return try {
+            copyToFile(resolver, uriText, destPath, maxBytes, signal, null)
+        } finally {
+            end(signal)
+        }
+    }
+
+    /**
+     * Copy the document [uriText] names to [destPath] for import [request], at most [maxBytes] of it: a
+     * DocumentTransfer result.
+     *
+     * The copy is [copyDocumentToFile]'s, under a signal of its own. One lookup asks the provider for the document's
+     * name and size, and both are published ([importName], [importProgress]) before the open; a lookup that fails or
+     * answers nothing does not stop the copy. While the copy runs, [importProgress] counts its bytes. A copy onto a
+     * full disk is LOCAL_FAILED, and [importNoSpace] then says so.
+     *
+     * [cancelImport] of [request] stops this copy, in the provider call it waits in or at its next chunk, and refuses
+     * every later copy for [request] until [forgetImport]: those answer CANCELLED. An [abort] answers FAILED, as for
+     * the backup. Only COPIED leaves a file at [destPath].
+     */
+    @JvmStatic
+    fun copyImportDocument(
+        resolver: ContentResolver,
+        request: Long,
+        uriText: String,
+        destPath: String,
+        maxBytes: Long,
+    ): Int {
+        if (!copyable(destPath, maxBytes)) {
+            return DocumentTransfer.FAILED
+        }
+        val copy = synchronized(inFlight) {
+            if (DocumentTransfer.isAborted) {
+                return DocumentTransfer.FAILED
+            }
+            val owner = imports.getOrPut(request, ::ImportRequest)
+            if (owner.cancelled) {
+                return DocumentTransfer.CANCELLED
+            }
+            if (owner.copy?.running == true) {
+                return DocumentTransfer.FAILED // A request's copies run one after another.
+            }
+            ImportCopy(owner).also {
+                inFlight.add(it.signal)
+                owner.copy = it
+            }
+        }
+        val result = try {
+            copyToFile(resolver, uriText, destPath, maxBytes, copy.signal, copy)
+        } finally {
+            synchronized(inFlight) {
+                inFlight.remove(copy.signal)
+                copy.running = false
+            }
+        }
+        val cancelled = synchronized(inFlight) { copy.owner.cancelled }
+        return if (cancelled && result != DocumentTransfer.COPIED) DocumentTransfer.CANCELLED else result
+    }
+
+    /** Cancel import [request]: the copy it runs, if any, and every later one, until [forgetImport]. */
+    @JvmStatic
+    fun cancelImport(request: Long) {
+        val signal = synchronized(inFlight) {
+            val owner = imports.getOrPut(request, ::ImportRequest)
+            owner.cancelled = true
+            owner.copy?.takeIf { it.running }?.signal
+        }
+        signal?.cancel()
+    }
+
+    /** Import [request]'s running copy: bytes copied, then the declared size (-1 when unknown); -1, -1 when none runs. */
+    @JvmStatic
+    fun importProgress(request: Long): LongArray = synchronized(inFlight) {
+        imports[request]?.copy?.takeIf { it.running }?.let { longArrayOf(it.bytes, it.declared) }
+    } ?: longArrayOf(-1L, -1L)
+
+    /** The name the provider gave the document of import [request]'s latest copy, or null. */
+    @JvmStatic
+    fun importName(request: Long): String? = synchronized(inFlight) { imports[request]?.copy?.name }
+
+    /** Whether import [request]'s latest copy failed for want of space on this device. */
+    @JvmStatic
+    fun importNoSpace(request: Long): Boolean = synchronized(inFlight) { imports[request]?.copy?.noSpace == true }
+
+    /** Drop import [request] and its cancel, once it has ended. */
+    @JvmStatic
+    fun forgetImport(request: Long) {
+        synchronized(inFlight) { imports.remove(request) }
+    }
+
+    private fun copyable(destPath: String, maxBytes: Long): Boolean =
+        destPath.isNotEmpty() && maxBytes >= 0 && File(destPath).parentFile != null
+
+    /**
+     * The copy [copyDocumentToFile] describes, under [signal]. An [import] copy also asks the provider for the
+     * document's name, reports what it finds and copies, stops on its own cancel (once more before the rename), and
+     * records a full disk.
+     */
+    private fun copyToFile(
+        resolver: ContentResolver,
+        uriText: String,
+        destPath: String,
+        maxBytes: Long,
+        signal: CancellationSignal,
+        import: ImportCopy?,
+    ): Int {
+        val directory = File(destPath).parentFile ?: return DocumentTransfer.FAILED
+        val steps = import ?: DocumentTransfer.NoSteps
         var staging: File? = null
         return try {
             val uri = Uri.parse(uriText)
-            val declared = declaredSize(resolver, uri, signal)
+            val (name, declared) = lookUp(resolver, uri, signal, if (import == null) SIZE else NAME_AND_SIZE)
+            import?.name = name
+            import?.declared = declared ?: -1L
             if (declared != null && declared > maxBytes) {
                 return DocumentTransfer.TOO_LARGE
             }
@@ -98,24 +254,27 @@ object DocumentCopies {
             val copied = document.use { opened ->
                 opened.createInputStream().use { input ->
                     DocumentTransfer.LocalOutput(localStream(temp)).use { output ->
-                        DocumentTransfer.copyCapped(input, output, maxBytes)
+                        DocumentTransfer.copyCapped(input, output, maxBytes, steps)
                     }
                 }
             }
-            when {
-                copied < 0 -> DocumentTransfer.TOO_LARGE
-                temp.renameTo(File(destPath)) -> DocumentTransfer.COPIED
-                else -> DocumentTransfer.LOCAL_FAILED
+            if (copied < 0) {
+                return DocumentTransfer.TOO_LARGE
             }
+            steps.check()
+            if (temp.renameTo(File(destPath))) DocumentTransfer.COPIED else DocumentTransfer.LOCAL_FAILED
         } catch (e: DocumentTransfer.LocalFailure) {
             Log.w(TAG, "could not write the copy of a document", e)
+            import?.noSpace = outOfSpace(e)
             DocumentTransfer.LOCAL_FAILED
+        } catch (e: OperationCanceledException) {
+            Log.i(TAG, "a document copy was cancelled")
+            DocumentTransfer.FAILED
         } catch (e: Exception) {
             Log.w(TAG, "failed to copy a document", e)
             DocumentTransfer.FAILED
         } finally {
             staging?.delete() // A no-op once the rename has landed.
-            end(signal)
         }
     }
 
@@ -229,18 +388,48 @@ object DocumentCopies {
         }
     }
 
-    /** The size the provider reports for [uri], or null when it reports none. A cancelled lookup propagates. */
-    private fun declaredSize(resolver: ContentResolver, uri: Uri, signal: CancellationSignal): Long? = try {
-        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null, signal)?.use { cursor ->
-            val column = cursor.getColumnIndex(OpenableColumns.SIZE)
-            if (column >= 0 && cursor.moveToFirst() && !cursor.isNull(column)) cursor.getLong(column) else null
-        }
+    private val SIZE = arrayOf(OpenableColumns.SIZE)
+    private val NAME_AND_SIZE = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+
+    /**
+     * The name and size the provider reports for [uri], in one query of [columns]; each null when it reports none, or
+     * was not asked. A lookup that fails reports neither; a cancelled one propagates.
+     */
+    private fun lookUp(
+        resolver: ContentResolver,
+        uri: Uri,
+        signal: CancellationSignal,
+        columns: Array<String>,
+    ): Pair<String?, Long?> = try {
+        resolver.query(uri, columns, null, null, null, signal)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val name = cursor.column(OpenableColumns.DISPLAY_NAME)?.let(cursor::getString)
+                Pair(name?.takeIf(String::isNotBlank), cursor.column(OpenableColumns.SIZE)?.let(cursor::getLong))
+            } else {
+                null
+            }
+        } ?: Pair(null, null)
     } catch (e: OperationCanceledException) {
         throw e
     } catch (e: Exception) {
-        Log.w(TAG, "size lookup failed for a document", e)
-        null
+        Log.w(TAG, "lookup failed for a document", e)
+        Pair(null, null)
     }
+
+    /** The index of [name] in the cursor's row, or null when it was not asked or holds null. */
+    private fun Cursor.column(name: String): Int? = getColumnIndex(name).takeIf { it >= 0 && !isNull(it) }
+
+    /**
+     * Whether [failure] is this device running out of room: ENOSPC anywhere in its causes, as an errno or, where
+     * nothing carries the errno, in a message.
+     */
+    private fun outOfSpace(failure: Throwable): Boolean = generateSequence(failure) { it.cause }.take(MAX_CAUSES).any {
+        (it is ErrnoException && it.errno == OsConstants.ENOSPC) ||
+            it.message.orEmpty().let { message -> "ENOSPC" in message || "No space left on device" in message }
+    }
+
+    /** How deep [outOfSpace] looks: far past any real chain, and finite on a cyclic one. */
+    private const val MAX_CAUSES = 16
 
     /** [uri] opened to replace its content: "wt" where the provider takes it, else "w". A cancelled open propagates. */
     private fun openForReplace(resolver: ContentResolver, uri: Uri, signal: CancellationSignal): ParcelFileDescriptor {
@@ -290,8 +479,8 @@ object DocumentCopies {
     }
 
     /** [file] opened for writing; a failure is this device's ([DocumentTransfer.LocalFailure]). */
-    private fun localStream(file: File): FileOutputStream = try {
-        FileOutputStream(file)
+    private fun localStream(file: File): OutputStream = try {
+        localOutput(file)
     } catch (e: IOException) {
         throw DocumentTransfer.LocalFailure(e)
     }

@@ -161,7 +161,11 @@ closing the document with an error (a pipe's write failure included) and deletin
 cancelling a held size lookup, a held read open and a held write open (with no `w` retry), skipping the delete, and
 refusing later transfers without a provider call. A failure on the device's side of a copy (a missing destination
 directory, a rename that cannot land, a write through `LocalOutput`) reads `LOCAL_FAILED`, and the suite first checks
-that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree.
+that `DecoderHost::DocumentCopy` and `DocumentTransfer`'s codes agree. The import copies (issue #832) run against the
+same stubs: one name-and-size lookup published before the open (a failed or null lookup still copies), the caps, a
+cancel before the start, in a held lookup or open and between chunks (`CANCELLED`, nothing left), a cancelled request
+refusing its later copies until it is forgotten while another request runs on, progress, a full disk (`ENOSPC` as an
+errno or a message) reported apart, and the abort answering `FAILED`.
 Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (`recording_player`) runs
 `RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player: a pause or the background while
 preparing, focus denied or lost, completion, seeks before the player is ready, a replaced player's late callbacks;

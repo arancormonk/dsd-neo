@@ -138,6 +138,51 @@ private fun aLocalOutputsFailuresAreLocal() {
     check(sink.toByteArray().contentEquals(bytes(10))) { "a local output passes its bytes through" }
 }
 
+/** Reports what a copy wrote, and stops it, as a cancelled import does, once [stopAfter] bytes were reported. */
+private class CountingSteps(private val stopAfter: Long = Long.MAX_VALUE) : DocumentTransfer.Steps {
+    var reported = 0L
+        private set
+
+    override fun check() {
+        if (reported >= stopAfter) throw IOException("this transfer was cancelled")
+    }
+
+    override fun copied(bytes: Int) {
+        reported += bytes
+    }
+}
+
+/** A copy's steps count exactly the bytes it wrote, and a step that throws stops it before the next chunk is read. */
+private fun stepsCountWhatIsWrittenAndStopACopy() {
+    for (size in SIZES) {
+        val whole = CountingSteps()
+        val output = ByteArrayOutputStream()
+        check(DocumentTransfer.copyCapped(ByteArrayInputStream(bytes(size)), output, size.toLong(), whole) ==
+            size.toLong()) { "$size bytes under a $size-byte cap copy whole with steps" }
+        check(whole.reported == size.toLong()) { "the steps see every byte of a $size-byte copy (${whole.reported})" }
+        check(output.toByteArray().contentEquals(bytes(size))) { "steps leave a $size-byte copy's bytes alone" }
+        val over = CountingSteps()
+        val partial = ByteArrayOutputStream()
+        check(DocumentTransfer.copyCapped(ByteArrayInputStream(bytes(size + 1)), partial, size.toLong(), over) == -1L) {
+            "${size + 1} bytes under a $size-byte cap are too large with steps"
+        }
+        check(over.reported == partial.size().toLong()) { "the steps count what was written, not what was read" }
+    }
+    val source = CountingInput(ByteArrayInputStream(bytes(3 * DocumentTransfer.CHUNK_BYTES)))
+    val output = ByteArrayOutputStream()
+    check(failsWithIOException { DocumentTransfer.copyCapped(source, output, Long.MAX_VALUE, CountingSteps(1)) }) {
+        "a step that throws fails the copy"
+    }
+    check(output.size() == DocumentTransfer.CHUNK_BYTES && source.reads == 1) {
+        "a stopped copy reads and writes nothing past the chunk it stopped after (${output.size()} written)"
+    }
+    val unread = CountingInput(ByteArrayInputStream(bytes(10)))
+    check(failsWithIOException { DocumentTransfer.copyCapped(unread, ByteArrayOutputStream(), 100, CountingSteps(0)) }) {
+        "a copy stopped before it starts fails"
+    }
+    check(unread.reads == 0) { "a copy stopped before it starts reads nothing" }
+}
+
 /** Last: the abort is sticky for the rest of the process. */
 private fun anAbortStopsACopyAtTheNextChunkAndRefusesNewOnes() {
     check(!DocumentTransfer.isAborted) { "nothing is aborted at first" }
@@ -176,6 +221,7 @@ fun main() {
     anEmptyStreamCopiesNothing()
     aReadOrWriteErrorFails()
     aLocalOutputsFailuresAreLocal()
+    stepsCountWhatIsWrittenAndStopACopy()
     anAbortStopsACopyAtTheNextChunkAndRefusesNewOnes()
-    println("PASS: document transfers copy within the cap, fail on errors and stop on abort")
+    println("PASS: document transfers copy within the cap, count their bytes, fail on errors and stop on cancel or abort")
 }

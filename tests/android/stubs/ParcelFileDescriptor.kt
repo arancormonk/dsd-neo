@@ -40,7 +40,7 @@ class ParcelFileDescriptor(file: File, mode: String, truncate: Boolean = false, 
         close()
     }
 
-    class AutoCloseInputStream(private val owner: ParcelFileDescriptor) : FileInputStream(owner.fileDescriptor) {
+    open class AutoCloseInputStream(private val owner: ParcelFileDescriptor) : FileInputStream(owner.fileDescriptor) {
         override fun close() {
             try {
                 super.close()

@@ -96,9 +96,16 @@ class DecoderHost : public QObject {
     /**
      * @brief copyDocumentToFile() results. DocumentFailed: the document could not be read (or the copy was aborted);
      * DocumentLocalFailed: it could, but this device could not write the copy (its destination could not be cleared,
-     * opened, written or committed).
+     * opened, written or committed). DocumentCancelled: the import request the copy belongs to was cancelled; only
+     * import copies answer it, never the backup's.
      */
-    enum DocumentCopy { DocumentCopied = 0, DocumentTooLarge = 1, DocumentFailed = 2, DocumentLocalFailed = 3 };
+    enum DocumentCopy {
+        DocumentCopied = 0,
+        DocumentTooLarge = 1,
+        DocumentFailed = 2,
+        DocumentLocalFailed = 3,
+        DocumentCancelled = 4
+    };
 
     /**
      * @brief What the call recording player is doing (issue #708). Stopped: nothing open. Preparing: opening

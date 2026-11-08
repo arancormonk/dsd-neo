@@ -13493,11 +13493,19 @@ thread, which the rest of the interface never is.
   than a short document, and deletes it; only a whole save closes normally. The write side is
   `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
   too.
+- Import copies (#832): `DocumentCopies.copyImportDocument()` is the same capped temp-file copy for one import request
+  id, from the import worker. One `query(DISPLAY_NAME, SIZE)` under the copy's own signal publishes the name
+  (`importName()`) and declared size (`importProgress()`, `[copied, declared]`, `[-1, -1]` when no copy runs) before
+  the open; a failed or null lookup still opens. `cancelImport(id)` cancels by exact id (never `RecordingExport`'s
+  "every id up to"): the running copy stops in its provider call or at its next chunk, and every later copy for that id
+  (a CSV's companions) answers `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A local write failure with
+  `ENOSPC` is `DocumentLocalFailed` and sets `importNoSpace()`. Only import copies answer `DocumentCancelled`;
+  `abort()` cancels and refuses them too, as `DocumentFailed`.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
 - Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document dispatch), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
+  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs). Real providers, JNI and
   `finishAndRemoveTask()` need a device or emulator.
 
 #### Accessibility bridge (issue #782)
