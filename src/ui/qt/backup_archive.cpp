@@ -11,8 +11,6 @@
 
 #include <QChar>
 #include <QFileInfo>
-#include <QJsonObject>
-#include <QJsonValue>
 #include <QLatin1String>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/crypto/backup_seal.h>
@@ -73,41 +71,6 @@ backup_error_from_seal_status(int status) {
         case DSD_BACKUP_ERR_PARAMS: return BackupError::Damaged;
         default: return BackupError::Io;
     }
-}
-
-QList<TypedPathField>
-typed_path_fields() {
-    return detail::typed_fields();
-}
-
-QList<TypedPathValue>
-typed_path_values(const QString& store, const QJsonArray& rows) {
-    QList<TypedPathValue> values;
-    for (int i = 0; i < rows.size(); ++i) {
-        const QJsonObject row = rows.at(i).toObject();
-        for (const auto& field : detail::typed_fields()) {
-            const QJsonValue value = row.value(QLatin1String(field.field));
-            if (detail::is_typed_field(store, field) && value.isString() && !value.toString().isEmpty()) {
-                values.append({i, field, value.toString()});
-            }
-        }
-    }
-    return values;
-}
-
-QJsonArray
-map_typed_path_values(const QString& store, const QJsonArray& rows,
-                      const std::function<QString(const TypedPathValue&)>& map) {
-    QJsonArray out = rows;
-    for (const TypedPathValue& value : typed_path_values(store, rows)) {
-        const QString mapped = map(value);
-        if (mapped != value.value) {
-            QJsonObject row = out.at(value.row).toObject();
-            row.insert(QLatin1String(value.field.field), mapped);
-            out.replace(value.row, row);
-        }
-    }
-    return out;
 }
 
 QVariantMap

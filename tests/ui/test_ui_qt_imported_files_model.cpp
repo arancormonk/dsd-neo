@@ -1417,7 +1417,8 @@ test_async_channel_bundles() {
                && read_file(firstCompanion(loose, 3)) == keys);
     expect("the gained bundle's map still loads", model.channelProfiles(model.rowForPath(loose)).value("ok").toBool());
 
-    // An existing bundle is replaced: same root, a new revision.
+    // An existing bundle is replaced: same root, a new revision, the old one reclaimed once the worker runs (B5).
+    const QStringList before = revisionsOf(root);
     const QByteArray newKeys("keyid,value\n02,12345\n");
     expect("replacement companion", write_file(source.filePath("keys.csv"), newKeys));
     result = importAndWait(model, bundled, "bundled.csv", "chan", stored);
@@ -1425,13 +1426,17 @@ test_async_channel_bundles() {
            result.value("ok").toBool() && result.value("path") == stored
                && model.get(model.rowForPath(stored)).value("bundleRoot") == root
                && read_file(firstCompanion(stored, 3)) == newKeys);
+    waitForWorker(service);
+    expect("the replaced channel revision is reclaimed (B5)",
+           revisionsOf(root).size() == 1 && revisionsOf(root) != before);
 
-    // A replace whose map names no companion keeps the root.
+    // A replace whose map names no companion keeps the root, and the revisions the map no longer reaches go.
     result = importAndWait(model, plain, "plain.csv", "chan", stored);
     expect("a replace without companions keeps the stored path and root",
            result.value("ok").toBool() && read_file(stored) == read_file(plain)
                && model.get(model.rowForPath(stored)).value("bundleRoot") == root);
     waitForWorker(service);
+    expect("a map that names no companion keeps no revision", revisionsOf(root).isEmpty());
     expect("no replace leaves a check file or staging", libraryHoldsOnly({"plain.csv"}) && stagingEmpty());
     while (model.count() > 0) {
         model.remove(0);
@@ -1574,6 +1579,54 @@ test_async_target_write_failure() {
     const QVariantMap result = importAndWait(model, targets, "targets.csv", "trunkTargets");
     expect("a rewrite that cannot write its destination is local, not format",
            result.value("error") == "local" && model.count() == 0);
+}
+
+/* Startup cleanup (B5): a channel map's revisions its primary no longer reaches go, unless a typed path field names a
+   file in one or the decoder runs; one it reaches stays. */
+void
+test_startup_revision_cleanup() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    QTemporaryDir source;
+    const QString bundled = source.filePath("bundled.csv");
+    expect("startup fixtures",
+           write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
+               && write_file(bundled, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n"));
+    // One worker for every library this test opens.
+    dsd_qt::ImportService service(host.importTransport());
+    QString root;
+    QString reached;
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        const QString stored = importAndWait(model, bundled, "bundled.csv", "chan").value("path").toString();
+        root = model.get(model.rowForPath(stored)).value("bundleRoot").toString();
+        reached = revisionsOf(root).value(0);
+    }
+    const QString orphan = root + "/33333333-3333-3333-3333-333333333333";
+    const QString named = root + "/44444444-4444-4444-4444-444444444444";
+    expect("orphan revisions", QDir().mkpath(orphan) && QDir().mkpath(named) && write_file(orphan + "/0.csv", "x\n")
+                                   && write_file(named + "/0.csv", "id,value\n1,1\n"));
+    // A saved system names a file in one of them.
+    expect(
+        "a typed path names a revision file",
+        dsd_qt::json_store_save_array("saved_systems.json", QJsonArray{QJsonObject{{"keyCsvPath", named + "/0.csv"}}}));
+
+    host.running = true;
+    {
+        const dsd_qt::ImportedFilesModel model(&host, &service);
+        waitForWorker(service);
+        expect("nothing is reclaimed while the decoder runs", QFileInfo::exists(orphan));
+    }
+    host.running = false;
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        waitForWorker(service);
+        expect("an unreached channel revision is reclaimed at startup (B5)", !QFileInfo::exists(orphan));
+        expect("the revision the map reaches stays", QFileInfo::exists(root + '/' + reached));
+        expect("a revision holding a file a saved system names stays", QFileInfo::exists(named + "/0.csv"));
+        model.remove(0);
+    }
+    QFile::remove(dsd_qt::json_store_path("saved_systems.json"));
 }
 
 /* The commit journal after a crash: the next load removes the journaled directories the index does not reference and
@@ -2573,6 +2626,7 @@ main(int argc, char** argv) {
     test_async_nested_target_bundle();
     test_async_bundle_limits_and_failures();
     test_async_target_write_failure();
+    test_startup_revision_cleanup();
     test_journal_recovery();
     test_channel_bundle();
     test_channel_bundle_quoted_options();

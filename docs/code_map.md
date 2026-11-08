@@ -12427,11 +12427,13 @@ Qt Quick frontend (`src/ui/qt`):
   replace, in the new root) and saves the row, or replaces the row's file index-first as above; a failure removes the
   directory, and the journal entry goes once the primary is in place. Unanswered companions answer `companions` with
   `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread).
-  Target-list revisions the row's primary no longer reaches are reclaimed on the import worker
-  (`clean_bundle_revisions()`), after a successful bundle replace and once after `load()`, never while the decoder
-  runs. Only owned, registered roots, never through a link; a target list that no longer validates keeps every
-  revision, and so does the journal naming the revision or its root (listed, then the journal read, then the primary
-  parsed, so a commit finishing in between is seen). `load()` first settles the commit journal (`recoverJournal()`, before the prune; skipped when
+  Bundle revisions the row's primary no longer reaches are reclaimed on the import worker
+  (`clean_bundle_revisions()`), for channel maps and target lists, after a successful bundle replace and once after
+  `load()`, never while the decoder runs. Only owned, registered roots, never through a link; a primary that cannot be
+  parsed (a target list that no longer validates) keeps every revision, and so does the journal naming the revision or
+  its root (listed, then the journal read, then the primary parsed, so a commit finishing in between is seen) or any
+  typed path field (`backup::typed_file_paths()`, the stores on disk; a store that cannot be read keeps everything)
+  naming a file in it. `load()` first settles the commit journal (`recoverJournal()`, before the prune; skipped when
   the index cannot be read): a journaled directory under `imports/bundles/` with an owned name that no row references
   (its bundle root, or a revision its primary reaches) is removed; an unreadable journal deletes nothing and is set
   aside (`ImportService::journalSetAside()`, `import_journal.json.bad`) so later commits journal again. The
@@ -12733,7 +12735,9 @@ Qt Quick frontend (`src/ui/qt`):
     portable settings, the five stores, the permanent signal-search avoids, `notIncluded`, and a path/size/sha256
     table), then the carried files' bytes. One table, `typed_path_fields()` (store, field, `File` | `Recording` |
     `BundleRoot`), drives export sanitizing, restore validation and the apply's remapping: a new store field that names
-    a path must join it. The export (worker-safe; only `backup_take_snapshot()` reads app state, on the UI thread)
+    a path must join it. It lives in `backup_typed_paths.cpp` with `typed_path_values()` and `typed_file_paths()` (every
+    `File` value in the stores on disk), free of the models, so the import library's revision cleanup reads the same
+    inventory. The export (worker-safe; only `backup_take_snapshot()` reads app state, on the UI thread)
     repairs rows the way the loaders would, clears every `Recording`, strips each profile's `compiled`, `runtimeRef`
     and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/` (an owned bundle
     whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check. A

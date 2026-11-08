@@ -128,6 +128,13 @@ QList<TypedPathValue> typed_path_values(const QString& store, const QJsonArray& 
 QJsonArray map_typed_path_values(const QString& store, const QJsonArray& rows,
                                  const std::function<QString(const TypedPathValue&)>& map);
 
+/**
+ * Every File value of a typed path field in the stores on disk, clean and absolute paths as stored. @p ok is false,
+ * and the list incomplete, when a store cannot be read: a caller then deletes nothing on the strength of it. Reads the
+ * files, not the models, so it is safe on a worker thread.
+ */
+QStringList typed_file_paths(bool* ok);
+
 /** Counts shown before a restore and after an export. */
 struct Summary {
     int systems = 0;

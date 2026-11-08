@@ -110,13 +110,12 @@ struct BundleRevisions {
 };
 
 /**
- * Reclaim the revision directories of @p bundles' target lists that their primaries no longer reach (import worker
- * only).
+ * Reclaim the revision directories of @p bundles that their primaries no longer reach (import worker only).
  *
- * Only owned, registered roots; never through a link. Kept: every revision when a primary cannot be parsed, and every
+ * Only owned, registered roots; never through a link. Kept: every revision when a primary cannot be parsed, every
  * revision a commit in flight is filling (@p journal lists it; read after the directories are listed and before the
- * primary is parsed, so a commit that finished in between is seen in the primary). Nothing is removed when the
- * journal cannot be read.
+ * primary is parsed, so a commit that finished in between is seen in the primary), and every revision holding a file
+ * a typed path field names. Nothing is removed when the journal or a store cannot be read.
  */
 void clean_bundle_revisions(const QList<BundleRevisions>& bundles, const std::function<QStringList(bool* ok)>& journal);
 } // namespace dsd_qt

@@ -874,10 +874,18 @@ revisionDirectories(const QString& root) {
     return dirs;
 }
 
+bool
+holdsNamedFile(const QString& dir, const QStringList& named) {
+    const QString prefix = dir + '/';
+    return std::any_of(named.cbegin(), named.cend(),
+                       [&prefix](const QString& path) { return path.startsWith(prefix); });
+}
+
 void
-cleanBundle(const BundleRevisions& bundle, const std::function<QStringList(bool* ok)>& journal) {
+cleanBundle(const BundleRevisions& bundle, const QStringList& named,
+            const std::function<QStringList(bool* ok)>& journal) {
     const QString root = QDir::cleanPath(bundle.root);
-    if (bundle.type != QLatin1String("trunkTargets") || !owned_bundle_root(root)) {
+    if (!owned_bundle_root(root)) {
         return;
     }
     // Listed first, then the journal, then the primary: a directory listed here was journaled before it was made, and
@@ -894,7 +902,7 @@ cleanBundle(const BundleRevisions& bundle, const std::function<QStringList(bool*
     }
     for (const auto& name : revisions) {
         const QString dir = root + '/' + name;
-        if (!reached.contains(name) && !inFlight.contains(dir)) {
+        if (!reached.contains(name) && !inFlight.contains(dir) && !holdsNamedFile(dir, named)) {
             QDir(dir).removeRecursively();
         }
     }
@@ -903,8 +911,13 @@ cleanBundle(const BundleRevisions& bundle, const std::function<QStringList(bool*
 
 void
 clean_bundle_revisions(const QList<BundleRevisions>& bundles, const std::function<QStringList(bool* ok)>& journal) {
+    bool ok = false;
+    const QStringList named = backup::typed_file_paths(&ok);
+    if (!ok) {
+        return;
+    }
     for (const auto& bundle : bundles) {
-        cleanBundle(bundle, journal);
+        cleanBundle(bundle, named, journal);
     }
 }
 } // namespace dsd_qt

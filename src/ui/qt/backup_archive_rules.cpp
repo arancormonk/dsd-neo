@@ -15,7 +15,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <functional>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
-#include <iterator>
 #include <stddef.h>
 #include "decode_mode_flag.h"
 #include "decryption_profiles_model.h"
@@ -28,23 +27,6 @@ namespace backup {
 namespace detail {
 
 namespace {
-
-constexpr TypedPathField kTypedPathFields[] = {
-    {kSavedSystemsStore, "chanCsvPath", PathKind::File},
-    {kSavedSystemsStore, "groupCsvPath", PathKind::File},
-    {kSavedSystemsStore, "keyCsvPath", PathKind::File},
-    {kSavedSystemsStore, "p25BandplanCsvPath", PathKind::File},
-    {kSavedSystemsStore, "srcCsvPath", PathKind::File},
-    {kSavedSystemsStore, "filePath", PathKind::Recording},
-    {kScanListsStore, "groupCsvPath", PathKind::File},
-    {kScanListsStore, "srcCsvPath", PathKind::File},
-    {kScanListsStore, "targetsCsvPath", PathKind::File},
-    {kImportedFilesStore, "path", PathKind::File},
-    {kImportedFilesStore, "bundleRoot", PathKind::BundleRoot},
-    {kDecryptionProfilesStore, "legacyCsvPath", PathKind::File},
-    {kDecryptionProfilesStore, "mappingCsvPath", PathKind::File},
-    {kDecryptionProfilesStore, "vendorCsvPath", PathKind::File},
-};
 
 QJsonArray
 repair_scan_entries(const QJsonValue& entries) {
@@ -169,17 +151,6 @@ validate_ranges(QJsonArray& rows, QString* why) {
 }
 
 } // namespace
-
-const QList<TypedPathField>&
-typed_fields() {
-    static const QList<TypedPathField> fields(std::begin(kTypedPathFields), std::end(kTypedPathFields));
-    return fields;
-}
-
-bool
-is_typed_field(const QString& store, const TypedPathField& field) {
-    return store == QLatin1String(field.store);
-}
 
 QString
 new_uid() {
