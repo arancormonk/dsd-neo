@@ -461,24 +461,25 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 `nfm-conventional` and `am-conventional`). Operator-facing behavior, the CSV columns, and the CLI/config options live in
 `docs/trunk-scan.md`; `include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
 
-- Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`,
-  `dsd_trunk_scan_load_targets_csv()`, `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the
-  target count is bounded by a memory budget divided by the per-target snapshot size, so the cap tracks the struct
-  instead of being a constant that goes stale. `dsd_trunk_scan_check_target_lists()` is the one merge rule across
-  lists loaded one by one (issue #697), for the engine start and the app pre-check alike: it walks the lists in order
-  and finds each row's id among earlier lists' rows through an id index sorted once (never a walk of every earlier
-  list). A row whose id an earlier list holds is that target, shared, when every parsed field of
-  `dsd_trunk_scan_target` but `csv_row` is the same (`scan_target_first_difference()`: companion paths compared as the
-  file they name by its identity through `dsd_path_same_file()`, so a link or, on Windows, another case or short name
-  of one file is that file; through `dsd_path_canonical()` when either identity cannot be read, and the strings when
-  either cannot be canonicalised; direct keys in constant time; a row
-  option only where its `DSD_SCAN_OPT_*` bit is set, from the `k_scan_option_columns` table, tone set and receive
-  filters/names included, an unknown bit still telling rows apart). Any difference refuses the lists, naming both files
-  and rows and the first differing column by its target-CSV name or its switches (`the key columns differ` for direct
-  keys, never their material). Within one file the parser's rules stay (no id or `(type, frequency)` twice); different
-  ids on one channel stay two targets. The distinct targets fit the budget. Its optional `row_targets` out array gives
-  each row its target index (a row is new exactly when that index is the count of targets before it); the app
-  pre-check reads only the distinct total.
+- Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`, `dsd_trunk_scan_load_targets_csv()`,
+  `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the target count is bounded by a memory
+  budget divided by the per-target snapshot size, so the cap tracks the struct instead of being a constant that goes
+  stale. `dsd_trunk_scan_check_target_lists()` is the one merge rule across lists loaded one by one (issue #697), for
+  the engine start and the app pre-check alike: it walks the lists in order and finds each row's id among earlier lists'
+  rows through an id index sorted once (never a walk of every earlier list). A row whose id an earlier list holds is
+  that target, shared, when every parsed field of `dsd_trunk_scan_target` but `csv_row` is the same
+  (`scan_target_first_difference()`: companion paths compared as the file they name by its identity through
+  `dsd_path_same_file()`, so a link or, on Windows, another case or short name of one file is that file; through
+  `dsd_path_canonical()` when either identity cannot be read, and the strings when either cannot be canonicalised;
+  direct keys in constant time; a row option only where its `DSD_SCAN_OPT_*` bit is set, from the
+  `k_scan_option_columns` table, tone set and receive filters/names included, all order independent (sets of bits, and
+  service names by `dsd_receive_names_equal()`, which compares tables as `dsd_receive_service_name()` reads them), an
+  unknown bit still telling rows apart). Any difference refuses the lists, naming both files and rows and the first
+  differing column by its target-CSV name or its switches (`the key columns differ` for direct keys, never their
+  material). Within one file the parser's rules stay (no id or `(type, frequency)` twice); different ids on one channel
+  stay two targets. The distinct targets fit the budget. Its optional `row_targets` out array, with the count of entries
+  it holds (fewer than the rows is a refusal, and that count bounds every write), gives each row its target index (a row
+  is new exactly when that index is the count of targets before it); the app pre-check reads only the distinct total.
 - Configured lists (issue #697): `<dsd-neo/core/trunk_scan_lists.h>` defines `dsd_trunk_scan_list_spec {path,
   start_off}` and `DSD_TRUNK_SCAN_MAX_LISTS` (8). `dsd_opts::trunk_scan_lists`/`trunk_scan_list_count`, its
   `next_start` copy and `dsdneoUserConfig` hold the same array by list number; `dsd_trunk_scan_lists_check()` and
@@ -4394,23 +4395,26 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     could keep the target, and a list switched on that gives the departure its alternate would wait for the call. Any
     other switch, "all lists on" included, is a flag edit that waits for the carrier to end, like put back and clear,
     so it never ends a DMR repeater call on a target that stays; so is switching off one of a shared target's lists
-    while another of them is on, which keeps it on air and its call going on (issue #697). The answer reads the asking
-    decoder's own `trunk_scan_session`, `trunk_scan_lists[].enabled`, `trunk_scan_active_lists`,
+    while another of them is on, which keeps it on air and its call going on (issue #697). Switches queued together are
+    judged in queue order: the walk over the queue carries the lists on as the switches of this scan before each leave
+    them (`scan_list_set_lists_after()`: a list on or off, every list on), so "list 1 off" then "list 2 off" leaves a
+    target those two lists hold at the second, while a list switched back on, or every list on, in between keeps it. The
+    answer reads the asking decoder's own `trunk_scan_session`, `trunk_scan_lists[].enabled`, `trunk_scan_active_lists`,
     `trunk_scan_active_list_off` and `trunk_scan_active_avoided`, which the coordinator writes on the decoder thread at
-    every hop, switch and pause (a paused scan publishes no target on air, so no lists of it, and owes no departure),
-    so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
-    that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the frame loop, since telling
-    that apart walks the targets; so does a payload of the wrong size, or any toggle with no state to judge by. A
-    payload of the right size that the drain refuses (session 0, a list the scan does not have) is judged by its fields
-    like any other, so it waits unless it names this scan while a departure is owed. A waiting toggle stays queued, so
-    it still gets its one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or
-    discarded first. `apply_cmd_scan_list_set()` checks what a raw submission can carry (`session != 0`, list 1..8 or
-    all, enabled 0/1; else an invalid payload), calls the hook, and composes the frontend-neutral toast from its code
-    alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`, the targets
-    the distinct total of the lists on, `dsd_app_scan_lists_targets_on()`; `... is off already`,
-    `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the other scan controls
-    use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue took gets a
-    retained result `{sequence, request, session, list, enabled, code, lists_seq}`
+    every hop, switch and pause (a paused scan publishes no target on air, so no lists of it, and owes no departure), so
+    it is one pass over the queued commands, never a walk of the targets, and never a frontend's stale snapshot. A
+    switch of the list on air that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the
+    frame loop, since telling that apart walks the targets; so does a payload of the wrong size, or any toggle with no
+    state to judge by. A payload of the right size that the drain refuses (session 0, a list the scan does not have) is
+    judged by its fields like any other, so it waits unless it names this scan while a departure is owed. A waiting
+    toggle stays queued, so it still gets its one result: when the drain after the carrier applies it, or `DROPPED` when
+    it is evicted or discarded first. `apply_cmd_scan_list_set()` checks what a raw submission can carry
+    (`session != 0`, list 1..8 or all, enabled 0/1; else an invalid payload), calls the hook, and composes the
+    frontend-neutral toast from its code alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`,
+    `All scan lists on: 40 targets`, the targets the distinct total of the lists on, `dsd_app_scan_lists_targets_on()`;
+    `... is off already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the
+    other scan controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue
+    took gets a retained result `{sequence, request, session, list, enabled, code, lists_seq}`
     (`src/app_control/scan_list_results.c`): `lists_seq` is the decoder's `trunk_scan_lists_seq` once the drain handled
     the request, and for one dropped before a drain reached it the value the last drain left
     (`dsd_app_scan_list_note_lists_seq()`); the coordinator's `dsd_trunk_scan_list_set_result` passes through as

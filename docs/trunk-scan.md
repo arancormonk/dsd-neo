@@ -612,13 +612,14 @@ written to its file.
   bytes. The number is what `lists_off` and the API take; the name is what the screens, the messages and the log show.
 - At most 8 lists. A ninth, the same path given twice on the command line, a path of 1024 bytes or more and a start
   with every list off are refused. Lists given on the command line replace a config file's lists as a whole.
-- A target id names one target, however many lists hold it. A row whose id an earlier list already loaded is that
-  same target, now in both lists, as long as every setting of the two rows is the same: type, frequency, label,
-  modulation, dwell, hold, gain, the channel map, band plan and key files, the direct keys and every switch in
-  `options`. A file is compared as the file it opens, so `keys.csv` and `./keys.csv` next to one list are one file, and
-  so are a link to it and, on Windows, `KEYS.csv` or its short name; `keys.csv` next to two lists in different folders
-  are two. Column order, `notes` and the order of the switches in `options` do not matter. Any difference refuses the start, naming both files and rows and the first setting that
-  differs, as its column name or its switches (`-G`, `--squelch/--squelch-db`):
+- A target id names one target, however many lists hold it. A row whose id an earlier list already loaded is that same
+  target, now in both lists, as long as every setting of the two rows is the same: type, frequency, label, modulation,
+  dwell, hold, gain, the channel map, band plan and key files, the direct keys and every switch in `options`. A file is
+  compared as the file it opens, so `keys.csv` and `./keys.csv` next to one list are one file, and so are a link to it
+  and, on Windows, `KEYS.csv` or its short name; `keys.csv` next to two lists in different folders are two. Column
+  order, `notes`, the order of the switches in `options` and the order of the entries in a list such as `--dcc-allow` or
+  `--tone-allow`, or of the service names, do not matter. Any difference refuses the start, naming both files and rows
+  and the first setting that differs, as its column name or its switches (`-G`, `--squelch/--squelch-db`):
 
   ```text
   Trunk scan: hospital.csv row 4: target id 'gate-b' is also security.csv row 2, with another frequency_hz; a target in two lists must have the same settings in both
@@ -675,14 +676,14 @@ does not leave it: the call goes on, and the screens name that other list. Putti
 its lists on.
 
 A DMR repeater carrier is held by the decoder for the whole call. Switching off the target's last list that is on ends
-the call at the next burst boundary, and so does any switch, put back or Clear avoids while the target on air is
-waiting to leave (every list holding it is off, or it is the avoided fallback described under
-[Runtime Behavior](#runtime-behavior)), since it lets that target go or keeps it. Any other switch (another list, one
-of the target's lists while another of them stays on, or every list on) only changes which targets the rotation takes,
-so it waits for the carrier to end and the call goes on undisturbed; its answer comes then. One case is a decided
-limit: switching off the target's last list that is on when no other list has a target left to scan is refused, yet it
-still interrupts the carrier for a moment, since telling it apart in advance would mean walking the targets on every
-frame.
+the call at the next burst boundary (also when it comes last of several switches made under one carrier, such as
+switching off both of the target's lists one after the other), and so does any switch, put back or Clear avoids while
+the target on air is waiting to leave (every list holding it is off, or it is the avoided fallback described under
+[Runtime Behavior](#runtime-behavior)), since it lets that target go or keeps it. Any other switch (another list, one of
+the target's lists while another of them stays on, or every list on) only changes which targets the rotation takes, so
+it waits for the carrier to end and the call goes on undisturbed; its answer comes then. One case is a decided limit:
+switching off the target's last list that is on when no other list has a target left to scan is refused, yet it still
+interrupts the carrier for a moment, since telling it apart in advance would mean walking the targets on every frame.
 
 Refused switches:
 
