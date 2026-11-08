@@ -151,6 +151,12 @@ Item {
             spy.signalName = "";
             screenLoader.active = false;
             screenLoader.source = "";
+            // After the screen is gone, so a case that failed half way leaks
+            // no host, playback, recordings or history into the next one.
+            testContext.resetHostPlayback();
+            recordings.reset();
+            callHistory.clearAll();
+            testContext.useLifecycleHost(false);
             root.width = 420;
             testContext.setMetric("radioInput", false);
             testContext.setHostRunning(false);
@@ -415,11 +421,6 @@ Item {
             callHistory.clearAll();
             var screen = load(data.file);
             holdsTabStopOnlyWhileFocused(data.tag, data.reach(screen));
-            screenLoader.active = false;
-            testContext.resetHostPlayback();
-            recordings.reset();
-            callHistory.clearAll();
-            testContext.useLifecycleHost(false);
         }
 
         // DisclosureRow's own gate (a row that goes nowhere right now).
