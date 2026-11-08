@@ -1562,7 +1562,7 @@ Item {
                 compare(names(), "Conv / Rock", "every row eligible: the first on the channel");
                 // Conv off: ROK stays, through Low; A does not.
                 testContext.setMetric("scanTargetEligible", [true, false, true]);
-                compare(names(), "Conv / Rock", "Conv off, ROK still Low's");
+                compare(names(), "Conv / Rock", "Conv off, ROK still in rotation through Low");
                 testContext.setMetric("centerFreqHz", 851512500);
                 compare(app.listenActions.length, 0, "A, Conv's alone, is off");
                 // ROK avoided: B is the row the scan takes on its channel.

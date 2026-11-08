@@ -4250,7 +4250,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     channel <MHz> MHz` for a trunked target); `Failed: tune to <name>`, `Deferred; retry: tune to <name>` (` (<MHz>
     MHz)` after the name for a trunked target: the frequency its tune tried, the go-to's `park_hz`), `Failed: <name>
     could not be set up`, each with `; scan stays paused` while paused; `Scan continues`; the reasons `; <name> is
-    avoided`, `; <name> is in a list that is off`, `; <name>'s width does not fit` (with `that row` or `that target`
+    avoided`, `; <name> is in no list that is on`, `; <name>'s width does not fit` (with `that row` or `that target`
     for a name that will not fit). Each fits `ui_msg`: optional parts drop whole, the count first, then a trunked
     target's frequency, and the name (`#65535 ` and 63 bytes at most) is never cut. A
     HOLDING whose own call left a text (`engine_toasted`) keeps that text. A failure the engine kept inside the call is
@@ -10870,10 +10870,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
     closes on Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The
     Trunk Scan row (`ui_render_trunk_scan_status()`) reads the "n of m" position from
-    `trunk_scan_rotation_ordinal/_count` (`(-/m)` while the list on air is off) and, with 2+ lists, shows `[list off]`
-    in the room `[avoided]` takes (11 cells then; `[avoided]` when both hold, so 80 columns keep room for the list's
-    name) and adds `List: <name>` after the target (cut at a whole field: the count, then the list, then the id); the
-    paused trunk row adds `Lists: n/m on`.
+    `trunk_scan_rotation_ordinal/_count` (`(-/m)` while every list holding the target on air is off) and, with 2+ lists,
+    shows `[list off]` in the room `[avoided]` takes (11 cells then; `[avoided]` when both hold, so 80 columns keep room
+    for the list's name) and adds `List: <name>` after the target (cut at a whole field: the count, then the list, then
+    the id); the paused trunk row adds `Lists: n/m on`.
     The rigctl rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
     `UI_SCAN_LIST_MODAL` (pending, answers, refusals and when their notes go, the paused footer, repeat Enter,
     out-of-order answers, All lists on, full queue, Esc, session change, results from before it opened, a snapshot
@@ -14286,8 +14286,8 @@ Several lists in one session (issue #697):
   (`ScanListsSheet.qml`: one `ToggleRow` per list with its targets and `On air`, `Switching off…` while pending, a
   refusal in the row's new `note` line in `Theme.alert` and announced; rows disabled while paused,
   `Resume the scan to change lists.`). The Monitor header reads `SCANNING · n/m · HOLD · <target> · <list>` with the
-  rotation's place (`-` while the list on air is off) and the title `<list> + N lists` (the count kept whole when the
-  name is elided).
+  rotation's place (`-` while every list holding the target on air is off) and the title `<list> + N lists` (the count
+  kept whole when the name is elided).
 
 Tests: `UI_QT_SESSION_ARGS` (join rule, argv), `UI_QT_CONTROLLER` (starter, refused start on an id clash, two imported
 lists sharing a target through their copies' companion paths, a differing shared row refused, auto-start, uid repair),

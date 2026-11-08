@@ -287,14 +287,15 @@ svc_scan_entry_toast_waiting(dsd_state* state) {
 }
 
 /* Why an entry on @p match's row stayed a plain tune: with the row's name (@p name), else (no room) as "that row" or
-   "that target" (@p trunk). */
+   "that target" (@p trunk). A list-off target is in no list that is on: one list or every list holding it (issue
+   #697) is off, and the words hold for both. */
 static void
 entry_reason_text(const dsd_scan_entry_match_t* match, const char* name, int trunk, char* out, size_t size) {
     const char* noun = trunk ? "that target" : "that row";
     const char* phrase = NULL; /* after the name, or after the noun */
     switch (match->reason) {
         case DSD_SCAN_ENTRY_AVOIDED: phrase = " is avoided"; break;
-        case DSD_SCAN_ENTRY_LIST_OFF: phrase = name ? " is in a list that is off" : "'s list is off"; break;
+        case DSD_SCAN_ENTRY_LIST_OFF: phrase = " is in no list that is on"; break;
         case DSD_SCAN_ENTRY_WIDTH: phrase = "'s width does not fit"; break;
         default: out[0] = '\0'; return;
     }

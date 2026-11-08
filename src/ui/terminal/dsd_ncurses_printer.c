@@ -1224,8 +1224,8 @@ ui_row_lcn_avoids_field(ui_row* row, const dsd_opts* opts, const dsd_state* stat
 
 /* The position on the Trunk Scan row (issue #697): the target on air's place among the targets of the lists switched
    on, "-" in the ordinal's room while every list holding it is off (the receiver leaves it as soon as another target
-   can take it), and the room alone before a position is published. Half a position is no position: no rotation length, no
-   room either. */
+   can take it), and the room alone before a position is published. Half a position is no position: no rotation
+   length, no room either. */
 static void
 ui_row_trunk_scan_position_field(ui_row* row, const dsd_state* state, int list_off) {
     const unsigned int count = (unsigned int)state->trunk_scan_rotation_count;
@@ -1245,7 +1245,8 @@ ui_row_trunk_scan_position_field(ui_row* row, const dsd_state* state, int list_o
 
 /* Why the target on air is outside the rotation, in a room that is always there: [avoided] (a fallback the scan parked
    on), and with two or more lists [list off] (every list holding it was just switched off) in the same room, which an
-   80-column row needs for the list's name. When both hold, [avoided]: "(-/m)" already says the list is off (issue #697). */
+   80-column row needs for the list's name. When both hold, [avoided]: "(-/m)" already says its lists are off (issue
+   #697). */
 static void
 ui_row_trunk_scan_outside_field(ui_row* row, const dsd_state* state, int several, int list_off) {
     static const char k_avoided[] = "[avoided]";

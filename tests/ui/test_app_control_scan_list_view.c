@@ -264,15 +264,31 @@ test_shared_targets(dsd_opts* opts, dsd_state* state) {
     assert(v.active_list == 1U && v.active_list_off == 1U);
     expect_entries("s waiting to leave", &v, "[*1] [*2] 3");
 
-    /* On t, every list on: lists 2 and 3 hold it. Mask bits past the lists loaded mark nothing. */
+    /* On t, every list on: lists 2 and 3 hold it. */
     state->trunk_scan_lists[0].enabled = 1U;
     state->trunk_scan_lists[1].enabled = 1U;
     state->trunk_scan_active_list_off = 0U;
-    set_on_air(state, 2U, 0x6U | 0xF0U);
+    set_on_air(state, 2U, 0x6U);
     v = view_of(opts, state);
     assert(v.targets_on == 6U);
     expect_entries("t on air", &v, "1 [2] [3]");
-    assert(v.lists[3].has_active == 0U);
+
+    /* A fourth list loaded that does not hold t stays unmarked; mask bits past the lists loaded (lists 5 and 8) mark
+       no entry, and the entries past the count stay empty. */
+    DSD_SNPRINTF(state->trunk_scan_lists[3].name, sizeof state->trunk_scan_lists[3].name, "%s", "list4");
+    state->trunk_scan_lists[3].enabled = 1U;
+    state->trunk_scan_lists[3].targets = 4U;
+    state->trunk_scan_membership_counts[0x8 - 1] = 4U;
+    state->trunk_scan_list_count = 4U;
+    set_on_air(state, 2U, 0x6U | 0x10U | 0x80U);
+    v = view_of(opts, state);
+    assert(v.list_count == 4U && v.lists[3].number == 4U && v.lists[3].enabled == 1U && v.lists[3].has_active == 0U);
+    assert(v.targets_on == 10U);
+    expect_entries("t on air, a fourth list without it", &v, "1 [2] [3] 4");
+    for (int i = 4; i < DSD_TRUNK_SCAN_MAX_LISTS; i++) {
+        assert(v.lists[i].number == 0U && v.lists[i].has_active == 0U);
+    }
+    state->trunk_scan_list_count = 3U;
 
     /* The view carries the membership counts, so a frontend totals the lists it shows on between two snapshots (a
        switch it sent and the answer it has) exactly as the decoder would. */

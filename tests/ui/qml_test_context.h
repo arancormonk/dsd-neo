@@ -4026,11 +4026,11 @@ class Setup : public QObject {
     /**
      * @brief Issue #697: hand the Scan lists sheet's model (the real ScanListToggleModel `metrics.scanListModel` is) a
      * frame: @p view is {session, seq, paused, activeList, memberships, lists: [{name, on, targets, onAir}]}, as the
-     * coordinator publishes it. `activeList` is the list that names the target on air (0 or absent: none); `onAir` marks
-     * each list holding it. `memberships` maps a membership mask (bit N-1: list N, as a number) to the distinct targets
-     * in exactly those lists, from which the sheet totals the lists on; without it, no list shares a target and each
-     * list's `targets` are its own mask's. The readings beside it (scanListCount and the rest) are the case's to set.
-     * Results answered with answerScanList() are read here.
+     * coordinator publishes it. `activeList` is the list that names the target on air (0 or absent: none); `onAir`
+     * marks each list holding it. `memberships` maps a membership mask (bit N-1: list N, as a number) to the distinct
+     * targets in exactly those lists, from which the sheet totals the lists on; without it, no list shares a target and
+     * each list's `targets` are its own mask's. The readings beside it (scanListCount and the rest) are the case's to
+     * set. Results answered with answerScanList() are read here.
      */
     Q_INVOKABLE void
     setScanLists(const QVariantMap& view) {

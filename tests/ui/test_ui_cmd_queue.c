@@ -25808,15 +25808,17 @@ test_trunk_scan_entry_holds_the_target(void) {
 /*
  * Issue #644 D5: a frequency typed by hand that is a target of a list switched off is a plain entry. The scan pauses
  * as for any other frequency, and the toast says why the target's settings did not apply, naming it as the target
- * toasts do: its place in the list beside its id, which on Android is an entry UID.
+ * toasts do: its place in the list beside its id, which on Android is an entry UID. Issue #697: with @p shared, a
+ * second list switched off holds the same target too, and the toast reads the same.
  */
 static int
-test_trunk_scan_entry_on_a_list_that_is_off(void) {
+trunk_scan_entry_on_lists_that_are_off(int shared) {
     static dsd_opts opts;
     static dsd_state state;
     char dir[DSD_TEST_PATH_MAX];
     char csv[DSD_TEST_PATH_MAX];
     char off_csv[DSD_TEST_PATH_MAX];
+    char off2_csv[DSD_TEST_PATH_MAX];
     int rc = expect_true("list off dir", dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_trunk_list_off") != NULL);
     init_decode_mode_context(&opts, &state);
     opts.audio_in_type = AUDIO_IN_WAV;
@@ -25826,6 +25828,7 @@ test_trunk_scan_entry_on_a_list_that_is_off(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_cc_request = pause_scan_tune_to_cc_ok});
     rc |= expect_int("list off csv", dsd_test_path_join(csv, sizeof csv, dir, "targets.csv"), 0);
     rc |= expect_int("list off csv", dsd_test_path_join(off_csv, sizeof off_csv, dir, "off.csv"), 0);
+    rc |= expect_int("list off csv", dsd_test_path_join(off2_csv, sizeof off2_csv, dir, "off2.csv"), 0);
     static const char k_on[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
                                "a,p25-trunk,851000000,,3000,,\n"
                                "b,dmr-trunk,452000000,,3000,,\n";
@@ -25833,24 +25836,35 @@ test_trunk_scan_entry_on_a_list_that_is_off(void) {
                                 "5f3c9a2e-7b1d-4e8a-9c0f-1a2b3c4d5e6f,dmr-trunk,453000000,,3000,,\n";
     rc |= write_file_bytes(csv, k_on, sizeof k_on - 1U);
     rc |= write_file_bytes(off_csv, k_off, sizeof k_off - 1U);
+    rc |= write_file_bytes(off2_csv, k_off, sizeof k_off - 1U);
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", csv);
     DSD_SNPRINTF(opts.trunk_scan_lists[1].path, sizeof opts.trunk_scan_lists[1].path, "%s", off_csv);
+    DSD_SNPRINTF(opts.trunk_scan_lists[2].path, sizeof opts.trunk_scan_lists[2].path, "%s", off2_csv);
     opts.trunk_scan_lists[1].start_off = 1U;
-    opts.trunk_scan_list_count = 2;
+    opts.trunk_scan_lists[2].start_off = 1U;
+    opts.trunk_scan_list_count = shared ? 3 : 2;
     char err[256] = {0};
     rc |= expect_int("list off scan init", dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err), 0);
     arm_seam_tune(RTL_STREAM_TUNE_OK);
     rc |= drain_entry(&opts, &state, 453000000U, "entry on a list that is off");
-    rc |=
-        expect_str("entry on a list that is off toast", state.ui_msg,
-                   "Applied: frequency -> 453.000000 MHz; scan paused; #3 5f3c9a2e-7b1d-4e8a-9c0f-1a2b3c4d5e6f is in a "
-                   "list that is off");
+    rc |= expect_str(
+        "entry on a list that is off toast", state.ui_msg,
+        "Applied: frequency -> 453.000000 MHz; scan paused; #3 5f3c9a2e-7b1d-4e8a-9c0f-1a2b3c4d5e6f is in no "
+        "list that is on");
     rc |= expect_int("entry on a list that is off: the plain tune, paused",
                      g_seam_tune_calls == 1 && state.trunk_scan_paused == 1U && state.trunk_scan_entry_hold == 0U, 1);
+    rc |= expect_int("entry on lists that are off: three targets, a shared one once",
+                     state.trunk_scan_target_count == 3U, 1);
     (void)remove(off_csv);
+    (void)remove(off2_csv);
     finish_trunk_scan(&opts, &state, csv);
     (void)dsd_test_rmdir(dir);
     return rc;
+}
+
+static int
+test_trunk_scan_entry_on_a_list_that_is_off(void) {
+    return trunk_scan_entry_on_lists_that_are_off(0) | trunk_scan_entry_on_lists_that_are_off(1);
 }
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
@@ -28204,7 +28218,12 @@ test_scan_entry_toasts_fit_the_status_line(void) {
         {0, DSD_SCAN_ENTRY_AVOIDED, "; fire-dispatch is avoided", "; that row is avoided"},
         {0, DSD_SCAN_ENTRY_WIDTH, "; fire-dispatch's width does not fit", "; that row's width does not fit"},
         {1, DSD_SCAN_ENTRY_AVOIDED, "; #3 fire-dispatch is avoided", "; that target is avoided"},
-        {1, DSD_SCAN_ENTRY_LIST_OFF, "; #3 fire-dispatch is in a list that is off", "; that target's list is off"},
+        {
+            1,
+            DSD_SCAN_ENTRY_LIST_OFF,
+            "; #3 fire-dispatch is in no list that is on",
+            "; that target is in no list that is on",
+        },
         {1, DSD_SCAN_ENTRY_WIDTH, "; #3 fire-dispatch's width does not fit", "; that target's width does not fit"},
     };
 

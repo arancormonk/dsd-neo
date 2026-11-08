@@ -345,8 +345,8 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
     (`--trunk-scan`); `state` is `off` (no scan), `running`, or `paused` (the
     operator took the tuner; `scan_resume` resumes it); `targets` is the trunk
     scan's target count, every list included and a target several lists hold
-    counted once, or the `-Y` list's row count (`0` with no scan). A `-Y` resume still waiting for its row's tune reads
-    `paused`.
+    counted once, or the `-Y` list's row count (`0` with no scan). A `-Y`
+    resume still waiting for its row's tune reads `paused`.
   * `hold`: `true` while the operator holds the scan on the row or target on
     air (`scan_hold_toggle`); `false` with no scan.
   * `entry_hold`: `true` while that hold is the one a frequency entry set
@@ -852,9 +852,9 @@ field, and the decoder refuses the rest when it applies the command.
     each ending `; scan stays paused` while the scan is paused. A trunked
     target's failed tune also names the frequency it tried, its control
     channel: `Failed: tune to #3 County (851.012500 MHz)`. A row that is
-    avoided, whose list is off, or whose width the input cannot run is not
+    avoided, in no list that is on, or whose width the input cannot run is not
     taken: the entry is a plain one, below, and its message ends with the reason
-    (`; fire-dispatch is avoided`, `; #3 County Fire is in a list that is off`,
+    (`; fire-dispatch is avoided`, `; #3 County Fire is in no list that is on`,
     `; fire-dispatch's width does not fit`; `that row` or `that target` in place
     of a name too long to fit).
   * Otherwise, with single-system P25 trunking on and no scan, it selects that
@@ -1032,14 +1032,15 @@ never written to the list files or the config.
   once, as `scan_avoid` does (a hold carries over), when it was the last list
   switched on that holds it. While another list holding it is still on, the
   target stays on air and `status.scan.list` moves to that list. A switch that
-  would leave nothing to scan is refused, and so is any switch while the scan
-  is paused. During a DMR repeater call, a switch that does not move the
-  receiver waits for the call to end, and its result comes then, with two
-  exceptions: while the target on air is waiting to leave (every list holding
-  it is off, or it is an avoided target the scan fell back onto), any switch
-  ends the call at once, since it lets that target go or keeps it; and
-  switching off the last list on that holds the target on air, when it is the
-  last one to scan, is refused, yet still interrupts the call for a moment. See [Switching lists](trunk-scan.md#switching-lists).
+  would leave nothing to scan is refused, and so is any switch while the scan is
+  paused. During a DMR repeater call, a switch that does not move the receiver
+  waits for the call to end, and its result comes then, with two exceptions:
+  while the target on air is waiting to leave (every list holding it is off, or
+  it is an avoided target the scan fell back onto), any switch ends the call at
+  once, since it lets that target go or keeps it; and switching off the last
+  list on that holds the target on air, when it is the last one to scan, is
+  refused, yet still interrupts the call for a moment. See
+  [Switching lists](trunk-scan.md#switching-lists).
 
 ## Examples
 
