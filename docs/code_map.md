@@ -10725,11 +10725,11 @@ Qt Quick frontend (`src/ui/qt`):
   opens at its top. With the keyboard focus on the tabs in the body it then reveals them, so a keyboard choice keeps
   the strip in view. The restore lays out only the section and body Columns; nested ones (a card's labels after a
   text-size change in the same turn) wait for the next polish and can grow the range after the place was clamped short.
-  So while a restore stands clamped short (`placeChase`, not moved by the tabs' reveal), each `contentHeightChanged` or
-  `originYChanged` of the body puts the place back again, until it is reached, or the body moved some other way (user
-  movement, a focus reveal, any write), a tab is chosen, `revealTop()` runs, or two frames have been swapped since (the
-  owed polish runs before the next frame; the second covers one already in flight); a section that really is shorter
-  is then left alone when it grows later.
+  So while a restore stands clamped short (`placeChase`; never after a keyboard choice with the tabs in the body, where
+  the place yields to the focused tab), each `contentHeightChanged` or `originYChanged` of the body puts the place back
+  again, until it is reached, or the body moved some other way (user movement, a focus reveal, any write), a tab is
+  chosen, `revealTop()` runs, or two frames have been swapped since (the owed polish runs before the next frame; the
+  second covers one already in flight); a section that really is shorter is then left alone when it grows later.
   Deferred scroll writers, highest first: `revealTop()` (cancels a pending restore and focus reveal, scrolls to the top,
   records it as the shown tab's place, and sets `focusRevealHeld`, which drops focus reveals until the user scrolls,
   `movementStarted`, or moves the focus by key, the new focus item being the old one's `nextItemInFocusChain()` either
@@ -10756,9 +10756,9 @@ Qt Quick frontend (`src/ui/qt`):
   font change and the widest (wrapped) receiver label across the threshold flipping once with the rendered fixed
   region at most half, focus kept across a move, one line under the fixed region; per-tab places, rapid switches
   and a switch during a fling remembering no clamp, the place kept when the range grows after the restore in its turn
-  (also green under `QT_QPA_UPDATE_IDLE_TIME` 16 and 200) and later growth not pulling a short section's view, a
-  restore waiting while hidden, a keyboard choice in the body keeping the tabs in view, `revealTop()` cancelling an
-  owed restore and holding off focus reveals; the migrated
+  (also green under `QT_QPA_UPDATE_IDLE_TIME` 16 and 200), later growth not pulling a short section's view nor, after a
+  keyboard choice in the body, the focused tab out of view, a restore waiting while hidden, a keyboard choice in the
+  body keeping the tabs in view, `revealTop()` cancelling an owed restore and holding off focus reveals; the migrated
   Home suites select the tab a case needs; `tst_home_dongle_status.qml` `test_reveal_top` and
   `tst_home_pinned.qml` `test_refusal_revealed_when_scrolled` run `revealTop()` against an owed restore, a
   pending focus reveal and a focus handed back later), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on

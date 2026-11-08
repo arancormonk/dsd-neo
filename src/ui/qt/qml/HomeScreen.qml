@@ -248,13 +248,14 @@ Item {
         if (place === undefined)
             place = scrollBody.originY;
         scrollBody.contentY = clampedScroll(place);
-        var applied = scrollBody.contentY;
-        if (!tabsFixed && holdsFocus(listenTabs))
+        // A keyboard choice with the tabs in the body: the place yields to
+        // the focused tab, now and as the range grows, so it is not followed.
+        var keyboardOnBodyTabs = !tabsFixed && holdsFocus(listenTabs);
+        if (keyboardOnBodyTabs)
             revealFocus();
-        // Clamped short and not moved by the tabs' reveal: follow the range.
-        placeChase.active = applied < place - 0.5 && Math.abs(scrollBody.contentY - applied) < 0.5;
+        placeChase.active = !keyboardOnBodyTabs && scrollBody.contentY < place - 0.5;
         placeChase.place = place;
-        placeChase.applied = applied;
+        placeChase.applied = scrollBody.contentY;
         placeChase.frames = 0;
     }
     // Issue #646: the restore lays out the section and the body's column, but
@@ -262,7 +263,9 @@ Item {
     // change in the same turn leaves to the next polish; the range can then
     // grow after the place was clamped short of it. While a restore stands
     // clamped short, each change of the body's range puts the place back
-    // again. That stops when the place is reached; when the body was moved
+    // again. It never starts after a keyboard choice with the tabs in the
+    // body (the place yields to the focused tab). It stops when the place is
+    // reached; when the body was moved
     // some other way (user movement at once; a focus reveal or any other
     // write at the next range change, by contentY no longer being what was
     // put back); when a tab is chosen or revealTop() runs; or once two

@@ -1090,6 +1090,41 @@ Item {
             verify(!inView(tab("scanLists")), "and the tabs scroll away with it");
         }
 
+        // With the tabs in the body, a keyboard choice that puts a place back short of where it was left keeps the
+        // focused tab in view even when the section's range grows right after: the place yields to the tabs, and is not
+        // followed down.
+        function test_keyboard_choice_not_pulled_by_late_growth() {
+            root.width = 640;
+            root.height = 250;
+            Ui.Theme.fontScale = 1.6;
+            addSystems(30);
+            settle();
+            verify(!home.tabsFixed, "the tabs in the body");
+            body().contentY = body().originY + body().contentHeight - body().height;
+            var deep = body().contentY;
+            // Scrolled that far the tabs are out of reach of a finger; a screen reader still presses them.
+            tab("scanLists").Accessible.pressAction();
+            compare(home.section, "scanLists");
+            emptyModels();
+            settle();
+            root.forceActiveFocus();
+            for (var i = 0; i < 6 && !tab("scanLists").activeFocus; ++i)
+                keyClick(Qt.Key_Tab);
+            verify(tab("scanLists").activeFocus, "the keyboard is on the tabs");
+            keyClick(Qt.Key_Left);
+            compare(home.section, "systems");
+            // The place is put back now, short of where it was left (nothing to scroll), and the cards come in the
+            // same turn.
+            home.restoreSection();
+            verify(body().contentY < deep - 100, "put back short of " + deep);
+            verify(inView(tab("systems")), "the focused tab in view");
+            addSystems(30);
+            settle();
+            waitFrames(2);
+            verify(tab("systems").activeFocus);
+            verify(inView(tab("systems")), "the focused tab stays in view: contentY " + body().contentY);
+        }
+
         // --- revealTop() is the strongest scroll writer (B3 precedence). ---
 
         // It drops a place still owed and keeps the top as the shown tab's place.
