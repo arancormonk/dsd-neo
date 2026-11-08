@@ -180,13 +180,14 @@ typedef struct {
 
 /** A channel allocation element (EN 300 392-2 table 21.87) as the MAC read it from a clear PDU. */
 typedef struct {
-    long freq_hz;       /**< downlink frequency of the carrier, 0 when its band is unknown */
-    uint16_t carrier;   /**< carrier number */
-    uint8_t type;       /**< allocation type */
-    uint8_t timeslots;  /**< timeslot assigned: bit 3 is timeslot 1 ... bit 0 timeslot 4; 0 is "go to the MCCH" */
-    uint8_t up_down;    /**< up/downlink assigned; for an augmented allocation, the augmented value */
-    uint8_t bandwidth;  /**< augmented allocations only; 0 is 25 kHz */
-    uint8_t modulation; /**< augmented allocations only; 0 is pi/4-DQPSK */
+    long freq_hz;        /**< downlink frequency of the carrier, 0 when its band is unknown */
+    uint16_t carrier;    /**< carrier number */
+    uint8_t type;        /**< allocation type */
+    uint8_t timeslots;   /**< timeslot assigned: bit 3 is timeslot 1 ... bit 0 timeslot 4; 0 is "go to the MCCH" */
+    uint8_t up_down;     /**< up/downlink assigned; for an augmented allocation, the augmented value */
+    uint8_t bandwidth;   /**< augmented allocations only; 0 is 25 kHz */
+    uint8_t modulation;  /**< augmented allocations only; 0 is pi/4-DQPSK */
+    uint8_t cell_change; /**< cell change flag: a channel of another cell (EN 300 392-2 clause 23.5.4.1) */
 } tetra_chan_alloc;
 
 /* Phase of a CMCE call (EN 300 392-2 clause 14.5): set up (D-SETUP, D-ALERT, D-CALL PROCEEDING), through-connected

@@ -1773,10 +1773,25 @@ call_takes_allocation(tetra_mac_sdu* sdu, const tetra_call_t* c) {
     return 1;
 }
 
+/* A call PDU the records act on: one of a known kind, not in a PDU whose allocation is another cell's
+ * (tetra_mac_sdu_other_cell()), which is printed only. */
+static int
+calls_event_acts(const tetra_state_t* ts, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+    if (!ts || !ev || ev->kind > TETRA_CALL_EV_RELEASE) {
+        return 0;
+    }
+    if (tetra_mac_sdu_other_cell(sdu)) {
+        TETRA_LOG_VERBOSE(ts, 2, "[TETRA CALL] %s for call %u came with another cell's channel; not acted on\n",
+                          k_event_names[ev->kind], (unsigned)ev->call_id);
+        return 0;
+    }
+    return 1;
+}
+
 void
 tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* ev, tetra_mac_sdu* sdu) {
     tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !ev || ev->kind > TETRA_CALL_EV_RELEASE) {
+    if (!calls_event_acts(ts, ev, sdu)) {
         return;
     }
     tetra_call_t* c = calls_find(ts, (uint16_t)(ev->call_id & 0x3FFFu));

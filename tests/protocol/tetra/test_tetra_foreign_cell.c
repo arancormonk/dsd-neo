@@ -42,6 +42,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "test_support.h"
 #include "tetra_calls.h"
@@ -184,36 +185,76 @@ sysinfo_burst(session* s, uint32_t main_carrier, uint32_t la) {
 }
 
 /* A downlink allocation of timeslot bitmap @p timeslots on @p carrier (table 21.87), with @p extended carrier numbering
- * naming the band and offset of the cell's SYSINFO. */
+ * naming the band and offset of the cell's SYSINFO, and cell change flag @p cell_change. */
 static void
-allocation(ttb_block* b, uint32_t timeslots, uint32_t carrier, int extended) {
+allocation(ttb_block* b, uint32_t timeslots, uint32_t carrier, int extended, uint32_t cell_change) {
     if (!extended) {
-        ttb_allocation(b, timeslots, 1, carrier);
+        ttb_allocation_cell(b, timeslots, 1, carrier, cell_change);
         return;
     }
-    ttb_put(b, 0, 2);         /* allocation type: replace current channel */
-    ttb_put(b, timeslots, 4); /* timeslot assigned */
-    ttb_put(b, 1, 2);         /* downlink only */
-    ttb_put(b, 0, 2);         /* CLCH permission, cell change flag */
-    ttb_put(b, carrier, 12);  /* carrier number */
-    ttb_put(b, 1, 1);         /* extended carrier numbering */
-    ttb_put(b, 4, 4);         /* frequency band */
-    ttb_put(b, 2, 2);         /* offset */
-    ttb_put(b, 0, 4);         /* duplex spacing, reverse operation */
-    ttb_put(b, 1, 2);         /* monitoring pattern: one */
+    ttb_put(b, 0, 2);           /* allocation type: replace current channel */
+    ttb_put(b, timeslots, 4);   /* timeslot assigned */
+    ttb_put(b, 1, 2);           /* downlink only */
+    ttb_put(b, 0, 1);           /* CLCH permission */
+    ttb_put(b, cell_change, 1); /* cell change flag */
+    ttb_put(b, carrier, 12);    /* carrier number */
+    ttb_put(b, 1, 1);           /* extended carrier numbering */
+    ttb_put(b, 4, 4);           /* frequency band */
+    ttb_put(b, 2, 2);           /* offset */
+    ttb_put(b, 0, 4);           /* duplex spacing, reverse operation */
+    ttb_put(b, 1, 2);           /* monitoring pattern: one */
 }
 
-/* A D-SETUP to group @p gssi for @p call_id with a downlink allocation of timeslot bitmap @p timeslots on @p carrier
- * (allocation()): an SCH/HD block, or with @p extended carrier numbering, which an SCH/HD has no room for, an SCH/F. */
+/* The MAC-RESOURCE address of a PDU to @p ssi: by type (table 21.55) the SSI alone, or with the usage marker (6 bits)
+ * or event label (10 bits) @p assigned it assigns. */
+typedef struct {
+    uint32_t type;
+    uint32_t ssi;
+    uint32_t assigned;
+} mac_addr;
+
+static int
+resource_to(ttb_block* b, const mac_addr* addr) {
+    const int start = ttb_resource(b, 0, addr->type, addr->ssi);
+    if (addr->type == TETRA_MAC_ADDR_SSI_USAGE) {
+        ttb_put(b, addr->assigned, 6);
+    } else if (addr->type == TETRA_MAC_ADDR_SSI_EVENT) {
+        ttb_put(b, addr->assigned, 10);
+    }
+    return start;
+}
+
+/* A D-SETUP's block (setup_block_as()). */
+typedef struct {
+    uint32_t gssi;
+    uint32_t call_id;
+    uint32_t timeslots;
+    uint32_t carrier;
+    int extended;
+    const mac_addr* addr;
+    uint32_t cell_change;
+} setup_spec;
+
+/* A D-SETUP to group @p gssi for @p call_id with a downlink allocation of timeslot bitmap @p timeslots on @p carrier,
+ * whose MAC-RESOURCE is addressed @p addr (the group's SSI alone for NULL), its allocation of another cell with
+ * @p cell_change (allocation()): an SCH/HD block, or with @p extended carrier numbering, which an SCH/HD has no room
+ * for, an SCH/F. */
+static void
+setup_block_as(ttb_block* b, const setup_spec* spec) {
+    const mac_addr group = {TETRA_MAC_ADDR_SSI, spec->gssi, 0U};
+    const int start = resource_to(b, spec->addr ? spec->addr : &group);
+    ttb_resource_flags(b, 1);
+    allocation(b, spec->timeslots, spec->carrier, spec->extended, spec->cell_change);
+    ttb_put(b, 2, 4); /* BL-UDATA */
+    ttb_d_setup(b, spec->call_id, TTB_SPEECH_GROUP);
+    ttb_close_resource(b, start);
+    ttb_finish(b, spec->extended ? TTB_SCH_F_BITS : TTB_SCH_HD_BITS, -1);
+}
+
 static void
 setup_block(ttb_block* b, uint32_t gssi, uint32_t call_id, uint32_t timeslots, uint32_t carrier, int extended) {
-    const int start = ttb_resource(b, 0, 1 /* SSI */, gssi);
-    ttb_resource_flags(b, 1);
-    allocation(b, timeslots, carrier, extended);
-    ttb_put(b, 2, 4); /* BL-UDATA */
-    ttb_d_setup(b, call_id, TTB_SPEECH_GROUP);
-    ttb_close_resource(b, start);
-    ttb_finish(b, extended ? TTB_SCH_F_BITS : TTB_SCH_HD_BITS, -1);
+    const setup_spec spec = {gssi, call_id, timeslots, carrier, extended, NULL, 0U};
+    setup_block_as(b, &spec);
 }
 
 static void
@@ -1199,6 +1240,207 @@ test_home_reallocation_still_followed(void) {
     }
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * Allocations of another cell, and the AACH beside the home cell's CRC evidence.
+ * ------------------------------------------------------------------------------------------------------------- */
+
+enum { UM_OTHER = 33, LABEL_OTHER = 0x155 };
+
+/* What A's call record holds that a PDU's address assigns, besides its allocation (follow_view). */
+typedef struct {
+    uint8_t flags;
+    uint8_t usage_marker;
+    uint16_t event_label;
+} assignments;
+
+static assignments
+assignments_of(const session* s) {
+    const tetra_call_t* const c = tetra_calls_peek(s->state, CALL_A);
+    assert(c != NULL);
+    const assignments a = {c->flags, c->usage_marker, c->event_label};
+    return a;
+}
+
+static void
+assert_assignments_unchanged(const session* s, const assignments* before) {
+    const assignments now = assignments_of(s);
+    assert(now.flags == before->flags && now.usage_marker == before->usage_marker);
+    assert(now.event_label == before->event_label);
+}
+
+/* A MAC-RESOURCE to @p addr with no TM-SDU, only a channel allocation of another cell (cell change flag 1) of
+ * timeslots @p timeslots on @p carrier: an SCH/HD block. */
+static void
+cell_change_header_block(ttb_block* b, const mac_addr* addr, uint32_t timeslots, uint32_t carrier) {
+    const int start = resource_to(b, addr);
+    ttb_resource_flags(b, 1);
+    allocation(b, timeslots, carrier, 0, 1U);
+    ttb_close_resource(b, start);
+    ttb_finish(b, TTB_SCH_HD_BITS, -1);
+}
+
+/* One of A's own PDUs on the followed carrier whose allocation is another cell's. */
+typedef struct {
+    const char* name;
+    int header_only; /* a MAC-RESOURCE with the allocation alone, else a D-SETUP of @c call_id with it */
+    mac_addr addr;
+    uint32_t call_id;
+    uint32_t timeslots;
+    uint32_t carrier;
+} cell_change_case;
+
+static const cell_change_case k_cell_change[] = {
+    {"held group's new call on G", 0, {TETRA_MAC_ADDR_SSI_USAGE, GSSI_HELD, UM_OTHER}, CALL_B, 0x4U, CARR_G},
+    {"A's call moved to G", 0, {TETRA_MAC_ADDR_SSI, GSSI_A, 0U}, CALL_A, 0x4U, CARR_G},
+    {"A's call on its channel, a marker", 0, {TETRA_MAC_ADDR_SSI_USAGE, GSSI_A, UM_OTHER}, CALL_A, 0x4U, CARR_F},
+    {"event label to A's group, G", 1, {TETRA_MAC_ADDR_SSI_EVENT, GSSI_A, LABEL_OTHER}, 0U, 0x4U, CARR_G},
+    {"A's group to the MCCH", 1, {TETRA_MAC_ADDR_SSI, GSSI_A, 0U}, 0U, 0x0U, CARR_F},
+};
+
+/* The case's PDU on F, scrambled with A's colour code (its CRC passes), the log it printed in @p log. */
+static void
+cell_change_on_air(session* s, const cell_change_case* c, char* log, size_t log_size) {
+    ttb_block b = {0};
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "tetra_cell_change") == 0);
+    if (c->header_only) {
+        cell_change_header_block(&b, &c->addr, c->timeslots, c->carrier);
+        assert(cell_ndb(s, &k_cell_a, &b, NULL) == 1);
+    } else {
+        /* The address with a usage marker leaves an SCH/HD no room: an SCH/F with extended carrier numbering. */
+        const int full = c->addr.type == TETRA_MAC_ADDR_SSI_USAGE;
+        const setup_spec spec = {c->addr.ssi, c->call_id, c->timeslots, c->carrier, full, &c->addr, 1U};
+        setup_block_as(&b, &spec);
+        assert((full ? cell_ndb_full(s, &k_cell_a, &b) : cell_ndb(s, &k_cell_a, &b, NULL)) == 1);
+    }
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, log, log_size) == 0);
+}
+
+/* A channel allocation with its cell change flag set is for an MS being moved to another cell (EN 300 392-2 clause
+ * 23.5.4.1), and the decoder follows no cell change. A's own PDU carrying one on the followed carrier -- a D-SETUP of a
+ * held group's new call, a D-SETUP moving A's call to G, a D-SETUP naming A's own channel with a usage marker, a
+ * header-only allocation assigning an event label, one sending A's group to the MCCH -- is printed with the allocation
+ * logged as another cell's and acted on in nothing: no tune or return, no record of the new call, A's record, its
+ * allocation, usage marker and event label, the follow, its proof, receive permission, publication and canonical call
+ * unchanged (regression: main read past the flag and took each as an allocation of this cell: it tuned to G, made the
+ * new call's record, took the usage marker or event label, moved A's record to G, or ended A's follow). The follow then
+ * ends on its hangtime and returns home. */
+static void
+test_cell_change_allocation_logged_only(void) {
+    for (size_t k = 0; k < sizeof k_cell_change / sizeof k_cell_change[0]; k++) {
+        printf("cell change: %s\n", k_cell_change[k].name);
+        reset_backend();
+        session s = open_on_a();
+        follow_a(&s, CARR_F);
+        s.state->tg_hold = GSSI_HELD;
+        const follow_view before = view_of(&s);
+        const assignments held = assignments_of(&s);
+        const int tunes = g_tunes;
+        char log[16384];
+        advance(&s, 0.2);
+        cell_change_on_air(&s, &k_cell_change[k], log, sizeof log);
+        assert(strstr(log, "cell change: for another cell; logged only") != NULL);
+        assert(g_tunes == tunes && g_returns == 0 && tetra_calls_peek(s.state, CALL_B) == NULL);
+        assert_unchanged(&s, &before);
+        assert_assignments_unchanged(&s, &held);
+        assert_home_is_a(&s);
+        end_follow(&s, END_HANGTIME);
+        assert_back_home(&s, 1);
+        close_session(&s);
+    }
+
+    /* On the control channel, following nothing: a new call's D-SETUP with another cell's channel is not followed and
+     * makes no record (regression: main followed it to G). */
+    reset_backend();
+    session s = open_on_a();
+    ttb_block b = {0};
+    const setup_spec spec = {GSSI_B, CALL_B, 0x4U, CARR_G, 0, NULL, 1U};
+    setup_block_as(&b, &spec);
+    mac_burst(&s, &b);
+    assert(g_tunes == 0 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    assert(tetra_calls_peek(s.state, CALL_B) == NULL);
+    close_session(&s);
+}
+
+/* The next burst is read in the next slot of timeslot @p tn in frames 1 to 17 after the TDMA clock's (255 symbols a
+ * slot, EN 300 392-2 clause 9.4.1). */
+static void
+in_next_slot(session* s, uint8_t tn) {
+    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    assert(ts->tdma_valid);
+    uint32_t k = 1U;
+    for (; k <= 4U * 19U; k++) {
+        const uint32_t pos = ((uint32_t)ts->tn - 1U) + k;
+        const uint32_t fn = ((((uint32_t)ts->fn - 1U) + (pos / 4U)) % 18U) + 1U;
+        if ((pos % 4U) + 1U == tn && fn != 18U) {
+            break;
+        }
+    }
+    s->state->symbolcnt = ts->tdma_slot_start + (k * TETRA_TDMA_SLOT_SYMBOLS) + TETRA_TDMA_NDB_SYNC_SYMBOL;
+}
+
+/* A first fragment of a D-SETUP of A's call to its group, whose MAC-END carries an allocation of timeslot 2 of G with
+ * cell change flag @p cell_change: the BL-UDATA header and the D-SETUP's first 20 bits, then the rest of it. */
+static void
+fragmented_setup(ttb_block* first, ttb_block* end, uint32_t cell_change) {
+    ttb_block sdu = {0};
+    ttb_put(&sdu, 2, 4); /* BL-UDATA */
+    ttb_d_setup(&sdu, CALL_A, TTB_SPEECH_GROUP);
+
+    enum { FIRST_BITS = 24 };
+
+    int start = ttb_resource(first, 0, TETRA_MAC_ADDR_SSI, GSSI_A);
+    ttb_set(first, start + 7, 63, 6); /* length indication: first fragment */
+    ttb_resource_flags(first, 0);
+    ttb_put_bits(first, sdu.bits, FIRST_BITS);
+    ttb_finish(first, TTB_SCH_HD_BITS, start + 2);
+    start = ttb_end(end);
+    ttb_put(end, 1, 1); /* channel allocation flag */
+    allocation(end, 0x4U, CARR_G, 0, cell_change);
+    ttb_put_bits(end, sdu.bits + FIRST_BITS, sdu.n - FIRST_BITS);
+    ttb_close_end(end, start);
+    ttb_finish(end, TTB_SCH_HD_BITS, -1);
+}
+
+/* A fragmented D-SETUP of A's call on the followed carrier, its allocation in the MAC-END (EN 300 392-2 clause
+ * 23.4.2.1.1): its first fragment's address is acted on as ever, before its allocation is known (a documented limit),
+ * and with another cell's allocation in the MAC-END the rebuilt D-SETUP and the allocation are printed only: no tune,
+ * the follow, record and assignments unchanged (regression: main followed it to G). With the allocation of this cell
+ * the D-SETUP is followed to G (control). The first fragment is block 2 of one burst of timeslot 2, the MAC-END block 1
+ * of the next. */
+static void
+test_cell_change_in_a_mac_end(void) {
+    for (uint32_t cell_change = 0U; cell_change <= 1U; cell_change++) {
+        reset_backend();
+        session s = open_on_a();
+        follow_a(&s, CARR_F);
+        advance(&s, 0.1);
+        assert(cell_sync_burst(&s, &k_cell_a, 0U, NULL, 0) == 1); /* A's SYNC on F sets its TDMA clock */
+        ttb_block first = {0};
+        ttb_block end = {0};
+        fragmented_setup(&first, &end, cell_change);
+        in_next_slot(&s, 2U);
+        assert(cell_ndb(&s, &k_cell_a, NULL, &first) == 1);
+        assert(tetra_st_peek(s.state)->mac_frag[2].active);
+        const follow_view before = view_of(&s);
+        const assignments held = assignments_of(&s);
+        in_next_slot(&s, 2U);
+        assert(cell_ndb(&s, &k_cell_a, &end, NULL) == 1);
+        if (cell_change) {
+            assert(g_tunes == 1 && g_returns == 0);
+            assert_unchanged(&s, &before);
+            assert_assignments_unchanged(&s, &held);
+            assert_home_is_a(&s);
+        } else {
+            tetra_sm_grant g = {0};
+            assert(g_tunes == 2 && g_tuned_hz == hz(CARR_G));
+            assert(tetra_sm_followed(s.state, &g) && g.freq_hz == hz(CARR_G) && g.call_id == CALL_A);
+        }
+        close_session(&s);
+    }
+}
+
 int
 main(void) {
     test_every_return_goes_home();
@@ -1215,6 +1457,8 @@ main(void) {
     test_guarded_direct_mode_is_not_taken();
     test_home_location_area_learned_on_the_carrier();
     test_home_reallocation_still_followed();
+    test_cell_change_allocation_logged_only();
+    test_cell_change_in_a_mac_end();
     printf("TETRA foreign cell: OK\n");
     return 0;
 }
