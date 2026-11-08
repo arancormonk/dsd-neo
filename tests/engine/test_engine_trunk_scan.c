@@ -18498,6 +18498,63 @@ test_lists_shared_row_layouts_share(void) {
     return test_rc;
 }
 
+/* Set-like row options written in another order are the same setting (issue #697): service names, a filter list and a
+   tone list. Another service name is refused by its switches. */
+static int
+test_lists_shared_row_set_options_any_order(void) {
+    static const char* const names[] = {"one", "two"};
+    const char* bodies[] = {
+        "ROK,dmr-conventional,461000000,,1500,1200,,--slot-name 1=Dispatch --dcc-name 7=Tower --dcc-allow 2/7/14\n"
+        "fire,nfm-conventional,154430000,,1500,1200,,--tone-allow 100.0/D023N/141.3 --tone-name D023N=Local "
+        "--tone-name 141.3=Traveler\n",
+        "fire,nfm-conventional,154430000,,1500,1200,,--tone-name 141.3=Traveler --tone-name D023N=Local "
+        "--tone-allow 141.3/D023N/100.0\n"
+        "ROK,dmr-conventional,461000000,,1500,1200,,--dcc-allow 14/2/7 --dcc-name 7=Tower --slot-name 1=Dispatch\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    scan_list_files files;
+    if (scan_list_files_write(&files, header, names, bodies, 2) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, NULL, &opts);
+    char err[2048] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_target_count(&state) != 2U || state.trunk_scan_lists[1].targets != 2U) {
+        DSD_FPRINTF(stderr, "set-like options in another order did not share: %zu targets, err \"%s\"\n",
+                    dsd_engine_trunk_scan_target_count(&state), err);
+        test_rc = 1;
+    }
+    test_rc |= expect_target_lists(&state, 0U, 0x3, 0U);
+    test_rc |= expect_target_lists(&state, 1U, 0x3, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    char two[1024];
+    DSD_SNPRINTF(two, sizeof two, "%s%s", header,
+                 "ROK,dmr-conventional,461000000,,1500,1200,,--dcc-allow 14/2/7 --dcc-name 7=Mall "
+                 "--slot-name 1=Dispatch\n");
+    char want[2048];
+    DSD_SNPRINTF(want, sizeof want,
+                 "%s row 2: target id 'ROK' is also %s row 2, with another "
+                 "--slot-name/--dcc-name/--ran-name/--nac-name/--tone-name/--no-service-names; a target in two lists "
+                 "must have the same settings in both",
+                 files.paths[1], files.paths[0]);
+    if (write_text_file(files.paths[1], two) != 0 || dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0
+        || strcmp(err, want) != 0) {
+        DSD_FPRINTF(stderr, "another service name: \"%s\", want \"%s\"\n", err, want);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
 /* A key file one row names with -K in its options and the other in its keys_hex_csv column is the same setting: both
    rows load that one file, so they are one target. */
 static int
@@ -21668,6 +21725,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_share_a_target_id);
     rc |= run_with_default_tune_hook(test_lists_shared_row_first_difference);
     rc |= run_with_default_tune_hook(test_lists_shared_row_layouts_share);
+    rc |= run_with_default_tune_hook(test_lists_shared_row_set_options_any_order);
     rc |= run_with_default_tune_hook(test_lists_shared_row_key_file_named_two_ways);
     rc |= run_with_default_tune_hook(test_lists_budget_counts_distinct_targets);
     rc |= run_with_default_tune_hook(test_hold_on_shared_target_lists_off);
