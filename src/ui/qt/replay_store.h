@@ -119,11 +119,11 @@ class ReplayStore : public QObject {
      * worker, and point the systems at the copies.
      *
      * Each cached file is copied through the transport (never the local-file shortcut), at most what leaves
-     * kReserveBytes free, published and recorded kept. Then only a row whose uid still names the cached path is
-     * repointed, and saved; a copy no row takes (the row was edited, removed or reseeded meanwhile, or the save failed)
-     * is released to pending. The cached file stays: it is the OS's cache, and a draft or session may still hold it.
-     * Until the job finishes, and after a crash, the rows keep the cached path, which still plays; the next start
-     * tries again.
+     * kReserveBytes free, and published pending. Each is adopted just before the save that repoints only the rows
+     * whose uid still names the cached path; a copy no row takes (the row was edited, removed or reseeded meanwhile,
+     * or the save failed) is released to pending. The cached file stays: it is the OS's cache, and a draft or session
+     * may still hold it. Until the job finishes, and after a crash, the rows keep the cached path, which still plays,
+     * and the next start reclaims any copy left pending and tries again.
      */
     void migrateCachedReplays(SavedSystemsModel* systems);
 

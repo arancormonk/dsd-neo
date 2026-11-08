@@ -41,6 +41,7 @@
 #include <memory>
 #include <mutex>
 #include <qflags.h>
+#include <qsystemdetection.h>
 #include <utility>
 
 #include "../test_support/qt_test_paths.h"
@@ -565,13 +566,124 @@ test_not_enough_space() {
     CHECK(result.value(QStringLiteral("freeBytes")).toLongLong() == ReplayStore::kReserveBytes + 10,
           "the free space is answered");
     CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("big.wav"), "the name is answered");
+    // Not even the reserve free: refused before the document is opened, even an empty one.
+    write_file(sources_dir() + QStringLiteral("/empty.wav"), QByteArray());
+    const qsizetype opened = rig.transport->copies().size();
     rig.store->setFreeSpace([](const QString&) { return ReplayStore::kReserveBytes / 2; });
-    result = rig.import(QStringLiteral("content://test/big.wav"), QString());
+    result = rig.import(QStringLiteral("content://test/empty.wav"), QStringLiteral("empty.wav"));
     CHECK(result.value(QStringLiteral("error")).toString() == QStringLiteral("too_large"), "less than the reserve");
+    CHECK(result.value(QStringLiteral("neededBytes")).toLongLong() == -1
+              && result.value(QStringLiteral("freeBytes")).toLongLong() == ReplayStore::kReserveBytes / 2,
+          "the free space is answered, the size unknown");
+    CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("empty.wav"),
+          "the pick's name is answered");
+    CHECK(rig.transport->copies().size() == opened, "the document is never opened");
     CHECK(replay_files().isEmpty() && manifest().isEmpty(), "nothing is kept of a refused copy");
     rig.store->setFreeSpace([](const QString&) { return ReplayStore::kReserveBytes + 100; });
     CHECK(rig.import(QStringLiteral("content://test/big.wav"), QString()).value("ok").toBool(), "an exact fit copies");
 }
+
+/* A request whose staging folder cannot be made never runs its stage; its answer still names the pick. */
+void
+test_every_answer_has_a_name() {
+    reset_data();
+    write_file(ImportService::stagingRoot(), QByteArray("not a folder"));
+    Rig rig;
+    const QVariantMap result = rig.import(QStringLiteral("content://test/x.wav"), QStringLiteral("picked.wav"));
+    CHECK(result.value(QStringLiteral("error")).toString() == QStringLiteral("local"), "no staging folder is local");
+    CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("picked.wav"), "named from the pick");
+    QFile::remove(ImportService::stagingRoot());
+}
+
+/* Finding r1-2: a pending copy a saved system names survives the reclaim (a row saved without the store, as by an
+   older version); a release that cannot be written leaves the copy kept; a link or a folder in replays/ is never
+   deleted. */
+void
+test_reclaim_guards() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/n.wav"), QByteArray("n"));
+    write_file(sources_dir() + QStringLiteral("/k.wav"), QByteArray("k"));
+    Rig rig;
+    const QString named = rig.import(QStringLiteral("content://test/n.wav"), QString()).value("path").toString();
+    const QString kept = rig.import(QStringLiteral("content://test/k.wav"), QString()).value("path").toString();
+    {
+        SavedSystemsModel unadopted; // no store: the copy stays pending while named
+        CHECK(unadopted.add(replay_system(QStringLiteral("Named"), named)), "a system names the pending copy");
+    }
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    CHECK(systems.add(replay_system(QStringLiteral("Kept"), kept)), "a system keeps the other copy");
+    CHECK(manifest().value(named) == QStringLiteral("pending"), "the named copy is pending");
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(QFileInfo::exists(named), "a pending copy a saved system names is never reclaimed");
+    // The release cannot be written: the copy stays kept.
+    const QByteArray list = read_file(ReplayStore::manifestPath());
+    CHECK(QFile::remove(ReplayStore::manifestPath()) && QDir().mkpath(ReplayStore::manifestPath()), "list blocked");
+    bool removed = false;
+    const QByteArray log = captured_stderr([&systems, &removed]() { removed = systems.remove(1); });
+    CHECK(removed && log.contains("could not be marked unused"), "the remove saves; the failed release is logged");
+    CHECK(QDir(ReplayStore::manifestPath()).removeRecursively(), "the list is unblocked");
+    write_file(ReplayStore::manifestPath(), list);
+    CHECK(manifest().value(kept) == QStringLiteral("kept"), "a release that failed leaves the copy kept");
+    // A link and a folder the list calls pending are not what the store made.
+    const QString folder = ReplayStore::replaysRoot() + QStringLiteral("/folder.wav");
+    CHECK(QDir().mkpath(folder), "a folder in replays/");
+    QJsonArray entries = dsd_qt::json_store_load_array(QStringLiteral("replay_copies.json"));
+    entries.append(QJsonObject{{QStringLiteral("path"), folder}, {QStringLiteral("state"), QStringLiteral("pending")}});
+#ifdef Q_OS_UNIX
+    const QString target = sources_dir() + QStringLiteral("/target.wav");
+    const QString link = ReplayStore::replaysRoot() + QStringLiteral("/link.wav");
+    write_file(target, QByteArray("outside"));
+    CHECK(QFile::link(target, link), "a link in replays/");
+    entries.append(QJsonObject{{QStringLiteral("path"), link}, {QStringLiteral("state"), QStringLiteral("pending")}});
+#endif
+    CHECK(dsd_qt::json_store_save_array(QStringLiteral("replay_copies.json"), entries), "the list names them");
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(QFileInfo(folder).isDir() && manifest().contains(folder), "a folder is never deleted");
+#ifdef Q_OS_UNIX
+    CHECK(QFileInfo(link).isSymLink() && read_file(target) == "outside" && manifest().contains(link),
+          "a link is never deleted or followed");
+#endif
+}
+
+#ifdef Q_OS_UNIX
+/* Finding r1-1: a reclaim that deleted a copy but could not save the list leaves a stale entry; a new copy under the
+   same name replaces it, so adopting the new copy keeps it through a restore. */
+void
+test_stale_entry_never_shadows_a_new_copy() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/capture.wav"), QByteArray("first"));
+    Rig rig;
+    const QString path = rig.import(QStringLiteral("content://test/capture.wav"), QString()).value("path").toString();
+    const QString root = dsd_qt::json_store_root();
+    const QFileDevice::Permissions writable = QFile::permissions(root);
+    {
+        SavedSystemsModel empty;
+        CHECK(QFile::setPermissions(root, QFileDevice::ReadOwner | QFileDevice::ExeOwner), "the list is read-only");
+        const QByteArray log = captured_stderr([&rig, &empty]() { rig.store->reclaim(empty, empty.storeLoaded()); });
+        CHECK(QFile::setPermissions(root, writable), "the data folder is writable again");
+        CHECK(!QFileInfo::exists(path) && log.contains("could not be saved"), "deleted, but the list kept its entry");
+        CHECK(manifest().value(path) == QStringLiteral("pending"), "the stale entry stays");
+    }
+    write_file(sources_dir() + QStringLiteral("/capture.wav"), QByteArray("second"));
+    const QString again = rig.import(QStringLiteral("content://test/capture.wav"), QString()).value("path").toString();
+    CHECK(again == path, "the re-pick takes the same name");
+    CHECK(manifest().size() == 1, "the stale entry is replaced");
+    {
+        SavedSystemsModel systems;
+        systems.setReplayStore(rig.store.get());
+        CHECK(systems.add(replay_system(QStringLiteral("Replay"), again)), "a system names the new copy");
+    }
+    QJsonArray rows = dsd_qt::json_store_load_array(QStringLiteral("saved_systems.json"));
+    QJsonObject row = rows.at(0).toObject();
+    row.insert(QStringLiteral("filePath"), QString());
+    rows.replace(0, row);
+    CHECK(dsd_qt::json_store_save_array(QStringLiteral("saved_systems.json"), rows), "the restore clears filePath");
+    SavedSystemsModel restored;
+    rig.store->reclaim(restored, restored.storeLoaded());
+    CHECK(read_file(again) == "second", "the kept copy outlives the restore");
+}
+#endif
 
 /* A disk that fills during the copy: local with noSpace, and its staging folder goes. */
 void
@@ -697,6 +809,33 @@ test_migration_save_failure_releases_its_copy() {
           "its copy is released");
 }
 
+/* Finding r1-7: the migration publishes its copy pending and adopts it just before the repoint is saved. A crash
+   between the two leaves a pending copy nothing names, beside rows still on the cached file: the next start reclaims
+   that copy and copies again. (The crash is the state it leaves on disk.) */
+void
+test_migration_crash_before_adopt() {
+    reset_data();
+    const QString legacy = cache_file(QStringLiteral("legacy.wav"), QByteArray("legacy"));
+    const QString orphan = ReplayStore::replaysRoot() + QStringLiteral("/legacy.wav");
+    {
+        SavedSystemsModel systems;
+        CHECK(systems.add(replay_system(QStringLiteral("A"), legacy)), "a system keeps a cached replay");
+    }
+    write_file(orphan, QByteArray("legacy"));
+    CHECK(dsd_qt::json_store_save_array(
+              QStringLiteral("replay_copies.json"),
+              QJsonArray{QJsonObject{{QStringLiteral("path"), orphan}, {QStringLiteral("state"), "pending"}}}),
+          "the crash left the copy published pending");
+    Rig rig;
+    SavedSystemsModel systems;
+    QObject owner;
+    (void)dsd_qt::load_replays(&rig.host, rig.service.get(), &systems, dsd_qt::backup::ApplyOutcome::None, &owner);
+    CHECK(wait_until([&rig]() { return !rig.service->busy(); }), "the migration runs again");
+    CHECK(systems.get(0).value(QStringLiteral("filePath")).toString() == orphan, "the row takes the new copy");
+    CHECK(manifest().size() == 1 && manifest().value(orphan) == QStringLiteral("kept"),
+          "the orphan was reclaimed and the new copy kept");
+}
+
 void
 test_names() {
     const QString root = ReplayStore::replaysRoot();
@@ -726,6 +865,12 @@ main(int argc, char** argv) {
     test_teardown_service_first();
     test_migration_runs_off_the_qt_thread();
     test_migration_save_failure_releases_its_copy();
+    test_migration_crash_before_adopt();
+    test_every_answer_has_a_name();
+    test_reclaim_guards();
+#ifdef Q_OS_UNIX
+    test_stale_entry_never_shadows_a_new_copy();
+#endif
     if (failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", failures);
         return 1;

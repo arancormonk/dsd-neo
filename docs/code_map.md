@@ -12479,8 +12479,10 @@ Qt Quick frontend (`src/ui/qt`):
   `beginReplayImport(reference, fileName)` answers `replayImportFinished(id, result)` once, queued: a local reference
   (file URL or absolute path) with its plain path, never copied; anything else is copied by the import service into its
   staging folder, at most the free space of `<AppData>/replays/` (`dsd_path_free_bytes`) less `kReserveBytes` (512 MiB;
-  no cap when free space cannot be read), then published into `replays/` (`ImportService::publish`) and recorded pending
-  before the answer. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`), `local` (`noSpace`),
+  no cap when free space cannot be read; with less than the reserve free the answer is `too_large` before the document
+  is opened), then published into `replays/` (`ImportService::publish`) and recorded pending before the answer (an entry
+  the list still holds for that name is stale, since the no-replace move proved the name free, and is replaced). Every
+  answer carries `name`. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`), `local` (`noSpace`),
   `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`); `copying`, `copyName`,
   `copyBytes` and `copyTotal` (-1 unknown) come from `ImportService::progress(id)`, read every 250 ms while it runs, and
   `progressChanged` fires only on a change. The manifest `<AppData>/replay_copies.json` (`[{path, state}]`, Qt thread)
@@ -12494,15 +12496,16 @@ Qt Quick frontend (`src/ui/qt`):
   `Deferred` or `Stuck` (no reclaim at that start). A manifest that cannot be read deletes nothing and is set aside to
   `replay_copies.json.bad`, so later copies are recorded again. A restore clears `filePath` but never touches `replays/`
   or the manifest, so a kept copy stays kept (unreferenced, never reclaimed); copies in `imports/` from older versions
-  are not listed and never touched. `load_replays()` then starts `migrateCachedReplays()` (B10), which no longer
-  copies on the startup path: it notes each `file` row whose `filePath` is a regular file in the OS cache
-  (`CacheLocation`, canonical) as `(uid, filePath)`, and one import request copies each cached file through the
-  transport (a forced local copy, not the local-reference shortcut; within the same free-space budget) on the worker.
-  Its commit publishes each copy into `replays/` recorded kept, repoints only rows whose uid still names the captured
-  path (`SavedSystemsModel::moveFilePaths()`, saved first), and releases every copy no row took (a row edited, removed
-  or reseeded meanwhile keeps the user's value; a failed save releases them all). The cached original is never
-  deleted. Until the job commits, and after a crash or a cancel at teardown, rows keep the cache path and the next
-  start retries. Test: `UI_QT_REPLAY_STORE`.
+  are not listed and never touched. `load_replays()` then starts `migrateCachedReplays()` (B10), which no longer copies
+  on the startup path: it notes each `file` row whose `filePath` is a regular file in the OS cache (`CacheLocation`,
+  canonical) as `(uid, filePath)`, and one import request copies each cached file through the transport (a forced local
+  copy, not the local-reference shortcut; within the same free-space budget) on the worker. Its commit publishes each
+  copy into `replays/` recorded pending, adopts it just before the save that repoints only rows whose uid still names
+  the captured path (`SavedSystemsModel::moveFilePaths()`, saved first), and releases every adopted copy no row took (a
+  row edited, removed or reseeded meanwhile keeps the user's value; a failed save releases them all). The cached
+  original is never deleted. Until the job commits, and after a crash or a cancel at teardown, rows keep the cache path
+  and the next start retries; a crash before the adopt leaves a pending copy nothing names, which that start reclaims
+  first. Test: `UI_QT_REPLAY_STORE`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
