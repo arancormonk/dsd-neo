@@ -4,7 +4,8 @@ import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
 // Issue #646: Listen's own layout on its single-column body. B1: hidden, Home keeps its scroll range and place. B8: a
-// saved-system card is as tall as what it holds, at every text size.
+// saved-system card is as tall as what it holds, at every text size. B3: keyboard focus moving down the body scrolls
+// the focused control into view.
 Item {
     id: root
     QtObject {
@@ -28,6 +29,27 @@ Item {
         z: 10
         color: "black"
     }
+    // Theme.revealFocus on its own: a body whose content column starts below the top.
+    Flickable {
+        id: offsetScroll
+        width: 200
+        height: 100
+        visible: false
+        contentHeight: offsetColumn.y + offsetColumn.height
+        Column {
+            id: offsetColumn
+            y: 30
+            width: parent.width
+            Repeater {
+                id: offsetRows
+                model: 5
+                Rectangle {
+                    width: offsetColumn.width
+                    height: 50
+                }
+            }
+        }
+    }
     TestCase {
         name: "HomeLayoutFixes"
         when: windowShown
@@ -44,6 +66,8 @@ Item {
             if (libraryPath.length)
                 importedFiles.remove(importedFiles.rowForPath(libraryPath));
             libraryPath = "";
+            testContext.setDongleStatus(false, 0, "");
+            testContext.useLifecycleHost(false);
             root.width = 360;
             root.height = 700;
             Ui.Theme.resetFontScale();
@@ -206,5 +230,68 @@ Item {
             }
         }
 
+        // B3: Tab down the body and round again: every control it stops on in the body is in full view once the
+        // layout settles, the last one too, flush with the bottom although the content column starts below the
+        // body's top. The desktop starts the column 18 px down, the brokered header 7 px.
+        function test_tab_stops_scroll_into_view_data() {
+            return [{tag: "desktop", brokered: false}, {tag: "brokered header", brokered: true}];
+        }
+        function test_tab_stops_scroll_into_view(data) {
+            if (data.brokered) {
+                // The brokered capability is CONSTANT: set it before publishing the host (see tst_home_dongle_status).
+                testContext.setDongleStatus(false, 0, "");
+                testContext.useLifecycleHost(true);
+            }
+            root.width = 411;
+            root.height = 700;
+            for (var i = 0; i < 12; ++i)
+                addSystem("System " + i);
+            verify(waitForPolish(home));
+            waitForRendering(home);
+            compare(home.pinnedHeader, data.brokered);
+            verify(body().contentItem.children[0].y > 0, "the content column starts below the body's top");
+            findChild(home, "addSystemButton").forceActiveFocus();
+            var window = root.Window.window;
+            var stops = 0;
+            var scrolledDown = false;
+            var lastStop = findChild(home, "exploreStart");
+            var reachedLast = false;
+            for (var n = 0; n < 40; ++n) {
+                keyClick(Qt.Key_Tab);
+                var focus = window.activeFocusItem;
+                if (!Ui.Navigation.contains(body().contentItem, focus))
+                    continue;
+                ++stops;
+                var label = "Tab " + (n + 1) + " on " + (focus.objectName || focus.accessibleName || focus);
+                tryVerify(function () {
+                    var p = focus.mapToItem(body(), 0, 0);
+                    return p.y >= -0.5 && p.y + focus.height <= body().height + 0.5;
+                }, 2000, label + " is in full view");
+                if (body().contentY > 0)
+                    scrolledDown = true;
+                if (focus === lastStop) {
+                    reachedLast = true;
+                    // The Explore card ends the column: its face is revealed down to the body's bottom edge.
+                    var bottom = focus.mapToItem(body(), 0, 0).y + focus.height;
+                    fuzzyCompare(bottom, body().height, 0.5, label + ": the bottom control is shown to its end");
+                }
+            }
+            verify(stops >= 28, "Tab stopped on the body's controls: " + stops);
+            verify(scrolledDown, "the body scrolled down to follow the focus");
+            verify(reachedLast, "Tab reached the last control");
+        }
+
+        // B3: Theme.revealFocus takes the place inside the Flickable's content, not inside the column it is handed,
+        // so a column that starts below the top is scrolled far enough. Every caller's column starts at 0, where
+        // the two are the same.
+        function test_reveal_focus_counts_the_column_offset() {
+            offsetScroll.contentY = 0;
+            Ui.Theme.revealFocus(offsetScroll, offsetColumn, offsetRows.itemAt(4));
+            fuzzyCompare(offsetScroll.contentY, 180, 0.5, "the last row ends at the bottom of the view");
+            Ui.Theme.revealFocus(offsetScroll, offsetColumn, offsetRows.itemAt(0));
+            fuzzyCompare(offsetScroll.contentY, 30, 0.5, "the first row starts at the top of the view");
+            Ui.Theme.revealFocus(offsetScroll, offsetColumn, offsetRows.itemAt(1));
+            fuzzyCompare(offsetScroll.contentY, 30, 0.5, "a row already in view does not move it");
+        }
     }
 }

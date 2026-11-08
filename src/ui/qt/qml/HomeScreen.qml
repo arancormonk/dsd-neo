@@ -154,6 +154,27 @@ Item {
         scrollBody.contentY = scrollBody.originY;
     }
 
+    // Issue #646 B3: keyboard focus moving onto a control in the body scrolls
+    // it into view once the move has settled. The timer is owned, so a scroll
+    // with a stronger claim can cancel a reveal still pending.
+    function revealFocus() {
+        var window = screen.Window.window;
+        if (window && screen.visible)
+            Theme.revealFocus(scrollBody, scrollBody.contentItem, window.activeFocusItem);
+    }
+    Timer {
+        id: revealFocusTimer
+        interval: 0
+        onTriggered: screen.revealFocus()
+    }
+    Connections {
+        target: screen.Window.window
+        function onActiveFocusItemChanged() {
+            if (screen.visible)
+                revealFocusTimer.restart();
+        }
+    }
+
     DeviceStatus {
         id: deviceStatus
         host: decoderHost
