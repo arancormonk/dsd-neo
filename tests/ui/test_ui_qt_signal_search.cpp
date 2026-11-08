@@ -385,6 +385,25 @@ testRangesKeptAside(dsd_qt::KnownFrequencyIndex* index) {
     assert(dsd_qt::json_store_save_array(file, previous));
 }
 
+/* A range save that failed and then succeeded leaves no failure shown (issue #828, r2#13). */
+void
+testRangeSaveFailureClears(dsd_qt::KnownFrequencyIndex* index) {
+    const QString file = QStringLiteral("signal-search-ranges.json");
+    const QString path = dsd_qt::json_store_path(file);
+    const QJsonArray previous = dsd_qt::json_store_load_array(file);
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        const QVariantMap range = model.ranges().front().toMap();
+        assert(QFile::remove(path) && QDir().mkpath(path));
+        const QString failed = model.saveRange(0, range);
+        assert(!failed.isEmpty() && model.error() == failed);
+        assert(QDir().rmdir(path));
+        assert(model.saveRange(0, range).isEmpty());
+        assert(model.error() != failed);
+    }
+    assert(dsd_qt::json_store_save_array(file, previous));
+}
+
 /* A Resume refused while the session winds down (admission already closed) is kept until that session ends, and
    ends with it. */
 void
@@ -1574,6 +1593,7 @@ main(int argc, char** argv) {
     testRestartAfterPausedStop(&index);
     testStoredMarginBelowMinimum(&index);
     testRangesKeptAside(&index);
+    testRangeSaveFailureClears(&index);
     testKnownFrequencyIdentity(temp.path());
     testKnownFrequencyListsApart();
     testKnownFrequencyEngineIds(temp.path());

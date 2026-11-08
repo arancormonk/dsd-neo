@@ -313,13 +313,18 @@ SignalSearchModel::persistRanges(const QVariantList& list) {
     for (const auto& r : list) {
         array.append(QJsonObject::fromVariantMap(r.toMap()));
     }
+    const QString failed = tr("Ranges could not be saved. Check available storage and try again.");
     if (!json_store_save_array(QStringLiteral("signal-search-ranges.json"), array)) {
-        m_error = tr("Ranges could not be saved. Check available storage and try again.");
+        m_error = failed;
         Q_EMIT changed();
         return false;
     }
     m_ranges = list;
     Q_EMIT rangesChanged();
+    if (m_error == failed) { // a retry that saved ends only its own failure
+        m_error.clear();
+        Q_EMIT changed();
+    }
     return true;
 }
 
