@@ -482,29 +482,57 @@ dsd_fsync_parent_dir(const char* path) {
     (void)path;
 }
 
+/* A directory source is refused before any move (see the POSIX helper). Looks the name up in UTF-8 first, then in the
+   ANSI code page, like the move itself. */
+static int
+dsd_move_source_is_directory(const char* path) {
+    DWORD attrs = INVALID_FILE_ATTRIBUTES;
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    if (wide) {
+        attrs = GetFileAttributesW(wide);
+        free(wide);
+    }
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        attrs = GetFileAttributesA(path);
+    }
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+/* Both names in UTF-8 (the app's own files, in any script) move through the wide call; a name in the ANSI code page, or
+   one the wide call does not find, through the ANSI one, as before. Returns ERROR_SUCCESS or the native error. */
+static DWORD
+dsd_win32_move_replacing(const char* tmp_path, const char* final_path) {
+    wchar_t* wide_tmp = dsd_win32_utf8_path_to_wide(tmp_path);
+    wchar_t* wide_final = wide_tmp ? dsd_win32_utf8_path_to_wide(final_path) : NULL;
+    BOOL moved = FALSE;
+    DWORD err = ERROR_FILE_NOT_FOUND;
+    if (wide_tmp && wide_final) {
+        moved = MoveFileExW(wide_tmp, wide_final, MOVEFILE_REPLACE_EXISTING);
+        err = moved ? ERROR_SUCCESS : GetLastError();
+    }
+    free(wide_tmp);
+    free(wide_final);
+    if (!moved && (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)) {
+        moved = MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING);
+        err = moved ? ERROR_SUCCESS : GetLastError();
+    }
+    return err;
+}
+
 int
 dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     if (!tmp_path || tmp_path[0] == '\0' || !final_path || final_path[0] == '\0') {
         errno = EINVAL;
         return -1;
     }
-    /* Both names in UTF-8 (the app's own files, in any script) move through the wide call; a name in the ANSI code
-       page, or one the wide call does not find, through the ANSI one, as before. */
-    wchar_t* wide_tmp = dsd_win32_utf8_path_to_wide(tmp_path);
-    wchar_t* wide_final = wide_tmp ? dsd_win32_utf8_path_to_wide(final_path) : NULL;
-    BOOL moved = FALSE;
-    DWORD err = ERROR_FILE_NOT_FOUND;
-    if (wide_tmp && wide_final) {
-        moved = MoveFileExW(wide_tmp, wide_final, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
-        err = moved ? ERROR_SUCCESS : GetLastError();
+    if (dsd_move_source_is_directory(tmp_path)) {
+        errno = EISDIR;
+        return -1;
     }
-    free(wide_tmp);
-    free(wide_final);
-    if (!moved && (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)) {
-        moved = MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
-    }
-    if (!moved) {
-        errno = EACCES;
+    const DWORD err = dsd_win32_move_replacing(tmp_path, final_path);
+    if (err != ERROR_SUCCESS) {
+        /* Never a copy: another volume is a failure the caller can tell from a denial. */
+        errno = err == ERROR_NOT_SAME_DEVICE ? EXDEV : EACCES;
         return -1;
     }
     return 0;
@@ -519,6 +547,10 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
         errno = EINVAL;
         return -1;
     }
+    if (dsd_move_source_is_directory(from)) {
+        errno = EISDIR;
+        return -1;
+    }
     /* The CRT's rename() refuses an existing destination and keeps the CRT's own path conversion (the UTF-8 locale the
        runtime selects included), which MoveFileExA() would not. It reports that refusal as EACCES, the errno of every
        other denial too, so the native error the same call left tells them apart. */
@@ -528,7 +560,13 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     }
     const int saved = errno;
     const unsigned long native = (unsigned long)_doserrno;
-    errno = (native == ERROR_ALREADY_EXISTS || native == ERROR_FILE_EXISTS) ? EEXIST : saved;
+    if (native == ERROR_ALREADY_EXISTS || native == ERROR_FILE_EXISTS) {
+        errno = EEXIST;
+    } else if (native == ERROR_NOT_SAME_DEVICE) {
+        errno = EXDEV;
+    } else {
+        errno = saved;
+    }
     return -1;
 }
 
