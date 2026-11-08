@@ -279,10 +279,16 @@ dsd_tg_policy_learn_result dsd_tg_policy_learn_exact(dsd_state* state, const dsd
  * A last line without a newline is ended first. @p metadata (free text, may be NULL) never lands in a column the
  * header models as tags: it goes one column further, past an empty tags field.
  *
- * @return 0 written or nothing to write (NULL opts/entry, empty path), 1 not an exact row, -1 on I/O failure
- *         (including a failed final close).
+ * The append runs under the managed-file lock (<dsd-neo/core/managed_file.h>) and does not check the file: it destroys
+ * nothing. When @p state's list has a baseline for the file (dsd_tg_policy_write_group_file()), the row is folded into
+ * it in file order, so an edit made outside dsd-neo before the append still shows at the next rewrite. A row appended
+ * to a file it creates starts a baseline. Nothing is read beyond the header and the last byte.
+ *
+ * @return 0 written or nothing to write (NULL opts/entry, empty path), 1 not an exact row or @p state's list loaded
+ *         incomplete (dsd_tg_policy_incomplete()), -1 on I/O failure (including a failed final close).
  */
-int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, const dsd_tg_policy_entry* entry, const char* metadata);
+int dsd_tg_policy_append_group_file_row(const dsd_opts* opts, dsd_state* state, const dsd_tg_policy_entry* entry,
+                                        const char* metadata);
 
 int dsd_tg_policy_should_preempt(const dsd_opts* opts, const dsd_state* state,
                                  const dsd_tg_policy_call_route* candidate_route,
@@ -478,9 +484,21 @@ int dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int ge
  * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
  * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end, patterns as their
  * canonical text. Unmodelled free-text columns (e.g. alias metadata)
- * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), 1 nothing written because the
- * list was loaded incomplete (dsd_tg_policy_incomplete()), -1 on I/O failure with the old file intact. */
-int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state);
+ * are not preserved.
+ *
+ * External-edit guard: the list keeps a baseline, the rows hash of the file it was last read from or written to (every
+ * load of the file, this write, an export, and each appended alias row keep it current). Before replacing a file the
+ * baseline describes, the write reads the file with the importer and compares: when the rows differ, someone changed
+ * the file outside dsd-neo (an editor, or a frontend's replacement whose reload has not run yet), and nothing is
+ * written. A destination with no baseline (a new export path, a file never read) is written as before, and becomes the
+ * baseline. The temporary file is staged first; the check and the replace run under the managed-file lock.
+ * Limits: an outside save landing between the check and the replace (milliseconds) is still lost, and an outside edit
+ * of only unmodelled columns or malformed rows is not seen (the rewrite drops those anyway).
+ *
+ * Returns 0 written or nothing to write (NULL opts, empty path), 1 nothing written because the list was loaded
+ * incomplete (dsd_tg_policy_incomplete()), 2 nothing written because the file changed on disk since dsd-neo last read
+ * or wrote it, -1 on I/O failure with the old file intact. */
+int dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state);
 
 /**
  * Decoder-thread owned, reference-counted policy context. References preserve row-local

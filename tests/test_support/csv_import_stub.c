@@ -7,6 +7,9 @@
 
 #include <dsd-neo/core/talkgroup_policy.h>
 
+#include <stdint.h>
+
+#include "../../src/core/util/talkgroup_policy_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -34,6 +37,26 @@ int
 dsd_tg_policy_load_counted(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report) {
     (void)path;
     (void)out;
+    if (report) {
+        *report = (dsd_tg_policy_load_report){0};
+    }
+    return -1;
+}
+
+/* The importer's rows-hash side: no file is read, so no row is hashed. */
+int
+dsd_tg_policy_rows_hash_line(uint64_t* hash, const char* path, const char* header_line, const char* line) {
+    (void)hash;
+    (void)path;
+    (void)header_line;
+    (void)line;
+    return 0;
+}
+
+int
+dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_load_report* report) {
+    (void)path;
+    (void)hash;
     if (report) {
         *report = (dsd_tg_policy_load_report){0};
     }

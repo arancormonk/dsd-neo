@@ -7283,6 +7283,11 @@ tg_listen_persist(dsd_opts* opts, dsd_state* state) {
                  "make the change again.\n",
                  opts->group_in_file);
         ui_set_toast(state, 4, "Talkgroup change kept for this session only; group list incomplete, reload it");
+    } else if (rc == 2) {
+        LOG_WARN("WARNING: Talkgroup change not saved to '%s': the file changed on disk since dsd-neo last read or "
+                 "wrote it. Reload the list, then make the change again (the reload drops changes not saved).\n",
+                 opts->group_in_file);
+        ui_set_toast(state, 4, "Talkgroup change kept for this session only; group list changed on disk, reload it");
     } else if (rc != 0) {
         LOG_WARN("WARNING: Talkgroup list changes could not be written to '%s'.\n", opts->group_in_file);
         ui_set_toast(state, 4, "Talkgroup change kept for this session only");
@@ -7478,6 +7483,14 @@ apply_cmd_tg_list_export(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     if (rc == 1) {
         // The export would become the list's file, and the list is missing rows of the one it came from.
         ui_set_toast(state, 4, "Talkgroup export refused: group list incomplete; reload it");
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (rc == 2) {
+        // Exporting over the list's own file would overwrite the edits made to it outside dsd-neo.
+        LOG_WARN("WARNING: Talkgroup list not exported to '%s': the file changed on disk since dsd-neo last read or "
+                 "wrote it. Reload the list, or export to another file.\n",
+                 path);
+        ui_set_toast(state, 4, "Talkgroup export refused: group list changed on disk; reload it");
         return UI_CMD_APPLY_FAILED;
     }
     if (rc != 0) {

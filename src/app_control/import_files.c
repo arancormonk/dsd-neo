@@ -5,6 +5,7 @@
 
 #include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/managed_file.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
@@ -119,6 +120,24 @@ import_write_staging(const char* final_path, const char* text, size_t len, char*
     return 0;
 }
 
+/*
+ * Put the staged @p tmp in place of @p final_path under the managed-file lock (<dsd-neo/core/managed_file.h>): the file
+ * may be a session's group list, which the decoder checks and rewrites under the same lock, so a replacement never lands
+ * between its check and its write. A bare rename() fails on Windows whenever the destination exists, which is every
+ * re-import. Returns 0, or -1 with the temp file removed.
+ */
+static int
+import_install_staged(const char* tmp, const char* final_path) {
+    dsd_managed_file_lock();
+    const int rc = dsd_replace_file_with_temp(tmp, final_path);
+    dsd_managed_file_unlock();
+    if (rc != 0) {
+        (void)remove(tmp);
+        return -1;
+    }
+    return 0;
+}
+
 int
 dsd_app_import_write(const char* final_path, const char* text, size_t len) {
     if (final_path == NULL || final_path[0] == '\0') {
@@ -128,12 +147,7 @@ dsd_app_import_write(const char* final_path, const char* text, size_t len) {
     if (import_write_staging(final_path, text, len, tmp, sizeof tmp) != 0) {
         return -1;
     }
-    /* A bare rename() fails on Windows whenever the destination exists, which is every re-import. */
-    if (dsd_replace_file_with_temp(tmp, final_path) != 0) {
-        (void)remove(tmp);
-        return -1;
-    }
-    return 0;
+    return import_install_staged(tmp, final_path);
 }
 
 int
@@ -154,11 +168,7 @@ dsd_app_import_replace_checked(const char* path, const char* text, size_t len, i
         (void)remove(tmp);
         return -2;
     }
-    if (dsd_replace_file_with_temp(tmp, path) != 0) {
-        (void)remove(tmp);
-        return -1;
-    }
-    return 0;
+    return import_install_staged(tmp, path);
 }
 
 int

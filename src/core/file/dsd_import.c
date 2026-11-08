@@ -282,22 +282,41 @@ group_apply_tags_field(const group_policy_header* header, size_t field_count, ch
     }
 }
 
+/* What one pass over a group file found so far. stats (may be NULL) is the dry-run validator's tally. With neither a
+ * state nor a store the pass only hashes the rows it would store (hash_only). */
+typedef struct {
+    dsd_state* state;
+    dsd_tg_policy_store* store;
+    dsd_csv_validation* stats;
+    dsd_tg_policy_load_report report;
+    group_policy_header header;
+    uint64_t rows_hash; /* dsd_tg_policy_rows_hash_fold() over the rows stored so far */
+    uint8_t hash_only;
+    char filename[CSV_IMPORT_PATH_MAX];
+} group_import_pass;
+
 static int
-group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry, const char* filename,
-                   unsigned int row_count, size_t* dropped_policy_alloc_rows) {
+group_commit_entry(group_import_pass* pass, const dsd_tg_policy_entry* entry, unsigned int row_count,
+                   size_t* dropped_policy_alloc_rows) {
     int rc = 0;
-    if ((!state && !store) || !entry || !filename || !dropped_policy_alloc_rows) {
+    if (!pass || !entry || !dropped_policy_alloc_rows) {
         return -1;
     }
 
-    if (store) {
-        rc = dsd_tg_policy_store_append(store, entry);
+    if (pass->store) {
+        rc = dsd_tg_policy_store_append(pass->store, entry);
+    } else if (!pass->state) {
+        rc = pass->hash_only ? 0 : -1;
     } else if (entry->kind == DSD_TG_POLICY_ROW_RANGE) {
-        rc = dsd_tg_policy_add_range_entry(state, entry);
+        rc = dsd_tg_policy_add_range_entry(pass->state, entry);
     } else if (entry->kind == DSD_TG_POLICY_ROW_PATTERN) {
-        rc = dsd_tg_policy_add_pattern_entry(state, entry);
+        rc = dsd_tg_policy_add_pattern_entry(pass->state, entry);
     } else {
-        rc = dsd_tg_policy_append_exact(state, entry);
+        rc = dsd_tg_policy_append_exact(pass->state, entry);
+    }
+    // A stored row always folds; a hash-only pass refuses here what a store would refuse.
+    if (rc == 0) {
+        rc = dsd_tg_policy_rows_hash_fold(&pass->rows_hash, entry);
     }
     if (rc == -1) {
         (*dropped_policy_alloc_rows)++;
@@ -305,7 +324,7 @@ group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_po
     }
     if (rc == 1) {
         static const char* const kinds[] = {"exact entry", "range", "pattern"};
-        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s and was skipped.\n", filename, row_count,
+        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s and was skipped.\n", pass->filename, row_count,
                  entry->kind < 3u ? kinds[entry->kind] : "entry");
     }
     return rc;
@@ -313,8 +332,9 @@ group_commit_entry(dsd_state* state, dsd_tg_policy_store* store, const dsd_tg_po
 
 /** @brief Parse and commit one group data row. @return 0 when the row loaded. */
 static int
-group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filename, unsigned int row_count,
-                 char* buffer, const group_policy_header* header, size_t* dropped_policy_alloc_rows) {
+group_import_row(group_import_pass* pass, unsigned int row_count, char* buffer, size_t* dropped_policy_alloc_rows) {
+    const char* filename = pass->filename;
+    const group_policy_header* header = &pass->header;
     char* fields[32];
     size_t field_count = 0;
     uint32_t id_start = 0;
@@ -345,18 +365,8 @@ group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filen
     group_entry_init(&entry, id_start, id_end, kind, &pattern, mode_field, name_field, row_count, &mode_blocking);
     group_apply_policy_fields(header, filename, row_count, field_count, fields, &entry, mode_blocking);
     group_apply_tags_field(header, field_count, fields, &entry);
-    return group_commit_entry(state, store, &entry, filename, row_count, dropped_policy_alloc_rows);
+    return group_commit_entry(pass, &entry, row_count, dropped_policy_alloc_rows);
 }
-
-/* What one pass over a group file found so far. stats (may be NULL) is the dry-run validator's tally. */
-typedef struct {
-    dsd_state* state;
-    dsd_tg_policy_store* store;
-    dsd_csv_validation* stats;
-    dsd_tg_policy_load_report report;
-    group_policy_header header;
-    char filename[CSV_IMPORT_PATH_MAX];
-} group_import_pass;
 
 static void
 group_import_header(group_import_pass* pass, const char* line) {
@@ -381,7 +391,7 @@ group_import_data_line(group_import_pass* pass, unsigned int row_count, char* bu
         return;
     }
     size_t dropped = 0;
-    if (group_import_row(pass->state, pass->store, pass->filename, row_count, buffer, &pass->header, &dropped) == 0) {
+    if (group_import_row(pass, row_count, buffer, &dropped) == 0) {
         pass->report.accepted++;
         if (pass->stats) {
             pass->stats->accepted++;
@@ -416,7 +426,7 @@ group_import_read(const char* group_file_path, group_import_pass* pass) {
     FILE* fp = NULL;
     unsigned int row_count = 0;
 
-    if (!group_file_path || group_file_path[0] == '\0' || (!pass->state && !pass->store)) {
+    if (!group_file_path || group_file_path[0] == '\0' || (!pass->state && !pass->store && !pass->hash_only)) {
         return -1;
     }
 
@@ -446,27 +456,74 @@ group_import_read(const char* group_file_path, group_import_pass* pass) {
     return group_import_finish(fp, pass);
 }
 
+static void
+group_import_pass_init(group_import_pass* pass, dsd_state* state, dsd_tg_policy_store* store,
+                       dsd_csv_validation* stats) {
+    DSD_MEMSET(pass, 0, sizeof *pass);
+    pass->state = state;
+    pass->store = store;
+    pass->stats = stats;
+    pass->hash_only = !state && !store;
+    pass->rows_hash = DSD_TG_POLICY_ROWS_HASH_INIT;
+    DSD_SNPRINTF(pass->filename, sizeof pass->filename, "%s", "filename.csv");
+}
+
 /* stats may be NULL; when set, counts data rows so a dry run can report them. report (may be NULL) says what the read
- * found, failures included. */
+ * found, failures included; rows_hash (may be NULL) takes the hash of the rows it stored. */
 static int
 group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_store* store, dsd_csv_validation* stats,
-                  dsd_tg_policy_load_report* report) {
+                  dsd_tg_policy_load_report* report, uint64_t* rows_hash) {
     group_import_pass pass;
-    DSD_MEMSET(&pass, 0, sizeof pass);
-    pass.state = state;
-    pass.store = store;
-    pass.stats = stats;
-    DSD_SNPRINTF(pass.filename, sizeof pass.filename, "%s", "filename.csv");
+    group_import_pass_init(&pass, state, store, stats);
     const int rc = group_import_read(group_file_path, &pass);
     if (report) {
         *report = pass.report;
+    }
+    if (rows_hash) {
+        *rows_hash = pass.rows_hash;
     }
     return rc;
 }
 
 static int
 group_import_path_stats(const char* path, dsd_state* state, dsd_csv_validation* stats) {
-    return group_import_path(path, state, NULL, stats, NULL);
+    return state ? group_import_path(path, state, NULL, stats, NULL, NULL) : -1;
+}
+
+int
+dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_load_report* report) {
+    dsd_tg_policy_load_report counts;
+    DSD_MEMSET(&counts, 0, sizeof counts);
+    const int rc = hash ? group_import_path(path, NULL, NULL, NULL, &counts, hash) : -1;
+    if (report) {
+        *report = counts;
+    }
+    return rc;
+}
+
+int
+dsd_tg_policy_rows_hash_line(uint64_t* hash, const char* path, const char* header_line, const char* line) {
+    char header_copy[BSIZE];
+    char buffer[BSIZE];
+    if (!hash || !line) {
+        return 0;
+    }
+    group_import_pass pass;
+    group_import_pass_init(&pass, NULL, NULL, NULL);
+    pass.rows_hash = *hash;
+    if (path) {
+        DSD_SNPRINTF(pass.filename, sizeof pass.filename, "%s", path);
+    }
+    // The header and the line as the importer's read leaves them: one physical line each, its terminator trimmed.
+    DSD_SNPRINTF(header_copy, sizeof header_copy, "%s", header_line ? header_line : "");
+    trim_eol(header_copy);
+    pass.header = group_parse_policy_header(header_copy);
+    DSD_SNPRINTF(buffer, sizeof buffer, "%s", line);
+    trim_eol(buffer);
+    const int overlong = strlen(line) >= sizeof buffer;
+    group_import_data_line(&pass, 2u, buffer, overlong);
+    *hash = pass.rows_hash;
+    return pass.report.accepted > 0u;
 }
 
 /* The one line an incomplete load gets (dsd_tg_policy_load_report_incomplete()): why, and that the list is not
@@ -498,7 +555,8 @@ dsd_tg_policy_load_counted(const char* path, dsd_tg_policy_store** out, dsd_tg_p
     if (!store) {
         return -1;
     }
-    const int rc = group_import_path(path, NULL, store, NULL, &counts);
+    uint64_t rows_hash = DSD_TG_POLICY_ROWS_HASH_INIT;
+    const int rc = group_import_path(path, NULL, store, NULL, &counts, &rows_hash);
     if (report) {
         *report = counts;
     }
@@ -509,6 +567,7 @@ dsd_tg_policy_load_counted(const char* path, dsd_tg_policy_store** out, dsd_tg_p
     if (dsd_tg_policy_load_report_incomplete(&counts)) {
         dsd_tg_policy_store_mark_incomplete(store);
     }
+    dsd_tg_policy_store_set_baseline(store, path, rows_hash);
     *out = store;
     return 0;
 }
@@ -528,12 +587,20 @@ dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
 int
 csvGroupImportPath(const char* group_file_path, dsd_state* state) {
     dsd_tg_policy_load_report counts;
-    int rc = group_import_path(group_file_path, state, NULL, NULL, &counts);
-    if (state && dsd_tg_policy_load_report_incomplete(&counts)) {
+    uint64_t rows_hash = DSD_TG_POLICY_ROWS_HASH_INIT;
+    if (!state) {
+        return -1;
+    }
+    int rc = group_import_path(group_file_path, state, NULL, NULL, &counts, &rows_hash);
+    if (dsd_tg_policy_load_report_incomplete(&counts)) {
         group_log_incomplete(group_file_path, &counts);
         if (dsd_tg_policy_mark_incomplete(state) != 0) {
             rc = -1;
         }
+    }
+    // The file's rows as just read: the list's baseline for it (a header-only file too).
+    if (rc == 0 && dsd_tg_policy_set_baseline(state, group_file_path, rows_hash) != 0) {
+        rc = -1;
     }
     return rc;
 }

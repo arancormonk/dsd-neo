@@ -689,7 +689,7 @@ test_group_file_append_helper(void) {
     (void)remove(path_template);
 
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
-    rc |= expect_true("append to missing file", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("append to missing file", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "") == 0);
     rc |= expect_true("read missing-created file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     rc |= expect_true("missing header", strcmp(l1, "id,mode,name\n") == 0);
@@ -704,7 +704,7 @@ test_group_file_append_helper(void) {
     }
     (void)dsd_close(fd);
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
-    rc |= expect_true("append to empty file", dsd_tg_policy_append_group_file_row(opts, &e, "ALG:01") == 0);
+    rc |= expect_true("append to empty file", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "ALG:01") == 0);
     rc |= expect_true("read empty-appended file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     rc |= expect_true("empty header metadata", strcmp(l1, "id,mode,name,metadata\n") == 0);
@@ -729,7 +729,7 @@ test_group_file_append_helper(void) {
         fclose(fp);
     }
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
-    rc |= expect_true("append to basic header", dsd_tg_policy_append_group_file_row(opts, &e, "VEND") == 0);
+    rc |= expect_true("append to basic header", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "VEND") == 0);
     rc |= expect_true("read basic file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     rc |= expect_true("basic row contains metadata", strstr(l2, ",VEND") != NULL);
     (void)remove(path_template);
@@ -752,7 +752,8 @@ test_group_file_append_helper(void) {
         fclose(fp);
     }
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
-    rc |= expect_true("append to policy header", dsd_tg_policy_append_group_file_row(opts, &e, "hello,\nworld") == 0);
+    rc |= expect_true("append to policy header",
+                      dsd_tg_policy_append_group_file_row(opts, NULL, &e, "hello,\nworld") == 0);
     rc |= expect_true("read policy file", read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     // This header models a tags column, so the metadata goes to the next, unmodelled column, never into tags.
     rc |= expect_true("policy row full schema", strstr(l2, "100,D,Alias,7,true,on,off,on,,hello  world") == l2);
@@ -786,7 +787,7 @@ test_group_file_append_helper(void) {
     }
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
     rc |= expect_true("append with policy-prefix header",
-                      dsd_tg_policy_append_group_file_row(opts, &e, "TAG-UPPER") == 0);
+                      dsd_tg_policy_append_group_file_row(opts, NULL, &e, "TAG-UPPER") == 0);
     rc |= expect_true("read policy-prefix file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     rc |=
@@ -811,7 +812,8 @@ test_group_file_append_helper(void) {
         fclose(fp);
     }
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path_template);
-    rc |= expect_true("append unknown metadata header", dsd_tg_policy_append_group_file_row(opts, &e, "META") == 0);
+    rc |=
+        expect_true("append unknown metadata header", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "META") == 0);
     rc |= expect_true("read unknown metadata file",
                       read_file_lines(path_template, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
     rc |= expect_true("unknown header unchanged", strcmp(l1, "id,mode,name,something_else\n") == 0);
@@ -860,7 +862,7 @@ append_alias_and_reload(const char* tag, const char* content, const char* expect
     }
     init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
-    rc |= expect_true(tag, dsd_tg_policy_append_group_file_row(opts, &e, "VEND") == 0);
+    rc |= expect_true(tag, dsd_tg_policy_append_group_file_row(opts, NULL, &e, "VEND") == 0);
     rc |= expect_true(tag, read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
     rc |= expect_true(tag, strcmp(l3, expected_row) == 0);
     rc |= expect_true(tag, csvGroupImportPath(path, loaded) == 0);
@@ -922,7 +924,7 @@ test_append_after_unterminated_line(void) {
     }
     init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
-    rc |= expect_true("append after unterminated row", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("append after unterminated row", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "") == 0);
     rc |= expect_true("read unterminated append",
                       read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), l3, sizeof(l3)) == 0);
     rc |= expect_true("unterminated row now ends its line", strcmp(l2, "1201,A,X\n") == 0);
@@ -945,7 +947,7 @@ test_append_after_unterminated_line(void) {
         return 1;
     }
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
-    rc |= expect_true("append after unterminated header", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("append after unterminated header", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "") == 0);
     rc |= expect_true("read unterminated header append",
                       read_file_lines(path, l1, sizeof(l1), l2, sizeof(l2), NULL, 0) == 0);
     rc |= expect_true("unterminated header kept", strcmp(l1, "id,mode,name\n") == 0);
@@ -3683,6 +3685,270 @@ test_row_token_refuses_stray_pattern_text(void) {
     return rc;
 }
 
+/* The importer's side of the external-edit guard (src/core/util/talkgroup_policy_internal.h). */
+int dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_load_report* report);
+
+/* Exact bytes, CR included: an editor on Windows saves CRLF. */
+static int
+write_group_bytes(const char* path, const char* content) {
+    FILE* fp = dsd_fopen_private(path, "wb");
+    if (!fp) {
+        return 1;
+    }
+    const int bad = fputs(content, fp) < 0;
+    return (fclose(fp) != 0) || bad;
+}
+
+/* The file as text, as production writes it (CRLF on Windows reads back as LF). */
+static int
+read_group_text(const char* path, char* out, size_t size) {
+    FILE* fp = dsd_fopen_existing_regular_file(path, "r");
+    if (!fp || size == 0) {
+        if (fp) {
+            (void)fclose(fp);
+        }
+        return 1;
+    }
+    const size_t n = fread(out, 1, size - 1U, fp);
+    out[n] = '\0';
+    const int bad = ferror(fp) != 0;
+    return (fclose(fp) != 0) || bad;
+}
+
+static uint64_t
+file_rows_hash(const char* path) {
+    uint64_t hash = 0;
+    return dsd_tg_policy_rows_hash_file(path, &hash, NULL) == 0 ? hash : 0;
+}
+
+/* A group file's rows hash describes the rows the importer accepts, in order (discussion #748 follow-up R4): line
+ * endings, unmodelled columns, blank lines and malformed rows do not change it; a reorder, a same-size name edit and a
+ * mode edit do. A header-only file and an empty file hold the same (no) rows. */
+static int
+test_group_rows_hash_canonical(void) {
+    static const struct {
+        const char* tag;
+        const char* content;
+        int same; /* hashes as the first case */
+    } cases[] = {
+        {"LF", "id,mode,name\n100,A,Dispatch\n200,B,Fire\n", 1},
+        {"CRLF", "id,mode,name\r\n100,A,Dispatch\r\n200,B,Fire\r\n", 1},
+        {"no final newline", "id,mode,name\n100,A,Dispatch\n200,B,Fire", 1},
+        {"unmodelled column, blank and malformed lines",
+         "id,mode,name,notes\n100,A,Dispatch,a note\n\nnot a row\n200, B ,Fire,x\n", 1},
+        {"reordered", "id,mode,name\n200,B,Fire\n100,A,Dispatch\n", 0},
+        {"same-size name edit", "id,mode,name\n100,A,Dispatch\n200,B,Fyre\n", 0},
+        {"same-size mode edit", "id,mode,name\n100,B,Dispatch\n200,B,Fire\n", 0},
+        {"tags column", "id,mode,name,tags\n100,A,Dispatch,ops\n200,B,Fire,\n", 0},
+    };
+
+    char path[64];
+    uint64_t first = 0;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        rc |= load_report_file(path, sizeof path, NULL);
+        rc |= write_group_bytes(path, cases[i].content);
+        const uint64_t hash = file_rows_hash(path);
+        if (i == 0) {
+            first = hash;
+        }
+        rc |= expect_true(cases[i].tag, hash != 0 && (hash == first) == cases[i].same);
+        (void)remove(path);
+    }
+    rc |= load_report_file(path, sizeof path, "id,mode,name\n");
+    const uint64_t header_only = file_rows_hash(path);
+    rc |= write_group_bytes(path, "");
+    rc |= expect_true("header-only and empty files hold the same rows",
+                      header_only != 0 && header_only == file_rows_hash(path));
+    (void)remove(path);
+    return rc;
+}
+
+/* What the rewrite writes is what its next check reads back: a name and tags with commas (sanitised to spaces), and a
+ * priority that promotes the extended header, all compare equal to the file the write produced, so dsd-neo's own
+ * consecutive saves go through. An outside edit, even one keeping the file size, stops the next save and leaves the
+ * file as edited; a CRLF re-save of the same rows does not. */
+static int
+test_group_rewrite_guard(void) {
+    char path[64];
+    int rc = load_report_file(path, sizeof path, NULL);
+    rc |= write_group_bytes(path, "id,mode,name\n100,A,Dispatch\n200,B,Fire\n");
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (rc != 0 || !opts || !st) {
+        free(opts);
+        free(st);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_true("guard load", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    dsd_tg_policy_entry values;
+    DSD_MEMSET(&values, 0, sizeof values);
+    DSD_SNPRINTF(values.name, sizeof values.name, "%s", "Fire, Station 2");
+    DSD_SNPRINTF(values.tags, sizeof values.tags, "%s", "ops,north");
+    rc |= expect_true(
+        "comma name edit",
+        dsd_tg_policy_set_fields(st, 200, 200, &values, DSD_TG_POLICY_FIELD_NAME | DSD_TG_POLICY_FIELD_TAGS) == 0);
+    rc |= expect_true("comma name write", dsd_tg_policy_write_group_file(opts, st) == 0);
+    char text[512] = {0};
+    rc |=
+        expect_true("comma name sanitised",
+                    read_group_text(path, text, sizeof text) == 0
+                        && strcmp(text, "id,mode,name,tags\n100,A,Dispatch,\n200,B,Fire  Station 2,ops north\n") == 0);
+    rc |= expect_true("comma name write compares equal", dsd_tg_policy_write_group_file(opts, st) == 0);
+    values.priority = 40;
+    rc |= expect_true("priority edit",
+                      dsd_tg_policy_set_fields(st, 100, 100, &values, DSD_TG_POLICY_FIELD_PRIORITY) == 0);
+    rc |= expect_true("extended header write", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("extended header write compares equal", dsd_tg_policy_write_group_file(opts, st) == 0);
+
+    // An outside editor changes one letter: same size, different rows.
+    rc |= expect_true("read before edit", read_group_text(path, text, sizeof text) == 0);
+    char* fire = strstr(text, "Fire");
+    if (fire) {
+        fire[1] = 'y';
+    }
+    rc |= expect_true("same-size outside edit", fire && write_group_bytes(path, text) == 0);
+    rc |= expect_true("lockout after outside edit", dsd_tg_policy_set_mode(st, 100, 100, "B") == 0);
+    rc |= expect_true("rewrite refused after outside edit", dsd_tg_policy_write_group_file(opts, st) == 2);
+    char after[512] = {0};
+    rc |= expect_true("outside edit kept", read_group_text(path, after, sizeof after) == 0 && strcmp(after, text) == 0);
+    rc |= expect_true("refused change stays in the session", policy_count(st) == 2);
+    rc |= expect_true("refused again until reloaded", dsd_tg_policy_write_group_file(opts, st) == 2);
+
+    // A reload takes the edited file; an editor's CRLF re-save of the same rows then is no conflict.
+    rc |= expect_true("reload outside edit", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("write after reload", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("read for CRLF", read_group_text(path, text, sizeof text) == 0);
+    char crlf[640] = {0};
+    size_t w = 0;
+    for (size_t r = 0; text[r] != '\0' && w + 2U < sizeof crlf; r++) {
+        if (text[r] == '\n') {
+            crlf[w++] = '\r';
+        }
+        crlf[w++] = text[r];
+    }
+    rc |= expect_true("CRLF re-save", write_group_bytes(path, crlf) == 0);
+    rc |= expect_true("edit after CRLF re-save", dsd_tg_policy_set_mode(st, 200, 200, "A") == 0);
+    rc |= expect_true("CRLF re-save is no conflict", dsd_tg_policy_write_group_file(opts, st) == 0);
+    free_test_state(st);
+    free(opts);
+    (void)remove(path);
+    return rc;
+}
+
+/* An appended alias row extends the baseline in file order without reading the file, under every header (the
+ * metadata past an empty tags column included), so dsd-neo's own next rewrite goes through. An outside edit made before
+ * an append still shows: the append goes ahead (it destroys nothing) and the next rewrite is refused. An append that
+ * creates the file starts its baseline. */
+static int
+test_group_append_tracks_baseline(void) {
+    static const char* const headers[] = {
+        "id,mode,name\n100,A,Dispatch\n",
+        "id,mode,name,tags\n100,A,Dispatch,ops\n",
+        "id,mode,name,priority,preempt,audio,record,stream,tags\n100,A,Dispatch,5,false,on,on,on,ops\n",
+        "id,mode,name\n100,A,Dispatch",
+    };
+    int rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts) {
+        return 1;
+    }
+    dsd_tg_policy_entry alias;
+    init_entry(&alias, 300, "D", "Learned, Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    char path[64];
+    for (size_t i = 0; i < sizeof headers / sizeof headers[0]; i++) {
+        dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+        rc |= load_report_file(path, sizeof path, NULL);
+        rc |= expect_true("append fixture", st && write_group_bytes(path, headers[i]) == 0);
+        DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+        rc |= expect_true("append load", dsd_tg_policy_reload_group_file(opts, st) == 0);
+        rc |= expect_true("append learned row", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+        rc |= expect_true("append", dsd_tg_policy_append_group_file_row(opts, st, &alias, "ALG:01,KEY") == 0);
+        rc |= expect_true("rewrite after own append", dsd_tg_policy_write_group_file(opts, st) == 0);
+        free_test_state(st);
+        (void)remove(path);
+    }
+
+    // Edited outside, then an alias arrives.
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    rc |= load_report_file(path, sizeof path, NULL);
+    rc |= expect_true("edit fixture", st && write_group_bytes(path, headers[0]) == 0);
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_true("edit load", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("outside edit", write_group_bytes(path, "id,mode,name\n100,A,Dispatch\n400,A,Added\n") == 0);
+    rc |= expect_true("learn after outside edit", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("append after outside edit", dsd_tg_policy_append_group_file_row(opts, st, &alias, "") == 0);
+    char text[256] = {0};
+    rc |= expect_true("append after outside edit keeps both",
+                      read_group_text(path, text, sizeof text) == 0
+                          && strcmp(text, "id,mode,name\n100,A,Dispatch\n400,A,Added\n300,D,Learned  Alias\n") == 0);
+    rc |= expect_true("rewrite refused after outside edit and append", dsd_tg_policy_write_group_file(opts, st) == 2);
+    free_test_state(st);
+    (void)remove(path);
+
+    // No file yet: the append creates it, and what it wrote is the baseline.
+    st = (dsd_state*)calloc(1, sizeof(*st));
+    rc |= load_report_file(path, sizeof path, NULL);
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |=
+        expect_true("learn into a new file", st && dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_true("append creates the file", dsd_tg_policy_append_group_file_row(opts, st, &alias, "") == 0);
+    rc |= expect_true("rewrite after creating append", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("outside edit of created file", write_group_bytes(path, "id,mode,name\n300,D,Renamed\n") == 0);
+    rc |= expect_true("created file guarded", dsd_tg_policy_write_group_file(opts, st) == 2);
+    free_test_state(st);
+    free(opts);
+    (void)remove(path);
+    return rc;
+}
+
+/* Every way a list comes to stand for a file sets the baseline: a startup import (a header-only file too) and an
+ * export, which moves it to the export path. A path the list never read or wrote has none and is written as before. */
+static int
+test_group_startup_and_export_baseline(void) {
+    char path[64], exported[64];
+    int rc = load_report_file(path, sizeof path, "id,mode,name\n100,A,Dispatch\n");
+    rc |= load_report_file(exported, sizeof exported, NULL);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (rc != 0 || !opts || !st) {
+        free(opts);
+        free(st);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_true("startup import", csvGroupImport(opts, st) == 0);
+    rc |=
+        expect_true("startup outside edit", write_group_bytes(path, "id,mode,name\n100,A,Dispatch\n200,A,Fire\n") == 0);
+    rc |= expect_true("startup edit", dsd_tg_policy_set_mode(st, 100, 100, "B") == 0);
+    rc |= expect_true("startup baseline refuses", dsd_tg_policy_write_group_file(opts, st) == 2);
+
+    // The export path is new: written, and the list's baseline moves there.
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", exported);
+    rc |= expect_true("export to a new path", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("export compares equal", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("export outside edit", write_group_bytes(exported, "id,mode,name\n100,A,Dispatch\n") == 0);
+    rc |= expect_true("export baseline refuses", dsd_tg_policy_write_group_file(opts, st) == 2);
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_true("old file has no baseline now", dsd_tg_policy_write_group_file(opts, st) == 0);
+    free_test_state(st);
+
+    st = (dsd_state*)calloc(1, sizeof(*st));
+    rc |= expect_true("header-only fixture", st && write_group_bytes(path, "id,mode,name\n") == 0);
+    rc |= expect_true("startup header-only import", csvGroupImport(opts, st) == 0);
+    rc |= expect_true("header-only outside edit", write_group_bytes(path, "id,mode,name\n500,A,Five\n") == 0);
+    dsd_tg_policy_entry e;
+    init_entry(&e, 100, "B", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    rc |= expect_true("header-only lockout", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("header-only baseline refuses", dsd_tg_policy_write_group_file(opts, st) == 2);
+    free_test_state(st);
+    free(opts);
+    (void)remove(path);
+    (void)remove(exported);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3739,5 +4005,9 @@ main(void) {
     rc |= test_alias_never_labels_talkgroup();
     rc |= test_group_load_report();
     rc |= test_group_startup_incomplete_not_written();
+    rc |= test_group_rows_hash_canonical();
+    rc |= test_group_rewrite_guard();
+    rc |= test_group_append_tracks_baseline();
+    rc |= test_group_startup_and_export_baseline();
     return rc;
 }

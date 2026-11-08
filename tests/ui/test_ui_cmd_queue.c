@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
@@ -23990,6 +23991,171 @@ test_group_startup_unusable_file_is_not_saved(void) {
     return rc;
 }
 
+/* Export the effective list to @p path through the command queue, at its current version. */
+static int
+post_group_export(const dsd_state* state, const char* path) {
+    union {
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + DSD_TEST_PATH_MAX];
+        dsd_app_tg_export_payload alignment; /* MSVC's C <stddef.h> has no max_align_t. */
+    } storage = {{0}};
+
+    dsd_app_tg_export_payload* exp = (dsd_app_tg_export_payload*)storage.bytes;
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    dsd_tg_policy_table_version(state, &exp->policy_context, &exp->policy_generation);
+    return dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp,
+                                  offsetof(dsd_app_tg_export_payload, path) + strlen(path) + 1U);
+}
+
+static const char k_r4_changed_toast[] =
+    "Talkgroup change kept for this session only; group list changed on disk, reload it";
+
+/* An edit made to the group file outside dsd-neo and not yet reloaded is never overwritten (spec R4): a Listen edit
+   and a lockout keep the change for the session and say why, and the file keeps the outside edit, a same-size one
+   included. An export over the list's own file is refused for the same reason; an export to a new file goes ahead and
+   that file is guarded from then on. */
+static int
+test_group_outside_edit_is_not_overwritten(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX], exported[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(path, sizeof path, "dsd_r4_edit", "id,mode,name\n100,A,Dispatch\n200,A,Fire\n");
+    rc |= make_group_file(exported, sizeof exported, "dsd_r4_export", NULL);
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("R4 import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    const char* edited = "id,mode,name\n100,A,Dispatch\n200,A,Fyre\n";
+    rc |= write_file_bytes(path, edited, strlen(edited));
+
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("R4 edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("R4 edit applies", dsd_tg_policy_lookup_id(&state, 100, &lookup), 0);
+    rc |= expect_str("R4 edit is in the session", lookup.entry.mode, "B");
+    rc |= expect_str("R4 edit toast", state.ui_msg, k_r4_changed_toast);
+    rc |= expect_file_bytes(path, edited);
+
+    dsd_call_observation observation = {.protocol = DSD_SYNC_P25P1_POS,
+                                        .slot = 0,
+                                        .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                        .ota_target_id = 200,
+                                        .policy_target_id = 200,
+                                        .ota_source_id = 1,
+                                        .observed_m = 1.0};
+    rc |= expect_int("R4 lockout call", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0);
+    rc |= expect_true("R4 lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+    rc |= expect_int("R4 lockout drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("R4 lockout applies", dsd_tg_policy_lookup_id(&state, 200, &lookup), 0);
+    rc |= expect_str("R4 lockout is in the session", lookup.entry.mode, "B");
+    rc |= expect_str("R4 lockout toast", state.ui_msg, k_r4_changed_toast);
+    rc |= expect_file_bytes(path, edited);
+
+    rc |= expect_true("R4 export over the list's file queued", post_group_export(&state, path) > 0);
+    rc |= expect_int("R4 export over the list's file drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R4 export over the list's file toast", state.ui_msg,
+                     "Talkgroup export refused: group list changed on disk; reload it");
+    rc |= expect_file_bytes(path, edited);
+
+    rc |= expect_true("R4 export to a new file queued", post_group_export(&state, exported) > 0);
+    rc |= expect_int("R4 export to a new file drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R4 export to a new file toast", state.ui_msg, "Applied: Talkgroup list exported");
+    rc |= expect_file_bytes(exported, "id,mode,name\n100,B,Dispatch\n200,B,Fire\n");
+    const char* export_edited = "id,mode,name\n100,B,Dispatch\n200,B,Fire\n300,A,Added\n";
+    rc |= write_file_bytes(exported, export_edited, strlen(export_edited));
+    edit.listen = 1;
+    rc |= expect_true("R4 edit after export queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 edit after export drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R4 edit after export toast", state.ui_msg, k_r4_changed_toast);
+    rc |= expect_file_bytes(exported, export_edited);
+    rc |= expect_file_bytes(path, edited);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(path);
+    (void)remove(exported);
+    return rc;
+}
+
+/* A frontend that replaces the session's group file (the terminal or Qt RadioReference refresh, Qt "Update from
+   file") queues the reload behind it: a change saved before that reload runs must not write the old table over the
+   new file. The reload then adopts the update, and saves go through again. */
+static int
+test_group_replaced_file_waits_for_its_reload(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(path, sizeof path, "dsd_r4_replace", "id,mode,name\n100,A,Dispatch\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("R4 replace seed drained", dsd_app_drain_cmds(&opts, &state), 1);
+    const char* update = "id,mode,name\n100,A,Dispatch\n700,A,Seven\n";
+    rc |=
+        expect_int("R4 refresh replaces the file", dsd_app_import_replace_checked(path, update, strlen(update), 0), 0);
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("R4 edit before reload queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 edit before reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R4 edit before reload toast", state.ui_msg, k_r4_changed_toast);
+    rc |= expect_file_bytes(path, update);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("R4 reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R4 reload toast", state.ui_msg, "Applied: Group list imported -> 2 rows");
+    rc |= expect_true("R4 edit after reload queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 edit after reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(path, "id,mode,name\n100,B,Dispatch\n700,A,Seven\n");
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(path);
+    return rc;
+}
+
+/* The startup list (-G) guards its file from the first save. An editor that only re-saves the same rows with CRLF
+   line ends is no conflict, so the save goes through; an edit to the rows is one. */
+static int
+test_group_startup_list_guards_its_file(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(path, sizeof path, "dsd_r4_startup", "id,mode,name\n100,A,Dispatch\n200,A,Fire\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", path);
+    rc |= expect_int("R4 startup import", csvGroupImport(&opts, &state), 0);
+    const char* crlf = "id,mode,name\r\n100,A,Dispatch\r\n200,A,Fire\r\n";
+    rc |= write_file_bytes(path, crlf, strlen(crlf));
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("R4 edit after CRLF re-save queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 edit after CRLF re-save drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(path, "id,mode,name\n100,B,Dispatch\n200,A,Fire\n");
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    rc |= write_file_bytes(path, crlf, strlen(crlf));
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", path);
+    rc |= expect_int("R4 second startup import", csvGroupImport(&opts, &state), 0);
+    const char* edited = "id,mode,name\n100,A,Dispatch\n200,B,Fire\n";
+    rc |= write_file_bytes(path, edited, strlen(edited));
+    rc |= expect_true("R4 startup edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 startup edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R4 startup edit toast", state.ui_msg, k_r4_changed_toast);
+    rc |= expect_file_bytes(path, edited);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(path);
+    return rc;
+}
+
 static int
 test_config_group_path_reloads_before_persist(int scoped) {
     static dsd_opts opts;
@@ -28747,6 +28913,9 @@ main(void) {
     rc |= test_config_group_path_reloads_before_persist(1);
     rc |= test_group_import_refuses_unusable_files();
     rc |= test_group_startup_unusable_file_is_not_saved();
+    rc |= test_group_outside_edit_is_not_overwritten();
+    rc |= test_group_replaced_file_waits_for_its_reload();
+    rc |= test_group_startup_list_guards_its_file();
 #ifdef DSD_NEO_TEST_TG_POLICY_WRAP
     rc |= test_group_import_refuses_a_partial_load();
     rc |= test_group_startup_partial_load_is_not_saved();

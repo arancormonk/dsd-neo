@@ -9,12 +9,24 @@
  */
 
 #include <dsd-neo/app_control/import_files.h>
+#include <dsd-neo/core/managed_file.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/threading.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include "managed_file_test_support.h"
 #include "test_env.h"
 #include "test_support.h"
 
@@ -208,6 +220,90 @@ test_write_and_replace(const char* dir) {
     return rc;
 }
 
+/* A RadioReference refresh racing the decoder's save of the same group list. */
+typedef struct {
+    const char* path;
+    const char* text;
+    atomic_int started;
+    atomic_int done;
+    int created; /* written by the hook on the saving thread, read after the save returns */
+    int rc;
+    dsd_thread_t thread;
+} refresh_race;
+
+static DSD_THREAD_RETURN_TYPE
+refresh_race_run(void* arg) {
+    refresh_race* race = (refresh_race*)arg;
+    race->rc = dsd_app_import_replace_checked(race->path, race->text, strlen(race->text), 0);
+    atomic_store(&race->done, 1);
+    DSD_THREAD_RETURN;
+}
+
+/* At the decoder's "file checked, about to replace" point (inside the managed-file lock): start the refresh, and wait,
+   two seconds at most, until it is blocked on the lock, or has finished because nothing held it back. */
+static void
+refresh_race_at_checked(dsd_managed_file_step step, void* user) {
+    refresh_race* race = (refresh_race*)user;
+    if (step != DSD_MANAGED_FILE_STEP_CHECKED || atomic_load(&race->started)) {
+        return;
+    }
+    atomic_store(&race->started, 1);
+    if (dsd_thread_create(&race->thread, refresh_race_run, race) != 0) {
+        return;
+    }
+    race->created = 1;
+    for (int i = 0; i < 2000 && dsd_managed_file_test_waiters() < 1 && !atomic_load(&race->done); i++) {
+        dsd_sleep_ms(1);
+    }
+}
+
+/* Discussion #748 follow-up R4: the terminal RadioReference refresh replaces a stored group list under the
+   managed-file lock, so it cannot land between the decoder's check of the file and its rewrite ("decoder checks A,
+   refresh installs B, decoder writes over B"). Driven deterministically: the refresh starts at the decoder's checked
+   point and must wait for the rewrite; it then lands on top, and the decoder's next save sees the change and refuses
+   until the list is reloaded. */
+static int
+test_refresh_waits_for_decoder_rewrite(const char* dir) {
+    char path[DSD_TEST_PATH_MAX];
+    (void)dsd_test_path_join(path, sizeof path, dir, "Race group.csv");
+    static const char k_before[] = "id,mode,name\n100,A,Dispatch\n";
+    static const char k_refresh[] = "id,mode,name\n100,A,Dispatch\n200,A,Fire\n";
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    int rc = (opts && st && write_file(path, k_before) == 0) ? 0 : 1;
+    if (rc != 0) {
+        free(opts);
+        free(st);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_int("race: load", dsd_tg_policy_reload_group_file(opts, st), 0);
+    rc |= expect_int("race: lockout", dsd_tg_policy_set_mode(st, 100, 100, "B"), 0);
+
+    refresh_race race;
+    DSD_MEMSET(&race, 0, sizeof race);
+    race.path = path;
+    race.text = k_refresh;
+    race.rc = -1;
+    dsd_managed_file_test_set_hook(refresh_race_at_checked, &race);
+    rc |= expect_int("race: decoder save", dsd_tg_policy_write_group_file(opts, st), 0);
+    dsd_managed_file_test_set_hook(NULL, NULL);
+    rc |= expect_int("race: refresh started at the checked point", atomic_load(&race.started), 1);
+    rc |= expect_int("race: refresh waited for the save", atomic_load(&race.done), 0);
+    if (race.created) {
+        (void)dsd_thread_join(race.thread);
+    }
+    rc |= expect_int("race: refresh written", race.rc, 0);
+    rc |= expect_int("race: the refresh is on disk", file_is(path, k_refresh), 1);
+    rc |= expect_int("race: the next save refuses the unreloaded refresh", dsd_tg_policy_write_group_file(opts, st), 2);
+    rc |= expect_int("race: the refresh stays", file_is(path, k_refresh), 1);
+    dsd_state_ext_free_all(st);
+    free(st);
+    free(opts);
+    (void)remove(path);
+    return rc;
+}
+
 /* The sidecar reads back what was written; a path is spoken for unless it is free or holds this very import. */
 static int
 test_provenance_and_conflicts(const char* dir) {
@@ -276,6 +372,7 @@ main(void) {
     rc |= test_list(dir);
     rc |= test_remove(dir);
     rc |= test_write_and_replace(dir);
+    rc |= test_refresh_waits_for_decoder_rewrite(dir);
     rc |= test_provenance_and_conflicts(dir);
     rc |= test_dir_create(dir);
     /* Removing the directory fails when anything (a stray temp file included) is left in it. */

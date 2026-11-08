@@ -19,6 +19,26 @@ int dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_e
 void dsd_tg_policy_store_mark_incomplete(dsd_tg_policy_store* store);
 int dsd_tg_policy_mark_incomplete(dsd_state* state);
 
+/* A group file's rows hash: 64-bit FNV-1a over the rows the importer accepts from it, in file order, each in the
+ * canonical form a store keeps it (kind, bounds or pattern, mode, name, tags, priority, preempt, media). Line endings,
+ * unmodelled columns and malformed rows do not enter it. A list's baseline is that hash for the file it was last read
+ * from or written to, so a rewrite can tell whether the file still holds what dsd-neo last saw there. */
+#define DSD_TG_POLICY_ROWS_HASH_INIT 0xcbf29ce484222325ULL
+/* Fold one row into @p hash as a store would keep it: 0 folded, 1 a row a store refuses (nothing folded). */
+int dsd_tg_policy_rows_hash_fold(uint64_t* hash, const dsd_tg_policy_entry* entry);
+/* Record that @p path held the rows @p rows_hash describes: on a detached store, or on the state's store (created when
+ * missing; -1 when it cannot be). */
+void dsd_tg_policy_store_set_baseline(dsd_tg_policy_store* store, const char* path, uint64_t rows_hash);
+int dsd_tg_policy_set_baseline(dsd_state* state, const char* path, uint64_t rows_hash);
+
+/* The importer's side (dsd_import.c). Fold into @p hash the row the importer would store from data line @p line of
+ * a file whose first line is @p header_line; @p path names the file in any row warning. Returns 1 folded, 0 the importer
+ * would skip the line. */
+int dsd_tg_policy_rows_hash_line(uint64_t* hash, const char* path, const char* header_line, const char* line);
+/* Set @p hash to the rows hash of the file at @p path, read as a load reads it, without storing a row. Returns 0 read
+ * to the end, -1 not (@p report, which may be NULL, says why: not_found or unreadable). */
+int dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_load_report* report);
+
 /* Mode rules shared by the group list and the radio list's policy columns. Mode `B` or `DE` blocks: no tuning and
  * every medium off. */
 int dsd_tg_policy_mode_blocks(const char* mode);

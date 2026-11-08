@@ -59,7 +59,8 @@ int dsd_app_import_remove(const char* csv_path);
 
 /**
  * @brief Write @p len bytes of @p text to @p final_path through a private temp sibling, synced, then replacing any file
- * there. Binary: the generator's '\n' stays '\n' on Windows.
+ * there. Binary: the generator's '\n' stays '\n' on Windows. The replace runs under the managed-file lock
+ * (<dsd-neo/core/managed_file.h>), so it never lands inside the decoder's check and rewrite of the same group list.
  * @return 0 when written; -1 when not, with the temp file removed and any file at @p final_path untouched.
  */
 int dsd_app_import_write(const char* final_path, const char* text, size_t len);
@@ -67,7 +68,7 @@ int dsd_app_import_write(const char* final_path, const char* text, size_t len);
 /**
  * @brief Replace the stored import @p path with @p len bytes of @p text, but only when the new text validates as a
  * channel map (@p is_chan) or a group list with at least one accepted row: it is staged in a private temp sibling,
- * checked there, then swapped in.
+ * checked there, then swapped in under the managed-file lock, as dsd_app_import_write() does.
  * @return 0 when replaced; -1 when the staging file could not be written; -2 when it was written but did not validate.
  * The stored file is untouched in both failure cases.
  */

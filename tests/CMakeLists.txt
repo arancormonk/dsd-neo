@@ -3576,6 +3576,10 @@ add_executable(
     ui/test_app_control_import_files.c
     ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
 )
+target_include_directories(
+    dsd-neo_test_app_control_import_files
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/core/file
+)
 target_link_libraries(
     dsd-neo_test_app_control_import_files
     PRIVATE dsd-neo_runtime dsd-neo_core dsd-neo_proto_dmr dsd-neo_test_support
@@ -5577,6 +5581,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
@@ -5628,6 +5633,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
@@ -6911,6 +6917,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
     dsd-neo_test_core_source_alias_fail
@@ -6945,6 +6952,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
     dsd-neo_test_core_tg_policy_alloc_fail
@@ -11440,6 +11448,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_clamp
@@ -11473,6 +11482,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_release
@@ -11506,6 +11516,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
@@ -11543,6 +11554,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_shim
@@ -11576,6 +11588,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11624,6 +11637,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11667,6 +11681,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11714,6 +11729,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13755,6 +13771,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_dmr_talker_alias_header_len
@@ -13779,6 +13796,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_dmr_talker_alias_utf16
@@ -13803,6 +13821,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_core_apx_embedded_alias_utf16
@@ -14150,6 +14169,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
