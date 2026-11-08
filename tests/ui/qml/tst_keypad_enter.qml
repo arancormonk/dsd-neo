@@ -157,6 +157,11 @@ Item {
             recordings.reset();
             callHistory.clearAll();
             testContext.useLifecycleHost(false);
+            testContext.setRadioReference("busy", false);
+            testContext.setRadioReference("sites", []);
+            testContext.setRadioReference("systemDetails", {});
+            testContext.setRadioReference("countries", []);
+            testContext.setRadioReference("credentialsReady", false);
             root.width = 420;
             testContext.setMetric("radioInput", false);
             testContext.setHostRunning(false);
@@ -652,10 +657,56 @@ Item {
                 }
                 return asked;
             });
-            testContext.setRadioReference("sites", []);
-            testContext.setRadioReference("systemDetails", {});
-            testContext.setRadioReference("countries", []);
-            testContext.setRadioReference("credentialsReady", false);
+        }
+
+        // A RadioReference row that has the focus when a lookup starts keeps
+        // its Tab stop until the focus leaves (init's failOnWarning catches
+        // the warning a dropped stop of the focused item gives). The lookup's
+        // overlay usually takes the focus first, but Qt does not promise that
+        // order, so it is held closed here: the row's gate then changes while
+        // the row still has the focus.
+        function holdsTabStopWhileBusy(tag, target, screen) {
+            item(screen, "radioReferenceBusyOverlay").visible = false;
+            verify(target.activeFocusOnTab, tag + " is a Tab stop");
+            target.forceActiveFocus();
+            verify(target.activeFocus, tag + " takes focus");
+            testContext.setRadioReference("busy", true);
+            verify(target.activeFocus, tag + " keeps the focus");
+            verify(target.activeFocusOnTab, tag + " holds its stop while it has the focus");
+            sheetField.forceActiveFocus();
+            verify(sheetField.activeFocus, "the focus leaves");
+            verify(!target.activeFocusOnTab, tag + " is no Tab stop during a lookup");
+            testContext.setRadioReference("busy", false);
+            verify(target.activeFocusOnTab, tag + " is a Tab stop again");
+        }
+        function test_radioreference_rows_hold_their_tab_stop_while_busy() {
+            var screen = load("RadioReferenceScreen.qml");
+            screen.visible = true;
+            testContext.setRadioReference("countries", [{name: "Canada", coid: 2}]);
+            var browse = item(screen, "radioReferenceCountrySheet");
+            browse.visible = true;
+            holdsTabStopWhileBusy("Browse row", item(browse, "browseRow0"), screen);
+            browse.visible = false;
+
+            testContext.setRadioReference("credentialsReady", true);
+            testContext.setRadioReference("systemDetails", {sid: 6673, name: "Test System", typeDescr: "Project 25",
+                flavorDescr: "Phase II"});
+            testContext.setRadioReference("sites", [{siteNumber: 1, descr: "Alpha", freqCount: 11,
+                controlFreqMhz: "851.0125", simulcast: false, freqMhz: "851.0125", colorCode: ""}]);
+            tryVerify(function () {
+                return screen.systemLoaded;
+            });
+            var siteRow = null;
+            (function walk(node) {
+                for (var child of node.children) {
+                    if (!siteRow && child.modelData !== undefined && child.modelData.site !== undefined)
+                        siteRow = child;
+                    else
+                        walk(child);
+                }
+            })(screen);
+            verify(siteRow !== null, "a site row exists");
+            holdsTabStopWhileBusy("Site row", siteRow, screen);
         }
 
         function test_wizard_file_choice_takes_keypad_enter() {
