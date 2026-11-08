@@ -171,8 +171,12 @@ Item {
         exportPicker.open();
     }
     function exportPicked(reference) {
-        if (exportSelection <= 0)
+        if (exportSelection <= 0) {
+            // Not wanted any more: nothing will write a Download-folder row.
+            if (exportPicker.savedToDownloads)
+                decoderHost.discardPendingDownload(reference);
             return;
+        }
         exportReference = reference;
         decoderHost.exportRecordings(exportSelectionMap, reference);
     }

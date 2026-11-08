@@ -242,8 +242,12 @@ Column {
         savePicker.open();
     }
     function savePicked(reference) {
-        if (saveSelection <= 0)
+        if (saveSelection <= 0) {
+            // Not wanted any more: nothing will write a Download-folder row.
+            if (savePicker.savedToDownloads)
+                decoderHost.discardPendingDownload(reference);
             return;
+        }
         saveReference = reference;
         decoderHost.saveRecording(saveSelectionMap, reference);
     }

@@ -157,12 +157,8 @@ Item {
     }
     // An import that went wrong is read out once, each time it happens.
     function announceProblem() {
-        if (!noticeIsProblem || !notice.length || !Navigation.allows(noticeLine))
-            return;
-        announced = notice;
-        announcements++;
-        if (typeof Accessible.announce === "function")
-            Accessible.announce(notice);
+        if (noticeIsProblem)
+            Navigation.announce(screen, noticeLine, notice);
     }
     DecryptionApplyFlow {
         id: mapApply

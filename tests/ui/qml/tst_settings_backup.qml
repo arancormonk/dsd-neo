@@ -643,6 +643,30 @@ Item {
             compare(notice().text, "");
         }
 
+        // #829: a save the flow no longer waits for (its step moved on with
+        // the picker still out) that comes back as a Download-folder row is
+        // thrown away, since nothing will write it; one the user placed is no
+        // row of the app's and is left alone.
+        function test_export_unwanted_download_is_discarded_data() {
+            return [
+                {tag: "Download folder", reference: "content://media/external/downloads/43", inDownloads: true, discarded: ["content://media/external/downloads/43"]},
+                {tag: "placed by the user", reference: pickedReference, inDownloads: false, discarded: []}
+            ];
+        }
+
+        function test_export_unwanted_download_is_discarded(data) {
+            var picker = toSavePicker();
+            flow.step = "";
+            pick(picker, data.reference, "dsd-neo-backup-2026-11-08.dsdbak", data.inDownloads);
+            compare(calls("saveExport").length, 0, "the flow writes nothing");
+            var discarded = testContext.documentCalls().filter(function (call) {
+                return call.name === "discardPendingDownload";
+            }).map(function (call) {
+                return call.reference;
+            });
+            compare(discarded, data.discarded);
+        }
+
         // #829: with no save picker the host saves to the Download folder and
         // names the file there; a name it cannot give falls back to "Backup saved.".
         function test_export_saved_to_downloads_data() {

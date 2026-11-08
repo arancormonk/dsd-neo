@@ -157,14 +157,7 @@ Item {
             return;
         sheet.visible = true;
         companionNotice = message;
-        if (Navigation.allows(companionNoticeLine))
-            announce(message);
-    }
-    function announce(text) {
-        announced = text;
-        announcements++;
-        if (typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        Navigation.announce(flow, companionNoticeLine, message);
     }
     function primaryPicked(reference, displayName) {
         if (!active)

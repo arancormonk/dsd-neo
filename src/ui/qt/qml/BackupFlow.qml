@@ -274,8 +274,12 @@ Item {
     }
 
     function savePicked(ref) {
-        if (step !== "exportPicker")
+        if (step !== "exportPicker") {
+            // Not wanted any more: nothing will write a Download-folder row.
+            if (savePicker.savedToDownloads)
+                decoderHost.discardPendingDownload(ref);
             return;
+        }
         step = "saving";
         reference = ref;
         savingSheet.open();

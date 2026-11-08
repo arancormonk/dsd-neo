@@ -93,12 +93,7 @@ Rectangle {
     function showImportProblem(text) {
         showValidation(text);
         validationIsProblem = true;
-        if (!Navigation.allows(validationMessage))
-            return;
-        announced = text;
-        announcements++;
-        if (typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        Navigation.announce(screen, validationMessage, text);
     }
 
     function selectTargets(path) {

@@ -12888,7 +12888,9 @@ Qt Quick frontend (`src/ui/qt`):
   reused call `cancel()` (emits `rejected` only while a request waits), so their own cancel path runs; flows that are
   ending call `close()`. Only the live id is answered; a Download-folder pick for a request this picker gave up goes
   to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
-  went to the Download folder. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
+  went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
+  (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`) discards a
+  Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
   `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
   `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
@@ -14257,7 +14259,9 @@ issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothi
 `Navigation.allows(line)` is false (`line` null: no gate, as for the backup card's notices, which live on Settings),
 records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
 use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
-`sourceNotice`), `CallRecordingsScreen` and `CallRecordingPlayer`.
+`sourceNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
+`ImportsScreen` (an import problem, `noticeLine`) and `ScanListScreen` (a target CSV import problem,
+`validationMessage`).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with
