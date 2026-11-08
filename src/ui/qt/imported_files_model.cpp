@@ -621,7 +621,7 @@ ImportedFilesModel::rowResult(const Row& row) {
 
 bool
 ImportedFilesModel::replacementBusy(const QString& type) const {
-    return type == QLatin1String("trunkTargets") && decoderBusy();
+    return (type == QLatin1String("group") || type == QLatin1String("trunkTargets")) && decoderBusy();
 }
 
 QVariantMap

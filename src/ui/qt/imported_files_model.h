@@ -125,8 +125,8 @@ class ImportedFilesModel : public QAbstractListModel {
      * @param type        The library type to import it as.
      * @param companions  A bundle's companion choices (channel maps and target lists).
      * @param replacePath The stored path of the row to replace, or empty for a new row. A replace commits only when
-     *                    that row is still there unchanged (else "stale"); replacing a target list is refused while
-     *                    the decoder runs ("busy"), at the start and again at the commit.
+     *                    that row is still there unchanged (else "stale"); replacing a talkgroup list or a target
+     *                    list is refused while the decoder runs ("busy"), at the start and again at the commit.
      * @return The request id (> 0); importFinished() answers it exactly once, queued, a refusal included. Result keys:
      *         ok, error, detail, path, name, type, accepted, skipped, limitBytes, noSpace. error is "" or "empty"
      *         (ok, no usable row) on success, else too_large (limitBytes), read, local (noSpace), format (detail),
@@ -251,7 +251,7 @@ class ImportedFilesModel : public QAbstractListModel {
     QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
     QString bundleReplacementError(int row, const QString& type) const;
     bool decoderBusy() const;
-    /** Whether replacing a row of @p type must wait: the engine reads target lists while it runs. */
+    /** Whether replacing a row of @p type must wait: the running engine writes talkgroup lists, reads target lists. */
     bool replacementBusy(const QString& type) const;
     /** beginImport()'s answer when it refuses at once, else empty with @p target filled. */
     QVariantMap importRefusal(const QString& type, const QString& replacePath, ImportTarget* target) const;

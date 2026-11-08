@@ -1030,6 +1030,46 @@ test_async_replace_stale() {
     model.remove(model.rowForPath(stored));
 }
 
+/* Issue #832 (B11): the engine appends learned talkgroups to a group list and rewrites it on policy edits while it
+ * runs, so replacing one is refused while the decoder runs: at the start and again at the commit. */
+void
+test_group_replace_busy() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir source;
+    const QString groups = source.filePath("groups.csv");
+    const QString repick = source.filePath("repick.csv");
+    const QByteArray kept("TG,Mode,Name\n1,D,One\n");
+    expect("busy fixtures", write_file(groups, kept) && write_file(repick, "TG,Mode,Name\n2,D,Two\n3,D,Three\n"));
+    const QString stored = importAndWait(model, groups, "groups.csv", "group").value("path").toString();
+    const int row = model.rowForPath(stored);
+
+    host.running = true;
+    expect("a synchronous group replace is refused while decoding",
+           model.updateFile(row, repick, "repick.csv").value("error") == "busy");
+    const QVariantMap atStart = importAndWait(model, repick, "repick.csv", "group", stored);
+    expect("a group replace is refused at the start while decoding",
+           atStart.value("error") == "busy"
+               && atStart.value("detail") == "Stop the decoder before replacing a talkgroup list.");
+    expect("a refused replace keeps the file", read_file(stored) == kept && model.get(row).value("accepted") == 1);
+
+    host.running = false;
+    QSignalSpy spy(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    const int id = model.beginImport(repick, "repick.csv", "group", {}, stored);
+    host.running = true;
+    const QVariantMap atCommit = waitForImport(spy, id);
+    expect("a group replace is refused at the commit once decoding started", atCommit.value("error") == "busy");
+    expect("a replace refused at the commit keeps the file",
+           read_file(stored) == kept && model.get(row).value("accepted") == 1 && indexedAccepted(stored) == 1);
+
+    host.running = false;
+    const QVariantMap stopped = importAndWait(model, repick, "repick.csv", "group", stored);
+    expect("a group replace runs once the decoder stopped",
+           stopped.value("ok").toBool() && stopped.value("path") == stored && model.get(row).value("accepted") == 2);
+    model.remove(row);
+}
+
 /* The replace order: the index is saved first, then the file moves over the old one. Either step failing leaves the
  * old index and the old bytes. */
 void
@@ -2077,6 +2117,7 @@ main(int argc, char** argv) {
     test_remove_finishes_on_retry();
     test_async_import_outcomes();
     test_async_replace_stale();
+    test_group_replace_busy();
     test_replace_failures();
     test_register_unsaved_export();
     test_entries_changed_on_replace();

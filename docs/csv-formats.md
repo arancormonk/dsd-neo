@@ -28,7 +28,8 @@ manages the library (import, update, remove), and the add/edit-system wizard's *
 channel map, talkgroup list, key file, P25 band plan, or source ID list (**Radio IDs**, kind `src`) to a system.
 Files are picked with the system document picker and copied into app-private storage (`files/imports/`), so the
 original can live anywhere (Downloads, Drive, …) and is not read again
-after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
+after import — use "Update from file" to pull in a changed original (a talkgroup list or a target list is updated only
+while the decoder is stopped, because the running decoder uses it). Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
 "No usable rows". While a session is running, open the monitor's session menu and choose **Edit saved system**; saving
 applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
