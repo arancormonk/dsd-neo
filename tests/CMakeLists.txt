@@ -8184,6 +8184,32 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_EDACS_FAILED_GRANT_STALL
         COMMAND dsd-neo_test_engine_edacs_failed_grant_stall
     )
+    # Discussion #748: an NXDN voice channel that is also another site's
+    # control channel must not keep the receiver after the call's end is missed.
+    add_executable(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        engine/test_engine_nxdn_foreign_control_return.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=getDibitSoft"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_NXDN_FOREIGN_CONTROL_RETURN
+        COMMAND dsd-neo_test_engine_nxdn_foreign_control_return
+    )
     add_executable(
         dsd-neo_test_engine_cold_start_hunt
         engine/test_engine_cold_start_hunt.c

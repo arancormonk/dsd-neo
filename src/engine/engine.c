@@ -3280,9 +3280,34 @@ receive_admitted_still_heard(const dsd_opts* opts, const dsd_state* state, doubl
            || dsd_call_state_admitted_call_active(opts, state, now_m, hangtime_s);
 }
 
+/* Whether a followed NXDN voice channel is held only by another channel's control traffic (discussion #748): a site's
+   voice channel can be another site's control channel, which keeps NXDN sync on it once the call's end was missed, so
+   noCarrier() never runs. Another channel's control frame heard there since the call's last voice, and nothing of the
+   call within the hangtime, lets it go. A call on this site's own composite control channel is never another channel's
+   (dsd_nxdn_control_heard_is_foreign()). The marker is read first: without it this costs one load. */
+static int
+nxdn_foreign_control_release_due(const dsd_opts* opts, const dsd_state* state) {
+    const double foreign_m = dsd_nxdn_foreign_control_last_m(state);
+    if (foreign_m <= 0.0 || foreign_m <= state->last_vc_sync_time_m) {
+        return 0;
+    }
+    const int protocol = state->synctype != DSD_SYNC_NONE ? state->synctype : state->lastsynctype;
+    if (!DSD_SYNC_IS_NXDN(protocol) || !dsd_nxdn_control_heard_is_foreign(opts, state)) {
+        return 0;
+    }
+    return no_carrier_is_cc_return_due(opts, state, dsd_decode_time())
+           && !receive_admitted_still_heard(opts, state, dsd_decode_now_mono_s());
+}
+
 int
 dsd_engine_trunk_receive_release_due(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned != 1 || !dsd_receive_filters_enabled(opts)) {
+    if (!opts || !state || opts->trunk_enable != 1 || opts->trunk_is_tuned != 1) {
+        return 0;
+    }
+    if (nxdn_foreign_control_release_due(opts, state)) {
+        return 1;
+    }
+    if (!dsd_receive_filters_enabled(opts)) {
         return 0;
     }
     /* Only admitted voice stamps the voice channel's activity (the DMR and NXDN voice paths), with the deadline
