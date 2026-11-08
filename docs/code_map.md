@@ -9730,15 +9730,15 @@ is followed until it names its control channel; `tetra_forget_carrier()` keeps i
 cell shares it. The cells of a network may share a colour code, so a SYSINFO naming another main carrier (the cell's,
 clause 21.4.4.1) or another location area than the cell's known one is another cell too, which forgets the same before
 the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). While the trunking state
-machine guards a follow, neither BSCH nor SYSINFO of another cell is taken on from the followed carrier, and they
-forget nothing (Trunking, "Another cell on the followed carrier"). Another cell is also another carrier, whatever the
-engine saw (a radio retuned outside the decoder),
-so what the last carrier's speech left goes as at a carrier boundary: its timeslots' signalling encryption, the heard
-timeslot with the heard or anonymous canonical call (`tetra_calls_forget_trunked_carrier()`), the speech in progress,
-the followed call's proof on the carrier, and the encryption mode the last cell's signalling showed. A DSB that puts a
-trunked carrier in direct mode (`tetra_enter_dmo()` in `tetra.c`) forgets the same of the trunked carrier, its partial
-TM-SDUs too, and stops the TDMA clock; a BSCH of a trunked system code or an uplink SCH/HU that ends direct mode
-forgets the direct mode channel's (`tetra_dmo_leave()`). A BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
+machine guards a follow, neither BSCH nor SYSINFO of another cell is taken on from the followed carrier, and they forget
+nothing (Trunking, "Another cell on the followed carrier"). Another cell is also another carrier, whatever the engine
+saw (a radio retuned outside the decoder), so what the last carrier's speech left goes as at a carrier boundary: its
+timeslots' signalling encryption, the heard timeslot with the heard or anonymous canonical call
+(`tetra_calls_forget_trunked_carrier()`), the speech in progress, the followed call's proof on the carrier, and the
+encryption mode the last cell's signalling showed. A DSB that puts a trunked carrier in direct mode (`tetra_enter_dmo()`
+in `tetra.c`) forgets the same of the trunked carrier, its partial TM-SDUs too, and stops the TDMA clock; a BSCH of a
+trunked system code or an uplink SCH/HU that ends direct mode forgets the direct mode channel's (`tetra_dmo_leave()`). A
+BSCH naming another network (MCC or MNC) also forgets what that network's SwMI numbers: a downlink
 SSI is a party of the current network and the call identifiers are the SwMI's (EN 300 392-2 clause 14.2.3), so the
 call records end, with the state machine's follow of their identifiers, the heard call and the speech in progress
 (`tetra_calls_forget_calls()`), and so do the concatenated short data being reassembled
@@ -9934,17 +9934,17 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   (`sm_restore_receiver()`, `tetra_sm_receiver_snapshot::staged_trunk_cc_freq`). The manual Return to CC, skip and
   lockout read the home through `current_cc_freq()` in `app_command_queue.c` and set `trunk_cc_freq` to it before the
   hand-over (`hand_tetra_sm_home()`), so the machine rests ON_CC there. `dsd_app_cc_freq()`, which the call view and the
-  status readouts use on frontend snapshots, carries no TETRA state and reads `trunk_cc_freq` alone: while the machine
-  guards the follow nothing on the carrier rewrites that, and with trunking off it can show another cell's control
-  channel until trunking is on again. Trunking turned on again while TUNED with a home (`sm_trunking_back_on()`, from
-  `sm_note_trunking()` in the tick, the grant and SYSINFO entries and the burst's end, and from
-  `tetra_sm_on_trunking_on()` in the trunk commands) ends the follow at once: the call was let go when trunking went off
-  (`sm_hold_untrunked()`), and what the carrier delivered since (another cell, direct mode, another location area)
-  cannot be trusted. `trunk_cc_freq` is the home's again at once, and until the return home completes the machine is
-  `return_required`: grants are refused, speech and maintenance stamp nothing, and the tick asks for the return at every
-  pass, again after one refused, deferred or failed (a failed return's rollback keeps the flag). A follow on the home
-  control channel's own carrier stops there without a tune and forgets the carrier and the cell
-  (`tetra_forget_carrier()`, `tetra_bsch_forget_cell()`), so the home's SYNC and SYSINFO are taken on again.
+  status readouts use on frontend snapshots, carries no TETRA state and never reads the home: it reads `trunk_cc_freq`,
+  else `p25_cc_freq`. While the machine guards the follow nothing on the carrier rewrites `trunk_cc_freq`, and with
+  trunking off it can show another cell's control channel until trunking is on again. Trunking turned on again while
+  TUNED with a home (`sm_trunking_back_on()`, from `sm_note_trunking()` in the tick, the grant and SYSINFO entries and
+  the burst's end, and from `tetra_sm_on_trunking_on()` in the trunk commands) ends the follow at once: the call was let
+  go when trunking went off (`sm_hold_untrunked()`), and what the carrier delivered since (another cell, direct mode,
+  another location area) cannot be trusted. `trunk_cc_freq` is the home's again at once, and until the return home
+  completes the machine is `return_required`: grants are refused, speech and maintenance restart no timer, and the tick
+  asks for the return at every pass, again after one refused, deferred or failed (a failed return's rollback keeps the
+  flag). A follow on the home control channel's own carrier stops there without a tune and forgets the carrier and the
+  cell (`tetra_forget_carrier()`, `tetra_bsch_forget_cell()`), so the home's SYNC and SYSINFO are taken on again.
 - Another cell on the followed carrier. TETRA cells reuse frequencies, so the traffic carrier of a followed call can
   carry another cell's bursts too. The machine guards a follow (`tetra_sm_guarding()`) while trunking is on and
   `tetra_sm_return_cc_hz()` names a home; then what another cell sends there is not taken on as the session's cell.
@@ -9982,8 +9982,9 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
     timeout runs out at most `TETRA_SM_GRANT_TIMEOUT_S` (4 s) after the last home evidence; a live home carrier sends
     its SYNC about once a second, so a call set up and silent keeps its channel. One carrying the call's marker counts
     toward N.213 only within 4 s of that evidence (`tetra_sm_aach_corroborated()`); otherwise it breaks the run and
-    neither restarts T.212 nor clears the N.212 count, so it keeps no permission alive. Adverse AACH evidence (N.208,
-    N.212) acts as before: it is the standard's own rule, and leaving early only returns home.
+    neither restarts T.212 nor clears the N.212 count, so it keeps no permission alive. Adverse AACH evidence acts as
+    before, the standard's own rule: N.208 ends the follow and returns home (`calls_leave_lost_channel()`), N.212 takes
+    back the receive permission, muting the call without ending the follow.
 - Channel allocations for another cell. A readable channel allocation with its cell change flag set moves an MS to
   another cell (clause 23.5.4.1, an announced type 1 cell reselection), which this decoder does not follow.
   `read_allocation()` reads it as `TETRA_ALLOC_OTHER_CELL`, guarding or not, and its PDU (a MAC-RESOURCE, or the MAC-END
@@ -10017,8 +10018,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
     identity, so its own BSCH counts as another cell's for that call (no identity update, no clock anchor from it
     there); its blocks still decode, since colour code 0 scrambles without the network.
   - The AACH. Within 4 s of the home evidence another cell's AACH words still count for maintenance and N.213, and
-    adverse ones (N.208, N.212) can end a live call early, as noise can; the follow then returns home. Speech counts as
-    home evidence on its CRC and the speech decoder's re-encode check (`TETRA_TCH_MAX_MISMATCH`,
+    adverse ones can end a live call early (N.208; the follow then returns home) or mute it (N.212), as noise can.
+    Speech counts as home evidence on its CRC and the speech decoder's re-encode check (`TETRA_TCH_MAX_MISMATCH`,
     `TETRA_HALF_MAX_MISMATCH`), which no test drives with encoded speech bursts: there is no TCH encoder.
   - Direct mode and another cell's BSCH. A guarded DSB is consumed, but `tetra_sb_bsch()` still leaves direct mode
     (`tetra_dmo_leave()`) before it parses a BSCH that turns out another cell's. Direct mode on a guarded carrier exists
