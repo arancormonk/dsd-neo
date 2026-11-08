@@ -21,6 +21,14 @@ Item {
         id: home
         anchors.fill: parent
     }
+    // Changed once per frame wanted, so the window draws while Home is hidden.
+    Rectangle {
+        id: ticker
+        width: 1
+        height: 1
+        z: 10
+        color: "black"
+    }
     SignalSpy {
         id: started
         target: home
@@ -55,6 +63,13 @@ Item {
             root.width = 700;
             root.height = 900;
             Ui.Theme.resetFontScale();
+        }
+        // Draws @a count frames while Home stays as it is: every polish a hidden Home would see runs in them.
+        function waitFrames(count) {
+            for (var i = 0; i < count; ++i) {
+                ticker.color = ticker.color === Qt.color("black") ? "white" : "black";
+                verify(waitForRendering(ticker), "frame " + i);
+            }
         }
         function emptyModels() {
             while (savedSystems.count)
@@ -671,8 +686,7 @@ Item {
                 compare(body().contentHeight - body().height >= scrolled, true, "the hidden body still scrolls that far");
                 compare(body().contentY, scrolled, "the hidden body keeps its place");
                 // And still after the hidden body's next layout passes: the cards keep their heights (issue #646 B1).
-                verify(waitForPolish(root.Window.window));
-                wait(100);
+                waitFrames(3);
                 compare(strip().height, stripHeight, "the hidden strip keeps its height through a layout");
                 compare(body().contentHeight - body().height >= scrolled, true, "the hidden body still scrolls that far after a layout");
                 compare(body().contentY, scrolled, "the hidden body keeps its place through a layout");

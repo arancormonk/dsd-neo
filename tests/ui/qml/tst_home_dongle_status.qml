@@ -16,6 +16,14 @@ Item {
     height: 900
     Ui.HomeScreen { id: home; anchors.fill: parent }
     Ui.OnboardingScreen { id: onboarding; anchors.fill: parent; visible: false }
+    // Changed once per frame wanted, so the window draws while Home is hidden.
+    Rectangle {
+        id: ticker
+        width: 1
+        height: 1
+        z: 10
+        color: "black"
+    }
     SignalSpy { id: exploreStarted; target: home; signalName: "explore" }
     SignalSpy { id: exploreEdited; target: home; signalName: "exploreSetup" }
     TestCase {
@@ -44,6 +52,13 @@ Item {
             Ui.Theme.resetFontScale();
             home.visible = true;
             onboarding.visible = false;
+        }
+        // Draws @a count frames while Home stays as it is: every polish a hidden Home would see runs in them.
+        function waitFrames(count) {
+            for (var i = 0; i < count; ++i) {
+                ticker.color = ticker.color === Qt.color("black") ? "white" : "black";
+                verify(waitForRendering(ticker), "frame " + i);
+            }
         }
         function test_cleanup_restores_platform_font_binding() {
             var previousFont = testContext.applicationFont();
@@ -472,8 +487,7 @@ Item {
                 compare(panel.height, panelHeight, "the hidden details panel keeps its height");
                 compare(body.contentHeight - body.height >= scrolled, true, "the hidden body still scrolls that far");
                 // And still after the hidden body's next layout passes (issue #646 B1).
-                verify(waitForPolish(root.Window.window));
-                wait(100);
+                waitFrames(3);
                 compare(header.height, headerHeight, "the header keeps its height through a layout while hidden");
                 compare(panel.height, panelHeight, "the details panel keeps its height through a layout while hidden");
                 compare(body.contentY, scrolled, "the hidden body keeps its place through a layout");
