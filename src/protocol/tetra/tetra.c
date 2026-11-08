@@ -301,11 +301,13 @@ tetra_nb_subtype(dsd_state* state, const tetra_nb_ctx* ctx, const char* what) {
    them (EN 300 392-2 clause 8.2.5.2), and the seed names all three. So a followed traffic carrier, whose access code the
    trunk tune dropped, names its colour code again, an uplink carrier, which has no BSCH, names its cell at all, and a
    --tetra-net preset is received identity once a block descrambled with it passed (never before). Noted before the MAC
-   acts on the block, which may move the receiver. */
+   acts on the block, which may move the receiver. Colour code 0 scrambles with the predefined all-zero vector whatever
+   the network (EN 300 392-2 table 21.76 note 1), so a block that passed with it proves nothing about the MCC and MNC;
+   only a BSCH names such a cell. */
 static void
 tetra_note_proven_cell(dsd_state* state, uint32_t seed) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (ts == NULL || ts->dmo || !ts->net_known || ts->lfsr_seed != seed) {
+    if (ts == NULL || ts->dmo || !ts->net_known || ts->colour == 0u || ts->lfsr_seed != seed) {
         return;
     }
     dsd_rxid_note_tetra_cell(state, ts->mcc, ts->mnc, ts->colour);

@@ -467,6 +467,61 @@ test_crc_passed_block_proves_the_cell(void) {
     session_close(&s);
 }
 
+/* A BSCH (SB1) for network 460/4242 and colour code @p colour: the synchronisation PDU of EN 300 392-2 table 21.75,
+ * which is scrambled with the all-zero vector whatever the cell (clause 8.2.5.2). */
+static void
+encode_bsch(uint8_t colour, uint8_t* dibits) {
+    ttb_block b = {0};
+    ttb_put(&b, 0, 4);      /* system code */
+    ttb_put(&b, colour, 6); /* colour code */
+    ttb_put(&b, 0, 2);      /* TN 1 */
+    ttb_put(&b, 1, 5);      /* FN 1 */
+    ttb_put(&b, 1, 6);      /* MN 1 */
+    ttb_put(&b, 0, 8);      /* sharing mode ... reserved */
+    ttb_put(&b, 460, 10);
+    ttb_put(&b, 4242, 14);
+    ttb_put(&b, 0, 5);
+    encode_signalling(b.bits, 60, 120, 11, 3u, dibits);
+}
+
+/* Colour code 0 is predefined scrambling: every block of the cell is scrambled with all-zero e(1)..e(30), not with its
+ * MCC and MNC (EN 300 392-2 table 21.76 note 1). A BSCH of such a cell names it, and its block 2 decodes; a block
+ * that passed with the predefined vector proves nothing about the network, so a --tetra-net preset, right or wrong,
+ * names no MCC and MNC from it. */
+static void
+test_colour_zero_cell_scrambles_predefined(void) {
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t block2[BLOCK_DIBITS];
+    uint8_t mac[TTB_SCH_HD_BITS] = {0};
+    encode_bsch(0U, bsch);
+    encode_sch_hd(mac, 3u, block2);
+
+    session s = session_open();
+    assert(sync_burst(&s, bsch, block2) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->net_known && ts->colour == 0U && ts->lfsr_seed == 3u);
+    assert(rxid_names_cell(s.state, 0U));
+    assert(ts->decode_ok >= 2U); /* the BSCH and block 2 */
+    session_close(&s);
+
+    /* A preset naming the network, a wrong one, and the all-zero one: the block passes in each, the cell is not named. */
+    static const uint16_t k_mcc[] = {460U, 262U, 0U};
+    static const uint16_t k_mnc[] = {4242U, 1001U, 0U};
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    for (size_t i = 0; i < sizeof k_mcc / sizeof k_mcc[0]; i++) {
+        s = session_open();
+        s.opts->tetra_net_preset = 1;
+        s.opts->tetra_net_mcc = k_mcc[i];
+        s.opts->tetra_net_mnc = k_mnc[i];
+        s.opts->tetra_net_colour = 0U;
+        (void)nts2_burst(&s, zeros, zeros);
+        assert(tetra_st_existing(s.state)->lfsr_seed == 3u);
+        assert(nts2_burst(&s, zeros, block2) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(s.state->rx_id.valid == 0U);
+        session_close(&s);
+    }
+}
+
 enum { CB_HALF_DIBITS = 42, SCH_HU_BITS = 92 };
 
 /* A control uplink burst (--tetra-uplink, network 460/4242 colour code 17 preset) whose 84 coded dibits are @p coded,
@@ -1339,6 +1394,7 @@ main(void) {
     test_normal_burst_failure_and_colour();
     test_failed_bsch_runs_the_clock();
     test_crc_passed_block_proves_the_cell();
+    test_colour_zero_cell_scrambles_predefined();
     test_control_burst_tells_the_polarity();
     test_control_burst_publishes_its_mode();
     test_control_burst_leaves_direct_mode();

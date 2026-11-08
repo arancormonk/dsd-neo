@@ -9156,7 +9156,9 @@ the message passed its own check, with that message's values, an unchanged repea
   downlink or uplink (a NUB's MAC block, a control uplink burst's SCH/HU), whose CRC passed once descrambled with the
   network's extended colour code (`tetra_note_proven_cell()` in `tetra.c`, before the MAC acts on it): every carrier of
   a cell, uplink included, scrambles with its MCC, MNC and colour code, so such a block proves all three on this
-  carrier, and an uplink carrier, which has no BSCH, names its cell this way only. A followed traffic carrier, whose
+  carrier, and an uplink carrier, which has no BSCH, names its cell this way only. Colour code 0 is the exception: it
+  scrambles with the predefined all-zero vector whatever the network (`tetra_compute_scramb_seed()`), so a block proves
+  no MCC or MNC there and only a BSCH names such a cell. A followed traffic carrier, whose
   colour code the trunk tune dropped, names it again with its next checked block. A SYSINFO notes the location area,
   and the control channel only when the tuner is on the main carrier it names; a checked direct mode burst
   (`tetra_dmo_apply_sync()`) drops a TETRA record. A `--tetra-net` preset notes nothing by itself: it becomes received
