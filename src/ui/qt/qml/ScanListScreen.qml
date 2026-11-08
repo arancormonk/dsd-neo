@@ -811,7 +811,8 @@ Rectangle {
                     objectName: "scanAdvancedToggle"
                     width: parent.width
                     height: Math.max(66, advHeading.implicitHeight + 24)
-                    activeFocusOnTab: Navigation.allows(advHeader) && enabled
+                    // Held while it has the focus (see OutlineButton).
+                    activeFocusOnTab: (Navigation.allows(advHeader) && enabled) || activeFocus
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Advanced")
                     // What it holds, as its second line says, then its state.

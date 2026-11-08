@@ -10,7 +10,8 @@ Item {
     property string text: ""
     signal clicked
 
-    activeFocusOnTab: Navigation.allows(control) && enabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: text
     // Issue #782: focusable only while in the tree, so a copy Android still

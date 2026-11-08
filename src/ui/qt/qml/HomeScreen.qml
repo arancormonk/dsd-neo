@@ -216,7 +216,8 @@ Item {
             // A tab stop whatever its state: pressing it opens Android's prompt,
             // which makes it inert under the user's focus, and focus stays put
             // as on any control. The role and activate() say whether it acts.
-            activeFocusOnTab: visible && navigationAllowed
+            // Held while it has the focus (see OutlineButton).
+            activeFocusOnTab: (visible && navigationAllowed) || activeFocus
             Accessible.role: deviceStatus.canAct ? Accessible.Button : Accessible.StaticText
             Accessible.name: deviceStatus.accessibleName
             Accessible.description: deviceStatus.detailText

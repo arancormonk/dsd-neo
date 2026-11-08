@@ -15,7 +15,8 @@ Item {
         if (enabled && interactive && Navigation.allows(control))
             toggled(!checked);
     }
-    activeFocusOnTab: Navigation.allows(control) && enabled && interactive
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(control) && enabled && interactive) || activeFocus
     Accessible.role: Accessible.Switch
     Accessible.name: accessibleName
     Accessible.checkable: true

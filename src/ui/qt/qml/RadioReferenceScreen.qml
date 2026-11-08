@@ -1023,7 +1023,8 @@ Item {
                 readonly property bool navigationAllowed: Navigation.allows(backToResults)
                 Accessible.ignored: !navigationAllowed
                 Accessible.onPressAction: goBack()
-                activeFocusOnTab: Navigation.allows(backToResults) && !radioReference.busy
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(backToResults) && !radioReference.busy) || activeFocus
                 Keys.onReturnPressed: goBack()
                 Keys.onEnterPressed: goBack()
                 Keys.onSpacePressed: goBack()

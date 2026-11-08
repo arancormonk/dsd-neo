@@ -38,7 +38,8 @@ Rectangle {
                 width: nav.vertical ? nav.width : nav.width / 3
                 height: nav.vertical ? Math.max(84, Theme.fontSize(11) + 56) : nav.height
 
-                activeFocusOnTab: Navigation.allows(nav) && enabled
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(nav) && enabled) || activeFocus
                 // Issue #646: a radio button, checked while its screen shows.
                 // Qt 6.11.3's Android bridge has no tab role and drops
                 // `selected`, so as a page tab TalkBack read the name alone; it

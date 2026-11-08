@@ -19,9 +19,22 @@ Item {
     height: 900
 
     // Stands in for an open sheet: the top modal, which none of the controls
-    // below is inside, so Navigation.allows() refuses them all.
+    // below is inside, so Navigation.allows() refuses them all. The field is
+    // where the sheet takes the focus.
     Item {
         id: blocker
+
+        y: 860
+        width: 100
+        height: 30
+
+        TextInput {
+            id: sheetField
+
+            width: parent.width
+            height: parent.height
+            activeFocusOnTab: true
+        }
     }
 
     Column {
@@ -71,6 +84,19 @@ Item {
 
             title: "Background listening"
         }
+        Ui.IconButton {
+            id: iconButton
+        }
+        Ui.DecodeChip {
+            id: decodeChip
+
+            text: "P25"
+        }
+        Ui.FilterPill {
+            id: filterPill
+
+            text: "All"
+        }
     }
 
     SignalSpy {
@@ -91,9 +117,15 @@ Item {
         name: "KeypadEnter"
         when: windowShown
 
+        // A control that keeps the focus as a sheet opens over it holds its Tab
+        // stop until the focus leaves; Qt warns when a binding asks to drop the
+        // stop of the item holding the focus.
+        function init() {
+            failOnWarning(/activeFocusOnTab/);
+        }
         function cleanup() {
             Ui.Navigation.removeModal(blocker);
-            for (var control of [segmented, nav, dashed, play, callRow, disclosure, plexSwitch, toggleRow]) {
+            for (var control of [segmented, nav, dashed, play, callRow, disclosure, plexSwitch, toggleRow, iconButton, decodeChip, filterPill]) {
                 control.enabled = true;
                 control.visible = true;
             }
@@ -126,13 +158,9 @@ Item {
             return found;
         }
 
-        // Stands in for a sheet opening over the focused control. A control
-        // whose Tab stop follows the navigation gate alone asks to drop it
-        // here, which Qt refuses (and says so) for the item holding the
-        // focus; the focus stays, so its keys still reach it.
-        function cover(target, dropsTabStop) {
-            if (dropsTabStop)
-                ignoreWarning("QQuickItem: Cannot set activeFocusOnTab to false once item is the active focus item.");
+        // Stands in for a sheet opening over the focused control, which keeps
+        // the focus (and so its keys) until the sheet takes it.
+        function cover() {
             Ui.Navigation.addModal(blocker);
         }
 
@@ -148,7 +176,7 @@ Item {
             keyClick(Qt.Key_Space);
             compare(spy.count, 3, tag + ": Space presses it");
 
-            cover(target, true);
+            cover();
             verify(target.activeFocus, tag + " keeps its focus under the sheet");
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
             keyClick(Qt.Key_Return);
@@ -222,12 +250,78 @@ Item {
             }
         }
 
+        // A control covered by a sheet while it has the focus keeps its Tab stop
+        // only while it keeps the focus: once the sheet takes the focus, Tab
+        // cannot land back on the control under it. Shown again, it is a stop.
+        function test_a_covered_control_is_no_tab_stop_once_focus_leaves_data() {
+            return [
+                {
+                    tag: "SegmentedControl",
+                    control: segmented,
+                    choice: 1
+                },
+                {
+                    tag: "BottomNav",
+                    control: nav,
+                    choice: 1
+                },
+                {
+                    tag: "DashedActionButton",
+                    control: dashed
+                },
+                {
+                    tag: "PlayCircle",
+                    control: play
+                },
+                {
+                    tag: "CallRow",
+                    control: callRow
+                },
+                {
+                    tag: "DisclosureRow",
+                    control: disclosure
+                },
+                {
+                    tag: "PlexSwitch",
+                    control: plexSwitch
+                },
+                {
+                    tag: "ToggleRow",
+                    control: toggleRow
+                },
+                {
+                    tag: "IconButton",
+                    control: iconButton
+                },
+                {
+                    tag: "DecodeChip",
+                    control: decodeChip
+                },
+                {
+                    tag: "FilterPill",
+                    control: filterPill
+                }
+            ];
+        }
+        function test_a_covered_control_is_no_tab_stop_once_focus_leaves(data) {
+            var target = data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control;
+            verify(target !== null);
+            verify(target.activeFocusOnTab, data.tag + " is a Tab stop");
+            target.forceActiveFocus();
+            cover();
+            verify(target.activeFocusOnTab, data.tag + " holds its stop while it has the focus");
+            sheetField.forceActiveFocus();
+            verify(sheetField.activeFocus, "the sheet takes the focus");
+            verify(!target.activeFocusOnTab, data.tag + " is no Tab stop under the sheet");
+            Ui.Navigation.removeModal(blocker);
+            verify(target.activeFocusOnTab, data.tag + " is a Tab stop again");
+        }
+
         // DisclosureRow's own gate (a row that goes nowhere right now).
         function test_a_disclosure_that_goes_nowhere_ignores_keypad_enter() {
             spy.target = disclosure;
             spy.signalName = "tapped";
             disclosure.forceActiveFocus();
-            ignoreWarning("QQuickItem: Cannot set activeFocusOnTab to false once item is the active focus item.");
             disclosure.tapEnabled = false;
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
             compare(spy.count, 0);
@@ -286,11 +380,11 @@ Item {
         // Each screen button that takes Return: under a sheet no key presses it,
         // then keypad Enter does, once. `effect` reads how many times it has
         // acted. Covered first, since a press can close what holds the button.
-        function enterActsOnce(tag, target, effect, dropsTabStop) {
+        function enterActsOnce(tag, target, effect) {
             target.forceActiveFocus();
             verify(target.activeFocus, tag + " takes focus");
             var before = effect();
-            cover(target, dropsTabStop !== false);
+            cover();
             verify(target.activeFocus, tag + " keeps its focus under the sheet");
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
             keyClick(Qt.Key_Return);
@@ -370,7 +464,7 @@ Item {
             spy.signalName = "chosen";
             enterActsOnce("Browse row", item(browse, "browseRow0"), function () {
                 return spy.count;
-            }, false);
+            });
             // A chosen country opens the next level; close every level.
             for (var level of ["radioReferenceCountrySheet", "radioReferenceStateSheet", "radioReferenceCountySheet"])
                 item(screen, level).visible = false;
@@ -424,7 +518,7 @@ Item {
             screen.selectedSitesChanged.connect(toggled);
             enterActsOnce("Site row", siteRow, function () {
                 return toggles;
-            }, false);
+            });
             screen.selectedSitesChanged.disconnect(toggled);
 
             // Leaving with a site chosen asks first: the question is the press.

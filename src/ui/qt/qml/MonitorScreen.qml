@@ -660,7 +660,8 @@ Item {
                     id: spectrumPill
 
                     objectName: "openSpectrumButton"
-                    activeFocusOnTab: Navigation.allows(spectrumPill) && enabled
+                    // Held while it has the focus (see OutlineButton).
+                    activeFocusOnTab: (Navigation.allows(spectrumPill) && enabled) || activeFocus
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Spectrum")
                     readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
@@ -1726,7 +1727,8 @@ Item {
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, decryptionLabel.implicitHeight + 20)
                 enabled: decoderHost.running
-                activeFocusOnTab: Navigation.allows(decryptionRow) && enabled
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(decryptionRow) && enabled) || activeFocus
                 Accessible.role: Accessible.Button
                 Accessible.name: qsTr("Decryption · %1").arg(keySheet.effectiveState)
                 readonly property bool navigationAllowed: Navigation.allows(decryptionRow)

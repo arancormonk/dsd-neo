@@ -13,7 +13,8 @@ Item {
     property bool showPause: false
     property string accessibleName: qsTr("Listen")
     signal clicked
-    activeFocusOnTab: Navigation.allows(control) && enabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     readonly property bool navigationAllowed: Navigation.allows(control)

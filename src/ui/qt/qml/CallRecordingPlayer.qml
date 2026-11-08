@@ -406,7 +406,8 @@ Column {
                     height: Theme.minimumTouchSize
                     y: (parent.height - height) / 2
                     enabled: seekable
-                    activeFocusOnTab: Navigation.allows(seekBar) && seekable
+                    // Held while it has the focus (see OutlineButton).
+                    activeFocusOnTab: (Navigation.allows(seekBar) && seekable) || activeFocus
                     Accessible.role: Accessible.Slider
                     Accessible.name: qsTr("Position")
                     Accessible.description: player.spokenTimeText

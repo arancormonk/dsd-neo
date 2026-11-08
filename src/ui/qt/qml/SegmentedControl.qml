@@ -46,7 +46,8 @@ Rectangle {
                 readonly property real textHeight: segmentLabel.height
                 onTextHeightChanged: Qt.callLater(control.measureLabels)
 
-                activeFocusOnTab: Navigation.allows(control) && enabled
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
                 Accessible.role: Accessible.RadioButton
                 Accessible.name: modelData
                 Accessible.checkable: true
