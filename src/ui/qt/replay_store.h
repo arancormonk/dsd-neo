@@ -78,7 +78,8 @@ class ReplayStore : public QObject {
      * copy runs at a time.
      *
      * The result holds ok, path and name, else error: "too_large" (neededBytes: the size plus kReserveBytes, -1 when
-     * the size is unknown; freeBytes), "local" (noSpace: the device filled during the copy), "read" or "cancelled".
+     * the size is unknown; freeBytes; reserveBytes, kReserveBytes, so a message can name the size and the reserve),
+     * "local" (noSpace: the device filled during the copy), "read" or "cancelled".
      *
      * @return The request id, positive.
      */
@@ -134,7 +135,10 @@ class ReplayStore : public QObject {
     void setFreeSpace(FreeSpace freeSpace);
 
   Q_SIGNALS:
-    /** @brief The answer to beginReplayImport() @p id: ok, path, name, error, noSpace, neededBytes, freeBytes. */
+    /**
+     * @brief The answer to beginReplayImport() @p id: ok, path, name, error, noSpace, neededBytes, freeBytes,
+     * reserveBytes.
+     */
     void replayImportFinished(int id, const QVariantMap& result);
     void progressChanged();
 

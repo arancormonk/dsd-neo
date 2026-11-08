@@ -75,17 +75,44 @@ Item {
             tc.wizard.beginReplay(reference, reference.substring(reference.lastIndexOf('/') + 1));
         }
 
-        function test_browse_hands_on_the_pick() {
+        // A local file (the desktop's pick) is used where it is: the store
+        // answers with its path on the next turn and copies nothing, so the
+        // row never shows a copy, not even for that turn, and Continue stays.
+        function test_browse_uses_a_local_file_without_a_copy() {
             var path = testContext.writeFixtureCsv("browse-capture.wav", "RIFF");
+            tc.wizard.fileText = "/data/before.wav";
+            var progress = item("wizardReplayProgress");
+            var watch = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"visibleChanged\" }", root);
+            watch.target = progress;
             var picker = item("wizardReplayPicker");
             picker.selectedFile = "file://" + path;
             picker.accepted();
             compare(testContext.replayCalls().begins, 1);
             compare(testContext.replayCalls().reference, "file://" + path);
-            compare(replayFiles.copyName, "browse-capture.wav", "the picked name goes with it");
-            verify(tc.wizard.replayCopying);
-            verify(testContext.finishReplay({ok: true, path: path}));
-            compare(tc.wizard.fileText, path);
+            verify(!progress.visible, "no copy shows for a local file");
+            verify(item("wizardReplayBrowse").enabled);
+            verify(item("wizardContinue").inputValid, "Continue does not flicker off");
+            tryCompare(tc.wizard, "fileText", path);
+            compare(watch.count, 0, "the copy row never showed");
+            verify(!tc.wizard.replayPending);
+            watch.destroy();
+        }
+
+        // The copy belongs to the File source: picking another source cancels
+        // it, so Continue does not wait on a copy nothing shows.
+        function test_leaving_the_file_source_cancels_the_copy() {
+            tc.wizard.fileText = "/data/before.wav";
+            pickReplay("content://provider/document/cap.wav");
+            verify(!item("wizardContinue").inputValid, "Continue waits for the copy");
+            tc.wizard.sourceType = "usb";
+            compare(testContext.replayCalls().cancels, 1);
+            verify(!tc.wizard.replayPending);
+            verify(item("wizardContinue").inputValid, "Continue is back for the USB source");
+            verify(testContext.finishReplay({ok: true, path: "/data/replays/late.wav"}));
+            compare(tc.wizard.fileText, "/data/before.wav", "the dropped copy's answer is ignored");
+            tc.wizard.sourceType = "file";
+            verify(!item("wizardReplayProgress").visible);
+            compare(tc.wizard.replayNotice, "");
         }
 
         function test_sized_copy_shows_its_progress_then_the_file() {
@@ -119,7 +146,7 @@ Item {
         function test_failure_keeps_the_earlier_file_data() {
             return [
                 {tag: "read", result: {ok: false, error: "read"}, text: "Could not read cap.wav. Check that it is still available, then try again."},
-                {tag: "too large", result: {ok: false, error: "too_large", neededBytes: 3.9e9, freeBytes: 1.2e9}, text: "cap.wav is too large for the free space on this device. It needs 3.9 GB, and 1.2 GB is free."},
+                {tag: "too large", result: {ok: false, error: "too_large", neededBytes: 3.4e9 + 536870912, freeBytes: 1.2e9, reserveBytes: 536870912}, text: "cap.wav does not fit on this device. It is 3.4\u00a0GB and 1.2\u00a0GB is free, and DSD-neo always leaves 537\u00a0MB spare."},
                 {tag: "no space", result: {ok: false, error: "local", noSpace: true}, text: "Could not save a copy of cap.wav on this device. Free up some storage, then try again."}
             ];
         }
@@ -278,7 +305,7 @@ Item {
         function test_failures_say_why_data() {
             return [
                 {tag: "read", size: -1, text: "Could not read wizard-gone.csv. Check that it is still available, then try again."},
-                {tag: "too large", size: 32 * 1024 * 1024 + 1, text: "wizard-big.csv is too large to import. A CSV file can be up to 32 MiB."}
+                {tag: "too large", size: 32 * 1024 * 1024 + 1, text: "wizard-big.csv is too large to import. A CSV file can be up to 32\u00a0MiB."}
             ];
         }
         function test_failures_say_why(data) {

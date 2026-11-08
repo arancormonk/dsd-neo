@@ -955,6 +955,18 @@ importsDirPath() {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/imports");
 }
 
+/* Whether every request folder is gone; the worker removes each once its commit returned, so this waits a little. */
+bool
+stagingEmpty() {
+    const auto empty = []() {
+        return QDir(dsd_qt::ImportService::stagingRoot()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty();
+    };
+    for (int waits = 0; waits < 100 && !empty(); waits++) {
+        QThread::msleep(20);
+    }
+    return empty();
+}
+
 int
 storedFileCount() {
     return static_cast<int>(QDir(importsDirPath()).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot).size());
@@ -1056,7 +1068,9 @@ test_async_import_outcomes() {
 
     // A file where the staging root belongs: no request folder can be made, so nothing can be copied locally.
     const QString staging = dsd_qt::ImportService::stagingRoot();
-    expect("block the staging root", QDir(staging).removeRecursively() && write_file(staging, "not a folder"));
+    // Once the worker has removed the earlier requests' folders: a removal still running would race this one.
+    expect("block the staging root",
+           stagingEmpty() && QDir(staging).removeRecursively() && write_file(staging, "not a folder"));
     const QVariantMap local = importAndWait(model, groups, "county.csv", "group");
     expect("a copy this device cannot write is a local failure",
            !local.value("ok").toBool() && local.value("error") == "local");
@@ -1363,18 +1377,6 @@ libraryHoldsOnly(const QStringList& names) {
     QStringList expected = names;
     expected.sort();
     return found == expected;
-}
-
-/* Whether every request folder is gone; the worker removes each once its commit returned, so this waits a little. */
-bool
-stagingEmpty() {
-    const auto empty = []() {
-        return QDir(dsd_qt::ImportService::stagingRoot()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty();
-    };
-    for (int waits = 0; waits < 100 && !empty(); waits++) {
-        QThread::msleep(20);
-    }
-    return empty();
 }
 
 /* The companion a stored channel map's first row names in its column @p column, as a path. */

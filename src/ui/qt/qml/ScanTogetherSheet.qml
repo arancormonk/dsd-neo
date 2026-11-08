@@ -37,9 +37,10 @@ ModalSheet {
             sheet.revision++;
         }
     }
+    // Every library change, a file replaced in place included (#832).
     Connections {
         target: importedFiles
-        function onCountChanged() {
+        function onEntriesChanged() {
             sheet.revision++;
         }
     }

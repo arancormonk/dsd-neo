@@ -792,7 +792,12 @@ function importMessage(result, context) {
 
 // The import limits are whole MiB (backup::kMaxFileBytes and the bundle's).
 function mibText(bytes) {
-    return qsTr("%1 MiB").arg(Math.round((Number(bytes) || 0) / (1024 * 1024)))
+    return keptWhole(qsTr("%1 MiB").arg(Math.round((Number(bytes) || 0) / (1024 * 1024))))
+}
+
+// A figure and its unit kept on one line inside a wrapped message.
+function keptWhole(text) {
+    return text.replace(/ /g, "\u00a0")
 }
 
 // A CSV over its limit: one file over the per-file limit, or a CSV with its
@@ -805,13 +810,18 @@ function csvSizeMessage(result, name) {
                 : qsTr("This file is too large to import. A CSV file can be up to %1.").arg(mibText(limit || 32 * 1024 * 1024))
 }
 
-// A replay capture the free space cannot hold: with its size when known.
+// A replay capture the free space cannot hold. The store keeps some space
+// spare (reserveBytes) and counts it in neededBytes, so the numbers shown are
+// the file's own size, the free space and that spare part: a file smaller
+// than the free space then still reads as not fitting, and says why.
 function replaySpaceMessage(result, name) {
     var file = name || qsTr("this file")
-    var free = sizeText(result.freeBytes)
-    if (Number(result.neededBytes) > 0)
-        return qsTr("%1 is too large for the free space on this device. It needs %2, and %3 is free.").arg(file).arg(sizeText(result.neededBytes)).arg(free)
-    return qsTr("There is not enough free space on this device to copy %1. %2 is free.").arg(file).arg(free)
+    var free = keptWhole(sizeText(result.freeBytes))
+    var spare = keptWhole(sizeText(result.reserveBytes))
+    var size = Number(result.neededBytes) - (Number(result.reserveBytes) || 0)
+    if (Number(result.neededBytes) > 0 && size >= 0)
+        return qsTr("%1 does not fit on this device. It is %2 and %3 is free, and DSD-neo always leaves %4 spare.").arg(file).arg(keptWhole(sizeText(size))).arg(free).arg(spare)
+    return qsTr("There is not enough free space on this device to copy %1. %2 is free, and DSD-neo always leaves %3 spare.").arg(file).arg(free).arg(spare)
 }
 
 function localCopyMessage(noSpace, name) {

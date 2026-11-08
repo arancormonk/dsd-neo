@@ -195,6 +195,7 @@ stage_replay(const ImportJob& job, const QString& reference, const QString& hint
         auto result = failure(QStringLiteral("too_large"));
         result.insert(QStringLiteral("neededBytes"), qint64{-1});
         result.insert(QStringLiteral("freeBytes"), free);
+        result.insert(QStringLiteral("reserveBytes"), ReplayStore::kReserveBytes);
         result.insert(QStringLiteral("name"), sanitized_import_name(QString(), hint));
         return result;
     }
@@ -211,6 +212,7 @@ stage_replay(const ImportJob& job, const QString& reference, const QString& hint
             result.insert(QStringLiteral("neededBytes"),
                           copy.total >= 0 ? copy.total + ReplayStore::kReserveBytes : qint64{-1});
             result.insert(QStringLiteral("freeBytes"), free);
+            result.insert(QStringLiteral("reserveBytes"), ReplayStore::kReserveBytes);
             break;
         case DecoderHost::DocumentLocalFailed:
             result = failure(QStringLiteral("local"));

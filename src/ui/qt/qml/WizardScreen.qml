@@ -64,7 +64,13 @@ Item {
     // Step 1 state
     property var airspySettings: ({})
     property string sourceType: "usb"
-    onSourceTypeChanged: Navigation.clearInput(wizard.Window.window)
+    // A replay copy belongs to the File source: leaving it drops the copy, so
+    // nothing hidden keeps Continue waiting.
+    onSourceTypeChanged: {
+        Navigation.clearInput(wizard.Window.window);
+        if (sourceType !== "file")
+            dropReplay();
+    }
     property alias hostText: hostField.text
     property alias portText: portField.text
     property string fileText: ""
@@ -122,12 +128,16 @@ Item {
     // every close takes the next, so the answer to an import started before
     // is dropped rather than written into another system.
     property int generation: 0
-    // The replay copy in flight (0 when none), whether it was asked to stop,
-    // and why the last one failed, shown under the Replay file row.
+    // The replay pick waiting for its answer (0 when none), whether it was
+    // asked to stop, and why the last one failed, shown under the Replay file
+    // row. Only a provider's document is copied: a local file is answered at
+    // once, on the next turn, so the row shows a copy only while the store
+    // says one runs, and never flashes for a desktop pick.
     property int replayRequest: 0
     property bool replayCancelling: false
     property string replayNotice: ""
-    readonly property bool replayCopying: replayRequest > 0
+    readonly property bool replayPending: replayRequest > 0
+    readonly property bool replayCopying: replayPending && replayFiles.copying
 
     // Step 3 state
     property alias nameText: nameField.text
@@ -347,7 +357,11 @@ Item {
     function stopImports() {
         generation++;
         csvImport.cancel();
-        if (replayCopying)
+        dropReplay();
+    }
+    // Cancel the replay copy, if any, and forget its answer.
+    function dropReplay() {
+        if (replayPending)
             replayFiles.cancelReplayImport();
         replayRequest = 0;
         replayCancelling = false;
@@ -375,7 +389,7 @@ Item {
         replayRequest = replayFiles.beginReplayImport(reference, hint);
     }
     function cancelReplay() {
-        if (!replayCopying || replayCancelling)
+        if (!replayPending || replayCancelling)
             return;
         replayCancelling = true;
         replayFiles.cancelReplayImport();
@@ -530,7 +544,7 @@ Item {
     }
 
     function commit() {
-        if (!hangtimeValid() || !encryptionValid || replayCopying)
+        if (!hangtimeValid() || !encryptionValid || replayPending)
             return;
         var sys = {
             name: nameText.trim(),

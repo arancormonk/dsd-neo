@@ -500,7 +500,8 @@ class ReplayFilesFake : public QObject {
   public:
     using QObject::QObject;
 
-    /* As the store's: a copy still running is cancelled first, and answers "cancelled" later. */
+    /* As the store's: a copy still running is cancelled first, and answers "cancelled" later. A local file (a file://
+     * URL or an absolute path) is never copied: it is answered later with its own path, and no copy runs meanwhile. */
     Q_INVOKABLE int
     beginReplayImport(const QString& reference, const QString& fileName) {
         if (m_current != 0) {
@@ -514,6 +515,16 @@ class ReplayFilesFake : public QObject {
         }
         ++begins;
         lastReference = reference;
+        const QString local = dsd_qt::local_document_path(reference);
+        if (!local.isEmpty()) {
+            const int id = ++m_next;
+            const QVariantMap answer{{QStringLiteral("ok"), true},
+                                     {QStringLiteral("path"), QDir::cleanPath(local)},
+                                     {QStringLiteral("name"), QFileInfo(local).fileName()}};
+            QMetaObject::invokeMethod(
+                this, [this, id, answer]() { Q_EMIT replayImportFinished(id, answer); }, Qt::QueuedConnection);
+            return id;
+        }
         m_current = ++m_next;
         m_name = fileName;
         m_bytes = 0;

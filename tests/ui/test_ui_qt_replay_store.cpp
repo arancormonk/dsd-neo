@@ -565,6 +565,8 @@ test_not_enough_space() {
           "it needs its size and the reserve");
     CHECK(result.value(QStringLiteral("freeBytes")).toLongLong() == ReplayStore::kReserveBytes + 10,
           "the free space is answered");
+    CHECK(result.value(QStringLiteral("reserveBytes")).toLongLong() == ReplayStore::kReserveBytes,
+          "the reserve is answered, so the size can be told apart from it");
     CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("big.wav"), "the name is answered");
     // Not even the reserve free: refused before the document is opened, even an empty one.
     write_file(sources_dir() + QStringLiteral("/empty.wav"), QByteArray());
@@ -573,8 +575,9 @@ test_not_enough_space() {
     result = rig.import(QStringLiteral("content://test/empty.wav"), QStringLiteral("empty.wav"));
     CHECK(result.value(QStringLiteral("error")).toString() == QStringLiteral("too_large"), "less than the reserve");
     CHECK(result.value(QStringLiteral("neededBytes")).toLongLong() == -1
-              && result.value(QStringLiteral("freeBytes")).toLongLong() == ReplayStore::kReserveBytes / 2,
-          "the free space is answered, the size unknown");
+              && result.value(QStringLiteral("freeBytes")).toLongLong() == ReplayStore::kReserveBytes / 2
+              && result.value(QStringLiteral("reserveBytes")).toLongLong() == ReplayStore::kReserveBytes,
+          "the free space and the reserve are answered, the size unknown");
     CHECK(result.value(QStringLiteral("name")).toString() == QStringLiteral("empty.wav"),
           "the pick's name is answered");
     CHECK(rig.transport->copies().size() == opened, "the document is never opened");

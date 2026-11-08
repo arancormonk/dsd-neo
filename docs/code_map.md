@@ -12496,7 +12496,8 @@ Qt Quick frontend (`src/ui/qt`):
   no cap when free space cannot be read; with less than the reserve free the answer is `too_large` before the document
   is opened), then published into `replays/` (`ImportService::publish`) and recorded pending before the answer (an entry
   the list still holds for that name is stale, since the no-replace move proved the name free, and is replaced). Every
-  answer carries `name`. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`), `local` (`noSpace`),
+  answer carries `name`. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`, `reserveBytes`),
+  `local` (`noSpace`),
   `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`); `copying`, `copyName`,
   `copyBytes` and `copyTotal` (-1 unknown) come from `ImportService::progress(id)`, read every 250 ms while it runs, and
   `progressChanged` fires only on a change. The manifest `<AppData>/replay_copies.json` (`[{path, state}]`, Qt thread)

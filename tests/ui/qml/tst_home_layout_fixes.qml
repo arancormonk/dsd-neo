@@ -187,6 +187,31 @@ Item {
             compare(sites.x, x, "and shown again");
         }
 
+        // #832: the hint follows the library, a file replaced in place included. A user's own file over the
+        // RadioReference channel map is not RadioReference's any more, so the card stops asking for a refresh, though
+        // the replace leaves the library's size as it was.
+        function test_replaced_map_stops_offering_the_refresh() {
+            var generated = testContext.writeFixtureCsv("layout-rr-map.csv", "channel,frequency\n1,851012500\n");
+            var result = importedFiles.importGeneratedFile(generated, "Layout RR map.csv", "chan",
+                {origin: "radioreference", rrSid: 12, rrSiteIds: "16863", rrKind: "chan"});
+            verify(result.ok);
+            libraryPath = result.path;
+            addSystem("County map system", {trunking: true, chanCsvPath: libraryPath});
+            var card = cardNamed("County map system");
+            verify(card.refreshHint, "a RadioReference map asks for a refresh");
+            var spy = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"importFinished\" }", root);
+            spy.target = importedFiles;
+            var count = importedFiles.count;
+            var own = testContext.writeFixtureCsv("layout-own-map.csv", "channel,frequency\n1,851012500\n2,852012500\n");
+            importedFiles.beginImport(own, "layout-own-map.csv", "chan", {}, libraryPath);
+            tryCompare(spy, "count", 1);
+            verify(spy.signalArguments[0][1].ok, "the replace committed");
+            compare(importedFiles.count, count, "the replace keeps the library's size");
+            compare(importedFiles.get(importedFiles.rowForPath(libraryPath)).origin, "", "the file is the user's now");
+            verify(!card.refreshHint, "the card no longer offers the refresh");
+            spy.destroy();
+        }
+
         // B8: a card with the refresh hint holds its labels, its actions and the hint without any two meeting, at
         // every text size, on the narrowest phone.
         function test_refresh_hint_card_holds_its_parts_data() {

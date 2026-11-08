@@ -509,8 +509,8 @@ Item {
                 {tag: "ok", result: {ok: true, error: "", name: "Map.csv"}, text: ""},
                 {tag: "empty", result: {ok: true, error: "empty", name: "Map.csv"}, text: ""},
                 {tag: "cancelled", result: {ok: false, error: "cancelled", name: "Map.csv"}, text: ""},
-                {tag: "too large file", result: {ok: false, error: "too_large", name: "Map.csv", limitBytes: 32 * mib}, text: "Map.csv is too large to import. A CSV file can be up to 32 MiB."},
-                {tag: "too large bundle", result: {ok: false, error: "too_large", name: "Map.csv", limitBytes: 64 * mib}, text: "These files are too large to import together. A CSV and its companion files can be up to 64 MiB in all."},
+                {tag: "too large file", result: {ok: false, error: "too_large", name: "Map.csv", limitBytes: 32 * mib}, text: "Map.csv is too large to import. A CSV file can be up to 32\u00a0MiB."},
+                {tag: "too large bundle", result: {ok: false, error: "too_large", name: "Map.csv", limitBytes: 64 * mib}, text: "These files are too large to import together. A CSV and its companion files can be up to 64\u00a0MiB in all."},
                 {tag: "read", result: {ok: false, error: "read", name: "Map.csv"}, text: "Could not read Map.csv. Check that it is still available, then try again."},
                 {tag: "read unnamed", result: {ok: false, error: "read", name: ""}, text: "Could not read this file. Check that it is still available, then try again."},
                 {tag: "local", result: {ok: false, error: "local", name: "Map.csv", noSpace: false}, text: "Could not save a copy of Map.csv on this device."},
@@ -525,8 +525,11 @@ Item {
                 {tag: "save detail", result: {ok: false, error: "save", name: "Map.csv", detail: "The file could not be replaced, and the library could not be put back as it was."}, text: "The file could not be replaced, and the library could not be put back as it was."},
                 {tag: "path", result: {ok: false, error: "path", name: "Map.csv"}, text: "Cannot replace this imported file."},
                 {tag: "unknown", result: {ok: false, error: "future", name: "Map.csv"}, text: "Could not import Map.csv."},
-                {tag: "replay too large", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: 3.9e9, freeBytes: 1.2e9}, text: "cap.wav is too large for the free space on this device. It needs 3.9 GB, and 1.2 GB is free."},
-                {tag: "replay no space", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: -1, freeBytes: 2.5e8}, text: "There is not enough free space on this device to copy cap.wav. 250 MB is free."},
+                // The file's own size, not the size plus the store's reserve.
+                {tag: "replay too large", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: 3.4e9 + 536870912, freeBytes: 1.2e9, reserveBytes: 536870912}, text: "cap.wav does not fit on this device. It is 3.4\u00a0GB and 1.2\u00a0GB is free, and DSD-neo always leaves 537\u00a0MB spare."},
+                // Smaller than the free space, still too large: the spare part says why.
+                {tag: "replay inside the reserve", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: 1.0e9 + 536870912, freeBytes: 1.2e9, reserveBytes: 536870912}, text: "cap.wav does not fit on this device. It is 1\u00a0GB and 1.2\u00a0GB is free, and DSD-neo always leaves 537\u00a0MB spare."},
+                {tag: "replay no space", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: -1, freeBytes: 2.5e8, reserveBytes: 536870912}, text: "There is not enough free space on this device to copy cap.wav. 250\u00a0MB is free, and DSD-neo always leaves 537\u00a0MB spare."},
                 {tag: "replay local", context: "replay", result: {ok: false, error: "local", name: "cap.wav", noSpace: true}, text: "Could not save a copy of cap.wav on this device. Free up some storage, then try again."},
                 {tag: "replay read", context: "replay", result: {ok: false, error: "read", name: "cap.wav"}, text: "Could not read cap.wav. Check that it is still available, then try again."},
                 {tag: "replay cancelled", context: "replay", result: {ok: false, error: "cancelled", name: "cap.wav"}, text: ""}
@@ -540,7 +543,7 @@ Item {
             var seen = {};
             for (var row of test_message_data()) {
                 var text = Util.importMessage(row.result, row.context || "csv");
-                if (!text.length || row.tag.indexOf("replay") === 0 && row.tag !== "replay too large" && row.tag !== "replay no space")
+                if (!text.length || row.tag.indexOf("replay") === 0 && row.tag !== "replay too large" && row.tag !== "replay no space" && row.tag !== "replay inside the reserve")
                     continue;
                 verify(seen[text] === undefined, row.tag + " reads as " + seen[text]);
                 seen[text] = row.tag;
