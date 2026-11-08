@@ -50,9 +50,10 @@ Text {
         property real pixelSize: label.scaledPixelSize
         property bool wordsFit: true
         property string family: ""
-        // Set once the label is built. A change handler can run while its
-        // caller's properties are still being set, when script globals such
-        // as Math are not reachable yet; the first fit runs on completion.
+        // Set once the label is built: the first fit runs on completion, not
+        // from the change handlers that fire while the caller sets its
+        // properties. One of those, in the Listen tabs' delegates with a
+        // larger base size, found Math undefined.
         property bool built: false
     }
 
