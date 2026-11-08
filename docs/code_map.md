@@ -8714,8 +8714,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   assignments 72, 80 for the DFA; VCALL_IV 72, 30 on Type-D; the ARIB VCALL and alias and the standard alias 72).
   The Type-C location ID (`nxdn_location_id_handler()`, NXDN TS 1-A 6.5.2: Global 10-bit system and 12-bit site,
   Regional 14/8, Local 17/5, category 3 reserved) is printed whenever it decodes but written to
-  `nxdn_location_category`/`_sys_code`/`_site_code` and `nxdn_last_ran` (the site code's low six bits) only once the
-  transmission is confirmed, as the SACCH's own RAN is, and never for the reserved category or a system or site code
+  `nxdn_location_category`/`_sys_code`/`_site_code` and `nxdn_last_ran` (the site code's low six bits) only from this
+  site's SITE_INFO or SRV_INFO (see "this site" below) and only once the transmission is confirmed, as the SACCH's own
+  RAN is, and never for the reserved category or a system or site code
   Table 6.5-1 reserves (all zeros, all ones: `dsd_nxdn_location_valid()`), which is printed and leaves the
   stored location, its RAN and the received identity as they were. A Type-D (IDAS) site's identity has fields of
   its own, `nxdn_idas_system_id` (19 bits, TS 1-E §6.6.2) and `nxdn_idas_site_code` (1-250, §6.6.5), 0 for not received,
@@ -8786,7 +8787,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with
   `dsd_nxdn_foreign_control_last_m()`, decode clock); no RAN, received control channel, CC hunt note or Type-C note is
   written; its site broadcasts are printed only, every other message prints its type only (no grant, call, release or
-  control-sync effect); and the frame neither stamps carrier sync nor plays voice. A call on this site's control channel
+  control-sync effect); and the frame skips the decoder's own carrier-sync stamp (`nxdn_mark_carrier_sync_active()`)
+  and plays no voice (the frame-sync accept still stamps `last_cc_sync_time` for any NXDN sync,
+  `frame_sync_note_cc_sync()`). A call on this site's control channel
   itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is the site's own.
 - NXDN return from a voice channel that is another site's control channel (discussion #748). That control channel keeps
   NXDN frame sync on the followed frequency, so once the call's DISC is missed the synced-frames loop never reaches
@@ -8803,7 +8806,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   session that never heard foreign control traffic pays one load per frame. The other site's assignments heard
   meanwhile, a VCALL_ASSGN_DUP past the hangtime included, are never followed (the bullet above). Tests:
   `ENGINE_NXDN_FOREIGN_CONTROL_RETURN` (the real engine loop and NXDN frame decoder, the other site's dedicated and
-  composite control channel on the followed frequency, and the carrier-loss return as a control),
+  composite control channel on the followed frequency, the composite one also with a RAN this site uses, the site, RAN,
+  received control channel and voice clock unchanged on it, and the carrier-loss return as a control),
   `ENGINE_P25_POLICY_STORE_GUARD` (`test_trunk_receive_release_due_nxdn_foreign_control`).
 - NXDN trunking admission and preemption (`nxdn_element.c`; NXDN has no trunk state machine). Two records in
   `dsd_state`, both saved with a trunk scan target's snapshot (and so restored by a failed switch's rollback):
@@ -9217,9 +9221,10 @@ the message passed its own check, with that message's values, an unchanged repea
   P_CLEAR the encryption lockout synthesizes to release the channel (`dmr_cspdu_release_channel()`, FID 0xFF, handled as
   a checked CSBK): it releases as a received one would, and `dmr_csbk_crc_checked()` refuses every note while it runs.
   NXDN's synthesized lockout DISC reaches no note point (its handler notes nothing), and P25 synthesizes no message.
-- NXDN: the RAN of a CRC-passed CAC (with the control channel, before its elements can retune), FACCH2/UDCH, and a SACCH
-  once the transmission is confirmed (`nxdn_deperm.c`), never the RAN a site code implies; the Type-C location at the
-  location handler's own gate (confirmed, category not reserved); the IDAS area bit and site ID under
+- NXDN: the RAN of a CRC-passed CAC (with the control channel, before its elements can retune; not a CAC decided
+  foreign on a followed channel), FACCH2/UDCH, and a SACCH once the transmission is confirmed (`nxdn_deperm.c`), never
+  the RAN a site code implies; the Type-C location at the location handler's own gate (this site's SITE_INFO or
+  SRV_INFO, confirmed, category not reserved); the IDAS area bit and site ID under
   `nxdn_confirm_scch_confirmed()`; a Type-D SRV_INFO's System ID and site code once confirmed.
 - dPMR: the colour code in `dpmr_publish_call()` after `dpmr_confirm_is_confirmed()`. M17: the CAN in
   `M17decodeLSF()` only with `publish_canonical` (the LSF's CRC passed), never while the encoder monitors what this
@@ -9670,8 +9675,9 @@ Private per-protocol modules worth knowing about:
   burst `-F` accepts as RAS (`DSD_CRC_RAS_UNVERIFIED`) and an MBC whose header CRC failed (`DSD_CRC_FAILED`), and the
   C_SYS_PARMS / P_SYS_PARMS short LC that `dmr_cach()` assembles behind Hamming(17,12,3) and CRC-8 (no RAS path); a
   C_BCAST vote/adjacent syscode names another site (`DMR_SEARCH_SITE_NOTES`). NXDN: the current-site location ID in
-  `nxdn_location_id_handler()` (SITE_INFO, SRV_INFO, CCH_INFO, all CRC-gated by their channel decoders) once
-  `nxdn_confirm_is_confirmed()`, so a single short SACCH CRC does not show a site; adjacent sites, the reserved
+  `nxdn_location_id_handler()`, from this site's SITE_INFO and SRV_INFO only (`NXDN_LOCATION_THIS_SITE`, CRC-gated by
+  their channel decoders; see "this site" under Protocols) once `nxdn_confirm_is_confirmed()`, so a single short SACCH
+  CRC does not show a site; a CCH_INFO or another site's broadcast notes nothing; adjacent sites, the reserved
   category, reserved system and site codes and the Type-D site identity (`nxdn_idas_*`) are not notes
   (`NXDN_SEARCH_SITE_NOTES`).
 - Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
