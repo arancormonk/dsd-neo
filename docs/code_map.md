@@ -13524,6 +13524,53 @@ thread, which the rest of the interface never is.
   (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
   `finishAndRemoveTask()` need a device or emulator.
 
+Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
+`DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own
+request code (1305) is never used.
+
+- Requests (`decoder_host_android_documents.cpp`, Qt thread): each takes the base host's next id and becomes the live
+  one (`m_document_request`); a live one it replaces is answered `documentPickCancelled`, queued. The JNI shims in
+  `decoder_host_android.cpp` (`platformOpenDocument()`, `platformSaveDocument()`) hand `DocumentPicker.open()` /
+  `create()` Qt's context only when `QAndroidApplication::isActivityContext()`; false there, or a call that failed
+  (both Kotlin entries return true), answers `documentPickUnavailable(id, "failed")`, queued, unless the request was
+  replaced first. `cancelDocumentRequest()` forgets the live id and calls `DocumentPicker.cancel()`; other ids are
+  ignored.
+- Answers: `refresh()` drains `DocumentPicker.pollResult()` every tick (`refreshDocumentPicks()`), live request or
+  not, and `android/document_pick_record.h` (JNI-free) turns each JSON record (`{"id","kind":"picked","uri","name",
+  "downloads"}`, `{"id","kind":"cancelled"}`, `{"id","kind":"unavailable","reason"}`) into the signal, for the live id
+  only, once. A record for another id is dropped, and a dropped `downloads` row goes to `discardPendingDownload()`;
+  malformed records and unknown kinds are ignored. Nothing is answered inside a request call.
+- `DocumentPicker.kt`: a process-level object whose request state belongs to the main looper (launches are posted
+  there); its record queue is locked on itself, since a `@Synchronized @JvmStatic` member of an object locks the class.
+  A request is its id; while an activity it launched is out it also holds that launch's code, the next in
+  `0x5D0000..0x5DFFFF` (wrapping). `DsdNeoActivity.onActivityResult()` hands it every result first; it claims the whole
+  range and settles only the live launch's code, so the late `RESULT_CANCELED` Android sends for a launch that threw
+  `ActivityNotFoundException` (the code is retired at the throw), a result after process death (no request) and one
+  for a replaced request are dropped. Each request settles once; a newer one settles the one it replaces `cancelled`.
+  - Open: `ACTION_OPEN_DOCUMENT` + `CATEGORY_OPENABLE`, `*/*`. With no app for it, GET_CONTENT: `all` = the
+    `GET_CONTENT` + OPENABLE handlers for `*/*`, `capable` = the union of the same query for `application/*`, `text/*`
+    and `audio/*`. None capable: `noPicker`; one: GET_CONTENT `*/*` straight to it; several: `Intent.createChooser()`
+    (no title: the platform's own) with `EXTRA_EXCLUDE_COMPONENTS` = `all - capable`. A bare `*/*` GET_CONTENT also
+    reaches the system photo picker, which with no DocumentsUI to forward to relaunches itself until Android removes
+    the app's task; its `image/*`/`video/*` filters match no family. The manifest's `<queries>` entry (GET_CONTENT +
+    OPENABLE, `*/*`) makes the handlers visible to the query.
+  - Save: `ACTION_CREATE_DOCUMENT` + OPENABLE, the type and `EXTRA_TITLE`. With no app for it, the row comes from
+    `DocumentPicker.downloads` (`DownloadsFallback.insert(name, mime, onDone)`, answered from any thread and moved to
+    the main looper) within 10 s: a row is `picked` with `downloads` and the requested name, none or the deadline
+    `noSavePicker`. A row that comes late, or for a request cancelled or replaced, goes to `DownloadsFallback.discard()`.
+    The default `NoDownloadsFallback` makes no row.
+  - Result: `RESULT_OK` takes `data` or ClipData item 0; none is `noResult`, a scheme other than `content`
+    (any case) `unreadable`. The display name is a `DISPLAY_NAME` query on its own one-thread executor with a
+    `CancellationSignal`, through the application's resolver; a lookup task checks the signal before its provider
+    call, a retired one is removed from the queue, and at the 2 s main-looper deadline the signal is cancelled and the
+    decoded last path segment stands in. Any other result code is `cancelled`. The reference is `uri.toString()` as
+    it came; no persistable grant is taken.
+  - `proguard-rules.pro` keeps `open`, `create`, `cancel` and `pollResult`; the class constant sits in
+    `decoder_host_android.cpp`, which calls them.
+- Tests: `ANDROID_DOCUMENT_PICKER_JVM` (`docs/testing.md`), `UI_QT_ANDROID_HOST` (`check_document_pick_record()`,
+  `check_document_requests()`). The launches themselves need an emulator: DocumentsUI on and off (the family queries must
+  never return the two photo-picker aliases), a chooser pick, re-entry and process death while a picker is up.
+
 #### Accessibility bridge (issue #782)
 
 Qt 6.11.3 turns its Android accessibility bridge on whenever any accessibility service is enabled, and with the bridge
@@ -13579,9 +13626,10 @@ stays as it is, with no cleanup fallback. The app prevents it and records what s
 - The manifest's `launchMode="singleTask"` brings the one instance forward for all three outside launches: a USB
   attachment (to `onNewIntent`), the launcher icon and the decoding notification, where `singleTop` could create a
   second instance over a picker or permission prompt. The cost: each of the three closes a document picker or
-  permission prompt open in the app's task, which returns cancelled. The `FileDialog` flows end quietly on a reject,
-  and an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share sheets run in their own
-  task.
+  permission prompt open in the app's task, which returns cancelled. A closed document picker answers its request
+  `documentPickCancelled` (`DocumentPicker` gets `RESULT_CANCELED` for the live launch's code), and the flow ends
+  quietly as on a reject; an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share
+  sheets run in their own task.
 - `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
   for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
   change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so
@@ -13683,7 +13731,10 @@ Each run gives its setup, then what must hold:
     -n io.github.arancormonk.dsdneo/.DsdNeoActivity
   ```
 
-  Same pid; `onNewIntent` takes the attachment; the picker is cancelled.
+  Same pid; `onNewIntent` takes the attachment; the picker is cancelled: `DocumentPicker` takes the
+  `RESULT_CANCELED`, the request is answered `documentPickCancelled` and the flow ends with no message. A result for a
+  code outside `DocumentPicker`'s range still reaches Qt (`super.onActivityResult()`), so a Qt bump re-reads
+  `QtActivityBase.onActivityResult()`.
 - **L-dup-launcher.** Cold-start through the USB intent (as in L-dup), start decoding, open Import CSV, press Home and
   tap the launcher icon; then repeat with the location prompt open (Nearby or "Use my location", permission not yet
   granted). Same pid; the import ends with no error; the cleared location prompt shows no "denied" text and the lookup

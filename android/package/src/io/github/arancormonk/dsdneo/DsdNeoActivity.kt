@@ -71,6 +71,11 @@ import org.qtproject.qt.android.bindings.QtActivity
  * in the app's task, which comes back cancelled: the pickers' flows end quietly, and so does a location request
  * ([LocationSupport]). One recreation that gets through anyway is recorded by [LaunchGuard], first among the launch
  * statements, for the next process's `exit:` line.
+ *
+ * The document pickers are the app's own (#829): [DocumentPicker] launches them for a result, and [onActivityResult]
+ * hands it every result first. It claims its own request codes, including a result that comes after process death,
+ * when no request waits for it any more (dropped), and the late RESULT_CANCELED Android sends for a launch that found
+ * no app; everything else goes on to Qt's listeners.
  */
 class DsdNeoActivity : QtActivity() {
     private var backCallback: OnBackInvokedCallback? = null
@@ -203,6 +208,13 @@ class DsdNeoActivity : QtActivity() {
         }
         if (!LocationSupport.onRequestPermissionsResult(this, requestCode, grantResults)) {
             super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        }
+    }
+
+    // #829: the app's document picker owns its request codes; every other result goes on to Qt.
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (!DocumentPicker.onActivityResult(this, requestCode, resultCode, data)) {
+            super.onActivityResult(requestCode, resultCode, data)
         }
     }
 

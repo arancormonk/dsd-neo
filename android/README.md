@@ -228,6 +228,16 @@ The Monitor keeps its hero fixed and scrolls the rows below it; recent calls hav
 a minimum pane height. Modal sheets constrain their height to the space above the
 keyboard, scroll their contents, and reveal the focused field.
 
+## Choosing files
+
+DSD-neo opens and saves files through Android's file picker. On a device without one (some car head units ship
+none), opening a file offers the apps that can pick documents instead, such as a file manager or Drive, and leaves out
+the photo pickers, which cannot open DSD-neo's files. With no such app, DSD-neo says **No compatible file picker on
+this device. Install a file manager app, then try again.** A file manager that hands back a plain file path rather
+than a document reads **That app gave DSD-neo a file it can't open. Pick the file from another app.** DSD-neo reads or
+writes a picked file while the app is open and keeps no lasting permission to it. A pick that comes back after Android
+closed DSD-neo in the background is ignored: open the screen again and pick the file.
+
 ## Imported files (trunking CSVs)
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
@@ -258,7 +268,8 @@ ID lists use `id,name[,tags]` and supply labels; a list whose header is `id,name
 recording calls by radio (see [Source ID List CSV](../docs/csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
 They can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
-No storage permissions are involved; SAF needs none.
+No storage permissions are involved: the picker grants access to the one document picked, and DSD-neo copies it
+right away.
 
 ## Call recordings
 
@@ -363,7 +374,7 @@ Settings → **Manage call recordings** opens **Call recordings**: one row per s
 count, size and dates. A row's menu has **Export as zip** and **Delete all for this system** (for this scan list, or
 from Explore); **Export all** and **Delete all** sit below the rows. An export first asks for the range: **Today**,
 **Yesterday**, **Last 7 days**, **Last 30 days** or **All**, by the day each call started on the phone's calendar. Then
-Android's save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
+the save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
 gains little from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count
 limit. A progress line with **Cancel export** shows while it runs, one export at a time. A recording deleted meanwhile
 is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
@@ -441,7 +452,7 @@ leaves that reference out and lists it under **Not included** on the Settings ca
 ### Exporting
 
 **Export backup** works while listening too. Type a passphrase of at least 8 characters twice (**Show passphrases**
-reveals both fields), then **Encrypt**. Android's save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`;
+reveals both fields), then **Encrypt**. The save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`;
 keep DSD-neo open until Settings reads **Backup saved.** The passphrase is the only way to open the backup. DSD-neo
 keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session keeps adding to its
 talkgroup lists; if a file changes while the backup is being made, the export stops with **Your setup changed while the
@@ -450,7 +461,7 @@ backup was being made. Try again.**
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
-listening to restore** until then). Pick the file in Android's file picker (DSD-neo checks the file's contents, not its
+listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its
 name) and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or
 the file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
 damaged, or unreadable), **Choose another file** opens the picker again. DSD-neo checks the whole backup before it
@@ -1659,7 +1670,7 @@ module behind it, so androiddeployqt has nothing extra to package.
   USB attachment, a tap on the launcher icon and a tap on the decoding notification
   all bring the running app forward, and each closes a file picker or a permission
   prompt open over it. The flow that opened it ends as if cancelled, quietly: a CSV
-  import, backup or recording picker ends with no error, and an interrupted location
+  import, backup, replay recording or call recording picker ends with no error, and an interrupted location
   prompt returns the site chooser to its idle text, with nothing reported as
   denied; Android asks again on the next tap. Share sheets open in their own task
   and are not affected.
@@ -2221,7 +2232,7 @@ notification says **Private** or **Identity not decoded** beside the talker.
 
 ### Scan lists
 
-**Import target CSV** opens Android's document picker. Select the target CSV and
+**Import target CSV** opens the file picker. Select the target CSV and
 the companion files requested by the import flow, review the read-only target
 preview, choose the receiver settings, name the list and Save. Play uses the stored
 CSV directly, preserving its supported options and their precedence over session

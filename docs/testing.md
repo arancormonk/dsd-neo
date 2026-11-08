@@ -175,6 +175,16 @@ Each first checks what crosses JNI or the manifest (the playback states and tran
 enums, the provider serving only the two "Call recordings" folders and the share copies' cache folder, with a read
 grant). They skip the FIFO and
 symbolic-link cases where the host cannot make them.
+`ANDROID_DOCUMENT_PICKER_JVM` (the `document_picker` suite, issue #829) runs `DocumentPicker.kt` against stubs of the
+activity, intents, package manager and resolver. Its request core runs against a fake activity: OPEN_DOCUMENT first,
+then the GET_CONTENT fallback straight to the one app that takes documents or through a chooser without the
+media-only pickers (none: `noPicker`); the late RESULT_CANCELED for a launch that found no app dropped while the
+fallback (a chooser, or a held Download-folder insert) goes on; results for other codes, for no request and for a
+replaced one; ClipData-only, empty, `file:` and custom-code results; the 2 s name deadline with a provider that never
+answers, a retired lookup leaving the queue, the 10 s insert deadline and a late or abandoned row discarded; cancel and
+supersede. Then the Intents each launch becomes, the handler query on API 29 and 33, and the public entry points end to
+end. It first checks that `DsdNeoActivity.onActivityResult` hands every result to the picker before Qt, and that the
+manifest's `<queries>` names the GET_CONTENT intent the handler query needs.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a
