@@ -214,7 +214,7 @@ Item {
         function test_unavailable_messages_data() {
             return [
                 {tag: "noPicker", message: "No compatible file picker on this device. Install a file manager app, then try again."},
-                {tag: "noSavePicker", message: "This device has no save picker, and DSD-neo could not save to the Download folder. Install a file manager app, then try again."},
+                {tag: "noSavePicker", message: "This device has no save picker, and DSD-neo could not save to the Download folder."},
                 {tag: "unreadable", message: "That app gave DSD-neo a file it can't open. Pick the file from another app."},
                 {tag: "noResult", message: "No file came back from the picker. Try again."},
                 {tag: "failed", message: "The file picker could not open. Try again."},
@@ -322,6 +322,9 @@ Item {
             dialog.selectedFile = "file://" + path;
             compare(dialog.selectedFiles.length, 1, "the fixture file is selected");
             var reference = dialog.selectedFile.toString();
+            // dialog.accept() would take the platform dialog's own selection,
+            // which a test cannot set: emit the answer with ours, then close as
+            // the dialog does after an accept.
             dialog.accepted();
             dialog.close();
             compare(spiesOf(picker).accepted.count, 1);
@@ -329,7 +332,7 @@ Item {
             compare(spiesOf(picker).accepted.signalArguments[0][1], "Talk groups.csv");
             verify(!picker.visible);
             verify(!picker.savedToDownloads);
-            compare(answers(picker), 1, "closing an answered dialog says nothing more");
+            compare(answers(picker), 1, "one answer for one accept");
 
             // The second open starts with no selection, so an answer without a
             // new choice never hands back the first file.
@@ -337,8 +340,8 @@ Item {
             tryVerify(function () { return dialog.visible; }, 2000);
             compare(dialog.selectedFile.toString(), "");
             compare(dialog.selectedFiles.length, 0);
-            dialog.accepted();
-            dialog.close();
+            dialog.accept(); // the real path: nothing chosen in the dialog
+            verify(!dialog.visible);
             compare(spiesOf(picker).accepted.count, 1, "the first file is not returned again");
             compare(spiesOf(picker).unavailable.count, 1);
             compare(spiesOf(picker).unavailable.signalArguments[0][0], "noResult");
@@ -360,12 +363,12 @@ Item {
             compare(dialog.selectedFile.toString(), "dsd-neo-backup-2026-11-08.dsdbak");
             compare(dialog.nameFilters, ["DSD-neo backup (*.dsdbak)"]);
             compare(dialog.defaultSuffix, "dsdbak");
-            dialog.selectedFile = "file:///tmp/My%20backup.dsdbak";
-            var reference = dialog.selectedFile.toString();
-            dialog.accepted();
-            dialog.close();
-            compare(spiesOf(picker).accepted.signalArguments[0][0], reference);
-            compare(spiesOf(picker).accepted.signalArguments[0][1], "My backup.dsdbak");
+            dialog.accept();
+            verify(!dialog.visible);
+            compare(spiesOf(picker).accepted.count, 1);
+            compare(spiesOf(picker).accepted.signalArguments[0][0], dialog.selectedFile.toString());
+            compare(spiesOf(picker).accepted.signalArguments[0][1], "dsd-neo-backup-2026-11-08.dsdbak");
+            compare(answers(picker), 1);
             verify(!picker.savedToDownloads, "the desktop never saves to the Download folder on its own");
         }
 
@@ -389,12 +392,37 @@ Item {
             compare(answers(picker), 1);
         }
 
+        // open() while the dialog is up starts over silently: the dialog closed
+        // on the way says nothing, and the reopened one answers once.
+        function test_desktop_reopen_while_open() {
+            testContext.setDocumentPickerSupported(false);
+            var picker = makePicker();
+            var dialog = dialogOf(picker);
+            picker.open();
+            tryVerify(function () { return dialog.visible; }, 2000);
+            var path = testContext.writeFixtureCsv("first.csv", "tg,name\n1,Dispatch\n");
+            dialog.selectedFile = "file://" + path;
+            picker.open();
+            tryVerify(function () { return dialog.visible; }, 2000, "open again");
+            verify(picker.visible);
+            compare(answers(picker), 0, "no rejected for the dialog closed on the way");
+            compare(dialog.selectedFiles.length, 0, "the reopened dialog starts with no selection");
+            dialog.accept();
+            compare(spiesOf(picker).accepted.count, 0, "the file chosen before the reopen is gone");
+            compare(spiesOf(picker).unavailable.count, 1);
+            compare(answers(picker), 1, "one answer for the reopened request");
+            verify(!picker.visible);
+        }
+
         // A dialog that cannot open answers "failed" rather than leave its owner
         // waiting, and never before open() returns.
         function test_desktop_dialog_without_a_window_fails() {
             testContext.setDocumentPickerSupported(false);
             var picker = makePicker();
-            var stranded = pickerComponent.createObject(null);
+            // No parent, so no window to open in; temporary, so a failed case
+            // does not leave it to later ones.
+            var stranded = createTemporaryObject(pickerComponent, null);
+            verify(stranded, "a picker without a parent");
             var spy = createTemporaryObject(spyComponent, testCase, {target: stranded, signalName: "unavailable"});
             stranded.open();
             compare(spy.count, 0, "not before open() returns");
@@ -402,7 +430,6 @@ Item {
             compare(spy.signalArguments[0][0], "failed");
             compare(spy.signalArguments[0][1], "The file picker could not open. Try again.");
             verify(!stranded.visible);
-            stranded.destroy();
             compare(answers(picker), 0);
         }
     }
