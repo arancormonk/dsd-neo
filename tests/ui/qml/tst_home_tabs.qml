@@ -1011,6 +1011,27 @@ Item {
             compare(body().contentY, deep, "Systems back at its place once the range has grown back");
         }
 
+        // A place clamped short because the section really is shorter now stops being followed once the restore has
+        // been drawn: cards added later leave the view where it is.
+        function test_later_growth_does_not_pull_the_view() {
+            addSystems(30);
+            settle();
+            body().contentY = body().originY + body().contentHeight - body().height;
+            var deep = body().contentY;
+            choose("explore");
+            while (savedSystems.count > 20)
+                savedSystems.remove(savedSystems.count - 1);
+            choose("systems");
+            var shortOf = body().contentY;
+            verify(shortOf < deep - 100, "clamped short of the place left: " + shortOf + " of " + deep);
+            waitFrames(3);
+            compare(body().contentY, shortOf);
+            addSystems(10);
+            settle();
+            waitFrames(2);
+            compare(body().contentY, shortOf, "the cards added later did not pull the view down");
+        }
+
         // A tab chosen while Home is hidden is put back where it was once Home shows again, not before.
         function test_restore_waits_while_hidden() {
             addSystems(30);

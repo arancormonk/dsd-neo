@@ -203,6 +203,7 @@ Item {
             sectionScroll[section] = clampedScroll(scrollBody.contentY);
         restorePending = true;
         ++restoreGeneration;
+        placeChase.active = false;
         revealFocusTimer.stop();
         focusRevealHeld = false;
         if (holdsFocus(sectionItem(section)) && !listenTabs.focusCurrent())
@@ -229,7 +230,7 @@ Item {
         restorePending = false;
         ++restoreGeneration;
         restoreTimer.stop();
-        restoreAgainTimer.stop();
+        placeChase.active = false;
     }
     // Puts the shown tab's place back a turn after the choice, once Home is
     // shown (a hidden Home waits to be shown again). It lays the section and
@@ -243,16 +244,57 @@ Item {
         sectionItem(section).forceLayout();
         content.forceLayout();
         restorePending = false;
-        applySectionPlace();
-        restoreAgainTimer.generation = restoreGeneration;
-        restoreAgainTimer.applied = scrollBody.contentY;
-        restoreAgainTimer.restart();
-    }
-    function applySectionPlace() {
         var place = sectionScroll[section];
-        scrollBody.contentY = clampedScroll(place === undefined ? scrollBody.originY : place);
+        if (place === undefined)
+            place = scrollBody.originY;
+        scrollBody.contentY = clampedScroll(place);
+        var applied = scrollBody.contentY;
         if (!tabsFixed && holdsFocus(listenTabs))
             revealFocus();
+        // Clamped short and not moved by the tabs' reveal: follow the range.
+        placeChase.active = applied < place - 0.5 && Math.abs(scrollBody.contentY - applied) < 0.5;
+        placeChase.place = place;
+        placeChase.applied = applied;
+        placeChase.frames = 0;
+    }
+    // Issue #646: the restore lays out the section and the body's column, but
+    // not the columns nested in them (a card's labels), which a text-size
+    // change in the same turn leaves to the next polish; the range can then
+    // grow after the place was clamped short of it. While a restore stands
+    // clamped short, each change of the body's range puts the place back
+    // again. That stops when the place is reached; when the body was moved
+    // some other way (user movement at once; a focus reveal or any other
+    // write at the next range change, by contentY no longer being what was
+    // put back); when a tab is chosen or revealTop() runs; or once two
+    // frames have been swapped since (the owed polish runs before the next
+    // frame; the second covers one already in flight), so later growth, a
+    // card added minutes on, never pulls the view.
+    QtObject {
+        id: placeChase
+        property bool active: false
+        property real place: 0
+        property real applied: 0
+        property int frames: 0
+    }
+    function chaseSectionPlace() {
+        if (!placeChase.active)
+            return;
+        if (scrollBody.moving || Math.abs(scrollBody.contentY - placeChase.applied) >= 0.5) {
+            placeChase.active = false;
+            return;
+        }
+        scrollBody.contentY = clampedScroll(placeChase.place);
+        placeChase.applied = scrollBody.contentY;
+        if (placeChase.applied >= placeChase.place - 0.5)
+            placeChase.active = false;
+    }
+    Connections {
+        target: screen.Window.window
+        enabled: placeChase.active
+        function onFrameSwapped() {
+            if (++placeChase.frames >= 2)
+                placeChase.active = false;
+        }
     }
     Timer {
         id: restoreTimer
@@ -260,21 +302,6 @@ Item {
         // The choice this restore is for (restoreGeneration).
         property int generation: 0
         onTriggered: screen.restoreSection()
-    }
-    // Once more a turn later: nested geometry still owed a polish (a card's
-    // labels after a text-size change in the same turn) can grow the range
-    // after the place was put back, which then stopped short. Dropped when
-    // another choice or revealTop() came since, or anything moved the body.
-    Timer {
-        id: restoreAgainTimer
-        interval: 0
-        property int generation: 0
-        property real applied: 0
-        onTriggered: {
-            if (generation === screen.restoreGeneration && screen.visible && !scrollBody.moving
-                    && Math.abs(scrollBody.contentY - applied) < 0.5)
-                screen.applySectionPlace();
-        }
     }
     // Forgets every tab's place and any scroll still owed, as a new Home
     // starts. For tests, which reuse one Home across cases.
@@ -658,8 +685,14 @@ Item {
 
         objectName: "dongleScrollBody"
         anchors.fill: parent
-        // The user scrolling takes over from revealTop() (focusRevealHeld).
-        onMovementStarted: screen.focusRevealHeld = false
+        // The user scrolling takes over from revealTop() (focusRevealHeld)
+        // and from a restore still following the range (placeChase).
+        onMovementStarted: {
+            screen.focusRevealHeld = false;
+            placeChase.active = false;
+        }
+        onContentHeightChanged: screen.chaseSectionPlace()
+        onOriginYChanged: screen.chaseSectionPlace()
         // Pinned, the body is clipped a few pixels below the header, so cards
         // scroll away short of the pill; the rest of the header's gap to the
         // first card stays at the body's top, and nothing moves at rest.
