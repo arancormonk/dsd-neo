@@ -1035,8 +1035,9 @@ somewhere. LOST still shows if the session ends.
 ### What a failed start says
 
 A start that fails says why on Home's failure card (#782), and the card's own
-failure stays until the next start, Retry or Dismiss, so a poll of an older
-session can never put that session's failure back:
+failure stays until the next start, Retry or Dismiss, or until the system or
+scan list it names is saved, so a poll of an older session can never put that
+session's failure back:
 
 - **The previous session is still stopping:** "The previous session is still
   stopping. Tap Retry to start this one once it has stopped."

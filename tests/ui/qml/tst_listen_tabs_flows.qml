@@ -5,9 +5,9 @@ import "../../../src/ui/qt/qml" as Ui
 
 // Issue #646 D6: which Listen tab shows after a flow, through Main. A saved system selects Systems and a saved scan
 // list (or draft) selects Scan lists, for the next time Home shows; a screen still on top stays there. A failed save,
-// a cancel, a removal, a pin, a refusal or a failure keeps the tab. Also through Main: the failure card on every tab, a
-// failed start from a sheet opened on a deep card keeping that card in view (B3 precedence), and Signal search opening
-// from the Explore tab.
+// a cancel, a removal, a pin, a refusal or a failure keeps the tab. Also through Main: the failure card on every tab and
+// taken down by a save of what it names (B10), a failed start from a sheet opened on a deep card keeping that card in
+// view (B3 precedence), and Signal search opening from the Explore tab.
 Item {
     id: root
 
@@ -457,6 +457,68 @@ Item {
                     return section.height > 0 && card.mapToItem(body.contentItem, 0, 0).y + card.height
                         <= section.mapToItem(body.contentItem, 0, 0).y;
                 }, 2000, "above " + tab + "'s section");
+            }
+        }
+
+        // B10: a successful save of the scan list or saved system the failure card names takes the card down on every
+        // tab, as its X does. A card naming another list or system stays, and so does the card after a failed save.
+        function test_saving_the_named_source_clears_its_failure_data() {
+            var rows = [];
+            for (var target of ["scan", "saved"]) {
+                var how = target === "scan" ? "draft refusal" : "host failure";
+                rows.push({tag: how + ", that one saved", target: target, save: "same", cleared: true},
+                    {tag: how + ", another saved", target: target, save: "other", cleared: false},
+                    {tag: how + ", save failed", target: target, save: "fail", cleared: false});
+            }
+            return rows;
+        }
+        function test_saving_the_named_source_clears_its_failure(data) {
+            var scan = data.target === "scan";
+            var named = scan ? addList("Draft", {isDraft: true}) : addSystem("County");
+            var other = scan ? addList("Other lists") : addSystem("Other");
+            if (scan) {
+                home.showSection("scanLists");
+                app.startPin("scan", named);
+                compare(app.startError, tc.draftText);
+            } else {
+                app.startSystem(savedSystems.rowForUid(named));
+                verify(app.monitorMode);
+                testContext.setLifecycleFailure("Connection refused");
+                decoderHost.stop();
+                verify(!app.monitorMode);
+            }
+            verify(app.showFailure, "the card shows");
+            compare(app.attemptedSource.uid, named, "and names that " + (scan ? "list" : "system"));
+            var uid = data.save === "other" ? other : named;
+            var store = scan ? "scan_lists.json" : "saved_systems.json";
+            if (scan)
+                home.editScanList(scanLists.rowForUid(uid));
+            else
+                home.editSystem(savedSystems.rowForUid(uid));
+            verify(scan ? app.scanListOpen : app.wizardOpen);
+            if (data.save === "fail")
+                block(store, true);
+            if (scan) {
+                editor.save();
+            } else {
+                wizard.nameText = "Renamed";
+                wizard.commit();
+            }
+            if (data.save === "fail") {
+                block(store, false);
+                verify(scan ? app.scanListOpen : app.wizardOpen, "a failed save stays in the editor");
+                app.scanListOpen = false;
+                app.wizardOpen = false;
+            } else {
+                verify(!app.scanListOpen && !app.wizardOpen, "saved and closed");
+            }
+            compare(app.showFailure, !data.cleared, data.cleared ? "the card is taken down" : "the card stays");
+            var card = findChild(home, "homeFailureCard");
+            for (var tab of tc.tabs) {
+                home.showSection(tab);
+                compareShown(tab, "on " + tab);
+                compare(card.visible, !data.cleared, data.cleared ? "the card is gone from " + tab
+                    : "the card stays on " + tab);
             }
         }
 

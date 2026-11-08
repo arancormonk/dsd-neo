@@ -10720,8 +10720,11 @@ Qt Quick frontend (`src/ui/qt`):
   wizard save: add, edit, Signal search's Save as system, a RadioReference import, the site chooser's Edit, a session's Edit saved
   system) calls `showSection("systems")` before Main closes the wizard (after pushing a running session's changed CSV
   files, as before), and `ScanListScreen.saved`, emitted only once `save()` or `saveDraft()` has persisted and just
-  before `closed` (which also fires for a cancel and a removal), calls `showSection("scanLists")`. A failed save, a
-  cancel, a removal, a pin, a refusal or a failure selects nothing. Each tab keeps its place (`sectionScroll`, its
+  before `closed` (which also fires for a cancel and a removal), calls `showSection("scanLists")`. Both first take
+  down a failure card that names what was saved (B10: `dismissFailureFor(kind, uid)`, an `attemptedSource` of that kind
+  and uid, through `dismissFailureCard()`, the card's X), since the card reported the settings just replaced and shows
+  on every tab; a card naming anything else stays. A failed save, a cancel, a removal, a pin, a refusal or a failure
+  selects nothing. Each tab keeps its place (`sectionScroll`, its
   `contentY` when it was left): `showSection()` cancels any flick, records the outgoing tab's place clamped to its
   range unless a restore is still owed (`restorePending`: until then the body's range is the previous section's, a
   transient clamp), cancels a pending focus reveal, and arms the owned `restoreTimer` (interval 0, never a bare
@@ -10771,7 +10774,8 @@ Qt Quick frontend (`src/ui/qt`):
   from either other tab and from History, Save as system under Signal search and Edit saved system under the monitor
   selecting Systems for when Home shows, editor save and draft save saying `saved` then `closed` and selecting Scan
   lists, failed saves, cancels, removals and pins keeping the tab, a refusal and a host failure keeping the tab with the
-  failure card above every tab's section, "Scan with other lists…" from the keyboard on a deep card with a failed start
+  failure card above every tab's section, a save of the list or system the card names taking it off every tab while
+  another one's save or a failed save keeps it, "Scan with other lists…" from the keyboard on a deep card with a failed start
   keeping the failure card in view after the sheet hands the focus back, Signal search opening from Explore by tap,
   Return, keypad Enter and Space), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on each tab;
   `tst_a11y_scan_churn.qml`: the Explore face on a hidden tab raises nothing).
