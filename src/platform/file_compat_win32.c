@@ -557,29 +557,57 @@ dsd_path_canonical(const char* path, char* out, size_t out_size) {
     return 0;
 }
 
-/* The volume serial number and file index of the file at @p path, which open from any spelling of its name. The handle
-   asks only for attributes and shares every access, so it never stands in the way of a writer or a delete. */
+/* A file's identity: the volume serial number and 128-bit file id FileIdInfo gives, exact on ReFS, whose ids do not fit
+   64 bits; or, where FileIdInfo is not supported (before Windows 8, some file systems), the volume serial number and
+   64-bit file index GetFileInformationByHandle() gives, held in the low bytes of @c id. The two kinds carry the volume
+   serial number at different widths, so only two of one kind compare. */
+typedef struct {
+    int exact; /* from FileIdInfo */
+    ULONGLONG volume;
+    unsigned char id[16];
+} dsd_file_id;
+
 static int
-dsd_file_identity(const char* path, BY_HANDLE_FILE_INFORMATION* info) {
+dsd_handle_identity(HANDLE h, dsd_file_id* out) {
+    DSD_MEMSET(out, 0, sizeof *out);
+    FILE_ID_INFO info;
+    if (GetFileInformationByHandleEx(h, FileIdInfo, &info, sizeof info)) {
+        out->exact = 1;
+        out->volume = info.VolumeSerialNumber;
+        DSD_MEMCPY(out->id, info.FileId.Identifier, sizeof out->id);
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION legacy;
+    if (!GetFileInformationByHandle(h, &legacy)) {
+        errno = dsd_path_errno(GetLastError());
+        return -1;
+    }
+    const ULONGLONG index = ((ULONGLONG)legacy.nFileIndexHigh << 32) | legacy.nFileIndexLow;
+    out->volume = legacy.dwVolumeSerialNumber;
+    DSD_MEMCPY(out->id, &index, sizeof index);
+    return 0;
+}
+
+/* The identity of the file at @p path, which opens from any spelling of its name. The handle asks only for attributes
+   and shares every access, so it never stands in the way of a writer or a delete. */
+static int
+dsd_file_identity(const char* path, dsd_file_id* out) {
     wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
     const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     HANDLE h =
         wide ? CreateFileW(wide, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL)
              : CreateFileA(path, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-    DWORD err = h == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    const DWORD err = h == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
     free(wide);
     if (h == INVALID_HANDLE_VALUE) {
         errno = dsd_path_errno(err);
         return -1;
     }
-    const BOOL ok = GetFileInformationByHandle(h, info);
-    err = ok ? ERROR_SUCCESS : GetLastError();
+    const int rc = dsd_handle_identity(h, out);
+    const int saved_errno = errno;
     CloseHandle(h);
-    if (!ok) {
-        errno = dsd_path_errno(err);
-        return -1;
-    }
-    return 0;
+    errno = saved_errno;
+    return rc;
 }
 
 int
@@ -591,13 +619,18 @@ dsd_path_same_file(const char* a, const char* b, int* same) {
         errno = EINVAL;
         return -1;
     }
-    BY_HANDLE_FILE_INFORMATION info_a;
-    BY_HANDLE_FILE_INFORMATION info_b;
-    if (dsd_file_identity(a, &info_a) != 0 || dsd_file_identity(b, &info_b) != 0) {
+    dsd_file_id id_a;
+    dsd_file_id id_b;
+    if (dsd_file_identity(a, &id_a) != 0 || dsd_file_identity(b, &id_b) != 0) {
         return -1;
     }
-    *same = info_a.dwVolumeSerialNumber == info_b.dwVolumeSerialNumber && info_a.nFileIndexHigh == info_b.nFileIndexHigh
-            && info_a.nFileIndexLow == info_b.nFileIndexLow;
+    /* Identities of two kinds carry the volume serial number at different widths, so they do not compare: the caller
+       compares the paths instead. One volume gives every file the same kind. */
+    if (id_a.exact != id_b.exact) {
+        errno = EIO;
+        return -1;
+    }
+    *same = id_a.volume == id_b.volume && memcmp(id_a.id, id_b.id, sizeof id_a.id) == 0;
     return 0;
 }
 

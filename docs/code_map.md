@@ -1217,10 +1217,13 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     store and the backup export and restore use it. Test: `PLATFORM_FILE_COMPAT`
   - File identity: `dsd_path_same_file()` (issue #697) says whether two paths name one existing file, however each is
     spelled: `stat()` device and inode on POSIX; on Windows `CreateFileW()` (attributes only, every share mode,
-    `FILE_FLAG_BACKUP_SEMANTICS`; the ANSI call for a path that is not UTF-8) and `GetFileInformationByHandle()`'s
-    volume serial number and file index, so another case, a short (8.3) name or a hard link is the same file. A file it
-    cannot read fails with errno (ENOENT for a missing one). The trunk-scan list merge compares companion paths by it.
-    Test: `PLATFORM_FILE_COMPAT` (POSIX: spellings, a hard link, a symbolic link, two files, a missing file)
+    `FILE_FLAG_BACKUP_SEMANTICS`; the ANSI call for a path that is not UTF-8) and the volume serial number and 128-bit
+    file id of `GetFileInformationByHandleEx(FileIdInfo)`, exact on ReFS, or where that is not supported the volume
+    serial number and 64-bit index of `GetFileInformationByHandle()` (two files of different kinds fail with EIO and
+    never compare), so another case, a short (8.3) name or a hard link is the same file. A file it cannot read fails
+    with errno (ENOENT for a missing one). The trunk-scan list merge compares companion paths by it, and falls back to
+    the paths when it fails. Test: `PLATFORM_FILE_COMPAT` (POSIX: spellings, a hard link, a symbolic link, two files, a
+    missing file)
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`
