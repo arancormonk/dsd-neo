@@ -86,6 +86,17 @@ Item {
         }
     }
 
+    // A label with a word too long for its tab even at the normal-text size.
+    Component {
+        id: longTokenStrip
+
+        Ui.ListenTabs {
+            width: 320 - 2 * Ui.Theme.screenPadding
+            model: [{id: "systems", label: "Systems"}, {id: "long", label: "Interoperability lists"}, {id: "explore", label: "Explore"}]
+            currentId: "long"
+        }
+    }
+
     // The oracle for a label's height in the selected weight.
     Text {
         id: probe
@@ -112,6 +123,9 @@ Item {
             Ui.Navigation.removeModal(blocker);
             Ui.Theme.resetFontScale();
             root.width = 360;
+            strip.width = Qt.binding(function () {
+                return root.width - 2 * Ui.Theme.screenPadding;
+            });
             strip.enabled = true;
             strip.visible = true;
             root.follow = true;
@@ -285,6 +299,53 @@ Item {
             verify(before.activeFocus, "a change made with the focus elsewhere leaves it there");
         }
 
+        // A tab the caller makes current while the strip is gated (a sheet
+        // over it, hidden, disabled) takes the focus once the gate lifts, so
+        // the strip settles to one Tab stop and Return chooses nothing old.
+        function gates() {
+            return [
+                {tag: "sheet", close: function () {
+                    Ui.Navigation.addModal(blocker);
+                }, open: function () {
+                    Ui.Navigation.removeModal(blocker);
+                }},
+                {tag: "hidden", close: function () {
+                    strip.visible = false;
+                }, open: function () {
+                    strip.visible = true;
+                }},
+                {tag: "disabled", close: function () {
+                    strip.enabled = false;
+                }, open: function () {
+                    strip.enabled = true;
+                }}
+            ];
+        }
+        function test_focus_follows_a_tab_set_while_gated_data() {
+            return gates();
+        }
+        function test_focus_follows_a_tab_set_while_gated(data) {
+            focusTab("systems");
+            data.close();
+            strip.currentId = "explore";
+            data.open();
+            tryVerify(function () {
+                return tabOf("explore").activeFocus;
+            }, 1000, data.tag + ": the focus moves to the current tab once the gate lifts");
+            verify(!tabOf("systems").activeFocus, data.tag + ": the old tab lets the focus go");
+            compare(tabStops(), ["explore"], data.tag + ": one Tab stop");
+            keyClick(Qt.Key_Return);
+            compare(chosenIds(), [], data.tag + ": Return on the current tab chooses nothing");
+
+            // With the focus outside the strip, lifting the gate leaves it there.
+            before.forceActiveFocus();
+            data.close();
+            strip.currentId = "scanLists";
+            data.open();
+            wait(20);
+            verify(before.activeFocus, data.tag + ": the focus stays outside the strip");
+        }
+
         function test_focus_current() {
             strip.currentId = "scanLists";
             verify(strip.focusCurrent());
@@ -328,6 +389,7 @@ Item {
         function test_choosing_is_blocked_while_hidden() {
             var held = focusTab("systems");
             strip.visible = false;
+            verify(held.activeFocus, "the tab keeps the focus while hidden, so the keys below reach it");
             keyClick(Qt.Key_Right);
             keyClick(Qt.Key_Return);
             tabOf("explore").Accessible.pressAction();
@@ -468,9 +530,36 @@ Item {
             compare(label.lineCount, 2, "two lines in the selected weight");
             verify(strip.implicitHeight >= label.height + 24 - 0.01, "the strip holds the wrapped label");
             compare(resting, strip.implicitHeight, "the strip was that tall before the tab was chosen");
-            strip.width = Qt.binding(function () {
-                return root.width - 2 * Ui.Theme.screenPadding;
-            });
+        }
+
+        // A word that cannot fit makes its label one elided line: the strip
+        // sizes from that line, the bar stays inside the label and the tab
+        // still reads the whole label.
+        function test_a_label_too_long_for_its_tab_is_one_elided_line() {
+            Ui.Theme.fontScale = 2.0;
+            var built = createTemporaryObject(longTokenStrip, root);
+            verify(built !== null);
+            wait(0);
+            var tab = findChild(built, "listenTab_long");
+            var label = labelOf(tab);
+            verify(label.elided, "the long word does not fit even at the normal-text size");
+            compare(label.lineCount, 1, "one line");
+            verify(label.truncated, "the line is elided");
+            compare(label.font.pixelSize, 14, "the strip's one size is the normal-text size");
+            compare(labelOf(findChild(built, "listenTab_systems")).font.pixelSize, 14, "every label at that size");
+            compare(tab.Accessible.name, "Interoperability lists", "the tab reads the whole label");
+            var bar = indicatorOf(tab);
+            verify(bar.visible);
+            verify(bar.width <= label.width + 0.01, "the bar stays inside the label (" + bar.width + " of " + label.width + ")");
+            var tallest = 0;
+            for (var id of ["systems", "long", "explore"])
+                tallest = Math.max(tallest, demiBoldHeight(labelOf(findChild(built, "listenTab_" + id))));
+            fuzzyCompare(built.implicitHeight, Math.max(Ui.Theme.minimumTouchSize, tallest + 24), 0.01,
+                         "the strip sizes from the one elided line");
+            built.currentId = "systems";
+            wait(0);
+            verify(label.elided && label.lineCount === 1, "still one elided line when not current");
+            fuzzyCompare(built.implicitHeight, Math.max(Ui.Theme.minimumTouchSize, tallest + 24), 0.01, "the same height");
         }
 
         function test_the_strip_grows_with_the_text() {

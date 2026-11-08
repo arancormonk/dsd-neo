@@ -57,8 +57,8 @@ Rectangle {
         return null;
     }
     // Moves the keyboard focus to the current tab, as long as it can take it.
-    // Returns whether it did. Reads `currentId` itself: in the handler below a
-    // tab's `active` can still hold the old answer.
+    // Returns whether it did. Reads `currentId` itself: in onCurrentIdChanged
+    // a tab's `active` can still hold the old answer.
     function focusCurrent() {
         for (var i = 0; i < tabs.count; ++i) {
             var item = tabs.itemAt(i);
@@ -73,11 +73,12 @@ Rectangle {
     }
     // The focus stays on the current tab when the caller changes it, so the
     // strip keeps exactly one Tab stop.
-    onCurrentIdChanged: {
+    function settleFocus() {
         var focused = focusedTab();
         if (focused && focused.tabId !== currentId)
             focusCurrent();
     }
+    onCurrentIdChanged: settleFocus()
 
     implicitHeight: Math.max(Theme.minimumTouchSize, labelHeight + 24)
     color: Theme.bg
@@ -126,6 +127,14 @@ Rectangle {
                 onFitPixelSizeChanged: strip.shareLabelSize()
 
                 readonly property bool navigationAllowed: Navigation.allows(strip)
+                // A tab the caller made current while the strip was gated
+                // (under a sheet, hidden or disabled) takes the focus once the
+                // gate lifts.
+                readonly property bool choosable: navigationAllowed && enabled && visible
+                onChoosableChanged: {
+                    if (choosable)
+                        strip.settleFocus();
+                }
                 // The one Tab stop is the current tab, held while it has the
                 // focus (see OutlineButton).
                 activeFocusOnTab: (navigationAllowed && enabled && visible && active) || activeFocus
@@ -142,6 +151,8 @@ Rectangle {
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: choose()
                 function canChoose() {
+                    // The gate itself, not `choosable`, which may not have
+                    // caught up with a change made in the same turn.
                     return Navigation.allows(strip) && enabled && visible;
                 }
                 // Every way of choosing a tab comes here. With the focus in the

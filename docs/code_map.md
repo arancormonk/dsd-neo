@@ -13487,7 +13487,8 @@ the radio button above, with `selected` too. The strip is one Tab stop, the curr
 `activeFocusOnTab: (gate && current) || activeFocus`. Left/Right (no wrap), Home/End, Return, keypad Enter, Space,
 a tap and an accessibility press all go through the tab's one guarded `choose()` (`Navigation.allows()`, `enabled`,
 `visible`). With the focus in the strip, `choose()` moves the focus to the tab before it reports the choice, and a
-`currentId` the caller changes takes the focus along, so a settled strip has one Tab stop. `focusCurrent()` puts the
+`currentId` the caller changes takes the focus along, at once or, while the strip is gated (under a sheet, hidden or
+disabled), as the gate lifts, so a settled strip has one Tab stop. `focusCurrent()` puts the
 focus on the current tab when it can take it. The labels are `WholeWordLabel`s at one shared size. The strip's height,
 `max(Theme.minimumTouchSize, tallest label + 24)`, measures each label laid out in the selected weight, so choosing a
 tab never changes it. There is no Flickable and no named container (R-2). Tests: `tst_listen_tabs.qml`.
