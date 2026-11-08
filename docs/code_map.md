@@ -10731,12 +10731,16 @@ Qt Quick frontend (`src/ui/qt`):
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
-- Listen body layout (issue #646 B1). In `qml/HomeScreen.qml` a saved-system card is shown on its own condition,
-  `readonly property bool shown` (no sites, or the first of its group), and its height is keyed on `shown`, never on
-  `visible`, which also goes false while Main hides Home: a collapsing card would cut the body's range and Flickable
-  would clamp the scroll position. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_layout_fixes.qml`: range and place held
-  through frames drawn while hidden; the scroll-across-tabs cases in `tst_home_dongle_status.qml` and
-  `tst_home_pinned_strip.qml` also check after a layout while hidden).
+- Listen body layout (issue #646 B1, B8). In `qml/HomeScreen.qml` a saved-system card is shown on its own
+  condition, `readonly property bool shown` (no sites, or the first of its group), and its height is `shown ?
+  fullHeight : 0`, never keyed on `visible`, which also goes false while Main hides Home: a collapsing card would cut
+  the body's range and Flickable would clamp the scroll position. `fullHeight` follows the content: the label column
+  sits 10 px above the middle of the actions' extent (More at the top, Play at `minimumTouchSize + 6`, the site button
+  centred on Play), never above the top padding; the refresh hint takes the full width 8 px below the lower of labels
+  and actions; the card ends `cardPadding` below the lowest. A card without the hint is 122 px at normal text, as
+  before, and grows at large text. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_layout_fixes.qml`: range and place held
+  through frames drawn while hidden, refresh-hint and plain cards at 320 px x 1.0/1.6/2.0; the scroll-across-tabs
+  cases in `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,

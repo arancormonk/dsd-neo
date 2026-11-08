@@ -601,20 +601,35 @@ Item {
                     // its own condition, not on `visible`, which also goes false
                     // while Main hides Home and would collapse the body (issue #646 B1).
                     readonly property bool shown: siblings.length === 0 || siblings[0] === index
+                    readonly property bool hasSites: siblings.length > 0
                     visible: shown
-                    height: shown ? (refreshHint ? 154 : 122) : 0
+                    height: shown ? fullHeight : 0
                     readonly property var playableSites: siblings.filter(function (row) {
                         return !savedSystems.get(row).avoidSite;
                     })
                     property bool refreshHint: (screen.siteRevision, screen.needsSiteRefresh(index))
 
+                    // Issue #646 B8: as tall as what it holds, so larger text grows
+                    // the card instead of running its labels into the hint or past
+                    // its edges. At normal text that is the actions' 122 px, as
+                    // before. Play counts even while it is hidden (several sites to
+                    // play): the site button is centred on it.
+                    readonly property real actionsBottom: Math.max(manageButton.y + manageButton.height, play.y + play.height,
+                        hasSites ? siteButton.y + siteButton.height : 0)
+                    readonly property real labelsBottom: labels.y + labels.height
+                    // The hint takes the full width, so it starts below both.
+                    readonly property real hintTop: Math.max(labelsBottom, actionsBottom) + 8
+                    readonly property real fullHeight: (refreshHint ? hintTop + refreshHintText.height : Math.max(labelsBottom, actionsBottom)) + Theme.cardPadding
+
                     Column {
+                        id: labels
                         anchors.left: parent.left
-                        anchors.right: siteButton.visible ? siteButton.left : play.left
+                        anchors.right: card.hasSites ? siteButton.left : play.left
                         anchors.leftMargin: Theme.cardPadding
                         anchors.rightMargin: 12
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.verticalCenterOffset: card.refreshHint ? -20 : -10
+                        // 10 px above the middle of the actions' extent, where they
+                        // sit at normal text; never above the card's top padding.
+                        y: Math.max(Theme.cardPadding, (card.actionsBottom + Theme.cardPadding - height) / 2 - 10)
                         spacing: 4
 
                         ReadableText {
@@ -650,10 +665,11 @@ Item {
                     }
 
                     ReadableText {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        anchors.margins: Theme.cardPadding
+                        id: refreshHintText
+                        objectName: "savedSystemRefreshHint"
+                        x: Theme.cardPadding
+                        y: card.hintTop
+                        width: parent.width - 2 * Theme.cardPadding
                         visible: card.refreshHint
                         text: qsTr("Refresh from RadioReference to enable site grouping")
                         wrapMode: Text.Wrap
@@ -669,7 +685,7 @@ Item {
                         anchors.verticalCenter: play.verticalCenter
                         anchors.rightMargin: play.visible ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
                         text: card.siblings.length === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(card.siblings.length)
-                        visible: card.siblings.length > 0
+                        visible: card.hasSites
                         onClicked: screen.chooseSites(card.index)
                     }
                     PlayCircle {
@@ -686,6 +702,7 @@ Item {
                     }
 
                     IconButton {
+                        id: manageButton
                         objectName: "savedSystemManageButton"
                         icon: "more"
                         accessibleName: qsTr("More options for %1").arg(card.name)
