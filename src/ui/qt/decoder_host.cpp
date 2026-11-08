@@ -19,8 +19,10 @@
 #include <QGuiApplication>
 #include <QIODevice>
 #include <QSaveFile>
+#include <QSet>
 #include <QUrl>
 
+#include "import_names.h"
 #include "json_store.h"
 
 #include <Qt>
@@ -35,25 +37,6 @@ imports_dir_path() {
     // Same root json_store uses, so the library index and the files it points at
     // can never end up under different app-data locations.
     return json_store_path(QStringLiteral("imports"));
-}
-
-/** @brief chan.csv, chan (2).csv, chan (3).csv … first name not already taken. */
-QString
-unique_destination(const QDir& dir, const QString& fileName) {
-    if (!dir.exists(fileName)) {
-        return dir.filePath(fileName);
-    }
-    const QFileInfo info(fileName);
-    const QString base = info.completeBaseName();
-    const QString suffix = info.suffix();
-    for (int i = 2; i < 1000; i++) {
-        const QString candidate = suffix.isEmpty() ? QStringLiteral("%1 (%2)").arg(base).arg(i)
-                                                   : QStringLiteral("%1 (%2).%3").arg(base).arg(i).arg(suffix);
-        if (!dir.exists(candidate)) {
-            return dir.filePath(candidate);
-        }
-    }
-    return QString();
 }
 
 /**
@@ -483,17 +466,11 @@ DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName,
 
     // The display name comes from the picker; keep only its last component so
     // it cannot navigate out of the imports directory.
-    QString name = QFileInfo(fileName).fileName();
-    if (name.isEmpty()) {
-        name = QFileInfo(sourcePath).fileName();
-    }
-    if (name.isEmpty()) {
-        return QString();
-    }
+    const QString name = sanitized_import_name(fileName, QFileInfo(sourcePath).fileName());
 
     QString destination = replace_destination(importsDir, replacePath);
     if (destination.isEmpty()) {
-        destination = unique_destination(importsDir, name);
+        destination = unique_import_destination(importsDir, name, QSet<QString>());
     }
     if (destination.isEmpty()) {
         return QString();

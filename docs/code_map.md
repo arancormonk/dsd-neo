@@ -12398,6 +12398,9 @@ Qt Quick frontend (`src/ui/qt`):
   `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, `src/core/file/p25_bandplan_csv.c`, and
   `src/core/file/source_alias_csv.c`) for row-count feedback. Kinds are `chan`, `group`, `keysDec`, `keysHex`,
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
+  `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most 247
+  UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also skips
+  reserved paths).
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`

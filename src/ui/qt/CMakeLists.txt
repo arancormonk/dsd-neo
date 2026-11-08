@@ -40,6 +40,7 @@ target_sources(
         decryption_profiles_model.cpp
         diagnostics_log.cpp
         imported_files_model.cpp
+        import_names.cpp
         input_commit.cpp
         csv_bundle_import.cpp
         json_store.cpp
