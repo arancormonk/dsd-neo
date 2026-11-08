@@ -41,7 +41,9 @@ constexpr int kKeptLimit = 99;
 enum class MarkState { Marked, Kept };
 
 /* Marks and notices are process-wide: call history saves on its worker while the GUI thread loads and saves the other
-   stores. The lock is held across a marked file's whole save, so two saves of it never interleave. A std::mutex, which
+   stores. The lock is held across a marked file's whole save, so two saves of a marked file never interleave; unmarked
+   saves run outside it, and each model keeps its own saves of one file apart (call history: one worker, and the
+   destructor's save after it). A std::mutex, which
    ThreadSanitizer understands, unlike QMutex's futex. */
 struct Registry {
     std::mutex lock;
@@ -167,7 +169,8 @@ keep_aside(const QString& path, QString* keptName) {
     }
     for (int n = 1; n <= kKeptLimit; ++n) {
         const QString keptPath = path + QStringLiteral(".unreadable-%1").arg(n);
-        if (dsd_rename_noreplace(from.constData(), platform_path(keptPath).constData(), nullptr) == 0) {
+        const QByteArray to = platform_path(keptPath); // held, so errno is read before anything is freed
+        if (dsd_rename_noreplace(from.constData(), to.constData(), nullptr) == 0) {
 #ifdef DSD_NEO_TEST_HOOKS
             if (registry().afterAside) { // the caller holds the lock
                 registry().afterAside(path, keptPath);
@@ -181,6 +184,16 @@ keep_aside(const QString& path, QString* keptName) {
         }
     }
     return Aside::Refused;
+}
+
+/* Whether a marked file's path may take the replacement: nothing there (moved aside, or gone), or a file or a link (a
+   rename that left its source, or one put back since). A folder, FIFO, socket or device is never replaced, and neither
+   is a path that cannot be told. */
+bool
+replaceable(const QByteArray& target) {
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    const int present = dsd_path_type_nofollow(target.constData(), &type);
+    return present == 0 || (present == 1 && (type == DSD_PATH_TYPE_FILE || type == DSD_PATH_TYPE_LINK));
 }
 
 bool
@@ -205,7 +218,8 @@ struct MarkedSave {
 
 /* Replaces the marked @p path in the order that keeps it: (1) write and sync a temporary file beside it, (2) rename
    it aside unless it already was (@p kept), (3) replace the path. A failure at (1) or (2) moves nothing; one at (3)
-   leaves the file kept. QSaveFile is not used: it resolves a link at the path and remembers its target. */
+   leaves the file kept. (3) replaces only nothing, a file or a link, so the retry after a kept file never replaces
+   what the move would have refused. QSaveFile is not used: it resolves a link at the path and remembers its target. */
 MarkedSave
 save_marked(const QString& path, bool kept, const QByteArray& data, qint64* bytes) {
     MarkedSave out;
@@ -224,7 +238,7 @@ save_marked(const QString& path, bool kept, const QByteArray& data, qint64* byte
         ok = out.aside == Aside::Kept || out.aside == Aside::Gone;
     }
     if (ok) {
-        ok = dsd_replace_file_with_temp(temp, target.constData()) == 0;
+        ok = replaceable(target) && dsd_replace_file_with_temp(temp, target.constData()) == 0;
     }
     if (!ok) {
         (void)dsd_remove_file(temp);
@@ -262,8 +276,9 @@ json_store_path(const QString& fileName) {
 
 bool
 json_store_definitely_missing(const QString& path) {
+    const QByteArray native = platform_path(path); // held, so errno is read before anything is freed
     dsd_stat_t st;
-    if (dsd_stat_path(platform_path(path).constData(), &st) == 0) {
+    if (dsd_stat_path(native.constData(), &st) == 0) {
         return false;
     }
     return errno == ENOENT || errno == ENOTDIR;
@@ -272,8 +287,9 @@ json_store_definitely_missing(const QString& path) {
 JsonStoreRead
 json_store_read(const QString& fileName) {
     const QString path = json_store_path(fileName);
+    const QByteArray native = platform_path(path); // held, so errno is read before anything is freed
     dsd_stat_t st;
-    if (dsd_stat_path(platform_path(path).constData(), &st) != 0) {
+    if (dsd_stat_path(native.constData(), &st) != 0) {
         const int err = errno;
         if (err == ENOENT || err == ENOTDIR) {
             return {};

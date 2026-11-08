@@ -345,6 +345,24 @@ test_json_store_keep_aside_posix(void) {
         remove_kept(locked, 1);
     }
 
+    /* A FIFO that appears at the path once the file is kept is never replaced, by that save or by its retry. */
+    const QString late = QStringLiteral("late-fifo.json");
+    const QByteArray latePath = QFile::encodeName(json_store_path(late));
+    expect("late fifo: fixture", write_raw(late, "[6"));
+    expect("late fifo: loads empty", json_store_load_array(late).isEmpty());
+    dsd_qt::json_store_test_after_aside(
+        [](const QString& path, const QString&) { (void)mkfifo(QFile::encodeName(path).constData(), 0600); });
+    expect("late fifo: the save fails", !json_store_save_array(late, rows));
+    dsd_qt::json_store_test_after_aside({});
+    expect("late fifo: kept", raw(kept(late, 1)) == "[6");
+    expect("late fifo: the retry fails too", !json_store_save_array(late, rows));
+    expect("late fifo: still a FIFO, no temporary file",
+           lstat(latePath.constData(), &info) == 0 && S_ISFIFO(info.st_mode) && temps_of(late).isEmpty());
+    expect("late fifo: removed", unlink(latePath.constData()) == 0);
+    expect("late fifo: then the retry writes, without a second move",
+           json_store_save_array(late, rows) && json_store_load_array(late) == rows && !QFile::exists(kept(late, 2)));
+    remove_kept(late, 1);
+
     /* A no-replace rename that made the new name but left the old one counts as kept: the path is then replaced. */
     const QString left = QStringLiteral("source-left.json");
     expect("source left: fixture", write_raw(left, "[5"));

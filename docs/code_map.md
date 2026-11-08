@@ -12539,11 +12539,13 @@ Qt Quick frontend (`src/ui/qt`):
     and replaces its target. States: Marked → Kept → cleared. A failure at (1) or (2) moves nothing and the save fails
     (owed, through each model's own save-failure path); a path confirmed absent at (2) clears the mark and is written;
     a folder, FIFO or socket there, an unknown classification, or no free N refuses; a failure at (3) stays Kept, so
-    the retry only writes; a rename that left its source (`out_source_left`) counts as kept. Lazy: nothing moves on
-    a run that never saves that store. A crash between (2) and (3) leaves the list empty at the next launch, with the
-    original kept and nothing destroyed.
-  - One mutex guards the marks and the notices, and is held across a marked file's whole save, so call history's
-    worker and GUI-thread saves of the same file never interleave. Unmarked saves run outside it.
+    the retry only writes; a rename that left its source (`out_source_left`) counts as kept. (3) replaces only
+    nothing, a file or a link (the same type check), so a FIFO that appears after the move is never replaced, by that
+    save or its retry. Lazy: nothing moves on a run that never saves that store. A crash between (2) and (3) leaves
+    the list empty at the next launch, with the original kept and nothing destroyed.
+  - One mutex guards the marks and the notices, and is held across a marked file's whole save, so two saves of a
+    marked file never interleave. Unmarked saves run outside it: each model keeps its own saves of one file apart, as
+    before (call history's single save worker, and the destructor's save after `waitForDone()`).
   - Notices: `json_store_notices()` (one `JsonStoreNotice {fileName, reason, keptName}` per file, oldest first;
     `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the settings
     INI), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread

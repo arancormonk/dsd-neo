@@ -16,7 +16,11 @@ namespace dsd_qt {
 /** @brief Reads of @p fileName report a read error after reading the whole file; an empty name reads normally. */
 void json_store_test_fail_read(const QString& fileName);
 
-/** @brief Called right after a marked file was renamed aside, with its path and its kept path; empty for none. */
+/**
+ * @brief Called right after a marked file was renamed aside, with its path and its kept path; empty for none.
+ *
+ * It runs with json_store's registry lock held, so it must not call any json_store function.
+ */
 void json_store_test_after_aside(std::function<void(const QString& path, const QString& keptPath)> hook);
 
 } // namespace dsd_qt

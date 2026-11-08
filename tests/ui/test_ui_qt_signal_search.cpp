@@ -399,7 +399,7 @@ testRangeSaveFailureClears(dsd_qt::KnownFrequencyIndex* index) {
         assert(!failed.isEmpty() && model.error() == failed);
         assert(QDir().rmdir(path));
         assert(model.saveRange(0, range).isEmpty());
-        assert(model.error() != failed);
+        assert(model.error().isEmpty());
     }
     assert(dsd_qt::json_store_save_array(file, previous));
 }
