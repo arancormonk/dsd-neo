@@ -615,6 +615,8 @@ Item {
                         // A target that has not decoded has no text (the call view
                         // leaves it empty, never "0"), so nothing is named for it.
                         text: metrics.slot1CallState === 2 ? metrics.slot1TgText : metrics.slot2CallState === 2 ? metrics.slot2TgText : ""
+                        // A textual target comes off the air: drawn as written.
+                        textFormat: Text.PlainText
                         font.family: Theme.mono
                         font.pixelSize: Theme.fontSize(11)
                         color: Theme.cyan
@@ -655,6 +657,8 @@ Item {
                     height: identityFont.height
                     // The font is read here so a text size change refits.
                     text: font.pixelSize > 0 ? Util.fitTokens(tokens, width, identityFont, " · ", " …") : ""
+                    // Received identity, drawn as fitTokens() measured it.
+                    textFormat: Text.PlainText
                     // Only for a first token wider than the whole line.
                     elide: Text.ElideRight
                     font.family: Theme.mono

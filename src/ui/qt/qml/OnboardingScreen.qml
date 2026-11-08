@@ -167,6 +167,8 @@ Item {
                         objectName: "dongleStatusText"
                         width: parent.width
                         text: screen.brokered ? deviceStatus.detailText : decoderHost.localDeviceStatus || "RTL2832U · USB-OTG · " + qsTr("ready")
+                        // Can name the USB device as it names itself.
+                        textFormat: Text.PlainText
                         wrapMode: Text.Wrap
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(14)

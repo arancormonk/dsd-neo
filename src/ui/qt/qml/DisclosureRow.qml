@@ -73,6 +73,9 @@ Item {
         Text {
             width: parent.width
             text: row.title
+            // Titles can be a typed or imported name (a RadioReference system,
+            // a key label, a recordings folder): drawn as written.
+            textFormat: Text.PlainText
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold

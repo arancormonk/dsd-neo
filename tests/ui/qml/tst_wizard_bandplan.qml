@@ -77,6 +77,47 @@ Item {
             compare(tc.wizard.p25BandplanCsvPath, "", "openForFound() must start without a band plan")
         }
 
+        // Issue #802 B12: an imported file's name in the picker is drawn and
+        // measured as written, never as markup (a "/" in it would start a
+        // path, so the tag is left open).
+        function textShowing(item, value) {
+            if (item.textFormat !== undefined && item.text === value && item.visible)
+                return item
+            var kids = item.children || []
+            for (var i = 0; i < kids.length; ++i) {
+                var found = textShowing(kids[i], value)
+                if (found)
+                    return found
+            }
+            return null
+        }
+        function test_01b_an_imported_file_name_draws_as_written() {
+            var source = testContext.writeFixtureCsv("markup-map.csv", "channel,frequency\n1,851012500\n")
+            var result = importedFiles.importFile(source, "<b>Map &amp; plan.csv", "chan")
+            verify(result.ok, "the map was not imported")
+            var sheet = findChild(tc.wizard, "wizardCsvSheet")
+            try {
+                tc.wizard.pickerTarget = "chan"
+                tc.wizard.chanCsvPath = result.path
+                sheet.visible = true
+                var text = null
+                tryVerify(function () { text = textShowing(sheet, "Selected: <b>Map &amp; plan.csv"); return text !== null },
+                          2000, "the imported map is not listed")
+                var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", tc.wizard)
+                mirror.font = text.font
+                mirror.text = text.text
+                var plainWidth = mirror.implicitWidth
+                mirror.destroy()
+                verify(Math.abs(text.implicitWidth - plainWidth) <= 0.5, "the file name draws as written: " + text.implicitWidth + " vs " + plainWidth)
+                compare(text.textFormat, Text.PlainText, "the file name is plain text")
+            } finally {
+                sheet.visible = false
+                tc.wizard.pickerTarget = ""
+                tc.wizard.chanCsvPath = ""
+                importedFiles.remove(importedFiles.rowForPath(result.path))
+            }
+        }
+
         function test_02_the_picker_seam_assigns_it() {
             tc.wizard.assignCsvPath("p25Bandplan", "/data/imports/band plan.csv", false)
             compare(tc.wizard.p25BandplanCsvPath, "/data/imports/band plan.csv")

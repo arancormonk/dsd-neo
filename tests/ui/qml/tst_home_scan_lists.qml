@@ -219,6 +219,45 @@ Item {
             }
         }
 
+        // Issue #802 B12: a saved system's or a scan list's name is typed or
+        // imported, so a "<b>" in it is drawn and measured as written, never
+        // as markup.
+        function verifyDrawnAsWritten(text, tag) {
+            verify(text !== null, tag + " is missing");
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", appLoader);
+            mirror.font = text.font;
+            mirror.text = text.text;
+            var plainWidth = mirror.implicitWidth;
+            mirror.destroy();
+            verify(Math.abs(text.implicitWidth - plainWidth) <= 0.5, tag + " draws as written: " + text.implicitWidth + " vs " + plainWidth);
+            compare(text.textFormat, Text.PlainText, tag + " is plain text");
+        }
+        function test_saved_and_list_names_draw_as_written() {
+            var row = savedSystems.count;
+            var oldOnboarding = prefs.onboardingDone;
+            try {
+                prefs.onboardingDone = true;
+                savedSystems.add({name: "<b>Dock</b>", sourceType: "usb", freqMhz: "851.5"});
+                scanLists.update(0, {name: "<b>Yard</b> &lt;2&gt;"});
+                var card = visualChild(appLoader.item, function (item) {
+                    return item.name === "<b>Dock</b>" && item.sourceType === "usb";
+                });
+                verify(card !== null);
+                var title = findChild(card, "savedSystemTitle");
+                compare(title.text, "<b>Dock</b>");
+                verifyDrawnAsWritten(title, "the saved system's name");
+                compare(findChild(card, "savedSystemPlay").accessibleName, "Listen to <b>Dock</b>");
+                var listCard = visualChild(appLoader.item, "scanListCard");
+                tryCompare(listCard, "listName", "<b>Yard</b> &lt;2&gt;");
+                verifyDrawnAsWritten(visualChild(listCard, function (item) {
+                    return item.text === "<b>Yard</b> &lt;2&gt;";
+                }), "the scan list's name");
+            } finally {
+                savedSystems.remove(row);
+                prefs.onboardingDone = oldOnboarding;
+            }
+        }
+
         function test_scan_target_uses_names_including_reattachment() {
             var app = appLoader.item;
             var previousSystem = app.sessionSystem;

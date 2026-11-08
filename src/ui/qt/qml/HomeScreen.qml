@@ -288,6 +288,8 @@ Item {
                         objectName: "dongleStatusText"
                         width: parent.width
                         text: deviceStatus.detailText
+                        // Can name the USB device as it names itself.
+                        textFormat: Text.PlainText
                         Accessible.ignored: true
                         wrapMode: Text.Wrap
                         font.family: Theme.sans

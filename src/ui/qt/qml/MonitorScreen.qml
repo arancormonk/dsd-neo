@@ -776,6 +776,9 @@ Item {
                             id: liveLabel
                             objectName: "monitorLiveLabel"
                             text: screen.liveLabel
+                            // Off a session, the host's status, which can be a
+                            // start failure naming a device or file.
+                            textFormat: Text.PlainText
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(11)
                             font.letterSpacing: 1.4
@@ -967,6 +970,9 @@ Item {
                                     parts.push("SRC " + screen.heroSrc);
                                 return parts.join(" · ");
                             }
+                            // Target and source text come off the air or from
+                            // an imported alias: drawn as written.
+                            textFormat: Text.PlainText
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSecondary
@@ -1034,6 +1040,8 @@ Item {
                             width: Math.max(0, Math.min(implicitWidth, heroSubline.width - x))
                             elide: Text.ElideRight
                             text: "· " + screen.heroChannel
+                            // A scan row's typed or imported name.
+                            textFormat: Text.PlainText
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(13)
                             color: Theme.textSecondary
@@ -1795,6 +1803,7 @@ Item {
                 }
 
                 Text {
+                    objectName: "monitorTunedNames"
                     width: Math.min(implicitWidth, parent.width)
                     visible: text.length > 0
                     text: {
@@ -1803,6 +1812,8 @@ Item {
                         var revision = knownFrequencies.revision;
                         return knownFrequencies.tunedNames(metrics.centerFreqHz, metrics.channelBandwidthHz).join(" / ");
                     }
+                    // Saved names, typed or imported.
+                    textFormat: Text.PlainText
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
                     color: Theme.textSecondary

@@ -87,6 +87,25 @@ Item {
                 compare(testContext.dongleRetryRequests(), before + 1);
             }
         }
+        // Issue #802 B12: the record's text names the USB device as the device
+        // names itself, drawn and measured as written, never as markup.
+        function test_device_name_draws_as_written() {
+            var text = "Android could not open <b>RTL2838</b> (open_failed).";
+            testContext.setDongleStatus(false, 2, text);
+            for (var page of [home, onboarding]) {
+                home.visible = page === home;
+                onboarding.visible = page === onboarding;
+                var label = findChild(page, "dongleStatusText");
+                tryCompare(label, "text", text);
+                var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+                mirror.font = label.font;
+                mirror.text = label.text;
+                var plainWidth = mirror.implicitWidth;
+                mirror.destroy();
+                verify(Math.abs(label.implicitWidth - plainWidth) <= 0.5, (page === home ? "Home" : "Onboarding") + " draws as written: " + label.implicitWidth + " vs " + plainWidth);
+                compare(label.textFormat, Text.PlainText, (page === home ? "Home" : "Onboarding") + " is plain text");
+            }
+        }
         function test_short_screen_retry_is_reachable() {
             root.width = 320;
             root.height = 360;

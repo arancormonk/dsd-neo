@@ -1754,6 +1754,8 @@ Item {
                             Text {
                                 width: parent.width
                                 text: modelData.path === csvSheet.currentPath ? qsTr("Selected: %1").arg(modelData.name) : modelData.name
+                                // An imported file's name: drawn as written.
+                                textFormat: Text.PlainText
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.fontSize(15)
                                 font.weight: Font.DemiBold

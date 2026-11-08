@@ -575,6 +575,8 @@ Item {
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
                             text: sheetRow.modelData.name
+                            // A RadioReference place name: drawn as written.
+                            textFormat: Text.PlainText
                             font.family: Theme.sans
                             font.pixelSize: Theme.fontSize(15)
                             color: sheetRow.modelData[browseSheet.idKey] === browseSheet.selectedId ? Theme.cyan : Theme.textPrimary
@@ -1283,6 +1285,8 @@ Item {
                                     // site number — the value is a DMR-ID-like
                                     // identifier — so it is named, not numbered.
                                     text: radioReference.conventional ? siteRow.modelData.site.descr : qsTr("Site %1 · %2").arg(siteRow.modelData.site.siteNumber).arg(siteRow.modelData.site.descr)
+                                    // RadioReference's own words, this line and the next.
+                                    textFormat: Text.PlainText
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(15)
                                     font.weight: Font.DemiBold
@@ -1311,6 +1315,7 @@ Item {
                                             line += " · " + qsTr("control %1 MHz").arg(site.controlFreqMhz);
                                         return line;
                                     }
+                                    textFormat: Text.PlainText
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued

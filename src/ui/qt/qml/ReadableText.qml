@@ -14,6 +14,9 @@ import QtQuick
 // button's label, a row named for its whole line) stays a plain Text.
 Text {
     id: readable
+    // Its words can be a typed, imported or received name (issue #802):
+    // drawn as written, never as markup. A styled text sets its own format.
+    textFormat: Text.PlainText
     // A screen or sheet title, which TalkBack can move between as a heading.
     property bool heading: false
     Accessible.role: heading ? Accessible.Heading : Accessible.StaticText

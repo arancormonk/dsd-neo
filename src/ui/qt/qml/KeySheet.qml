@@ -441,9 +441,12 @@ ModalSheet {
     }
     Text {
         id: keySheetNotice
+        objectName: "keySheetNotice"
         width: parent.width
         visible: text.length > 0
         text: sheet.notice
+        // Quotes saved system and profile names.
+        textFormat: Text.PlainText
         Accessible.role: Accessible.StaticText
         Accessible.name: text
         Accessible.ignored: !Navigation.allows(keySheetNotice) || !visible

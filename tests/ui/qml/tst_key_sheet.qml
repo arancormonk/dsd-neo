@@ -471,6 +471,50 @@ Item {
                 verify(decryptionProfiles.removeProfile(profileUid).ok);
             }
         }
+        // Issue #802 B12: the notice and the Use for button quote a typed or
+        // imported system name, drawn and measured as written, never as markup.
+        function verifyDrawnAsWritten(text, tag) {
+            verify(text !== null, tag + " is missing");
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", sheet);
+            mirror.font = text.font;
+            mirror.text = text.text;
+            var plainWidth = mirror.implicitWidth;
+            mirror.destroy();
+            verify(Math.abs(text.implicitWidth - plainWidth) <= 0.5, tag + " draws as written: " + text.implicitWidth + " vs " + plainWidth);
+            compare(text.textFormat, Text.PlainText, tag + " is plain text");
+        }
+        function textShowing(item, value) {
+            if (item.textFormat !== undefined && item.text === value)
+                return item;
+            for (var i = 0; i < item.children.length; ++i) {
+                var found = textShowing(item.children[i], value);
+                if (found)
+                    return found;
+            }
+            return null;
+        }
+        function test_system_name_draws_as_written() {
+            var profileUid = directProfile("Orphan keys");
+            var system = addSystem("<b>Gone</b>");
+            try {
+                sheet.visible = false;
+                sheet.systemUid = system;
+                sheet.systemName = "<b>Gone</b>";
+                sheet.open();
+                sheet.selectedProfileUid = profileUid;
+                var use = findChild(sheet, "useProfileForSystem");
+                compare(use.text, "Use for <b>Gone</b> on future starts");
+                verifyDrawnAsWritten(textShowing(use, use.text), "the Use for button");
+                removeSystem(system);
+                use.activate();
+                var notice = findChild(sheet, "keySheetNotice");
+                compare(notice.text, "“<b>Gone</b>” is no longer a saved system. Nothing was changed.");
+                verifyDrawnAsWritten(notice, "the notice");
+            } finally {
+                removeSystem(system);
+                verify(decryptionProfiles.removeProfile(profileUid).ok);
+            }
+        }
         // A scan list, Explore or a wizard test passes no system UID.
         function test_use_for_system_hidden_without_a_system() {
             var profileUid = directProfile("Any keys");

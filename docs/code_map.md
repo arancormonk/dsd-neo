@@ -13340,6 +13340,12 @@ Preserve each file's existing QML formatting and use focused manual edits. Do no
 run whole-file `qmlformat` during a functional change; no automatic QML formatting
 settings are prescribed. MonitorScreen's existing expanded style is retained.
 Text sizes use `Theme.fontSize(pixels)`, with the platform scale bounded to 1–1.6.
+Text that can show a typed, imported (CSV, RadioReference, backup) or received string, or an error quoting one, is
+`Text.PlainText`, because Qt's default AutoText draws a first line holding a tag (`<b>`) or `&lt;` as markup (issue
+#802): `ReadableText` (so `LiveText`), `MicroLabel` and the pieces that draw a caller's label (`OutlineButton`,
+`FilterPill`, `PlexCheckBox`, `PlexComboBox`, `PlexTextField`, `DisclosureRow`, `ToggleRow`, `ChoiceSheet`'s title) are
+plain already, and a bare `Text` showing one sets it. Only app-authored markup is styled (`RadioReferenceAccountEditor`'s
+link, `Util.summaryMarkup()`, which escapes its tokens).
 A binding that mixes an item's own state (`visible`, `enabled`) with `Navigation.allows()` reads the gate first
 (`Accessible.ignored: !navigationAllowed || !visible`): the gate's walk up the parents can settle an ancestor's pending
 `parent:` binding (MonitorScreen's tier groups), and state read before it would change under the running binding, a

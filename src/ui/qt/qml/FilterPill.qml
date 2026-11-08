@@ -53,6 +53,8 @@ Rectangle {
             objectName: "filterPillLabel"
             anchors.verticalCenter: parent.verticalCenter
             text: control.text
+            // A pill can name a saved system or an imported category.
+            textFormat: Text.PlainText
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(13)
             font.weight: Font.DemiBold

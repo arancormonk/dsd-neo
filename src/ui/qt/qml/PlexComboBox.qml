@@ -34,6 +34,9 @@ ComboBox {
     rightPadding: 38
     contentItem: Text {
         text: control.displayText
+        // Choices can be saved system or file names: drawn as written, here
+        // and in the list below.
+        textFormat: Text.PlainText
         font: control.font
         color: Theme.textPrimary
         verticalAlignment: Text.AlignVCenter
@@ -60,6 +63,7 @@ ComboBox {
         contentItem: Text {
             id: optionLabel
             text: option.text
+            textFormat: Text.PlainText
             font: control.font
             color: Theme.textPrimary
             wrapMode: Text.Wrap

@@ -142,5 +142,69 @@ Item {
             compare(seen[0], false, "the row forwarded the wrong state")
             compare(seen[1], true, "the row forwarded the wrong state")
         }
+
+        // Issue #802 B12: the shared text pieces carry typed, imported and
+        // received names (a saved system, a profile, a RadioReference site, a
+        // scan list), so a "<b>" or "&lt;" in one is drawn and measured as
+        // written, never as markup. Each text showing the name must be plain
+        // and as wide as a plain mirror of it.
+        readonly property string markup: "<b>Dock</b> &lt;1&gt;"
+        function drawnTexts(item, out) {
+            if (out.indexOf(item) >= 0)
+                return out
+            if (item.textFormat !== undefined && String(item.text).indexOf(markup) >= 0)
+                out.push(item)
+            var kids = (item.contentItem && item.contentItem !== item ? [item.contentItem] : []).concat(item.children || [])
+            for (var i = 0; i < kids.length; ++i)
+                drawnTexts(kids[i], out)
+            return out
+        }
+        function verifyDrawnAsWritten(item, tag, expected) {
+            var texts = drawnTexts(item, [])
+            compare(texts.length, expected, tag + " shows the name")
+            for (var i = 0; i < texts.length; ++i) {
+                var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root)
+                mirror.font = texts[i].font
+                mirror.text = texts[i].text
+                var plainWidth = mirror.implicitWidth
+                mirror.destroy()
+                verify(Math.abs(texts[i].implicitWidth - plainWidth) <= 0.5,
+                       tag + " " + i + " draws as written: " + texts[i].implicitWidth + " vs " + plainWidth)
+                compare(texts[i].textFormat, Text.PlainText, tag + " " + i + " is plain text")
+            }
+        }
+        function create(file, properties) {
+            var component = Qt.createComponent(uiDir + "/" + file)
+            compare(component.status, Component.Ready, file + ": " + component.errorString())
+            var made = createTemporaryObject(component, root, properties)
+            verify(made !== null, file + " was not created")
+            return made
+        }
+        function test_06_shared_text_draws_names_as_written_data() {
+            return [
+                {tag: "ReadableText", file: "ReadableText.qml", properties: {text: markup}, texts: 1},
+                {tag: "LiveText", file: "LiveText.qml", properties: {text: markup}, texts: 1},
+                {tag: "MicroLabel", file: "MicroLabel.qml", properties: {text: markup}, texts: 1},
+                {tag: "OutlineButton", file: "OutlineButton.qml", properties: {text: markup, width: 300}, texts: 1},
+                {tag: "FilterPill", file: "FilterPill.qml", properties: {text: markup}, texts: 1},
+                {tag: "DisclosureRow", file: "DisclosureRow.qml", properties: {title: markup, subtitle: markup, width: 400}, texts: 2},
+                {tag: "ToggleRow", file: "ToggleRow.qml", properties: {title: markup, subtitle: markup, note: markup, width: 400}, texts: 3},
+                {tag: "PlexComboBox", file: "PlexComboBox.qml", properties: {model: [markup], width: 300}, texts: 1},
+                {tag: "PlexTextField", file: "PlexTextField.qml", properties: {label: "Name", placeholderText: markup, width: 300}, texts: 1}
+            ]
+        }
+        function test_06_shared_text_draws_names_as_written(data) {
+            verifyDrawnAsWritten(create(data.file, data.properties), data.tag, data.texts)
+        }
+        function test_07_choice_list_draws_names_as_written() {
+            var combo = create("PlexComboBox.qml", {model: [markup], width: 300})
+            combo.popup.open()
+            tryCompare(combo.popup, "opened", true)
+            verifyDrawnAsWritten(combo.popup.contentItem, "the choice list", 1)
+            combo.popup.close()
+            var sheet = create("ChoiceSheet.qml", {width: 400, height: 600})
+            sheet.open(markup, [markup], function () {})
+            verifyDrawnAsWritten(sheet, "the choice sheet", 2)
+        }
     }
 }
