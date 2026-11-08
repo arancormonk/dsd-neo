@@ -42,6 +42,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFocusEvent>
 #include <QFont>
 #include <QFontDatabase>
@@ -101,6 +102,7 @@
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "known_frequency_index.h"
+#include "listen_pins.h"
 #include "p25_network_model.h" // WP-F2
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -227,6 +229,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
     SessionState
     sessionState() const override {
         return phase;
+    }
+
+    /* How the last file replay ended (1 completed, 2 stopped), as the native session reports it (issue #801). */
+    int terminal = 0;
+
+    int
+    terminalReason() const override {
+        return terminal;
     }
 
     void
@@ -3669,6 +3679,32 @@ class Setup : public QObject {
         return path;
     }
 
+    /**
+     * @brief Make @p path impossible to replace or delete as a file, or (@p blocked false) put it back.
+     *
+     * The file is moved aside and a non-empty directory takes its place, so a store saved there fails and a file
+     * removed there stays, whatever the permissions the suite runs with (issue #801). Answers whether it worked.
+     */
+    Q_INVOKABLE bool
+    blockPath(const QString& path, bool blocked) const {
+        if (blocked) {
+            return QFile::rename(path, path + QStringLiteral(".held")) && QDir().mkpath(path + QStringLiteral("/held"));
+        }
+        return QDir(path).removeRecursively() && QFile::rename(path + QStringLiteral(".held"), path);
+    }
+
+    /** @brief The absolute path of app store @p name, for blockPath(). */
+    Q_INVOKABLE QString
+    storePath(const QString& name) const {
+        return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/") + name;
+    }
+
+    /** @brief Whether @p path names an existing file (not a directory). */
+    Q_INVOKABLE bool
+    fileExists(const QString& path) const {
+        return QFileInfo(path).isFile();
+    }
+
     /** Use real QObject signals and QSettings for initialization bookkeeping tests;
      * plain context maps deliberately cannot validate writes or lifecycle edges. */
     Q_INVOKABLE void
@@ -3849,6 +3885,13 @@ class Setup : public QObject {
         m_lifecycle_host->accessForSourceRequests = 0;
         m_lifecycle_host->accessSource.clear();
         m_lifecycle_host->accessSerial.clear();
+    }
+
+    /** @brief How the last replay ended, as DecoderHost::terminalReason() reports it: 1 completed, 2 stopped. */
+    Q_INVOKABLE void
+    setTerminalReason(int reason) {
+        m_lifecycle_host->terminal = reason;
+        Q_EMIT m_lifecycle_host->runResultChanged();
     }
 
     /** @brief The last session's input failure kind, as DecoderHost::inputFailureKind() reports it. */
@@ -4053,6 +4096,14 @@ class Setup : public QObject {
     Q_INVOKABLE void
     setScanListQueueFull(bool full) {
         m_scan_list_queue_full = full;
+    }
+
+    /** @brief Issue #801: no pinned Listen shortcuts, through the real AppPrefs `listenPins` reads. */
+    Q_INVOKABLE void
+    resetPins() {
+        if (m_app_prefs != nullptr) {
+            m_app_prefs->setPinned({});
+        }
     }
 
     /** @brief No scan lists: an empty frame, and every switch and answer forgotten. */
@@ -4956,6 +5007,11 @@ class Setup : public QObject {
         // Issue #644: the production index over them, so Main offers what a case saves on the tuned channel.
         ctx->setContextProperty(QStringLiteral("knownFrequencies"),
                                 new dsd_qt::KnownFrequencyIndex(saved_systems, scan_lists, engine));
+        /* Issue #801: the production pins over the real AppPrefs (the settings file every case shares, whichever
+         * `prefs` a case reads), cleared for each test file; resetPins() clears them between cases. */
+        app_prefs->setPinned({});
+        ctx->setContextProperty(QStringLiteral("listenPins"),
+                                new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         auto* profiles = new dsd_qt::DecryptionProfilesModel(engine);
         profiles->setReferences(saved_systems, scan_lists);
         auto* starter = new dsd_qt::ScanListStarter(app_prefs, saved_systems, engine);

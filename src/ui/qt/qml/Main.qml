@@ -425,31 +425,10 @@ Window {
             }
             return;
         }
-        var scan = request.kind === "scan";
-        if (!scan) {
-            var refusal = savedStartRefusal(request.uid);
-            if (refusal.length) {
-                // The refused system is the attempt Home's failure card names:
-                // Retry asks again, and Edit opens that system.
-                attemptedSource = {
-                    kind: "saved",
-                    uid: request.uid,
-                    system: savedSystems.getByUid(request.uid),
-                    remember: true
-                };
-                startError = refusal;
-                return;
-            }
-        }
-        var row = scan ? scanLists.rowForUid(request.uid) : savedSystems.rowForUid(request.uid);
-        if (row < 0) {
-            startError = qsTr("This source was removed. Choose another source.");
-            return;
-        }
-        if (scan)
-            startScanBundle(row, request.companions || [], request.holdTarget || "");
+        if (request.kind === "scan")
+            startScanByUid(request.uid, request.companions || [], request.holdTarget || "");
         else
-            startSystem(row);
+            startSavedByUid(request.uid);
     }
     /** Why saved system @p uid cannot start now, or empty when it can. */
     function savedStartRefusal(uid) {
@@ -460,6 +439,36 @@ Window {
         if (system.avoidSite)
             return qsTr("“%1” is avoided. Remove the avoid in its site list to start it.").arg(system.name);
         return "";
+    }
+    /**
+     * Refuse a start the way a failed start is shown: on Home's failure card,
+     * scrolled into view even over a failure already there (a pin can be
+     * tapped with the body scrolled). @p attempt ({kind: "saved"|"scan", uid,
+     * system}, or null when nothing is left to name) is what the card's Retry
+     * asks again and its Edit source opens. The refused start is the newest
+     * one, so a start still waiting (on USB access, or on the decoder to idle)
+     * is dropped and cannot run after it. Callers check the transition guard
+     * first.
+     */
+    function refuseStart(message, attempt) {
+        dropPendingStarts();
+        attemptedSource = attempt ? Object.assign({
+            companions: [],
+            remember: true
+        }, attempt) : null;
+        // As startWithMap() does for a new attempt: a finished replay's card
+        // goes with the attempt it names, or its Play again would retry this
+        // refused target. The session bookkeeping it also resets stays, since
+        // nothing starts here and a late initialization of the last session
+        // still counts.
+        completionMessage = "";
+        dismissedFailure = "";
+        startError = message;
+        revealFailure();
+        // revealFailure() scrolls Home to the top only on a brokered host; a
+        // refusal is revealed on the desktop too.
+        if (!decoderHost.localDeviceBrokered)
+            homeScreen.revealTop();
     }
     /**
      * Leave Signal search for another session, as one operation.
@@ -577,7 +586,9 @@ Window {
         mainRoot.awaitingUsbAccess = false;
         mainRoot.pendingStart = null;
         mainRoot.pendingStartRow = -1;
+        mainRoot.pendingStartCompanions = [];
         mainRoot.pendingStartRemember = true;
+        mainRoot.pendingStartHold = "";
     }
     // WP-S1 shares the saved-session USB gate and initialization bookkeeping.
     property bool pendingScanList: false
@@ -599,12 +610,19 @@ Window {
         target: uiController
         function onAutoStartRequested(kind, uid, companions) {
             var row = kind === "saved" ? savedSystems.rowForUid(uid) : kind === "scan" ? scanLists.rowForUid(uid) : -1;
+            // Deliberately silent for a target removed since it last started:
+            // nobody asked for this start (a dongle was plugged in), so a
+            // "removed" banner would only be noise. Unlike a tap, nothing is
+            // refused here.
             if (row < 0)
                 return;
+            // B2: through each kind's gate, so an avoided site or a list that
+            // became a draft is refused as its card would refuse it, before
+            // any USB request, not started.
             if (kind === "saved")
-                mainRoot.startSystem(row);
+                mainRoot.startSavedByUid(uid);
             else
-                mainRoot.startScanBundle(row, companions || []);
+                mainRoot.startScanByUid(uid, companions || [], "");
         }
     }
 
@@ -1136,11 +1154,13 @@ Window {
                 // Issue #697: the lists as they are saved now, by uid; one
                 // removed during the permission dialog is not started from its
                 // old map.
-                var listRow = scanLists.rowForUid(sys.uid || "");
-                if (listRow < 0)
-                    mainRoot.startError = qsTr("This source was removed. Choose another source.");
-                else
-                    mainRoot.startScanBundle(listRow, companionUids, hold);
+                mainRoot.startScanByUid(sys.uid || "", companionUids, hold);
+            } else if (sys && row >= 0) {
+                // B6: a saved system the same way, through its start gate: one
+                // removed, avoided, moved to another row or given another
+                // receiver during the dialog starts as it is saved now, or is
+                // refused.
+                mainRoot.startSavedByUid(sys.uid || "");
             } else if (sys) {
                 mainRoot.startWithMap(sys, row, scan, options);
             }
@@ -1209,14 +1229,76 @@ Window {
     }
 
     function startSystem(row) {
+        mainRoot.startSavedByUid(savedSystems.get(row).uid || "");
+    }
+    /**
+     * Start saved system @p uid as it is saved now. The one gate every saved
+     * start passes through (card, site chooser, auto-start, Retry, a pin, a
+     * USB grant), so a removed or avoided site is refused alike from each.
+     */
+    function startSavedByUid(uid) {
         // Refused before cancelling, as restartSite() is: a USB attachment
         // while a handoff stops must not drop it.
-        if (row < 0 || (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4))
+        if (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4)
             return;
+        var row = savedSystems.rowForUid(uid);
+        var refusal = savedStartRefusal(uid);
+        if (refusal.length) {
+            // The refused system is the attempt Home's failure card names:
+            // Retry asks again, and Edit opens that system.
+            mainRoot.refuseStart(refusal, row < 0 ? null : {
+                kind: "saved",
+                uid: uid,
+                system: savedSystems.get(row)
+            });
+            return;
+        }
         cancelPendingRestart();
-        var sys = savedSystems.get(row);
-        if (sys)
-            mainRoot.startWithMap(sys, row, false);
+        mainRoot.startWithMap(savedSystems.get(row), row, false);
+    }
+    // Home's site chooser for the system at @a row, as its card's sites button
+    // opens it.
+    function openSiteChooser(row) {
+        mainRoot.cancelPendingRestart();
+        siteChooser.openFor(row);
+    }
+    /**
+     * Issue #801: what a pinned shortcut does, resolved at the tap, never from
+     * a row kept since. A system plays its one playable site, else opens its
+     * site chooser, as its card does; a site starts; a scan list starts alone
+     * (D6), and a draft is refused before any start is tried; Signal search
+     * opens; Explore starts, or asks where to start when nothing is set up.
+     */
+    function startPin(kind, uid) {
+        if (decoderHost.transitioning)
+            return;
+        if (kind === "system")
+            mainRoot.startSystemPin(uid);
+        else if (kind === "site")
+            mainRoot.startSavedByUid(uid);
+        else if (kind === "scan")
+            mainRoot.startScanByUid(uid, [], "");
+        else if (kind === "search")
+            mainRoot.openSignalSearch();
+        else if (kind === "explore" && prefs.exploreSourceType.length > 0)
+            mainRoot.startExploring();
+        else if (kind === "explore")
+            mainRoot.openExploreSetup();
+    }
+    function startSystemPin(uid) {
+        var row = savedSystems.rowForUid(uid);
+        var siblings = row >= 0 ? savedSystems.siblingRows(row) : [];
+        if (siblings.length === 0) {
+            mainRoot.startSavedByUid(uid);
+            return;
+        }
+        var playable = siblings.filter(function (sibling) {
+            return !savedSystems.get(sibling).avoidSite;
+        });
+        if (playable.length === 1)
+            mainRoot.startSavedByUid(savedSystems.get(playable[0]).uid);
+        else
+            mainRoot.openSiteChooser(row);
     }
 
     // The name each entry of @a list goes by, by uid: as scanTargetLabel() names
@@ -1288,6 +1370,32 @@ Window {
 
     function startScanList(row) {
         mainRoot.startScanBundle(row, []);
+    }
+    // The list @a uid names, as it is saved now, with @a companionUids and
+    // @a holdTarget as startScanBundle() takes them. One removed is refused,
+    // and so is a draft, before any start is tried: Retry asks again and Edit
+    // source opens it, so it can be saved and started.
+    function startScanByUid(uid, companionUids, holdTarget) {
+        // The saved gate's transition guard, before refuseStart() can drop
+        // anything waiting.
+        if (decoderHost.sessionState !== 0 && decoderHost.sessionState !== 4)
+            return;
+        var row = scanLists.rowForUid(uid);
+        if (row < 0) {
+            mainRoot.refuseStart(qsTr("This source was removed. Choose another source."), null);
+            return;
+        }
+        var list = scanLists.get(row);
+        if (list.isDraft) {
+            mainRoot.refuseStart(scanListStarter.draftRefusal, {
+                kind: "scan",
+                uid: uid,
+                companions: companionUids,
+                system: list
+            });
+            return;
+        }
+        mainRoot.startScanBundle(row, companionUids, holdTarget);
     }
     // Issue #697: the list at @a row and the lists @a companionUids name, in
     // that order, as one session on the first list's receiver, each as it is
@@ -1535,6 +1643,11 @@ Window {
         var remembered = fromSearch ? prefs.searchSourceType : prefs.exploreSourceType;
         signalSearchScreen.seed(mainRoot.effectiveSource(remembered) || "usb", (fromSearch ? prefs.searchHost : prefs.exploreHost) || "192.168.1.10", (fromSearch ? prefs.searchPort : prefs.explorePort) || 1234);
     }
+    /** Open Signal search from Home: its button or a pin. The search starts from its own Start. */
+    function openSignalSearch() {
+        mainRoot.seedSignalSearch();
+        mainRoot.signalSearchOpen = true;
+    }
 
     /**
      * The system map an explore session runs on.
@@ -1630,8 +1743,7 @@ Window {
             }
             onImportSystem: mainRoot.openRadioReference(false)
             onChooseSites: function (row) {
-                mainRoot.cancelPendingRestart();
-                siteChooser.openFor(row);
+                mainRoot.openSiteChooser(row);
             }
             onPlaySystem: function (row) {
                 mainRoot.startSystem(row);
@@ -1655,11 +1767,11 @@ Window {
                 mainRoot.wizardOpen = true;
             }
             onExplore: mainRoot.startExploring()
-            onSignalSearch: {
-                mainRoot.seedSignalSearch();
-                mainRoot.signalSearchOpen = true;
-            }
+            onSignalSearch: mainRoot.openSignalSearch()
             onExploreSetup: mainRoot.openExploreSetup()
+            onStartPin: function (kind, uid) {
+                mainRoot.startPin(kind, uid);
+            }
         }
 
         HistoryScreen {

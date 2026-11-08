@@ -10192,16 +10192,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   so Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and
   returns), so a stop that hangs past the engine's restore timeouts cannot lock the
   screen; the site chooser's any-input cancel is ignored while it runs, and
-  `startSystem()`/`restartSite()` refuse by state before cancelling, so a USB
+  `startSavedByUid()`/`restartSite()` refuse by state before cancelling, so a USB
   attachment's start cannot drop it. `leaveSearchFor()` pins `signalSearchOpen`
   true, as Stop does, so a screen reopened after Activity recreation (bound to `status.owned`, which
   the search clears before the decoder is idle) stays through the stop and after a Back cancel.
   `finishPendingRestart()` closes the screen just
   before starting the request, and a stop ending in Failed closes it and clears the flag.
   A saved request is checked (`savedStartRefusal()`) before the stop, the refusal shown in
-  the screen's `localFailure`, and again in `finishPendingRestart()`, which shows the
-  refusal (an avoided site no longer declines silently) and records the system as
-  `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here
+  the screen's `localFailure`, and again when `finishPendingRestart()` starts it through
+  `startSavedByUid()`, which shows the refusal (an avoided site no longer declines
+  silently) and records the system as `attemptedSource` so Home's Retry asks again and
+  Edit opens it. Explore here
   (`exploreHereSystem()`) is `systemForHit()` renamed Exploring, untrunked, on the
   `effectiveSource()` kind through `onAttachedReceiver()`/`onReceiver()` (an Airspy map only
   stays on an Airspy; a switch to an Airspy drops the RTL `ppm`, `biasTee` and gain); `startWithMap(sys,
@@ -10689,6 +10690,77 @@ Qt Quick frontend (`src/ui/qt`):
   they stack in focus order, keeping the source hint beneath Add a system. The available content width, including
   the supporting pane, and the current font determine reflow. Empty collection headings are hidden. Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
+- Pinned strip and sheet (issue #801; the pins themselves are `listen_pins.{h,cpp}`, below). `qml/HomeScreen.qml` places
+  `pinnedStrip` between `listenHeader` and the scroll body, on the content column, 8 px under the header. The order is
+  title, strip, body on both hosts: `fixedTitle` (`pinnedHeader` or the strip shown) fixes `listenHeader` above the
+  body, so on the desktop with pins the header holds the title alone (no receiver pill, height `max(44, title)`), and
+  the body's own title row is hidden, so the title is read once. The strip is shown while `heldPins` is non-empty and is
+  then one line tall, `max(48, pin label height + 24)` at any text size; the body's top margin adds it plus the 6 px
+  clearance, and the scroll divider shows under it. Header and strip heights follow `heldPins`, not `visible`, so a tab
+  switch moves nothing. With nothing pinned the layout is as before on both hosts. `heldPins` takes `listenPins.entries`
+  only while Home is visible and holds the last list while hidden ([r1-7]), with the line it is laid out on
+  (`heldStripWidth`, `heldPinFont`), so a rename, removal or unpin, a rotation or a text-size change behind the wizard,
+  Monitor or another tab adds, removes or renames no pin there and keeps the strip's height and the body's scroll; shown
+  again, it takes the list and the line as they are. `placed` lays out the found pins in stored order before any is made
+  (a `FontMetrics` in the held `Theme.pinLabelFont`, the font `PinButton` draws its label in): each pin is its label's
+  width (the wider of advance and ink, plus a pixel, as `PinButton` sizes it, so a whole name never elides) plus 30 px,
+  at most the room (the column less More and an 8 px gap), so the first always shows (elided if it must). The first pin
+  that does not fit whole ends the line: it is shown elided in the room left when that is at least `elidedMinimum`
+  (padding and about five average characters, never under two touch targets), so a long name does not leave most of the
+  line blank, else it is left out; its accessible name stays whole. Pins past it, and pins not found, are not made. The
+  buttons come from a `StableRows` over `placed`, keyed by pin key, so a rename renames its button and a pin arriving or
+  leaving adds or removes only its own; a departing button is not drawn (`shown`) and reads as nothing, leaves the tree
+  and takes no focus or press (`live`, `PinButton.live`) for the rest of its turn. A pin starts the entry `placed` holds
+  for its key. More (`pinnedStripMore`, "All pinned shortcuts") always ends the strip. No Flickable, so the strip adds
+  no container node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, body. A pin or a sheet row emits
+  Home's `startPin(kind, uid)`, which Main connects to `startPin()` (the start gate below); pins are disabled while
+  `decoderHost.transitioning`, and the strip while `managementSheetOpen`. `qml/PinButton.qml` is FilterPill's rounded
+  chip with `OutlineButton`'s gate (focused-control `activeFocusOnTab` retention, `Navigation.allows()` read first,
+  Return/Enter/Space, `onPressAction`, `FocusFrame`, half opacity when disabled) and a one-line plain-text label elided
+  at its width; FilterPill is unchanged. `qml/PinnedSheet.qml` (`pinnedSheet`, Home-hosted, in `managementSheetOpen`):
+  heading "Pinned", a hint naming the cap and where to pin, then a row per stored pin from a `StableRows` fed only while
+  open: a start `OutlineButton` (its accessible name from `entries`) and an **Unpin** (`unpinKey()`, "Unpin <label>"),
+  both gated on `live` as the strip's pins are. An Unpin pressed from the keyboard first hands its focus to the next
+  row's Unpin, else the one before, else Done. A pin not found shows "<last label> (not found)", else "Saved system not
+  found", "Site not found" or "Scan list not found", and its start is disabled; its Unpin reads "Unpin the missing ..."
+  without a label. A start closes the sheet before it asks, so a site chooser it opens is on top. "Nothing is pinned."
+  replaces the rows when the last is unpinned. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_pinned_strip.qml` on Home alone:
+  hidden without pins, one line at 320/360/411 px x 1.0/1.3/1.6 portrait and landscape and the 900 px desktop, order and
+  activation, keyboard order on both hosts, the sheet, focus after a keyboard Unpin, departing rows, modal blocking,
+  hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip;
+  `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
+  title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
+  the strip or the closed sheet).
+- Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
+  (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
+  not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
+  uid, objectName)` builds the menu row (key `pin`) and `togglePin(kind, uid, offeredPinned)` does what the row said
+  when it was offered (`unpin()` for an offered Unpin, else `pin()`), never the opposite. `pin()`'s refusal is not
+  shown: every source is modal, so nothing fills the row while one is open, and a full row's Pin is already disabled
+  with the reason (D3: a full row is not an error dialog). The saved-system menu (Edit, Sites, Pin, Remove…) pins
+  `system` with the card's row UID, so a grouped card pins its group and a standalone card also unpins a site pin of its
+  own row; the scan-list menu (Edit, Scan with other lists…, Pin, Remove…) pins `scan`. Both handlers route `remove`
+  explicitly and do nothing for any other key (before #801 an unknown key fell through to Remove). Signal search is a
+  row: the button fills it up to a 48 px More (`signalSearchManageButton`), placed from the Explore card's More just
+  below so it shares the cards' More column, opening `searchMenu` [Pin]. Explore's card: a card-wide `TapHandler` (tap
+  starts, long press opens `exploreMenu` [Edit connection, Pin]) and pressed tint, the face `exploreStart`, and More
+  (`exploreManageButton`, "More options for Explore"). The face is a sibling of More, stopping at More's column (`width:
+  exploreMore.x`), so its focus ring and accessible bounds leave More out and no key pressed on More reaches it; the
+  caret, in More's column, is drawn outside the face and stays in the card's tap target. The face is the button that
+  starts Explore, or opens its setup with no radio chosen: Button role, name "Explore the band, start on <radio> from
+  <MHz> MHz" or "Explore the band, set up a radio to tune around and find what is on the air", empty while
+  `Accessible.ignored` (so a frequency changed in Explore's setup, Home hidden, renames nothing), its two lines plain
+  `Text` with `Accessible.ignored`, `OutlineButton`'s Tab gate, Return/Enter/Space, `onPressAction`, `FocusFrame`. The
+  subtitle wraps to two lines before it elides, so the frequency stays whole at large text, and the card grows with the
+  labels. More never starts Explore. The two new menus join `managementSheetOpen`. `qml/SiteChooserSheet.qml` gives each
+  site row a Pin `OutlineButton` (`sitePin<row>`, kind `site`) after Edit site, shown whatever the session state, whose
+  action re-reads `listenPins.revision` so it flips in place with the chooser open; under it `sitePinReason<row>` shows
+  the full reason. Tests: `UI_QT_PERSISTENCE` (`test_pin_action`), `UI_QT_QML_CALL_LISTS` (`tst_home_pinned.qml`: each
+  menu, the standalone site card, full, a row doing what it offered, unknown keys, modal blocking;
+  `tst_home_dongle_status.qml`: More and long press open the menu, the face clear of More, the caret tappable, keys and
+  the accessibility press on the face and on More; `tst_site_chooser_sheet.qml`; the key lists in
+  `tst_home_scan_lists.qml` and `tst_back_modals.qml`, whose auto-start case covers the new menus),
+  `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: the hidden face raises nothing on a frequency change).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
   access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
   layout, Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery is reset and reopened once per
@@ -10756,6 +10828,33 @@ Qt Quick frontend (`src/ui/qt`):
     the bus; a suppressed attachment is still consumed. An unanswered permission request
     (`localDeviceRequestPending`) joins `autoStartBlocked`; its expiry lifts the block without retrying the old
     attachment.
+  - Saved-system start gate (Main.qml, issue #801): every saved start (card play, the site chooser, auto-start,
+    Retry and Listen with through `finishPendingRestart()`, a pin, a USB grant) goes through `startSavedByUid(uid)`,
+    resolved at that moment: the transition guard first (refused unless Idle or Failed, before anything is
+    cancelled), then `savedStartRefusal()` ("removed", or the avoided-site text), then `startWithMap()` on the row the
+    uid is at now. `startSystem(row)` only names the row's uid, so a missing row is refused as removed, not ignored.
+    Decided limit: auto-start stays silent for a target removed since it last started (an unattended plug-in, so a
+    "removed" banner would be noise; `onAutoStartRequested` returns before the gate), and refuses only an existing
+    avoided site.
+    A USB grant re-enters it by the waiting start's uid instead of running the map captured at the tap, so a system
+    removed, avoided, moved to another row or given another receiver during the permission dialog is refused or
+    starts as saved (B6); a scan list's grant goes through `startScanByUid()`, which has the same transition guard and
+    refuses a removed list and a draft (`scanListStarter.draftRefusal`, the starter's own text) before any start or
+    USB request. Every refusal is
+    `refuseStart(message, attempt)`: it drops any waiting start (`dropPendingStarts()`: the pending restart and all
+    `pendingStart*` state), sets `attemptedSource` to `attempt` (`{kind: "saved"|"scan", uid, system}`, null when
+    the target is gone) so Retry asks again and Edit source opens that system or list, clears `dismissedFailure`,
+    sets `startError`, and always reveals Home's failure card (`revealFailure()` then `homeScreen.revealTop()`, on
+    the desktop too and over a failure already showing). `startPin(kind, uid)` is a pin's tap, a no-op while
+    `decoderHost.transitioning`: a system plays its group's one playable (unavoided) site, else opens the site
+    chooser (`openSiteChooser()`, shared with the card's sites button), and a standalone row starts; a site starts; a
+    scan list starts alone (`startScanByUid(uid, [])`); Signal search opens (`openSignalSearch()`, shared with
+    Home's button); Explore starts when `explore/sourceType` is set, else opens its setup. Home shows
+    `systemRemovalError` ("System removal failed" / "Site removal failed") when `SavedSystemsModel::remove()` cannot
+    save, as `scanListRemovalError` does for a list (both join `managementSheetOpen`); the site chooser keeps the
+    site whose avoid change failed (`avoidFailedUid`) and says so under its row, the toggle showing what is saved.
+    Tests: `tst_home_pinned.qml` (the start contract), `tst_back_modals.qml` (`test_system_removal_failure_notice`),
+    `tst_site_chooser_sheet.qml` (`test_avoid_toggle_failure_shown`).
   - Tests: `UI_QT_QML_DEVICE_STATUS` (`tst_device_status.qml`, every state), `tst_home_dongle_status.qml` (pinned
     header, reflow at 320/360/411 px by 1.0/1.6/2.0 and the 900 px supporting pane, activation paths and the modal
     guard, focus kept when the prompt opens, scroll kept across tabs, desktop layout unchanged, Onboarding),
@@ -11054,6 +11153,8 @@ Qt Quick frontend (`src/ui/qt`):
     on a scratch copy was ruled out: the parse has side effects (Runtime, CLI). A target CSV's options cell refuses
     every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
     `recordingLimitMb` before `start()` and on every change.
+    `AppPrefs::pinned` (`listen/pinned`, issue #801) is no session preference: it never reaches the argv, and pinning
+    a Listen shortcut never writes `lastStarted*` (see `listen_pins.{h,cpp}` below).
   - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly, analogMaxGapMs, analogPrerollMs)` sends the
     analog pause hold (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, issue #756) and the NFM pre-roll
     (`DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET`, issue #668), each none when negative, so the session keeps its own, then
@@ -11867,6 +11968,65 @@ Qt Quick frontend (`src/ui/qt`):
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
+- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
+  `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
+  the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
+  `void`: recency is advisory, and an unsaved stamp stays out of memory too). `clearCsvPath` returns true when nothing
+  names the path. So `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`,
+  `mostRecentRowChanged`) mean the removal is on disk, and whatever follows rows out of the model can prune on them.
+  A site is grouped while `rrSid > 0` and `rrSiteId > 0` (`site_groups.cpp`). An edit of its frequency, decode flag or
+  a CSV field, or the removal of a library file it names, zeroes both and also clears `avoidSite`, because only the
+  group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
+  the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
+  keeps its avoid: its "1 site" chooser lifts it. Tests: `UI_QT_PERSISTENCE`.
+- `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
+  `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
+  saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
+  `explore` (no UID). The getter is the only validation (unparsable text, an unquoted hand edit QSettings returns as a
+  list, unknown kinds, a malformed UUID, a scan UID empty or over 128 characters and repeats are dropped; at most
+  `AppPrefs::kPinnedCap`, 6, which the constant `cap` property gives the views), and the setter writes it sanitized and
+  compact. A scan list whose UID is longer than 128 characters (only a hand-edited or foreign store holds one) cannot be
+  pinned: its Pin to Listen does nothing (a documented limit). `qt_ui.cpp`'s `load_listen_pins()` builds `ListenPins`
+  over `AppPrefs`, `SavedSystemsModel` and `ScanListsModel` after both load and before `prune_missing_csv_paths()`, so a
+  `system` pin whose row that startup cleanup takes out of its group follows the group as below. `entries` holds every
+  stored pin in order as `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its
+  group's lead and its accessible name says whether a tap starts it or chooses a site (no site, or several, it can
+  play), a site is "system · site". `revision` moves on every entries change and on every row, data, sites or reset
+  signal of either model, because `isPinned()` follows groups: a system pin matches its group's card through any of its
+  sites, and a row in no group also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()`
+  refuses a full row ("Pinned is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`;
+  `unpin()` removes what `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model
+  reset or when pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting
+  toward the cap, until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they
+  saved, prunes: a `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group
+  (`siblingRows()` before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no
+  `listenPins` signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers
+  each row's group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV
+  field, or a library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the
+  pin to the group's lead and stores it; a group's last site keeps its pin (also at startup, see `load_listen_pins()`
+  above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to Listen" above). User text
+  lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears pins for each test file,
+  and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
+- Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
+  systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
+  `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
+  before it saves the index without the row. File first, so a failure never leaves a copy no row names: a file that will
+  not delete keeps its row, and an index save that fails after the delete leaves the row listed, naming a missing file,
+  until a retry or the next load prunes it (the startup cleanup below then clears what names it;
+  `RadioReferenceModel::unwindImport()` can leave such a row the same way). The bundle folder's delete is best effort: a
+  failure there is neither reported nor retried, and the row goes once the file has. A scan list names library files in
+  three fields: its target CSV (cleared, the list becomes a draft) and its fallback `groupCsvPath`/`srcCsvPath`
+  (emptied, the list runs without it; an empty fallback is "none" to the starter and session args).
+  `listsReferencingPath()` covers all three; the remove sheet names target lists (`listsTargetingPath()`) and fallback
+  lists (`listsFallingBackOnPath()`) on separate lines, since removal does different things to each. The first step that
+  returns false stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only
+  when all three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
+  (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
+  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. The
+  library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an earlier
+  launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
+  (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
+  `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   Every history change rescans the whole history (a merge can move a row to another session, so contributions are
@@ -12139,6 +12299,9 @@ Qt Quick frontend (`src/ui/qt`):
     every restored replay system arrives, is refused before it starts (`SessionArgsError::RecordingMissing`, start
     category `recording-missing`), checked after AM's source rule (AM needs a radio whatever the file) and before
     TETRA's, so it never runs `-i ""` and is never told to choose a radio.
+  - A list-valued portable preference is a JSON array held in a string (`listen/pinned`, issue #801), since a backup
+    carries only scalars; its getter is its only validation, because a parse hook would fail the whole backup as
+    damaged. A backup without the key restores no pins, and a rollback restores the old ones.
   - Whole numbers from stored or restored data (preferences, saved systems, scan lists, imported files, decryption
     profiles) are read through `stored_int.h` (`stored_int()`, `stored_int_or()`, `stored_uint32()`). A restore keeps a
     large JSON number as a 64-bit integer, and the settings file hands one back as text; `QVariant::toInt()` and
@@ -12151,6 +12314,8 @@ Qt Quick frontend (`src/ui/qt`):
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
+    `listen/pinned` (issue #801): its round trip in `UI_QT_BACKUP_ARCHIVE`; in `UI_QT_BACKUP_APPLY`, a backup without
+    it restores no pins and a rolled-back apply keeps them.
 - Decryption profile key material (`decryption_profiles_model.{h,cpp}`, `session_args.{h,cpp}`):
   - One hex contract: `session_args_key_hex_normalize()` drops every `QChar::isSpace()` character, `-` and `:` and a
     leading `0x`/`0X`, for the hex direct types (`session_args_key_type_hex()`: hex, rc4, m17Scrambler, m17Aes) and the
@@ -13503,9 +13668,13 @@ Several lists in one session (issue #697):
   (`UiController::autoStartRequested(kind, uid, companions)`, from `qt_ui.cpp`) and `pruneScanCompanions()` trims of
   removed lists. A start resolves the uids as the lists are saved then (`scanListsByUid()`): a removed companion is left
   out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
-  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. A start hold (issue #644) is
+  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. That load also saves the
+  repaired uids (issue #801), so the next load keeps them and a backup taken at once carries them; a failed save logs
+  one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). A start hold (issue #644) is
   no part of the identity: `startWithMap()` takes it in `options.holdTarget` for that start, across a USB permission
   wait in `pendingStartHold` (set by every wait, read once by the grant), and never in `attemptedSource` or prefs.
+  Pinned Listen shortcuts (issue #801) name lists by uid too, but portably, since a restore keeps every list's uid.
+  `ListenPins` prunes them only on a saved removal, never at load, so pins survive a list file that fails to load.
 - In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
   (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
   every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the

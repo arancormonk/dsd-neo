@@ -289,20 +289,21 @@ Item {
                 return menu.actions.map(function (action) { return action.key; }).join();
             };
             menu.openFor(0);
-            compare(keys(), "edit,remove", "one list has no others to scan with");
+            compare(keys(), "edit,pin,remove", "one list has no others to scan with");
             menu.visible = false;
             scanLists.add({name: "Draft", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, isDraft: true});
             menu.openFor(0);
-            compare(keys(), "edit,remove", "a draft is not a list to scan with");
+            compare(keys(), "edit,pin,remove", "a draft is not a list to scan with");
             menu.visible = false;
             scanLists.add({name: "Hospital", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
                 entries: [{kind: "freq", name: "ER", protocol: "p25", freqMhz: "852.5", enabled: true}]});
             var hospital = scanLists.get(scanLists.count - 1);
             menu.openFor(0);
-            compare(keys(), "edit,together,remove");
+            compare(keys(), "edit,together,pin,remove");
             compare(menu.actions[1].text, "Scan with other lists…");
+            compare(menu.actions[2].text, "Pin to Listen", "#801: every list's menu pins it");
             menu.openFor(1);
-            compare(keys(), "edit,remove", "a draft's own menu offers no scan");
+            compare(keys(), "edit,pin,remove", "a draft's own menu offers no scan");
             menu.openFor(0);
             menu.activate(1);
             var sheet = findChild(home, "scanTogetherSheet");

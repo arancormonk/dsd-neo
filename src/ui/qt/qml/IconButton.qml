@@ -24,6 +24,7 @@ Item {
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     FocusFrame {}
     Rectangle {
         anchors.fill: parent
