@@ -5416,12 +5416,17 @@ static long int g_counting_tune_to_cc_parked_freq = 0;
 static dsd_trunk_tune_result g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
 static uint64_t g_counting_tune_to_cc_last_request_id = 0U;
+/* A tune that blocks this long on the TEST decode clock before it answers, as a rigctl round trip does (0 none). */
+static uint64_t g_counting_tune_to_cc_latency_ns = 0U;
 
 static dsd_trunk_tune_result
 counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     g_counting_tune_to_cc_last_request_id = request_id;
     g_counting_tune_to_cc_calls++;
+    if (g_counting_tune_to_cc_latency_ns != 0U) {
+        dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + g_counting_tune_to_cc_latency_ns);
+    }
     g_counting_tune_to_cc_ted_sps = ted_sps;
     g_counting_tune_to_cc_freq = freq;
     if (g_counting_tune_to_cc_failures_remaining > 0) {
@@ -7975,6 +7980,172 @@ test_scan_control_unavailable_without_coordinator(void) {
     test_rc |= expect_control_rc("hook without coordinator",
                                  dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
                                  DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    return test_rc;
+}
+
+static void
+set_decode_now_s(double now_s) {
+    dsd_decode_clock_test_set_ns((uint64_t)(now_s * 1e9 + 0.5));
+}
+
+/*
+ * Discussion #717: the frame-sync hunt asks dsd_trunk_scan_hook_dwell_due() every 300 symbols and hands back early, so
+ * an idle dwell ends on time on dead air rather than at the end of an 1800-symbol pass. The answer is due once per
+ * dwell (a tick that keeps the target re-arms it first), and a park still in flight counts from its landing, as the
+ * tick that notices the landing now arms it: that tick may come a whole pass later.
+ */
+/* Two 250 ms-dwell targets on the TEST decode clock, target a parked synchronously at 100.0 s. */
+static int
+dwell_scan_init(dsd_opts* opts, dsd_state* state, char* dir, char* target_path) {
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, DSD_TEST_PATH_MAX, dir, DSD_TEST_PATH_MAX)
+        != 0) {
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    dsd_decode_clock_use_test(0U);
+    trunk_scan_test_clear_now();
+    set_decode_now_s(100.0);
+    char err[256] = {0};
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "dwell-due scan init failed err=%s\n", err);
+        dsd_decode_clock_use_system();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+dwell_scan_done(dsd_opts* opts, dsd_state* state, const char* dir, const char* target_path) {
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    g_counting_tune_to_cc_latency_ns = 0U;
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_decode_clock_use_system();
+    cleanup_paths(dir, target_path, NULL);
+}
+
+static int
+test_idle_dwell_due_yields_once_and_counts_from_the_landing(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (dwell_scan_init(&opts, &state, dir, target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+
+    /* Target a parked at 100.0 s with a 250 ms dwell. */
+    set_decode_now_s(100.20);
+    test_rc |= expect_control_rc("dwell not due at 200 ms", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    set_decode_now_s(100.26);
+    test_rc |= expect_control_rc("dwell due at 260 ms", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    test_rc |= expect_control_rc("one yield per dwell", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+
+    /* The tick the yield hands back to rotates; the park to b stays in flight. */
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the due dwell", 1U);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    set_decode_now_s(100.28);
+    test_rc |= expect_control_rc("a park in flight runs no dwell", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+
+    /* It lands at 100.30 s; no tick notices until 100.56 s, past the dwell counted from the landing. */
+    set_decode_now_s(100.30);
+    dsd_trunk_tuning_request_complete(park, DSD_TRUNK_TUNE_RESULT_OK);
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (ctx) {
+        (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 100.30, "test-complete");
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    set_decode_now_s(100.50);
+    test_rc |= expect_control_rc("landed dwell not due at 200 ms", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    set_decode_now_s(100.56);
+    test_rc |= expect_control_rc("landed dwell due at 260 ms", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the dwell counted from the landing", 0U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_control_rc("no trunk scan, no yield", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    dwell_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
+/* A park that blocks while it tunes (a rigctl round trip, here 200 ms): its dwell runs from the landing, not from the
+   request, or the tune's latency is spent as listening time and the target rotates after ~50 ms on air. */
+static int
+test_idle_dwell_counts_from_a_blocking_tunes_landing(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (dwell_scan_init(&opts, &state, dir, target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    set_decode_now_s(100.26);
+    test_rc |= expect_control_rc("a's dwell due", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    g_counting_tune_to_cc_latency_ns = 200000000ULL;
+    dsd_engine_trunk_scan_tick(&opts, &state); /* asked at 100.26 s, lands at 100.46 s */
+    g_counting_tune_to_cc_latency_ns = 0U;
+    test_rc |= expect_active_target(&state, "the blocking park", 1U);
+    set_decode_now_s(100.66);
+    test_rc |= expect_control_rc("200 ms after the landing", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "a tick 200 ms after the landing", 1U);
+    set_decode_now_s(100.72);
+    test_rc |= expect_control_rc("260 ms after the landing", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dwell_scan_done(&opts, &state, dir, target_path);
+    return test_rc;
+}
+
+/* A park that lands while no tick looks (a held no-sync pass), and an operator hold toggled on and off before the next
+   tick: the release promises a fresh dwell (docs/code_map.md), which the late-noticed landing must not replace with
+   its older stamp. */
+static int
+test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (dwell_scan_init(&opts, &state, dir, target_path) != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    set_decode_now_s(100.26);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    test_rc |= expect_active_target(&state, "the pending park", 1U);
+    const uint64_t park = g_counting_tune_to_cc_last_request_id;
+    set_decode_now_s(100.30);
+    dsd_trunk_tuning_request_complete(park, DSD_TRUNK_TUNE_RESULT_OK);
+    p25_sm_ctx_t* ctx = (p25_sm_ctx_t*)dsd_engine_trunk_scan_active_p25_ctx();
+    if (ctx) {
+        (void)p25_sm_restart_pending_cc_acquisition(ctx, &opts, &state, 100.30, "test-complete");
+    }
+    set_decode_now_s(100.40);
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    set_decode_now_s(100.50);
+    test_rc |= expect_control_rc("hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    test_rc |= expect_control_rc("a released dwell is not due yet", dsd_trunk_scan_hook_dwell_due(&opts, &state), 0);
+    set_decode_now_s(100.56);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the first tick after the release", 1U);
+    set_decode_now_s(100.80);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "240 ms into the fresh dwell", 1U);
+    set_decode_now_s(100.82);
+    test_rc |= expect_control_rc("the fresh dwell ends", dsd_trunk_scan_hook_dwell_due(&opts, &state), 1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "the fresh dwell's end", 0U);
+    dwell_scan_done(&opts, &state, dir, target_path);
     return test_rc;
 }
 
@@ -20651,6 +20822,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_scan_tick_skips_rotation_when_p25_guard_busy);
     rc |= run_with_default_tune_hook(test_scan_control_unavailable_without_coordinator);
     rc |= run_with_default_tune_hook(test_scan_hold_pauses_rotation_and_release_restarts_dwell);
+    rc |= run_with_default_tune_hook(test_idle_dwell_due_yields_once_and_counts_from_the_landing);
+    rc |= run_with_default_tune_hook(test_idle_dwell_counts_from_a_blocking_tunes_landing);
+    rc |= run_with_default_tune_hook(test_hold_release_before_a_noticed_landing_grants_a_fresh_dwell);
     rc |= run_with_default_tune_hook(test_scan_advance_moves_now_and_keeps_hold);
     rc |= run_with_default_tune_hook(test_scan_retreat_moves_back_and_keeps_hold);
     rc |= run_with_default_tune_hook(test_scan_retreat_on_two_targets);

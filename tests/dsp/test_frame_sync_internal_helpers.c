@@ -30,6 +30,7 @@
 #endif
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -3018,6 +3019,107 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
     }
 }
 
+static unsigned int g_fake_fractional_rate_hz = 12000U;
+
+static unsigned int
+fake_fractional_output_rate_hz(void) {
+    return g_fake_fractional_rate_hz;
+}
+
+/*
+ * Discussion #717. On an RTL FSK output whose rate is not a whole multiple of the symbol rate the slicer
+ * times each symbol at the floor or the ceiling of the ratio (symbol_rtl_fsk_next_sps(): 12 kHz at 4800/s reads
+ * 2,3,2,3,...; 16 kHz at 6000/s reads 2,3,3,...; the first symbol after a reset is the short one), and that per-symbol
+ * value is what dsd_state::samplesPerSymbol holds when getFrameSync() is next entered. DSP bandwidths of 12 and 16 kHz
+ * are offered, and an RTL-SDR there is deliberately not resampled (docs/airspy.md). The entry's reconciliation must
+ * not take the short symbol for a timing another profile set: Auto stays on the profile its hunt chose.
+ */
+static void
+test_sps_hunt_keeps_a_fractional_profile_on_either_symbol(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    static const struct {
+        unsigned int rate_hz;
+        int profile;
+        int sps;
+    } cases[] = {
+        {12000U, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 2}, {12000U, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 3},
+        {16000U, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 2}, {16000U, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 3},
+        {16000U, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 3}, {16000U, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 4},
+    };
+
+    int failures = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        reset(&opts, &state);
+        assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) == 0);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+        state.rf_mod = 0;
+        state.sps_hunt_idx = cases[i].profile;
+        state.samplesPerSymbol = cases[i].sps;
+        state.symbolCenter = dsd_opts_symbol_center(cases[i].sps);
+        g_fake_fractional_rate_hz = cases[i].rate_hz;
+        dsd_rtl_stream_metrics_hooks hooks = {
+            .output_rate_hz = fake_fractional_output_rate_hz,
+            .apply_demod_profile = fake_apply_demod_profile,
+        };
+        dsd_rtl_stream_metrics_hooks_set(&hooks);
+        reset_fake_profile_capture();
+
+        frame_sync_ensure_enabled_sps_profile(&opts, &state);
+        if (state.sps_hunt_idx != cases[i].profile) {
+            DSD_FPRINTF(
+                stderr,
+                "FAIL #717: Auto at %u Hz on profile %d (%d sym/s), entered on a %d-sample symbol: hunt moved to "
+                "profile %d (%d sym/s, %d levels), RTL profile requests %d\n",
+                cases[i].rate_hz, cases[i].profile, dsd_frame_sync_test_sps_hunt_profile_rate(cases[i].profile),
+                cases[i].sps, state.sps_hunt_idx, dsd_frame_sync_test_sps_hunt_profile_rate(state.sps_hunt_idx),
+                g_profile_levels, g_profile_set_calls);
+            failures++;
+        }
+        dsd_rtl_stream_metrics_hooks_set(NULL);
+    }
+
+    /* The -m lock path (frame_sync_sps_hunt_next_index_matching_timing()) steps only between profiles of the current
+       timing. At 12 kHz the 4800/4 profile's equal-timing partner is 4800/2 (D-STAR), on either symbol length; a short
+       symbol must not read as the 9600/2 or 6000/4 timing. */
+    for (int sps = 2; sps <= 3; sps++) {
+        reset(&opts, &state);
+        assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) == 0);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.mod_cli_lock = 1;
+        opts.mod_c4fm = 1;
+        state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+        state.rf_mod = 0;
+        state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+        state.samplesPerSymbol = sps;
+        state.symbolCenter = dsd_opts_symbol_center(sps);
+        state.sps_hunt_counter =
+            dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+        g_fake_fractional_rate_hz = 12000U;
+        dsd_rtl_stream_metrics_hooks hooks = {
+            .output_rate_hz = fake_fractional_output_rate_hz,
+            .apply_demod_profile = fake_apply_demod_profile,
+        };
+        dsd_rtl_stream_metrics_hooks_set(&hooks);
+        reset_fake_profile_capture();
+
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        if (state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_2) {
+            DSD_FPRINTF(
+                stderr,
+                "FAIL #717: -m locked Auto at 12000 Hz on 4800/4, a %d-sample symbol: hunt stepped to profile %d "
+                "(%d sym/s), want 4800/2\n",
+                sps, state.sps_hunt_idx, dsd_frame_sync_test_sps_hunt_profile_rate(state.sps_hunt_idx));
+            failures++;
+        }
+        dsd_rtl_stream_metrics_hooks_set(NULL);
+    }
+    assert(failures == 0);
+}
+
 static void
 test_rtl_p25p2_timing_reconciliation_preserves_cqpsk(void) {
     static dsd_opts opts;
@@ -5123,6 +5225,7 @@ main(void) {
     test_rtl_symbol_profile_selection();
     test_decode_mode_profiles_agree_with_the_sps_hunt_table();
     test_rtl_p25p2_timing_reconciliation_preserves_cqpsk();
+    test_sps_hunt_keeps_a_fractional_profile_on_either_symbol();
     test_unlocked_rtl_p25p2_sync_switches_demod_family();
     test_rtl_sps_profiles_apply_and_lock_on_sync();
     test_dmr_sync_applies_gfsk_rtl_profile();

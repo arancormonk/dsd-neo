@@ -99,8 +99,14 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"mode", "dmr_udp_comp_ports",
      "UDP ports linked to DMR compressed-UDP port indices 95-127, comma-separated <index>=<port> (e.g. 97=4005)", "",
      NULL, DSDCFG_TYPE_STRING, 0, 0},
-    {"mode", "edacs_ea", "Decode EDACS with extended addressing, without changing the decode preset", "false", NULL,
-     DSDCFG_TYPE_BOOL, 0, 0},
+    {"mode", "edacs_addressing",
+     "EDACS addressing mode without changing the decode preset: none (ProVoice alone, -fp), standard (-fh) or "
+     "extended (-fe); wins over edacs_ea",
+     "", "none|standard|extended", DSDCFG_TYPE_ENUM, 0, 0},
+    {"mode", "edacs_ea",
+     "Older form of edacs_addressing: true is extended, false standard addressing; read when edacs_addressing is "
+     "absent",
+     "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"mode", "edacs_esk", "Apply the EDACS ESK 0xA0 scrambling mask, without changing the decode preset", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
     {"mode", "demod", "Demodulator path (auto/C4FM/GFSK/QPSK)", "auto", "auto|c4fm|gfsk|qpsk", DSDCFG_TYPE_ENUM, 0, 0},
@@ -149,8 +155,9 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunk_scan", "lists_off", "Trunk scan lists that start switched off, by number (e.g. 2, 3)", "", NULL,
      DSDCFG_TYPE_STRING, 0, 0},
     {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000},
-    {"trunk_scan", "activity_hold_ms", "Default conventional DMR/NXDN activity hold", "1200", NULL, DSDCFG_TYPE_INT,
-     250, 600000},
+    {"trunk_scan", "activity_hold_ms",
+     "Default conventional DMR/P25/NXDN activity hold and analog (nfm/am-conventional) carrier tail", "1200", NULL,
+     DSDCFG_TYPE_INT, 250, 600000},
 
     /* [logging] section */
     {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},

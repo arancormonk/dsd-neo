@@ -3544,6 +3544,9 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 opts->frame_provoice = 1;                                                                              \
                 opts->frame_ysf = 0;                                                                                   \
                 opts->frame_m17 = 0;                                                                                   \
+                /* ProVoice alone has no EDACS addressing mode, so it drops an earlier -fh/-fH/-fe/-fE's. */           \
+                state->ea_mode = -1;                                                                                   \
+                state->esk_mask = 0;                                                                                   \
                 state->samplesPerSymbol = 5;                                                                           \
                 state->symbolCenter = 2;                                                                               \
                 cli_preset_modulation(opts, state, 2);                                                                 \

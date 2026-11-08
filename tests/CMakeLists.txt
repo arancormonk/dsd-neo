@@ -8120,6 +8120,30 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
     )
+    # Discussion #717: a failed EDACS grant tune must not leave a session whose
+    # control channel keeps syncing tuned to the voice channel forever.
+    add_executable(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        engine/test_engine_edacs_failed_grant_stall.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_EDACS_FAILED_GRANT_STALL
+        COMMAND dsd-neo_test_engine_edacs_failed_grant_stall
+    )
     add_executable(
         dsd-neo_test_engine_cold_start_hunt
         engine/test_engine_cold_start_hunt.c
@@ -14636,6 +14660,42 @@ target_link_libraries(
 add_test(
     NAME FRAME_SYNC_SPS_HUNT_FALSE_SYNC
     COMMAND dsd-neo_test_frame_sync_sps_hunt_false_sync
+)
+
+# X2-TDMA syncs at 4800 sym/s, the P25 Phase 1 rate, and not at P25 Phase 2's 6000 (discussion #717): synthetic bursts
+# through the real WAV reader, symbol slicer and frame sync, under -fx and Auto.
+add_executable(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    dsp/test_frame_sync_x2tdma_rate.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_x2tdma_rate
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_X2TDMA_RATE
+    COMMAND dsd-neo_test_frame_sync_x2tdma_rate
 )
 
 # The frame sync's history across a no-sync exit: a TETRA control uplink burst that straddles the end of a matchless
