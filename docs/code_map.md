@@ -2848,6 +2848,10 @@ suite runs under this compiler.
 - Path: `src/runtime`, `include/dsd-neo/runtime`
 - Target: `dsd-neo_runtime`
 - Responsibilities:
+  - Logging (`log.h`, `src/runtime/log.cpp`): `dsd_neo_log_write()` behind the `LOG_*` macros, the sink choice, one
+    process-wide tap (the diagnostics log) and `dsd_neo_log_capture_error()`, which keeps a copy of the calling thread's
+    first error message for a caller that runs a parser and wants its reason (#832: the import worker's `format`
+    detail); other threads are never captured. Test: `RUNTIME_LOG`.
   - Frontend-neutral Signal search records, rational range validation, the aggregate
     configuration check engine and frontends share (`dsd_signal_search_validate_config()`)
     and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
@@ -12402,7 +12406,10 @@ Qt Quick frontend (`src/ui/qt`):
   replacePath)` returns an id and `importFinished(id, result)` answers it exactly once, queued, refusals included
   (`cancelImport(id)` answers `cancelled` until the commit runs; `importing` says whether one is pending). The stage, on
   the worker, copies the document into its staging folder (at most `backup::kMaxFileBytes`, 32 MiB), names it from the
-  transport's display name, else the picker's hint (`sanitized_import_name`), and validates it there. The commit, on the
+  transport's display name, else the picker's hint (`sanitized_import_name`), and validates it there; a refusal's
+  `detail` is the parser's reason, which the C parsers give only to the log, so `validate()` keeps the worker thread's
+  first error (`dsd_neo_log_capture_error()`) and the stage names the file by its picked name, not the staging path
+  (none for a talkgroup list, whose parser skips bad rows rather than refusing). The commit, on the
   Qt thread, only renames and saves the index: a new file moves in under a free name (`unique_import_destination`,
   skipping every `newTalkgroupListPath()` this process handed out, then `dsd_rename_noreplace`, the next name on
   `EEXIST`) before `saveRows`, which on failure removes it again; a replace rechecks the row's path, in-memory revision
@@ -12418,7 +12425,9 @@ Qt Quick frontend (`src/ui/qt`):
   `bundles/<uuid>/<rev>/`, so relative references resolve in the mirror as they will in the library and the validated
   bytes are the published ones. Copies go through an `ImportFetch` on the request's transport, each capped at
   `min(32 MiB, budget left)` within `kMaxBundleImportBytes` (64 MiB) in all: a copy the budget cut short is
-  `too_large` with `limitBytes` 64 MiB, a file over 32 MiB with 32 MiB and its name; a rewritten output over 32 MiB is
+  `too_large` with `limitBytes` 64 MiB, a file over 32 MiB with 32 MiB and its name, also when less than 32 MiB of the
+  budget was left (the transport's declared size, `ImportFetchResult::size`; an unknown size is the budget's limit);
+  a rewritten output over 32 MiB is
   `too_large` too. The staged primary is read whole with its read error checked (a failed read never imports its
   valid prefix), and a target rewrite that cannot write its destination (`dsd_app_scan_csv_rewrite()` returns
   `DSD_APP_SCAN_CSV_WRITE_FAILED`) is `local`, not `format`. A map that names no companion is a plain file and commits
@@ -12436,13 +12445,16 @@ Qt Quick frontend (`src/ui/qt`):
   naming a file in it. `load()` first settles the commit journal (`recoverJournal()`, before the prune; skipped when
   the index cannot be read): a journaled directory under `imports/bundles/` with an owned name that no row references
   (its bundle root, or a revision its primary reaches) is removed; an unreadable journal deletes nothing and is set
-  aside (`ImportService::journalSetAside()`, `import_journal.json.bad`) so later commits journal again. The
-  synchronous `importFile`/`updateFile`/`importBundle` run the same stage and commit at
-  once (`ImportService::runNow`); `importGeneratedFile`/`refreshGeneratedFile` (RadioReference) do too, so a refresh
-  shares the replace order and its rollback. Every library change bumps the model's `revision` and emits
-  `entriesChanged`; `countChanged` stays for count changes. The lists built from `entriesForType()` (the wizard's
-  picker sheet, Scan lists' target files, Home's scan-list counts) depend on `revision`, so a file replaced in place
-  refreshes them (B7). QML (#832): `CsvImportFlow.qml` runs one import at a time, `idle → picking → copying(id) →
+  aside (`ImportService::journalSetAside()`, `import_journal.json.bad`) so later commits journal again. Picks import
+  only through `beginImport()`: no synchronous import is left (the host's `importContentUri`/`importDocument` and
+  Android's `AppSupport.importDocumentToFiles` are gone too). `importGeneratedFile`/`refreshGeneratedFile`
+  (RadioReference) run the same stage and commit at once on the Qt thread (`ImportService::runNow`; a small local file
+  the app wrote), so a refresh shares the replace order and its rollback. Tests import through `beginImport()` and wait
+  for its answer (`tests/test_support/qt_library_import.h`, `testContext.importNow`). Every library change bumps the
+  model's `revision` and emits `entriesChanged`; `countChanged` stays for count changes. The lists built from
+  `entriesForType()` (the wizard's picker sheet, Scan lists' target files, Home's scan-list counts) depend on
+  `revision`, so a file replaced in place refreshes them (B7). QML (#832): `CsvImportFlow.qml` runs one import at a
+  time, `idle → picking → copying(id) →
   [companions sheet → copying(id′) …] → idle`, and emits `finished(result, context)` once per start with the host's
   context. Its `ModalSheet` shows at once while a copy runs ("Copying <name>…", Cancel); Cancel, Back and Escape go
   through the sheet's `dismissHandler` to `cancelImport(id)` and the sheet stays ("Cancelling…") until the
@@ -13626,12 +13638,13 @@ thread, which the rest of the interface never is.
   too.
 - Import copies (#832): `DocumentCopies.copyImportDocument()` is the same capped temp-file copy for one import request
   id, from the import worker. One `query(DISPLAY_NAME, SIZE)` under the copy's own signal publishes the name
-  (`importName()`) and declared size (`importProgress()`, `[copied, declared]`, `[-1, -1]` when no copy runs) before
-  the open; a failed or null lookup still opens. `cancelImport(id)` cancels by exact id (never `RecordingExport`'s
-  "every id up to"): the running copy stops in its provider call or at its next chunk, and every later copy for that id
-  (a CSV's companions) answers `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A local write failure with
-  `ENOSPC` is `DocumentLocalFailed` and sets `importNoSpace()`. Only import copies answer `DocumentCancelled`;
-  `abort()` cancels and refuses them too, as `DocumentFailed`.
+  (`importName()`) and declared size (`importProgress()`, `[copied, declared]`: `copied` is -1 once the copy ended,
+  `declared` stays until the next copy or `forgetImport()`, so a refused copy still says how large it is; `[-1, -1]`
+  with no copy) before the open; a failed or null lookup still opens. `cancelImport(id)` cancels by exact id (never
+  `RecordingExport`'s "every id up to"): the running copy stops in its provider call or at its next chunk, and every
+  later copy for that id (a CSV's companions) answers `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A
+  local write failure with `ENOSPC` is `DocumentLocalFailed` and sets `importNoSpace()`. Only import copies answer
+  `DocumentCancelled`; `abort()` cancels and refuses them too, as `DocumentFailed`.
 - The C++ side of the import copies is `DecoderHostAndroid::ImportTransport` (`decoder_host_android_imports.cpp`,
   handed out by `importTransport()`), whose JNI calls (`platformCopyImportDocument()` and the five request-table
   calls) sit beside `platformCopyDocumentToFile()` in `decoder_host_android.cpp`. A `content://` reference is read as
