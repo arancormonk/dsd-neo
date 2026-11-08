@@ -81,12 +81,7 @@ group_parse_priority_field(char* token, int* out) {
     return GROUP_PARSE_VALUE_OK;
 }
 
-typedef struct {
-    int policy_active;
-    unsigned int prefix_len;
-    int invalid_order;
-    int basic_tags;
-} group_policy_header;
+typedef dsd_tg_policy_group_header group_policy_header;
 
 typedef struct {
     unsigned long long key[DSD_VERTEX_KS_MAP_MAX];
@@ -163,8 +158,8 @@ group_entry_init(dsd_tg_policy_entry* entry, uint32_t id_start, uint32_t id_end,
 }
 
 static void
-group_apply_optional_bool_field(const char* filename, unsigned int row_count, const char* label, char* token,
-                                uint8_t* target, int* has_flag) {
+group_apply_optional_bool_field(const csv_row_origin* at, const char* label, char* token, uint8_t* target,
+                                int* has_flag) {
     int parsed = 0;
     int br = csv_parse_bool_cell(token, &parsed);
     if (br == GROUP_PARSE_VALUE_OK) {
@@ -174,15 +169,15 @@ group_apply_optional_bool_field(const char* filename, unsigned int row_count, co
         }
         return;
     }
-    if (br == GROUP_PARSE_VALUE_INVALID) {
-        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s value '%s'; using default.\n", filename, row_count,
+    if (br == GROUP_PARSE_VALUE_INVALID && !at->quiet) {
+        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s value '%s'; using default.\n", at->filename, at->row,
                  label, token);
     }
 }
 
 static void
-group_apply_priority_field(const group_policy_header* header, const char* filename, unsigned int row_count,
-                           size_t field_count, char** fields, dsd_tg_policy_entry* entry) {
+group_apply_priority_field(const group_policy_header* header, const csv_row_origin* at, size_t field_count,
+                           char** fields, dsd_tg_policy_entry* entry) {
     if (!header || !fields || !entry) {
         return;
     }
@@ -192,16 +187,18 @@ group_apply_priority_field(const group_policy_header* header, const char* filena
         if (pr == GROUP_PARSE_VALUE_OK) {
             entry->priority = parsed_priority;
         } else if (pr == GROUP_PARSE_VALUE_INVALID) {
-            LOG_WARN("WARNING: Group file '%s' row %u has invalid priority '%s'; defaulting to 0.\n", filename,
-                     row_count, fields[3]);
+            if (!at->quiet) {
+                LOG_WARN("WARNING: Group file '%s' row %u has invalid priority '%s'; defaulting to 0.\n", at->filename,
+                         at->row, fields[3]);
+            }
             entry->priority = 0;
         }
     }
 }
 
 static void
-group_apply_preempt_field(const group_policy_header* header, const char* filename, unsigned int row_count,
-                          size_t field_count, char** fields, dsd_tg_policy_entry* entry) {
+group_apply_preempt_field(const group_policy_header* header, const csv_row_origin* at, size_t field_count,
+                          char** fields, dsd_tg_policy_entry* entry) {
     if (!header || !fields || !entry) {
         return;
     }
@@ -211,45 +208,45 @@ group_apply_preempt_field(const group_policy_header* header, const char* filenam
         if (br == GROUP_PARSE_VALUE_OK) {
             entry->preempt = parsed ? 1u : 0u;
         } else if (br == GROUP_PARSE_VALUE_INVALID) {
-            LOG_WARN("WARNING: Group file '%s' row %u has invalid preempt value '%s'; defaulting to false.\n", filename,
-                     row_count, fields[4]);
+            if (!at->quiet) {
+                LOG_WARN("WARNING: Group file '%s' row %u has invalid preempt value '%s'; defaulting to false.\n",
+                         at->filename, at->row, fields[4]);
+            }
             entry->preempt = 0;
         }
     }
 }
 
 static void
-group_apply_media_fields(const group_policy_header* header, const char* filename, unsigned int row_count,
-                         size_t field_count, char** fields, dsd_tg_policy_entry* entry, int* has_audio, int* has_record,
-                         int* has_stream) {
+group_apply_media_fields(const group_policy_header* header, const csv_row_origin* at, size_t field_count, char** fields,
+                         dsd_tg_policy_entry* entry, int* has_audio, int* has_record, int* has_stream) {
     if (!header || !fields || !entry || !has_audio || !has_record || !has_stream) {
         return;
     }
     if (header->prefix_len >= 3 && field_count > 5) {
-        group_apply_optional_bool_field(filename, row_count, "audio", fields[5], &entry->audio, has_audio);
+        group_apply_optional_bool_field(at, "audio", fields[5], &entry->audio, has_audio);
     }
     if (header->prefix_len >= 4 && field_count > 6) {
-        group_apply_optional_bool_field(filename, row_count, "record", fields[6], &entry->record, has_record);
+        group_apply_optional_bool_field(at, "record", fields[6], &entry->record, has_record);
     }
     if (header->prefix_len >= 5 && field_count > 7) {
-        group_apply_optional_bool_field(filename, row_count, "stream", fields[7], &entry->stream, has_stream);
+        group_apply_optional_bool_field(at, "stream", fields[7], &entry->stream, has_stream);
     }
 }
 
 static void
-group_enforce_media_constraints(const char* filename, unsigned int row_count, dsd_tg_policy_entry* entry,
-                                int mode_blocking, int has_audio, int has_record, int has_stream) {
+group_enforce_media_constraints(const csv_row_origin* at, dsd_tg_policy_entry* entry, int mode_blocking, int has_audio,
+                                int has_record, int has_stream) {
     if (!entry) {
         return;
     }
-    const csv_row_origin origin = {"Group", filename, row_count, 0};
     const csv_media_cells media = {&entry->audio, &entry->record, &entry->stream, has_audio, has_record, has_stream};
-    csv_enforce_media_cells(&origin, mode_blocking, &media);
+    csv_enforce_media_cells(at, mode_blocking, &media);
 }
 
 static void
-group_apply_policy_fields(const group_policy_header* header, const char* filename, unsigned int row_count,
-                          size_t field_count, char** fields, dsd_tg_policy_entry* entry, int mode_blocking) {
+group_apply_policy_fields(const group_policy_header* header, const csv_row_origin* at, size_t field_count,
+                          char** fields, dsd_tg_policy_entry* entry, int mode_blocking) {
     int has_audio = 0;
     int has_record = 0;
     int has_stream = 0;
@@ -258,11 +255,10 @@ group_apply_policy_fields(const group_policy_header* header, const char* filenam
         return;
     }
 
-    group_apply_priority_field(header, filename, row_count, field_count, fields, entry);
-    group_apply_preempt_field(header, filename, row_count, field_count, fields, entry);
-    group_apply_media_fields(header, filename, row_count, field_count, fields, entry, &has_audio, &has_record,
-                             &has_stream);
-    group_enforce_media_constraints(filename, row_count, entry, mode_blocking, has_audio, has_record, has_stream);
+    group_apply_priority_field(header, at, field_count, fields, entry);
+    group_apply_preempt_field(header, at, field_count, fields, entry);
+    group_apply_media_fields(header, at, field_count, fields, entry, &has_audio, &has_record, &has_stream);
+    group_enforce_media_constraints(at, entry, mode_blocking, has_audio, has_record, has_stream);
 }
 
 static void
@@ -283,7 +279,8 @@ group_apply_tags_field(const group_policy_header* header, size_t field_count, ch
 }
 
 /* What one pass over a group file found so far. stats (may be NULL) is the dry-run validator's tally. With neither a
- * state nor a store the pass only hashes the rows it would store (hash_only). */
+ * state nor a store the pass only hashes the rows it would store (hash_only); a quiet pass logs no row diagnostics
+ * (the file's rows were reported when it was loaded). */
 typedef struct {
     dsd_state* state;
     dsd_tg_policy_store* store;
@@ -292,6 +289,7 @@ typedef struct {
     group_policy_header header;
     uint64_t rows_hash; /* dsd_tg_policy_rows_hash_fold() over the rows stored so far */
     uint8_t hash_only;
+    uint8_t quiet;
     char filename[CSV_IMPORT_PATH_MAX];
 } group_import_pass;
 
@@ -322,7 +320,7 @@ group_commit_entry(group_import_pass* pass, const dsd_tg_policy_entry* entry, un
         (*dropped_policy_alloc_rows)++;
         return rc;
     }
-    if (rc == 1) {
+    if (rc == 1 && !pass->quiet) {
         static const char* const kinds[] = {"exact entry", "range", "pattern"};
         LOG_WARN("WARNING: Group file '%s' row %u has invalid %s and was skipped.\n", pass->filename, row_count,
                  entry->kind < 3u ? kinds[entry->kind] : "entry");
@@ -333,7 +331,7 @@ group_commit_entry(group_import_pass* pass, const dsd_tg_policy_entry* entry, un
 /** @brief Parse and commit one group data row. @return 0 when the row loaded. */
 static int
 group_import_row(group_import_pass* pass, unsigned int row_count, char* buffer, size_t* dropped_policy_alloc_rows) {
-    const char* filename = pass->filename;
+    const csv_row_origin at = {"Group", pass->filename, row_count, pass->quiet};
     const group_policy_header* header = &pass->header;
     char* fields[32];
     size_t field_count = 0;
@@ -348,22 +346,26 @@ group_import_row(group_import_pass* pass, unsigned int row_count, char* buffer, 
 
     field_count = csv_split_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
     if (field_count < 3) {
-        LOG_WARN("WARNING: Group file '%s' row %u missing required fields; skipping.\n", filename, row_count);
+        if (!at.quiet) {
+            LOG_WARN("WARNING: Group file '%s' row %u missing required fields; skipping.\n", at.filename, at.row);
+        }
         return -1;
     }
 
     // A failed parse may have trimmed the cell in place; report it as written once trimmed.
     if (!csv_parse_id_field(fields[0], &id_start, &id_end, &kind, &pattern)) {
         const char* id_text = trim_ws(fields[0]);
-        LOG_WARN("WARNING: Group file '%s' row %u has invalid %s '%s'; skipping.\n", filename, row_count,
-                 dsd_id_pattern_is_candidate(id_text) ? "pattern" : "id", id_text);
+        if (!at.quiet) {
+            LOG_WARN("WARNING: Group file '%s' row %u has invalid %s '%s'; skipping.\n", at.filename, at.row,
+                     dsd_id_pattern_is_candidate(id_text) ? "pattern" : "id", id_text);
+        }
         return -1;
     }
 
     mode_field = trim_ws(fields[1]);
     name_field = fields[2];
     group_entry_init(&entry, id_start, id_end, kind, &pattern, mode_field, name_field, row_count, &mode_blocking);
-    group_apply_policy_fields(header, filename, row_count, field_count, fields, &entry, mode_blocking);
+    group_apply_policy_fields(header, &at, field_count, fields, &entry, mode_blocking);
     group_apply_tags_field(header, field_count, fields, &entry);
     return group_commit_entry(pass, &entry, row_count, dropped_policy_alloc_rows);
 }
@@ -373,7 +375,7 @@ group_import_header(group_import_pass* pass, const char* line) {
     char header_copy[BSIZE];
     DSD_SNPRINTF(header_copy, sizeof(header_copy), "%s", line);
     pass->header = group_parse_policy_header(header_copy);
-    if (pass->header.policy_active && pass->header.invalid_order) {
+    if (pass->header.policy_active && pass->header.invalid_order && !pass->quiet) {
         LOG_WARN("WARNING: Group file '%s' header optional policy columns are out of order; ignoring "
                  "mismatched and later "
                  "optional columns.\n",
@@ -384,7 +386,9 @@ group_import_header(group_import_pass* pass, const char* line) {
 /* One data line: loaded, skipped as malformed, or read but not stored for want of memory. */
 static void
 group_import_data_line(group_import_pass* pass, unsigned int row_count, char* buffer, int invalid_line) {
-    if (!csv_data_row_ready(buffer, invalid_line, pass->filename, row_count, pass->stats)) {
+    dsd_csv_validation quiet_tally = {0U, 0U, 0U};
+    dsd_csv_validation* tally = (pass->quiet && !pass->stats) ? &quiet_tally : pass->stats;
+    if (!csv_data_row_ready(buffer, invalid_line, pass->filename, row_count, tally)) {
         if (invalid_line) {
             pass->report.skipped++;
         }
@@ -464,6 +468,7 @@ group_import_pass_init(group_import_pass* pass, dsd_state* state, dsd_tg_policy_
     pass->store = store;
     pass->stats = stats;
     pass->hash_only = !state && !store;
+    pass->quiet = pass->hash_only;
     pass->rows_hash = DSD_TG_POLICY_ROWS_HASH_INIT;
     DSD_SNPRINTF(pass->filename, sizeof pass->filename, "%s", "filename.csv");
 }
@@ -501,27 +506,37 @@ dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_loa
     return rc;
 }
 
-int
-dsd_tg_policy_rows_hash_line(uint64_t* hash, const char* path, const char* header_line, const char* line) {
+void
+dsd_tg_policy_group_header_parse(const char* header_line, dsd_tg_policy_group_header* out) {
     char header_copy[BSIZE];
-    char buffer[BSIZE];
-    if (!hash || !line) {
-        return 0;
+    if (!out) {
+        return;
     }
-    group_import_pass pass;
-    group_import_pass_init(&pass, NULL, NULL, NULL);
-    pass.rows_hash = *hash;
-    if (path) {
-        DSD_SNPRINTF(pass.filename, sizeof pass.filename, "%s", path);
-    }
-    // The header and the line as the importer's read leaves them: one physical line each, its terminator trimmed.
+    // As the importer's read leaves the first line: its terminator trimmed.
     DSD_SNPRINTF(header_copy, sizeof header_copy, "%s", header_line ? header_line : "");
     trim_eol(header_copy);
-    pass.header = group_parse_policy_header(header_copy);
-    DSD_SNPRINTF(buffer, sizeof buffer, "%s", line);
-    trim_eol(buffer);
-    const int overlong = strlen(line) >= sizeof buffer;
-    group_import_data_line(&pass, 2u, buffer, overlong);
+    *out = group_parse_policy_header(header_copy);
+}
+
+int
+dsd_tg_policy_rows_hash_line(uint64_t* hash, const dsd_tg_policy_group_header* header, char* line) {
+    if (!hash || !header || !line) {
+        return 0;
+    }
+    // Only what a quiet hash-only row reads; the file name is never printed.
+    group_import_pass pass;
+    pass.state = NULL;
+    pass.store = NULL;
+    pass.stats = NULL;
+    DSD_MEMSET(&pass.report, 0, sizeof pass.report);
+    pass.header = *header;
+    pass.rows_hash = *hash;
+    pass.hash_only = 1;
+    pass.quiet = 1;
+    pass.filename[0] = '\0';
+    const size_t len = strlen(line);
+    trim_eol(line);
+    group_import_data_line(&pass, 2u, line, len >= BSIZE - 1U);
     *hash = pass.rows_hash;
     return pass.report.accepted > 0u;
 }

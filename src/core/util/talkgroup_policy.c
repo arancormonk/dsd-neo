@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -2564,14 +2565,27 @@ tg_policy_bool_on_off(uint8_t v) {
     return v ? "on" : "off";
 }
 
-/* Where a written row goes, and the rows hash it extends: the importer's reading of each line, under the header the
- * file has, so the hash of a written file is the hash its next load computes. */
+/* Where a written row goes, and the rows hashes it extends: the importer's reading of each line, under the header the
+ * file has (parsed once), so the hash of a written file is the hash its next load computes. An append extends the
+ * baseline of every list that stands for the file. */
+enum { TG_POLICY_SINK_HASHES = 3 };
+
 typedef struct {
     FILE* wf;
-    const char* path;
-    const char* header_line;
-    uint64_t rows_hash;
+    dsd_tg_policy_group_header header;
+    uint64_t hashes[TG_POLICY_SINK_HASHES];
+    size_t hash_count;
 } tg_policy_row_sink;
+
+static void
+tg_policy_row_sink_fold(tg_policy_row_sink* sink, const char* line, size_t len) {
+    char scratch[640];
+    for (size_t i = 0; i < sink->hash_count && len < sizeof scratch; i++) {
+        // The importer's reading splits the line in place.
+        DSD_MEMCPY(scratch, line, len + 1U);
+        (void)dsd_tg_policy_rows_hash_line(&sink->hashes[i], &sink->header, scratch);
+    }
+}
 
 static int
 tg_policy_write_group_row(tg_policy_row_sink* sink, const dsd_tg_policy_entry* entry, const char* id_text,
@@ -2592,7 +2606,7 @@ tg_policy_write_group_row(tg_policy_row_sink* sink, const dsd_tg_policy_entry* e
     if (n < 0 || (size_t)n >= sizeof line || fputs(line, sink->wf) < 0) {
         return -1;
     }
-    (void)dsd_tg_policy_rows_hash_line(&sink->rows_hash, sink->path, sink->header_line, line);
+    tg_policy_row_sink_fold(sink, line, (size_t)n);
     return 0;
 }
 
@@ -2623,7 +2637,7 @@ tg_policy_write_group_table(tg_policy_row_sink* sink, const dsd_tg_policy_entry*
     } else if (any_tags) {
         header = "id,mode,name,tags\n";
     }
-    sink->header_line = header;
+    dsd_tg_policy_group_header_parse(header, &sink->header);
     int failed = fputs(header, sink->wf) < 0;
     for (size_t i = 0; !failed && i < count; i++) {
         const dsd_tg_policy_entry* entry = &entries[i];
@@ -2720,7 +2734,10 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
     }
     // Staged before the managed-file lock, which then covers only the check and the replace.
     char tmp[sizeof(opts->group_in_file) + 32];
-    tg_policy_row_sink sink = {NULL, path, NULL, DSD_TG_POLICY_ROWS_HASH_INIT};
+    tg_policy_row_sink sink;
+    DSD_MEMSET(&sink, 0, sizeof sink);
+    sink.hashes[0] = DSD_TG_POLICY_ROWS_HASH_INIT;
+    sink.hash_count = 1;
     sink.wf = dsd_fopen_private_temp_for_replace(path, tmp, sizeof(tmp), "w");
     if (!sink.wf) {
         return -1;
@@ -2733,26 +2750,81 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
         (void)remove(tmp);
         return -1;
     }
-    return tg_policy_replace_group_file(ctx, path, tmp, sink.rows_hash);
+    return tg_policy_replace_group_file(ctx, path, tmp, sink.hashes[0]);
 }
 
-/* Append @p entry's line to the open @p wf and, when the store's baseline describes this file (or the append creates
- * it), fold the line into the baseline as the next load of the file will read it. */
+/* The lists an append to @p path keeps in step: every store the decoder holds whose baseline names the file (the
+ * effective list, and the global or the row's list held aside while a -Y row's or trunk-scan target's own list is in
+ * place), plus the list that owns the file (the global list) when the append creates the file and it has none. */
+typedef struct {
+    dsd_tg_policy_context* stores[TG_POLICY_SINK_HASHES];
+    size_t count;
+    dsd_tg_policy_context* effective;
+    dsd_tg_policy_context* owner;
+} tg_policy_append_lists;
+
+static void
+tg_policy_append_lists_add(tg_policy_append_lists* lists, dsd_tg_policy_context* ctx) {
+    for (size_t i = 0; i < lists->count; i++) {
+        if (lists->stores[i] == ctx) {
+            return;
+        }
+    }
+    if (ctx && lists->count < TG_POLICY_SINK_HASHES) {
+        lists->stores[lists->count++] = ctx;
+    }
+}
+
+static void
+tg_policy_append_lists_collect(dsd_state* state, const char* path, int creates, tg_policy_append_lists* lists) {
+    dsd_tg_policy_store* held = NULL;
+    DSD_MEMSET(lists, 0, sizeof *lists);
+    lists->effective = tg_policy_ctx_get_mut(state, 0);
+    // While a row's own list is in effect the global list, which owns the file, is the one held aside (maybe none).
+    lists->owner = dsd_scan_groups_held_store(state, &held) == 1 ? held : lists->effective;
+    dsd_tg_policy_context* candidates[2] = {lists->effective, held};
+    for (size_t i = 0; i < 2; i++) {
+        if (tg_policy_baseline_for(candidates[i], path)) {
+            tg_policy_append_lists_add(lists, candidates[i]);
+        }
+    }
+    if (creates && lists->owner && !tg_policy_baseline_for(lists->owner, path)) {
+        tg_policy_append_lists_add(lists, lists->owner);
+    }
+}
+
+/* A list held aside that stands for the file takes the appended row too, as its next load of the file would (the file's
+ * first row for an ID wins, so a list with a row for the ID keeps it). Otherwise its next rewrite of the file would drop
+ * the row just appended. */
+static void
+tg_policy_store_mirror_learned(dsd_tg_policy_context* ctx, const dsd_tg_policy_entry* entry) {
+    if (tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 0) >= 0
+        || tg_policy_find_bounds_idx_kind(ctx, entry->id_start, entry->id_start, 1) >= 0) {
+        return;
+    }
+    (void)tg_policy_store_append_kind(ctx, entry, 0);
+}
+
+/* Append @p entry's line to the open @p wf and fold it, as the next load of the file will read it, into each list in
+ * @p lists. */
 static int
-tg_policy_append_row(FILE* wf, dsd_tg_policy_context* ctx, const char* path, tg_policy_group_file_probe* probe,
+tg_policy_append_row(FILE* wf, const tg_policy_append_lists* lists, const char* path, tg_policy_group_file_probe* probe,
                      const dsd_tg_policy_entry* entry, const char* clean_meta) {
     char clean_mode[16];
     char clean_name[128];
     tg_policy_csv_sanitize_copy(clean_mode, sizeof(clean_mode), entry->mode);
     tg_policy_csv_sanitize_copy(clean_name, sizeof(clean_name), entry->name);
-    const int created = probe->missing_or_empty;
     if (tg_policy_write_group_file_header(wf, probe, clean_meta) != 0) {
         return -1;
     }
-    tg_policy_row_sink sink = {wf, path, probe->header_line, DSD_TG_POLICY_ROWS_HASH_INIT};
-    const int tracked = tg_policy_baseline_for(ctx, path);
-    if (tracked) {
-        sink.rows_hash = ctx->baseline.rows_hash;
+    tg_policy_row_sink sink;
+    DSD_MEMSET(&sink, 0, sizeof sink);
+    sink.wf = wf;
+    dsd_tg_policy_group_header_parse(probe->header_line, &sink.header);
+    sink.hash_count = lists->count;
+    for (size_t i = 0; i < lists->count; i++) {
+        const dsd_tg_policy_context* ctx = lists->stores[i];
+        sink.hashes[i] = tg_policy_baseline_for(ctx, path) ? ctx->baseline.rows_hash : DSD_TG_POLICY_ROWS_HASH_INIT;
     }
     if (tg_policy_write_group_file_entry(&sink, entry, probe, clean_mode, clean_name, clean_meta) != 0) {
         return -1;
@@ -2761,8 +2833,11 @@ tg_policy_append_row(FILE* wf, dsd_tg_policy_context* ctx, const char* path, tg_
     if (tg_policy_close_append(wf) != 0) {
         return -2;
     }
-    if (ctx && (tracked || created)) {
-        dsd_tg_policy_store_set_baseline(ctx, path, sink.rows_hash);
+    for (size_t i = 0; i < lists->count; i++) {
+        dsd_tg_policy_store_set_baseline(lists->stores[i], path, sink.hashes[i]);
+        if (lists->stores[i] != lists->effective) {
+            tg_policy_store_mirror_learned(lists->stores[i], entry);
+        }
     }
     return 0;
 }
@@ -2772,6 +2847,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, dsd_state* state, cons
                                     const char* metadata) {
     char clean_meta[256];
     tg_policy_group_file_probe probe;
+    tg_policy_append_lists lists;
 
     if (!opts || !entry) {
         return 0;
@@ -2780,8 +2856,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, dsd_state* state, cons
     if (path[0] == '\0') {
         return 0;
     }
-    // An incomplete list is never written back to its file (dsd_tg_policy_incomplete()), not even a row at a time.
-    if (!tg_policy_entry_valid_exact(entry) || dsd_tg_policy_incomplete(state)) {
+    if (!tg_policy_entry_valid_exact(entry)) {
         return 1;
     }
     tg_policy_csv_sanitize_copy(clean_meta, sizeof(clean_meta), metadata ? metadata : "");
@@ -2789,9 +2864,15 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, dsd_state* state, cons
     // An append destroys nothing, so it does not check the file; the lock keeps it out of another writer's sequence.
     dsd_managed_file_lock();
     int rc = tg_policy_probe_group_file(path, &probe);
+    tg_policy_append_lists_collect(state, path, probe.missing_or_empty, &lists);
+    // An incomplete list is never written back to its file (dsd_tg_policy_incomplete()), not even a row at a time.
+    if (lists.owner && lists.owner->incomplete) {
+        dsd_managed_file_unlock();
+        return 1;
+    }
     FILE* wf = rc == 0 ? dsd_fopen_private(path, "a") : NULL;
     if (wf) {
-        rc = tg_policy_append_row(wf, tg_policy_ctx_get_mut(state, 0), path, &probe, entry, clean_meta);
+        rc = tg_policy_append_row(wf, &lists, path, &probe, entry, clean_meta);
         if (rc == -1) {
             fclose(wf);
         }

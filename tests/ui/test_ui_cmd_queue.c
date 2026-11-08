@@ -24156,6 +24156,72 @@ test_group_startup_list_guards_its_file(void) {
     return rc;
 }
 
+/* A learned alias is appended to the global group file even while a -Y row's own list (another file, or the same one)
+   is in effect. The global list held aside keeps its baseline in step with that row and takes the row itself, so once
+   the row is left the next saved change goes through and keeps the alias (R4). When the append creates the global
+   file, the global list (not the row's) starts its baseline. */
+enum { ROW_ALIAS_OWN_FILE, ROW_ALIAS_SAME_FILE, ROW_ALIAS_GLOBAL_MISSING };
+
+static int
+test_group_alias_learned_on_a_row_list_is_kept(int mode) {
+    const int same_file = mode == ROW_ALIAS_SAME_FILE;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char global[DSD_TEST_PATH_MAX], row_file[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(global, sizeof global, "dsd_r4_row_global", "id,mode,name\n100,A,Dispatch\n");
+    rc |= make_group_file(row_file, sizeof row_file, "dsd_r4_row_own", "id,mode,name\n500,A,Row\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    if (mode == ROW_ALIAS_GLOBAL_MISSING) {
+        // A global list with no file yet: rows entered this session, saved nowhere until the file exists.
+        rc |= remove(global) != 0;
+        DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", global);
+        dsd_tg_policy_entry dispatch;
+        rc |= dsd_tg_policy_make_exact_entry(100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &dispatch);
+        rc |= dsd_tg_policy_append_exact(&state, &dispatch);
+    } else {
+        post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, global);
+        rc |= expect_int("R4 row global import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    }
+
+    dsd_scan_options parsed = {0};
+    parsed.values.present = DSD_SCAN_OPT_GROUP;
+    DSD_SNPRINTF(parsed.values.group_file, sizeof parsed.values.group_file, "%s", same_file ? global : row_file);
+    dsd_key_set keys = {0};
+    dsd_scan_row_profile* row = NULL;
+    rc |= expect_int("R4 row profile loads", dsd_scan_profile_load(&parsed, 0, &row, &keys), 0);
+    rc |= expect_int("R4 row scope", dsd_scan_groups_begin(&state), 0);
+    dsd_scan_groups_enter(&state, row);
+    rc |= expect_true("R4 row list in effect", dsd_scan_groups_row_active(&state));
+
+    dsd_tg_policy_entry alias;
+    rc |=
+        expect_int("R4 row alias entry",
+                   dsd_tg_policy_make_exact_entry(300, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias), 0);
+    rc |= expect_true("R4 row alias learned", dsd_tg_policy_learn_exact(&state, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_int("R4 row alias appended", dsd_tg_policy_append_group_file_row(&opts, &state, &alias, ""), 0);
+    dsd_scan_groups_leave(&state);
+
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("R4 row edit after leave queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 row edit after leave drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("R4 row edit after leave saved", strstr(state.ui_msg, "changed on disk") == NULL);
+    rc |= expect_file_bytes(global, "id,mode,name\n100,B,Dispatch\n300,D,Learned\n");
+    if (!same_file) {
+        rc |= expect_file_bytes(row_file, "id,mode,name\n500,A,Row\n");
+    }
+    dsd_scan_profile_free(row);
+    dsd_key_set_free(&keys);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(global);
+    (void)remove(row_file);
+    return rc;
+}
+
 static int
 test_config_group_path_reloads_before_persist(int scoped) {
     static dsd_opts opts;
@@ -28916,6 +28982,9 @@ main(void) {
     rc |= test_group_outside_edit_is_not_overwritten();
     rc |= test_group_replaced_file_waits_for_its_reload();
     rc |= test_group_startup_list_guards_its_file();
+    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_OWN_FILE);
+    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_SAME_FILE);
+    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_GLOBAL_MISSING);
 #ifdef DSD_NEO_TEST_TG_POLICY_WRAP
     rc |= test_group_import_refuses_a_partial_load();
     rc |= test_group_startup_partial_load_is_not_saved();

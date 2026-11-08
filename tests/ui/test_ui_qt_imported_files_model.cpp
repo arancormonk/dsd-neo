@@ -879,12 +879,12 @@ race_at_installed(dsd_managed_file_step step, void* user) {
     wait_for_lock_waiter(race->appended);
 }
 
-/* The rollback of a failed update restores its backup only over the bytes it installed (R4). A decoder alias append
+/* The rollback of a failed update or RadioReference refresh restores its backup only over the bytes it installed (R4). A decoder alias append
  * that arrives while the update is in flight waits for the rollback and lands on the restored file, so neither is
  * lost and the decoder's next save goes through; a file an outside editor changed meanwhile is kept, and the update
  * still reports failure. */
 void
-test_rollback_keeps_newer_files(bool outsideEdit) {
+test_rollback_keeps_newer_files(bool outsideEdit, bool viaRefresh) {
     TestHost host;
     dsd_qt::ImportedFilesModel model(&host);
     QTemporaryDir fixtures;
@@ -909,7 +909,9 @@ test_rollback_keeps_newer_files(bool outsideEdit) {
     race.path = path;
     race.outsideEdit = outsideEdit ? QByteArray("id,mode,name\n123,A,Edited outside\n") : QByteArray();
     dsd_managed_file_test_set_hook(race_at_installed, &race);
-    const QVariantMap result = model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "replacement.csv");
+    const QVariantMap result =
+        viaRefresh ? model.refreshGeneratedFile(row, replacement)
+                   : model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "replacement.csv");
     if (race.appender.joinable()) {
         race.appender.join();
     }
@@ -1904,8 +1906,10 @@ main(int argc, char** argv) {
     test_metadata_failure_keeps_file();
     test_update_waits_for_decoder_rewrite(false);
     test_update_waits_for_decoder_rewrite(true);
-    test_rollback_keeps_newer_files(false);
-    test_rollback_keeps_newer_files(true);
+    test_rollback_keeps_newer_files(false, false);
+    test_rollback_keeps_newer_files(false, true);
+    test_rollback_keeps_newer_files(true, false);
+    test_rollback_keeps_newer_files(true, true);
     test_remove_finishes_on_retry();
     test_channel_bundle();
     test_channel_bundle_quoted_options();

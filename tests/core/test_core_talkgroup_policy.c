@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -3903,6 +3904,49 @@ test_group_append_tracks_baseline(void) {
     return rc;
 }
 
+/* Group-file row warnings seen by the log tap. */
+static int g_group_row_warnings;
+
+static void
+count_group_row_warnings(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text && strstr(text, "Group file") && strstr(text, " row ")) {
+        g_group_row_warnings++;
+    }
+}
+
+/* A load reports each malformed row once; the guard's re-reads of the same file (the check before a rewrite) and the
+ * write's own reading of its lines stay quiet, so a refused save does not log the file's rows again. */
+static int
+test_group_check_is_quiet(void) {
+    char path[64];
+    int rc = load_report_file(path, sizeof path, NULL);
+    rc |= write_group_bytes(path, "id,mode,name,priority\n100,A,Dispatch,x\nnot a row\n200,B,Fire,5\n");
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (rc != 0 || !opts || !st) {
+        free(opts);
+        free(st);
+        return 1;
+    }
+    dsd_neo_log_set_tap(count_group_row_warnings, NULL);
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    g_group_row_warnings = 0;
+    rc |= expect_true("quiet load", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("load reports the malformed rows", g_group_row_warnings == 2);
+    g_group_row_warnings = 0;
+    uint64_t hash = 0;
+    rc |= expect_true("check read", dsd_tg_policy_rows_hash_file(path, &hash, NULL) == 0);
+    rc |= expect_true("lockout", dsd_tg_policy_set_mode(st, 100, 100, "B") == 0);
+    rc |= expect_true("guarded save", dsd_tg_policy_write_group_file(opts, st) == 0);
+    rc |= expect_true("check and save stay quiet", g_group_row_warnings == 0);
+    free_test_state(st);
+    free(opts);
+    (void)remove(path);
+    return rc;
+}
+
 /* Every way a list comes to stand for a file sets the baseline: a startup import (a header-only file too) and an
  * export, which moves it to the export path. A path the list never read or wrote has none and is written as before. */
 static int
@@ -4009,5 +4053,6 @@ main(void) {
     rc |= test_group_rewrite_guard();
     rc |= test_group_append_tracks_baseline();
     rc |= test_group_startup_and_export_baseline();
+    rc |= test_group_check_is_quiet();
     return rc;
 }

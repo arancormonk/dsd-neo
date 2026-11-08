@@ -44,11 +44,18 @@ dsd_tg_policy_load_counted(const char* path, dsd_tg_policy_store** out, dsd_tg_p
 }
 
 /* The importer's rows-hash side: no file is read, so no row is hashed. */
-int
-dsd_tg_policy_rows_hash_line(uint64_t* hash, const char* path, const char* header_line, const char* line) {
-    (void)hash;
-    (void)path;
+void
+dsd_tg_policy_group_header_parse(const char* header_line, dsd_tg_policy_group_header* out) {
     (void)header_line;
+    if (out) {
+        *out = (dsd_tg_policy_group_header){0};
+    }
+}
+
+int
+dsd_tg_policy_rows_hash_line(uint64_t* hash, const dsd_tg_policy_group_header* header, char* line) {
+    (void)hash;
+    (void)header;
     (void)line;
     return 0;
 }

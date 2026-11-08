@@ -6920,6 +6920,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
@@ -6955,6 +6956,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
@@ -13774,6 +13776,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
@@ -13799,6 +13802,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
@@ -13824,6 +13828,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
@@ -14172,6 +14177,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
     ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )

@@ -31,10 +31,19 @@ int dsd_tg_policy_rows_hash_fold(uint64_t* hash, const dsd_tg_policy_entry* entr
 void dsd_tg_policy_store_set_baseline(dsd_tg_policy_store* store, const char* path, uint64_t rows_hash);
 int dsd_tg_policy_set_baseline(dsd_state* state, const char* path, uint64_t rows_hash);
 
-/* The importer's side (dsd_import.c). Fold into @p hash the row the importer would store from data line @p line of
- * a file whose first line is @p header_line; @p path names the file in any row warning. Returns 1 folded, 0 the importer
- * would skip the line. */
-int dsd_tg_policy_rows_hash_line(uint64_t* hash, const char* path, const char* header_line, const char* line);
+/* The importer's side (dsd_import.c). A group file's first line as the importer reads it, parsed once for the
+ * lines below it. */
+typedef struct {
+    int policy_active;
+    unsigned int prefix_len;
+    int invalid_order;
+    int basic_tags;
+} dsd_tg_policy_group_header;
+
+void dsd_tg_policy_group_header_parse(const char* header_line, dsd_tg_policy_group_header* out);
+/* Fold into @p hash the row the importer would store from data line @p line (trimmed in place; no row warning) under
+ * @p header. Returns 1 folded, 0 the importer would skip the line. */
+int dsd_tg_policy_rows_hash_line(uint64_t* hash, const dsd_tg_policy_group_header* header, char* line);
 /* Set @p hash to the rows hash of the file at @p path, read as a load reads it, without storing a row. Returns 0 read
  * to the end, -1 not (@p report, which may be NULL, says why: not_found or unreadable). */
 int dsd_tg_policy_rows_hash_file(const char* path, uint64_t* hash, dsd_tg_policy_load_report* report);
