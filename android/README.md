@@ -447,6 +447,13 @@ keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A 
 talkgroup lists; if a file changes while the backup is being made, the export stops with **Your setup changed while the
 backup was being made. Try again.**
 
+If DSD-neo couldn't read one of the lists a backup carries, or your settings, the export stops and names each one, for
+example **No backup was made. Saved systems couldn't be read, so a backup can't include them.** A backup would hold
+that list empty, and restoring it would replace what the phone has. DSD-neo keeps the unreadable file aside, under a
+name ending in `.unreadable-1` (or the next free number), the next time it saves that list (for settings, at a later
+start). Backups made after that hold only what DSD-neo shows then, never the kept file, and a restore never touches
+kept files.
+
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop

@@ -26,6 +26,7 @@
 #include <QRunnable>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QThread>
 #include <QUuid>
 #include <QVariant>
@@ -149,11 +150,16 @@ result_map(const QString& error, const QVariantMap& summary = QVariantMap()) {
             {QStringLiteral("summary"), summary}};
 }
 
-/** result_map() plus the export's not-included lines beside its summary. */
+/**
+ * result_map() plus the export's not-included lines beside its summary, and the file names an Unreadable export
+ * could not read (Snapshot::unreadable; empty otherwise).
+ */
 QVariantMap
-export_map(const QString& error, const QVariantMap& summary = QVariantMap()) {
+export_map(const QString& error, const QVariantMap& summary = QVariantMap(),
+           const QStringList& unreadable = QStringList()) {
     QVariantMap map = result_map(error, summary);
     map.insert(QStringLiteral("notIncluded"), summary.value(QStringLiteral("notIncluded")).toStringList());
+    map.insert(QStringLiteral("unreadable"), unreadable);
     return map;
 }
 
@@ -222,7 +228,8 @@ run_export(const ExportWork& work) {
     }
     wipe(built.archive);
     work.passphrase->wipe();
-    return export_map(error, error.isEmpty() ? backup::summary_to_map(built.summary) : QVariantMap());
+    return export_map(error, error.isEmpty() ? backup::summary_to_map(built.summary) : QVariantMap(),
+                      built.error == BackupError::Unreadable ? work.snapshot.unreadable : QStringList());
 }
 
 /** Everything an inspection job needs, copied on the UI thread. */

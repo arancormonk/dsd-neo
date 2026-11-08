@@ -24,7 +24,8 @@
  * Result maps carry `ok` (bool) and `error`, empty on success, else a backup_error_name() ("NotBackup",
  * "NewerVersion", "WrongPassphrase", "TooLarge", "Damaged", "NoSpace", "SessionActive", "Io", "SourceChanged": a file
  * changed while an export read it, which a session can cause, so retrying helps; "StagingFailed": a restore could not
- * be prepared on this phone, while "Io" from an inspection means the picked document could not be read) or one of the
+ * be prepared on this phone, while "Io" from an inspection means the picked document could not be read;
+ * "Unreadable": an export found a file it carries unreadable, Snapshot::unreadable, and built nothing) or one of the
  * model's own names: "Busy" (another backup step is running), "PassphraseTooShort" (export only) and "RestorePending"
  * (a confirmed restore already waits for the next start). Text that comes from a backup (the app version, the
  * not-included lines) is plain data for QML to show as plain text.
@@ -218,9 +219,12 @@ class BackupModel : public QObject {
     void restoreCancellableChanged();
     void startupOutcomeChanged();
     void lastResultChanged();
-    /** `{ok, error, summary, notIncluded}`; `summary` as summary_to_map(), `notIncluded` a list of plain lines. */
+    /**
+     * `{ok, error, summary, notIncluded, unreadable}`; `summary` as summary_to_map(), `notIncluded` a list of plain
+     * lines, `unreadable` the file names an "Unreadable" export could not read (empty otherwise).
+     */
     void exportPrepared(const QVariantMap& result);
-    /** `{ok, error, summary, notIncluded}`, the last two from the export that was saved. */
+    /** `{ok, error, summary, notIncluded, unreadable}`, the summary and lines from the export that was saved. */
     void exportFinished(const QVariantMap& result);
     /**
      * `{ok, error, summary}`; `summary` holds `createdAt`, `app`, `systems`, `scanLists`, `libraryFiles`, `profiles`,

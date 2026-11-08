@@ -26,6 +26,7 @@
 #include "backup_archive_rules.h"
 #include "json_store.h"
 #include "realtime_clock.h"
+#include "settings_recovery.h"
 
 namespace dsd_qt {
 namespace backup {
@@ -50,6 +51,7 @@ backup_error_name(BackupError error) {
         case BackupError::Io: return QStringLiteral("Io");
         case BackupError::SourceChanged: return QStringLiteral("SourceChanged");
         case BackupError::StagingFailed: return QStringLiteral("StagingFailed");
+        case BackupError::Unreadable: return QStringLiteral("Unreadable");
     }
     return QStringLiteral("Io");
 }
@@ -132,8 +134,23 @@ backup_take_snapshot() {
     snapshot.root = json_store_root();
     snapshot.canonicalRoot = QFileInfo(snapshot.root).canonicalFilePath();
     snapshot.prefs = AppPrefs::readPortable();
+    // Read, never loaded: a load would mark a store this snapshot only looks at, and its next save would move a good
+    // file aside after a passing read failure.
     for (const QString& store : backup_store_names()) {
-        snapshot.stores.insert(store, json_store_load_array(store));
+        const JsonStoreRead read = json_store_read(store);
+        if (read.status == JsonStoreLoad::Unreadable) {
+            snapshot.unreadable.append(store);
+        }
+        snapshot.stores.insert(store, read.array);
+    }
+    // Only an avoid file still in place unread: once kept aside, the in-memory list is what the store saves.
+    dsd_app_search_file_load avoidsLoad = DSD_APP_SEARCH_FILE_OK;
+    if (dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_AVOIDS, &avoidsLoad, nullptr, nullptr, 0) == 0
+        && avoidsLoad == DSD_APP_SEARCH_FILE_UNREADABLE) {
+        snapshot.unreadable.append(QLatin1String(kAvoidsFileName));
+    }
+    if (settings_recovery_scratch(settings_recovery_prefs_file_name())) {
+        snapshot.unreadable.append(settings_recovery_prefs_file_name());
     }
     std::vector<uint32_t> avoids(DSD_SEARCH_MAX_AVOIDS);
     const size_t count = dsd_app_signal_search_avoids_get(avoids.data(), avoids.size());

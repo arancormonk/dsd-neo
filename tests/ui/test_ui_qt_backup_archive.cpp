@@ -86,6 +86,11 @@ expect(const char* what, bool ok) {
     }
 }
 
+void
+expect(const QString& what, bool ok) {
+    expect(qUtf8Printable(what), ok);
+}
+
 /**
  * Whether this test may remove @p path: a clean absolute path equal to the isolated data root (unless
  * @p strictlyBelow) or below it, the root itself clean, absolute, not "/" and named for this test. Anything else, an
@@ -1169,6 +1174,113 @@ test_export_folded_bundle_paths(const Fixture& f) {
     remove_tree(snapshot.root + "/imports/Bundles");
 }
 
+/* Issue #828: a store the backup carries that cannot be read now refuses the export by name, instead of going into
+ * the backup as an empty list that its restore would write over the store. */
+void
+expect_refused(const QString& what, const QStringList& unreadable) {
+    const auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    expect(what + ": the snapshot names what it could not read", snapshot.unreadable == unreadable);
+    const auto built = dsd_qt::backup::backup_build_archive(snapshot, nullptr);
+    expect(what + ": no backup is built", built.error == BackupError::Unreadable && built.archive.isEmpty()
+                                              && built.detail.contains(unreadable.value(0)));
+    expect(what + ": the error's name", dsd_qt::backup::backup_error_name(built.error) == "Unreadable");
+}
+
+/** The parsed backup of the current configuration; a failure is reported under @p what. */
+dsd_qt::backup::ParseResult
+expect_backed_up(const QString& what) {
+    const auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    expect(what + ": nothing unreadable", snapshot.unreadable.isEmpty());
+    const auto built = dsd_qt::backup::backup_build_archive(snapshot, nullptr);
+    expect(what + ": the backup builds", built.error == BackupError::None);
+    return dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
+}
+
+void
+test_unreadable_store_refuses_export() {
+    for (const QString& store : dsd_qt::backup::backup_store_names()) {
+        const QString what = "unreadable " + store;
+        const QString path = dsd_qt::json_store_path(store);
+        const QByteArray good = read_file(path);
+        expect(what + ": damaged", write_file(path, "[{\"torn"));
+        expect_refused(what, {store});
+        // The snapshot only read it: once it reads again, a save replaces it in place and keeps nothing aside.
+        expect(what + ": readable again", write_file(path, good));
+        expect(what + ": saved", dsd_qt::json_store_save_array(store, dsd_qt::json_store_read(store).array));
+        expect(what + ": the snapshot did not mark it", !QFileInfo::exists(path + ".unreadable-1"));
+        expect(what + ": unchanged", read_file(path) == good);
+        expect_backed_up(what);
+    }
+
+    // A missing store is an empty one, as before: nothing in it could be lost.
+    const QString ranges = dsd_qt::json_store_path(QLatin1String(dsd_qt::backup::kSignalSearchRangesStore));
+    const QByteArray rangesGood = read_file(ranges);
+    expect("missing ranges: removed", QFile::remove(ranges));
+    expect("missing ranges: backed up empty",
+           expect_backed_up("missing ranges").stores.value("signal-search-ranges.json").isEmpty());
+    expect("missing ranges: restored", write_file(ranges, rangesGood));
+
+    // Kept aside earlier in this run: the clean file now at the path is what the backup carries.
+    const QString lists = dsd_qt::json_store_path(QLatin1String(dsd_qt::backup::kScanListsStore));
+    const QByteArray listsGood = read_file(lists);
+    const QJsonArray listsRows = dsd_qt::json_store_read(QLatin1String(dsd_qt::backup::kScanListsStore)).array;
+    expect("kept lists: damaged", write_file(lists, "[{\"torn"));
+    expect("kept lists: loaded empty",
+           dsd_qt::json_store_load_array(QLatin1String(dsd_qt::backup::kScanListsStore)).isEmpty());
+    expect_refused("kept lists, still in place", {QLatin1String(dsd_qt::backup::kScanListsStore)});
+    expect("kept lists: saved",
+           dsd_qt::json_store_save_array(QLatin1String(dsd_qt::backup::kScanListsStore), listsRows));
+    expect("kept lists: kept aside", read_file(lists + ".unreadable-1") == "[{\"torn");
+    const auto parsed = expect_backed_up("kept lists");
+    expect("kept lists: the backup carries the saved lists",
+           parsed.stores.value("scan_lists.json").size() == listsRows.size());
+    bool keptCarried = false;
+    for (const auto& file : parsed.files) {
+        keptCarried = keptCarried || file.path.contains(".unreadable-");
+    }
+    expect("kept lists: the kept file is not carried", !keptCarried);
+    expect("kept lists: kept file removed", QFile::remove(lists + ".unreadable-1"));
+    expect("kept lists: bytes back", write_file(lists, listsGood));
+}
+
+/* The permanent avoid list is backed up from memory, so its file's load state decides: refused while the file is
+ * still in place unread, backed up once it is kept aside (the list in memory is then what the store saves). */
+void
+test_unreadable_avoids_refuse_export() {
+    const QString base = dsd_qt::json_store_path("signal-search-history.v1");
+    const QString avoids = dsd_qt::json_store_path(QLatin1String(dsd_qt::backup::kAvoidsFileName));
+    const QByteArray good = read_file(avoids);
+    expect("unreadable avoids: the fixture's file", !good.isEmpty());
+    dsd_app_signal_search_store_close();
+    expect("unreadable avoids: damaged", write_file(avoids, "{\"torn"));
+    expect("unreadable avoids: reopened", dsd_app_signal_search_store_open(base.toUtf8().constData()) == 0);
+    dsd_app_search_file_load load = DSD_APP_SEARCH_FILE_OK;
+    dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_AVOIDS, &load, nullptr, nullptr, 0);
+    expect("unreadable avoids: the store reports it", load == DSD_APP_SEARCH_FILE_UNREADABLE);
+    expect_refused("unreadable avoids", {QLatin1String(dsd_qt::backup::kAvoidsFileName)});
+
+    // Every unreadable file in one refusal, stores in manifest order, then the avoid file.
+    const QString systems = dsd_qt::json_store_path(QLatin1String(dsd_qt::backup::kSavedSystemsStore));
+    const QByteArray systemsGood = read_file(systems);
+    expect("unreadable systems and avoids: damaged", write_file(systems, "{"));
+    expect_refused("unreadable systems and avoids",
+                   {QLatin1String(dsd_qt::backup::kSavedSystemsStore), QLatin1String(dsd_qt::backup::kAvoidsFileName)});
+    expect("unreadable systems and avoids: systems back", write_file(systems, systemsGood));
+
+    expect("kept avoids: avoid 156800000",
+           dsd_app_signal_search_permanent_avoid(156800000U) >= DSD_APP_SEARCH_AVOID_ADDED);
+    expect("kept avoids: avoid 162550000",
+           dsd_app_signal_search_permanent_avoid(162550000U) >= DSD_APP_SEARCH_AVOID_ADDED);
+    dsd_app_signal_search_store_flush();
+    dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_AVOIDS, &load, nullptr, nullptr, 0);
+    expect("kept avoids: kept aside",
+           load == DSD_APP_SEARCH_FILE_KEPT && read_file(avoids + ".unreadable-1") == "{\"torn");
+    const auto parsed = expect_backed_up("kept avoids");
+    expect("kept avoids: the backup carries the list in memory",
+           parsed.avoids == QList<quint32>({156800000U, 162550000U}));
+    expect("kept avoids: kept file removed", QFile::remove(avoids + ".unreadable-1"));
+}
+
 void
 test_build_caps_and_cancel() {
     auto snapshot = dsd_qt::backup::backup_take_snapshot();
@@ -1923,6 +2035,8 @@ main(int argc, char** argv) {
         test_export_folded_bundle_paths(fixture);
         test_build_caps_and_cancel();
         test_sanitize();
+        test_unreadable_store_refuses_export();
+        test_unreadable_avoids_refuse_export();
     }
     dsd_app_signal_search_store_close();
 

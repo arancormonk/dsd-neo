@@ -683,6 +683,37 @@ function notIncludedText(items) {
     return text
 }
 
+// Issue #828: the name the app gives each file a backup reads (the five stores,
+// the Signal search avoid file and the settings file), for messages that name a
+// file that couldn't be read. A name not listed is shown as it is.
+function storeLabel(fileName) {
+    switch (String(fileName || "")) {
+    case "saved_systems.json":
+        return qsTr("Saved systems")
+    case "scan_lists.json":
+        return qsTr("Scan lists")
+    case "imported_files.json":
+        return qsTr("Imported files")
+    case "decryption_profiles.json":
+        return qsTr("Decryption profiles")
+    case "signal-search-ranges.json":
+        return qsTr("Signal search ranges")
+    case "signal-search-history.v1.avoids.json":
+        return qsTr("Signal search avoids")
+    case "dsd-neo-app.ini":
+        return qsTr("Settings")
+    }
+    return String(fileName || "")
+}
+
+// "A", "A and B", "A, B and C": names run into one sentence.
+function andList(names) {
+    var list = names || []
+    if (list.length < 2)
+        return list.length ? String(list[0]) : ""
+    return qsTr("%1 and %2").arg(list.slice(0, -1).join(", ")).arg(list[list.length - 1])
+}
+
 // Issue #580: a waiting restore whose apply has started (backup.restoreCancellable
 // false), which only the next start can finish or undo. Settings, the Home card
 // and a refused cancel all say it in these words.

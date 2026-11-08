@@ -664,7 +664,10 @@ Item {
                 {tag: "Io", field: "", text: "Couldn't create the backup. Free some storage and try again."},
                 {tag: "TooLarge", field: "", text: "Your setup is too large for one backup."},
                 {tag: "Busy", field: "", text: "Another backup task is still running. Try again in a moment."},
-                {tag: "SourceChanged", field: "", text: "Your setup changed while the backup was being made. Try again."}
+                {tag: "SourceChanged", field: "", text: "Your setup changed while the backup was being made. Try again."},
+                // Issue #828: every file that couldn't be read, named in one message.
+                {tag: "Unreadable", field: "", unreadable: ["saved_systems.json"], text: "No backup was made. Saved systems couldn't be read, so a backup can't include them. Backups made after the unreadable file is kept aside hold only what DSD-neo shows now, not that file."},
+                {tag: "Unreadable, three", error: "Unreadable", field: "", unreadable: ["signal-search-ranges.json", "signal-search-history.v1.avoids.json", "dsd-neo-app.ini"], text: "No backup was made. Signal search ranges, Signal search avoids and Settings couldn't be read, so a backup can't include them. Backups made after the unreadable files are kept aside hold only what DSD-neo shows now, not those files."}
             ];
         }
 
@@ -674,7 +677,7 @@ Item {
             wait(0);
             part("backupPassphraseSheet").forceActiveFocus();
             verify(part("backupPassphraseSheet").activeFocus);
-            verify(testContext.emitBackup("exportPrepared", {ok: false, error: data.tag, summary: {}, notIncluded: []}));
+            verify(testContext.emitBackup("exportPrepared", {ok: false, error: data.error || data.tag, summary: {}, notIncluded: [], unreadable: data.unreadable || []}));
             var sheet = part("backupPassphraseSheet");
             verify(sheet.visible);
             compare(flow.step, "exportPassphrase");

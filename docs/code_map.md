@@ -12840,7 +12840,17 @@ Qt Quick frontend (`src/ui/qt`):
     and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/` (an owned bundle
     whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check. A
     carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with
-    `BackupError::SourceChanged`, not `Io`.
+    `BackupError::SourceChanged`, not `Io`. An export never carries a file it could not read as an empty list, which
+    its restore would write over the file (issue #828): `backup_take_snapshot()` reads each store with
+    `json_store_read()` (never `json_store_load_array()`, whose mark would make the next save move a good file aside
+    after a passing failure) and lists in `Snapshot::unreadable`, by file name, each store found Unreadable now, the
+    avoid file while the signal-search store reports it `DSD_APP_SEARCH_FILE_UNREADABLE`, and AppPrefs' file while
+    `settings_recovery_scratch(settings_recovery_prefs_file_name())`. A store kept aside earlier in the run is read
+    from its clean file, and a `KEPT` avoid file does not refuse: the in-memory list is then what the store saves. A
+    non-empty list fails the build with `BackupError::Unreadable` before anything is read; the model hands the names to
+    QML as the result's `unreadable`, and `BackupFlow.qml` names them in one message through `Util.storeLabel()`. Call
+    history's settings are not in a backup. Kept `<name>.unreadable-N` files are never carried, and a restore never
+    touches them.
     `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB
     a file, 4096 rows a store, 4 MiB manifest), a sha256 per file, archive paths under `imports/` with case- and
     NFC-folded duplicates refused, store shapes and identities, settings filtered to `AppPrefs::portableKeys()`; it

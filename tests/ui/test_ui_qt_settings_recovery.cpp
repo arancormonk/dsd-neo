@@ -453,10 +453,12 @@ test_call_history_settings() {
 }
 #endif
 
-/* A committed restore whose settings hold decode/extraArgs = -R, the settings files removed after it. */
+/* A committed restore whose settings hold decode/extraArgs = -R, the settings files removed after it. The backup is
+   made on a clean start: settings an earlier case left on scratch would refuse it (issue #828). */
 void
 commit_restore(const QString& what) {
     reset();
+    dsd_qt::recover_settings_files();
     expect(what + ": backup settings", AppPrefs::replacePortable({{"decode/extraArgs", "-R"}}));
     const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
     expect(what + ": backup builds", built.error == dsd_qt::backup::BackupError::None);
@@ -491,6 +493,43 @@ expect_restore_applies(const QString& what) {
                                                   && read_file(g_paths.prefs).contains("-R"));
     expect(what + ": nothing pending", !dsd_qt::backup::pending_exists());
     (void)dsd_qt::backup::clear_result_file();
+}
+
+/* Issue #828: settings on their scratch copy cannot go into a backup: refused by name until a later start keeps the
+   file aside, then backed up as the clean file holds them. Call history's settings are never in a backup. */
+void
+test_backup_refused_on_scratch_settings() {
+    const QStringList prefsName{dsd_qt::settings_recovery_prefs_file_name()};
+    reset();
+    expect("backup on scratch: written", write_file(g_paths.prefs, kUnreadSection));
+    take_every_kept_name("backup on scratch", g_paths.prefs);
+    expect("backup on scratch: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+    const auto refused = dsd_qt::backup::backup_take_snapshot();
+    expect("backup on scratch: the settings file is named", refused.unreadable == prefsName);
+    const auto notBuilt = dsd_qt::backup::backup_build_archive(refused, nullptr);
+    expect("backup on scratch: refused",
+           notBuilt.error == dsd_qt::backup::BackupError::Unreadable && notBuilt.archive.isEmpty());
+
+    relaunch();
+    QFile::remove(kept(g_paths.prefs, 3));
+    expect("backup on scratch: a later start is Kept", recover_prefs() == SettingsRecovery::Kept);
+    const auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    expect("backup once kept: nothing unreadable", snapshot.unreadable.isEmpty());
+    const auto built = dsd_qt::backup::backup_build_archive(snapshot, nullptr);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
+    expect("backup once kept: carries what parsed",
+           built.error == dsd_qt::backup::BackupError::None && parsed.prefs.value("decode/extraArgs") == "-Z");
+
+#ifdef HISTORY_SETTINGS_ARE_INI
+    reset();
+    expect("backup beside history scratch: written", write_file(g_paths.history, "[zz]\nno equals here\n"));
+    take_every_kept_name("backup beside history scratch", g_paths.history);
+    relaunch();
+    dsd_qt::recover_settings_files();
+    expect("backup beside history scratch: history on scratch",
+           dsd_qt::settings_recovery_scratch(QFileInfo(g_paths.history).fileName()));
+    expect("backup beside history scratch: not refused", dsd_qt::backup::backup_take_snapshot().unreadable.isEmpty());
+#endif
 }
 
 /* r3#1: a restore that applied onto the scratch copy would lose its settings at the next start. */
@@ -619,6 +658,7 @@ main(int argc, char** argv) {
     test_call_history_settings();
 #endif
     test_restore_waits_for_settings();
+    test_backup_refused_on_scratch_settings();
 
     reset();
     dsd_app_signal_search_store_close();

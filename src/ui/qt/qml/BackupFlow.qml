@@ -163,10 +163,27 @@ Item {
         return qsTr("Use at least %1 characters.").arg(backup.minPassphraseLength);
     }
 
+    // Issue #828: an export that found files it carries unreadable (the model's
+    // `unreadable` file names) names each one. A backup would hold it empty, so
+    // none is made; one made once the file is kept aside holds what DSD-neo
+    // shows, never the kept file.
+    function unreadableText(files) {
+        var labels = (files || []).map(function (file) {
+            return Util.storeLabel(file);
+        });
+        if (labels.length === 1)
+            return qsTr("No backup was made. %1 couldn't be read, so a backup can't include them. Backups made after the unreadable file is kept aside hold only what DSD-neo shows now, not that file.").arg(labels[0]);
+        var names = labels.length ? Util.andList(labels) : qsTr("Some files");
+        return qsTr("No backup was made. %1 couldn't be read, so a backup can't include them. Backups made after the unreadable files are kept aside hold only what DSD-neo shows now, not those files.").arg(names);
+    }
+
     // One message per model error name. `action` picks the wording where the
     // same name means different things: prepare, save, inspect or commit.
-    function errorText(name, action) {
+    // `unreadable` is the result's list of files that couldn't be read.
+    function errorText(name, action, unreadable) {
         switch (name) {
+        case "Unreadable":
+            return unreadableText(unreadable);
         case "WrongPassphrase":
             return qsTr("Wrong passphrase, or the file is damaged.");
         case "NotBackup":
@@ -256,7 +273,7 @@ Item {
                 passphraseField.error = errorText(result.error, "prepare");
                 announce(passphraseField.error);
             } else {
-                exportError.text = errorText(result.error, "prepare");
+                exportError.text = errorText(result.error, "prepare", result.unreadable);
                 announce(exportError.text);
             }
             focusField(passphraseField);
