@@ -180,6 +180,12 @@ struct Snapshot {
  */
 Snapshot backup_take_snapshot();
 
+/**
+ * The file names backup_take_snapshot() would list in Snapshot::unreadable now, without reading the rest of the
+ * configuration: the check an export runs before it asks for a passphrase. UI thread only.
+ */
+QStringList backup_unreadable_files();
+
 struct BuildResult {
     BackupError error = BackupError::None;
     /** Set when @c cancel was raised; nothing else is meaningful then. */

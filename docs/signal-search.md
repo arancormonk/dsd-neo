@@ -453,7 +453,10 @@ journal is never moved: if it can't be read, the app says so and leaves it as
 it is. Leftover temporary files from an interrupted save are removed at start.
 Limit: if the app stops between keeping the avoid list and writing the new
 one, the next start shows no permanent avoids; the kept file still holds them.
-Kept files are never part of a backup or touched by a restore.
+Kept files are never part of a backup or touched by a restore. While the
+permanent avoid list can't be read, Export backup stops and says so; once a
+change to the permanent avoids has saved the list again, a backup holds only
+the avoids the app shows.
 
 A recording belongs to a detection through the call recording journal: each
 recording published from audio received on a detection's visit names it there

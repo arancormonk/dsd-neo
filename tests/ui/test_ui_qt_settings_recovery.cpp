@@ -504,6 +504,7 @@ test_backup_refused_on_scratch_settings() {
     expect("backup on scratch: written", write_file(g_paths.prefs, kUnreadSection));
     take_every_kept_name("backup on scratch", g_paths.prefs);
     expect("backup on scratch: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+    expect("backup on scratch: refused before the passphrase", dsd_qt::backup::backup_unreadable_files() == prefsName);
     const auto refused = dsd_qt::backup::backup_take_snapshot();
     expect("backup on scratch: the settings file is named", refused.unreadable == prefsName);
     const auto notBuilt = dsd_qt::backup::backup_build_archive(refused, nullptr);
@@ -528,7 +529,8 @@ test_backup_refused_on_scratch_settings() {
     dsd_qt::recover_settings_files();
     expect("backup beside history scratch: history on scratch",
            dsd_qt::settings_recovery_scratch(QFileInfo(g_paths.history).fileName()));
-    expect("backup beside history scratch: not refused", dsd_qt::backup::backup_take_snapshot().unreadable.isEmpty());
+    expect("backup beside history scratch: not refused", dsd_qt::backup::backup_take_snapshot().unreadable.isEmpty()
+                                                             && dsd_qt::backup::backup_unreadable_files().isEmpty());
 #endif
 }
 

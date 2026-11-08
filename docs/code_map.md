@@ -12840,15 +12840,19 @@ Qt Quick frontend (`src/ui/qt`):
     and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/` (an owned bundle
     whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check. A
     carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with
-    `BackupError::SourceChanged`, not `Io`. An export never carries a file it could not read as an empty list, which
-    its restore would write over the file (issue #828): `backup_take_snapshot()` reads each store with
-    `json_store_read()` (never `json_store_load_array()`, whose mark would make the next save move a good file aside
-    after a passing failure) and lists in `Snapshot::unreadable`, by file name, each store found Unreadable now, the
-    avoid file while the signal-search store reports it `DSD_APP_SEARCH_FILE_UNREADABLE`, and AppPrefs' file while
-    `settings_recovery_scratch(settings_recovery_prefs_file_name())`. A store kept aside earlier in the run is read
-    from its clean file, and a `KEPT` avoid file does not refuse: the in-memory list is then what the store saves. A
+    `BackupError::SourceChanged`, not `Io`. An export never carries a file it could not read as an empty list, which its
+    restore would write over the file (issue #828): `backup_take_snapshot()` reads each store with `json_store_read()`
+    (never `json_store_load_array()`, whose mark would make the next save move a good file aside after a passing
+    failure) and lists in `Snapshot::unreadable`, by file name, each store found Unreadable now, the avoid file while
+    the signal-search store reports it `DSD_APP_SEARCH_FILE_UNREADABLE`, and AppPrefs' file while
+    `settings_recovery_scratch(settings_recovery_prefs_file_name())`. A store kept aside earlier in the run is read from
+    its clean file, and a `KEPT` avoid file does not refuse: the in-memory list is then what the store saves. A
     non-empty list fails the build with `BackupError::Unreadable` before anything is read; the model hands the names to
-    QML as the result's `unreadable`, and `BackupFlow.qml` names them in one message through `Util.storeLabel()`. Call
+    QML as the result's `unreadable` (a QStringList). `backup_unreadable_files()` runs the same checks without the rest
+    of the snapshot; the model's `checkExport()` answers with it in exportPrepared's map shape, so `BackupFlow.qml`
+    refuses at Export backup before it asks for a passphrase; the export's own check stays for a file that turns
+    unreadable in between, and either refusal ends the flow with one message on the Settings card that names each file
+    through `Util.storeLabel()` and gives the next step (save a change to that list, or restart for the settings). Call
     history's settings are not in a backup. Kept `<name>.unreadable-N` files are never carried, and a restore never
     touches them.
     `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB

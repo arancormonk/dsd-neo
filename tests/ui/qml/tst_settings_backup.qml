@@ -664,10 +664,7 @@ Item {
                 {tag: "Io", field: "", text: "Couldn't create the backup. Free some storage and try again."},
                 {tag: "TooLarge", field: "", text: "Your setup is too large for one backup."},
                 {tag: "Busy", field: "", text: "Another backup task is still running. Try again in a moment."},
-                {tag: "SourceChanged", field: "", text: "Your setup changed while the backup was being made. Try again."},
-                // Issue #828: every file that couldn't be read, named in one message.
-                {tag: "Unreadable", field: "", unreadable: ["saved_systems.json"], text: "No backup was made. Saved systems couldn't be read, so a backup can't include them. Backups made after the unreadable file is kept aside hold only what DSD-neo shows now, not that file."},
-                {tag: "Unreadable, three", error: "Unreadable", field: "", unreadable: ["signal-search-ranges.json", "signal-search-history.v1.avoids.json", "dsd-neo-app.ini"], text: "No backup was made. Signal search ranges, Signal search avoids and Settings couldn't be read, so a backup can't include them. Backups made after the unreadable files are kept aside hold only what DSD-neo shows now, not those files."}
+                {tag: "SourceChanged", field: "", text: "Your setup changed while the backup was being made. Try again."}
             ];
         }
 
@@ -677,7 +674,7 @@ Item {
             wait(0);
             part("backupPassphraseSheet").forceActiveFocus();
             verify(part("backupPassphraseSheet").activeFocus);
-            verify(testContext.emitBackup("exportPrepared", {ok: false, error: data.error || data.tag, summary: {}, notIncluded: [], unreadable: data.unreadable || []}));
+            verify(testContext.emitBackup("exportPrepared", {ok: false, error: data.tag, summary: {}, notIncluded: []}));
             var sheet = part("backupPassphraseSheet");
             verify(sheet.visible);
             compare(flow.step, "exportPassphrase");
@@ -693,6 +690,47 @@ Item {
             verify(backup.flowActive);
             // Back in the field, ready to change the passphrase or try again.
             tryCompare(part("backupPassphraseField").input, "activeFocus", true);
+        }
+
+        // Issue #828: a backup that can't be made is refused at Export backup,
+        // before any passphrase, naming each file with what to do next.
+        function test_export_refused_before_the_passphrase_data() {
+            var later = "That backup holds only what DSD-neo shows now.";
+            return [
+                {tag: "one list", files: ["saved_systems.json"], text: "Saved systems can't be read, so no backup was made. Save a change to Saved systems, then back up again. " + later},
+                {tag: "settings", files: ["dsd-neo-app.ini"], text: "Settings can't be read, so no backup was made. Restart DSD-neo, then back up again. " + later},
+                {tag: "three lists", files: ["scan_lists.json", "signal-search-ranges.json", "signal-search-history.v1.avoids.json"], text: "Scan lists, Signal search ranges and Signal search avoids can't be read, so no backup was made. Save a change to each of Scan lists, Signal search ranges and Signal search avoids, then back up again. " + later},
+                {tag: "a list and settings", files: ["imported_files.json", "dsd-neo-app.ini"], text: "Imported files and Settings can't be read, so no backup was made. Save a change to Imported files, restart DSD-neo, then back up again. " + later},
+                {tag: "two lists and settings", files: ["decryption_profiles.json", "signal-search-history.v1.avoids.json", "dsd-neo-app.ini"], text: "Decryption profiles, Signal search avoids and Settings can't be read, so no backup was made. Save a change to each of Decryption profiles and Signal search avoids, restart DSD-neo, then back up again. " + later}
+            ];
+        }
+
+        function test_export_refused_before_the_passphrase(data) {
+            // checkExport() answers them as a C++ QStringList, as the model does.
+            verify(testContext.setBackup("unreadableFiles", data.files));
+            findChild(settings, "settingsBackupExportRow").activate();
+            wait(0);
+            verify(!part("backupPassphraseSheet").visible);
+            compare(flow.step, "");
+            compare(calls("checkExport").length, 1);
+            compare(calls("setFlowActive").length, 0);
+            compare(calls("prepareExport").length, 0);
+            compare(notice().text, data.text);
+            compare(notice().color, Ui.Theme.alert);
+        }
+
+        // A file that becomes unreadable after that check is still refused when
+        // the export reads it; the flow ends there, since retyping can't help.
+        function test_export_unreadable_at_export_lands_in_the_card() {
+            encrypt();
+            verify(testContext.emitBackup("exportPrepared", {ok: false, error: "Unreadable", summary: {}, notIncluded: [], unreadable: ["scan_lists.json"]}));
+            tryCompare(part("backupPassphraseSheet"), "visible", false);
+            compare(flow.step, "");
+            compare(lastFlowActive(), false);
+            verify(!part("backupSavePicker").visible);
+            compare(part("backupPassphraseField").text, "");
+            compare(notice().text, "Scan lists can't be read, so no backup was made. Save a change to Scan lists, then back up again. That backup holds only what DSD-neo shows now.");
+            compare(notice().color, Ui.Theme.alert);
         }
 
         function test_export_save_error_lands_in_the_card() {

@@ -35,6 +35,7 @@
 #include <QList>
 #include <QMap>
 #include <QMetaMethod>
+#include <QMetaType>
 #include <QObject>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -1235,26 +1236,42 @@ test_short_real_passphrase(FakeHost& host, const QString& scratch) {
     expect("clean up", model.discardRestore().value("ok").toBool());
 }
 
-/* Issue #828: a store that cannot be read refuses the export by name, and nothing is sealed or left in the cache. */
+/* Issue #828: a store that cannot be read refuses the export by name: at the check the screen runs before it asks for
+ * a passphrase, and again when the export reads the store, for a file that became unreadable in between. Nothing is
+ * sealed or left in the cache. */
 void
 test_unreadable_store_refuses(FakeHost& host) {
     const QString lists = at("scan_lists.json");
     const QByteArray good = read_file(lists);
-    expect("unreadable lists: damaged", !good.isEmpty() && write_file(lists, "[{\"torn"));
     BackupModel model(&host, {});
     model.setKdfParams(fast_kdf());
     Results results(model);
+    expect("unreadable lists: the check passes while it reads", model.checkExport().value("ok").toBool());
+    expect("unreadable lists: a passing check is no card result", model.lastResult().isEmpty());
+    expect("unreadable lists: damaged", !good.isEmpty() && write_file(lists, "[{\"torn"));
+    const QVariantMap checked = model.checkExport();
+    expect("unreadable lists: the check names it",
+           !checked.value("ok").toBool() && checked.value("error") == "Unreadable"
+               && checked.value("unreadable").userType() == QMetaType::QStringList
+               && checked.value("unreadable").toStringList() == QStringList{"scan_lists.json"});
+    expect("unreadable lists: the card shows the check's refusal",
+           model.lastResult().value("action") == "prepareExport" && model.lastResult().value("error") == "Unreadable");
+    expect("unreadable lists: the check starts nothing", !model.busy() && cache_entries().isEmpty());
+    // Damaged after the screen's check passed: the export reads it again.
     model.prepareExport(kPass);
     expect("unreadable lists: reported", pump_until([&]() { return results.prepared.size() == 1; }));
     const QVariantMap refused = results.prepared.value(0);
     expect("unreadable lists: refused by name",
            !refused.value("ok").toBool() && refused.value("error") == "Unreadable"
                && refused.value("unreadable").toStringList() == QStringList{"scan_lists.json"});
+    expect("unreadable lists: the names are a string list",
+           refused.value("unreadable").userType() == QMetaType::QStringList);
     expect("unreadable lists: no summary", refused.value("summary").toMap().isEmpty());
     expect("unreadable lists: nothing sealed", cache_entries().isEmpty() && !model.busy());
     expect("unreadable lists: the card shows it",
            model.lastResult().value("action") == "prepareExport" && model.lastResult().value("error") == "Unreadable");
     expect("unreadable lists: readable again", write_file(lists, good));
+    expect("unreadable lists: the check passes again", model.checkExport().value("ok").toBool());
     model.prepareExport(kPass);
     expect("unreadable lists: then exported",
            pump_until([&]() { return results.prepared.size() == 2; }) && results.prepared.value(1).value("ok").toBool()

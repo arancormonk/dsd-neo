@@ -37,6 +37,12 @@ Item {
     function beginExport() {
         if (active)
             return;
+        // Issue #828: no passphrase is asked for a backup that can't be made.
+        var check = backup.checkExport();
+        if (!check.ok) {
+            setNotice(errorText(check.error, "prepare", check.unreadable), true);
+            return;
+        }
         start("exportPassphrase");
         passphraseField.text = "";
         confirmField.text = "";
@@ -163,18 +169,32 @@ Item {
         return qsTr("Use at least %1 characters.").arg(backup.minPassphraseLength);
     }
 
-    // Issue #828: an export that found files it carries unreadable (the model's
-    // `unreadable` file names) names each one. A backup would hold it empty, so
-    // none is made; one made once the file is kept aside holds what DSD-neo
-    // shows, never the kept file.
+    // Issue #828: files a backup carries that can't be read now (the model's
+    // file names), named in one message with what to do next. A list's next
+    // saved change writes it again, and the settings are tried again at the
+    // next start; the backup after that holds what DSD-neo has then, never the
+    // unreadable data.
     function unreadableText(files) {
-        var labels = (files || []).map(function (file) {
-            return Util.storeLabel(file);
-        });
-        if (labels.length === 1)
-            return qsTr("No backup was made. %1 couldn't be read, so a backup can't include them. Backups made after the unreadable file is kept aside hold only what DSD-neo shows now, not that file.").arg(labels[0]);
-        var names = labels.length ? Util.andList(labels) : qsTr("Some files");
-        return qsTr("No backup was made. %1 couldn't be read, so a backup can't include them. Backups made after the unreadable files are kept aside hold only what DSD-neo shows now, not those files.").arg(names);
+        var names = [];
+        var lists = [];
+        var settings = false;
+        for (var i = 0; i < (files || []).length; ++i) {
+            var file = String(files[i]);
+            names.push(Util.storeLabel(file));
+            if (file === "dsd-neo-app.ini")
+                settings = true;
+            else
+                lists.push(Util.storeLabel(file));
+        }
+        var text = qsTr("%1 can't be read, so no backup was made.").arg(names.length ? Util.andList(names) : qsTr("Some files"));
+        var step = "";
+        if (lists.length === 1)
+            step = settings ? qsTr("Save a change to %1, restart DSD-neo, then back up again.").arg(lists[0]) : qsTr("Save a change to %1, then back up again.").arg(lists[0]);
+        else if (lists.length > 1)
+            step = settings ? qsTr("Save a change to each of %1, restart DSD-neo, then back up again.").arg(Util.andList(lists)) : qsTr("Save a change to each of %1, then back up again.").arg(Util.andList(lists));
+        else if (settings)
+            step = qsTr("Restart DSD-neo, then back up again.");
+        return step.length ? text + " " + step + " " + qsTr("That backup holds only what DSD-neo shows now.") : text;
     }
 
     // One message per model error name. `action` picks the wording where the
@@ -267,13 +287,19 @@ Item {
     function exportPrepared(result) {
         if (step !== "encrypting")
             return;
+        if (!result.ok && result.error === "Unreadable") {
+            // A file became unreadable after the check at Export backup:
+            // retyping can't help, so the flow ends with the reason on the card.
+            finish(errorText(result.error, "prepare", result.unreadable), true);
+            return;
+        }
         if (!result.ok) {
             step = "exportPassphrase";
             if (result.error === "PassphraseTooShort") {
                 passphraseField.error = errorText(result.error, "prepare");
                 announce(passphraseField.error);
             } else {
-                exportError.text = errorText(result.error, "prepare", result.unreadable);
+                exportError.text = errorText(result.error, "prepare");
                 announce(exportError.text);
             }
             focusField(passphraseField);

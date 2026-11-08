@@ -444,6 +444,17 @@ BackupModel::prepareExport(const QString& passphrase) {
     });
 }
 
+QVariantMap
+BackupModel::checkExport() {
+    const QStringList unreadable = backup::backup_unreadable_files();
+    const QVariantMap result =
+        export_map(unreadable.isEmpty() ? QString() : error_name(BackupError::Unreadable), QVariantMap(), unreadable);
+    if (!unreadable.isEmpty()) {
+        setLastResult(QStringLiteral("prepareExport"), result);
+    }
+    return result;
+}
+
 void
 BackupModel::saveExport(const QString& reference) {
     QString refusal;

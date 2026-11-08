@@ -153,6 +153,14 @@ class BackupModel : public QObject {
      */
     Q_INVOKABLE void prepareExport(const QString& passphrase);
 
+    /**
+     * Whether an export can be made now, checked before the screen asks for a passphrase (issue #828). Answers
+     * exportPrepared's map shape at once: ok, or "Unreadable" with `unreadable` the file names
+     * backup_unreadable_files() lists, recorded as the last prepareExport result. prepareExport() checks again, for a
+     * file that becomes unreadable in between.
+     */
+    Q_INVOKABLE QVariantMap checkExport();
+
     /** Copy the prepared export into the document @p reference names, then remove it. Reports exportFinished. */
     Q_INVOKABLE void saveExport(const QString& reference);
 

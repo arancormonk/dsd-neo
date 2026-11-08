@@ -1178,6 +1178,8 @@ test_export_folded_bundle_paths(const Fixture& f) {
  * the backup as an empty list that its restore would write over the store. */
 void
 expect_refused(const QString& what, const QStringList& unreadable) {
+    expect(what + ": the check before the passphrase names it",
+           dsd_qt::backup::backup_unreadable_files() == unreadable);
     const auto snapshot = dsd_qt::backup::backup_take_snapshot();
     expect(what + ": the snapshot names what it could not read", snapshot.unreadable == unreadable);
     const auto built = dsd_qt::backup::backup_build_archive(snapshot, nullptr);
@@ -1189,6 +1191,7 @@ expect_refused(const QString& what, const QStringList& unreadable) {
 /** The parsed backup of the current configuration; a failure is reported under @p what. */
 dsd_qt::backup::ParseResult
 expect_backed_up(const QString& what) {
+    expect(what + ": the check before the passphrase passes", dsd_qt::backup::backup_unreadable_files().isEmpty());
     const auto snapshot = dsd_qt::backup::backup_take_snapshot();
     expect(what + ": nothing unreadable", snapshot.unreadable.isEmpty());
     const auto built = dsd_qt::backup::backup_build_archive(snapshot, nullptr);

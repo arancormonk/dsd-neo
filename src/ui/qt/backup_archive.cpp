@@ -128,6 +128,36 @@ summary_to_map(const Summary& summary) {
             {QStringLiteral("app"), summary.app}};
 }
 
+namespace {
+
+/* The files a backup carries that are not JSON stores, appended to @p unreadable when they cannot be read now. */
+void
+append_unreadable_native(QStringList* unreadable) {
+    // Only an avoid file still in place unread: once kept aside, the in-memory list is what the store saves.
+    dsd_app_search_file_load avoidsLoad = DSD_APP_SEARCH_FILE_OK;
+    if (dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_AVOIDS, &avoidsLoad, nullptr, nullptr, 0) == 0
+        && avoidsLoad == DSD_APP_SEARCH_FILE_UNREADABLE) {
+        unreadable->append(QLatin1String(kAvoidsFileName));
+    }
+    if (settings_recovery_scratch(settings_recovery_prefs_file_name())) {
+        unreadable->append(settings_recovery_prefs_file_name());
+    }
+}
+
+} // namespace
+
+QStringList
+backup_unreadable_files() {
+    QStringList unreadable;
+    for (const QString& store : backup_store_names()) {
+        if (json_store_read(store).status == JsonStoreLoad::Unreadable) {
+            unreadable.append(store);
+        }
+    }
+    append_unreadable_native(&unreadable);
+    return unreadable;
+}
+
 Snapshot
 backup_take_snapshot() {
     Snapshot snapshot;
@@ -143,15 +173,7 @@ backup_take_snapshot() {
         }
         snapshot.stores.insert(store, read.array);
     }
-    // Only an avoid file still in place unread: once kept aside, the in-memory list is what the store saves.
-    dsd_app_search_file_load avoidsLoad = DSD_APP_SEARCH_FILE_OK;
-    if (dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_AVOIDS, &avoidsLoad, nullptr, nullptr, 0) == 0
-        && avoidsLoad == DSD_APP_SEARCH_FILE_UNREADABLE) {
-        snapshot.unreadable.append(QLatin1String(kAvoidsFileName));
-    }
-    if (settings_recovery_scratch(settings_recovery_prefs_file_name())) {
-        snapshot.unreadable.append(settings_recovery_prefs_file_name());
-    }
+    append_unreadable_native(&snapshot.unreadable);
     std::vector<uint32_t> avoids(DSD_SEARCH_MAX_AVOIDS);
     const size_t count = dsd_app_signal_search_avoids_get(avoids.data(), avoids.size());
     for (size_t i = 0; i < count; ++i) {
