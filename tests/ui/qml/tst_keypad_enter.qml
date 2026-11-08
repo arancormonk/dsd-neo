@@ -93,8 +93,10 @@ Item {
 
         function cleanup() {
             Ui.Navigation.removeModal(blocker);
-            for (var control of [segmented, nav, dashed, play, callRow, disclosure, plexSwitch, toggleRow])
+            for (var control of [segmented, nav, dashed, play, callRow, disclosure, plexSwitch, toggleRow]) {
                 control.enabled = true;
+                control.visible = true;
+            }
             disclosure.tapEnabled = true;
             segmented.currentIndex = 0;
             nav.currentIndex = 0;
@@ -232,6 +234,42 @@ Item {
             disclosure.tapEnabled = true;
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
             compare(spy.count, 1);
+        }
+
+        // A hidden Add or Play (a Listen tab not shown) leaves the tree, and a
+        // late press reaching it (an accessibility press from a node Android
+        // still holds, or a key while it keeps the focus) does nothing.
+        function test_a_hidden_add_or_play_ignores_every_press_data() {
+            return [
+                {
+                    tag: "DashedActionButton",
+                    control: dashed,
+                    setsFocusable: true
+                },
+                {
+                    tag: "PlayCircle",
+                    control: play
+                }
+            ];
+        }
+        function test_a_hidden_add_or_play_ignores_every_press(data) {
+            var control = data.control;
+            spy.target = control;
+            spy.signalName = "clicked";
+            control.forceActiveFocus();
+            control.visible = false;
+            verify(control.Accessible.ignored, data.tag + " leaves the tree while hidden");
+            if (data.setsFocusable)
+                verify(!control.Accessible.focusable, data.tag + " is no swipe stop while hidden");
+            control.Accessible.pressAction();
+            keyClick(Qt.Key_Enter, Qt.KeypadModifier);
+            keyClick(Qt.Key_Return);
+            keyClick(Qt.Key_Space);
+            compare(spy.count, 0, data.tag + ": a hidden control ignores every press");
+            control.visible = true;
+            verify(!control.Accessible.ignored);
+            control.Accessible.pressAction();
+            compare(spy.count, 1, data.tag + " acts again once shown");
         }
 
         function load(file) {

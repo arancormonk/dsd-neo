@@ -19,8 +19,10 @@ Item {
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
+    // Issue #646: a late press on a hidden Play (a Listen tab not shown), from
+    // a node Android still holds, does nothing.
     function activate() {
-        if (enabled && Navigation.allows(control))
+        if (enabled && Navigation.allows(control) && visible)
             clicked();
     }
     Keys.onSpacePressed: activate()
