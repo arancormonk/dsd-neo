@@ -948,11 +948,13 @@ Item {
                         Item {
                             id: spectrumStepDownAction
                             objectName: "spectrumStepDown"
-                            activeFocusOnTab: Navigation.allows(spectrumStepDownAction) && spectrum.hasData
+                            // Held while it has the focus (see OutlineButton).
+                            activeFocusOnTab: (Navigation.allows(spectrumStepDownAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Tune down")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -982,13 +984,15 @@ Item {
                         Item {
                             id: spectrumSweepToggleAction
                             objectName: "spectrumSweepToggle"
-                            activeFocusOnTab: Navigation.allows(spectrumSweepToggleAction) && spectrum.hasData
+                            // Held while it has the focus (see OutlineButton).
+                            activeFocusOnTab: (Navigation.allows(spectrumSweepToggleAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Start or stop frequency sweep")
                             // The step it sweeps by, which its label shows.
                             Accessible.description: sweepLabel.text
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -1063,11 +1067,13 @@ Item {
                         Item {
                             id: spectrumStepUpAction
                             objectName: "spectrumStepUp"
-                            activeFocusOnTab: Navigation.allows(spectrumStepUpAction) && spectrum.hasData
+                            // Held while it has the focus (see OutlineButton).
+                            activeFocusOnTab: (Navigation.allows(spectrumStepUpAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Tune up")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -1113,11 +1119,13 @@ Item {
                         Item {
                             id: spectrumSignalDownAction
                             objectName: "spectrumSignalDown"
-                            activeFocusOnTab: Navigation.allows(spectrumSignalDownAction) && spectrum.hasData
+                            // Held while it has the focus (see OutlineButton).
+                            activeFocusOnTab: (Navigation.allows(spectrumSignalDownAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Previous signal")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -1159,11 +1167,13 @@ Item {
                         Item {
                             id: spectrumSignalUpAction
                             objectName: "spectrumSignalUp"
-                            activeFocusOnTab: Navigation.allows(spectrumSignalUpAction) && spectrum.hasData
+                            // Held while it has the focus (see OutlineButton).
+                            activeFocusOnTab: (Navigation.allows(spectrumSignalUpAction) && spectrum.hasData) || activeFocus
                             Accessible.role: Accessible.Button
                             Accessible.name: qsTr("Next signal")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {

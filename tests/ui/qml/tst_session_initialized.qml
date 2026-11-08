@@ -12,14 +12,15 @@ Item {
         target: savedSystems
         signalName: "dataChanged"
     }
+    // Pointed at prefs by init(), once prefs is the real AppPrefs. Bound to
+    // prefs, they followed it to the fixture's plain map between cases, which
+    // has no such signals ("Signal '…' not found").
     SignalSpy {
         id: kindWrites
-        target: prefs
         signalName: "lastStartedKindChanged"
     }
     SignalSpy {
         id: uidWrites
-        target: prefs
         signalName: "lastStartedUidChanged"
     }
     TestCase {
@@ -35,6 +36,8 @@ Item {
         }
         function init() {
             testContext.useLifecycleHost(true, true);
+            kindWrites.target = prefs;
+            uidWrites.target = prefs;
             testContext.setNotificationPermissionNeeded(false);
             prefs.backgroundListening = true;
             prefs.notificationExplained = false;
@@ -66,6 +69,8 @@ Item {
             prefs.notificationExplained = true;
             prefs.backgroundListening = true;
             testContext.setNotificationPermissionNeeded(false);
+            kindWrites.target = null;
+            uidWrites.target = null;
             testContext.useLifecycleHost(false);
             while (savedSystems.count > 0)
                 savedSystems.remove(0);

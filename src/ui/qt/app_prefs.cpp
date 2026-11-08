@@ -112,6 +112,9 @@ enum Key {
     // Issue #801: the shortcuts pinned to Listen, in order (JSON). Portable: they name saved systems and scan lists by
     // UID, which a restore keeps, as it keeps lastStartedUid.
     kPinned,
+    // Issue #646: the Listen tab last chosen. Device-local: how this device's screen was arranged, like
+    // kMonitorDetailsExpanded.
+    kListenSection,
     kKeyCount
 };
 
@@ -162,6 +165,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"listen/lastStartedCompanions", false},
     {"listen/acceptedStartTargets", false},
     {"listen/pinned", true},
+    {"listen/section", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -188,13 +192,31 @@ as_scalar(const QVariant& stored) {
  * dropped, leaving the file permanently disagreeing with the app.
  */
 
+constexpr double kDefaultHangtimeSec = 2.0;
+
 /** @brief Finite seconds in the UI range, rounded to the displayed precision. */
 double
 sane_hangtime(double seconds) {
     if (!std::isfinite(seconds)) {
-        return 2.0;
+        return kDefaultHangtimeSec;
     }
     return std::round(qBound(0.0, seconds, 30.0) * 10.0) / 10.0;
+}
+
+/** @brief The hang time @p raw holds, else the default: text that is no number would otherwise read as 0 s. */
+double
+stored_hangtime(const QVariant& raw) {
+    bool ok = false;
+    const double seconds = raw.toDouble(&ok);
+    return ok ? sane_hangtime(seconds) : kDefaultHangtimeSec;
+}
+
+/** @brief Whether writing @p next would change the hang time stored as @p stored; one that is no number differs. */
+bool
+stored_hangtime_differs(const QVariant& stored, double next) {
+    bool ok = false;
+    const double seconds = stored.toDouble(&ok);
+    return !ok || !qFuzzyCompare(seconds, next);
 }
 
 /** @brief @p mode if it names an appearance, else the default. */
@@ -217,6 +239,20 @@ sane_tuner_source_type(const QString& type) {
     return (type == QLatin1String("usb") || type == QLatin1String("airspy") || type == QLatin1String("rtltcp"))
                ? type
                : QString();
+}
+
+/** @brief Whether @p section names a Listen tab (issue #646). The ids are persisted: never rename one. */
+bool
+is_listen_section(const QString& section) {
+    return section == QLatin1String("systems") || section == QLatin1String("scanLists")
+           || section == QLatin1String("explore");
+}
+
+/** @brief The Listen tab @p raw names, else Systems: text QSettings did not write as one string (a list) included. */
+QString
+sane_listen_section(const QVariant& raw) {
+    const QString section = raw.metaType().id() == QMetaType::QString ? raw.toString() : QString();
+    return is_listen_section(section) ? section : QStringLiteral("systems");
 }
 
 /** @brief @p port if it is a usable TCP port, else the rtl_tcp default. */
@@ -560,13 +596,13 @@ AppPrefs::setSkipEncrypted(bool on) {
 
 double
 AppPrefs::hangtimeSec() const {
-    return sane_hangtime(m_settings.value(key_name(kHangtimeSec), 2.0).toDouble());
+    return stored_hangtime(m_settings.value(key_name(kHangtimeSec), kDefaultHangtimeSec));
 }
 
 void
 AppPrefs::setHangtimeSec(double seconds) {
     const double value = sane_hangtime(seconds);
-    if (qFuzzyCompare(value, m_settings.value(key_name(kHangtimeSec), 2.0).toDouble())) {
+    if (!stored_hangtime_differs(m_settings.value(key_name(kHangtimeSec), kDefaultHangtimeSec), value)) {
         return;
     }
     m_settings.setValue(key_name(kHangtimeSec), value);
@@ -816,6 +852,26 @@ AppPrefs::setMonitorDetailsExpanded(bool on) {
     }
     m_settings.setValue(key_name(kMonitorDetailsExpanded), on);
     Q_EMIT monitorDetailsExpandedChanged();
+}
+
+QString
+AppPrefs::listenSection() const {
+    return sane_listen_section(m_settings.value(key_name(kListenSection)));
+}
+
+void
+AppPrefs::setListenSection(const QString& section) {
+    if (!is_listen_section(section)) {
+        return;
+    }
+    // Compared with the raw stored value (absent counts as Systems), so choosing Systems over a value that only reads
+    // as Systems still lands.
+    const QVariant stored = m_settings.value(key_name(kListenSection), QStringLiteral("systems"));
+    if (stored.metaType().id() == QMetaType::QString && stored.toString() == section) {
+        return;
+    }
+    m_settings.setValue(key_name(kListenSection), section);
+    Q_EMIT listenSectionChanged();
 }
 
 bool

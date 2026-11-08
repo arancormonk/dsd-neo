@@ -597,6 +597,8 @@ Item {
                 prefs.exploreFreqMhz = "851.5";
                 var home = findChild(app, "homeScreen");
                 tryCompare(home, "visible", true);
+                // Issue #646: on the Explore tab, where the face is shown.
+                home.showSection("explore");
                 waitForRendering(home);
                 var face = findChild(home, "exploreStart");
                 compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 851.5 MHz");
@@ -617,6 +619,45 @@ Item {
             } finally {
                 testContext.stopAccessibilityCount();
                 app.exploreSetupOpen = false;
+                findChild(app, "homeScreen").showSection("systems");
+                prefs.exploreSourceType = saved.source;
+                prefs.exploreFreqMhz = saved.freq;
+            }
+        }
+
+        // Issue #646: Home shown on another Listen tab hides the Explore section, and the face in it renames nothing
+        // on a frequency change either; back on Explore, it reads the new frequency.
+        function test_l2_explore_face_on_another_tab_stays_silent() {
+            testContext.setLifecyclePhase(0);
+            verify(!app.monitorMode);
+            var saved = {source: prefs.exploreSourceType, freq: prefs.exploreFreqMhz};
+            var home = findChild(app, "homeScreen");
+            try {
+                prefs.exploreSourceType = "rtltcp";
+                prefs.exploreFreqMhz = "851.5";
+                tryCompare(home, "visible", true);
+                home.showSection("explore");
+                waitForRendering(home);
+                var face = findChild(home, "exploreStart");
+                compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 851.5 MHz");
+                home.showSection("systems");
+                tryVerify(function () { return face.Accessible.ignored; }, 1000, "the face leaves the tree with its section");
+                verify(home.visible, "Home itself is still shown");
+                testContext.startAccessibilityCount();
+                prefs.exploreFreqMhz = "852.0125";
+                wait(50);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                var events = 0;
+                for (var type of Object.keys(counts.types))
+                    events += testContext.accessibilityCountWithin(face, type);
+                compare(events, 0, "the face on a hidden tab raised events: " + JSON.stringify(counts.chains));
+                home.showSection("explore");
+                tryVerify(function () { return !face.Accessible.ignored; }, 1000);
+                compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 852.0125 MHz");
+            } finally {
+                testContext.stopAccessibilityCount();
+                home.showSection("systems");
                 prefs.exploreSourceType = saved.source;
                 prefs.exploreFreqMhz = saved.freq;
             }

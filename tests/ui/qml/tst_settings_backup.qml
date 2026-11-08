@@ -1299,12 +1299,14 @@ Item {
             verify(card.Accessible.name.indexOf(data.title) === 0);
             compare(card.border.color, data.problem ? Ui.Theme.alertBorder : Ui.Theme.panelBorder);
             compare(buttons(card), data.actions);
-            // At the top of Home: only the screen title sits above it.
+            // At the top of Home's body: nothing in it sits above the card; the screen title is fixed above the body
+            // with the Listen tabs (issue #646).
             tryVerify(function () {
                 return card.parent.children.filter(function (item) {
                     return item !== card && item.visible && item.height > 0 && item.y < card.y;
-                }).length === 1;
-            }, 2000, "only the title sits above the card");
+                }).length === 0;
+            }, 2000, "nothing sits above the card in the body");
+            verify(findChild(home, "listenHeaderTitle").visible, "the title is fixed above the body");
             var dismiss = findChild(card, "backupResultDismiss");
             verify(dismiss.height >= Ui.Theme.minimumTouchSize);
             dismiss.activate();

@@ -78,10 +78,10 @@ a new path; late results from abandoned requests never associate a file.
 The shell has two modes, switched on `DecoderHost::sessionState` — a phone cannot
 do both at once:
 
-- **Idle** (`Idle`, `Failed`) — the tab shell: saved systems on Home (one tap to
-  listen, long-press to edit or remove), the persistent call log on History,
-  Settings, plus the add-system wizard and a failure banner when a start was
-  abandoned.
+- **Idle** (`Idle`, `Failed`) — the tab shell: Listen (Home), with its **Systems**,
+  **Scan lists** and **Explore** tabs (a saved system is one tap to listen,
+  long-press to edit or remove), the persistent call log on History, Settings,
+  plus the add-system wizard and a failure banner when a start was abandoned.
 - **Monitor** (`Starting`, `Running`, `Stopping`) — the live session takes the
   screen: the hero call, mute, hold, skip and avoid, the signal strip, and the session's
   recent calls. On a radio source the signal strip opens with **FREQ**, the frequency
@@ -417,7 +417,7 @@ Record back on. Switch Record off again before **Apply** if that talkgroup shoul
   have its temporary files treated as unfinished recordings.
 - Encrypted calls record only as far as DSD-neo can play them, as before: a call it decrypts is recorded, and one it
   cannot decrypt records nothing; its History row shows ENC without a recording.
-- - A backup carries the Record calls, Only unknown talkgroups, Analog pause hold, NFM pre-roll and Storage limit
+- A backup carries the Record calls, Only unknown talkgroups, Analog pause hold, NFM pre-roll and Storage limit
   settings, never the recordings. A restored Storage limit lower than what the recordings on the phone take removes the
   oldest of them when DSD-neo next opens.
 
@@ -431,7 +431,8 @@ profiles with their keys, Signal search ranges and permanent avoids, and your se
 decoder arguments and the RadioReference username and application-key override.
 
 It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
-detection history, diagnostics, the last location fix and first-run state. The RadioReference password is never saved,
+detection history, diagnostics, the last location fix, the Listen tab the phone opens on (each phone remembers its
+own, and a restore keeps it) and first-run state. The RadioReference password is never saved,
 so it is never in a backup.
 Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again. A
 file that a saved system, scan list or profile names outside DSD-neo's imported files cannot be carried: the export
@@ -952,8 +953,9 @@ libusb target, and Java retains descriptor ownership until native transfers end.
 ### Receiver status on Listen
 
 Listen keeps the receiver's status in a pill beside the title, in a header that
-stays put while the list scrolls (the desktop has no pill and its title scrolls
-as before). One shared reading (`DeviceStatus.qml`) names the receiver —
+stays put while the list scrolls (the desktop has no pill; its title stays put
+above the Pinned row or Listen tabs that stay put, and otherwise leads the list).
+One shared reading (`DeviceStatus.qml`) names the receiver —
 RTL-SDR, Airspy, or "receiver" when it cannot tell — for Listen, Onboarding and
 the Monitor:
 
@@ -1033,8 +1035,9 @@ somewhere. LOST still shows if the session ends.
 ### What a failed start says
 
 A start that fails says why on Home's failure card (#782), and the card's own
-failure stays until the next start, Retry or Dismiss, so a poll of an older
-session can never put that session's failure back:
+failure stays until the next start, Retry or Dismiss, or until the system or
+scan list it names is saved, so a poll of an older session can never put that
+session's failure back:
 
 - **The previous session is still stopping:** "The previous session is still
   stopping. Tap Retry to start this one once it has stopped."
@@ -1614,7 +1617,8 @@ module behind it, so androiddeployqt has nothing extra to package.
   itself) leaves the control holding Qt's keyboard focus, so the swipe back onto it
   gets no answer and TalkBack stays put until the screen is touched. This is a limit
   of Qt 6.11.2's Android bridge; letting the containers take the focus made other
-  swipes stick.
+  swipes stick. With Qt 6.11.3, swiping back and forth over Listen's title, pinned
+  shortcuts and list did not stick.
 - **The first Spectrum open with TalkBack on stalls for a few seconds** (#782).
   Building the screen makes Qt tell TalkBack about each hidden part, and Android's
   main thread waits on the app for each answer: about 2 seconds on an emulator
@@ -1625,10 +1629,17 @@ module behind it, so androiddeployqt has nothing extra to package.
 - **TalkBack can skip controls a disclosure has just shown** (#782). Right after
   expanding a section (the key sheet's "Advanced: session direct override") or
   adding a row, the first forward swipe can pass the new controls; Qt tells TalkBack
-  nothing when they appear. A second pass reaches them.
+  nothing when they appear. A second pass reaches them. Switching Listen tabs is not
+  affected: with Qt 6.11.3 the first swipe after a switch reached the new tab's
+  controls.
 - **TalkBack makes a silent stop at the start and end of a screen** (#782). Swiping
   past the last item or back past the first lands once on the window itself, which
   Qt's bridge gives no name.
+- **TalkBack's swipe does not scroll Listen's lists** (#646). On a long Listen tab,
+  swiping past the last card on the screen moves on to the bottom bar instead of
+  scrolling to the next card. This is a limit of Qt 6.11.3's Android bridge. Other
+  long screens may do the same. To reach the rest, scroll the list with a two-finger
+  swipe, then touch a card: TalkBack goes on from there.
 - **TalkBack reads the Network sheet in a fixed order** (#782). With TalkBack on,
   each section lists its entries by frequency, SGID or radio ID rather than most
   recent first: Qt tells TalkBack nothing when rows change places, and a list that
@@ -2014,7 +2025,7 @@ imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup
 
 ### Navigation, accessibility and replay
 
-**Signal search**, beside Explore on Home, searches configured frequency ranges
+**Signal search**, first on Listen's **Explore** tab, searches configured frequency ranges
 using internal RF power measurements, then identifies and monitors detections.
 Ranges have independent detection sensitivity and listening squelch. The default
 digital probe is three seconds, followed by explicitly unresolved NFM monitoring;
@@ -2055,6 +2066,9 @@ adb. Remove the argument after testing to stop the log growing. Argument
 construction is also covered by the host tests.
 
 Controls expose named accessibility actions, keyboard focus and 48 dp targets.
+From a keyboard, Return, keypad Enter and Space press the focused control.
+TalkBack reads the bottom tabs as radio buttons and says "checked" on the one
+shown.
 A screen reader reaches them through Qt's accessibility bridge, which the app turns
 on only when a screen reader's explore-by-touch (TalkBack's) is on at launch (#782).
 Unless the bridge is already on, no other accessibility service gets app content:
@@ -2225,7 +2239,7 @@ or finish removing the file says so and keeps the file's row in the library;
 remove it again to finish. Validation reports the failing row/field without
 displaying key values.
 
-Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
+Listen's **Scan lists** tab combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
 modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
 individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
@@ -2263,9 +2277,40 @@ list's effective alias file must be readable.
 Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 
+### Listen tabs
+
+Listen shows one group at a time under three tabs, **Systems**, **Scan lists** and **Explore**, which stay in place
+under the title (and the Pinned row) while the list scrolls. On a short screen, where tabs that stay in place would
+leave the list less than half of Listen (a phone held sideways at a large text size, say), the tabs are the first
+thing in the list instead and scroll away with it; this follows rotation and text size as they change:
+
+- **Systems**: **+ Add a system**, then the saved systems.
+- **Scan lists**: **+ Add a scan list**, a line saying what a scan list is for while there is none, then the lists.
+- **Explore**: **Signal search**, then **Explore the band**.
+
+A failure, a finished replay, a backup's result and the receiver's details show at the top on every tab. The tab's
+name is the group's heading. Listen opens on the tab last chosen on this phone; that choice is not in backups, and a
+restore keeps it. While a Listen menu or sheet is open the tabs are greyed out and do nothing.
+
+Saving a system (adding one, editing one, or saving a Signal search detection or a RadioReference import as one)
+switches Listen to **Systems**; saving a scan list, or saving it as a draft, switches it to **Scan lists**. A screen
+still open on top stays open (Signal search after **Save as system**, or a session's monitor), and Listen shows that
+tab when you get back to it. Nothing else switches the tab: a save that fails, leaving an editor without saving,
+removing something, pinning or unpinning, and a start that is refused or fails all leave Listen on the tab it was on.
+
+Each tab keeps its own place in the list while the app runs: going back to a tab shows it where it was left, and a tab
+not shown yet starts at its top. When Listen scrolls to its top to show a failure (or, with a USB receiver, a session
+that ended), that is the tab's place, and nothing scrolls the message away until you scroll or move on with the
+keyboard.
+
+From a keyboard the tabs are one Tab stop, the current tab: Left and Right move to the next tab and show it, Home and
+End go to the first and last, and Enter or Space shows the focused one. When the tabs are in the list, a tab chosen from
+the keyboard stays in view, so the list stops short of the tab's place if it has to. TalkBack reads each tab as a radio
+button, "checked" on the current one, because Qt's Android bridge has no tab role.
+
 ### Pinned shortcuts
 
-Listen keeps up to 6 shortcuts in a **Pinned** row above its list: a saved system (the whole card), one site of a
+Listen keeps up to 6 shortcuts in a **Pinned** row above its tabs: a saved system (the whole card), one site of a
 grouped system, a scan list, Signal search or Explore. A tap does what the shortcut's own control does: a system or
 site starts (a grouped system opens its site list when it has no playable site or more than one), a scan list starts
 on its own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text

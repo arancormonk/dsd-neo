@@ -554,7 +554,7 @@ Item {
 
                         width: listColumn.width
                         height: Math.max(Theme.minimumTouchSize, placeLabel.implicitHeight + 24)
-                        activeFocusOnTab: browseSheet.rowsEnabled
+                        activeFocusOnTab: browseSheet.rowsEnabled || activeFocus
                         Accessible.role: Accessible.RadioButton
                         Accessible.name: modelData.name
                         readonly property bool navigationAllowed: Navigation.allows(sheetRow)
@@ -567,6 +567,7 @@ Item {
                                 browseSheet.chosen(modelData);
                         }
                         Keys.onReturnPressed: choose()
+                        Keys.onEnterPressed: choose()
                         Keys.onSpacePressed: choose()
                         FocusFrame {}
                         Text {
@@ -1024,8 +1025,10 @@ Item {
                 readonly property bool navigationAllowed: Navigation.allows(backToResults)
                 Accessible.ignored: !navigationAllowed
                 Accessible.onPressAction: goBack()
-                activeFocusOnTab: Navigation.allows(backToResults) && !radioReference.busy
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(backToResults) && !radioReference.busy) || activeFocus
                 Keys.onReturnPressed: goBack()
+                Keys.onEnterPressed: goBack()
                 Keys.onSpacePressed: goBack()
                 FocusFrame {}
                 function goBack() {
@@ -1253,7 +1256,7 @@ Item {
 
                             width: sitesColumn.width
                             height: Math.max(Theme.minimumTouchSize, siteLabels.implicitHeight + 24)
-                            activeFocusOnTab: !radioReference.busy
+                            activeFocusOnTab: !radioReference.busy || activeFocus
                             Accessible.role: radioReference.conventional || screen.eachSite ? Accessible.CheckBox : Accessible.RadioButton
                             Accessible.name: modelData.site.descr
                             // The site's lines as shown (issue #782): its number and its frequencies.
@@ -1268,6 +1271,7 @@ Item {
                                     screen.toggleSite(modelData.index);
                             }
                             Keys.onReturnPressed: choose()
+                            Keys.onEnterPressed: choose()
                             Keys.onSpacePressed: choose()
                             FocusFrame {}
                             Column {

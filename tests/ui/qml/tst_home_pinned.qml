@@ -58,6 +58,8 @@ Item {
             app.startError = "";
             app.attemptedSource = null;
             app.dismissedFailure = "";
+            findChild(app, "homeScreen").showSection("systems");
+            findChild(app, "homeScreen").resetScrollMemory();
         }
 
         function cleanup() {
@@ -240,11 +242,17 @@ Item {
         }
 
         // [r2-5] A refusal is revealed with the body scrolled, on both hosts, also over a failure already showing.
+        // Issue #646 B3: when the refusal lands, either a tab's place is still owed or a keyboard focus reveal is still
+        // pending; revealTop() drops either.
         function test_refusal_revealed_when_scrolled_data() {
-            return [{tag: "desktop", brokered: false, replacing: false},
-                {tag: "desktop replacing a failure", brokered: false, replacing: true},
-                {tag: "brokered", brokered: true, replacing: false},
-                {tag: "brokered replacing a failure", brokered: true, replacing: true}];
+            var rows = [];
+            for (var pending of ["restore", "reveal"]) {
+                rows.push({tag: "desktop, " + pending + " pending", brokered: false, replacing: false, pending: pending},
+                    {tag: "desktop replacing a failure, " + pending + " pending", brokered: false, replacing: true, pending: pending},
+                    {tag: "brokered, " + pending + " pending", brokered: true, replacing: false, pending: pending},
+                    {tag: "brokered replacing a failure, " + pending + " pending", brokered: true, replacing: true, pending: pending});
+            }
+            return rows;
         }
         function test_refusal_revealed_when_scrolled(data) {
             for (var i = 0; i < 12; ++i)
@@ -260,9 +268,50 @@ Item {
             waitForRendering(home);
             body.contentY = body.contentHeight - body.height;
             verify(body.contentY > body.originY + 100, "the body scrolled");
+            var plays = [];
+            (function look(node) {
+                for (var child of node.children) {
+                    if (child.objectName === "savedSystemPlay" && child.visible)
+                        plays.push(child);
+                    look(child);
+                }
+            })(findChild(home, "listenSystemsSection"));
+            if (data.pending === "restore") {
+                home.showSection("explore");
+                home.showSection("systems");
+                verify(home.restorePending, "Systems' place is owed");
+            } else {
+                // A Play out of view both here and at the top: its reveal would scroll the failure card away.
+                var away = plays.filter(function (play) {
+                    var y = play.mapToItem(body.contentItem, 0, 0).y;
+                    return y + play.height < body.contentY - 100 && y > body.originY + body.height + 100;
+                });
+                verify(away.length > 0, "a Play out of view at both places");
+                // The keyboard is in Main's window, on Home (outside the body, so nothing is revealed yet).
+                app.requestActivate();
+                tryCompare(app, "active", true);
+                tryVerify(function () {
+                    home.forceActiveFocus();
+                    return home.activeFocus;
+                }, 2000, "Main's window takes the keyboard");
+                var at = body.contentY;
+                away[0].forceActiveFocus();
+                compare(body.contentY, at, "the reveal has not run yet");
+                verify(!home.restorePending && away[0].activeFocus, "a focus reveal is pending");
+            }
             app.startSystem(savedSystems.rowForUid(sites[1]));
             compareRefused(avoidedText("County"), sites[1]);
             compare(body.contentY, body.originY, "the failure card is in view");
+            verify(waitForPolish(home));
+            waitForRendering(home);
+            compare(body.contentY, body.originY, "and stays in view once the deferred scrolls have run");
+            // A focus handed back afterwards, as a sheet does to its opener, scrolls nothing either.
+            plays[plays.length - 2].forceActiveFocus();
+            verify(waitForPolish(home));
+            waitForRendering(home);
+            compare(body.contentY, body.originY, "a later focus hand-back leaves the failure card in view");
+            verify(findChild(home, "homeFailureCard").visible);
+            root.forceActiveFocus();
         }
 
         // A refused pin start is the newest attempt: a finished replay's card goes, so its Play again cannot retry the
@@ -508,6 +557,15 @@ Item {
             waitForRendering(home);
             return home;
         }
+        // Issue #646: taps Home's Listen tab @p id, as a finger does, and waits for its section.
+        function showTab(id) {
+            var home = showHome();
+            var tab = homeItem("listenTab_" + id);
+            mouseClick(tab, tab.width / 2, tab.height / 2);
+            compare(home.section, id);
+            verify(waitForPolish(app.contentItem));
+            waitForRendering(home);
+        }
         // Scrolls Home's body to @p control and taps it.
         function tapOnHome(control) {
             var scroll = homeItem("dongleScrollBody");
@@ -580,7 +638,7 @@ Item {
 
         function test_pin_from_scan_menu() {
             var list = addList("Patrol");
-            showHome();
+            showTab("scanLists");
             var menu = openMenu(homeItem("scanListManageButton"), "scanListManageSheet");
             compare(keys(menu), "edit,pin,remove");
             tapPin(menu, "pinScanListButton", "Pin to Listen", "Pin Patrol to Listen");
@@ -614,7 +672,7 @@ Item {
         // D5: Explore's More and Signal search's More each open a menu that pins it; Edit connection opens setup.
         function test_pin_explore_and_search_menus() {
             prefs.exploreSourceType = "rtltcp";
-            showHome();
+            showTab("explore");
             var searchMore = homeItem("signalSearchManageButton");
             compare(searchMore.accessibleName, "More options for Signal search");
             var menu = openMenu(searchMore, "signalSearchManageSheet");
@@ -662,11 +720,13 @@ Item {
             showHome();
             var menu;
             var pin;
-            var sources = [{opener: function () { return cardMore("Solo"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
-                {opener: function () { return cardMore("County"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
-                {opener: function () { return homeItem("signalSearchManageButton"); }, menu: "signalSearchManageSheet", pin: "pinSignalSearchButton"},
-                {opener: function () { return homeItem("exploreManageButton"); }, menu: "exploreManageSheet", pin: "pinExploreButton"}];
+            var sources = [{tab: "systems", opener: function () { return cardMore("Solo"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
+                {tab: "systems", opener: function () { return cardMore("County"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
+                {tab: "explore", opener: function () { return homeItem("signalSearchManageButton"); }, menu: "signalSearchManageSheet", pin: "pinSignalSearchButton"},
+                {tab: "explore", opener: function () { return homeItem("exploreManageButton"); }, menu: "exploreManageSheet", pin: "pinExploreButton"}];
             for (var source of sources) {
+                if (findChild(app, "homeScreen").section !== source.tab)
+                    showTab(source.tab);
                 menu = openMenu(source.opener(), source.menu);
                 pin = findChild(menu, source.pin);
                 compare(pin.text, "Pin to Listen", source.menu);
@@ -736,7 +796,11 @@ Item {
         // The new menus hold Home and auto-start as every Home sheet does.
         function test_new_menus_block_background() {
             prefs.exploreSourceType = "rtltcp";
+            // Issue #646: on the Explore tab, so the face is on screen and its block below is not a given.
+            showTab("explore");
             var home = showHome();
+            var shownFace = homeItem("exploreStart");
+            verify(shownFace.visible && shownFace.enabled && shownFace.activeFocusOnTab, "the face is live before a menu opens");
             for (var name of ["exploreManageSheet", "signalSearchManageSheet"]) {
                 var sheet = homeItem(name);
                 sheet.openFor();

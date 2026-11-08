@@ -49,7 +49,8 @@ Item {
     readonly property real displayHz: rail.dragging ? rail.pendingHz : (rail.settling ? rail.settleHz : rail.tunedHz)
 
     implicitHeight: Math.max(48, Theme.fontSize(10) + 24)
-    activeFocusOnTab: Navigation.allows(rail) && enabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(rail) && enabled) || activeFocus
     Accessible.role: Accessible.Slider
     Accessible.name: qsTr("Coarse tuning: %1 MHz").arg((displayHz / 1e6).toFixed(3))
     readonly property real value: displayHz / 1e6

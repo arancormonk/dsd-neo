@@ -660,17 +660,25 @@ Item {
                     id: spectrumPill
 
                     objectName: "openSpectrumButton"
-                    activeFocusOnTab: Navigation.allows(spectrumPill) && enabled
+                    // Held while it has the focus (see OutlineButton).
+                    activeFocusOnTab: (Navigation.allows(spectrumPill) && enabled) || activeFocus
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Spectrum")
                     readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
-                    Accessible.ignored: !navigationAllowed
-                    Accessible.onPressAction: {
-                        if (Navigation.allows(spectrumPill))
+                    // Gate first: see OutlineButton.
+                    Accessible.ignored: !navigationAllowed || !visible
+                    Accessible.onPressAction: activate()
+                    // One guarded press for keys and accessibility alike: a key
+                    // reaching it under an open sheet, or while it is hidden
+                    // with the focus (off a radio, a narrowed header), does
+                    // nothing.
+                    function activate() {
+                        if (enabled && Navigation.allows(spectrumPill) && visible)
                             screen.openSpectrum();
                     }
-                    Keys.onReturnPressed: screen.openSpectrum()
-                    Keys.onSpacePressed: screen.openSpectrum()
+                    Keys.onReturnPressed: activate()
+                    Keys.onEnterPressed: activate()
+                    Keys.onSpacePressed: activate()
                     FocusFrame {}
                     visible: metrics.radioInput && screen.wideHeaderActions
                     width: spectrumLabel.implicitWidth + 22
@@ -1730,7 +1738,8 @@ Item {
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, decryptionLabel.implicitHeight + 20)
                 enabled: decoderHost.running
-                activeFocusOnTab: Navigation.allows(decryptionRow) && enabled
+                // Held while it has the focus (see OutlineButton).
+                activeFocusOnTab: (Navigation.allows(decryptionRow) && enabled) || activeFocus
                 Accessible.role: Accessible.Button
                 Accessible.name: qsTr("Decryption · %1").arg(keySheet.effectiveState)
                 readonly property bool navigationAllowed: Navigation.allows(decryptionRow)
@@ -1741,6 +1750,7 @@ Item {
                         keySheet.open();
                 }
                 Keys.onReturnPressed: activate()
+                Keys.onEnterPressed: activate()
                 Keys.onSpacePressed: activate()
                 FocusFrame {}
                 Text {

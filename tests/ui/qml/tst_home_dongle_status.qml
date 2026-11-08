@@ -16,6 +16,14 @@ Item {
     height: 900
     Ui.HomeScreen { id: home; anchors.fill: parent }
     Ui.OnboardingScreen { id: onboarding; anchors.fill: parent; visible: false }
+    // Changed once per frame wanted, so the window draws while Home is hidden.
+    Rectangle {
+        id: ticker
+        width: 1
+        height: 1
+        z: 10
+        color: "black"
+    }
     SignalSpy { id: exploreStarted; target: home; signalName: "explore" }
     SignalSpy { id: exploreEdited; target: home; signalName: "exploreSetup" }
     TestCase {
@@ -25,6 +33,7 @@ Item {
             // The brokered capability is CONSTANT: set it before publishing the host.
             testContext.setDongleStatus(false, 0, "");
             testContext.useLifecycleHost(true);
+            home.showSection("systems");
         }
         function cleanup() {
             // Leave no focus on the pill for the next case's state changes.
@@ -44,6 +53,21 @@ Item {
             Ui.Theme.resetFontScale();
             home.visible = true;
             onboarding.visible = false;
+            home.showSection("systems");
+            while (savedSystems.count)
+                savedSystems.remove(0);
+        }
+        // Issue #646: saved systems enough that Listen's Systems tab scrolls at 360 x 400.
+        function fillSystems() {
+            for (var i = 0; i < 4; ++i)
+                verify(savedSystems.add({name: "System " + i, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+        }
+        // Draws @a count frames while Home stays as it is: every polish a hidden Home would see runs in them.
+        function waitFrames(count) {
+            for (var i = 0; i < count; ++i) {
+                ticker.color = ticker.color === Qt.color("black") ? "white" : "black";
+                verify(waitForRendering(ticker), "frame " + i);
+            }
         }
         function test_cleanup_restores_platform_font_binding() {
             var previousFont = testContext.applicationFont();
@@ -144,6 +168,8 @@ Item {
             var oldSource = prefs.exploreSourceType;
             prefs.exploreSourceType = "rtltcp";
             try {
+                // Issue #646: on the Explore tab.
+                home.showSection("explore");
                 var card = findChild(home, "exploreCard");
                 var more = findChild(home, "exploreManageButton");
                 var face = findChild(home, "exploreStart");
@@ -200,6 +226,7 @@ Item {
                 prefs.exploreFreqMhz = "851.0125";
                 root.width = data.width;
                 Ui.Theme.fontScale = 1.6;
+                home.showSection("explore");
                 var card = findChild(home, "exploreCard");
                 var subtitle = findChild(home, "homeExploreSubtitle");
                 verify(waitForPolish(home));
@@ -223,6 +250,7 @@ Item {
             var oldSource = prefs.exploreSourceType;
             prefs.exploreSourceType = data.source;
             try {
+                home.showSection("explore");
                 var face = findChild(home, "exploreStart");
                 var more = findChild(home, "exploreManageButton");
                 var menu = findChild(home, "exploreManageSheet");
@@ -320,6 +348,7 @@ Item {
         function test_header_stays_pinned() {
             root.width = 360;
             root.height = 400;
+            fillSystems();
             testContext.setAttachedDeviceSource("usb");
             var header = findChild(home, "listenHeader");
             var body = findChild(home, "dongleScrollBody");
@@ -339,15 +368,53 @@ Item {
             verify(contains({x: 0, y: 0, w: home.width, h: home.height}, rectOf(pill)), "the pill stays on screen");
         }
 
+        // Issue #646 B3: revealTop() wins over Home's other deferred scroll writers. A tab's place still owed is
+        // dropped (a focus move while it is owed arms nothing), and so is a focus reveal still pending; the top becomes
+        // the tab's place, and a focus handed back later (a sheet restoring its opener) does not scroll it away.
         function test_reveal_top() {
             root.width = 360;
             root.height = 400;
+            fillSystems();
             var body = findChild(home, "dongleScrollBody");
+            verify(waitForPolish(home));
             waitForRendering(home);
+            var plays = [];
+            (function look(node) {
+                for (var child of node.children) {
+                    if (child.objectName === "savedSystemPlay" && child.visible)
+                        plays.push(child);
+                    look(child);
+                }
+            })(findChild(home, "listenSystemsSection"));
+            compare(plays.length, 4);
+            // A place still owed.
             body.contentY = body.contentHeight - body.height;
             verify(body.contentY > 0);
+            home.showSection("explore");
+            home.showSection("systems");
+            verify(home.restorePending, "Systems' place is owed");
             home.revealTop();
             compare(body.contentY, body.originY);
+            verify(!home.restorePending, "the owed place is dropped");
+            waitFrames(3);
+            compare(body.contentY, body.originY, "nothing owed scrolled the top away");
+            verify(plays[2].mapToItem(body, 0, 0).y > body.height, "the control handed the focus is out of view at the top");
+            plays[2].forceActiveFocus();
+            waitFrames(3);
+            compare(body.contentY, body.originY, "a focus handed back later scrolls nothing");
+            home.showSection("explore");
+            home.showSection("systems");
+            waitFrames(3);
+            compare(body.contentY, body.originY, "the top is Systems' place now");
+
+            // A focus reveal still pending: the keyboard reached a control out of view, and the refusal came first.
+            verify(!home.restorePending && !home.focusRevealHeld, "nothing owed, nothing held");
+            verify(plays[3].mapToItem(body, 0, 0).y > body.height, "the focused control is out of view at the top");
+            plays[3].forceActiveFocus();
+            home.revealTop();
+            waitFrames(3);
+            compare(body.contentY, body.originY, "the pending reveal was dropped");
+            root.forceActiveFocus();
         }
 
         function test_receiver_on_the_bus_is_not_missing() {
@@ -469,17 +536,22 @@ Item {
             // then, or the body loses the place the user scrolled to.
             root.width = 360;
             root.height = 400;
+            // Cards enough that the height set below keeps the Listen tabs fixed (issue #646): a shorter Home would
+            // move them into the body and change the range being set.
+            fillSystems();
             testContext.setAttachedDeviceSource("usb");
             var body = findChild(home, "dongleScrollBody");
             var header = findChild(home, "listenHeader");
             tryCompare(findChild(home, "dongleRetry"), "visible", true);
             verify(waitForPolish(home));
+            waitForRendering(home);
             var headerHeight = header.height;
             verify(headerHeight > 0);
             // A body that scrolls by less than the details panel is tall, so
             // the panel collapsing would leave nothing to scroll.
             root.height += body.contentHeight - body.height - 60;
             verify(waitForPolish(home));
+            verify(home.tabsFixed, "the Listen tabs stay fixed at this height");
             var panel = findChild(home, "dongleDetailsPanel");
             var panelHeight = panel.height;
             verify(panelHeight > 60);
@@ -490,6 +562,11 @@ Item {
                 compare(header.height, headerHeight, "the hidden header keeps its height");
                 compare(panel.height, panelHeight, "the hidden details panel keeps its height");
                 compare(body.contentHeight - body.height >= scrolled, true, "the hidden body still scrolls that far");
+                // And still after the hidden body's next layout passes (issue #646 B1).
+                waitFrames(3);
+                compare(header.height, headerHeight, "the header keeps its height through a layout while hidden");
+                compare(panel.height, panelHeight, "the details panel keeps its height through a layout while hidden");
+                compare(body.contentY, scrolled, "the hidden body keeps its place through a layout");
                 home.visible = true;
                 verify(waitForPolish(home));
                 compare(body.contentY, scrolled, "scroll position after a tab switch");
@@ -554,22 +631,26 @@ Item {
             }
         }
 
-        function test_non_brokered_layout_unchanged() {
+        // Issue #646: the desktop's title is fixed above the Listen tabs as the brokered host's is, shown once, with
+        // no receiver pill; the body starts under the tabs and runs to the bottom.
+        function test_non_brokered_title_above_the_tabs() {
             testContext.useLifecycleHost(false);
             var body = findChild(home, "dongleScrollBody");
-            var title = findChild(home, "listenTitle");
-            verify(title !== null);
-            tryCompare(title, "visible", true);
-            verify(within(title, body), "the title scrolls with the body, as before");
-            compare(title.text, "Listen");
-            compare(title.parent.height, 44);
-            compare(title.parent.mapToItem(body.contentItem, 0, 0).y, Ui.Theme.screenPadding);
             var header = findChild(home, "listenHeader");
-            verify(header === null || !header.visible, "no pinned header");
+            var title = findChild(home, "listenHeaderTitle");
+            tryCompare(header, "visible", true);
+            verify(title.visible);
+            verify(!within(header, body), "the title stays put above the body");
+            compare(title.text, "Listen");
+            compare(header.y, Ui.Theme.screenPadding);
+            compare(header.height, Math.max(44, title.implicitHeight));
+            verify(!findChild(home, "listenTitle").visible, "the body's own title row is not shown as well");
             var pill = findChild(home, "dongleStatusPill");
             verify(pill === null || !pill.visible, "no pill");
-            compare(body.y, 0);
-            compare(body.height, home.height);
+            var tabs = findChild(home, "listenTabs");
+            verify(rectOf(tabs).y >= rectOf(header).y + header.height, "the tabs under the title");
+            compare(body.y, rectOf(tabs).y + tabs.height);
+            compare(body.height, home.height - body.y);
         }
 
         function test_onboarding_names_the_receiver_data() {

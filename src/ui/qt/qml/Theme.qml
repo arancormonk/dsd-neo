@@ -52,7 +52,10 @@ QtObject {
         var target = focus.parent && focus.parent.input === focus ? focus.parent : focus;
         if (target.height > scroll.height)
             target = focus;
-        var point = target.mapToItem(content, 0, 0);
+        // Inside the Flickable's content, which contentY scrolls: a content
+        // column that starts below its top (Home's) would otherwise come up
+        // short by that offset. Every other caller's column starts at 0.
+        var point = target.mapToItem(scroll.contentItem, 0, 0);
         var next = scroll.contentY;
         if (point.y < next)
             next = point.y;

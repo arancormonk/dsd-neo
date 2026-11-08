@@ -21,6 +21,14 @@ Item {
         id: home
         anchors.fill: parent
     }
+    // Changed once per frame wanted, so the window draws while Home is hidden.
+    Rectangle {
+        id: ticker
+        width: 1
+        height: 1
+        z: 10
+        color: "black"
+    }
     SignalSpy {
         id: started
         target: home
@@ -56,6 +64,13 @@ Item {
             root.height = 900;
             Ui.Theme.resetFontScale();
         }
+        // Draws @a count frames while Home stays as it is: every polish a hidden Home would see runs in them.
+        function waitFrames(count) {
+            for (var i = 0; i < count; ++i) {
+                ticker.color = ticker.color === Qt.color("black") ? "white" : "black";
+                verify(waitForRendering(ticker), "frame " + i);
+            }
+        }
         function emptyModels() {
             while (savedSystems.count)
                 savedSystems.remove(0);
@@ -81,6 +96,9 @@ Item {
         }
         function body() {
             return findChild(home, "dongleScrollBody");
+        }
+        function tabs() {
+            return findChild(home, "listenTabs");
         }
         // The strip's pins on screen, left to right.
         function stripPins() {
@@ -111,6 +129,13 @@ Item {
             var p = item.mapToItem(home, 0, 0);
             return {x: p.x, y: p.y, w: item.width, h: item.height};
         }
+        function descends(item, scope) {
+            for (var at = item; at; at = at.parent) {
+                if (at === scope)
+                    return true;
+            }
+            return false;
+        }
         function sameButtons(a, b, message) {
             compare(a.length, b.length, message);
             for (var i = 0; i < a.length; ++i)
@@ -136,8 +161,8 @@ Item {
             return sheet;
         }
 
-        // §6: nothing pinned, no strip: the desktop's layout is exactly as before, and the brokered body starts under
-        // the header as before. A pin brings the strip, and the body moves below it.
+        // §6: nothing pinned, no strip: on both hosts the Listen tabs sit 8 px under the fixed title and the body
+        // starts under them (issue #646). A pin brings the strip between the title and the tabs, which move below it.
         function test_strip_hidden_without_pins_data() {
             return [{tag: "desktop", brokered: false}, {tag: "brokered", brokered: true}];
         }
@@ -145,16 +170,16 @@ Item {
             if (!data.brokered)
                 testContext.useLifecycleHost(false);
             var header = findChild(home, "listenHeader");
-            var restingTop = data.brokered ? header.y + header.height + home.headerClearance : 0;
+            verify(header.visible, "the title is fixed on both hosts");
+            var restingTabs = header.y + header.height + 8;
             verify(!strip().visible, "no strip");
             compare(strip().height, 0);
             compare(home.pinnedStripHeight, 0);
-            compare(body().y, restingTop);
-            compare(body().height, home.height - restingTop);
+            compare(rectOf(tabs()).y, restingTabs, "the tabs under the title");
+            compare(body().y, restingTabs + tabs().height, "the body under the tabs");
+            compare(body().height, home.height - body().y);
             var title = findChild(home, "listenTitle");
-            compare(title.visible, !data.brokered);
-            if (!data.brokered)
-                compare(title.parent.mapToItem(body().contentItem, 0, 0).y, Ui.Theme.screenPadding);
+            verify(!title.visible, "the body's own title row is not shown");
 
             var uid = addSystem("Alpha");
             pin("system", uid);
@@ -163,13 +188,15 @@ Item {
             compare(home.pinnedStripHeight, strip().height);
             verify(header.visible, "the title is fixed above the strip");
             compare(strip().y, header.y + header.height + 8);
-            compare(body().y, strip().y + strip().height + home.headerClearance, "the body starts under the strip");
+            compare(rectOf(tabs()).y, strip().y + strip().height + 8, "the tabs under the strip");
+            compare(body().y, rectOf(tabs()).y + tabs().height, "the body starts under the tabs");
             compare(JSON.stringify(stripTexts()), JSON.stringify(["Alpha"]));
             verify(!title.visible, "the body's own title row is not shown as well");
 
             listenPins.unpin("system", uid);
             tryCompare(strip(), "visible", false);
-            compare(body().y, restingTop, "unpinned, the body is back where it was");
+            compare(rectOf(tabs()).y, restingTabs, "unpinned, the tabs are back where they were");
+            compare(body().y, restingTabs + tabs().height, "and the body");
         }
 
         // §6 [Review focus 3]: six pins with long names stay on one line at every phone width and text size, portrait
@@ -231,7 +258,21 @@ Item {
             var right = home.supportingPane ? home.width - 280 - 2 * Ui.Theme.screenPadding : home.width - Ui.Theme.screenPadding;
             verify(s.x >= Ui.Theme.screenPadding - 0.5 && s.x + s.w <= right + 0.5, "strip inside the column");
             var b = rectOf(body());
-            verify(b.y >= s.y + s.h, "body below the strip");
+            var t = rectOf(tabs());
+            compare(t.y, s.y + s.h + 8, "the tabs 8 px below the strip");
+            // Issue #646: the Listen tabs are fixed while that leaves the body half of Home at least; these landscape
+            // phones are shorter, and there the tabs lead the body instead, at rest just where fixed ones would be.
+            var short = ["320 px landscape at 1", "320 px landscape at 1.3", "320 px landscape at 1.6",
+                "360 px landscape at 1.6"].indexOf(data.tag) >= 0;
+            compare(home.tabsFixed, !short, "the tabs fixed");
+            compare(home.tabsFixed, home.fixedExtent <= home.height / 2, "by the short-screen rule");
+            if (home.tabsFixed) {
+                compare(b.y, t.y + t.h, "body below the tabs");
+            } else {
+                compare(body().contentY, body().originY);
+                verify(descends(tabs(), body()), "the tabs in the body");
+                verify(t.y >= b.y && t.y + t.h <= b.y + b.h, "the tabs at the top of the body, in view");
+            }
             compare(b.y + b.h, home.height, "the body runs to the bottom");
             verify(b.h >= home.height / 2, "the body keeps most of the screen: " + b.h + " of " + home.height);
             var header = rectOf(findChild(home, "listenHeader"));
@@ -320,8 +361,8 @@ Item {
             }
         }
 
-        // §6: Tab goes from the receiver pill through the pins to More, then into the body.
-        // On the desktop the fixed title is no stop, and there is no pill: pins, More, body.
+        // §6: Tab goes from the receiver pill through the pins to More, then the current Listen tab (issue #646), then
+        // into the body. On the desktop the fixed title is no stop, and there is no pill: pins, More, tab, body.
         function test_keyboard_order_data() {
             return [{tag: "brokered", brokered: true}, {tag: "desktop", brokered: false}];
         }
@@ -336,7 +377,8 @@ Item {
             verify(findChild(home, "listenHeaderTitle").visible, "the title leads");
             var pins = stripPins();
             compare(pins.length, 2);
-            var order = (data.brokered ? [pill] : []).concat([pins[0], pins[1], findChild(home, "pinnedStripMore")]);
+            var order = (data.brokered ? [pill] : []).concat([pins[0], pins[1], findChild(home, "pinnedStripMore"),
+                findChild(home, "listenTab_" + home.section)]);
             root.forceActiveFocus();
             for (var i = 0; i < order.length; ++i) {
                 keyClick(Qt.Key_Tab);
@@ -634,12 +676,14 @@ Item {
             home.visible = true;
             verify(waitForPolish(home));
             compare(body().contentY, 40, "scroll position after a tab switch");
-            // Back on Home with nothing pinned: exactly the desktop layout as before.
-            tryCompare(header, "visible", false);
-            compare(header.height, 0);
-            verify(bodyTitle.visible);
-            compare(body().y, 0);
-            compare(bodyTitle.parent.mapToItem(body().contentItem, 0, 0).y, Ui.Theme.screenPadding);
+            // Back on Home with nothing pinned: the strip goes, and the title stays fixed above the Listen tabs
+            // (issue #646), still once.
+            tryCompare(strip(), "visible", false);
+            verify(header.visible && headerTitle.visible);
+            compare(header.height, Math.max(44, headerTitle.implicitHeight));
+            verify(!bodyTitle.visible);
+            compare(rectOf(tabs()).y, header.y + header.height + 8);
+            compare(body().y, rectOf(tabs()).y + tabs().height);
         }
 
         // Hidden on another tab with pins, Home keeps its scroll range and position, also when the pins change there.
@@ -654,7 +698,9 @@ Item {
             for (var scrolled of [40, 1e9]) {
                 for (var uid of uids)
                     pin("system", uid);
-                verify(waitForPolish(home));
+                // The whole window's layout, so the body's range is measured with the cards laid out.
+                verify(waitForPolish(root.Window.window));
+                waitForRendering(home);
                 var stripHeight = strip().height;
                 verify(stripHeight > 0);
                 scrolled = Math.min(scrolled, body().contentHeight - body().height);
@@ -668,6 +714,11 @@ Item {
                 compare(strip().height, stripHeight, "the hidden strip keeps its height");
                 compare(body().contentHeight - body().height >= scrolled, true, "the hidden body still scrolls that far");
                 compare(body().contentY, scrolled, "the hidden body keeps its place");
+                // And still after the hidden body's next layout passes: the cards keep their heights (issue #646 B1).
+                waitFrames(3);
+                compare(strip().height, stripHeight, "the hidden strip keeps its height through a layout");
+                compare(body().contentHeight - body().height >= scrolled, true, "the hidden body still scrolls that far after a layout");
+                compare(body().contentY, scrolled, "the hidden body keeps its place through a layout");
                 home.visible = true;
                 verify(waitForPolish(home));
                 // Back on Home the strip goes and the body grows by its height: the place is kept, short of the end.

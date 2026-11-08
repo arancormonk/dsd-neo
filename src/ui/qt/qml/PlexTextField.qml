@@ -64,7 +64,8 @@ Rectangle {
         selectionColor: Qt.alpha(Theme.cyan, 0.35)
         selectedTextColor: Theme.textPrimary
         clip: true
-        activeFocusOnTab: Navigation.allows(control) && control.enabled
+        // Held while it has the focus (see OutlineButton).
+        activeFocusOnTab: (Navigation.allows(control) && control.enabled) || activeFocus
         Accessible.role: Accessible.EditableText
         Accessible.name: control.label
         // The label is the name; the unit, an example the placeholder shows

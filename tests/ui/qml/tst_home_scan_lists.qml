@@ -37,9 +37,12 @@ Item {
                     }
                 ]
             });
+            // Issue #646: the scan lists are on their own Listen tab.
+            findChild(appLoader.item, "homeScreen").showSection("scanLists");
         }
 
         function cleanup() {
+            findChild(appLoader.item, "homeScreen").showSection("systems");
             testContext.setScanTestUsb(false, false);
             testContext.useLifecycleHost(false);
             while (scanLists.count)
@@ -190,6 +193,7 @@ Item {
                     return item.name === "Grouped system" && item.sourceType === "usb";
                 });
                 verify(card !== null);
+                findChild(appLoader.item, "homeScreen").showSection("systems");
                 var sites = findChild(card, "homeSiteChooserButton");
                 var play = findChild(card, "savedSystemPlay");
                 var title = findChild(card, "savedSystemTitle");
@@ -199,7 +203,11 @@ Item {
                 var more = findChild(card, "savedSystemManageButton");
                 compare(more.accessibleName, "More options for Grouped system");
                 verify(more.y + more.height <= play.y, "menu is above Listen");
+                // The scan card on its own tab shares the system card's action column, and the system card hidden
+                // behind it keeps its layout: the site button stays clear of Play (issue #646).
+                findChild(appLoader.item, "homeScreen").showSection("scanLists");
                 var scanCard = visualChild(appLoader.item, "scanListCard");
+                tryCompare(scanCard, "visible", true);
                 var scanMore = findChild(scanCard, "scanListManageButton");
                 compare(scanMore.accessibleName, "More options for Scan");
                 compare(scanMore.y, more.y);
@@ -501,6 +509,7 @@ Item {
                 prefs.lastStartedUid = uid;
                 testContext.setScanTestUsb(true, true);
                 appLoader.item.currentTab = 0;
+                findChild(appLoader.item, "homeScreen").showSection(data.kind === "scan" ? "scanLists" : "systems");
                 compare(decoderHost.sessionState, 0);
                 tryCompare(uiController, "autoStartBlocked", false);
                 var card = visualChild(appLoader.item, data.kind === "scan" ? "scanListCard" : function (item) {

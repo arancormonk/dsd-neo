@@ -53,6 +53,12 @@ Item {
             callHistory.setSaveFailing(false);
         }
         function cleanup() {
+            // Home goes before its calls do. Unloading only schedules its
+            // deletion and wait(0) runs it; otherwise its recent list is
+            // destroyed after clearAll(), still building a row of a model now
+            // empty, and Qt warns "DelegateModel::cancel: index out range".
+            home.active = false;
+            wait(0);
             callHistory.clearAll();
             callHistory.setSaveFailing(false);
         }
@@ -171,7 +177,6 @@ Item {
             var now = list.indexAt(list.width / 2, list.contentY + 1);
             compare(list.itemAtIndex(now).name, name);
             verify(Math.abs(list.itemAtIndex(now).y - list.contentY - offset) <= 2);
-            home.active = false;
         }
 
         function test_save_failing_notice() {
