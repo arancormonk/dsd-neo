@@ -156,6 +156,20 @@ advance(session* s, double seconds) {
     at(s->t);
 }
 
+/* A cell as its bursts show it: network and colour code, which its scrambling seed is made of. */
+typedef struct {
+    uint32_t mcc;
+    uint32_t mnc;
+    uint32_t colour;
+} cell;
+
+static const cell k_cell_a = {MCC, MNC, COL_A};
+
+static uint32_t
+seed_of(const cell* c) {
+    return ttb_seed(c->mcc, c->mnc, c->colour);
+}
+
 /* One burst whose block is a MAC block, as tetra.c decodes it. */
 static void
 mac_burst(session* s, const ttb_block* b) {
@@ -167,14 +181,20 @@ mac_burst(session* s, const ttb_block* b) {
 }
 
 static void
-bsch_burst(session* s, uint32_t colour) {
+bsch_burst_of(session* s, const cell* c) {
     ttb_block b = {0};
-    ttb_sync_pdu(&b, MCC, MNC, colour);
+    ttb_sync_pdu(&b, c->mcc, c->mnc, c->colour);
     tetra_confirm_burst_begin(s->state);
     assert(tetra_bsch_parse(b.bits, b.n, s->opts, s->state) == TETRA_BSCH_TAKEN);
     tetra_confirm_note_signalling(s->state);
     (void)tetra_confirm_burst_end(s->state);
     tetra_sm_after_burst(s->opts, s->state);
+}
+
+static void
+bsch_burst(session* s, uint32_t colour) {
+    const cell c = {MCC, MNC, colour};
+    bsch_burst_of(s, &c);
 }
 
 static void
@@ -264,10 +284,11 @@ setup_burst(session* s, uint32_t gssi, uint32_t call_id, uint32_t timeslots, uin
     mac_burst(s, &b);
 }
 
-/* A live RTL session with a 2 s hangtime, on A's control channel by A's BSCH and SYSINFO, whose D-MLE-SYSINFO names
- * A's location area unless @p no_la: then the SYSINFO carries none (its MAC part only). */
+/* A live RTL session with a 2 s hangtime, on the control channel of @p home (A's network and colour code unless a case
+ * says otherwise) by its BSCH and SYSINFO, whose D-MLE-SYSINFO names A's location area unless @p no_la: then the
+ * SYSINFO carries none (its MAC part only). */
 static session
-open_on_a_as(int no_la) {
+open_on(const cell* home, int no_la) {
     session s;
     DSD_MEMSET(&s, 0, sizeof s);
     s.opts = (dsd_opts*)calloc(1U, sizeof(*s.opts));
@@ -297,7 +318,7 @@ open_on_a_as(int no_la) {
     s.state->min = -3;
     assert(tetra_st(s.state) != NULL);
     tetra_sm_init(s.opts, s.state);
-    bsch_burst(&s, COL_A);
+    bsch_burst_of(&s, home);
     ttb_block si = {0};
     ttb_sysinfo(&si, CARR_A_CC, 4U, 2U, LA_A);
     if (no_la) {
@@ -308,6 +329,11 @@ open_on_a_as(int no_la) {
     assert(tetra_st_peek(s.state)->sysinfo_known == !no_la);
     assert(tetra_sm_return_cc_hz(s.state) == 0 && !tetra_sm_guarding(s.opts, s.state));
     return s;
+}
+
+static session
+open_on_a_as(int no_la) {
+    return open_on(&k_cell_a, no_la);
 }
 
 static session
@@ -375,20 +401,6 @@ assert_back_home(const session* s, int returns) {
  * ------------------------------------------------------------------------------------------------------------- */
 
 enum { SB_BB_DIBITS = 15, NDB_AACH2_DIBITS = 8 };
-
-/* A cell as its bursts show it: network and colour code, which its scrambling seed is made of. */
-typedef struct {
-    uint32_t mcc;
-    uint32_t mnc;
-    uint32_t colour;
-} cell;
-
-static const cell k_cell_a = {MCC, MNC, COL_A};
-
-static uint32_t
-seed_of(const cell* c) {
-    return ttb_seed(c->mcc, c->mnc, c->colour);
-}
 
 /* The symbols the burst decoder reads after the training sequence, as a symbol file (one dibit a byte). */
 static void
@@ -465,21 +477,32 @@ cell_sync_burst(session* s, const cell* c, uint32_t sharing, const ttb_block* bl
     return sync_burst_on_air(s, &sync, block2, seed_of(c), inverted);
 }
 
-/* A normal downlink burst, its AACH not captured: block 1 @p b1 as the frame sync captured it, then block 2 @p b2
- * (108 dibits each); @p nts2 two half-slot blocks, else one full-slot channel across both. */
+/* A normal downlink burst: block 1 @p b1 and AACH half 1 as the frame sync captured them, then AACH half 2 and block 2
+ * @p b2 (108 dibits each); @p nts2 two half-slot blocks, else one full-slot channel across both. @p aach is the AACH's
+ * 15 dibits (ttb_encode_aach()), or NULL for one the frame sync did not capture. */
 static int
-ndb_on_air(session* s, int nts2, const uint8_t* b1, const uint8_t* b2) {
+ndb_on_air_with(session* s, int nts2, const uint8_t* aach, const uint8_t* b1, const uint8_t* b2) {
     uint8_t tail[NDB_AACH2_DIBITS + TTB_BLOCK_DIBITS] = {0};
+    if (aach) {
+        DSD_MEMCPY(s->state->tetra_sync.aach1_dibuf, aach, TTB_AACH_DIBITS - NDB_AACH2_DIBITS);
+        DSD_MEMCPY(tail, aach + (TTB_AACH_DIBITS - NDB_AACH2_DIBITS), NDB_AACH2_DIBITS);
+    }
     DSD_MEMCPY(tail + NDB_AACH2_DIBITS, b2, TTB_BLOCK_DIBITS);
     DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, b1, TTB_BLOCK_DIBITS);
     s->state->tetra_sync.b1_valid = 1;
     s->state->tetra_sync.b1_soft_valid = 0;
-    s->state->tetra_sync.aach1_valid = 0;
+    s->state->tetra_sync.aach1_valid = (uint8_t)(aach != NULL);
     s->state->tetra_sync.nts2 = (uint8_t)(nts2 != 0);
     s->state->tetra_sync.cb = 0;
     s->state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
     s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
     return air_burst(s, 0, tail, (int)sizeof tail);
+}
+
+/* ndb_on_air_with(), its AACH not captured. */
+static int
+ndb_on_air(session* s, int nts2, const uint8_t* b1, const uint8_t* b2) {
+    return ndb_on_air_with(s, nts2, NULL, b1, b2);
 }
 
 /* An NTS2 normal downlink burst of cell @p c: half-slot blocks @p block1 and @p block2 (124 type-1 bits each)
@@ -1441,6 +1464,194 @@ test_cell_change_in_a_mac_end(void) {
     }
 }
 
+/* The r2 review's counterexample (EN 300 392-2 clauses 8.2.5.2, 8.3.1.1): network 234/1234, home colour code 1, another
+ * cell of colour code 8 on the followed carrier. That cell's ACCESS-ASSIGN 0x0000 corrects under the home's scrambling
+ * into 0x2CFF: header 10, field 1 51 (a traffic usage marker), field 2 63. */
+enum { VEC_MCC = 234, VEC_MNC = 1234, VEC_UM = 51 };
+
+static const cell k_vec_home = {VEC_MCC, VEC_MNC, 1U};
+static const cell k_vec_other = {VEC_MCC, VEC_MNC, 8U};
+
+#define VEC_OTHER_PDU  0x0000U
+#define VEC_HOME_READS 0x2CFFU
+
+/* A's group call on timeslot 2 of F with usage marker 51, granted on the home's control channel and followed there (the
+ * tune completes at once), the home's SYNC on F setting its TDMA clock: the home cell's last CRC evidence there. */
+static void
+follow_marked(session* s) {
+    const mac_addr marked = {TETRA_MAC_ADDR_SSI_USAGE, GSSI_A, VEC_UM};
+    const setup_spec spec = {GSSI_A, CALL_A, 0x4U, CARR_F, 1, &marked, 0U};
+    ttb_block b = {0};
+    setup_block_as(&b, &spec);
+    mac_burst(s, &b);
+    assert(tetra_sm_get_state(s->state) == TETRA_SM_TUNED && g_tuned_hz == hz(CARR_F));
+    const tetra_call_t* const c = tetra_calls_peek(s->state, CALL_A);
+    assert(c != NULL && (c->flags & TETRA_CALL_F_USAGE_MARKER) != 0U && c->usage_marker == VEC_UM);
+    assert(cell_sync_burst(s, &k_vec_home, 0U, NULL, 0) == 1);
+}
+
+/* An NTS1 normal downlink burst in the next slot of the followed timeslot 2: its AACH ACCESS-ASSIGN @p pdu scrambled
+ * with @p seed through the test transmit chain, its slot unscrambled zeros, which no seed decodes into signalling. */
+static void
+aach_on_air(session* s, uint16_t pdu, uint32_t seed) {
+    uint8_t aach[TTB_AACH_DIBITS];
+    const uint8_t slot[2 * TTB_BLOCK_DIBITS] = {0};
+    ttb_encode_aach(pdu, 0U, seed, aach);
+    in_next_slot(s, 2U);
+    (void)ndb_on_air_with(s, 0, aach, slot, slot + TTB_BLOCK_DIBITS);
+}
+
+/* What the other cell sends on F, between the home's last SYNC and the deadline: its SYNC (not taken on, G1) and a
+ * SYSINFO of the home's colour code naming another main carrier (not applied, G2). Neither is the home cell's
+ * evidence. */
+static void
+other_cells_on_f(session* s) {
+    assert(cell_sync_burst(s, &k_vec_other, 0U, NULL, 0) == 1);
+    ttb_block si = {0};
+    ttb_sysinfo(&si, CARR_H, 4U, 2U, LA_B);
+    assert(cell_ndb(s, &k_vec_home, NULL, &si) == 1);
+}
+
+/* The other cell's AACH corrects into the followed call's own traffic marker under the home's scrambling (read through
+ * the real AACH decode: "2/51/63"), which maintains the channel, yet the AACH has no CRC: while the follow is guarded
+ * it keeps the channel no longer than TETRA_SM_GRANT_TIMEOUT_S after the home cell's last CRC-passed block there, its
+ * SYNC at the tune or 1.5 s later. The other cell's SYNC and a SYSINFO naming another main carrier in between are no
+ * such block. The grant timeout returns home at that deadline and not before (regression: main took every such AACH
+ * as maintenance, so the follow stayed on the other cell's carrier as long as it sent). */
+static void
+test_aach_cannot_outlive_home_evidence(void) {
+    static const double k_last_sync[] = {0.0, 1.5};
+    for (size_t k = 0; k < sizeof k_last_sync / sizeof k_last_sync[0]; k++) {
+        reset_backend();
+        session s = open_on(&k_vec_home, 0);
+        follow_marked(&s);
+        const double t0 = s.t;
+        const double deadline = t0 + k_last_sync[k] + TETRA_SM_GRANT_TIMEOUT_S;
+        const tetra_state_t* const ts = tetra_st_peek(s.state);
+
+        char log[16384];
+        dsd_test_capture_stderr cap;
+        s.opts->payload = 1;
+        assert(dsd_test_capture_stderr_begin(&cap, "tetra_vector") == 0);
+        aach_on_air(&s, VEC_OTHER_PDU, seed_of(&k_vec_other));
+        assert(dsd_test_capture_stderr_end(&cap) == 0);
+        assert(dsd_test_capture_stderr_read(&cap, log, sizeof log) == 0);
+        s.opts->payload = 0;
+        assert(strstr(log, "AACH 2/51/63") != NULL);
+
+        for (int step = 1; s.t + 0.25 < deadline; step++) {
+            advance(&s, 0.25);
+            if (k_last_sync[k] > 0.0 && step == 6) {
+                assert(cell_sync_burst(&s, &k_vec_home, 0U, NULL, 0) == 1); /* the home's SYNC at t0 + 1.5 */
+            }
+            if (step == 10) {
+                other_cells_on_f(&s);
+            }
+            aach_on_air(&s, VEC_OTHER_PDU, seed_of(&k_vec_other));
+            tetra_sm_tick(s.opts, s.state);
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+        }
+        assert(ts->sm.t_voice_m <= 0.0);
+        s.t = deadline - 0.01;
+        at(s.t);
+        tetra_sm_tick(s.opts, s.state);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+        s.t = deadline;
+        at(s.t);
+        tetra_sm_tick(s.opts, s.state);
+        assert_back_home(&s, 1);
+        close_session(&s);
+    }
+}
+
+/* Three AACHs of the other cell in successive slots of the followed channel, reading as the call's own marker. */
+static void
+three_other_aachs(session* s) {
+    for (int i = 0; i < 3; i++) {
+        aach_on_air(s, VEC_OTHER_PDU, seed_of(&k_vec_other));
+    }
+}
+
+/* The other cell's AACHs reading as the call's marker count toward its receive permission (N.213, EN 300 392-2 clause
+ * 23.8.2.3.2) only within TETRA_SM_GRANT_TIMEOUT_S of the home cell's last CRC-passed block on the carrier. A speaking
+ * call (the hangtime holds it) whose home SYNC was 4.5 s ago gets no permission from three of them (regression: main
+ * gave it, and with it the call's proof on the carrier); once the home's SYNC is heard again, three of them do. */
+static void
+test_aach_run_needs_home_evidence(void) {
+    reset_backend();
+    session s = open_on(&k_vec_home, 0);
+    s.opts->trunk_hangtime = 10.0F;
+    follow_marked(&s);
+    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    advance(&s, 0.1);
+    speech(&s);
+    advance(&s, 4.4);
+    three_other_aachs(&s);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && !ts->confirm.rx_perm);
+
+    advance(&s, 0.1);
+    assert(cell_sync_burst(&s, &k_vec_home, 0U, NULL, 0) == 1);
+    three_other_aachs(&s);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && ts->confirm.rx_perm);
+    close_session(&s);
+}
+
+/* A live home carrier: the call's channel sends its marker in the AACH of every slot and its SYNC once a second. A call
+ * set up and silent keeps its channel as long as that goes on, 10 s here, and the grant timeout returns home
+ * TETRA_SM_GRANT_TIMEOUT_S after the last SYNC (control: as on main). */
+static void
+test_live_home_carrier_keeps_a_silent_call(void) {
+    reset_backend();
+    session s = open_on(&k_vec_home, 0);
+    follow_marked(&s);
+    for (int i = 1; i <= 40; i++) {
+        advance(&s, 0.25);
+        if (i % 4 == 0) {
+            assert(cell_sync_burst(&s, &k_vec_home, 0U, NULL, 0) == 1);
+        }
+        aach_on_air(&s, VEC_HOME_READS, seed_of(&k_vec_home));
+        tetra_sm_tick(s.opts, s.state);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    }
+    advance(&s, TETRA_SM_GRANT_TIMEOUT_S - 0.01);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    advance(&s, 0.01);
+    tetra_sm_tick(s.opts, s.state);
+    assert_back_home(&s, 1);
+    close_session(&s);
+}
+
+/* Adverse AACH evidence is the standard's own rule and stays as on main: three ACCESS-ASSIGN PDUs saying the channel
+ * went back to common control (header 00, N.208) end a speaking call and return home, the home cell's last CRC evidence
+ * 5 s old. So do three of the other cell's that read that way under the home's scrambling (a documented limit: as
+ * noise can on main). The other cell's word is the wanted one XORed with what its zero word reads as (the code is
+ * linear). */
+static void
+test_adverse_aach_ends_the_call(void) {
+    static const uint16_t k_common_control = 0x0249U; /* 00, 9, 9 */
+    for (int other = 0; other <= 1; other++) {
+        reset_backend();
+        session s = open_on(&k_vec_home, 0);
+        s.opts->trunk_hangtime = 10.0F;
+        follow_marked(&s);
+        advance(&s, 0.1);
+        speech(&s);
+        advance(&s, 4.9);
+        for (int i = 0; i < 3; i++) {
+            if (other) {
+                aach_on_air(&s, (uint16_t)(k_common_control ^ VEC_HOME_READS), seed_of(&k_vec_other));
+            } else {
+                aach_on_air(&s, k_common_control, seed_of(&k_vec_home));
+            }
+        }
+        tetra_sm_tick(s.opts, s.state);
+        assert_back_home(&s, 1);
+        close_session(&s);
+    }
+}
+
 int
 main(void) {
     test_every_return_goes_home();
@@ -1459,6 +1670,10 @@ main(void) {
     test_home_reallocation_still_followed();
     test_cell_change_allocation_logged_only();
     test_cell_change_in_a_mac_end();
+    test_aach_cannot_outlive_home_evidence();
+    test_aach_run_needs_home_evidence();
+    test_live_home_carrier_keeps_a_silent_call();
+    test_adverse_aach_ends_the_call();
     printf("TETRA foreign cell: OK\n");
     return 0;
 }

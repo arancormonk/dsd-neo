@@ -167,15 +167,40 @@ void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
 void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
 
 /**
- * @brief The followed channel is maintained for the followed call (EN 300 392-2 clause 23.5.6.1.2, T.209): an
- * ACCESS-ASSIGN PDU of a followed timeslot carries the call's traffic usage marker, or a PDU there is addressed to one
- * of its parties.
+ * @brief The followed channel is maintained for the followed call (EN 300 392-2 clause 23.5.6.1.2, T.209): a PDU there
+ * is addressed to one of its parties.
  *
  * While TUNED and before the call's first speech, the grant timeout runs from the last such event instead of the tune:
  * a call set up and silent is not left while its channel is kept for it. Speech, and with it the hangtime, is
  * unaffected.
  */
 void tetra_sm_note_maintenance(dsd_state* state);
+
+/**
+ * @brief tetra_sm_note_maintenance() for an ACCESS-ASSIGN PDU of a followed timeslot carrying the call's traffic usage
+ * marker. The AACH has no CRC (EN 300 392-2 clause 8.3.1.1), and another cell's on the followed carrier can correct
+ * into a valid word under the home cell's scrambling: while the machine guards the follow (tetra_sm_guarding()) the
+ * event counts as of the home cell's last block whose CRC passed on the carrier (tetra_sm_note_home_crc()), not now,
+ * so the grant timeout runs out at most TETRA_SM_GRANT_TIMEOUT_S after it; a live home carrier sends its SYNC about
+ * once a second. Unguarded it is tetra_sm_note_maintenance(). @p opts may be NULL (unguarded).
+ */
+void tetra_sm_note_aach_maintenance(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief A block whose CRC passed under the home cell's scrambling was decoded on the followed carrier: the home cell's
+ * SYNC, a signalling block of it (not one carrying another cell's SYSINFO) or speech. While TUNED with a home and no
+ * tune in flight, in a burst still on the carrier, it is the home cell's latest evidence there, which positive AACH
+ * evidence cannot outlive (tetra_sm_note_aach_maintenance(), tetra_sm_aach_corroborated()).
+ */
+void tetra_sm_note_home_crc(dsd_state* state);
+
+/**
+ * @brief 1 when an ACCESS-ASSIGN PDU carrying the followed call's usage marker may count toward its receive permission
+ * (N.213, EN 300 392-2 clause 23.8.2.3.2): always unguarded; while the machine guards the follow only within
+ * TETRA_SM_GRANT_TIMEOUT_S of the home cell's last block whose CRC passed on the carrier (tetra_sm_note_home_crc()).
+ * @p opts may be NULL (unguarded).
+ */
+int tetra_sm_aach_corroborated(const dsd_opts* opts, const dsd_state* state);
 
 /**
  * @brief Time-driven transitions: settle the tune in flight once the backend answered it (until then nothing else

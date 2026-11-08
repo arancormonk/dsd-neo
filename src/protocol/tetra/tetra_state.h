@@ -75,6 +75,7 @@ typedef struct {
     double t_tune_m;
     double t_voice_m;
     double t_maint_m;
+    double t_home_crc_m;
     uint32_t confirm_epoch;
     uint8_t followed_proven;
     uint8_t followed_rx;
@@ -116,6 +117,8 @@ typedef struct {
     double t_tune_m;  /* the followed tune completed, or the grant was taken on the same carrier; 0 in flight */
     double t_voice_m; /* last speech on a followed timeslot since then; 0 for none */
     double t_maint_m; /* last channel maintenance event before the first speech (tetra_sm_note_maintenance()); 0 none */
+    double t_home_crc_m; /* last block of the home cell whose CRC passed on the followed carrier: its SYNC, signalling
+                            or speech (tetra_sm_note_home_crc()); 0 none since the follow started */
     uint64_t pending_request_id; /* the correlated trunk-tuning request in flight; 0 for none */
     uint8_t state;               /* tetra_sm_state_e */
     uint8_t pending_kind;        /* what the request in flight does: 0 none, 1 grant, 2 return to the control channel,

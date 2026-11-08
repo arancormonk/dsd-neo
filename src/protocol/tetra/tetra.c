@@ -324,8 +324,9 @@ tetra_note_proven_cell(dsd_state* state, uint32_t seed) {
 /* A CRC-passed signalling block: the MAC in trunked mode, the DMAC logger in direct mode. It counts as evidence about
    the carrier once it has been acted on, so a grant it carries is judged by the blocks before it. A trunked downlink MAC
    block proves a control channel, an uplink one the carrier for publication only (tetra_confirm.h), and a direct mode
-   one the burst. A normal uplink burst's full slot goes to the uplink reader (tetra_ul.h), never the downlink MAC; its
-   stealing channel half slots are not read. */
+   one the burst. A trunked downlink block is the home cell's evidence on a followed carrier too
+   (tetra_sm_note_home_crc()), unless it carried another cell's SYSINFO. A normal uplink burst's full slot goes to the
+   uplink reader (tetra_ul.h), never the downlink MAC; its stealing channel half slots are not read. */
 static void
 tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* decoded, int len,
                     const char* kind, int ks_offset) {
@@ -335,16 +336,30 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
         return;
     }
     tetra_note_proven_cell(state, ctx->seed);
+    int own = 1; /* the block was the cell's (tetra_mac_parse_block()) */
     if (ctx->uplink && len == SCHF_TYPE1) {
         tetra_ul_block(state, TETRA_UL_SCH_F, decoded, len, ctx->cc);
     } else {
-        tetra_mac_parse_block(decoded, len, ctx->cc, ks_offset, opts, state);
+        own = tetra_mac_parse_block(decoded, len, ctx->cc, ks_offset, opts, state);
     }
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (ts && ts->uplink) {
         tetra_confirm_note_uplink_signalling(state);
-    } else {
-        tetra_confirm_note_signalling(state);
+        return;
+    }
+    tetra_confirm_note_signalling(state);
+    if (own) {
+        tetra_sm_note_home_crc(state);
+    }
+}
+
+/* Speech whose CRC passed in a trunked downlink burst: the home cell's evidence on a followed carrier
+   (tetra_sm_note_home_crc()), as its signalling is. */
+static void
+tetra_nb_speech_decoded(dsd_state* state, const tetra_nb_ctx* ctx) {
+    tetra_confirm_note_block(state);
+    if (!ctx->direct && !ctx->uplink) {
+        tetra_sm_note_home_crc(state);
     }
 }
 
@@ -396,7 +411,7 @@ tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     if (!tetra_nb_half(opts, state, ctx, block, "STCH-2", TETRA_AIR_KSS_SECOND_HALF_BLOCK)
         && !tetra_tdma_control_frame(tetra_st_peek(state)) && !ctx->no_traffic
         && tetra_decode_tch_half(block, opts, state)) {
-        tetra_confirm_note_block(state);
+        tetra_nb_speech_decoded(state, ctx);
     }
 }
 
@@ -418,7 +433,7 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     if (!tetra_schf_decode_bits(type4, decoded)) {
         tetra_nb_block_failed(state, ctx);
         if (!tetra_tdma_control_frame(ts) && !ctx->no_traffic && tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
-            tetra_confirm_note_block(state);
+            tetra_nb_speech_decoded(state, ctx);
         }
         return;
     }
@@ -904,7 +919,8 @@ tetra_sb_soft_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
    in the slot after the last burst's: the TDMA clock runs to it on the symbol count, as for a normal burst, so block 2
    is decoded in its own timeslot rather than the last burst's. So does one of another cell on the followed carrier
    (TETRA_BSCH_FOREIGN), whose burst is that cell's: its block 2 is scrambled with another colour code and is not
-   decoded, and the BSCH is no evidence about the carrier nor sets its polarity. */
+   decoded, and the BSCH is no evidence about the carrier nor sets its polarity. One taken on is the home cell's
+   evidence on a followed carrier (tetra_sm_note_home_crc()). */
 static int
 tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     uint8_t decoded[SB_TYPE2];
@@ -928,6 +944,7 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     }
     tetra_tmo_sb_commit_polarity(state);
     tetra_confirm_note_signalling(state);
+    tetra_sm_note_home_crc(state);
     return 1;
 }
 

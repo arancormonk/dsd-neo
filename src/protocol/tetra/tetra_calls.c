@@ -2260,10 +2260,11 @@ calls_leave_lost_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
 }
 
 /* N.213 / N.212 / T.212 on an ACCESS-ASSIGN PDU of the followed channel in frames 1 to 17 (clause 23.8.2.3.2), with the
- * call's downlink usage marker @p um. */
+ * call's downlink usage marker @p um. One the home cell's CRC evidence does not @p corroborate counts toward no run
+ * (tetra_sm_aach_corroborated()): the AACH has no CRC, and another cell's can correct into the call's marker. */
 static void
 aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* g, unsigned header, unsigned f1,
-                        const tetra_call_t* c) {
+                        const tetra_call_t* c, int corroborated) {
     const uint8_t um = c->usage_marker;
     /* The channel is the record's timeslots of the follow: an allocation may have narrowed it since. */
     const uint8_t slots = (uint8_t)(c->alloc.timeslots & g->timeslots);
@@ -2282,7 +2283,13 @@ aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_gran
     const int successive = cf->rx_run > 0u
                            && slots_between(cf->rx_run_start, ts->tdma_slot_start)
                                   == next_channel_slot(cf->rx_run_tn, cf->rx_run_fn, slots);
-    cf->rx_run = (uint8_t)(successive ? (cf->rx_run < UINT8_MAX ? cf->rx_run + 1u : cf->rx_run) : 1u);
+    if (!corroborated) {
+        cf->rx_run = 0;
+    } else if (!successive) {
+        cf->rx_run = 1;
+    } else if (cf->rx_run < UINT8_MAX) {
+        cf->rx_run++;
+    }
     cf->rx_run_tn = ts->tn;
     cf->rx_run_fn = ts->fn;
     cf->rx_run_start = ts->tdma_slot_start;
@@ -2384,14 +2391,14 @@ tetra_calls_on_aach(dsd_opts* opts, dsd_state* state, int read, uint16_t pdu) {
     const unsigned fields[3] = {(pdu >> 12) & 3u, (pdu >> 6) & 0x3Fu, pdu & 0x3Fu};
     const int control_frame = tetra_tdma_control_frame(ts);
     if (c && aach_maintains(control_frame, fields[0], fields[1], fields[2], c->usage_marker)) {
-        tetra_sm_note_maintenance(state);
+        tetra_sm_note_aach_maintenance(opts, state);
     }
     /* Frame 18 counts for channel maintenance only. */
     if (control_frame || aach_n208(opts, state, ts, &g, fields, c)) {
         return;
     }
     if (c) {
-        aach_receive_permission(state, ts, &g, fields[0], fields[1], c);
+        aach_receive_permission(state, ts, &g, fields[0], fields[1], c, tetra_sm_aach_corroborated(opts, state));
     }
 }
 

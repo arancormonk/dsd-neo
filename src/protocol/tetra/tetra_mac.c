@@ -67,6 +67,7 @@ typedef struct {
     int fragment_seen;        /* the block carried a fragment of its timeslot's TM-SDU */
     tetra_mac_fragment* frag; /* fragment context of the block's timeslot */
     int ks_offset;            /* key stream bit its encrypted PDUs start at (EN 300 392-7 clause 6.4.2.2) */
+    int other_cell;           /* the block carried another cell's SYSINFO (sysinfo_applies()) */
 } mac_block;
 
 /* 1 for the SSI family (SSI, USSI and their event label or usage marker forms), 2 for the SMI family, 0 for event
@@ -1210,6 +1211,8 @@ parse_broadcast(mac_block* b, const uint8_t* bits, int nbits) {
            on the carrier of a guarded follow is not taken at all. */
         if (taken) {
             b->ts->frames_sysinfo++;
+        } else {
+            b->other_cell = 1;
         }
         return nbits;
     }
@@ -1391,23 +1394,23 @@ tetra_mac_forget_fragments(dsd_state* state) {
 
 void
 tetra_mac_parse_schd(const uint8_t* bits, int nbits, int cc, dsd_opts* opts, dsd_state* state) {
-    tetra_mac_parse_block(bits, nbits, cc, 0, opts, state);
+    (void)tetra_mac_parse_block(bits, nbits, cc, 0, opts, state);
 }
 
-void
+int
 tetra_mac_parse_block(const uint8_t* bits, int nbits, int cc, int ks_offset, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !bits || nbits < 2) {
-        return;
+        return 1;
     }
     log_raw_block(ts, bits, nbits);
     if (ts->uplink) {
         /* Uplink blocks hold MAC-DATA, MAC-U-BLCK and uplink MAC-FRAG/MAC-END PDUs (clause 21.4.2), whose layouts
          * differ from the downlink ones decoded here. */
         TETRA_LOG_PAYLOAD(ts, "[TETRA MAC] CC=%d  uplink block of %d bits not decoded\n", cc, nbits);
-        return;
+        return 1;
     }
-    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)], ks_offset};
+    mac_block b = {opts, state, ts, cc, nbits, 1, 0, &ts->mac_frag[fragment_timeslot(ts)], ks_offset, 0};
     catch_up_fragment(ts, b.frag, cc);
     int off = 0;
     while (nbits - off >= (b.first ? 2 : MAC_NULL_PDU_BITS)) {
@@ -1421,6 +1424,7 @@ tetra_mac_parse_block(const uint8_t* bits, int nbits, int cc, int ks_offset, dsd
         b.first = 0;
     }
     age_fragment(&b);
+    return !b.other_cell;
 }
 
 tetra_dl_usage

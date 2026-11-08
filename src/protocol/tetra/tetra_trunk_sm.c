@@ -104,6 +104,7 @@ sm_capture(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts
     r.t_tune_m = ts->sm.t_tune_m;
     r.t_voice_m = ts->sm.t_voice_m;
     r.t_maint_m = ts->sm.t_maint_m;
+    r.t_home_crc_m = ts->sm.t_home_crc_m;
     r.confirm_epoch = tetra_confirm_carrier_epoch(state);
     r.followed_proven = (uint8_t)tetra_confirm_followed_call_proven(state);
     r.followed_rx = (uint8_t)tetra_confirm_followed_rx(state);
@@ -154,6 +155,7 @@ sm_restore(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_sm_r
     ts->sm.t_tune_m = r->t_tune_m;
     ts->sm.t_voice_m = r->t_voice_m;
     ts->sm.t_maint_m = r->t_maint_m;
+    ts->sm.t_home_crc_m = r->t_home_crc_m;
     /* The receiver never left the carrier: what proved the call there still does, unless the carrier was reset. */
     tetra_confirm_restore_followed_call(state, r->confirm_epoch, r->followed_proven, r->followed_rx);
     sm_set_state(state, ts, (tetra_sm_state_e)r->state, "tune failed; put back");
@@ -217,6 +219,7 @@ sm_follow(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* grant) {
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
     ts->sm.t_maint_m = 0.0;
+    ts->sm.t_home_crc_m = 0.0;
     tetra_confirm_forget_followed_call(state);
 }
 
@@ -231,6 +234,7 @@ sm_unfollow(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     ts->sm.t_tune_m = 0.0;
     ts->sm.t_voice_m = 0.0;
     ts->sm.t_maint_m = 0.0;
+    ts->sm.t_home_crc_m = 0.0;
     tetra_confirm_forget_followed_call(state);
     tetra_calls_unfollowed(opts, state);
 }
@@ -987,14 +991,53 @@ tetra_sm_note_voice(dsd_state* state, uint8_t tn) {
     ts->sm.t_voice_m = dsd_decode_now_mono_s();
 }
 
+/* The followed channel's maintenance can extend the grant timeout: TUNED, no tune in flight, no speech yet, and no
+ * return owed. */
+static int
+sm_maintainable(const tetra_state_t* ts) {
+    return ts->sm.state == (uint8_t)TETRA_SM_TUNED && ts->sm.pending_request_id == 0U && ts->sm.t_voice_m <= 0.0
+           && !ts->sm.return_required;
+}
+
 void
 tetra_sm_note_maintenance(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U || ts->sm.t_voice_m > 0.0
-        || ts->sm.return_required) {
+    if (ts && sm_maintainable(ts)) {
+        ts->sm.t_maint_m = dsd_decode_now_mono_s();
+    }
+}
+
+void
+tetra_sm_note_aach_maintenance(const dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || !sm_maintainable(ts)) {
         return;
     }
-    ts->sm.t_maint_m = dsd_decode_now_mono_s();
+    /* An AACH has no CRC, and another cell's may correct into the call's marker under the home's scrambling: while
+     * guarding it maintains the channel no later than the home cell's last block whose CRC passed there. */
+    const double at_m = tetra_sm_guarding(opts, state) ? ts->sm.t_home_crc_m : dsd_decode_now_mono_s();
+    if (at_m > ts->sm.t_maint_m) {
+        ts->sm.t_maint_m = at_m;
+    }
+}
+
+void
+tetra_sm_note_home_crc(dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || ts->sm.state != (uint8_t)TETRA_SM_TUNED || ts->sm.pending_request_id != 0U || !ts->sm.home.valid
+        || !tetra_confirm_burst_current(state)) {
+        return;
+    }
+    ts->sm.t_home_crc_m = dsd_decode_now_mono_s();
+}
+
+int
+tetra_sm_aach_corroborated(const dsd_opts* opts, const dsd_state* state) {
+    if (!tetra_sm_guarding(opts, state)) {
+        return 1;
+    }
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    return ts && ts->sm.t_home_crc_m > 0.0 && dsd_decode_now_mono_s() - ts->sm.t_home_crc_m <= TETRA_SM_GRANT_TIMEOUT_S;
 }
 
 /* Trunking off while TUNED: the receiver stays on the followed channel (sm_release()), and what it decodes there is
