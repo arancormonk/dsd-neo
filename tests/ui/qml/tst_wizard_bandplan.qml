@@ -92,9 +92,14 @@ Item {
             return null
         }
         function test_01b_an_imported_file_name_draws_as_written() {
+            // The import stores the file under this name, and Windows file
+            // names cannot hold "<" or ">", so no imported name carries markup
+            // there.
+            if (Qt.platform.os === "windows")
+                skip("Windows file names cannot hold markup")
             var source = testContext.writeFixtureCsv("markup-map.csv", "channel,frequency\n1,851012500\n")
             var result = importedFiles.importFile(source, "<b>Map &amp; plan.csv", "chan")
-            verify(result.ok, "the map was not imported")
+            verify(result.ok, "the map was not imported: " + result.error)
             var sheet = findChild(tc.wizard, "wizardCsvSheet")
             try {
                 tc.wizard.pickerTarget = "chan"
