@@ -27721,6 +27721,80 @@ test_scan_list_set_keeps_a_shared_target_on_air(void) {
     return rc;
 }
 
+/* Switches queued while a decoder holds the carrier of a target two lists hold (issue #697) are judged in queue order:
+   "hospital off" and then "municipality off" leave b at the second, though neither alone does, so that one returns the
+   decoder to the frame loop and the drain leaves b for a, in security. A list switched off and back on, or every list
+   on, between them keeps b, so all of them wait for the carrier. */
+static int
+test_scan_list_set_queued_switches_leave_a_shared_target(void) {
+    static const char* const k_rows[3] = {
+        "a,p25-trunk,851000000,,3000,,\n",
+        "b,dmr-trunk,452000000,,3000,,\nc,p25-trunk,853000000,,3000,,\n",
+        "d,dmr-trunk,454000000,,3000,,\nb,dmr-trunk,452000000,,3000,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_rig rig;
+    int rc = init_scan_list_rig_rows(&opts, &state, &rig, k_rows);
+    const uint32_t session = state.trunk_scan_session;
+
+    /* a leaves for b, which hospital and municipality hold; security on again keeps b, a its alternative. */
+    rc |= drain_list_set(&opts, &state, session, 1, 0, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 1 (security) off: 2 of 3 lists on, 3 targets", "queued: list 1 off");
+    rc |= drain_list_set(&opts, &state, session, 1, 1, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 1 (security) on: 3 of 3 lists on, 4 targets", "queued: list 1 on");
+    rc |= expect_str("queued: on b", state.trunk_scan_active_id, "b");
+    rc |= expect_int("queued: b in hospital and municipality", state.trunk_scan_active_lists, 0x6);
+    held_carrier held;
+    held_carrier_note(&held, &state);
+
+    /* hospital off, hospital on, municipality off: one of b's lists stays on throughout. */
+    uint64_t after = scan_list_newest_seq();
+    rc |= expect_int("hospital off queued", submit_list_set(session, 2, 0, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("hospital on queued", submit_list_set(session, 2, 1, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("municipality off queued", submit_list_set(session, 3, 0, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_carrier_kept("off, on, then b's other list off waits for the carrier", &state, &held, after);
+    rc |= expect_int("carrier ended: three drained", dsd_app_drain_cmds(&opts, &state), 3);
+    rc |= expect_lists_on("off, on, other off", &state, 1, 1, 0);
+    rc |= expect_str("b stays after off, on, other off", state.trunk_scan_active_id, "b");
+    rc |= drain_list_set(&opts, &state, session, 3, 1, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 3 (municipality) on: 3 of 3 lists on, 4 targets", "queued: municipality on");
+
+    /* hospital off, every list on, municipality off: the same. */
+    held_carrier_note(&held, &state);
+    after = scan_list_newest_seq();
+    rc |= expect_int("hospital off queued", submit_list_set(session, 2, 0, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("every list on queued", submit_list_set(session, DSD_APP_SCAN_LIST_ALL, 1, NULL),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("municipality off queued", submit_list_set(session, 3, 0, NULL), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_carrier_kept("off, every list on, then b's other list off waits", &state, &held, after);
+    rc |= expect_int("carrier ended: three drained", dsd_app_drain_cmds(&opts, &state), 3);
+    rc |= expect_lists_on("off, every list on, other off", &state, 1, 1, 0);
+    rc |= expect_str("b stays after off, every list on, other off", state.trunk_scan_active_id, "b");
+    rc |= drain_list_set(&opts, &state, session, 3, 1, DSD_APP_SCAN_LIST_SET_OK,
+                         "Scan list 3 (municipality) on: 3 of 3 lists on, 4 targets", "queued: municipality on again");
+
+    /* hospital off waits; municipality off after it switches off the last of b's lists that is on. */
+    held_carrier_note(&held, &state);
+    after = scan_list_newest_seq();
+    uint32_t hospital = 0U;
+    uint32_t municipality = 0U;
+    rc |= expect_int("hospital off queued", submit_list_set(session, 2, 0, &hospital), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_carrier_kept("hospital off alone waits", &state, &held, after);
+    rc |= expect_int("municipality off queued", submit_list_set(session, 3, 0, &municipality),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |=
+        expect_int("both of b's lists off returns to the frame loop", dsd_runtime_controls_need_frame_loop(&state), 1);
+    rc |= expect_int("both of b's lists off: drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_list_result("hospital off", after, hospital, session, 2, 0, DSD_APP_SCAN_LIST_SET_OK);
+    rc |= expect_list_result("municipality off", after, municipality, session, 3, 0, DSD_APP_SCAN_LIST_SET_OK);
+    rc |= expect_lists_on("both of b's lists off", &state, 1, 0, 0);
+    rc |= expect_true("both of b's lists off leave b for a",
+                      strcmp(state.trunk_scan_active_id, "a") == 0 && state.trunk_cc_freq != held.cc_freq);
+    finish_scan_list_rig(&opts, &state, &rig);
+    return rc;
+}
+
 /* Whether a list switch leaves the target on air is judged from every list holding it (issue #697): switching off one
    of them takes the frame loop only when it is on and no other of them is on. Judged against the asking decoder's
    state, here written by hand: three lists, the target on air held by lists 2 and 3. */
@@ -27771,6 +27845,74 @@ test_scan_list_set_judged_by_the_lists_holding_the_target(void) {
         dsd_app_frontend_runtime_start(&opts, &state);
         rc |=
             expect_true("list switch queued", dsd_app_command_submit(DSD_APP_CMD_SCAN_LIST_SET, &off, sizeof off) > 0);
+        if (dsd_runtime_controls_need_frame_loop(&state) != cases[i].needs) {
+            DSD_FPRINTF(stderr, "%s: needs the frame loop %d, want %d\n", cases[i].name,
+                        dsd_runtime_controls_need_frame_loop(&state), cases[i].needs);
+            rc = 1;
+        }
+        dsd_app_frontend_runtime_stop();
+    }
+    dsd_app_frontend_runtime_start(&opts, &state);
+    freeState(&state);
+    DSD_SECURE_ZERO(&state, sizeof state);
+    return rc;
+}
+
+/* Queued list switches are judged in queue order (issue #697), each against the lists on as the switches of this scan
+   before it leave them: three lists, all on, the target on air held by lists 1 and 2. Here the state is written by
+   hand. */
+static int
+test_scan_list_set_judged_in_queue_order(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    int rc = 0;
+
+    /* Each switch: its list (DSD_APP_SCAN_LIST_ALL: every list), whether it switches on, and its session (0: this
+       scan's). */
+    typedef struct {
+        int list;
+        int enabled;
+        uint32_t session;
+    } queued_switch;
+
+    const struct {
+        const char* name;
+        queued_switch switches[3];
+        size_t count;
+        int needs;
+    } cases[] = {
+        {"list 1 off, then list 2 off", {{1, 0, 0U}, {2, 0, 0U}}, 2U, 1},
+        {"list 2 off, then list 1 off", {{2, 0, 0U}, {1, 0, 0U}}, 2U, 1},
+        {"list 1 off, list 1 on, list 2 off", {{1, 0, 0U}, {1, 1, 0U}, {2, 0, 0U}}, 3U, 0},
+        {"list 1 off, every list on, list 2 off", {{1, 0, 0U}, {DSD_APP_SCAN_LIST_ALL, 1, 0U}, {2, 0, 0U}}, 3U, 0},
+        {"list 1 off, then list 3 off", {{1, 0, 0U}, {3, 0, 0U}}, 2U, 0},
+        {"another scan's list 1 off, then list 2 off", {{1, 0, 7U}, {2, 0, 0U}}, 2U, 0},
+        {"list 9 off, then list 2 off", {{9, 0, 0U}, {2, 0, 0U}}, 2U, 0},
+        {"every list off (refused), then list 2 off", {{DSD_APP_SCAN_LIST_ALL, 0, 0U}, {2, 0, 0U}}, 2U, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        state.trunk_scan_session = 1U;
+        state.trunk_scan_list_count = 3U;
+        for (int l = 0; l < 3; l++) {
+            state.trunk_scan_lists[l].enabled = 1U;
+        }
+        state.trunk_scan_paused = 0U;
+        state.trunk_scan_active_lists = 0x3U;
+        state.trunk_scan_active_list = 1U;
+        state.trunk_scan_active_list_off = 0U;
+        state.trunk_scan_active_avoided = 0U;
+        dsd_app_frontend_runtime_start(&opts, &state);
+        for (size_t k = 0; k < cases[i].count; k++) {
+            const queued_switch* q = &cases[i].switches[k];
+            const dsd_app_scan_list_set_payload p = {.session = q->session != 0U ? q->session : 1U,
+                                                     .request = (uint32_t)(k + 1U),
+                                                     .list = (int16_t)q->list,
+                                                     .enabled = (uint8_t)q->enabled};
+            rc |=
+                expect_true("list switch queued", dsd_app_command_submit(DSD_APP_CMD_SCAN_LIST_SET, &p, sizeof p) > 0);
+        }
         if (dsd_runtime_controls_need_frame_loop(&state) != cases[i].needs) {
             DSD_FPRINTF(stderr, "%s: needs the frame loop %d, want %d\n", cases[i].name,
                         dsd_runtime_controls_need_frame_loop(&state), cases[i].needs);
@@ -28622,7 +28764,9 @@ main(void) {
     rc |= test_scan_list_set_waits_for_a_held_carrier();
     rc |= test_scan_flag_edits_while_a_departure_is_owed();
     rc |= test_scan_list_set_keeps_a_shared_target_on_air();
+    rc |= test_scan_list_set_queued_switches_leave_a_shared_target();
     rc |= test_scan_list_set_judged_by_the_lists_holding_the_target();
+    rc |= test_scan_list_set_judged_in_queue_order();
     rc |= test_scan_list_back_on_during_a_held_carrier_keeps_the_target();
     rc |= test_scan_list_on_during_a_held_carrier_lets_the_departure_go();
     rc |= test_put_back_during_a_held_carrier_keeps_the_fallback();
