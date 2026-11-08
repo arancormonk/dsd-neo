@@ -324,6 +324,7 @@ load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* syste
     if (restore != backup::ApplyOutcome::Deferred && restore != backup::ApplyOutcome::Stuck) {
         replays->reclaim(*systems, systems->storeLoaded());
     }
+    replays->migrateCachedReplays(systems);
     return replays;
 }
 
@@ -341,7 +342,6 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* backupModel = new BackupModel(host, restoreOutcome, &engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
-    (void)systems->migrateCachedReplayFiles(host);
     auto* replays = load_replays(host, imports, systems, restoreOutcome.outcome, &engine);
     sessionArgs->setSavedSystems(systems);
 

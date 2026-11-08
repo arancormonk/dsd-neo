@@ -31,7 +31,6 @@
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
-class DecoderHost;
 class ReplayStore;
 
 class SavedSystemsModel : public QAbstractListModel {
@@ -78,7 +77,6 @@ class SavedSystemsModel : public QAbstractListModel {
     /** Private-store secret access for session argument assembly only. Not invokable from QML.
      * QString copies cannot promise erasure. Never log or export the returned value. */
     QString keyValueForUid(const QString& uid) const;
-    bool migrateCachedReplayFiles(DecoderHost* host);
 
     /**
      * @brief The replay copies' owner (#832): add() and update() adopt a copy a row gains before they save, update()
@@ -94,6 +92,22 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /** @brief Every non-empty filePath the systems hold (a replay's file), each once. */
     QStringList filePaths() const;
+
+    /** @brief A row to point at a new replay file, while it still names the old one. */
+    struct FilePathMove {
+        QString uid;
+        QString from;
+        QString to;
+    };
+
+    /**
+     * @brief Point each row @p moves names by uid at its new file, when its filePath is still the old one. Persists
+     * first; the replay store is not told (the caller owns the copies).
+     *
+     * @param applied Receives every new path a row now names (empty when nothing moved or the save failed).
+     * @return false when the save failed; nothing changed then.
+     */
+    bool moveFilePaths(const QList<FilePathMove>& moves, QStringList* applied);
 
     /**
      * @brief @p candidate in the form this model stores a UID (a brace-less UUID), or empty when it is no UUID.

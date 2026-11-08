@@ -3,7 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <QChar>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qanystringview.h>
 #include <utility>
@@ -22,12 +21,7 @@
 #include <QUuid>
 #include <QVariant>
 
-#include <QFile>
-#include <QFileInfo>
-#include <QStandardPaths>
-#include <QUrl>
 #include <dsd-neo/runtime/log.h>
-#include "decoder_host.h"
 #include "json_store.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
@@ -698,49 +692,34 @@ SavedSystemsModel::filePaths() const {
 }
 
 bool
-SavedSystemsModel::migrateCachedReplayFiles(DecoderHost* host) {
-    if (!host) {
-        return false;
-    }
-    const QString cache =
-        QFileInfo(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)).canonicalFilePath();
-    if (cache.isEmpty()) {
-        return true;
-    }
+SavedSystemsModel::moveFilePaths(const QList<FilePathMove>& moves, QStringList* applied) {
+    applied->clear();
     auto next = m_rows;
-    QMap<QString, QString> copies;
-    for (auto& row : next) {
-        if (row.sourceType != "file") {
-            continue;
+    QList<int> changed;
+    QStringList used;
+    for (const FilePathMove& move : moves) {
+        const int row = rowForUid(move.uid);
+        if (row < 0 || next.at(row).filePath != move.from) {
+            continue; // edited, removed or reseeded since: the row stays as the user made it
         }
-        const QFileInfo original(row.filePath);
-        const QString source = original.canonicalFilePath();
-        if (source.isEmpty() || !source.startsWith(cache + '/') || !original.isFile()) {
-            continue;
+        next[row].filePath = move.to;
+        changed.append(row);
+        if (!used.contains(move.to)) {
+            used.append(move.to);
         }
-        if (!copies.contains(source)) {
-            const QString stored =
-                host->importDocument(QUrl::fromLocalFile(source).toString(), original.fileName(), QString());
-            if (stored.isEmpty() || QFileInfo(stored).canonicalFilePath() == source) {
-                continue;
-            }
-            copies.insert(source, stored);
-        }
-        row.filePath = copies.value(source);
     }
-    if (copies.isEmpty()) {
+    if (changed.isEmpty()) {
         return true;
     }
     if (!saveRows(next)) {
-        for (const auto& path : copies) {
-            QFile::remove(path);
-        }
         return false;
     }
     m_rows = std::move(next);
-    if (!m_rows.isEmpty()) {
-        Q_EMIT dataChanged(index(0), index(count() - 1));
+    for (const int row : changed) {
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx, {FilePathRole});
     }
+    *applied = used;
     return true;
 }
 

@@ -6,7 +6,8 @@
 /* Unit tests: the replay store (#832). A replay picked in the wizard copies on the import worker into replays/ (a
  * local file is answered with its path), within the free space less the reserve, with progress and cancel; the copy
  * is recorded pending, saved systems adopt and release it, and a later start deletes only pending copies no saved
- * system names, and nothing when a store cannot be read, the decoder runs or a restore is unfinished. */
+ * system names, and nothing when a store cannot be read, the decoder runs or a restore is unfinished. The startup
+ * migration of replays kept in the OS cache copies on the worker and repoints only rows still naming the cached file. */
 
 #include <QByteArray>
 #include <QChar>
@@ -25,6 +26,7 @@
 #include <QMap>
 #include <QObject>
 #include <QSet>
+#include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QThread>
@@ -35,7 +37,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <functional>
-#include <initializer_list>
+#include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <memory>
 #include <mutex>
 #include <qflags.h>
@@ -618,6 +620,83 @@ test_teardown_service_first() {
     CHECK(rig.answers.isEmpty(), "no answer after teardown");
 }
 
+QString
+cache_file(const QString& name, const QByteArray& bytes) {
+    const QString path = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QLatin1Char('/') + name;
+    write_file(path, bytes);
+    return path;
+}
+
+/* B10: the cached-replay migration copies on the worker (the startup path returns at once), through the transport
+   even though the source is local, repoints only rows still naming the cached file, and leaves that file. */
+void
+test_migration_runs_off_the_qt_thread() {
+    reset_data();
+    const QString legacy = cache_file(QStringLiteral("legacy.wav"), QByteArray("test replay copy"));
+    const QString other = cache_file(QStringLiteral("other.wav"), QByteArray("other replay"));
+    Rig rig;
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    CHECK(systems.add(replay_system(QStringLiteral("A"), legacy))
+              && systems.add(replay_system(QStringLiteral("B"), legacy))
+              && systems.add(replay_system(QStringLiteral("C"), other)),
+          "three systems keep cached replays");
+    rig.transport->setHoldLocal(true);
+    rig.store->migrateCachedReplays(&systems);
+    CHECK(systems.get(0).value(QStringLiteral("filePath")).toString() == legacy, "the startup path does not wait");
+    CHECK(wait_until([&rig]() { return rig.transport->holding() > 0; }), "the copy runs on the worker");
+    // Edited while the copy runs: the row stays as the user made it.
+    CHECK(systems.update(2, {{QStringLiteral("filePath"), QStringLiteral("/elsewhere/other.wav")}}), "C is edited");
+    rig.transport->setHoldLocal(false);
+    CHECK(wait_until([&rig]() { return !rig.service->busy(); }), "the migration finishes");
+    const QString durable = ReplayStore::replaysRoot() + QStringLiteral("/legacy.wav");
+    const QString unused = ReplayStore::replaysRoot() + QStringLiteral("/other.wav");
+    CHECK(systems.get(0).value(QStringLiteral("filePath")).toString() == durable
+              && systems.get(1).value(QStringLiteral("filePath")).toString() == durable,
+          "the rows still naming the cached file take one copy");
+    CHECK(read_file(durable) == "test replay copy" && manifest().value(durable) == QStringLiteral("kept"),
+          "the copy is kept");
+    CHECK(systems.get(2).value(QStringLiteral("filePath")).toString() == QStringLiteral("/elsewhere/other.wav"),
+          "an edited row keeps its edit");
+    CHECK(manifest().value(unused) == QStringLiteral("pending"), "the copy no row took is released");
+    CHECK(QFileInfo::exists(legacy) && QFileInfo::exists(other), "the cached originals stay");
+    CHECK(rig.transport->copies().contains(legacy) && rig.transport->copies().contains(other),
+          "the cached files copy through the transport");
+    CHECK(rig.transport->allOffMainThread(), "every copy ran off the Qt thread");
+    {
+        SavedSystemsModel reopened;
+        CHECK(reopened.get(0).value(QStringLiteral("filePath")).toString() == durable, "the repoint is saved");
+    }
+    const int copies = static_cast<int>(rig.transport->copies().size());
+    rig.store->migrateCachedReplays(&systems);
+    CHECK(!rig.service->busy() && rig.transport->copies().size() == copies, "a migrated system is not copied again");
+    rig.store->reclaim(systems, systems.storeLoaded());
+    CHECK(QFileInfo::exists(durable) && !QFileInfo::exists(unused), "the next start reclaims only the unused copy");
+}
+
+/* A repoint that cannot be saved leaves the rows on the cached file and its copy pending, for a later reclaim. */
+void
+test_migration_save_failure_releases_its_copy() {
+    reset_data();
+    const QString legacy = cache_file(QStringLiteral("legacy.wav"), QByteArray("legacy"));
+    Rig rig;
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    CHECK(systems.add(replay_system(QStringLiteral("A"), legacy)), "a system keeps a cached replay");
+    const QString store = dsd_qt::json_store_path(QStringLiteral("saved_systems.json"));
+    CHECK(QFile::remove(store) && QDir().mkpath(store), "the saved systems store is blocked");
+    QByteArray log;
+    log = captured_stderr([&rig, &systems]() {
+        rig.store->migrateCachedReplays(&systems);
+        (void)wait_until([&rig]() { return !rig.service->busy(); });
+    });
+    CHECK(QDir(store).removeRecursively(), "the store is unblocked");
+    CHECK(log.contains("keep the cached files"), "the failed save is logged");
+    CHECK(systems.get(0).value(QStringLiteral("filePath")).toString() == legacy, "the row keeps the cached file");
+    CHECK(manifest().value(ReplayStore::replaysRoot() + QStringLiteral("/legacy.wav")) == QStringLiteral("pending"),
+          "its copy is released");
+}
+
 void
 test_names() {
     const QString root = ReplayStore::replaysRoot();
@@ -645,6 +724,8 @@ main(int argc, char** argv) {
     test_no_space_during_copy();
     test_cancel_and_progress();
     test_teardown_service_first();
+    test_migration_runs_off_the_qt_thread();
+    test_migration_save_failure_releases_its_copy();
     if (failures != 0) {
         std::fprintf(stderr, "%d failure(s)\n", failures);
         return 1;

@@ -12494,7 +12494,15 @@ Qt Quick frontend (`src/ui/qt`):
   `Deferred` or `Stuck` (no reclaim at that start). A manifest that cannot be read deletes nothing and is set aside to
   `replay_copies.json.bad`, so later copies are recorded again. A restore clears `filePath` but never touches `replays/`
   or the manifest, so a kept copy stays kept (unreferenced, never reclaimed); copies in `imports/` from older versions
-  are not listed and never touched. Test: `UI_QT_REPLAY_STORE`.
+  are not listed and never touched. `load_replays()` then starts `migrateCachedReplays()` (B10), which no longer
+  copies on the startup path: it notes each `file` row whose `filePath` is a regular file in the OS cache
+  (`CacheLocation`, canonical) as `(uid, filePath)`, and one import request copies each cached file through the
+  transport (a forced local copy, not the local-reference shortcut; within the same free-space budget) on the worker.
+  Its commit publishes each copy into `replays/` recorded kept, repoints only rows whose uid still names the captured
+  path (`SavedSystemsModel::moveFilePaths()`, saved first), and releases every copy no row took (a row edited, removed
+  or reseeded meanwhile keeps the user's value; a failed save releases them all). The cached original is never
+  deleted. Until the job commits, and after a crash or a cancel at teardown, rows keep the cache path and the next
+  start retries. Test: `UI_QT_REPLAY_STORE`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`

@@ -15,8 +15,11 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QSet>
+#include <QStandardPaths>
 #include <QVariant>
+#include <QVariantList>
 #include <Qt>
 #include <algorithm>
 #include <limits>
@@ -116,15 +119,23 @@ set_state(const QString& path, bool kept) {
     return save_manifest(entries);
 }
 
-/* Record the new copy at @p path pending. */
+/*
+ * Publish the staged copy @p staged into replaysRoot() under a free form of @p name and record it, @p kept or pending.
+ * A copy that cannot be recorded is removed again: the store never leaves a copy the manifest does not list.
+ */
 bool
-record_pending(const QString& path) {
+publish_copy(const QString& staged, const QString& name, bool kept, QString* published) {
     QList<ManifestEntry> entries;
-    if (!load_manifest(&entries)) {
+    if (!load_manifest(&entries)
+        || !ImportService::publish(staged, QDir(ReplayStore::replaysRoot()), name, {}, published)) {
         return false;
     }
-    entries.append({QDir::cleanPath(path), false});
-    return save_manifest(entries);
+    entries.append({QDir::cleanPath(*published), kept});
+    if (!save_manifest(entries)) {
+        QFile::remove(*published);
+        return false;
+    }
+    return true;
 }
 
 /*
@@ -195,6 +206,67 @@ stage_replay(const ImportJob& job, const QString& reference, const QString& hint
     }
     result.insert(QStringLiteral("name"), sanitized_import_name(copy.displayName, hint));
     return result;
+}
+
+/* A saved system keeping a replay in the OS cache, as the migration found it. */
+struct CachedReplay {
+    QString uid;
+    QString filePath; // as the row names it
+    QString source;   // the canonical cached file
+};
+
+/*
+ * The migration's stage, on the import worker: copy each cached file into the request's staging folder through the
+ * transport (a forced local copy), each at most what leaves kReserveBytes free. The map lists the copies made, as
+ * {source, staged}; a file that does not copy is left for the next start.
+ */
+QVariantMap
+stage_migration(const ImportJob& job, const QStringList& sources, const ReplayStore::FreeSpace& freeSpace) {
+    QVariantList copies;
+    const QString root = ReplayStore::replaysRoot();
+    for (qsizetype i = 0; i < sources.size() && !job.cancelled() && QDir().mkpath(root); i++) {
+        const qint64 free = freeSpace(root);
+        const qint64 budget =
+            free < 0 ? std::numeric_limits<qint64>::max() : qMax<qint64>(0, free - ReplayStore::kReserveBytes);
+        const QString staged = QDir(job.stagingDir).filePath(QString::number(i));
+        if (job.transport->copy(job.id, sources.at(i), staged, budget) == DecoderHost::DocumentCopied) {
+            copies.append(QVariantMap{{QStringLiteral("source"), sources.at(i)}, {QStringLiteral("staged"), staged}});
+        }
+    }
+    return {{QStringLiteral("copies"), copies}};
+}
+
+/*
+ * The migration's commit, on the Qt thread: publish each copy kept (it is about to be named), point the rows that
+ * still name its cached file at it, and release every copy no row took, so a later start reclaims it.
+ */
+void
+commit_migration(SavedSystemsModel* systems, const QList<CachedReplay>& found, const QVariantMap& staged) {
+    QMap<QString, QString> published; // cached file → its copy
+    for (const QVariant& value : staged.value(QStringLiteral("copies")).toList()) {
+        const QVariantMap copy = value.toMap();
+        const QString source = copy.value(QStringLiteral("source")).toString();
+        QString path;
+        if (publish_copy(copy.value(QStringLiteral("staged")).toString(),
+                         sanitized_import_name(QFileInfo(source).fileName(), {}), true, &path)) {
+            published.insert(source, path);
+        }
+    }
+    QList<SavedSystemsModel::FilePathMove> moves;
+    for (const CachedReplay& replay : found) {
+        if (published.contains(replay.source)) {
+            moves.append({replay.uid, replay.filePath, published.value(replay.source)});
+        }
+    }
+    QStringList applied;
+    if (!systems->moveFilePaths(moves, &applied)) {
+        LOG_WARN("Saved systems could not be pointed at their replay copies; they keep the cached files.\n");
+    }
+    for (const QString& path : published) {
+        if (!applied.contains(path) && !ReplayStore::release(path)) {
+            LOG_WARN("An unused replay copy could not be marked unused; it is kept.\n");
+        }
+    }
 }
 
 } // namespace
@@ -318,6 +390,44 @@ ReplayStore::reclaim(const SavedSystemsModel& systems, bool systemsLoaded) {
     }
 }
 
+void
+ReplayStore::migrateCachedReplays(SavedSystemsModel* systems) {
+    const QString cache =
+        QFileInfo(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)).canonicalFilePath();
+    if (systems == nullptr || m_imports.isNull() || cache.isEmpty()) {
+        return;
+    }
+    QList<CachedReplay> found;
+    QStringList sources;
+    for (int row = 0; row < systems->count(); row++) {
+        const QVariantMap system = systems->get(row);
+        const QString filePath = system.value(QStringLiteral("filePath")).toString();
+        const QFileInfo original(filePath);
+        const QString source = original.canonicalFilePath();
+        if (system.value(QStringLiteral("sourceType")).toString() != QLatin1String("file") || source.isEmpty()
+            || !source.startsWith(cache + QLatin1Char('/')) || !original.isFile()) {
+            continue;
+        }
+        found.append({system.value(QStringLiteral("uid")).toString(), filePath, source});
+        if (!sources.contains(source)) {
+            sources.append(source);
+        }
+    }
+    if (sources.isEmpty()) {
+        return;
+    }
+    const FreeSpace freeSpace = m_freeSpace;
+    const QPointer<SavedSystemsModel> model(systems);
+    (void)m_imports->submit(
+        [sources, freeSpace](const ImportJob& job) { return stage_migration(job, sources, freeSpace); },
+        [model, found](qint64, const QVariantMap& staged, bool cancelled) {
+            // Cancelled (the app is closing) or gone: nothing is published, and the next start tries again.
+            if (!cancelled && !model.isNull()) {
+                commit_migration(model.data(), found, staged);
+            }
+        });
+}
+
 bool
 ReplayStore::names(const QStringList& paths, const QString& path) {
     if (path.isEmpty()) {
@@ -347,15 +457,9 @@ ReplayStore::commitImport(qint64 id, const QVariantMap& staged, bool cancelled) 
     } else if (staged.value(QStringLiteral("ok")).toBool()) {
         // Recorded pending before QML sees it: a copy is never left unlisted, so a later start can reclaim it.
         QString path;
-        const QDir root(replaysRoot());
-        if (!ImportService::publish(staged.value(QStringLiteral("staged")).toString(), root, name, {}, &path)) {
-            result = failure(QStringLiteral("local"));
-        } else if (!record_pending(path)) {
-            QFile::remove(path);
-            result = failure(QStringLiteral("local"));
-        } else {
-            result = {{QStringLiteral("ok"), true}, {QStringLiteral("path"), path}};
-        }
+        result = publish_copy(staged.value(QStringLiteral("staged")).toString(), name, false, &path)
+                     ? QVariantMap{{QStringLiteral("ok"), true}, {QStringLiteral("path"), path}}
+                     : failure(QStringLiteral("local"));
         result.insert(QStringLiteral("name"), name);
     }
     result.remove(QStringLiteral("staged"));

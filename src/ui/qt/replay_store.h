@@ -114,6 +114,19 @@ class ReplayStore : public QObject {
      */
     void reclaim(const SavedSystemsModel& systems, bool systemsLoaded);
 
+    /**
+     * @brief At startup: copy every replay a saved system keeps in the OS cache into replaysRoot(), on the import
+     * worker, and point the systems at the copies.
+     *
+     * Each cached file is copied through the transport (never the local-file shortcut), at most what leaves
+     * kReserveBytes free, published and recorded kept. Then only a row whose uid still names the cached path is
+     * repointed, and saved; a copy no row takes (the row was edited, removed or reseeded meanwhile, or the save failed)
+     * is released to pending. The cached file stays: it is the OS's cache, and a draft or session may still hold it.
+     * Until the job finishes, and after a crash, the rows keep the cached path, which still plays; the next start
+     * tries again.
+     */
+    void migrateCachedReplays(SavedSystemsModel* systems);
+
     /** @brief Whether @p paths holds @p path, as written or as the same file (canonical paths). */
     static bool names(const QStringList& paths, const QString& path);
 
