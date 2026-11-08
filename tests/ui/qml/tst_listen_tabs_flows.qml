@@ -148,12 +148,16 @@ Item {
             }
             return found;
         }
+        // Home's section Column for tab @a tab (listenSystemsSection, listenScanListsSection, listenExploreSection).
+        function sectionOf(tab) {
+            return findChild(home, "listen" + tab.charAt(0).toUpperCase() + tab.substring(1) + "Section");
+        }
         // Home is on screen, on tab @a id: its section the only one shown and its tab the current one.
         function compareShown(id, why) {
             tryCompare(home, "visible", true);
             compare(home.section, id, why);
             for (var tab of tc.tabs) {
-                var section = findChild(home, "listen" + tab.charAt(0).toUpperCase() + tab.substring(1) + "Section");
+                var section = sectionOf(tab);
                 compare(section.visible, tab === id, why + ": only " + id + "'s section is shown");
                 compare(findChild(home, "listenTab_" + tab).active, tab === id, why + ": " + id + "'s tab is current");
             }
@@ -447,7 +451,7 @@ Item {
             verify(inView(card, body), "at the top of the body, in view");
             for (var tab of tc.tabs) {
                 home.showSection(tab);
-                var section = findChild(home, "listen" + tab.charAt(0).toUpperCase() + tab.substring(1) + "Section");
+                var section = sectionOf(tab);
                 verify(card.visible, "the failure card shows on " + tab);
                 tryVerify(function () {
                     return section.height > 0 && card.mapToItem(body.contentItem, 0, 0).y + card.height
@@ -512,7 +516,8 @@ Item {
 
         // Signal search opens from the Explore tab, by a tap and from the keyboard.
         function test_signal_search_from_explore_data() {
-            return [{tag: "tap", key: 0}, {tag: "Return", key: Qt.Key_Return}, {tag: "Space", key: Qt.Key_Space}];
+            return [{tag: "tap", key: 0}, {tag: "Return", key: Qt.Key_Return},
+                {tag: "keypad Enter", key: Qt.Key_Enter, modifiers: Qt.KeypadModifier}, {tag: "Space", key: Qt.Key_Space}];
         }
         function test_signal_search_from_explore(data) {
             home.showSection("explore");
@@ -527,7 +532,7 @@ Item {
                 activateMain();
                 button.forceActiveFocus();
                 verify(button.activeFocus);
-                keyClick(data.key);
+                keyClick(data.key, data.modifiers || Qt.NoModifier);
             }
             verify(app.signalSearchOpen, "Signal search opened");
             verify(findChild(app, "signalSearchScreen").visible);

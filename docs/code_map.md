@@ -10773,7 +10773,7 @@ Qt Quick frontend (`src/ui/qt`):
   lists, failed saves, cancels, removals and pins keeping the tab, a refusal and a host failure keeping the tab with the
   failure card above every tab's section, "Scan with other lists…" from the keyboard on a deep card with a failed start
   keeping the failure card in view after the sheet hands the focus back, Signal search opening from Explore by tap,
-  Return and Space), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on each tab;
+  Return, keypad Enter and Space), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on each tab;
   `tst_a11y_scan_churn.qml`: the Explore face on a hidden tab raises nothing).
 - Pinned strip and sheet (issue #801; the pins themselves are `listen_pins.{h,cpp}`, below). `qml/HomeScreen.qml` places
   `pinnedStrip` between `listenHeader` and the scroll body, on the content column, 8 px under the header. The order is
