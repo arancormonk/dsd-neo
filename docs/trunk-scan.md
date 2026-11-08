@@ -60,7 +60,7 @@ Column behavior:
 
 | Column | Required | Meaning |
 |--------|----------|---------|
-| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](#receive-admission-and-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists, and in log messages. Keep it under 64 bytes, in UTF-8. |
+| `id` | Yes | Short name, unique within the file (the same id in another list names the same target; see [Several lists](#several-lists)), shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](#receive-admission-and-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists, and in log messages. Keep it under 64 bytes, in UTF-8. |
 | `type` | Yes | `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel, held on carrier) or `am-conventional` (one analog AM channel, held on carrier); see [Analog NFM and AM targets](#analog-nfm-and-am-targets). |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
 | `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |
@@ -103,10 +103,11 @@ Target list limits and validation:
 - Frequency values must be at least `1`. Builds with a 64-bit `long` (Linux, macOS, Android) accept values up to
   `4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX`
   (2147483647).
-- Duplicate `id` values are rejected, and so is an `id` that is not valid UTF-8 (a Latin-1 `café`, for one): the
-  avoid list's put back, in every frontend and the API, finds a target by its exact `id` bytes, which only UTF-8 text
-  keeps. Save the file as UTF-8.
-- Duplicate `(type, frequency_hz)` pairs are rejected.
+- Duplicate `id` values in one file are rejected (the same `id` in another list is the same target; see
+  [Several lists](#several-lists)), and so is an `id` that is not valid UTF-8 (a Latin-1 `café`, for one): the avoid
+  list's put back, in every frontend and the API, finds a target by its exact `id` bytes, which only UTF-8 text keeps.
+  Save the file as UTF-8.
+- Duplicate `(type, frequency_hz)` pairs in one file are rejected.
 - A duplicated key header is rejected. An unloadable key path fails the whole import like a bad `-K`/`-k`; a malformed
   direct key or a row mixing direct and file sources also fails, without repeating direct key material in the error.
 - `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, `nxdn-trunk` and `nxdn48-trunk` targets; `p25_bandplan_csv` is
@@ -148,7 +149,7 @@ dsd-neo -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan ~/radio/security.csv --trunk
 
 To start on one target and stay there, give its `id` with `--trunk-scan-hold`. The scan parks that target first and
 holds it, as typing its frequency does, once the park lands; `y` continues the scan from it. An id no target has, a
-target in a list that starts off and one whose width does not fit the input refuse the start; a park that fails leaves
+target whose lists all start off and one whose width does not fit the input refuse the start; a park that fails leaves
 the scan running unheld, named once on the status line. The option is never saved. Details:
 [cli.md](cli.md#trunking--scanning).
 
@@ -439,8 +440,8 @@ During scanning:
   putting another target back can let it leave at once. `b` on it changes nothing (`Already avoided: target #<place>
   <label>`).
 - **Several lists.** With more than one target list loaded, the rotation, `L`, `J`, the visit cap and the rejection
-  rules take only the targets of the lists that are on, and a list can be switched on or off while the scan runs; see
-  [Several lists](#several-lists).
+  rules take only the targets of the lists that are on (a target several lists hold while any of them is on), and a
+  list can be switched on or off while the scan runs; see [Several lists](#several-lists).
 - **Pausing for a frequency you choose.** A frequency you tune by hand wins over the scan and pauses it: the terminal's
   frequency entry (`=`, or Input > `Frequency...`), Qt/Android **Go to**, or the API's `rtl_set_freq`, unless it is a
   target's frequency (next item). `y` (and the API's `scanner_toggle`) pauses it where it is without tuning, and so do
@@ -461,17 +462,17 @@ During scanning:
   visit, on its learned control channel first, so the receiver may end up on another frequency than the one typed. The
   status line says `Holding: #3 County Fire` (`, trunked: following its control channel 851.012500 MHz` for a trunked
   target), or `Going to #3 County Fire: waiting for the tune` until the park lands, and names the target if the park
-  fails. With several targets on the frequency (one per type, or a copy in another list), the one on air wins, else the
-  first by list number, then file order; the message adds `(1 of 2)`, and `L` and `J` reach the others. The Trunk Scan
-  row reads `HOLD (y continues)`: `y` (the API's `scanner_toggle` or `scan_resume`) lets the hold go and the scan
-  carries on from that target; `Y` and Qt/Android **Hold** let it go too. `L`, `J` and `b` keep the hold on the target
-  they move to, and any pause ends it. A target that is avoided, whose list is off or whose width the input cannot take
-  is not gone to: the entry pauses the scan as above, and its message ends with the reason (`; #3 County Fire is
-  avoided`). Only a typed frequency does this: a spectrum tap, a drag and **Explore from here** keep the configured
-  settings. To hear a target's frequency with the configured settings, pause the scan in place while it is on that
-  target with `y` (a first `y` lets a typed frequency's hold go, a second pauses). After the radio stream restarts (a
-  reconnect, a config that reopens the input), the scan is not sure of the target on air until its next park, so typing
-  that target's frequency parks it again, which ends a call in progress.
+  fails. With several targets on the frequency (one per type, or a copy under another id in another list), the one on
+  air wins, else the first by list number, then file order; the message adds `(1 of 2)`, and `L` and `J` reach the
+  others. The Trunk Scan row reads `HOLD (y continues)`: `y` (the API's `scanner_toggle` or `scan_resume`) lets the hold
+  go and the scan carries on from that target; `Y` and Qt/Android **Hold** let it go too. `L`, `J` and `b` keep the hold
+  on the target they move to, and any pause ends it. A target that is avoided, in no list that is on, or whose width the
+  input cannot take is not gone to: the entry pauses the scan as above, and its message ends with the reason
+  (`; #3 County Fire is avoided`). Only a typed frequency does this: a spectrum tap, a drag and **Explore from here**
+  keep the configured settings. To hear a target's frequency with the configured settings, pause the scan in place while
+  it is on that target with `y` (a first `y` lets a typed frequency's hold go, a second pauses). After the radio stream
+  restarts (a reconnect, a config that reopens the input), the scan is not sure of the target on air until its next
+  park, so typing that target's frequency parks it again, which ends a call in progress.
 - **Resuming.** `y`, Qt/Android **Resume scan** or the API's `scan_resume` resumes on the target the scan left, with a
   fresh dwell and visit cap; the hold, avoids, learned state and live per-target edits are as they were, except a hold
   that typing a target's frequency set, which the pause ended. A resume whose retune is refused, or whose target cannot
@@ -611,14 +612,39 @@ written to its file.
   bytes. The number is what `lists_off` and the API take; the name is what the screens, the messages and the log show.
 - At most 8 lists. A ninth, the same path given twice on the command line, a path of 1024 bytes or more and a start
   with every list off are refused. Lists given on the command line replace a config file's lists as a whole.
-- A target id must be unique across all the lists; the error names both files and rows. The same channel (type and
-  frequency) in two lists is two targets, each with its own options, keys, avoid and learned state. Every load error
-  starts with the file it is about.
+- A target id names one target, however many lists hold it. A row whose id an earlier list already loaded is that
+  same target, now in both lists, as long as every setting of the two rows is the same: type, frequency, label,
+  modulation, dwell, hold, gain, the channel map, band plan and key files, the direct keys and every switch in
+  `options`. A file is compared as the file it opens, so `keys.csv` and `./keys.csv` next to one list are one file, and
+  `keys.csv` next to two lists in different folders are two. Column order, `notes` and the order of the switches in
+  `options` do not matter. Any difference refuses the start, naming both files and rows and the first setting that
+  differs, as its column name or its switches (`-G`, `--squelch/--squelch-db`):
+
+  ```text
+  Trunk scan: hospital.csv row 4: target id 'gate-b' is also security.csv row 2, with another frequency_hz; a target in two lists must have the same settings in both
+  ```
+
+  Direct keys that differ read `but the key columns differ` instead, without the keys. Within one file the rules stay:
+  no id and no channel (type and frequency) twice. The same channel in two lists under different ids is two targets
+  (see [Same channel in two lists](#same-channel-in-two-lists)). Every load error starts with the file it is about.
+- One file loaded as two lists another way than the same path twice on the command line (a config's `targets_csv` and
+  `targets_csv_2` naming it, or `hospital.csv` and `./hospital.csv`) is not refused: the two lists share every target,
+  so nothing is scanned twice, and switching either one off leaves the rotation as it was while the other is on.
+- Each list counts the targets its file holds, shared ones included, since that is what you see in the file. Every
+  total counts a target once, however many lists hold it, so the lists' counts can add up to more than the total. The
+  start log names what each list shares with the lists before it:
+
+  ```text
+  NOTICE: Trunk scan enabled with 18 targets in 2 lists
+  NOTICE: Trunk scan list 1 (conv): 12 targets, on
+  NOTICE: Trunk scan list 2 (low): 9 targets (3 also in list 1), on
+  ```
 - The lists are the files loaded at start: none can be added or removed while the scan runs, and a config loaded
   meanwhile changes them only at the next start. To keep a list ready, load it switched off and switch it on when you
   need it.
 - Memory: every target of every list, on or off, keeps its own snapshot of decoder state (about 100 KB), and the lists
-  together share the one budget under [Target CSV](#target-csv) (about 2,400 targets).
+  together share the one budget under [Target CSV](#target-csv) (about 2,400 targets), where a target several lists
+  hold counts once.
 - Lists are a trunk-scan feature. A `-Y` conventional scan has none: it takes one channel map, and a second `-C` is
   refused.
 
@@ -632,23 +658,31 @@ written to its file.
 
 A switch lasts for the session only: nothing is written to a list file, Config->Save or the exit autosave, and a
 restart starts each list in its configured state. The rotation runs over the targets of the lists that are on, in list
-order and then row order. A list that is off is passed over by the rotation, `L`, `J`, the visit cap and the rejection
-rules alike, and keeps everything its targets learned, their avoids and session edits, for when it is on again.
+order and then row order; a target several lists hold is visited once a rotation, at its place in the first list that
+holds it, even while that list is off and another list holding it is on. A list that is off is passed over by the
+rotation, `L`, `J`, the visit cap and the rejection rules alike, but for the targets it shares with a list that is on,
+and keeps everything its targets learned, their avoids and session edits, for when it is on again. A target several
+lists hold has one avoid, one set of session edits and keys and one learned state: avoiding it avoids it in every list
+that holds it.
 
-Switching off the list that holds the target on air leaves that target at once, as `L` does: the call in progress ends
-under that target's name, its carrier is handed back, and a `Y` hold carries over to the target the scan lands on. When
-no other target can take the receiver yet (they are cooling down from a failed retune, or from a switch that could not
-be set up), the scan stays, marked as outside the lists that are on, and leaves as soon as one can, ahead of its hold,
-dwell and activity, even while a DMR carrier stays keyed. Switching that list back on, or every list on, before then
-keeps it. Putting a target back never switches its list on.
+Switching off the last list that is on and holds the target on air leaves that target at once, as `L` does: the call in
+progress ends under that target's name, its carrier is handed back, and a `Y` hold carries over to the target the scan
+lands on. When no other target can take the receiver yet (they are cooling down from a failed retune, or from a switch
+that could not be set up), the scan stays, marked as outside the lists that are on, and leaves as soon as one can, ahead
+of its hold, dwell and activity, even while a DMR carrier stays keyed. Switching one of its lists back on, or every list
+on, before then keeps it. Switching off a list that holds the target on air while another list holding it stays on
+does not leave it: the call goes on, and the screens name that other list. Putting a target back never switches any of
+its lists on.
 
-A DMR repeater carrier is held by the decoder for the whole call. Switching off the list on air ends the call at the
-next burst boundary, and so does any switch, put back or Clear avoids while the target on air is waiting to leave (its
-list is off, or it is the avoided fallback described under [Runtime Behavior](#runtime-behavior)), since it lets that
-target go or keeps it. Any other switch (another list, or every list on) only changes which targets the rotation takes,
+A DMR repeater carrier is held by the decoder for the whole call. Switching off the target's last list that is on ends
+the call at the next burst boundary, and so does any switch, put back or Clear avoids while the target on air is
+waiting to leave (every list holding it is off, or it is the avoided fallback described under
+[Runtime Behavior](#runtime-behavior)), since it lets that target go or keeps it. Any other switch (another list, one
+of the target's lists while another of them stays on, or every list on) only changes which targets the rotation takes,
 so it waits for the carrier to end and the call goes on undisturbed; its answer comes then. One case is a decided
-limit: switching off the list on air when no other list has a target left to scan is refused, yet it still interrupts
-the carrier for a moment, since telling it apart in advance would mean walking the targets on every frame.
+limit: switching off the target's last list that is on when no other list has a target left to scan is refused, yet it
+still interrupts the carrier for a moment, since telling it apart in advance would mean walking the targets on every
+frame.
 
 Refused switches:
 
@@ -660,24 +694,30 @@ Refused switches:
 - A switch for an earlier scan session, or for a list the session does not have, changes nothing
   (`Refused: the scan changed; nothing applied`).
 
-A pause keeps a departure the target on air owes. A resume from a target whose list was switched off resumes on the
-next target the rotation would take; if none can take the receiver yet, it resumes where it paused and leaves as soon as
-one can, and if every one it tries fails the scan stays paused and the status line names the frequency it tried last.
+A pause keeps a departure the target on air owes. A resume from a target whose lists were all switched off resumes on
+the next target the rotation would take; if none can take the receiver yet, it resumes where it paused and leaves as
+soon as one can, and if every one it tries fails the scan stays paused and the status line names the frequency it tried
+last.
 
 ### What the screens show
 
-- The "n of m" position counts the targets of the lists that are on, avoided ones included; a target outside them reads
-  `-` for n. The `#<place>` that names a target in the avoided-channels list and in the avoid, put-back and stay
-  messages counts every loaded list, on or off, so it can differ from n.
+- The "n of m" position counts the targets of the lists that are on, avoided ones included, and a target several of
+  them hold once; a target outside them (every list holding it is off) reads `-` for n. The `#<place>` that names a
+  target in the avoided-channels list and in the avoid, put-back and stay messages counts the targets of every loaded
+  list, on or off, each once, so it can differ from n.
+- The list named for the target on air is the lowest-numbered list holding it that is on, or, while every list holding
+  it is off, the lowest-numbered list holding it.
 - Terminal: the Trunk Scan row names the list after the target (`Target: gate-b List: security`) and shows
   `[list off]` in the room `[avoided]` takes, `[avoided]` winning when both apply; a paused scan reads `Lists: 2/3 on`
-  (see [the terminal UI guide](ui-terminal.md#channel-labels)).
-- Qt and Android: the Monitor header reads `SCANNING · 3/14 · <target> · <list>` (`-/14` while the target's list is off,
-  `HOLD` after the position while held), and the title names the list started from and how many others run with it
-  (`Security + 2 lists`).
+  (see [the terminal UI guide](ui-terminal.md#channel-labels)). The Scan lists rows count the targets each file holds
+  and mark `on air` beside every list holding the target on air; the title's total counts each target once.
+- Qt and Android: the Monitor header reads `SCANNING · 3/14 · <target> · <list>` (`-/14` while every list holding the
+  target is off, `HOLD` after the position while held), and the title names the list started from and how many others
+  run with it (`Security + 2 lists`).
 - The API: `status.scan` carries `ordinal`, `count`, `list` and `lists`.
 - Every switch shows a message (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`,
-  `All scan lists on: 40 targets`), and the log names each list at start and each switch:
+  `All scan lists on: 40 targets`), its total counting each target once, and the log names each list at start and each
+  switch:
 
 ```text
 NOTICE: Trunk scan enabled with 16 targets in 3 lists
@@ -689,13 +729,17 @@ NOTICE: Trunk scan list 2 (hospital) off; 1 of 3 lists on, 12 targets
 
 ### Same channel in two lists
 
-A channel in two lists is two targets: the rotation visits each copy in its turn, each with its own options, keys,
-tone list and learned state, and history names each by its own id. When a tone filter rejects a transmission on one
-copy, though, the rejection never moves to another target of the same type on the same frequency, whatever tone list it
-runs; it moves to a target elsewhere, or the target stays as when it has nowhere to go (see "Tone filter" under
-[Analog NFM and AM targets](#analog-nfm-and-am-targets)). This is a decided limit. A digital receive filter (colour
-code, RAN, NAC) is different: a copy with another filter can accept what this one rejected, so such a rejection can move
-to the copy.
+A channel in two lists under the same `id` is one target that both lists hold (its rows must have the same settings,
+see [Loading the lists](#loading-the-lists)): the rotation visits it once, and it has one avoid, one set of options and
+keys and one learned state. Give the rows different ids to scan the channel as two targets.
+
+A channel in two lists under different ids is two targets: the rotation visits each copy in its turn, each with its
+own options, keys, tone list and learned state, and history names each by its own id. When a tone filter rejects a
+transmission on one copy, though, the rejection never moves to another target of the same type on the same frequency,
+whatever tone list it runs; it moves to a target elsewhere, or the target stays as when it has nowhere to go (see "Tone
+filter" under [Analog NFM and AM targets](#analog-nfm-and-am-targets)). This is a decided limit. A digital receive
+filter (colour code, RAN, NAC) is different: a copy with another filter can accept what this one rejected, so such a
+rejection can move to the copy.
 
 ### Qt and Android several lists
 
@@ -707,12 +751,21 @@ voice-only setting, default dwell and hold, fallback talkgroup file and source a
 path resolution. A setting the radio does not use is not compared: gain, PPM correction and bias tee only on a USB or
 rtl_tcp radio, the bandwidth only on those and an Airspy. A list that differs is shown greyed out with the first
 difference (`Different gain`), and a session runs at most 8 lists. All the lists are checked before anything starts
-(each list's own checks, the ids across lists, the target budget); a refusal names the list (`“Louder” can't scan with
-“Security”: different gain.`). Every list starts switched on: the app cannot start a list switched off, a decided limit;
-switch it off in the session instead.
+(each list's own checks, the target ids two lists share, the target budget); a refusal names the list (`“Louder” can't
+scan with “Security”: different gain.`), or, for a target id two lists hold with different settings, gives the
+decoder's message after `Scan lists rejected: `. Every list starts switched on: the app cannot start a list switched
+off, a decided limit; switch it off in the session instead.
 
-While the session runs, Session options > **Scan lists** has a switch per list with its targets and **On air** beside
-the list of the target on air. A switch waits for the decoder's answer (`Switching off…`); a refusal turns it back and
+Imported target CSVs share targets by id as files on the command line do (see [Loading the lists](#loading-the-lists)),
+and so do two lists over one imported file, whatever files its rows name. Two imports of the same file are another
+matter, a decided limit: each import keeps its own copies of the channel maps, band plans, key files and group files
+it names, so a row naming one of them is a different file in each and refuses the start, naming that column; rows that
+name none share. Lists built in the app's editor never share a target, since each entry's id is its own (see
+[Qt and Android scan lists](#qt-and-android-scan-lists)).
+
+While the session runs, Session options > **Scan lists** has a switch per list with the targets its file holds and
+**On air** beside every list holding the target on air, and its summary counts each target once
+(`3 of 3 on · 14 targets`). A switch waits for the decoder's answer (`Switching off…`); a refusal turns it back and
 says why under the list, in the app's words (`Nothing else to scan. Switch on another list first.`). While the scan is
 paused the switches cannot be used and the sheet says `Resume the scan to change lists.`
 
@@ -888,12 +941,12 @@ no symbol profile is applied over the monitor. Everything below applies to both 
   `Carrier` with no countdown; once that traffic ends, the hold and the dwell run as after any carrier. A target of
   another type on the same frequency counts as somewhere to go, since it runs no tone check (a mixed-mode repeater's
   `dmr-conventional` target takes the DMR traffic an `nfm-conventional` target's allow list rejects). A copy of the
-  target from another list does not (see [Same channel in two lists](#same-channel-in-two-lists)). Leaving
-  the target restores the configured policy, and Config->Save never writes a target's own. An `am-conventional` target
-  has no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches, and while it is parked the
-  configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A configured list policy with no
-  `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and scan start says
-  so once.
+  target under another id in another list does not (see [Same channel in two lists](#same-channel-in-two-lists)).
+  Leaving the target restores the configured policy, and Config->Save never writes a target's own. An `am-conventional`
+  target has no policy: the AM monitor hears no CTCSS or DCS, so its `options` refuse the switches, and while it is
+  parked the configured policy judges and mutes nothing and its carrier holds it under `Carrier`. A configured list
+  policy with no `nfm-conventional` target in the list has no effect, since every target runs its own type's mode, and
+  scan start says so once.
 - **Controls.** `--scan-max-visit-ms`, the `Y` hold, `L`/`J` and avoid work exactly as for digital targets, including
   while a carrier holds the target. The voice gate never applies to an analog target, so a global `--scan-voice-only`
   does not block one, and voice-gate switches are rejected in its `options`.
@@ -1069,7 +1122,13 @@ changes that mode's rotation timing.
 Lists persist in `scan_lists.json`. Lists and entries have stable UIDs; system
 entries reference saved-system UIDs, so deleting or reordering a saved system
 cannot silently select a different system. A missing referenced system prevents
-start. Frequency entries select P25, DMR, NXDN48 or NXDN96 conventional decoding, or
+start. An entry's UID is its target id in the generated CSV, so no two lists'
+entries share one: an entry that carries a UID another list already holds (a
+hand-edited or older `scan_lists.json`) gets a new UID when the lists load, the
+first list keeping the old one, and the repair is saved at once. History rows
+logged before that repair under the UID the two entries shared keep whatever name
+the app's map of scan-list ids gives them, since a history row records no list
+(a decided limit). Frequency entries select P25, DMR, NXDN48 or NXDN96 conventional decoding, or
 an analog channel: **NFM (analog)** (`nfm-conventional`) or **AM (analog)**
 (`am-conventional`).
 

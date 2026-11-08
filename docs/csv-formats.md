@@ -559,7 +559,7 @@ Columns:
 
 | Column | Required | Behavior |
 |--------|----------|----------|
-| `id` | Yes | Unique short name shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists (an analog call's label itself, ahead of its frequency; see [Analog calls in rdio-scanner](cli.md#analog-calls-in-rdio-scanner)), and in log messages. Empty or too-long IDs are rejected, and so is an ID that is not valid UTF-8 (save the file as UTF-8): the avoid list puts a target back by its exact ID. |
+| `id` | Yes | Short name, unique within the file (the same id in another list of the session names the same target; see [Several lists](trunk-scan.md#several-lists)), shown in the terminal status row and Call Info, as the `[id]` prefix on event-history rows and `-J` log lines (a [service name](cli.md#receive-filters-and-service-names) takes its place on the traffic it names), as the rdio `talkgroup_tag` fallback when no service or talkgroup name exists (an analog call's label itself, ahead of its frequency; see [Analog calls in rdio-scanner](cli.md#analog-calls-in-rdio-scanner)), and in log messages. Empty or too-long IDs are rejected, and so is an ID that is not valid UTF-8 (save the file as UTF-8): the avoid list puts a target back by its exact ID. |
 | `type` | Yes | One of `p25-trunk`, `p25-conventional`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk` (NXDN96, 12.5 kHz), `nxdn48-trunk` (NXDN48, 6.25 kHz), `nxdn-conventional` (NXDN96, 12.5 kHz), `nxdn48-conventional` (NXDN48, 6.25 kHz), `nfm-conventional` (one analog NFM channel) or `am-conventional` (one analog AM channel); see [Analog rows](#analog-rows). Exact case. |
 | `frequency_hz` | Yes | Decimal Hz only. Builds with a 64-bit `long` (Linux, macOS, Android) accept `1..4294967295`; Windows builds, whose `long` is 32-bit, and other 32-bit targets reject values above `LONG_MAX` (2147483647). Do not use `K`/`M`/`G` suffixes in CSV. |
 | `chan_csv` | No | Optional channel-map path for trunk targets (`p25-trunk`, `dmr-trunk`, `nxdn-trunk`, `nxdn48-trunk`). Paths are resolved relative to this CSV. Leave empty for conventional DMR, P25, both conventional NXDN types and the analog types. |
@@ -586,8 +586,11 @@ Validation notes:
 - No fixed target-count limit. Each parked target reserves a snapshot of decoder state (~80 KB), and the list is
   capped by a 256 MB budget for those snapshots - a few thousand targets. A CSV past the cap is rejected while
   parsing, with an error naming the budget.
-- Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-trunk`/`nxdn48-trunk` and
-  `nxdn-conventional`/`nxdn48-conventional` are distinct types, so one frequency may appear once as each.
+- Within one file, duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-trunk`/`nxdn48-trunk`
+  and `nxdn-conventional`/`nxdn48-conventional` are distinct types, so one frequency may appear once as each. Across
+  the lists of one session an id may repeat: a row whose id an earlier list loaded is that same target and must have
+  the same settings, or the start is refused naming both files and rows and the first column that differs (see
+  [Several lists](trunk-scan.md#several-lists)). The same channel under another id in another list is another target.
 - Optional column names match ASCII case-insensitively in this format. Duplicate direct-key headers, malformed direct values, and
   rows that mix a direct value with a key-file path are rejected without echoing the key value.
 - `chan_csv` and `p25_bandplan_csv` on conventional

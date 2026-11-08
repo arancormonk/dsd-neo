@@ -2217,22 +2217,27 @@ is delayed.
     give `--trunk-scan-off <file>` for a list that starts switched off; both also take the `=FILE` form. Lists are
     numbered in command-line order across both options, and a list's name is its file name without folder and
     extension. A ninth list, the same path twice, a path of 1024 bytes or more and a start with every list off are
-    refused. Lists on the command line replace a config file's lists as a whole. How the lists behave and are switched
-    while scanning: [Several lists](trunk-scan.md#several-lists).
+    refused. Lists on the command line replace a config file's lists as a whole. A target id may repeat across the
+    lists: a row whose id an earlier list loaded is that same target, now in both lists, and must have the same
+    settings, or the start is refused naming both files and rows and the first column that differs. One file named two
+    ways (`low.csv` and `./low.csv`) is two lists that share every target. How the lists behave and are switched while
+    scanning: [Several lists](trunk-scan.md#several-lists).
   - Start held on one target: `--trunk-scan-hold <target-id>` (also `--trunk-scan-hold=<target-id>`) starts the scan
     parked on the target whose `id` is the one given, and holds it there as typing that target's frequency does: the
     hold comes once the target's park lands (on its learned control channel first, for a trunked target), and `y`
     continues the scan from it. A park that is refused, deferred or fails later leaves the scan running unheld, on to
-    the next target, and the status line names the target once. Ids are unique across every list, so the id names one
-    target in whichever list holds it. The start is refused, naming the id and the reason, when no target has the id,
-    when the target's list starts off (`--trunk-scan-off`, or `lists_off` in a config), and when the target's width
-    does not fit the input, for example `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not
-    fit the 16 kHz DSP rate)`. Without a trunk scan (`--trunk-scan`, or a config's `[trunk_scan]` lists) the option
-    is refused, saying why none runs: an option on this command line turned off the config's scan, or the config's
-    lists are off (`enabled = false`). The id is taken whatever it reads like, so an id that starts with `-` works
-    in both spellings. The start logs whether the target is held, holds once its tune lands, or was refused or
-    deferred; a hold that comes once the tune lands shows as `HOLD (y continues)` on the Trunk Scan row, with no
-    `Holding:` message. It has no INI key and is never saved: a start that wants the hold gives it again.
+    the next target, and the status line names the target once. An id names one target, however many lists hold it.
+    The start is refused, naming the id and the reason, when no target has the id, when every list holding the target
+    starts off (`--trunk-scan-off`, or `lists_off` in a config;
+    `--trunk-scan-hold: target "ROK" is in lists that are off (list 2, conv; list 3, low); start one of them on`), and
+    when the target's width does not fit the input, for example
+    `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not fit the 16 kHz DSP rate)`. Without a
+    trunk scan (`--trunk-scan`, or a config's `[trunk_scan]` lists) the option is refused, saying why none runs: an
+    option on this command line turned off the config's scan, or the config's lists are off (`enabled = false`). The id
+    is taken whatever it reads like, so an id that starts with `-` works in both spellings. The start logs whether the
+    target is held, holds once its tune lands, or was refused or deferred; a hold that comes once the tune lands shows
+    as `HOLD (y continues)` on the Trunk Scan row, with no `Holding:` message. It has no INI key and is never saved: a
+    start that wants the hold gives it again.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional rows,
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
