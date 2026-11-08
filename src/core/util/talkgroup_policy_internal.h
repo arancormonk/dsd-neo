@@ -4,6 +4,7 @@
 #ifndef DSD_NEO_SRC_CORE_UTIL_TALKGROUP_POLICY_INTERNAL_H_
 #define DSD_NEO_SRC_CORE_UTIL_TALKGROUP_POLICY_INTERNAL_H_
 
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <stdint.h>
 
@@ -12,6 +13,11 @@
  * insertion return convention: 0 stored, 1 invalid, -1 allocation failure. */
 dsd_tg_policy_store* dsd_tg_policy_store_create(void);
 int dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry);
+/* Mark a list loaded incomplete (dsd_tg_policy_load_report_incomplete()): a detached store, or the state's effective
+ * one, created empty when the load stored no row at all. The mark lasts as long as the store; only a complete load
+ * replaces it. The state form returns -1 when no store could be created to carry the mark, else 0. */
+void dsd_tg_policy_store_mark_incomplete(dsd_tg_policy_store* store);
+int dsd_tg_policy_mark_incomplete(dsd_state* state);
 
 /* Mode rules shared by the group list and the radio list's policy columns. Mode `B` or `DE` blocks: no tuning and
  * every medium off. */

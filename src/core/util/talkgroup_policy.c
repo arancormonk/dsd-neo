@@ -139,6 +139,8 @@ struct dsd_tg_policy_store {
     /* Created in place by a decoder write (ledger, alias, avoid), not loaded or edited: a frontend that saw no list
      * at all still addresses it. */
     uint8_t lazy;
+    /* Loaded without some of its file's rows (dsd_tg_policy_load_report_incomplete()): used, never written back. */
+    uint8_t incomplete;
     dsd_tg_policy_active_table active;
     uint64_t context_id;
     uint64_t snapshot_source_context_id;
@@ -1704,6 +1706,7 @@ tg_policy_context_clone(const dsd_tg_policy_context* src, dsd_tg_policy_context*
     clone->table.structural_generation = src->table.structural_generation;
     clone->table.pattern_count = src->table.pattern_count;
     clone->lazy = src->lazy;
+    clone->incomplete = src->incomplete;
     clone->active = src->active;
     clone->call_skips = src->call_skips;
     if (src->session_avoid_count) {
@@ -2551,6 +2554,10 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || opts->group_in_file[0] == '\0') {
         return 0;
     }
+    // A table missing rows of its file would write them out of it.
+    if (dsd_tg_policy_incomplete(state)) {
+        return 1;
+    }
     const char* path = opts->group_in_file;
     tg_policy_group_file_probe probe;
     if (tg_policy_probe_group_file(path, &probe) != 0) {
@@ -2977,16 +2984,57 @@ tg_policy_carry_active(dsd_tg_policy_context* dst, const dsd_tg_policy_context* 
 }
 
 int
-dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
-    dsd_tg_policy_store* loaded = NULL;
+dsd_tg_policy_load_report_incomplete(const dsd_tg_policy_load_report* report) {
+    if (!report) {
+        return 0;
+    }
+    return report->failed > 0u || report->unreadable || (report->accepted == 0u && report->skipped > 0u);
+}
 
+int
+dsd_tg_policy_incomplete(const dsd_state* state) {
+    const dsd_tg_policy_context* ctx = tg_policy_ctx_get_const(state);
+    return ctx != NULL && ctx->incomplete;
+}
+
+void
+dsd_tg_policy_store_mark_incomplete(dsd_tg_policy_store* store) {
+    if (store) {
+        store->incomplete = 1;
+    }
+}
+
+int
+dsd_tg_policy_mark_incomplete(dsd_state* state) {
+    dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
+    if (!ctx) {
+        return -1;
+    }
+    ctx->incomplete = 1;
+    return 0;
+}
+
+int
+dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report) {
+    dsd_tg_policy_store* loaded = NULL;
+    dsd_tg_policy_load_report counts;
+
+    DSD_MEMSET(&counts, 0, sizeof counts);
+    if (report) {
+        *report = counts;
+    }
     if (!path || !out) {
         return -1;
     }
-    if (dsd_tg_policy_load(path, &loaded) != 0) {
+    const int rc = dsd_tg_policy_load_counted(path, &loaded, &counts);
+    if (report) {
+        *report = counts;
+    }
+    if (rc != 0) {
         return -1;
     }
-    if (tg_policy_reload_validate_candidate(loaded) != 0) {
+    // A reload replaces the whole list, so a partial read never replaces it.
+    if (loaded->incomplete || tg_policy_reload_validate_candidate(loaded) != 0) {
         dsd_tg_policy_release(loaded);
         return -1;
     }
@@ -3018,7 +3066,7 @@ int
 dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
     dsd_tg_policy_store* loaded = NULL;
 
-    if (!opts || !state || dsd_tg_policy_load_group_file(opts->group_in_file, &loaded) != 0) {
+    if (!opts || !state || dsd_tg_policy_load_group_file(opts->group_in_file, &loaded, NULL) != 0) {
         return -1;
     }
     dsd_tg_policy_adopt_group_file(state, loaded);

@@ -478,8 +478,8 @@ int dsd_tg_policy_remove_key(dsd_state* state, uint64_t context, unsigned int ge
  * Keeps an extended policy header, or promotes for priority, preempt or media overrides. Otherwise uses
  * id,mode,name,tags when any row has tags, or id,mode,name. Ranges are written as start-end, patterns as their
  * canonical text. Unmodelled free-text columns (e.g. alias metadata)
- * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), -1 on I/O
- * failure with the old file intact. */
+ * are not preserved. Returns 0 written or nothing to write (NULL opts, empty path), 1 nothing written because the
+ * list was loaded incomplete (dsd_tg_policy_incomplete()), -1 on I/O failure with the old file intact. */
 int dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state);
 
 /**
@@ -516,22 +516,57 @@ void dsd_tg_policy_install(dsd_state* state, dsd_tg_policy_store* store);
  * Use install instead for a target transition that must restart call bookkeeping.
  */
 void dsd_tg_policy_restore(dsd_state* state, dsd_tg_policy_store* store);
+
+/** What one read of a group list file found. A load fills it in every case, failures included. */
+typedef struct {
+    unsigned int accepted; /**< data rows loaded, in file order */
+    unsigned int skipped;  /**< malformed data rows, each logged and left out (blank lines are not rows) */
+    unsigned int failed;   /**< data rows read but not stored for want of memory */
+    uint8_t not_found;     /**< the file could not be opened because it does not exist */
+    uint8_t unreadable;    /**< the file exists but could not be opened, or a read failed part way through */
+} dsd_tg_policy_load_report;
+
+/**
+ * Whether a load left rows of the file out of its table for a reason other than a malformed row the user can see in
+ * the log: a row not stored for want of memory, a read that stopped part way, or data rows none of which loaded
+ * (a file in another format, such as an Excel CSV with ';' separators). A header-only or empty file is complete.
+ * A store loaded incomplete is still used for decoding, but nothing writes it back to its file
+ * (dsd_tg_policy_incomplete()). NULL is complete.
+ */
+int dsd_tg_policy_load_report_incomplete(const dsd_tg_policy_load_report* report);
+/**
+ * Whether the state's effective list was loaded incomplete (dsd_tg_policy_load_report_incomplete()). Such a list
+ * cannot stand for its file: dsd_tg_policy_write_group_file() refuses to rewrite it, and learned aliases are not
+ * appended, until a complete load of the file replaces it.
+ */
+int dsd_tg_policy_incomplete(const dsd_state* state);
+
 /**
  * Load a standalone policy from a group file, with csvGroupImportPath() semantics (rows the
- * importer cannot store are skipped with a warning). On success `*out` is overwritten with a
+ * importer cannot store are skipped with a warning, and an incomplete load is logged and marked
+ * as such). On success `*out` is overwritten with a
  * new reference, so release any reference it held first. On failure `*out` is untouched.
  * Returns 0 on success, -1 otherwise.
  */
 int dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out);
 /**
+ * dsd_tg_policy_load() reporting what it read in @p report (may be NULL), and logging nothing about an incomplete load:
+ * the caller decides what to keep. Returns -1 when the file could not be opened or read to the end (report's
+ * not_found/unreadable), 0 otherwise, with the store marked incomplete when the report says so.
+ */
+int dsd_tg_policy_load_counted(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report);
+/**
  * dsd_tg_policy_reload_group_file() in two steps, for a caller that must know the file loads before it changes
  * anything. The load reads and checks @p path as a reload does and touches no state: on success `*out` is overwritten
- * with a new reference to a detached store (0), on failure it is untouched (-1). The adopt then makes that store the
+ * with a new reference to a detached store (0); a file that cannot be opened or read, a row that cannot be stored, or
+ * an incomplete load (dsd_tg_policy_load_report_incomplete()) leaves it untouched (-1). @p report (may be NULL) says
+ * what the read found either way. A complete file with no data rows loads as an empty list; refusing that is the
+ * caller's call. The adopt then makes that store the
  * state's policy as a reload does: its generations advance past the current context's and the calls being followed
  * carry over. The state takes its own reference, the caller keeps and releases theirs; a store is adopted once, never
  * one already installed. Adopting cannot fail; NULL arguments do nothing. Same guard rule as a reload.
  */
-int dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out);
+int dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report);
 void dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded);
 
 #ifdef __cplusplus

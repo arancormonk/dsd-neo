@@ -30,7 +30,11 @@ extern "C" {
  * Import a group list (docs/csv-formats.md, "Group List CSV") into the state's talkgroup
  * policy. Malformed rows are skipped with a warning, as are rows dropped for an allocation
  * failure, and the import still returns 0 with whatever loaded. Returns -1 when the file
- * cannot be opened or a read error interrupts it.
+ * cannot be opened or a read error interrupts it (rows read before it stay loaded). A load that
+ * left rows out (dsd_tg_policy_load_report_incomplete(): a dropped row, a read error, or data
+ * rows none of which loaded) is logged once and marks the list incomplete, so it is never
+ * written back over the file (dsd_tg_policy_incomplete()); -1 when no list could carry that mark.
+ * A header-only or empty file loads as an empty list.
  */
 /* Source aliases: replace on success; preserve live store on open/read/allocation failure. */
 int csvSrcImport(const dsd_opts* opts, dsd_state* state);

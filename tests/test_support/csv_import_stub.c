@@ -29,3 +29,13 @@ dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
     (void)out;
     return -1;
 }
+
+int
+dsd_tg_policy_load_counted(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report) {
+    (void)path;
+    (void)out;
+    if (report) {
+        *report = (dsd_tg_policy_load_report){0};
+    }
+    return -1;
+}

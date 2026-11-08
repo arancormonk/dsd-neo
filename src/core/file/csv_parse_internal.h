@@ -83,7 +83,10 @@ csv_open_user_read_file(const char* label, const char* requested, char* resolved
 
     FILE* fp = dsd_path_fopen_user_read_file(requested, resolved, resolved_size);
     if (fp == NULL) {
+        // Callers tell a missing file from an unreadable one by errno; the log must not change it.
+        const int open_errno = errno;
         LOG_ERROR("Unable to open %s '%s'\n", label, requested);
+        errno = open_errno;
         return NULL;
     }
     return fp;

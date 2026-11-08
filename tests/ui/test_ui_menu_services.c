@@ -466,9 +466,12 @@ dsd_source_alias_clear(dsd_state* state) {
 }
 
 int
-dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
+dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report) {
     (void)path;
     (void)out;
+    if (report) {
+        *report = (dsd_tg_policy_load_report){.not_found = 1};
+    }
     return -1;
 }
 

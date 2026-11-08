@@ -511,6 +511,147 @@ read_file_lines(const char* path, char* l1, size_t l1sz, char* l2, size_t l2sz, 
     return 0;
 }
 
+/* A temp group file holding @p content (NULL: none at that path). */
+static int
+load_report_file(char* path, size_t size, const char* content) {
+    DSD_SNPRINTF(path, size, "%s", "dsd-neo-test-tg-load-report-XXXXXX");
+    const int fd = dsd_mkstemp(path);
+    if (fd < 0) {
+        return 1;
+    }
+    (void)dsd_close(fd);
+    if (!content) {
+        return remove(path) != 0;
+    }
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return 1;
+    }
+    const int bad = fputs(content, fp) < 0;
+    return (fclose(fp) != 0) || bad;
+}
+
+/* What a group list read found, for a caller deciding whether the list can replace the live one or be written back
+ * (discussion #748 follow-up R1). A file in another format (';' separators) is incomplete and never stands for its
+ * file; a header-only or empty file is a complete empty list. */
+static int
+test_group_load_report(void) {
+    static const struct {
+        const char* tag;
+        const char* content;
+        int rc;
+        unsigned int accepted;
+        unsigned int skipped;
+        int not_found;
+        int incomplete;
+    } cases[] = {
+        {"rows and a malformed row", "id,mode,name\n100,A,ONE\n\n200,B,TWO\nnot a row\n", 0, 2u, 1u, 0, 0},
+        {"';' separators", "id;mode;name\n100;A;ONE\n200;B;TWO\n", 0, 0u, 2u, 0, 1},
+        {"header only", "id,mode,name\n", 0, 0u, 0u, 0, 0},
+        {"empty file", "", 0, 0u, 0u, 0, 0},
+        {"missing file", NULL, -1, 0u, 0u, 1, 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char path[64];
+        if (load_report_file(path, sizeof path, cases[i].content) != 0) {
+            return 1;
+        }
+        dsd_tg_policy_load_report report;
+        dsd_tg_policy_store* store = NULL;
+        const int load_rc = dsd_tg_policy_load_counted(path, &store, &report);
+        rc |= expect_true(cases[i].tag, load_rc == cases[i].rc);
+        rc |= expect_true(cases[i].tag, report.accepted == cases[i].accepted && report.skipped == cases[i].skipped);
+        rc |= expect_true(cases[i].tag, report.failed == 0u && report.not_found == cases[i].not_found);
+        rc |= expect_true(cases[i].tag, dsd_tg_policy_load_report_incomplete(&report) == cases[i].incomplete);
+
+        // The detached load a scan row uses carries the mark into the state that installs it, and its copies.
+        dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+        dsd_state* copy = (dsd_state*)calloc(1, sizeof(*copy));
+        if (!st || !copy) {
+            dsd_tg_policy_release(store);
+            free(st);
+            free(copy);
+            return 1;
+        }
+        if (store) {
+            dsd_tg_policy_install(st, store);
+            dsd_tg_policy_release(store);
+            rc |= expect_true(cases[i].tag, dsd_tg_policy_incomplete(st) == cases[i].incomplete);
+            rc |= expect_true(cases[i].tag, dsd_tg_policy_copy_snapshot(copy, st) == 0);
+            rc |= expect_true(cases[i].tag, dsd_tg_policy_incomplete(copy) == cases[i].incomplete);
+        }
+
+        // A reload refuses what cannot stand for the file, and says why.
+        store = NULL;
+        DSD_MEMSET(&report, 0xA5, sizeof report);
+        const int reload_rc = dsd_tg_policy_load_group_file(path, &store, &report);
+        rc |= expect_true(cases[i].tag, reload_rc == ((cases[i].rc == 0 && !cases[i].incomplete) ? 0 : -1));
+        rc |= expect_true(cases[i].tag, (reload_rc == 0) == (store != NULL));
+        rc |= expect_true(cases[i].tag, report.accepted == cases[i].accepted && report.skipped == cases[i].skipped);
+        dsd_tg_policy_release(store);
+        free_test_state(st);
+        free_test_state(copy);
+        if (cases[i].content) {
+            (void)remove(path);
+        }
+    }
+    return rc;
+}
+
+/* A startup import keeps an incomplete list for decoding but never writes it over the file: the rewrite refuses, and
+ * the file keeps its rows. A header-only startup list is an empty list on purpose and saves as usual. */
+static int
+test_group_startup_incomplete_not_written(void) {
+    const char* excel_csv = "id;mode;name\n100;A;ONE\n";
+    char path[64];
+    int rc = load_report_file(path, sizeof path, excel_csv);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+    if (rc != 0 || !opts || !st) {
+        free(opts);
+        free(st);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    rc |= expect_true("startup ';' import loads", csvGroupImport(opts, st) == 0);
+    rc |= expect_true("startup ';' import is incomplete", dsd_tg_policy_incomplete(st));
+    dsd_tg_policy_entry e;
+    init_entry(&e, 100, "B", "ONE", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+    rc |= expect_true("startup ';' list takes a session row", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("startup ';' list is not written", dsd_tg_policy_write_group_file(opts, st) == 1);
+    char l1[64] = {0}, l2[64] = {0}, l3[64] = {0};
+    rc |= expect_true("startup ';' file keeps its rows",
+                      read_file_lines(path, l1, sizeof l1, l2, sizeof l2, l3, sizeof l3) == 0
+                          && strcmp(l1, "id;mode;name\n") == 0 && strcmp(l2, "100;A;ONE\n") == 0);
+    // A complete reload replaces the list and ends the mark.
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (fp) {
+        (void)fputs("id,mode,name\n100,A,ONE\n", fp);
+        (void)fclose(fp);
+    }
+    rc |= expect_true("complete reload", dsd_tg_policy_reload_group_file(opts, st) == 0);
+    rc |= expect_true("complete reload ends the mark", !dsd_tg_policy_incomplete(st));
+    rc |= expect_true("complete reload list is written", dsd_tg_policy_write_group_file(opts, st) == 0);
+    dsd_state_ext_free_all(st);
+    DSD_MEMSET(st, 0, sizeof(*st));
+
+    fp = dsd_fopen_private(path, "w");
+    if (fp) {
+        (void)fputs("id,mode,name\n", fp);
+        (void)fclose(fp);
+    }
+    rc |= expect_true("startup header-only import loads", csvGroupImport(opts, st) == 0);
+    rc |= expect_true("startup header-only list is complete", !dsd_tg_policy_incomplete(st));
+    rc |= expect_true("startup header-only list takes a row", dsd_tg_policy_append_exact(st, &e) == 0);
+    rc |= expect_true("startup header-only list is written", dsd_tg_policy_write_group_file(opts, st) == 0);
+    free_test_state(st);
+    free(opts);
+    (void)remove(path);
+    return rc;
+}
+
 static int
 test_group_file_append_helper(void) {
     int rc = 0;
@@ -3596,5 +3737,7 @@ main(void) {
     rc |= test_row_token_refuses_stray_pattern_text();
     rc |= test_group_label_from_range_and_pattern();
     rc |= test_alias_never_labels_talkgroup();
+    rc |= test_group_load_report();
+    rc |= test_group_startup_incomplete_not_written();
     return rc;
 }

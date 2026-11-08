@@ -1005,7 +1005,7 @@ svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store*
     if (!opts || !path || !*path || !out || strlen(path) >= sizeof opts->group_in_file) {
         return -1;
     }
-    return dsd_tg_policy_load_group_file(path, out);
+    return dsd_tg_policy_load_group_file(path, out, NULL);
 }
 
 void

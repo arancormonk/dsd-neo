@@ -348,37 +348,82 @@ group_import_row(dsd_state* state, dsd_tg_policy_store* store, const char* filen
     return group_commit_entry(state, store, &entry, filename, row_count, dropped_policy_alloc_rows);
 }
 
-/* Rows dropped for want of memory are a warning, as they always were: the import keeps
- * what it could load. A read error is a failure, since the file was not fully read. */
-static int
-group_import_finish(FILE* fp, const char* filename, size_t dropped_policy_alloc_rows) {
-    if (dropped_policy_alloc_rows > 0) {
-        LOG_WARN("WARNING: Group file '%s' skipped %zu rows due to policy allocation failure.\n", filename,
-                 dropped_policy_alloc_rows);
-    }
+/* What one pass over a group file found so far. stats (may be NULL) is the dry-run validator's tally. */
+typedef struct {
+    dsd_state* state;
+    dsd_tg_policy_store* store;
+    dsd_csv_validation* stats;
+    dsd_tg_policy_load_report report;
+    group_policy_header header;
+    char filename[CSV_IMPORT_PATH_MAX];
+} group_import_pass;
 
-    const int rc = ferror(fp) ? -1 : 0;
-    fclose(fp);
-    return rc;
+static void
+group_import_header(group_import_pass* pass, const char* line) {
+    char header_copy[BSIZE];
+    DSD_SNPRINTF(header_copy, sizeof(header_copy), "%s", line);
+    pass->header = group_parse_policy_header(header_copy);
+    if (pass->header.policy_active && pass->header.invalid_order) {
+        LOG_WARN("WARNING: Group file '%s' header optional policy columns are out of order; ignoring "
+                 "mismatched and later "
+                 "optional columns.\n",
+                 pass->filename);
+    }
 }
 
-/* stats may be NULL; when set, counts data rows so a dry run can report them. */
+/* One data line: loaded, skipped as malformed, or read but not stored for want of memory. */
+static void
+group_import_data_line(group_import_pass* pass, unsigned int row_count, char* buffer, int invalid_line) {
+    if (!csv_data_row_ready(buffer, invalid_line, pass->filename, row_count, pass->stats)) {
+        if (invalid_line) {
+            pass->report.skipped++;
+        }
+        return;
+    }
+    size_t dropped = 0;
+    if (group_import_row(pass->state, pass->store, pass->filename, row_count, buffer, &pass->header, &dropped) == 0) {
+        pass->report.accepted++;
+        if (pass->stats) {
+            pass->stats->accepted++;
+        }
+    } else if (dropped > 0) {
+        pass->report.failed++;
+    } else {
+        pass->report.skipped++;
+    }
+}
+
+/* Rows dropped for want of memory are a warning, as they always were: the import keeps
+ * what it could load, and the report marks it incomplete. A read error is a failure, since
+ * the file was not fully read. */
 static int
-group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_store* store,
-                  dsd_csv_validation* stats) {
-    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
+group_import_finish(FILE* fp, group_import_pass* pass) {
+    if (pass->report.failed > 0) {
+        LOG_WARN("WARNING: Group file '%s' skipped %u rows due to policy allocation failure.\n", pass->filename,
+                 pass->report.failed);
+    }
+    if (ferror(fp)) {
+        pass->report.unreadable = 1;
+    }
+    fclose(fp);
+    return pass->report.unreadable ? -1 : 0;
+}
+
+/* Read @p group_file_path into the pass's state or store; the pass's report says what the read found. */
+static int
+group_import_read(const char* group_file_path, group_import_pass* pass) {
     char buffer[BSIZE];
     FILE* fp = NULL;
     unsigned int row_count = 0;
-    size_t dropped_policy_alloc_rows = 0;
-    group_policy_header header = {0};
 
-    if (!group_file_path || group_file_path[0] == '\0' || (!state && !store)) {
+    if (!group_file_path || group_file_path[0] == '\0' || (!pass->state && !pass->store)) {
         return -1;
     }
 
-    fp = csv_open_user_read_file("group file", group_file_path, filename, sizeof filename);
+    fp = csv_open_user_read_file("group file", group_file_path, pass->filename, sizeof pass->filename);
     if (fp == NULL) {
+        pass->report.not_found = errno == ENOENT;
+        pass->report.unreadable = !pass->report.not_found;
         return -1;
     }
 
@@ -388,40 +433,62 @@ group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_s
         trim_eol(buffer);
 
         if (row_count == 1) {
-            if (invalid_line) {
-                continue;
-            }
-            char header_copy[BSIZE];
-            DSD_SNPRINTF(header_copy, sizeof(header_copy), "%s", buffer);
-            header = group_parse_policy_header(header_copy);
-            if (header.policy_active && header.invalid_order) {
-                LOG_WARN("WARNING: Group file '%s' header optional policy columns are out of order; ignoring "
-                         "mismatched and later "
-                         "optional columns.\n",
-                         filename);
+            if (!invalid_line) {
+                group_import_header(pass, buffer);
             }
             continue; //don't want labels
         }
-
-        if (!csv_data_row_ready(buffer, invalid_line, filename, (unsigned)row_count, stats)) {
-            continue;
-        }
-        if (group_import_row(state, store, filename, row_count, buffer, &header, &dropped_policy_alloc_rows) == 0
-            && stats) {
-            stats->accepted++;
-        }
+        group_import_data_line(pass, row_count, buffer, invalid_line);
     }
 
-    return group_import_finish(fp, filename, dropped_policy_alloc_rows);
+    return group_import_finish(fp, pass);
+}
+
+/* stats may be NULL; when set, counts data rows so a dry run can report them. report (may be NULL) says what the read
+ * found, failures included. */
+static int
+group_import_path(const char* group_file_path, dsd_state* state, dsd_tg_policy_store* store, dsd_csv_validation* stats,
+                  dsd_tg_policy_load_report* report) {
+    group_import_pass pass;
+    DSD_MEMSET(&pass, 0, sizeof pass);
+    pass.state = state;
+    pass.store = store;
+    pass.stats = stats;
+    DSD_SNPRINTF(pass.filename, sizeof pass.filename, "%s", "filename.csv");
+    const int rc = group_import_read(group_file_path, &pass);
+    if (report) {
+        *report = pass.report;
+    }
+    return rc;
 }
 
 static int
 group_import_path_stats(const char* path, dsd_state* state, dsd_csv_validation* stats) {
-    return group_import_path(path, state, NULL, stats);
+    return group_import_path(path, state, NULL, stats, NULL);
+}
+
+/* The one line an incomplete load gets (dsd_tg_policy_load_report_incomplete()): why, and that the list is not
+ * written back. */
+static void
+group_log_incomplete(const char* path, const dsd_tg_policy_load_report* report) {
+    const char* why = "it could not be read to the end";
+    if (report->failed > 0u) {
+        why = "some rows could not be stored (out of memory)";
+    } else if (!report->unreadable) {
+        why = "none of its rows could be used";
+    }
+    LOG_WARN("WARNING: Group file '%s' loaded incomplete: %s. Talkgroup changes will not be saved to it until it is "
+             "reloaded.\n",
+             path, why);
 }
 
 int
-dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
+dsd_tg_policy_load_counted(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report) {
+    dsd_tg_policy_load_report counts;
+    DSD_MEMSET(&counts, 0, sizeof counts);
+    if (report) {
+        *report = counts;
+    }
     if (!out) {
         return -1;
     }
@@ -429,17 +496,44 @@ dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
     if (!store) {
         return -1;
     }
-    if (group_import_path(path, NULL, store, NULL) != 0) {
+    const int rc = group_import_path(path, NULL, store, NULL, &counts);
+    if (report) {
+        *report = counts;
+    }
+    if (rc != 0) {
         dsd_tg_policy_release(store);
         return -1;
+    }
+    if (dsd_tg_policy_load_report_incomplete(&counts)) {
+        dsd_tg_policy_store_mark_incomplete(store);
     }
     *out = store;
     return 0;
 }
 
 int
+dsd_tg_policy_load(const char* path, dsd_tg_policy_store** out) {
+    dsd_tg_policy_load_report counts;
+    const int rc = dsd_tg_policy_load_counted(path, out, &counts);
+    if (rc == 0 && dsd_tg_policy_load_report_incomplete(&counts)) {
+        group_log_incomplete(path, &counts);
+    }
+    return rc;
+}
+
+/* Startup and bootstrap imports add the rows to the live list. Rows read before a read error stay loaded, so an
+ * incomplete load marks the list rather than dropping it: it decodes with what loaded, and is not written back. */
+int
 csvGroupImportPath(const char* group_file_path, dsd_state* state) {
-    return group_import_path_stats(group_file_path, state, NULL);
+    dsd_tg_policy_load_report counts;
+    int rc = group_import_path(group_file_path, state, NULL, NULL, &counts);
+    if (state && dsd_tg_policy_load_report_incomplete(&counts)) {
+        group_log_incomplete(group_file_path, &counts);
+        if (dsd_tg_policy_mark_incomplete(state) != 0) {
+            rc = -1;
+        }
+    }
+    return rc;
 }
 
 int
