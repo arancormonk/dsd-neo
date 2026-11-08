@@ -5067,6 +5067,35 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_backup_apply PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_BACKUP_APPLY COMMAND dsd-neo_test_ui_qt_backup_apply)
 
+    # A settings file Qt could not read whole is kept before Qt writes over it
+    # (issue #828): AppPrefs' and call history's INI files, the scratch copy a
+    # run writes when that fails, and the restore that waits for it. It links
+    # the whole UI library, so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_settings_recovery
+        ui/test_ui_qt_settings_recovery.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_settings_recovery
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SETTINGS_RECOVERY
+        COMMAND dsd-neo_test_ui_qt_settings_recovery
+    )
+
     # The backup screens' model (issue #580): export, inspect, commit and the
     # startup outcome through the model's worker, with a fake host, archives
     # built from the real models' stores and the apply the next start runs. It
@@ -8866,6 +8895,7 @@ foreach(
     dsd-neo_test_ui_qt_backup_archive
     dsd-neo_test_ui_qt_backup_apply
     dsd-neo_test_ui_qt_backup_model
+    dsd-neo_test_ui_qt_settings_recovery
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(

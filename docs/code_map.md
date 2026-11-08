@@ -12556,6 +12556,39 @@ Qt Quick frontend (`src/ui/qt`):
   link, mode 0200, a folder that cannot be searched, a marked file removed, retry after a failed replace,
   `out_source_left`, marks across threads, saved systems and scan lists), `UI_QT_CALL_HISTORY_MODEL` (the worker save),
   `UI_QT_SIGNAL_SEARCH` (ranges), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_IMPORTED_FILES`.
+- `settings_recovery.{h,cpp}` applies the same rule to the two INI settings files (issue #828): AppPrefs'
+  (`IniFormat`, `AppPrefs::settingsOrganization()`/`settingsApplication()`, `dsd-neo`/`dsd-neo-app`) and call history's
+  default `QSettings` (`QSettings::defaultFormat()`, the application's names by QSettings' own rule; an INI file on
+  Linux and Android, while the Windows registry and Apple plists are left alone). QSettings parses sections lazily,
+  ignores a read error (a valid prefix reads `NoError`), and its next write rewrites the whole file from what it parsed,
+  dropping malformed lines; its status sticks per instance, and an organization fallback file counts towards it.
+  `recover_settings_files()` is the first statement of `ui_load()`, before the restore apply and before any model or
+  `AppPrefs` opens a settings file, and runs `recover_ini_settings(format, org, app)` for each:
+  - The path is derived from an organization-only `QSettings`'s `fileName()` (`<user path><org><ext>` →
+    `<user path><org>/<app><ext>`), so Qt never reads the settings file before it is checked (and a FIFO there cannot
+    hang the start). The file is read through the json_store classifier (confirmed absence → Missing; any other stat
+    error, not a regular file, an open or read error → Unreadable), then that verified copy is parsed apart from every
+    fallback: an explicit-file `QSettings` on a copy in a `QTemporaryDir`, `allKeys()` forcing every section.
+  - Read whole and parsed cleanly, or missing: nothing happens. Otherwise, when the file was read whole: its bytes are
+    copied to the first free `<file>.unreadable-N` (N = 1..99, `dsd_fopen_private(..., "wbx")`, never replacing
+    anything; synced), then a clean file (the parsed keys written back by `QSettings`, byte for byte what Qt's own
+    next write would produce) replaces the file through a synced temp and `dsd_replace_file_with_temp()`. The
+    original stays in place until that replacement. A rewrite that fails removes the copy (the original is still
+    there).
+  - A read error, a path that is not a regular file, no free name, or a failed copy or rewrite: nothing may write the
+    file this run. `QSettings::setPath(format, UserScope, <CacheLocation>/settings-scratch/<ini|native>)` re-points
+    the format, so every later `QSettings` of it (constructor writes such as the location expiry, static helpers,
+    deferred flushes, destruction) writes a scratch copy seeded with the bytes that were read. The original stays
+    byte-identical and the next start tries again. `settings_recovery_scratch()` (an atomic, safe from any thread)
+    reports it, apart from QSettings' status, which reads `NoError` from the scratch copy: a pending restore is
+    Deferred while it is true (`backup_apply.cpp`), so a scratch sync never counts as a restore.
+  - Each kept or scratch file posts a `JsonStoreNotice` through `json_store_post_notice()`: `fileName` is the settings
+    file's own name (`dsd-neo-app.ini`; call history's `<application>.conf`, `DSD-neo.conf` in the app), `reason` is
+    for the log, and `keptName` is the copy's name, empty only for a file on its scratch copy.
+  - `SettingsRecoveryEnv` injects a read error after N bytes and a failing copy or rewrite for tests.
+  Documented limits: a read error is never kept (the copy could not hold what was not read), so a file that fails every
+  read runs on its scratch copy at every start; a transient read error that hits only Qt's own later read, and not the
+  check, is not seen. Tests: `UI_QT_SETTINGS_RECOVERY`.
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
   the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
@@ -12821,8 +12854,8 @@ Qt Quick frontend (`src/ui/qt`):
     name each other's files, so a library still losing rows on its third pass (a crafted chain) is refused as `Damaged`,
     at most three dry runs a row. `promote_staging()` renames it to `restore-pending/`, and `commit_pending()` writes
     `COMMITTED` (the manifest's sha256); every check reads only a regular `COMMITTED` file as the marker, as the apply
-    does. `ui_load()` calls `apply_pending_restore()` as its first statement, before any model reads a store, so
-    restored stores go through the loaders and migrations like any start's; its `engineBusy` is
+    does. `ui_load()` calls `apply_pending_restore()` right after the settings recovery, before any model reads a
+    store, so restored stores go through the loaders and migrations like any start's; its `engineBusy` is
     `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
     old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names (never
     one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
@@ -12837,10 +12870,11 @@ Qt Quick frontend (`src/ui/qt`):
     old setup does not own holds its place, the apply fails before any change ("A folder left by an earlier import is in
     the way of a restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for
     byte (pruned empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine
-    busy or storage short; kept) and `Stuck` (neither finishing nor undoing worked; kept); `backup-restore-result.json`
-    records the applied, failed and stuck ones. A commit marker that cannot be removed is Stuck without a rollback, on
-    purpose: a rollback ends by removing that same marker, so it could not complete either; the next start repeats the
-    idempotent roll forward and removes the marker then. A journal whose `prefs.json` does not match the hash its
+    busy, storage short, or settings on their scratch copy, `settings_recovery_scratch()`; kept) and `Stuck` (neither
+    finishing nor undoing worked; kept); `backup-restore-result.json` records the applied, failed and stuck ones.
+    A commit marker that cannot be removed is Stuck without a rollback, on purpose: a rollback ends by removing that
+    same marker, so it could not complete either; the next start repeats the idempotent roll forward and removes the
+    marker then. A journal whose `prefs.json` does not match the hash its
     manifest records is unreadable (Stuck) rather than a rollback that would clear the settings. `discard_pending()`
     refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is the only writer, deleter and
     renamer: it refuses a path outside the data root or one with a symlink or junction among its existing components,
@@ -13598,7 +13632,8 @@ Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration ba
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
 thread, which the rest of the interface never is.
 
-- Startup apply: `ui_load()` runs `apply_pending_restore()` first, before any model reads a store (the native
+- Startup apply: `ui_load()` runs `apply_pending_restore()` right after the settings recovery
+  (`recover_settings_files()`), before any model reads a store (the native
   signal-search store opens later, from `SignalSearchModel`), and asks `engineBusy()` there.
   `DecoderHostAndroid::engineBusy()` (`decoder_host_android_lifecycle.cpp`) reads the engine atomic, then
   `DecoderService.stateName()`, and returns `engine_busy()` from `session_state_map.h`: busy unless the service is IDLE

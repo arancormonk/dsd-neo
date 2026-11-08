@@ -41,6 +41,7 @@
 #include "backup_apply_fs.h"
 #include "backup_archive.h"
 #include "backup_archive_rules.h"
+#include "settings_recovery.h"
 
 namespace dsd_qt {
 namespace backup {
@@ -67,6 +68,12 @@ stuck_reason() {
 QString
 busy_reason() {
     return QCoreApplication::translate("BackupApply", "The decoder was busy, so the restore waits for the next start");
+}
+
+QString
+settings_reason() {
+    return QCoreApplication::translate("BackupApply",
+                                       "Settings couldn't be read or kept, so the restore waits for the next start");
 }
 
 QString
@@ -779,6 +786,12 @@ class Applier {
         const bool verified = StagingReader(m_pending, &m_staging).read();
         if (busy()) {
             return result(ApplyOutcome::Deferred, busy_reason());
+        }
+        // Settings on their scratch copy this run (issue #828) would take the restored ones and lose them at the next
+        // start, while every other store kept its restore. Nothing is touched, the stage stays committed, and the
+        // first start whose settings can be written applies it.
+        if (settings_recovery_scratch()) {
+            return result(ApplyOutcome::Deferred, settings_reason());
         }
         if (!entry_exists(m_journalDir + QStringLiteral("/COMPLETE"))) {
             return startFresh(verified);

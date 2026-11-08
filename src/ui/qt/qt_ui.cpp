@@ -50,6 +50,7 @@
 #include "scan_lists_model.h"
 #include "screen_reader_state.h"
 #include "session_args.h"
+#include "settings_recovery.h"
 #include "signal_search_model.h"
 #include "site_groups.h"
 #include "spectrum_model.h"
@@ -241,9 +242,12 @@ register_qml_types() {
 }
 
 // A restore the user confirmed applies before any model reads a store it replaces (#580), so the restored data goes
-// through the loaders, migrations and pruning below like any other start's.
+// through the loaders, migrations and pruning below like any other start's. Before it, and before anything opens a
+// settings file, a settings file Qt could not read whole is kept, or else this run's settings go to a scratch copy and
+// the restore waits (issue #828).
 static backup::ApplyResult
-apply_confirmed_restore(const DecoderHost* host) {
+recover_settings_and_apply_restore(const DecoderHost* host) {
+    recover_settings_files();
     backup::ApplyEnv env;
     env.engineBusy = [host]() { return host != nullptr && host->engineBusy(); };
     return backup::apply_pending_restore(env);
@@ -295,7 +299,7 @@ load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystem
 
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
-    const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
+    const backup::ApplyResult restoreOutcome = recover_settings_and_apply_restore(host);
     load_fonts(engine.rootContext());
 
     auto* metrics = new MetricsModel(&engine);

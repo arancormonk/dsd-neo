@@ -364,7 +364,17 @@ AppPrefs::~AppPrefs() = default;
 // and QSettings' fallback location would then depend on how the process was
 // launched rather than on the app. The one place the settings file is opened.
 AppPrefs::Settings::Settings()
-    : QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"), QStringLiteral("dsd-neo-app")) {}
+    : QSettings(QSettings::IniFormat, QSettings::UserScope, settingsOrganization(), settingsApplication()) {}
+
+QString
+AppPrefs::settingsOrganization() {
+    return QStringLiteral("dsd-neo");
+}
+
+QString
+AppPrefs::settingsApplication() {
+    return QStringLiteral("dsd-neo-app");
+}
 
 QList<AppPrefs::KeySpec>
 AppPrefs::keyTable() {

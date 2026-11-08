@@ -64,6 +64,7 @@ target_sources(
         spectrum_view_item.cpp
         screen_reader_state.cpp # Issue #782
         session_args.cpp
+        settings_recovery.cpp # Issue #828
         talkgroup_filter_model.cpp
         talkgroup_list_model.cpp
         ui_controller.cpp
