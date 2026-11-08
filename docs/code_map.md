@@ -10838,7 +10838,8 @@ Qt Quick frontend (`src/ui/qt`):
   target into `scroll.contentItem`, so a content column that starts below the top (Home's starts 13 px under fixed
   Listen tabs) is scrolled far enough; every other caller's column starts at 0. Tests: `UI_QT_QML_CALL_LISTS`
   (`tst_home_layout_fixes.qml`: range and place held through frames drawn while hidden, refresh-hint and plain cards at
-  320 px x 1.0/1.6/2.0, Tab through 12 systems and through 12 scan lists on their tabs at 411 x 700 on both hosts, the
+  320 px x 1.0/1.6/2.0, Tab through 12 systems and through 12 scan lists on their tabs on both hosts, at 411 x 700 with the tabs fixed and at
+  640 wide at 1.6 with the tabs in the body (where they are body stops kept in view), the
   helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
   `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`

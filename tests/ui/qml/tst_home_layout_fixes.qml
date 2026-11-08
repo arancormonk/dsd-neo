@@ -256,12 +256,19 @@ Item {
         // B3: Tab down the body and round again: every control it stops on in the body is in full view once the
         // layout settles, the last one too, flush with the bottom although the content column starts below the
         // body's top (13 px under the Listen tabs, issue #646). On the Systems and on the Scan lists tab, each
-        // with 12 cards, whose last Play ends the body's controls.
+        // with 12 cards, whose last Play ends the body's controls. In both tab placements: fixed at 411 x 700, and in
+        // the body at 640 wide with larger text on a window just under twice the fixed region (the short-screen
+        // rule), where the tabs scroll with the cards and are Tab stops of the body.
         function test_tab_stops_scroll_into_view_data() {
-            return [{tag: "desktop", brokered: false, section: "systems"},
-                {tag: "brokered header", brokered: true, section: "systems"},
-                {tag: "desktop scan lists", brokered: false, section: "scanLists"},
-                {tag: "brokered header scan lists", brokered: true, section: "scanLists"}];
+            var rows = [];
+            for (var place of [{name: "", fixed: true, width: 411, height: 700, scale: 1.0},
+                    {name: ", tabs in the body", fixed: false, width: 640, height: 0, scale: 1.6}]) {
+                rows.push({tag: "desktop" + place.name, brokered: false, section: "systems", place: place},
+                    {tag: "brokered header" + place.name, brokered: true, section: "systems", place: place},
+                    {tag: "desktop scan lists" + place.name, brokered: false, section: "scanLists", place: place},
+                    {tag: "brokered header scan lists" + place.name, brokered: true, section: "scanLists", place: place});
+            }
+            return rows;
         }
         function test_tab_stops_scroll_into_view(data) {
             if (data.brokered) {
@@ -269,8 +276,9 @@ Item {
                 testContext.setDongleStatus(false, 0, "");
                 testContext.useLifecycleHost(true);
             }
-            root.width = 411;
-            root.height = 700;
+            root.width = data.place.width;
+            root.height = data.place.height;
+            Ui.Theme.fontScale = data.place.scale;
             for (var i = 0; i < 12; ++i) {
                 if (data.section === "systems")
                     addSystem("System " + i);
@@ -279,8 +287,13 @@ Item {
             }
             home.showSection(data.section);
             verify(waitForPolish(home));
+            if (!data.place.fixed) {
+                root.height = Math.floor(2 * home.fixedExtent) - 2;
+                verify(waitForPolish(home));
+            }
             waitForRendering(home);
             compare(home.pinnedHeader, data.brokered);
+            compare(home.tabsFixed, data.place.fixed, "the Listen tabs' placement");
             verify(body().contentItem.children[0].y > 0, "the content column starts below the body's top");
             findChild(home, data.section === "systems" ? "addSystemButton" : "addScanListButton").forceActiveFocus();
             var window = root.Window.window;
@@ -301,6 +314,7 @@ Item {
             });
             var lastStop = plays[plays.length - 1];
             var reachedLast = false;
+            var reachedTabs = false;
             for (var n = 0; n < 40; ++n) {
                 keyClick(Qt.Key_Tab);
                 var focus = window.activeFocusItem;
@@ -314,6 +328,8 @@ Item {
                 }, 2000, label + " is in full view");
                 if (body().contentY > 0)
                     scrolledDown = true;
+                if (focus.objectName.indexOf("listenTab_") === 0)
+                    reachedTabs = true;
                 if (focus === lastStop) {
                     reachedLast = true;
                     // The last card ends the column: its Play is revealed down to the body's bottom edge.
@@ -325,6 +341,7 @@ Item {
             verify(stops >= 25, "Tab stopped on the body's controls: " + stops);
             verify(scrolledDown, "the body scrolled down to follow the focus");
             verify(reachedLast, "Tab reached the last control");
+            compare(reachedTabs, !data.place.fixed, "the Listen tabs are body stops only in the body");
         }
 
         // B3: Theme.revealFocus takes the place inside the Flickable's content, not inside the column it is handed,
