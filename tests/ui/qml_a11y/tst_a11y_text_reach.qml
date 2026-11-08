@@ -564,7 +564,7 @@ Item {
         // RadioReference sites, the wizard's CSV choices, the Diagnostics log while paused and the key sheet's slots.
         function test_5_model_rows() {
             var groups = testContext.writeFixtureCsv("reach-groups.csv", "id,mode,name\n1001,A,Dispatch\n1002,A,Fireground\n");
-            var imported = importedFiles.importFile(groups, "reach-groups.csv", "group");
+            var imported = testContext.importNow(groups, "group");
             verify(imported.ok, "the fixture CSV must import");
             savedSystems.add({name: "County P25", sourceType: "rtltcp", freqMhz: "851.0125"});
             var systemUid = savedSystems.get(savedSystems.count - 1).uid;

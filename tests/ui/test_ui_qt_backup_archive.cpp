@@ -50,6 +50,7 @@
 #include <qsystemdetection.h>
 #include <stdio.h>
 #include <utility>
+#include "../test_support/qt_library_import.h"
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "backup_archive.h"
@@ -180,7 +181,11 @@ struct Fixture {
 
 QString
 import_path(dsd_qt::ImportedFilesModel& library, const QString& source, const QString& name, const QString& type) {
-    const QVariantMap result = library.importFile(source, name, type);
+    // A copy keeps the picked file's own name, so the fixture is picked under the name it is stored as.
+    QTemporaryDir picked;
+    const QString named = picked.filePath(name);
+    expect("fixture copied under its stored name", QFile::copy(source, named));
+    const QVariantMap result = dsd_test_import_and_wait(library, named, type);
     expect("fixture import succeeds", result.value("ok").toBool());
     return result.value("path").toString();
 }
@@ -194,7 +199,7 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Fixture& f) {
                && write_file(source.filePath("channels.csv"),
                              "channel,frequency_hz,mode,keys_hex_csv,options\n1,461000000,dmr,keys.csv,"
                              "--dmr-tg-key-csv 'map.csv'\n"));
-    QVariantMap result = library.importBundle(source.filePath("channels.csv"), "Bundle.csv", "chan", {});
+    QVariantMap result = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan");
     expect("channel bundle imports", result.value("ok").toBool());
     f.chan = result.value("path").toString();
     f.chanRoot = library.get(library.rowForPath(f.chan)).value("bundleRoot").toString();
@@ -206,7 +211,7 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Fixture& f) {
                && write_file(source.filePath("targets.csv"),
                              "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
                              "one,p25-trunk,851012500,tmap.csv,250,,\n"));
-    result = library.importFile(source.filePath("targets.csv"), "Targets.csv", "trunkTargets");
+    result = dsd_test_import_and_wait(library, source.filePath("targets.csv"), "trunkTargets");
     expect("target bundle imports", result.value("ok").toBool());
     f.targets = result.value("path").toString();
     f.targetsRoot = library.get(library.rowForPath(f.targets)).value("bundleRoot").toString();
@@ -214,9 +219,10 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Fixture& f) {
     // A plain channel map later updated with companions keeps its file in imports/, beside its new bundle.
     expect("write plain channel map",
            write_file(source.filePath("plain.csv"), "channel,frequency_hz,mode\n1,461000000,dmr\n"));
-    result = library.importBundle(source.filePath("plain.csv"), "Plain.csv", "chan", {});
+    result = dsd_test_import_and_wait(library, source.filePath("plain.csv"), "chan");
     const int row = library.rowForPath(result.value("path").toString());
-    result = library.importBundle(source.filePath("channels.csv"), "Plain.csv", "chan", {}, row);
+    result = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan",
+                                      library.get(row).value("path").toString());
     expect("plain channel map updated with companions", result.value("ok").toBool());
     f.updated = result.value("path").toString();
     f.updatedRoot = library.get(row).value("bundleRoot").toString();
@@ -942,7 +948,7 @@ import_leftover_names(TestHost& host, CarrySetup& setup) {
                              "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr,keys.csv\n"));
     dsd_qt::ImportedFilesModel library(&host);
     setup.list = import_path(library, example("group.csv"), ".import-list.tmp", "group");
-    const QVariantMap result = library.importBundle(source.filePath(".staged-x.csv"), ".staged-x.csv", "chan", {});
+    const QVariantMap result = dsd_test_import_and_wait(library, source.filePath(".staged-x.csv"), "chan");
     expect(".staged-x.csv imports with its companion", result.value("ok").toBool());
     setup.staged = result.value("path").toString();
     setup.stagedRoot = library.get(library.rowForPath(setup.staged)).value("bundleRoot").toString();

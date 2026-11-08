@@ -13,17 +13,13 @@
 #include <QByteArray>
 #include <QClipboard>
 #include <QDateTime>
-#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
 #include <QSaveFile>
-#include <QSet>
-#include <QUrl>
 
 #include "document_import_transport.h"
-#include "import_names.h"
 #include "json_store.h"
 
 #include <Qt>
@@ -33,41 +29,6 @@
 namespace dsd_qt {
 
 namespace {
-
-QString
-imports_dir_path() {
-    // Same root json_store uses, so the library index and the files it points at
-    // can never end up under different app-data locations.
-    return json_store_path(QStringLiteral("imports"));
-}
-
-/**
- * @brief @p replacePath when it names a file directly inside @p dir, else empty.
- *
- * Canonicalizes the *directory*, not the file: QFileInfo::canonicalPath() gives
- * up on a missing leaf and returns ".", which would silently turn an update of a
- * copy that vanished behind the app's back into a fresh unique copy the caller
- * then rejects and never cleans up. The Android host resolves the parent too, so
- * this keeps the two in step.
- */
-QString
-replace_destination(const QDir& dir, const QString& replacePath) {
-    if (replacePath.isEmpty()) {
-        return QString();
-    }
-    const QString canonicalDir = QFileInfo(dir.absolutePath()).canonicalFilePath();
-    const QString canonicalTarget = QFileInfo(QFileInfo(replacePath).absolutePath()).canonicalFilePath();
-    if (canonicalDir.isEmpty() || canonicalTarget != canonicalDir) {
-        return QString();
-    }
-    return replacePath;
-}
-
-/** @brief Copy @p source to @p out in chunks; false on any read or write error. */
-bool
-copy_stream(QIODevice& source, QSaveFile& out) {
-    return copy_stream_capped(source, out, -1) == DecoderHost::DocumentCopied;
-}
 
 /** @brief A copy_stream_capped() predicate that stops once @p aborted is raised (never with no flag). */
 std::function<bool(qint64)>
@@ -422,48 +383,6 @@ DecoderHost::reportRecordingsMissing(const QStringList& paths) {
     if (!paths.isEmpty()) {
         Q_EMIT recordingFilesMissing(paths);
     }
-}
-
-QString
-DecoderHost::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {
-    const QUrl url(reference);
-    return importLocalFile(url.isLocalFile() ? url.toLocalFile() : reference, fileName, replacePath);
-}
-
-QString
-DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName, const QString& replacePath) {
-    QFile source(sourcePath);
-    if (!source.open(QIODevice::ReadOnly)) {
-        return QString();
-    }
-
-    QDir importsDir(imports_dir_path());
-    if (!importsDir.mkpath(QStringLiteral("."))) {
-        return QString();
-    }
-
-    // The display name comes from the picker; keep only its last component so
-    // it cannot navigate out of the imports directory.
-    const QString name = sanitized_import_name(fileName, QFileInfo(sourcePath).fileName());
-
-    QString destination = replace_destination(importsDir, replacePath);
-    if (destination.isEmpty()) {
-        destination = unique_import_destination(importsDir, name, QSet<QString>());
-    }
-    if (destination.isEmpty()) {
-        return QString();
-    }
-
-    // QSaveFile stages beside the target and renames over it on commit, so an
-    // update never leaves a half-written CSV where a saved system points.
-    QSaveFile out(destination);
-    if (!open_private(out)) {
-        return QString();
-    }
-    if (!copy_stream(source, out) || !out.commit()) {
-        return QString();
-    }
-    return destination;
 }
 
 } // namespace dsd_qt

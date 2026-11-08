@@ -51,6 +51,7 @@
 #include <stdio.h>
 #include <utility>
 #include <vector>
+#include "../test_support/qt_library_import.h"
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "backup_apply.h"
@@ -344,7 +345,11 @@ struct Backup {
 
 QString
 import_path(dsd_qt::ImportedFilesModel& library, const QString& source, const QString& name, const QString& type) {
-    const QVariantMap result = library.importFile(source, name, type);
+    // A copy keeps the picked file's own name, so the fixture is picked under the name it is stored as.
+    QTemporaryDir picked;
+    const QString named = picked.filePath(name);
+    expect("fixture copied under its stored name", QFile::copy(source, named));
+    const QVariantMap result = dsd_test_import_and_wait(library, named, type);
     expect("fixture import succeeds", result.value("ok").toBool());
     return result.value("path").toString();
 }
@@ -358,7 +363,7 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Backup& b) {
                && write_file(source.filePath("channels.csv"),
                              "channel,frequency_hz,mode,keys_hex_csv,options\n1,461000000,dmr,keys.csv,"
                              "--dmr-tg-key-csv 'map.csv'\n"));
-    QVariantMap result = library.importBundle(source.filePath("channels.csv"), "Bundle.csv", "chan", {});
+    QVariantMap result = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan");
     expect("channel bundle imports", result.value("ok").toBool());
     b.chan = result.value("path").toString();
     b.chanRoot = library.get(library.rowForPath(b.chan)).value("bundleRoot").toString();
@@ -370,7 +375,7 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Backup& b) {
                && write_file(source.filePath("targets.csv"),
                              "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
                              "one,p25-trunk,851012500,tmap.csv,250,,\n"));
-    result = library.importFile(source.filePath("targets.csv"), "Targets.csv", "trunkTargets");
+    result = dsd_test_import_and_wait(library, source.filePath("targets.csv"), "trunkTargets");
     expect("target bundle imports", result.value("ok").toBool());
     b.targets = result.value("path").toString();
     b.targetsRoot = library.get(library.rowForPath(b.targets)).value("bundleRoot").toString();
@@ -507,8 +512,7 @@ change_library(TestHost& host, const Backup& b, Old& old) {
            write_file(source.filePath("keys2.csv"), "keyid,value\n03,FEDCB\n")
                && write_file(source.filePath("channels.csv"),
                              "channel,frequency_hz,mode,keys_hex_csv\n1,462000000,dmr,keys2.csv\n"));
-    const QVariantMap updated =
-        library.importBundle(source.filePath("channels.csv"), "Bundle.csv", "chan", {}, library.rowForPath(b.chan));
+    const QVariantMap updated = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan", b.chan);
     expect("bundle updated in place",
            updated.value("ok").toBool() && library.get(library.rowForPath(b.chan)).value("bundleRoot") == b.chanRoot);
     for (QDirIterator it(b.chanRoot, QDir::Files, QDirIterator::Subdirectories); it.hasNext();) {
@@ -2093,9 +2097,10 @@ make_beside(TestHost& host) {
                    && write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
                    && write_file(source.filePath("channels.csv"),
                                  "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr,keys.csv\n"));
-        QVariantMap result = library.importBundle(source.filePath("plain.csv"), "Plain.csv", "chan", {});
+        QVariantMap result = dsd_test_import_and_wait(library, source.filePath("plain.csv"), "chan");
         const int row = library.rowForPath(result.value("path").toString());
-        result = library.importBundle(source.filePath("channels.csv"), "Plain.csv", "chan", {}, row);
+        result = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan",
+                                          library.get(row).value("path").toString());
         expect("the plain map is updated with companions", result.value("ok").toBool());
         beside.map = result.value("path").toString();
         beside.bundle = library.get(row).value("bundleRoot").toString();

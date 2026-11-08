@@ -144,6 +144,20 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertIn(("copyDocumentToFile", "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;J)I"),
                       kept)
 
+    def test_static_keeps_match_the_native_upcalls(self):
+        # A keep with no caller left keeps dead code alive (AppSupport.importDocumentToFiles after #832), and a caller
+        # with no keep breaks once R8 renames the method.
+        upcalls, _ = r8.jni_contract(ROOT)
+        rules = (ROOT / "android/package/proguard-rules.pro").read_text(encoding="utf-8")
+        classes = re.findall(r"-keep\S*\s+class\s+" + re.escape(r8.APP_PACKAGE.replace("/", ".")) + r"(\w+)\s*\{",
+                             rules)
+        self.assertIn("AppSupport", classes)
+        for class_name in classes:
+            called = {(name, signature) for owner, name, signature in upcalls
+                      if owner == r8.APP_PACKAGE + class_name}
+            with self.subTest(class_name=class_name):
+                self.assertEqual(kept_static_methods(class_name), called)
+
     def test_mapping_requires_r8_and_class_mappings(self):
         r8.verify_mapping("# compiler: R8\nexample.Policy -> a.b:\n")
         for invalid in ("", "# compiler: D8\nexample.Policy -> a.b:\n", "# compiler: R8\n"):

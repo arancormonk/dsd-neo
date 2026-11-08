@@ -138,41 +138,16 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE void cancelImport(int id);
 
     /**
-     * @brief Copy a document into the library, validate it, record a row: beginImport()'s stage and commit, run at
-     * once on the calling thread.
-     *
-     * @p fileName names the copy (a blank one leaves the document's own name); a pick goes through beginImport() or
-     * importBundle(), where the name the document's provider reports wins over the picker's hint.
-     *
-     * @return beginImport()'s result. error "empty" means the file parsed but no row was usable — the row is kept, so
-     *         the user can fix the file and update, but the UI should warn.
-     */
-    Q_INVOKABLE QVariantMap importFile(const QString& reference, const QString& fileName, const QString& type);
-    Q_INVOKABLE QVariantMap importBundle(const QString& reference, const QString& fileName, const QString& type,
-                                         const QVariantMap& companions, int replaceRow = -1);
-
-    /**
-     * @brief Re-pick flow: replace the row's stored file and re-validate, as beginImport() with a replacePath, run at
-     * once on the calling thread.
-     *
-     * The pick is staged outside the library and validated BEFORE it is committed
-     * over the row's file, so a file that is not parseable as the row's type
-     * leaves the stored copy byte-identical. Every saved system referencing that
-     * path keeps working.
-     */
-    Q_INVOKABLE QVariantMap updateFile(int row, const QString& reference, const QString& fileName);
-
-    /**
      * @brief Adopt a file this process generated, recording where it came from.
      *
-     * Same stage and commit as importFile(), but the source is a plain path we
-     * wrote rather than a picker reference, and @p fileName names the copy.
+     * beginImport()'s stage and commit, run at once on the calling thread: the source is a plain path we wrote
+     * rather than a picker reference, and @p fileName names the copy.
      *
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
      * @param type       "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan" | "src".
      * @param origin     Provenance: {origin, rrSid, rrSiteIds, rrKind, rrPartialEnc}.
-     * @return Same shape as importFile().
+     * @return beginImport()'s result.
      */
     Q_INVOKABLE QVariantMap importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
                                                 const QVariantMap& origin);
@@ -187,7 +162,7 @@ class ImportedFilesModel : public QAbstractListModel {
      *
      * @param row        Library row.
      * @param sourcePath Absolute path of the freshly generated file.
-     * @return Same shape as importFile().
+     * @return beginImport()'s result.
      */
     Q_INVOKABLE QVariantMap refreshGeneratedFile(int row, const QString& sourcePath);
 
@@ -263,8 +238,6 @@ class ImportedFilesModel : public QAbstractListModel {
     /** Run a single-file stage and its commit at once on the calling thread; the commit's result. */
     QVariantMap importNow(const QString& reference, const QString& providerName, const QString& hint,
                           const QString& type, const ImportTarget& target, const QVariantMap& origin);
-    /** Run a bundle's stage and its commit at once on the calling thread; the commit's result. */
-    QVariantMap importBundleNow(const QVariantMap& request, const ImportTarget& target);
     void finishImport(qint64 id, const QVariantMap& staged, bool cancelled, const ImportTarget& target);
     QVariantMap commitStaged(const QVariantMap& staged, bool cancelled, const ImportTarget& target,
                              const QVariantMap& origin);

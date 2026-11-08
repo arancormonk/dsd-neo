@@ -361,16 +361,6 @@ DecoderHostAndroid::noteStartAttempt(const QString&) {}
 void
 DecoderHostAndroid::setScreenPolicy(int, int) {}
 
-QString
-DecoderHostAndroid::importContentUri(const QString&, const QString&) {
-    return {};
-}
-
-QString
-DecoderHostAndroid::importDocument(const QString&, const QString&, const QString&) {
-    return {};
-}
-
 bool
 DecoderHostAndroid::quitApp() {
     return false;

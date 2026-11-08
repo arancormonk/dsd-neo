@@ -179,18 +179,6 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void requestLocalDeviceAccess() override;
     void setScreenPolicy(int mode, int delaySeconds) override;
 
-    /** @brief Materialize a replay document into durable app-private storage; returns "" on failure. */
-    QString importContentUri(const QString& reference, const QString& fileName) override;
-
-    /**
-     * @brief Materialize a SAF content URI into filesDir/imports; returns "" on failure.
-     *
-     * No default argument: on a virtual it would be bound from the static type of
-     * the call, so a base-class default that ever changed would silently mean two
-     * different things depending on which pointer type the caller held.
-     */
-    QString importDocument(const QString& reference, const QString& fileName, const QString& replacePath) override;
-
     /**
      * @brief Finish the Activity so a committed restore applies at the next launch (#580).
      *

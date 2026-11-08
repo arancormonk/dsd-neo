@@ -24,7 +24,6 @@
     public static boolean takeNotificationPermissionRefresh();
     public static boolean notificationPermissionNeeded(android.content.Context);
     public static void ensureNotificationPermission(android.app.Activity);
-    public static java.lang.String importDocumentToFiles(android.content.Context, java.lang.String, java.lang.String, java.lang.String);
     public static void finishApp(android.content.Context);
 }
 

@@ -156,7 +156,7 @@ Item {
         function test_imported_target_preview_and_save() {
             var source = testContext.writeFixtureCsv("scan-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,--scan-max-visit-ms 20000\n");
-            var result = importedFiles.importFile(source, "Targets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.draft.name = "Imported";
@@ -191,7 +191,7 @@ Item {
                 + "thr,p25-conventional,851500000,,,,,--squelch-db -60\n"
                 + "off,dmr-conventional,461000000,,,,,--squelch-db 0\n"
                 + "inh,nxdn48-conventional,461556250,,,,,\n");
-            var result = importedFiles.importFile(source, "SquelchTargets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -217,7 +217,7 @@ Item {
                 + "dig,dmr-conventional,461000000,,,,,\n"
                 + "tower,am-conventional,118300000,,,,,--am-bandwidth-hz 8333\n"
                 + "guard,am-conventional,121500000,,,,,\n");
-            var result = importedFiles.importFile(source, "BandwidthTargets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -257,7 +257,7 @@ Item {
                 + "inh,nfm-conventional,155535000,,,,,\n"
                 + "tower,am-conventional,118300000,,,,,\n"
                 + "dig,dmr-conventional,461000000,,,,,\n");
-            var result = importedFiles.importFile(source, "ToneTargets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -298,7 +298,7 @@ Item {
         function test_reselect_csv_targets_keeps_preview() {
             var fixture = testContext.writeFixtureCsv("scan-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,--scan-max-visit-ms 20000\n");
-            var result = importedFiles.importFile(fixture, "Targets.csv", "trunkTargets");
+            var result = testContext.importNow(fixture, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -975,7 +975,7 @@ Item {
         function test_modes_preserved_until_selected_mode_is_saved(data) {
             var fixture = testContext.writeFixtureCsv("both-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,\n");
-            var result = importedFiles.importFile(fixture, "Both.csv", "trunkTargets");
+            var result = testContext.importNow(fixture, "trunkTargets");
             verify(result.ok, result.detail);
             try {
                 edit("scanListName", "Both modes");
@@ -1354,7 +1354,7 @@ Item {
                 control("scanAdvancedToggle").Accessible.pressAction();
                 for (var fixture of fixtures) {
                     var source = testContext.writeFixtureCsv("scan-" + fixture.type + ".csv", fixture.csv);
-                    var result = importedFiles.importFile(source, "scan-" + fixture.type + ".csv", fixture.type);
+                    var result = testContext.importNow(source, fixture.type);
                     verify(result.ok, result.detail);
                     paths.push(result.path);
                     var picker = control("scanFile_" + fixture.key);

@@ -94,6 +94,7 @@
 #include <mutex>
 #include <set>
 #include <utility>
+#include "../test_support/qt_library_import.h"
 #include "../test_support/qt_test_paths.h"
 #include "decryption_profiles_model.h"
 
@@ -193,10 +194,9 @@ class HeldImportTransport : public dsd_qt::DocumentImportTransport {
 /**
  * @brief Minimal DecoderHost so ImportedFilesModel has one to copy through.
  *
- * Only importDocument() is exercised here, and that is DecoderHost's own
- * non-virtual desktop implementation. The lifecycle members exist because the
- * base class is abstract; the `decoderHost` the QML reads is still the plain map
- * below, which is what keeps the screens' session bindings drivable from a case.
+ * Only its import transport is used here: the base local-file copy, behind a gate the cases can hold. The lifecycle
+ * members exist because the base class is abstract; the `decoderHost` the QML reads is still the plain map below,
+ * which is what keeps the screens' session bindings drivable from a case.
  */
 class ImportOnlyHost : public dsd_qt::DecoderHost {
     Q_OBJECT
@@ -3867,7 +3867,7 @@ class Setup : public QObject {
      * @brief Write @p contents to a disposable CSV and answer its path.
      *
      * The imports library only grows a row by copying a real file through
-     * DecoderHost::importDocument() and parsing what landed, and QML cannot
+     * its import transport and parsing what landed, and QML cannot
      * create one. The file goes under the same disposable app data tree the
      * library itself persists to, so a run leaves nothing behind.
      */
@@ -3920,23 +3920,7 @@ class Setup : public QObject {
      */
     Q_INVOKABLE QVariantMap
     importNow(const QString& path, const QString& type) {
-        QVariantMap result{{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("timeout")}};
-        int wanted = 0;
-        QEventLoop loop;
-        // importFinished() is queued, so it cannot arrive before the id is known.
-        const QMetaObject::Connection answered =
-            QObject::connect(m_imported_files, &dsd_qt::ImportedFilesModel::importFinished, &loop,
-                             [&](int id, const QVariantMap& answer) {
-                                 if (id == wanted) {
-                                     result = answer;
-                                     loop.quit();
-                                 }
-                             });
-        wanted = m_imported_files->beginImport(path, QFileInfo(path).fileName(), type, QVariantMap(), QString());
-        QTimer::singleShot(10000, &loop, &QEventLoop::quit);
-        loop.exec();
-        QObject::disconnect(answered);
-        return result;
+        return dsd_test_import_and_wait(*m_imported_files, path, type);
     }
 
     /**

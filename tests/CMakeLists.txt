@@ -5094,9 +5094,8 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_replay_store PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_REPLAY_STORE COMMAND dsd-neo_test_ui_qt_replay_store)
 
-    # The imported-files layer behind the CSV pickers: DecoderHost's desktop
-    # importDocument() copy/unique-ify/replace semantics and the library model
-    # the wizard and the imports screen share.
+    # The imported-files layer behind the CSV pickers: the library model the
+    # wizard and the imports screen share, its import worker and commits.
     add_executable(
         dsd-neo_test_ui_qt_imported_files_model
         ui/test_ui_qt_imported_files_model.cpp

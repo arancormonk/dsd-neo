@@ -102,8 +102,8 @@ Item {
             // there.
             if (Qt.platform.os === "windows")
                 skip("Windows file names cannot hold markup")
-            var source = testContext.writeFixtureCsv("markup-map.csv", "channel,frequency\n1,851012500\n")
-            var result = importedFiles.importFile(source, "<b>Map &amp; plan.csv", "chan")
+            var source = testContext.writeFixtureCsv("<b>Map &amp; plan.csv", "channel,frequency\n1,851012500\n")
+            var result = testContext.importNow(source, "chan")
             verify(result.ok, "the map was not imported: " + result.error)
             var sheet = findChild(tc.wizard, "wizardCsvSheet")
             try {

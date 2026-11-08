@@ -35,6 +35,7 @@
 #include <utility>
 #include "app_prefs.h"
 #include "decoder_host.h"
+#include "document_import_transport.h"
 #include "recording_sessions.h"
 
 #include <dsd-neo/core/opts.h>
@@ -1559,34 +1560,13 @@ test_network_and_file_sources(void) {
            input_spec(session_args_build(file, SessionArgPrefs(), &error)) == QStringLiteral("/sdcard/capture.wav"));
 }
 
-/* I5 (#832): desktop Browse hands the wizard a file:// URL; the host stores its plain path, which -i opens. */
+/* I5 (#832): desktop Browse hands the wizard a file:// URL; the replay store keeps its plain path, which -i opens. */
 void
 test_desktop_browse_stores_a_plain_path(void) {
-    class Host : public dsd_qt::DecoderHost {
-      public:
-        bool
-        isRunning() const override {
-            return false;
-        }
-
-        QString
-        statusText() const override {
-            return {};
-        }
-
-        bool
-        start(const QStringList&) override {
-            return false;
-        }
-
-        void
-        stop() override {}
-    } host;
-
     const QString path = QStringLiteral("/home/user/captures/site 1.wav");
-    const QString stored = host.importContentUri(QUrl::fromLocalFile(path).toString(), QStringLiteral("site 1.wav"));
+    const QString stored = dsd_qt::local_document_path(QUrl::fromLocalFile(path).toString());
     expect("a file URL is stored as its plain path", stored == path);
-    expect("a plain path is stored as it is", host.importContentUri(path, QStringLiteral("site 1.wav")) == path);
+    expect("a plain path is stored as it is", dsd_qt::local_document_path(path) == path);
     QVariantMap file;
     file.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
     file.insert(QStringLiteral("filePath"), stored);

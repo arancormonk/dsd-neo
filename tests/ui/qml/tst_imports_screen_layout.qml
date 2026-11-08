@@ -50,12 +50,12 @@ Item {
             // the fixture has to be one.
             var groups = testContext.writeFixtureCsv("groups.csv", "id,mode,name\n1001,A,Dispatch\n1002,A,Fireground\n");
             verify(groups.length > 0, "could not write the talkgroup fixture");
-            var accepted = importedFiles.importFile(groups, "groups.csv", "group");
+            var accepted = testContext.importNow(groups, "group");
             verify(accepted.ok, "the talkgroup fixture did not import");
 
             var more = testContext.writeFixtureCsv("extra.csv", "id,mode,name\n2001,A,Public Works\n");
             verify(more.length > 0, "could not write the second fixture");
-            verify(importedFiles.importFile(more, "extra.csv", "group").ok, "the second fixture did not import");
+            verify(testContext.importNow(more, "group").ok, "the second fixture did not import");
 
             tryCompare(tc.list, "count", 2);
             tc.waitForRendering(tc.list);
@@ -78,7 +78,7 @@ Item {
                 + "1,851012500,p25,--squelch-db -60\n"
                 + "2,852012500,dmr,--squelch-db 0\n"
                 + "3,853012500,dmr,\n");
-            var result = importedFiles.importFile(map, "squelch-map.csv", "chan");
+            var result = testContext.importNow(map, "chan");
             verify(result.ok, result.detail || "the channel map did not import");
             var row = importedFiles.rowForPath(result.path);
             try {
@@ -114,7 +114,7 @@ Item {
                 + "3,853012500,dmr,\n"
                 + "4,118300000,am,--am-bandwidth-hz 8333\n"
                 + "5,121500000,am,\n");
-            var result = importedFiles.importFile(map, "bandwidth-map.csv", "chan");
+            var result = testContext.importNow(map, "chan");
             verify(result.ok, result.detail || "the channel map did not import");
             var row = importedFiles.rowForPath(result.path);
             try {
@@ -160,7 +160,7 @@ Item {
                 + "4,155535000,nfm,\n"
                 + "5,118300000,am,\n"
                 + "6,853012500,dmr,\n");
-            var result = importedFiles.importFile(map, "tone-map.csv", "chan");
+            var result = testContext.importNow(map, "chan");
             verify(result.ok, result.detail || "the channel map did not import");
             var row = importedFiles.rowForPath(result.path);
             try {

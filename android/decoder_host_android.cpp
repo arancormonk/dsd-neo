@@ -457,27 +457,6 @@ DecoderHostAndroid::moveToBackground() {
     return activity.callMethod<jboolean>("moveTaskToBack", "(Z)Z", JNI_TRUE) == JNI_TRUE;
 }
 
-QString
-DecoderHostAndroid::importContentUri(const QString& reference, const QString& fileName) {
-    return importDocument(reference, fileName, QString());
-}
-
-QString
-DecoderHostAndroid::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {
-    QJniObject context = android_context();
-    if (!context.isValid()) {
-        return QString();
-    }
-    QJniObject uri = QJniObject::fromString(reference);
-    QJniObject name = QJniObject::fromString(fileName);
-    QJniObject replace = QJniObject::fromString(replacePath);
-    QJniObject result = QJniObject::callStaticObjectMethod(
-        kSupportClass, "importDocumentToFiles",
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-        context.object(), uri.object(), name.object(), replace.object());
-    return result.isValid() ? result.toString() : QString();
-}
-
 bool
 DecoderHostAndroid::quitApp() {
     if (!QNativeInterface::QAndroidApplication::isActivityContext()) {

@@ -516,33 +516,6 @@ ImportedFilesModel::companionDetails(const QVariantMap& requiredDetails) const {
 }
 
 QVariantMap
-ImportedFilesModel::importBundle(const QString& reference, const QString& fileName, const QString& type,
-                                 const QVariantMap& companions, int replaceRow) {
-    if (type != "chan" && type != "trunkTargets") {
-        if (replaceRow >= 0) {
-            return updateFile(replaceRow, reference, fileName);
-        }
-        // A pick: the name its provider reports wins over the picker's hint, as in beginImport().
-        ImportTarget target;
-        const QVariantMap refusal = importRefusal(type, QString(), &target);
-        return refusal.isEmpty() ? importNow(reference, QString(), fileName, type, target, QVariantMap()) : refusal;
-    }
-    if (replaceRow >= count()) {
-        QVariantMap result = failure(QStringLiteral("path"));
-        result.insert(QStringLiteral("detail"), tr("Cannot replace this imported file."));
-        result.insert(QStringLiteral("type"), type);
-        return result;
-    }
-    ImportTarget target;
-    QVariantMap refusal = importRefusal(type, replaceRow >= 0 ? m_rows[replaceRow].path : QString(), &target);
-    if (!refusal.isEmpty()) {
-        return refusal;
-    }
-    target.bundle = true;
-    return importBundleNow(bundleRequest(reference, fileName, type, companions, target), target);
-}
-
-QVariantMap
 ImportedFilesModel::bundleRequest(const QString& reference, const QString& fileName, const QString& type,
                                   const QVariantMap& companions, const ImportTarget& target) const {
     QVariantMap libraryEntries;
@@ -568,19 +541,6 @@ ImportedFilesModel::bundleRequest(const QString& reference, const QString& fileN
         }
     }
     return request;
-}
-
-QVariantMap
-ImportedFilesModel::importBundleNow(const QVariantMap& request, const ImportTarget& target) {
-    QVariantMap result = failure(QStringLiteral("local"));
-    result.insert(QStringLiteral("type"), target.type);
-    if (m_imports) {
-        m_imports->runNow([&request](const ImportJob& job) { return stage_bundle(job, request); },
-                          [&](qint64, const QVariantMap& staged, bool cancelled) {
-                              result = commitStaged(staged, cancelled, target, QVariantMap());
-                          });
-    }
-    return result;
 }
 
 ImportedFilesModel::Row
@@ -936,36 +896,10 @@ ImportedFilesModel::applyReplacement(int row, QList<Row> next) {
 }
 
 QVariantMap
-ImportedFilesModel::importFile(const QString& reference, const QString& fileName, const QString& type) {
-    if (type == "trunkTargets") {
-        return importBundle(reference, fileName, type, {});
-    }
-    ImportTarget target;
-    const QVariantMap refusal = importRefusal(type, QString(), &target);
-    // The caller's name for the copy wins over the document's own (a blank one falls back to it).
-    return refusal.isEmpty() ? importNow(reference, fileName, fileName, type, target, QVariantMap()) : refusal;
-}
-
-QVariantMap
 ImportedFilesModel::importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
                                         const QVariantMap& origin) {
     return importNow(sourcePath, fileName, QFileInfo(sourcePath).fileName(), type,
                      ImportTarget{QString(), 0, type, false}, origin);
-}
-
-QVariantMap
-ImportedFilesModel::updateFile(int row, const QString& reference, const QString& fileName) {
-    if (row < 0 || row >= m_rows.size()) {
-        return failure(QStringLiteral("path"));
-    }
-    const Row snapshot = m_rows.at(row);
-    if (snapshot.type == "trunkTargets") {
-        return importBundle(reference, fileName, snapshot.type, {}, row);
-    }
-    ImportTarget target;
-    const QVariantMap refusal = importRefusal(snapshot.type, snapshot.path, &target);
-    return refusal.isEmpty() ? importNow(reference, QString(), fileName, snapshot.type, target, QVariantMap())
-                             : refusal;
 }
 
 QVariantMap
