@@ -716,6 +716,29 @@ test_store_past_int_range(void) {
     expect("an oversized policy reads as the default", row.value(QStringLiteral("rrEncryptionPolicy")).toInt() == 3);
 }
 
+/* Issue #828: a library index that could not be read loads empty, and the next import keeps it byte for byte instead
+ * of writing over it. */
+void
+test_unreadable_index_is_kept() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    const QTemporaryDir sourceDir;
+    const QString source = sourceDir.filePath(QStringLiteral("county.csv"));
+    expect("unreadable index: source written", write_file(source, "TG,Mode,Name\n101,D,Dispatch\n"));
+    const QString index = dsd_qt::json_store_path(QStringLiteral("imported_files.json"));
+    const QByteArray junk("[{\"name\":\"county.csv\"");
+    expect("unreadable index: fixture", QDir().mkpath(QFileInfo(index).absolutePath()) && write_file(index, junk));
+    dsd_qt::ImportedFilesModel model(&host);
+    expect("unreadable index: loads empty", model.rowCount() == 0 && model.takePrunedPaths().isEmpty());
+    expect("unreadable index: nothing moves at load", read_file(index) == junk);
+    const QVariantMap imported =
+        model.importFile(QUrl::fromLocalFile(source).toString(), QStringLiteral("county.csv"), QStringLiteral("group"));
+    expect("unreadable index: the import saves", imported.value(QStringLiteral("ok")).toBool());
+    expect("unreadable index: kept byte for byte", read_file(index + QStringLiteral(".unreadable-1")) == junk);
+    expect("unreadable index: the new index has the import",
+           dsd_qt::json_store_load_array(QStringLiteral("imported_files.json")).size() == 1);
+}
+
 void
 test_export_registration_in_place() {
     TestHost host;
@@ -1742,6 +1765,7 @@ main(int argc, char** argv) {
     test_src_kind();
     test_legacy_store_without_provenance();
     test_store_past_int_range();
+    test_unreadable_index_is_kept();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

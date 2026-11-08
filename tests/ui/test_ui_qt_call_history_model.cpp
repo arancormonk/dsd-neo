@@ -4405,6 +4405,43 @@ test_failed_save_is_kept_and_retried(void) {
     expect("saveNow on an owed log writes it", !model.saveFailing() && stored_tg(24002U));
 }
 
+/* Issue #828: history stores that could not be read load empty, and the first save, on the save worker, keeps each one
+ * byte for byte instead of writing over it. */
+void
+test_unreadable_stores_are_kept_by_the_worker(void) {
+    resetStorage();
+    const QString rowsPath = dsd_qt::json_store_path("call_history.json");
+    const QString seenPath = dsd_qt::json_store_path("call_history_seen.json");
+    const auto put = [](const QString& path, const QByteArray& bytes) {
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    };
+    const auto bytes = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray("<unopenable>");
+    };
+    const QByteArray rowsJunk("[{\"tg\":26000,");
+    const QByteArray seenJunk("{\"seen\":[]}");
+    expect("unreadable history fixtures", put(rowsPath, rowsJunk) && put(seenPath, seenJunk));
+    RingFixture ring;
+    const time_t when = 1754705000;
+    {
+        CallHistoryModel model;
+        expect("unreadable history loads empty", model.count() == 0);
+        expect("nothing moves at load", bytes(rowsPath) == rowsJunk && bytes(seenPath) == seenJunk);
+        ring.commit(0, 26001, 1001, when, when + 4);
+        model.refresh(ring.state);
+        model.startSaveForTest();
+        settle_save(model);
+        expect("the worker's save lands", !model.saveFailing() && stored_tg(26001U));
+        expect("the rows store is kept", bytes(rowsPath + ".unreadable-1") == rowsJunk);
+        expect("the seen store is kept", bytes(seenPath + ".unreadable-1") == seenJunk);
+    }
+    expect("later saves keep nothing more",
+           !QFile::exists(rowsPath + ".unreadable-2") && !QFile::exists(seenPath + ".unreadable-2"));
+}
+
 /* B6 across a restart: a save that wrote the rows store but not the seen store leaves a log whose seen entries lag.
  * A relaunched model reading the same ring logs no row twice. */
 void
@@ -4705,6 +4742,7 @@ main(int argc, char** argv) {
     test_recording_roles_follow_the_provider();
     test_failed_save_is_kept_and_retried();
     test_restart_after_a_half_written_save();
+    test_unreadable_stores_are_kept_by_the_worker();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

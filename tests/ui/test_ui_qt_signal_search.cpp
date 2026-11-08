@@ -13,6 +13,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -357,6 +358,30 @@ testStoredMarginBelowMinimum(dsd_qt::KnownFrequencyIndex* index) {
     assert(ranges[0].toMap().value(QStringLiteral("squelchMargin")).toInt() == 3);
     assert(ranges[1].toMap().value(QStringLiteral("name")) == QStringLiteral("Level 0 dB"));
     assert(ranges[1].toMap().value(QStringLiteral("squelchMargin")).toInt() == 0);
+    assert(dsd_qt::json_store_save_array(file, previous));
+}
+
+/* Issue #828: a ranges file that could not be read is kept at the first edit instead of being written over. */
+void
+testRangesKeptAside(dsd_qt::KnownFrequencyIndex* index) {
+    const QString file = QStringLiteral("signal-search-ranges.json");
+    const QString path = dsd_qt::json_store_path(file);
+    const QJsonArray previous = dsd_qt::json_store_load_array(file);
+    const QByteArray junk("[{\"name\":");
+    {
+        QFile broken(path);
+        assert(broken.open(QIODevice::WriteOnly | QIODevice::Truncate) && broken.write(junk) == junk.size());
+    }
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        assert(model.ranges().size() == 1); // the default, shown in place of the lost ones
+        QVariantMap range = model.defaultRange();
+        range[QStringLiteral("name")] = QStringLiteral("Edited");
+        assert(model.saveRange(0, range).isEmpty());
+        QFile kept(path + QStringLiteral(".unreadable-1"));
+        assert(kept.open(QIODevice::ReadOnly) && kept.readAll() == junk);
+    }
+    assert(QFile::remove(path + QStringLiteral(".unreadable-1")));
     assert(dsd_qt::json_store_save_array(file, previous));
 }
 
@@ -1548,6 +1573,7 @@ main(int argc, char** argv) {
     testResumeWhileWindingDown(&index);
     testRestartAfterPausedStop(&index);
     testStoredMarginBelowMinimum(&index);
+    testRangesKeptAside(&index);
     testKnownFrequencyIdentity(temp.path());
     testKnownFrequencyListsApart();
     testKnownFrequencyEngineIds(temp.path());

@@ -12520,6 +12520,40 @@ Qt Quick frontend (`src/ui/qt`):
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
+- `json_store.{h,cpp}` holds the Qt models' JSON-array stores in the app data root (`json_store_root()`): saved
+  systems, scan lists, imported files, decryption profiles, call history and its seen map, Signal search ranges. A store
+  that could not be read whole is never written over (issue #828):
+  - `json_store_read()` returns `Missing` (confirmed absent: `json_store_definitely_missing()`, a `dsd_stat_path()`
+    ENOENT/ENOTDIR), `Ok`, or `Unreadable` with a reason for the log: any other stat failure (a folder that cannot be
+    searched), a path that is not a regular file (checked before the open, so a FIFO cannot hang the GUI thread), an
+    open or read error (`file.error()` after `readAll()`), invalid JSON, or a document that is not an array. It marks
+    nothing, for readers that never save.
+  - `json_store_load_array()` (what the models call) marks an `Unreadable` file in a process-wide table keyed by
+    absolute path, logs it (`LOG_WARN`, so the diagnostics log keeps it) and posts a notice. A later `Ok` read does not
+    clear the mark.
+  - `json_store_save_array()` writes an unmarked file through QSaveFile as before. A marked one follows the keep-aside
+    rule shared with the native Signal search store: (1) write and sync its own temp
+    (`dsd_fopen_private_temp_for_replace()`), (2) rename the path, never followed (`dsd_path_type_nofollow()`: a
+    regular file or a link, the link itself), with `dsd_rename_noreplace()` to the first free `<name>.unreadable-N`,
+    N = 1..99, (3) `dsd_replace_file_with_temp()`. QSaveFile is not used there because it resolves a link at the path
+    and replaces its target. States: Marked → Kept → cleared. A failure at (1) or (2) moves nothing and the save fails
+    (owed, through each model's own save-failure path); a path confirmed absent at (2) clears the mark and is written;
+    a folder, FIFO or socket there, an unknown classification, or no free N refuses; a failure at (3) stays Kept, so
+    the retry only writes; a rename that left its source (`out_source_left`) counts as kept. Lazy: nothing moves on
+    a run that never saves that store. A crash between (2) and (3) leaves the list empty at the next launch, with the
+    original kept and nothing destroyed.
+  - One mutex guards the marks and the notices, and is held across a marked file's whole save, so call history's
+    worker and GUI-thread saves of the same file never interleave. Unmarked saves run outside it.
+  - Notices: `json_store_notices()` (one `JsonStoreNotice {fileName, reason, keptName}` per file, oldest first;
+    `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the settings
+    INI), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread
+    that loaded or saved. `call_history_seen.json` gets a notice like any store; it is internal, so a frontend
+    shows no card for it.
+  - Test seams (`DSD_NEO_TEST_HOOKS`, `json_store_test_hooks.h`): a read error, and a hook run right after the move.
+  Tests: `UI_QT_PERSISTENCE` (each read class, keep-aside numbering, a mark surviving an `Ok` re-read, folder, FIFO,
+  link, mode 0200, a folder that cannot be searched, a marked file removed, retry after a failed replace,
+  `out_source_left`, marks across threads, saved systems and scan lists), `UI_QT_CALL_HISTORY_MODEL` (the worker save),
+  `UI_QT_SIGNAL_SEARCH` (ranges), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_IMPORTED_FILES`.
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
   the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
@@ -12807,7 +12841,8 @@ Qt Quick frontend (`src/ui/qt`):
     and removes trees without following links. Documented limits: a resumed apply (journal complete) that finds the
     engine busy is Deferred, and that session runs on the half-applied configuration, whose edits the next roll forward
     can overwrite; a corrupt complete journal is Stuck at every start and cannot be discarded; a store file that is a
-    symlink fails every restore (`QSaveFile` writes through a link, so the models' own saves never replace it).
+    symlink fails every restore (`QSaveFile` writes through a link, so the models' own saves replace it only when it
+    could not be read, by renaming the link aside: `json_store` above).
     `ApplyEnv` injects the engine check, free space and a fault per named step.
   - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
     one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
