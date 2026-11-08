@@ -1303,7 +1303,8 @@ Item {
                         // A button a screen reader can press (issue #782), as the scan list's
                         // Advanced header is: its title is the name, its second line and
                         // whether it is open the description.
-                        activeFocusOnTab: Navigation.allows(advHeader) && visible
+                        // Held while it has the focus (see OutlineButton).
+                        activeFocusOnTab: (Navigation.allows(advHeader) && visible) || activeFocus
                         Accessible.role: Accessible.Button
                         Accessible.name: advTitle.text
                         Accessible.description: advSubtitle.text + ". " + (wizard.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
@@ -1720,7 +1721,8 @@ Item {
 
                     Item {
                         id: csvChoice
-                        activeFocusOnTab: Navigation.allows(csvChoice)
+                        // Held while it has the focus (see OutlineButton).
+                        activeFocusOnTab: Navigation.allows(csvChoice) || activeFocus
                         Accessible.role: Accessible.RadioButton
                         Accessible.name: modelData.name
                         // The file's lines as shown (issue #782): whether it is the one selected, and what it holds.
@@ -1731,6 +1733,7 @@ Item {
                         Accessible.ignored: !navigationAllowed
                         Accessible.onPressAction: choose()
                         Keys.onReturnPressed: choose()
+                        Keys.onEnterPressed: choose()
                         Keys.onSpacePressed: choose()
                         FocusFrame {}
                         function choose() {

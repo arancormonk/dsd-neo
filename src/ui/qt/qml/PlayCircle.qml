@@ -13,18 +13,22 @@ Item {
     property bool showPause: false
     property string accessibleName: qsTr("Listen")
     signal clicked
-    activeFocusOnTab: Navigation.allows(control) && enabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
+    // Issue #646: a late press on a hidden Play (a Listen tab not shown), from
+    // a node Android still holds, does nothing.
     function activate() {
-        if (enabled && Navigation.allows(control))
+        if (enabled && Navigation.allows(control) && visible)
             clicked();
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     FocusFrame {}
 
     implicitWidth: 52

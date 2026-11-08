@@ -41,7 +41,8 @@ Item {
 
     width: parent ? parent.width : 0
     height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + verticalPadding)
-    activeFocusOnTab: Navigation.allows(row) && tapEnabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(row) && tapEnabled) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: accessibleName
     Accessible.description: accessibleDescription
@@ -59,6 +60,7 @@ Item {
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     FocusFrame {}
 
     Column {

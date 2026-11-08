@@ -21,7 +21,8 @@ Item {
 
     width: parent ? parent.width : 0
     height: Math.max(Theme.minimumTouchSize, labels.implicitHeight + 24)
-    activeFocusOnTab: Navigation.allows(row) && enabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(row) && enabled) || activeFocus
     Accessible.role: Accessible.Switch
     Accessible.name: title
     Accessible.description: note.length > 0 ? subtitle + "\n" + note : subtitle
@@ -37,6 +38,7 @@ Item {
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     FocusFrame {}
     TapHandler {
         onTapped: row.activate()

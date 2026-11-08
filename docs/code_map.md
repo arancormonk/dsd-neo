@@ -10928,20 +10928,109 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
-- Listen creation actions (issue #709): `qml/HomeScreen.qml` places Add a system and Add a scan list after the status
-  cards and before either saved collection, inside the same modal-guarded scroll body. Two equal columns fit only
-  when both can hold the wider button's complete label plus padding (`DashedActionButton.implicitWidth`); otherwise
-  they stack in focus order, keeping the source hint beneath Add a system. The available content width, including
-  the supporting pane, and the current font determine reflow. Empty collection headings are hidden. Tests:
-  `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
+- Listen creation actions (issue #709, #646 D4): in `qml/HomeScreen.qml` each Listen tab's section starts with its own
+  creation action, inside the same modal-guarded scroll body, so it is in reach however long the section is: Add a
+  system (`addSystemButton`, with the source hint `addSystemHint` beneath it) heads Systems, Add a scan list
+  (`addScanListButton`) heads Scan lists. Each fills the column width; its label wraps at large text. There are no
+  in-body headings: the tab's label is the section's heading. While there is no scan list, `scanListsEmptyHint` ("A
+  scan list steps through saved systems and frequencies one at a time.") sits under Add a scan list. Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`: each action first in its section, in view with 20 items, whole
+  label and touch size at 7 sizes x 3 scales, long-label reflow, keyboard order and activation, modal blocking for each
+  with its own section shown, status cards first on a short screen, no heading in the body on any tab; plus the
+  existing Home and Back/modal cases).
+- Listen tabs on Home (issue #646 D2-D5, D10). `qml/HomeScreen.qml` places `ListenTabs` (`listenTabs`, below "Qt QML
+  editing convention") on the content column, 8 px under the Pinned strip, or under the title with nothing pinned. They
+  are fixed (`tabsFixed`, in `fixedTabsSlot`) while `fixedExtent <= height / 2`, a tie counting as fixed; otherwise they
+  are reparented into `bodyTabsSlot`, the body's first item (after the body's title row when that shows), and scroll
+  with it. `fixedExtent` is prospective: header origin, `listenHeader.naturalHeight` (the title and, brokered, the
+  pill's laid-out height, its label wrapped at the pill's width, never only its minimum), the held strip and its gap
+  (`heldPins`), the 8 px gap and the tabs' `implicitHeight` (labels measured at DemiBold). It reads no placement,
+  `visible` or selection, so the rule cannot oscillate; while `height <= 0` the last answer (initially fixed) stands.
+  `placeTabs()` sets `tabsFixed` from `heightChanged` and `fixedExtentChanged`: as a binding, even a readonly copy, Qt
+  evaluates it inside `fixedTitle`'s first evaluation and reports a loop. Fixed, the extent is exactly where the body
+  starts. `fixedTitle` includes `tabsFixed`, so with fixed tabs the title is in `listenHeader` on both hosts; with the
+  tabs in the body the title stays where it is without them (fixed with the pill or pins, else the body's title row),
+  shown and read once either way. Under fixed tabs the body starts at their bottom edge, whose hairline marks where
+  cards scroll away, and the content column starts `Theme.gap` below it. In the body under a fixed title, the body
+  starts `headerClearance` under the strip or header and the column 2 px lower, so at rest the tabs sit where fixed ones
+  would; the scroll divider (`listenScrollDivider`, drawn only with a fixed title and the tabs in the body) shows once
+  the body scrolls, except while the tabs' own hairline is on the body's top row, so the line is never doubled. The
+  keyboard focus survives the reparenting. The tabs are disabled while `managementSheetOpen`. `section` (`systems`,
+  `scanLists`, `explore`) is read once, in `Component.onCompleted`, from `prefsStore.listenSection` (`prefsStore` is
+  `prefs`; anything unknown reads `systems`) and is Home's own from then on: `showSection(id)` sets it and writes the
+  preference whether or not the store keeps it (the QML fixture's plain map keeps nothing), and ignores unknown ids.
+  Home follows every `selected(id)` through `showSection()`. Main selects a tab after two flows (D6), selection only, so
+  a screen still on top stays there and the restore waits for Home to show: the wizard's `saved` (every successful
+  wizard save: add, edit, Signal search's Save as system, a RadioReference import, the site chooser's Edit, a session's Edit saved
+  system) calls `showSection("systems")` before Main closes the wizard (after pushing a running session's changed CSV
+  files, as before), and `ScanListScreen.saved`, emitted only once `save()` or `saveDraft()` has persisted and just
+  before `closed` (which also fires for a cancel and a removal), calls `showSection("scanLists")`. Both first take
+  down a failure card that names what was saved (B10: `dismissFailureFor(kind, uid)`, an `attemptedSource` of that kind
+  and uid, through `dismissFailureCard()`, the card's X), since the card reported the settings just replaced and shows
+  on every tab; a card naming anything else stays. A failed save, a cancel, a removal, a pin, a refusal or a failure
+  selects nothing. Each tab keeps its place (`sectionScroll`, its
+  `contentY` when it was left): `showSection()` cancels any flick, records the outgoing tab's place clamped to its
+  range unless a restore is still owed (`restorePending`: until then the body's range is the previous section's, a
+  transient clamp), cancels a pending focus reveal, and arms the owned `restoreTimer` (interval 0, never a bare
+  `Qt.callLater`, below) with the choice's `restoreGeneration`; a timer armed for an earlier choice drops itself. The
+  restore waits while Home is hidden (`onVisibleChanged` re-arms it), lays the section and the body column out itself
+  (`forceLayout()`), then sets the place clamped to `[originY, originY + contentHeight - height]`; a tab not left yet
+  opens at its top. With the keyboard focus on the tabs in the body it then reveals them, so a keyboard choice keeps
+  the strip in view. The restore lays out only the section and body Columns; nested ones (a card's labels after a
+  text-size change in the same turn) wait for the next polish and can grow the range after the place was clamped short.
+  So while a restore stands clamped short (`placeChase`; never after a keyboard choice with the tabs in the body, where
+  the place yields to the focused tab), each `contentHeightChanged` or `originYChanged` of the body puts the place back
+  again, until it is reached, or the body moved some other way (user movement, a focus reveal, any write), a tab is
+  chosen, `revealTop()` runs, or two frames have been swapped since (the owed polish runs before the next frame; the
+  second covers one already in flight); a section that really is shorter is then left alone when it grows later.
+  Deferred scroll writers, highest first: `revealTop()` (cancels a pending restore and focus reveal, scrolls to the top,
+  records it as the shown tab's place, and sets `focusRevealHeld`, which drops focus reveals until the user scrolls,
+  `movementStarted`, or moves the focus by key, the new focus item being the old one's `nextItemInFocusChain()` either
+  way, so a sheet handing focus back to its opener cannot scroll a failure card away), a keyboard tab choice revealing
+  the strip, the section restore, then plain focus reveal (none starts while a restore is owed). `resetScrollMemory()`
+  forgets the places and anything owed, for tests that reuse one Home. The body holds the status cards (backup result,
+  USB details, failure, replay completion) on every tab, then three section Columns, `listenSystemsSection` (Add a
+  system and hint, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
+  `listenExploreSection` (the Signal search row, then `exploreCard`). Each is `visible` and `enabled` only while its
+  tab is current, and its height is `shown ? implicitHeight : 0`, keyed on the tab, never on `visible` (B1). Disabled,
+  a hidden section's controls take no focus, key or press (Qt keeps focus and key delivery on an item that only goes
+  invisible), and `Accessible.ignored` follows `visible`. Before the outgoing section hides, `showSection()` moves
+  keyboard focus inside it to the current tab (`focusCurrent()`), else to the body, and the tabs then hand it to the
+  new current tab. The Repeaters stay bound while their section is hidden, a decided limit (a visibility toggle
+  costs a screen reader far fewer events than rebuilding the cards). Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_home_tabs.qml`: Explore one tap away with 30 systems and 10 lists, each tab only its
+  section, sections led by their action, the empty Scan lists line, status cards on every tab, the
+  remembered tab read once through the real AppPrefs and damaged values read as Systems, the choice standing without
+  the store, hidden-section focus/keys/presses, focus handed to the current tab, tabs disabled under a sheet, Tab
+  order pill, pins, More, tab, body on both hosts, layout at 320/360/411 x 1.0/1.6/2.0 and Home 900/1000 px beside
+  Recent activity, the fixed title on both hosts, a hidden card's layout; short screens: the extent the same in both
+  placements, hidden and on every tab, the tie fixed, zero height keeping the last placement, 640 x 360 at 1.6 with
+  pins in the body and 360 x 740 fixed with the Tab order, one title in both placements on both hosts, live resize,
+  font change and the widest (wrapped) receiver label across the threshold flipping once with the rendered fixed
+  region at most half, focus kept across a move, one line under the fixed region; per-tab places, rapid switches
+  and a switch during a fling remembering no clamp, the place kept when the range grows after the restore in its turn
+  (also green under `QT_QPA_UPDATE_IDLE_TIME` 16 and 200), later growth not pulling a short section's view nor, after a
+  keyboard choice in the body, the focused tab out of view, a restore waiting while hidden, a keyboard choice in the
+  body keeping the tabs in view, `revealTop()` cancelling an owed restore and holding off focus reveals; the migrated
+  Home suites select the tab a case needs; `tst_home_dongle_status.qml` `test_reveal_top` and
+  `tst_home_pinned.qml` `test_refusal_revealed_when_scrolled` run `revealTop()` against an owed restore, a
+  pending focus reveal and a focus handed back later; `tst_listen_tabs_flows.qml`, through Main: wizard add and edit
+  from either other tab and from History, Save as system under Signal search and Edit saved system under the monitor
+  selecting Systems for when Home shows, editor save and draft save saying `saved` then `closed` and selecting Scan
+  lists, failed saves, cancels, removals and pins keeping the tab, a refusal and a host failure keeping the tab with the
+  failure card above every tab's section, a save of the list or system the card names taking it off every tab while
+  another one's save or a failed save keeps it, "Scan with other lists…" from the keyboard on a deep card with a failed start
+  keeping the failure card in view after the sheet hands the focus back, Signal search opening from Explore by tap,
+  Return, keypad Enter and Space), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on each tab;
+  `tst_a11y_scan_churn.qml`: the Explore face on a hidden tab raises nothing).
 - Pinned strip and sheet (issue #801; the pins themselves are `listen_pins.{h,cpp}`, below). `qml/HomeScreen.qml` places
   `pinnedStrip` between `listenHeader` and the scroll body, on the content column, 8 px under the header. The order is
-  title, strip, body on both hosts: `fixedTitle` (`pinnedHeader` or the strip shown) fixes `listenHeader` above the
-  body, so on the desktop with pins the header holds the title alone (no receiver pill, height `max(44, title)`), and
-  the body's own title row is hidden, so the title is read once. The strip is shown while `heldPins` is non-empty and is
-  then one line tall, `max(48, pin label height + 24)` at any text size; the body's top margin adds it plus the 6 px
-  clearance, and the scroll divider shows under it. Header and strip heights follow `heldPins`, not `visible`, so a tab
-  switch moves nothing. With nothing pinned the layout is as before on both hosts. `heldPins` takes `listenPins.entries`
+  title, strip, Listen tabs, body on both hosts: `fixedTitle` (`pinnedHeader`, the strip shown or the fixed Listen
+  tabs) fixes `listenHeader` above the body, so on the desktop the header holds the title alone (no receiver pill,
+  height `max(44, title)`), and the body's own title row is hidden, so the title is read once. The strip is shown while
+  `heldPins` is non-empty and is then one line tall, `max(48, pin label height + 24)` at any text size; the Listen tabs
+  sit 8 px under it, and the body under them. Header and strip heights follow `heldPins`, not `visible`, so a tab
+  switch moves nothing. With nothing pinned the tabs sit 8 px under the title. `heldPins` takes `listenPins.entries`
   only while Home is visible and holds the last list while hidden ([r1-7]), with the line it is laid out on
   (`heldStripWidth`, `heldPinFont`), so a rename, removal or unpin, a rotation or a text-size change behind the wizard,
   Monitor or another tab adds, removes or renames no pin there and keeps the strip's height and the body's scroll; shown
@@ -10956,7 +11045,8 @@ Qt Quick frontend (`src/ui/qt`):
   leaving adds or removes only its own; a departing button is not drawn (`shown`) and reads as nothing, leaves the tree
   and takes no focus or press (`live`, `PinButton.live`) for the rest of its turn. A pin starts the entry `placed` holds
   for its key. More (`pinnedStripMore`, "All pinned shortcuts") always ends the strip. No Flickable, so the strip adds
-  no container node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, body. A pin or a sheet row emits
+  no container node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, the current Listen tab, body. A pin
+  or a sheet row emits
   Home's `startPin(kind, uid)`, which Main connects to `startPin()` (the start gate below); pins are disabled while
   `decoderHost.transitioning`, and the strip while `managementSheetOpen`. `qml/PinButton.qml` is FilterPill's rounded
   chip with `OutlineButton`'s gate (focused-control `activeFocusOnTab` retention, `Navigation.allows()` read first,
@@ -10971,10 +11061,31 @@ Qt Quick frontend (`src/ui/qt`):
   replaces the rows when the last is unpinned. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_pinned_strip.qml` on Home alone:
   hidden without pins, one line at 320/360/411 px x 1.0/1.3/1.6 portrait and landscape and the 900 px desktop, order and
   activation, keyboard order on both hosts, the sheet, focus after a keyboard Unpin, departing rows, modal blocking,
-  hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip;
+  hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip; the four
+  shortest landscape rows put the Listen tabs in the body, the rest keep them fixed, and the body keeps half the
+  height in every row;
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
+- Listen body layout (issue #646 B1, B8, B3). In `qml/HomeScreen.qml` a saved-system card is shown on its own condition,
+  `readonly property bool shown` (no sites, or the first of its group), and its height is `shown ? fullHeight : 0`,
+  never keyed on `visible`, which also goes false while Main hides Home: a collapsing card would cut the body's range
+  and Flickable would clamp the scroll position. `fullHeight` follows the content: the label column is centred 10 px
+  above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
+  `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
+  refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
+  lowest. A card without the hint is 122 px at normal text, as before, and grows at large text. The site button lines up
+  against Play's own condition (`playShown`), not Play's `visible`, so a hidden card's site button stays clear of Play.
+  Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
+  `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
+  scroll writer cancel a pending reveal (the precedence is under Listen tabs, above). `Theme.revealFocus` maps the
+  target into `scroll.contentItem`, so a content column that starts below the top (Home's starts 13 px under fixed
+  Listen tabs) is scrolled far enough; every other caller's column starts at 0. Tests: `UI_QT_QML_CALL_LISTS`
+  (`tst_home_layout_fixes.qml`: range and place held through frames drawn while hidden, refresh-hint and plain cards at
+  320 px x 1.0/1.6/2.0, Tab through 12 systems and through 12 scan lists on their tabs on both hosts, at 411 x 700 with the tabs fixed and at
+  640 wide at 1.6 with the tabs in the body (where they are body stops kept in view), the
+  helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
+  `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
@@ -10986,7 +11097,8 @@ Qt Quick frontend (`src/ui/qt`):
   own row; the scan-list menu (Edit, Scan with other lists…, Pin, Remove…) pins `scan`. Both handlers route `remove`
   explicitly and do nothing for any other key (before #801 an unknown key fell through to Remove). Signal search is a
   row: the button fills it up to a 48 px More (`signalSearchManageButton`), placed from the Explore card's More just
-  below so it shares the cards' More column, opening `searchMenu` [Pin]. Explore's card: a card-wide `TapHandler` (tap
+  below on the Explore tab so it shares the cards' More column, opening `searchMenu` [Pin]. Explore's card: a card-wide
+  `TapHandler` (tap
   starts, long press opens `exploreMenu` [Edit connection, Pin]) and pressed tint, the face `exploreStart`, and More
   (`exploreManageButton`, "More options for Explore"). The face is a sibling of More, stopping at More's column (`width:
   exploreMore.x`), so its focus ring and accessible bounds leave More out and no key pressed on More reaches it; the
@@ -11006,8 +11118,9 @@ Qt Quick frontend (`src/ui/qt`):
   `tst_home_scan_lists.qml` and `tst_back_modals.qml`, whose auto-start case covers the new menus),
   `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: the hidden face raises nothing on a frequency change).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
-  access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
-  layout, Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery is reset and reopened once per
+  access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself, has no receiver pill or
+  details panel on Listen, and keeps its Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery
+  is reset and reopened once per
   stall before its session would end (IO, "USB stall recovery"; a brokered one through its descriptor, after the
   unplug-owner grace, "Android descriptor recovery"), so only a stall that recovery could not clear, or an Airspy's,
   ends its session as described here.
@@ -11034,8 +11147,10 @@ Qt Quick frontend (`src/ui/qt`):
     it found.
   - Listen (`qml/HomeScreen.qml`): the title row is a fixed `listenHeader` above the scroll body, on the content
     column's x and width (`columnX`/`columnWidth`; the supporting pane is untouched; safe areas come from the parent),
-    so the pill (`dongleStatusPill`, label `dongleStatusLabel`) never scrolls away. The body is clipped 6 px under the
-    header, and a 1 px `Theme.divider` shows at that edge only while the body is scrolled. Title and pill share a row
+    so the pill (`dongleStatusPill`, label `dongleStatusLabel`) never scrolls away. The Listen tabs follow it (above),
+    and the body starts at their hairline. Without fixed tabs the body is clipped 6 px under the header
+    (`headerClearance`), and a 1 px `Theme.divider` shows at that edge only while the body is scrolled. Title and pill
+    share a row
     while `title.implicitWidth + gap + pill.implicitWidth` fits the column; otherwise the pill drops under the title,
     left-aligned and at most the column wide, its label wrapping at spaces (never elided) and its height following the
     label (at least `max(48, 30 * fontScale)`). Header and details-panel heights are keyed on the host, not on
@@ -12533,8 +12648,10 @@ Qt Quick frontend (`src/ui/qt`):
     shows `startupOutcome` and matches the `BackupApply` reason strings of `backup_apply.cpp` through `qsTranslate()`,
     so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
   - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
-    (onboarding, the notification explanation and the last location fix are device-local), with
-    `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
+    (device-local: first-run state (`ui/onboardingDone`, `ui/notificationExplained`), the last location fix
+    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`) and the session
+    this device's service runs (`listen/acceptedStart*`, `listen/lastStartedCompanions`); `UI_QT_PERSISTENCE` pins the
+    set), with `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
     any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,
     and `configuration()` refuses it ("Open this decryption profile and save it again."). Its key files are written only
     below `<root>/decryption` reached through no symlink or junction (`privateWrite()`), so a link left under
@@ -12547,6 +12664,16 @@ Qt Quick frontend (`src/ui/qt`):
   - A list-valued portable preference is a JSON array held in a string (`listen/pinned`, issue #801), since a backup
     carries only scalars; its getter is its only validation, because a parse hook would fail the whole backup as
     damaged. A backup without the key restores no pins, and a rollback restores the old ones.
+  - `AppPrefs::listenSection` (`listen/section`, issue #646) is the Listen tab last chosen, held as a string id
+    (`systems`, `scanLists`, `explore`; the ids are persisted, so never rename one) rather than an index, so a build that
+    adds, removes or reorders tabs still reads old values. Anything else stored (a newer build's id, a hand edit, a
+    number, a list) reads as `systems`; the setter refuses any other text without writing and compares with the raw
+    stored value, so choosing `systems` over damage lands. Device-local: kept out of backups and kept on restore. The QML
+    fixture's `prefs` map carries it as `systems`; the real key is set back to `systems` for each test file, and
+    `testContext.resetListenSection()` does that between cases (a Home already built keeps its tab).
+  - The voice hang time (`decode/hangtimeSec`, a double) reads stored text that is no number as the 2 s default, and
+    its setter counts such text as different from every value, so choosing 0 s over it lands (`toDouble()` would read
+    it as 0 s and drop the write).
   - Whole numbers from stored or restored data (preferences, saved systems, scan lists, imported files, decryption
     profiles) are read through `stored_int.h` (`stored_int()`, `stored_int_or()`, `stored_uint32()`). A restore keeps a
     large JSON number as a 64-bit integer, and the settings file hands one back as text; `QVariant::toInt()` and
@@ -13469,15 +13596,20 @@ whether the new Qt lifts them. A change in what they show is a reason to revisit
 - **Container round trips (R-2).** On Home, swipe back from the Listen heading (onto the unnamed window node or
   "Scrollable content") and forward again; on the Monitor, from Stop listening onto "Recent calls" and back; on the
   Network sheet, from Done onto "Dialog" and back. Record which ways back stick until a touch. On 6.11.2 the Home case
-  sticks (`179bc9529` recheck 2).
+  sticks (`179bc9529` recheck 2). On 6.11.3 (issue #646, emulator) three round trips over the Listen heading, the
+  Pinned strip and the body did not stick; the Monitor and Network sheet cases were not rechecked.
 - **Spectrum first open (R-4).** TalkBack on at launch, scanning Local84, `log.looper.<uid>.main.slow=30`: open the
   Spectrum for the first time in three fresh launches. Record the watchdog stall and the main thread's messages of
   30 ms or more in the 15 s after. On 6.11.2: stalls of 2.09 s and 2.36 s, 41–48 messages, 5.6–5.9 s in total
   (`0b4f38981`); the first start after an install on a cold boot stalled 26.4 s.
 - **Newly shown controls.** In the key sheet, expand "Advanced: session direct override", then swipe forward once.
-  Record whether the newly shown controls are reached on the first pass. On 6.11.2 they are skipped once.
+  Record whether the newly shown controls are reached on the first pass. On 6.11.2 they are skipped once. On 6.11.3
+  (issue #646, emulator) the first forward swipe after a Listen tab switch reached the newly shown tab's controls 6
+  times of 6; the key sheet case was not rechecked, so the limit stands.
 - **Window node.** Swipe forward past a screen's last item and back past its first. Record whether a silent stop
   comes at the wrap. On 6.11.2 Android's host view is one, unnamed.
+- **Long list scroll.** On Listen's Scan lists tab with 10 lists, swipe forward past the last card on screen. Record
+  whether the list scrolls and the next card is reached. On 6.11.3 it moves on to the bottom bar (issue #646).
 
 ### Android screen modes
 
@@ -13661,6 +13793,56 @@ changes itself under the binding reading it. Deferred work in a component that c
 runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
 tests pin these with `failOnWarning`.
 
+Short control labels keep whole words (issue #646). `Text.Wrap` breaks a word wider than its line anywhere, so at large
+text a segment split "Automatic" or "simulcast" over two lines. `qml/WholeWordLabel.qml` (the `SegmentedControl`
+segments' label) wraps between words only. When its widest word does not fit at `Theme.fontSize(basePixelSize)` it is
+drawn at the largest whole pixel size at which every word fits, never below its normal-text size. A control draws all
+its labels at one size, the smallest of their fits: each label reports its `fitPixelSize`, and the control passes the
+smallest back as every label's `sharedPixelSize` (`SegmentedControl.labelPixelSize`, recomputed when a fit changes), so
+a shrunk label never sits beside larger ones. A word that still does not fit at the normal-text size makes that label
+one elided line (Qt elides only the last line it lays out), and the control's accessible name keeps the whole text.
+Words are measured at `measureWeight`, the heaviest weight the label is shown in, so selecting a segment never changes
+its size, and a `FontMetrics` measures at the rounded size a `Text` draws (`Qt.font` truncates a fractional size). The
+fit runs once the label is built (`Component.onCompleted`, not the change handlers that fire while the caller sets its
+properties; one of those in a Listen tab found `Math` undefined) and then when the text, width or text size changes,
+never per frame. A control sizes from the label's `height`.
+Tests: `tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every `SegmentedControl` label
+set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
+
+A control a keyboard can press takes Return, keypad Enter (`Keys.onEnterPressed`) and Space, each through the control's
+one guarded activation function (`enabled`, `Navigation.allows()` and any gate of its own), as its accessibility press
+does. A key handler never calls the action directly: a control can keep the keyboard focus while a sheet opens over it.
+Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionButton`, `PlayCircle`, `CallRow`,
+`DisclosureRow`, `PlexSwitch` and `ToggleRow` and to the Spectrum, Monitor, RadioReference and wizard buttons and rows
+that took Return alone, and moved the Monitor's Spectrum button's keys behind its gate. A control a hidden section can
+hold also checks `visible` there and in its `Accessible.ignored` gate: `DashedActionButton` and `PlayCircle` (Listen's
+Add and Play) and the Monitor's Spectrum button (hidden off a radio or in a narrowed header) do nothing on a late press
+while hidden, from a node Android still holds or a key while they keep the focus. A Tab stop gated on
+`Navigation.allows()` is held while its item has the focus, `activeFocusOnTab: (gate && …) || activeFocus`
+(OutlineButton, PinButton): Qt refuses to drop the stop of the item holding the focus and warns, and without
+`activeFocus` in the binding nothing re-ran it once the sheet took the focus, so the covered control stayed a Tab stop
+under the sheet (issue #646 put the hold on every control that lacked it). Tests: `tst_keypad_enter.qml`
+(`failOnWarning(/activeFocusOnTab/)`, `test_a_covered_control_is_no_tab_stop_once_focus_leaves`).
+
+A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
+`Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's
+Android bridge maps `PageTab` to a class name TalkBack does not recognise and never passes `selected` on, so the bottom
+tabs, page tabs marked selected, were heard by name alone; checkable and checked do reach TalkBack ("checked, Listen,
+radio button"). `BottomNav` keeps `selected` set for platforms that read it. Names carry no role or position words.
+Tests: `tst_bottom_nav_a11y.qml`.
+
+The Listen tabs (`qml/ListenTabs.qml`, issue #646) are Material primary tabs in the app's tokens: `model` of
+`{id, label}`, the caller's `currentId`, and `selected(id)` only for a change of tab. Each tab (`listenTab_<id>`) is
+the radio button above, with `selected` too. The strip is one Tab stop, the current tab:
+`activeFocusOnTab: (gate && current) || activeFocus`. Left/Right (no wrap), Home/End, Return, keypad Enter, Space,
+a tap and an accessibility press all go through the tab's one guarded `choose()` (`Navigation.allows()`, `enabled`,
+`visible`). With the focus in the strip, `choose()` moves the focus to the tab before it reports the choice, and a
+`currentId` the caller changes takes the focus along, at once or, while the strip is gated (under a sheet, hidden or
+disabled), as the gate lifts, so a settled strip has one Tab stop. `focusCurrent()` puts the
+focus on the current tab when it can take it. The labels are `WholeWordLabel`s at one shared size. The strip's height,
+`max(Theme.minimumTouchSize, tallest label + 24)`, measures each label laid out in the selected weight, so choosing a
+tab never changes it. There is no Flickable and no named container (R-2). Tests: `tst_listen_tabs.qml`.
+
 Accessibility churn (issue #782). On Android, Qt 6.11.3's accessibility bridge turns each ObjectShow or ObjectHide into
 a main-thread task that makes 8 blocking round trips to the Qt thread, so a screen that creates or toggles accessible
 items on every metrics tick stalls the app (the bridge runs only under TalkBack now, "Android foundation integration
@@ -13743,6 +13925,15 @@ disclosure is skipped by the first forward swipe after it, as its gate lifting r
 which the bridge does not pass on, and its visibility changed while it was still out of the tree, so no show; and
 Android's host view, which the bridge builds without Qt's name for the window (`getNodeForView`), is a silent stop at
 the wrap of a swipe.
+
+TalkBack's swipe does not scroll Listen's tabs either (issue #646, Qt 6.11.3, seen on the emulator; `android/README.md`
+"Known limits"): past the last card on screen it moves on to the bottom bar. As far as known, the cause is that Qt
+6.11.3's Android bridge gives these views no scroll action: it marks a node scrollable, with scroll forward and back,
+only when the node offers the increase or decrease action (`populateNode`), and `PlexFlickable` offers neither. Given
+the two actions (tried on the emulator), the list scrolled a page, but TalkBack still moved on to the bottom bar, and
+the scrollable node added a "Scrollable content | List" stop, so the actions were left out. Other long scrolling
+screens may behave the same; not checked. A two-finger swipe scrolls the list, and a touch then puts TalkBack on a card
+it shows.
 
 A sheet out of sight or under another leaves the tree through its parts' gates, and every part of a sheet that a
 screen reader reaches has its own navigation gate (`Accessible.ignored: !Navigation.allows(…) || …`): Qt lifts an

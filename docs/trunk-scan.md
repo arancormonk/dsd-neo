@@ -699,7 +699,7 @@ to the copy.
 
 ### Qt and Android several lists
 
-A ready scan list's More menu (on Home) offers **Scan with other lists…** while another ready list exists. Its sheet
+A ready scan list's More menu (on Listen) offers **Scan with other lists…** while another ready list exists. Its sheet
 has a switch for each other ready list, all off, in Home order; switch on the lists to scan along with this one and tap
 **Start N lists**. The lists run as one session on this list's receiver and settings, so a list joins only when every
 setting the session shares matches: the radio source, gain, PPM correction, bandwidth, bias tee, Airspy settings,
@@ -1015,7 +1015,8 @@ calls across these boundaries.
 
 ### Qt and Android scan lists
 
-Home → **Scan lists → Import target CSV** imports a prepared target list, including
+Listen → **Scan lists** tab → **+ Add a scan list** → **Import target CSV** imports
+a prepared target list, including
 `examples/trunk_scan_targets.csv`. It is also available as **Trunk scan targets**
 in the imported-files library. Choose the CSV and any requested companion files,
 review the target preview, name the list, select its receiver settings, and Save.
@@ -1046,7 +1047,7 @@ imported asset; removing that asset makes referencing lists drafts until another
 target CSV is selected. Imported counts come from the library and Monitor uses the
 CSV's target ID. Existing manual lists keep their original behavior below.
 
-Home's **Scan lists** section starts saved systems and bare frequencies as one
+Listen's **Scan lists** tab starts saved systems and bare frequencies as one
 `--trunk-scan` session. Long-press a list to edit, reorder, enable or remove entries.
 The editor selects USB or RTL-TCP and one tuner configuration for the entire list.
 System source, host, port, PPM, bandwidth and bias-tee settings are replaced by the

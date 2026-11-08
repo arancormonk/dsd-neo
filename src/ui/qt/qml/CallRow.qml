@@ -14,7 +14,8 @@ Item {
     property bool interactive: false
     property bool hasRecording: false
     signal activated
-    activeFocusOnTab: Navigation.allows(row) && interactive && enabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(row) && interactive && enabled) || activeFocus
     Accessible.role: interactive ? Accessible.Button : Accessible.StaticText
     Accessible.name: hasRecording ? qsTr("%1, has a recording").arg(accessibleName) : accessibleName
     // What the row shows besides its name (issue #782): the meta line, its
@@ -37,6 +38,7 @@ Item {
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     FocusFrame {}
     TapHandler {
         onTapped: row.activate()

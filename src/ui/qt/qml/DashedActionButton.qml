@@ -10,18 +10,23 @@ Item {
     property string text: ""
     signal clicked
 
-    activeFocusOnTab: Navigation.allows(control) && enabled
+    // Held while it has the focus (see OutlineButton).
+    activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
     Accessible.role: Accessible.Button
     Accessible.name: text
     // Issue #782: focusable only while in the tree, so a copy Android still
     // holds of a covered or hidden control (no event tells it the control
     // left the tree) is not a swipe stop.
-    Accessible.focusable: navigationAllowed
+    // Hidden counts as out of the tree too (issue #646: a Listen tab's Add
+    // button while another tab shows), and a late press on a hidden button,
+    // from a node Android still holds, does nothing.
+    Accessible.focusable: navigationAllowed && visible
     readonly property bool navigationAllowed: Navigation.allows(control)
-    Accessible.ignored: !navigationAllowed
+    // Gate first: see OutlineButton.
+    Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !Navigation.allows(control))
+        if (!enabled || !Navigation.allows(control) || !visible)
             return;
         // Issue #718: finish the keyboard's word and the field's editing before
         // the action reads the form.
@@ -29,6 +34,7 @@ Item {
         clicked();
     }
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     Keys.onSpacePressed: activate()
     FocusFrame {}
     implicitWidth: Math.max(Theme.minimumTouchSize, Math.ceil(label.implicitWidth) + 24)

@@ -176,6 +176,21 @@ Window {
         if (decoderHost.sessionState === 0)
             Qt.callLater(finishPendingRestart);
     }
+    // The failure card's X: the user has read it, so it stays down until the
+    // next start, and the attempt behind it is given up so it can never start
+    // later.
+    function dismissFailureCard() {
+        dismissedFailure = failureText;
+        decoderHost.dismissFailure();
+    }
+    // B10: a successful save of the saved system or scan list (@p kind
+    // "saved" or "scan") whose @p uid the failure card names takes the card
+    // down as its X does: it reported settings that were just replaced, and it
+    // shows on every Listen tab. A card naming anything else stays.
+    function dismissFailureFor(kind, uid) {
+        if (showFailure && attemptedSource && attemptedSource.kind === kind && uid.length > 0 && attemptedSource.uid === uid)
+            dismissFailureCard();
+    }
     function editFailedSource() {
         cancelPendingRestart();
         if (!attemptedSource)
@@ -1724,11 +1739,7 @@ Window {
             completionMessage: mainRoot.completionMessage
             onRetryFailure: mainRoot.retrySource()
             onEditFailure: mainRoot.editFailedSource()
-            onDismissFailure: {
-                mainRoot.dismissedFailure = mainRoot.failureText;
-                // Gives up the attempt the card reports, so it can never start later.
-                decoderHost.dismissFailure();
-            }
+            onDismissFailure: mainRoot.dismissFailureCard()
             onFailureDetails: failureDetails.visible = true
             onReplayAgain: mainRoot.retrySource()
             x: mainRoot.expanded ? nav.width : 0
@@ -1898,6 +1909,11 @@ Window {
         visible: mainRoot.scanListOpen
         z: 20
         onClosed: mainRoot.scanListOpen = false
+        // Issue #646 D6: the saved list is on Scan lists when Listen shows.
+        onSaved: {
+            mainRoot.dismissFailureFor("scan", scanListEditor.editUid);
+            homeScreen.showSection("scanLists");
+        }
     }
 
     // ---- Live monitor (owns the screen while a session is active) ----
@@ -2192,6 +2208,12 @@ Window {
                 // naming and metering the system as it was before the edit.
                 mainRoot.sessionSystem = sys;
             }
+            if (row >= 0)
+                mainRoot.dismissFailureFor("saved", savedSystems.get(row).uid || "");
+            // Issue #646 D6: the saved system is on Systems when Listen shows,
+            // now or once a screen still on top (Signal search after Save as
+            // system, the monitor during a session) closes.
+            homeScreen.showSection("systems");
             mainRoot.wizardOpen = false;
             mainRoot.currentTab = 0;
             Qt.inputMethod.hide();
