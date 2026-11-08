@@ -57,14 +57,19 @@ Item {
             var flow = findChild(tc.wizard, "wizardCsvImport");
             verify(flow !== null);
             if (data.tag === "primary") {
-                flow.pick("chan");
+                flow.pick("chan", tc.wizard.csvContext());
                 findChild(flow, "csvPrimaryPicker").reject();
             } else {
                 var source = testContext.writeFixtureCsv("cancel-consumer.csv",
                     "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
-                flow.begin(source, "Map.csv", "chan");
-                findChild(flow, "csvCompanionSheet").requestDismiss();
+                flow.begin(source, "Map.csv", "chan", tc.wizard.csvContext());
+                var sheet = findChild(flow, "csvCompanionSheet");
+                // #832: the copy answers later; the companions it asks for come
+                // with that answer.
+                tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
+                sheet.requestDismiss();
             }
+            tryCompare(flow, "active", false);
             compare(tc.wizard.chanCsvPath, "keep.csv");
             compare(tc.wizard.csvNotice, "");
             verify(!tc.wizard.csvNoticeIsProblem);

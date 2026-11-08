@@ -197,14 +197,17 @@ Item {
             var flow = findChild(tc.screen, "importsCsvImport");
             verify(flow !== null);
             if (data.tag === "primary") {
-                flow.pick("chan");
+                flow.pick("chan", tc.screen.importContext());
                 findChild(flow, "csvPrimaryPicker").reject();
             } else {
                 var source = testContext.writeFixtureCsv("cancel-consumer.csv",
                     "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
-                flow.begin(source, "Map.csv", "chan");
+                // A new import, as the kind sheet starts: pendingRow is the stale state under test.
+                flow.begin(source, "Map.csv", "chan", {generation: tc.screen.generation});
+                tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
                 findChild(flow, "csvCompanionSheet").requestDismiss();
             }
+            tryCompare(flow, "active", false);
             compare(tc.screen.pendingRow, -1);
             compare(tc.screen.notice, "");
             verify(!tc.screen.noticeIsProblem);
@@ -277,6 +280,104 @@ Item {
                 compare(kindTc.screen.pendingType, kinds[i]);
             }
             root.width = 420;
+        }
+    }
+    // #832: an import answers later, from the import worker.
+    TestCase {
+        id: importTc
+        name: "ImportsScreenImports"
+        when: windowShown
+        readonly property var screen: screenLoader.item
+        readonly property var flow: findChild(screenLoader.item, "importsCsvImport")
+
+        function groups(name, rows) {
+            var text = "id,mode,name\n";
+            for (var i = 0; i < rows; ++i)
+                text += (1001 + i) + ",A,Group " + i + "\n";
+            return testContext.writeFixtureCsv(name, text);
+        }
+        function init() {
+            importTc.screen.visible = true;
+            importTc.screen.notice = "";
+            importTc.screen.pendingRow = -1;
+        }
+        function cleanup() {
+            testContext.holdImports(false);
+            importTc.screen.visible = true;
+            tryCompare(importTc.flow, "active", false);
+            while (importedFiles.count > 0)
+                importedFiles.remove(0);
+        }
+        function accept(path) {
+            var picker = findChild(importTc.flow, "csvPrimaryPicker");
+            picker.selectedFile = "file://" + path;
+            picker.accepted();
+        }
+
+        // An update names its row by path: a row removed above it while the
+        // copy runs moves it, and the update still lands on it.
+        function test_update_lands_on_its_row_after_rows_move() {
+            var above = testContext.importNow(groups("imports-above.csv", 1), "group");
+            var target = testContext.importNow(groups("imports-target.csv", 1), "group");
+            verify(above.ok && target.ok);
+            importTc.screen.pendingRow = importedFiles.rowForPath(target.path);
+            compare(importTc.screen.pendingRow, 1);
+            testContext.holdImports(true);
+            importTc.screen.importPickedFile();
+            accept(groups("imports-update.csv", 3));
+            verify(importTc.flow.copying);
+            verify(importedFiles.remove(importedFiles.rowForPath(above.path)));
+            compare(importedFiles.rowForPath(target.path), 0, "the row moved up");
+            testContext.holdImports(false);
+            tryCompare(importTc.flow, "active", false);
+            compare(importedFiles.count, 1);
+            compare(importedFiles.get(0).path, target.path);
+            compare(importedFiles.get(0).accepted, 3, "the update replaced its own row's file");
+            compare(importTc.screen.notice, "Imported · 3 talkgroups");
+            verify(!importTc.screen.noticeIsProblem);
+        }
+
+        // The screen is kept while closed: closing cancels the copy, and the
+        // answer is not reported to the next visit.
+        function test_closing_cancels_the_copy() {
+            testContext.holdImports(true);
+            importTc.screen.importPickedFile();
+            accept(groups("imports-closed.csv", 2));
+            verify(importTc.flow.copying);
+            importTc.screen.visible = false;
+            tryCompare(importTc.flow, "active", false);
+            compare(importedFiles.count, 0, "the cancelled copy added nothing");
+            compare(importTc.screen.notice, "");
+        }
+
+        // Each failure says what went wrong.
+        function test_failures_say_why() {
+            var gone = testContext.storePath("fixtures/imports-gone.csv");
+            importTc.flow.begin(gone, "imports-gone.csv", "group", importTc.screen.importContext());
+            tryCompare(importTc.flow, "active", false);
+            compare(importTc.screen.notice, "Could not read imports-gone.csv. Check that it is still available, then try again.");
+            verify(importTc.screen.noticeIsProblem);
+            var read = importTc.screen.notice;
+
+            var bad = testContext.writeFixtureCsv("imports-bad-map.csv", "not a talkgroup row\n");
+            importTc.flow.begin(bad, "imports-bad-map.csv", "dmrTgKeys", importTc.screen.importContext());
+            tryCompare(importTc.flow, "active", false);
+            verify(importTc.screen.noticeIsProblem);
+            verify(importTc.screen.notice.length > 0 && importTc.screen.notice !== read, "a format failure reads apart: " + importTc.screen.notice);
+
+            // The row is removed while its update copies.
+            var target = testContext.importNow(groups("imports-stale.csv", 1), "group");
+            verify(target.ok);
+            importTc.screen.pendingRow = 0;
+            testContext.holdImports(true);
+            importTc.screen.importPickedFile();
+            accept(groups("imports-stale-update.csv", 2));
+            verify(importedFiles.remove(0));
+            testContext.holdImports(false);
+            tryCompare(importTc.flow, "active", false);
+            compare(importTc.screen.notice, "The imported file changed while the new copy was being made. Nothing was replaced.");
+            verify(importTc.screen.noticeIsProblem);
+            compare(importedFiles.count, 0);
         }
     }
 }

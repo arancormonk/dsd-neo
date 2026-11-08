@@ -106,9 +106,10 @@ Item {
     readonly property bool encryptionValid: encryptionEditor.valid
     property string p25BandplanCsvPath: ""
     property string srcCsvPath: ""
-    // Which field the shared FileDialog is serving: "source" is the step-1
-    // audio/capture pick; "chan"/"group"/"keys"/"p25Bandplan"/"src" are the
-    // trunking-data picks.
+    // Which trunking-data field the picker sheet is serving: "chan", "group",
+    // "keys", "p25Bandplan" or "src" ("source" or empty: none). An import
+    // captures it when it starts (csvContext()), so a later change cannot
+    // redirect a copy in flight.
     property string pickerTarget: "source"
     // Dec/hex choice for a new key-file import from the picker sheet.
     property bool pickerKeyHex: false
@@ -117,6 +118,16 @@ Item {
     // leaves the row reading "None" with no explanation.
     property string csvNotice: ""
     property bool csvNoticeIsProblem: false
+    // #832: which opening of the wizard an import belongs to. Every open and
+    // every close takes the next, so the answer to an import started before
+    // is dropped rather than written into another system.
+    property int generation: 0
+    // The replay copy in flight (0 when none), whether it was asked to stop,
+    // and why the last one failed, shown under the Replay file row.
+    property int replayRequest: 0
+    property bool replayCancelling: false
+    property string replayNotice: ""
+    readonly property bool replayCopying: replayRequest > 0
 
     // Step 3 state
     property alias nameText: nameField.text
@@ -179,6 +190,7 @@ Item {
     }
 
     function openForAdd(preferNetwork) {
+        stopImports();
         retainedKeySourceUid = "";
         resetImport();
         decryptionProfileUid = "";
@@ -228,6 +240,7 @@ Item {
      * supplies the decoder, gain, bandwidth and receiver settings it captured.
      */
     function openForFound(sys, freqMhz, detection) {
+        stopImports();
         resetImport();
         retainedKeySourceUid = "";
         decryptionProfileUid = "";
@@ -284,6 +297,7 @@ Item {
     }
 
     function openForEdit(row) {
+        stopImports();
         resetImport();
         var sys = savedSystems.get(row);
         retainedKeySourceUid = sys.uid || "";
@@ -325,6 +339,59 @@ Item {
         csvNoticeIsProblem = false;
         wizardAirspy.resetText();
         initialDraft = draftFingerprint();
+    }
+
+    // #832: a wizard that closes or opens again leaves its imports behind. A
+    // copy in flight is cancelled, and whatever it still answers belongs to an
+    // earlier generation, so it is dropped.
+    function stopImports() {
+        generation++;
+        csvImport.cancel();
+        if (replayCopying)
+            replayFiles.cancelReplayImport();
+        replayRequest = 0;
+        replayCancelling = false;
+        replayNotice = "";
+    }
+    onVisibleChanged: {
+        if (!visible)
+            stopImports();
+    }
+    // What a CSV import must remember from the moment it starts: the field it
+    // fills, the key format it was picked as, and this opening of the wizard.
+    function csvContext() {
+        return {
+            target: pickerTarget,
+            keyHex: pickerKeyHex,
+            generation: generation
+        };
+    }
+    // Copy a picked replay where the decoder can read it; the Replay file row
+    // shows the copy until replayFiles answers. The earlier file stays until
+    // then, and stays if the copy fails.
+    function beginReplay(reference, hint) {
+        replayNotice = "";
+        replayCancelling = false;
+        replayRequest = replayFiles.beginReplayImport(reference, hint);
+    }
+    function cancelReplay() {
+        if (!replayCopying || replayCancelling)
+            return;
+        replayCancelling = true;
+        replayFiles.cancelReplayImport();
+    }
+    Connections {
+        target: replayFiles
+        function onReplayImportFinished(id, result) {
+            if (wizard.replayRequest === 0 || id !== wizard.replayRequest)
+                return;
+            wizard.replayRequest = 0;
+            wizard.replayCancelling = false;
+            if (result.ok)
+                wizard.fileText = result.path;
+            else
+                wizard.replayNotice = Util.importMessage(result, "replay");
+        }
     }
 
     // Display line for a picker row: the file's name, or "None".
@@ -463,7 +530,7 @@ Item {
     }
 
     function commit() {
-        if (!hangtimeValid() || !encryptionValid)
+        if (!hangtimeValid() || !encryptionValid || replayCopying)
             return;
         var sys = {
             name: nameText.trim(),
@@ -643,15 +710,14 @@ Item {
             wizard.step = 1;
     }
 
-    // Audio/IQ source documents keep their existing host import path.
+    // The audio or capture to replay. A local file is used where it is; a
+    // document from a provider is copied first (replayFiles).
     FileDialog {
         id: fileDialog
+        objectName: "wizardReplayPicker"
         onAccepted: {
             var reference = selectedFile.toString();
-            var hint = reference.substring(reference.lastIndexOf('/') + 1);
-            var path = decoderHost.importContentUri(reference, hint);
-            if (path.length > 0)
-                wizard.fileText = path;
+            wizard.beginReplay(reference, reference.substring(reference.lastIndexOf('/') + 1));
         }
     }
 
@@ -664,20 +730,22 @@ Item {
         id: csvImport
         objectName: "wizardCsvImport"
         overlayParent: wizard
-        onFinished: function (result) {
-            var target = wizard.pickerTarget;
-            var keyHex = wizard.pickerKeyHex;
+        // The field and the key format come from the import's own context: the
+        // picker may serve another field by the time the copy answers.
+        onFinished: function (result, context) {
+            if (context.generation !== wizard.generation)
+                return;
             wizard.pickerTarget = "";
             wizard.csvNotice = "";
             wizard.csvNoticeIsProblem = false;
             if (result.error === "cancelled")
                 return;
             if (!result.ok) {
-                wizard.csvNotice = qsTr("Could not read that file");
+                wizard.csvNotice = Util.importMessage(result, "csv");
                 wizard.csvNoticeIsProblem = true;
                 return;
             }
-            wizard.assignCsvPath(target, result.path, keyHex);
+            wizard.assignCsvPath(context.target, result.path, context.keyHex);
             if (result.error === "empty") {
                 wizard.csvNotice = qsTr("%1 has no usable rows — check the file format.").arg(result.name);
                 wizard.csvNoticeIsProblem = true;
@@ -916,14 +984,103 @@ Item {
 
                         OutlineButton {
                             id: browse
+                            objectName: "wizardReplayBrowse"
                             width: 96
                             text: qsTr("Browse")
-                            onClicked: {
-                                wizard.pickerTarget = "source";
-                                fileDialog.open();
+                            enabled: !wizard.replayCopying
+                            onClicked: fileDialog.open()
+                        }
+                    }
+
+                    // #832: a document from a provider is copied before it can
+                    // be replayed, and a capture can run to gigabytes. The copy
+                    // shows as an export does on Call recordings: what is
+                    // copied, how far it is, and a way out.
+                    UiPanel {
+                        objectName: "wizardReplayProgress"
+                        width: parent.width
+                        visible: wizard.replayCopying
+                        height: replayProgressColumn.height + 2 * Theme.cardPadding
+
+                        Column {
+                            id: replayProgressColumn
+                            x: Theme.cardPadding
+                            y: Theme.cardPadding
+                            width: parent.width - 2 * Theme.cardPadding
+                            spacing: 10
+
+                            ReadableText {
+                                objectName: "wizardReplayProgressText"
+                                width: parent.width
+                                text: qsTr("Copying %1…").arg(replayFiles.copyName)
+                                wrapMode: Text.Wrap
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(15)
+                                font.weight: Font.DemiBold
+                                color: Theme.textPrimary
+                            }
+
+                            // How far, on its own line: a long name wraps
+                            // without splitting the figures.
+                            LiveText {
+                                objectName: "wizardReplayProgressAmount"
+                                step: String(wizard.replayRequest)
+                                width: parent.width
+                                text: replayFiles.copyTotal > 0 ? qsTr("%1 of %2").arg(Util.sizeText(replayFiles.copyBytes)).arg(Util.sizeText(replayFiles.copyTotal)) : qsTr("%1 copied").arg(Util.sizeText(replayFiles.copyBytes))
+                                wrapMode: Text.Wrap
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(13)
+                                color: Theme.textSecondary
+                            }
+
+                            // Only for a known size: a bar with no end would be
+                            // invented progress.
+                            Rectangle {
+                                objectName: "wizardReplayProgressBar"
+                                width: parent.width
+                                height: 4
+                                radius: 2
+                                visible: replayFiles.copyTotal > 0
+                                color: Theme.toggleOffTrack
+                                Accessible.role: Accessible.ProgressBar
+                                Accessible.name: qsTr("Copy progress")
+                                // Read when asked (Android polls it); a plain Item's value raises no
+                                // ValueChanged, so it stays live (issue #782).
+                                readonly property real value: replayFiles.copyBytes
+                                readonly property real minimumValue: 0
+                                readonly property real maximumValue: Math.max(0, replayFiles.copyTotal)
+
+                                Rectangle {
+                                    width: replayFiles.copyTotal > 0 ? parent.width * Math.min(1, replayFiles.copyBytes / replayFiles.copyTotal) : 0
+                                    height: parent.height
+                                    radius: 2
+                                    color: Theme.cyan
+                                }
+                            }
+
+                            OutlineButton {
+                                objectName: "wizardReplayCancel"
+                                width: parent.width
+                                text: wizard.replayCancelling ? qsTr("Cancelling…") : qsTr("Cancel copy")
+                                enabled: !wizard.replayCancelling
+                                onClicked: wizard.cancelReplay()
                             }
                         }
                     }
+
+                    // Why the last copy failed; the file above is still the one in use.
+                    ReadableText {
+                        objectName: "wizardReplayNotice"
+                        width: parent.width
+                        visible: text.length > 0
+                        text: wizard.replayNotice
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
+                        color: Theme.magenta
+                        wrapMode: Text.Wrap
+                        Accessible.role: Accessible.AlertMessage
+                    }
+
                     DisclosureRow {
                         width: parent.width
                         visible: wizard.fileText.length > 0
@@ -1630,7 +1787,8 @@ Item {
         anchors.margins: Theme.screenPadding
         anchors.bottomMargin: Math.max(22, wizard.height - Theme.keyboardTop(wizard) + 8)
         text: wizard.step < 2 ? qsTr("Continue") : qsTr("Save system")
-        inputValid: wizard.stepValid()
+        // Not while a replay copy runs: the system would save the earlier file.
+        inputValid: wizard.stepValid() && !wizard.replayCopying
         onClicked: {
             if (wizard.step < 2) {
                 wizard.step++;
@@ -1681,7 +1839,7 @@ Item {
 
         readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath : wizard.pickerTarget === "group" ? wizard.groupCsvPath : wizard.pickerTarget === "p25Bandplan" ? wizard.p25BandplanCsvPath : wizard.pickerTarget === "src" ? wizard.srcCsvPath : wizard.keyCsvPath
         readonly property var entries: {
-            var n = importedFiles.count; // dependency: recompute when the library changes
+            var n = importedFiles.revision; // dependency: recompute when the library changes, a replaced file's counts too
             if (!visible || wizard.pickerTarget === "source")
                 return [];
             return wizard.pickerTarget === "keys" ? importedFiles.entriesForType("keysDec").concat(importedFiles.entriesForType("keysHex")) : importedFiles.entriesForType(wizard.pickerTarget);
@@ -1816,7 +1974,7 @@ Item {
             onClicked: {
                 csvSheet.visible = false;
                 var type = wizard.pickerTarget === "keys" ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget;
-                csvImport.pick(type);
+                csvImport.pick(type, wizard.csvContext());
             }
         }
 

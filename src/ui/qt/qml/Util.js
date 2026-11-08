@@ -758,6 +758,85 @@ function sizeText(bytes) {
     return unit(b / 1e9, "GB")
 }
 
+// #832: what a failed import says, the same on the wizard, Imported files
+// and Scan lists. `result` is an importedFiles.importFinished() or a
+// replayFiles.replayImportFinished() answer; `context` is "replay" for a
+// replay capture (its size is checked against the free space), else a CSV.
+// Empty for a success (an "empty" file is the host's own warning) and for a
+// cancel, which the user asked for.
+function importMessage(result, context) {
+    var error = result.error || ""
+    if (result.ok || error === "cancelled")
+        return ""
+    var name = result.name || ""
+    if (error === "too_large")
+        return context === "replay" ? replaySpaceMessage(result, name) : csvSizeMessage(result, name)
+    if (error === "read")
+        return name ? qsTr("Could not read %1. Check that it is still available, then try again.").arg(name)
+                    : qsTr("Could not read this file. Check that it is still available, then try again.")
+    if (error === "local")
+        return localCopyMessage(result.noSpace === true, name)
+    if (error === "format")
+        return result.detail || formatMessage(result.type, name)
+    if (error === "stale")
+        return qsTr("The imported file changed while the new copy was being made. Nothing was replaced.")
+    if (error === "busy")
+        return result.detail || (result.type === "trunkTargets" ? qsTr("Stop the decoder before replacing target files.")
+                                                                : qsTr("Stop the decoder before replacing a talkgroup list."))
+    if (error === "save")
+        return result.detail || qsTr("Could not save the list of imported files. Try again.")
+    if (error === "path")
+        return result.detail || qsTr("Cannot replace this imported file.")
+    return name ? qsTr("Could not import %1.").arg(name) : qsTr("Could not import this file.")
+}
+
+// The import limits are whole MiB (backup::kMaxFileBytes and the bundle's).
+function mibText(bytes) {
+    return qsTr("%1 MiB").arg(Math.round((Number(bytes) || 0) / (1024 * 1024)))
+}
+
+// A CSV over its limit: one file over the per-file limit, or a CSV with its
+// companions over the larger bundle limit.
+function csvSizeMessage(result, name) {
+    var limit = Number(result.limitBytes) || 0
+    if (limit > 32 * 1024 * 1024)
+        return qsTr("These files are too large to import together. A CSV and its companion files can be up to %1 in all.").arg(mibText(limit))
+    return name ? qsTr("%1 is too large to import. A CSV file can be up to %2.").arg(name).arg(mibText(limit || 32 * 1024 * 1024))
+                : qsTr("This file is too large to import. A CSV file can be up to %1.").arg(mibText(limit || 32 * 1024 * 1024))
+}
+
+// A replay capture the free space cannot hold: with its size when known.
+function replaySpaceMessage(result, name) {
+    var file = name || qsTr("this file")
+    var free = sizeText(result.freeBytes)
+    if (Number(result.neededBytes) > 0)
+        return qsTr("%1 is too large for the free space on this device. It needs %2, and %3 is free.").arg(file).arg(sizeText(result.neededBytes)).arg(free)
+    return qsTr("There is not enough free space on this device to copy %1. %2 is free.").arg(file).arg(free)
+}
+
+function localCopyMessage(noSpace, name) {
+    var file = name || qsTr("this file")
+    return noSpace ? qsTr("Could not save a copy of %1 on this device. Free up some storage, then try again.").arg(file)
+                   : qsTr("Could not save a copy of %1 on this device.").arg(file)
+}
+
+// A file its kind cannot parse, when the parser gave no reason of its own.
+function formatMessage(type, name) {
+    var kinds = {
+        chan: qsTr("channel map"),
+        group: qsTr("talkgroup list"),
+        keysDec: qsTr("decimal key file"),
+        keysHex: qsTr("hex key file"),
+        p25Bandplan: qsTr("P25 band plan"),
+        src: qsTr("radio ID list"),
+        dmrTgKeys: qsTr("DMR key mapping file"),
+        vertexKeys: qsTr("Vertex keystream file"),
+        trunkTargets: qsTr("target CSV")
+    }
+    var kind = kinds[type] || qsTr("CSV file")
+    return name ? qsTr("%1 is not a valid %2.").arg(name).arg(kind) : qsTr("This file is not a valid %1.").arg(kind)
+}
+
 // The storage limit in its choices' words: 0 is no limit.
 function limitText(mb) {
     return mb > 0 ? sizeText(mb * 1e6) : qsTr("No limit")

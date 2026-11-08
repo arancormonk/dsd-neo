@@ -12440,8 +12440,22 @@ Qt Quick frontend (`src/ui/qt`):
   synchronous `importFile`/`updateFile`/`importBundle` run the same stage and commit at
   once (`ImportService::runNow`); `importGeneratedFile`/`refreshGeneratedFile` (RadioReference) do too, so a refresh
   shares the replace order and its rollback. Every library change bumps the model's `revision` and emits
-  `entriesChanged`; `countChanged` stays for count changes. `registerTalkgroupList()` saves the index before it adds the
-  row and answers false, adding nothing, when it cannot.
+  `entriesChanged`; `countChanged` stays for count changes. The lists built from `entriesForType()` (the wizard's
+  picker sheet, Scan lists' target files, Home's scan-list counts) depend on `revision`, so a file replaced in place
+  refreshes them (B7). QML (#832): `CsvImportFlow.qml` runs one import at a time, `idle → picking → copying(id) →
+  [companions sheet → copying(id′) …] → idle`, and emits `finished(result, context)` once per start with the host's
+  context. Its `ModalSheet` shows at once while a copy runs ("Copying <name>…", Cancel); Cancel, Back and Escape go
+  through the sheet's `dismissHandler` to `cancelImport(id)` and the sheet stays ("Cancelling…") until the
+  authoritative `importFinished(id)`, which may be the commit's success. `start()` is refused while a copy runs. Hosts
+  pass a context with a generation they bump on every open and close (`WizardScreen.csvContext()`, also carrying the
+  target field and key format captured at the pick; `ImportsScreen.importContext()`, carrying the replaced row's
+  stored path, not its index; `ScanListScreen.importContext()`), drop an answer from another generation and cancel the
+  flow when hidden. `Util.importMessage(result, context)` is every screen's failure text. The wizard's Replay file
+  Browse goes through `replayFiles.beginReplayImport()`; while it copies, the row shows the export progress pattern
+  ("Copying <name>…", then "<bytes> of <total>" with a bar, or "<bytes> copied" and no bar when the size is unknown)
+  with Cancel copy, Browse and Continue/Save are disabled (`commit()` refuses too), a failure shows under the row and
+  keeps the earlier file, and closing or reopening the wizard cancels the copy and drops its answer.
+  `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most 247
   UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also skips
   reserved paths).

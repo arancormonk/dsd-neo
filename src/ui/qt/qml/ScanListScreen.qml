@@ -91,8 +91,25 @@ Rectangle {
         showValidation(preview.ok ? "" : preview.error);
     }
 
+    // #832: which draft an import belongs to. Every openFor() and every close
+    // takes the next, so a copy that answers late never lands in another list.
+    property int importGeneration: 0
+    function importContext() {
+        return {
+            generation: importGeneration
+        };
+    }
+    function stopImport() {
+        importGeneration++;
+        targetImport.cancel();
+    }
+    onVisibleChanged: {
+        if (!visible)
+            stopImport();
+    }
+
     function importTargets() {
-        targetImport.pick("trunkTargets");
+        targetImport.pick("trunkTargets", importContext());
     }
 
     CsvImportFlow {
@@ -100,11 +117,13 @@ Rectangle {
         objectName: "targetCsvImport"
 
         overlayParent: screen
-        onFinished: function (result) {
+        onFinished: function (result, context) {
+            if (context.generation !== screen.importGeneration)
+                return;
             if (result.ok)
                 screen.selectTargets(result.path);
             else if (result.error !== "cancelled")
-                screen.showValidation(result.detail || qsTr("Could not import the target CSV."));
+                screen.showValidation(Util.importMessage(result, "csv"));
         }
     }
 
@@ -174,6 +193,7 @@ Rectangle {
     }
 
     function openFor(row) {
+        stopImport();
         editRow = row;
         draft = row >= 0 ? scanLists.get(row) : scanLists.newDraft();
         editUid = row >= 0 ? draft.uid || "" : "";
@@ -656,7 +676,7 @@ Rectangle {
 
                 PlexComboBox {
                     id: targetCsvPicker
-                    property var files: (importedFiles.count, importedFiles.entriesForType("trunkTargets"))
+                    property var files: (importedFiles.revision, importedFiles.entriesForType("trunkTargets"))
 
                     objectName: "scanTargetCsvPicker"
                     width: parent.width
@@ -1137,7 +1157,7 @@ Rectangle {
                                 wrapMode: Text.Wrap
                             }
                             PlexComboBox {
-                                property var files: (importedFiles.count, importedFiles.entriesForType(modelData.type))
+                                property var files: (importedFiles.revision, importedFiles.entriesForType(modelData.type))
                                 objectName: "scanFile_" + modelData.key
                                 width: parent.width
                                 Accessible.name: modelData.label

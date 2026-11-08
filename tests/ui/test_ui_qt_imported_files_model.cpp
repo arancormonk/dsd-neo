@@ -1263,6 +1263,11 @@ test_entries_changed_on_replace() {
     const QString repick = source.filePath("repick.csv");
     expect("entries fixtures",
            write_file(groups, "TG,Mode,Name\n1,D,One\n") && write_file(repick, "TG,Mode,Name\n2,D,Two\n3,D,Three\n"));
+    const QString map = source.filePath("map.csv");
+    const QString remap = source.filePath("remap.csv");
+    expect("map fixtures", write_file(map, "channel,frequency\n1,851012500\n")
+                               && write_file(remap, "channel,frequency\n1,851012500\n2,852012500\n"));
+    const QString storedMap = importAndWait(model, map, "map.csv", "chan").value("path").toString();
     const QString stored = model.importFile(groups, "groups.csv", "group").value("path").toString();
     const int row = model.rowForPath(stored);
     QSignalSpy entries(&model, &dsd_qt::ImportedFilesModel::entriesChanged);
@@ -1277,9 +1282,15 @@ test_entries_changed_on_replace() {
     revision = model.revision();
     expect("async replace", importAndWait(model, repick, "repick.csv", "group", stored).value("ok").toBool());
     expect("an async replace announces the change", entries.size() == 3 && model.revision() != revision);
+    revision = model.revision();
+    const QVariantMap rebuilt = importAndWait(model, remap, "remap.csv", "chan", storedMap);
+    expect("a channel map's bundle replace announces the change",
+           rebuilt.value("ok").toBool() && rebuilt.value("accepted").toInt() == 2 && entries.size() == 4
+               && model.revision() != revision);
+    // The screens list entriesForType() by the revision now; a replace never moves the count (#832 B7).
     expect("a replace keeps the count, so it does not announce one", counts.isEmpty());
     expect("remove", model.remove(row));
-    expect("a remove announces both", entries.size() == 4 && counts.size() == 1);
+    expect("a remove announces both", entries.size() == 5 && counts.size() == 1);
 }
 
 /* Nothing in the library is swept by name: a stored file shaped like the old Android staging names survives imports

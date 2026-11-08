@@ -2,13 +2,25 @@
 import QtQuick
 import QtQuick.Dialogs
 
+// One CSV import, from the pick to its answer (#832). The copy and the checks
+// run on the import worker, so the flow waits for importFinished():
+//
+//   idle → picking → copying(id) → [companions sheet → copying(id′) …] → idle
+//
+// It finishes exactly once per start, handing back the host's context with the
+// result; a host that has moved on (closed, reseeded) ignores the answer by
+// that context.
 Item {
     id: flow
     property var overlayParent: parent
     property string reference: ""
     property string fileName: ""
     property string type: ""
-    property int replaceRow: -1
+    // The stored path of the library row this import replaces, or "" for a new
+    // row: a path, not a row index, since rows move while a copy runs.
+    property string replacePath: ""
+    // The host's, from start() to finished(), unchanged.
+    property var context: ({})
     property var companions: ({})
     property var requiredFiles: []
     property var requiredLabels: ({})
@@ -18,56 +30,100 @@ Item {
     // Whether the user has chosen a companion on the sheet (a library file or a
     // picked one). Preselected matches are the app's guess, not a choice.
     property bool choiceMade: false
-    signal finished(var result)
+    // The import in flight (0 when none), and whether it was asked to stop.
+    property int request: 0
+    property bool cancelling: false
+    readonly property bool copying: request > 0
+    readonly property bool choosingCompanions: requiredFiles.length > 0
+    // The picked name as a person reads it: a provider's reference arrives
+    // URL-encoded ("primary%3ADownload%2Fmap.csv").
+    readonly property string displayName: {
+        var name = fileName;
+        try {
+            name = decodeURIComponent(name);
+        } catch (e) {
+            // Not an encoded name: shown as it came.
+        }
+        return name.substring(name.lastIndexOf('/') + 1);
+    }
+    signal finished(var result, var context)
 
     // One completion per pick()/begin(). A companion rejection only abandons
     // that slot's choice; the enclosing import remains active on the sheet.
-    function start(kind, row) {
+    // Refused (false) while a copy runs: that import keeps the flow until its
+    // answer is in. @a context is the host's, handed back by finished(); its
+    // replacePath, when set, names the row to replace.
+    function start(kind, context) {
+        if (copying)
+            return false;
         cancel();
         reference = "";
         fileName = "";
         type = kind;
-        replaceRow = row === undefined ? -1 : row;
+        flow.context = context || ({});
+        replacePath = flow.context.replacePath || "";
         companions = ({});
         requiredFiles = [];
         requiredLabels = ({});
         requiredDetails = ({});
         choiceMade = false;
         active = true;
+        return true;
     }
-    function pick(kind, row) {
-        start(kind, row);
+    function pick(kind, context) {
+        if (!start(kind, context))
+            return false;
         primaryPicker.open();
+        return true;
     }
-    function begin(uri, name, kind, row) {
-        start(kind, row);
+    function begin(uri, name, kind, context) {
+        if (!start(kind, context))
+            return false;
         reference = uri;
         fileName = name;
         attempt();
+        return true;
     }
     function complete(result) {
         if (!active)
             return;
+        var context = flow.context;
         active = false;
+        request = 0;
+        cancelling = false;
         primaryPicker.close();
         picker.close();
         sheet.visible = false;
         reference = "";
         fileName = "";
+        replacePath = "";
+        flow.context = ({});
         choosing = "";
         companions = ({});
         requiredFiles = [];
         requiredLabels = ({});
         requiredDetails = ({});
         choiceMade = false;
-        finished(result);
+        finished(result, context);
     }
+    // With a copy running, ask it to stop and wait for its answer: it may have
+    // committed already, and then that is the outcome. Otherwise the flow ends
+    // here.
     function cancel() {
-        complete({ok: false, error: "cancelled"});
+        if (!copying) {
+            complete({ok: false, error: "cancelled"});
+            return;
+        }
+        if (cancelling)
+            return;
+        cancelling = true;
+        importedFiles.cancelImport(request);
     }
     // The sheet's Cancel, Back and Escape (issue #718): once a companion was
     // chosen, ask before the choices go.
     function requestCancel() {
+        if (cancelling)
+            return;
         if (active && choiceMade)
             discard.ask(cancel);
         else
@@ -104,28 +160,52 @@ Item {
         requiredDetails = details;
         sheet.visible = true;
     }
+    // The sheet shows at once, as it is (D5): a quick copy shows it only
+    // briefly, and nothing behind it takes input while a copy runs.
     function attempt() {
-        if (!active)
+        if (!active || copying)
             return;
-        var result = importedFiles.importBundle(reference, fileName, type, companions, replaceRow);
+        request = importedFiles.beginImport(reference, fileName, type, companions, replacePath);
+        sheet.visible = true;
+    }
+    // The import's answer. One that needs companions keeps the flow on the
+    // sheet with its request retired, unless the user had asked to stop.
+    function settle(result) {
+        var stopped = cancelling;
+        request = 0;
+        cancelling = false;
         if (result.error === "companions") {
-            showRequirements(result);
-            return;
+            if (!stopped) {
+                showRequirements(result);
+                return;
+            }
+            result = {ok: false, error: "cancelled", name: result.name, type: result.type};
         }
         complete(result);
+    }
+    Connections {
+        target: importedFiles
+        function onImportFinished(id, result) {
+            if (flow.request > 0 && id === flow.request)
+                flow.settle(result);
+        }
     }
     // No MIME filter: Android providers index CSV under several MIME types.
     FileDialog {
         id: primaryPicker
         objectName: "csvPrimaryPicker"
         onAccepted: {
-            if (!flow.active)
+            if (!flow.active || flow.copying)
                 return;
             flow.reference = selectedFile.toString();
             flow.fileName = flow.reference.substring(flow.reference.lastIndexOf('/') + 1);
             flow.attempt();
         }
-        onRejected: flow.cancel()
+        // A dialog closing after it handed back a file is not a cancel.
+        onRejected: {
+            if (!flow.copying)
+                flow.cancel();
+        }
     }
     FileDialog {
         id: picker
@@ -141,11 +221,13 @@ Item {
                 sheet.visible = true;
         }
     }
+    // The flow's one sheet: "Copying <name>…" while the first copy runs, then
+    // the companion choices when the CSV needs them.
     ModalSheet {
         id: sheet
         objectName: "csvCompanionSheet"
         parent: flow.overlayParent
-        accessibleName: flow.type === "trunkTargets" ? qsTr("Target CSV companion files") : qsTr("Channel-map companion files")
+        accessibleName: !flow.choosingCompanions ? qsTr("Copying %1").arg(flow.displayName) : flow.type === "trunkTargets" ? qsTr("Target CSV companion files") : qsTr("Channel-map companion files")
         // A form sheet (issue #718): an outside tap keeps the choices made here.
         closesOnOutsideTap: false
         dismissHandler: function () {
@@ -156,7 +238,19 @@ Item {
             parent: sheet
         }
         ReadableText {
+            objectName: "csvCopyingText"
             width: parent.width
+            visible: !flow.choosingCompanions
+            text: qsTr("Copying %1…").arg(flow.displayName)
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.family: Theme.sans
+            font.pixelSize: Theme.fontSize(17)
+            font.weight: Font.Bold
+        }
+        ReadableText {
+            width: parent.width
+            visible: flow.choosingCompanions
             text: qsTr("This CSV references additional files. Choose an imported file or a file from your device for each companion to store a complete, private copy.")
             wrapMode: Text.Wrap
             color: Theme.textPrimary
@@ -223,8 +317,9 @@ Item {
         GradientButton {
             objectName: "csvCompleteBundle"
             width: parent.width
-            text: qsTr("Import complete bundle")
-            enabled: flow.requiredFiles.every(function (path) {
+            visible: flow.choosingCompanions
+            text: flow.copying ? qsTr("Importing…") : qsTr("Import complete bundle")
+            enabled: !flow.copying && flow.requiredFiles.every(function (path) {
                 return !!flow.companions[path];
             })
             onClicked: flow.attempt()
@@ -232,7 +327,8 @@ Item {
         OutlineButton {
             objectName: "csvCancel"
             width: parent.width
-            text: qsTr("Cancel")
+            text: flow.cancelling ? qsTr("Cancelling…") : qsTr("Cancel")
+            enabled: !flow.cancelling
             onClicked: flow.requestCancel()
         }
     }

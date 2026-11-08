@@ -13,10 +13,19 @@ Item {
     id: screen
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
-    onVisibleChanged: if (visible) Qt.callLater(function () {
-        if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
-            screen.forceActiveFocus();
-    })
+    onVisibleChanged: {
+        if (visible) {
+            Qt.callLater(function () {
+                if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
+                    screen.forceActiveFocus();
+            });
+            return;
+        }
+        // #832: the screen is kept while closed. An import still copying is
+        // cancelled, and what it answers is not this visit's to report.
+        generation++;
+        csvImport.cancel();
+    }
 
     signal closed
     // Asks Main.qml to push the RadioReference screen over this one.
@@ -27,6 +36,8 @@ Item {
     property int pendingRow: -1
     property string pendingType: "chan"
     property bool pendingKeyHex: false
+    // #832: which visit an import belongs to; every close takes the next.
+    property int generation: 0
     // Row the action sheet is open on.
     property int actionRow: -1
     // Transient outcome line under the header; magenta when it reports a problem.
@@ -66,7 +77,7 @@ Item {
 
     function resultNotice(verb, result) {
         if (!result.ok) {
-            screen.notice = result.detail || qsTr("Could not read that file");
+            screen.notice = Util.importMessage(result, "csv");
             screen.noticeIsProblem = true;
             return;
         }
@@ -125,16 +136,26 @@ Item {
         }
     }
 
+    // An update names its row by the stored path: rows can move while the
+    // copy runs (another import, a removal), and the path stays the row's.
+    function importContext() {
+        return {
+            replacePath: pendingRow >= 0 ? importedFiles.get(pendingRow).path : "",
+            generation: generation
+        };
+    }
     function importPickedFile() {
         var type = pendingRow >= 0 ? importedFiles.get(pendingRow).type : pendingType === "keys" ? (pendingKeyHex ? "keysHex" : "keysDec") : pendingType;
-        csvImport.pick(type, pendingRow);
+        csvImport.pick(type, importContext());
     }
 
     CsvImportFlow {
         id: csvImport
         objectName: "importsCsvImport"
         overlayParent: screen
-        onFinished: function (result) {
+        onFinished: function (result, context) {
+            if (context.generation !== screen.generation)
+                return;
             screen.pendingRow = -1;
             screen.notice = "";
             screen.noticeIsProblem = false;

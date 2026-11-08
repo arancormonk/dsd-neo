@@ -35,6 +35,17 @@ Item {
         }
     }
 
+    // #832: a draft opened again after a commit ran, before its answer is in.
+    Connections {
+        id: reopenOnCommit
+        target: importedFiles
+        enabled: false
+        function onEntriesChanged() {
+            reopenOnCommit.enabled = false;
+            screen.openFor(-1);
+        }
+    }
+
     TestCase {
         function init() {
             while (scanLists.count)
@@ -71,12 +82,60 @@ Item {
             } else {
                 var source = testContext.writeFixtureCsv("cancel-targets.csv",
                     "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-trunk,851012500,missing-map.csv,,,\n");
-                findChild(screen, "targetCsvImport").begin(source, "Targets.csv", "trunkTargets");
+                var flow = findChild(screen, "targetCsvImport");
+                flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
+                tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
                 findChild(screen, "csvCompanionSheet").requestDismiss();
+                tryCompare(flow, "active", false);
             }
             compare(screen.fingerprint(), before);
             compare(screen.initialDraft, initial);
             compare(JSON.stringify(screen.targetRows), preview);
+        }
+
+        // #832: a target import answers later. Its failures say why, and a
+        // draft opened again since it began ignores even a successful answer.
+        function test_target_import_failures_say_why() {
+            var flow = findChild(screen, "targetCsvImport");
+            flow.begin(testContext.storePath("fixtures/scan-gone.csv"), "scan-gone.csv", "trunkTargets", screen.importContext());
+            tryCompare(flow, "active", false);
+            compare(screen.validationText, "Could not read scan-gone.csv. Check that it is still available, then try again.");
+            var bad = testContext.writeFixtureCsv("scan-bad-targets.csv", "not,a,target,header\n1,2,3,4\n");
+            flow.begin(bad, "scan-bad-targets.csv", "trunkTargets", screen.importContext());
+            tryCompare(flow, "active", false);
+            verify(screen.validationText.length > 0, "a format failure is explained");
+            verify(screen.validationText.indexOf("Could not read") < 0, "and reads apart from a read failure: " + screen.validationText);
+            verify(!screen.csvMode);
+        }
+
+        function test_reopened_draft_ignores_a_late_target_import() {
+            var flow = findChild(screen, "targetCsvImport");
+            var source = testContext.writeFixtureCsv("scan-late-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\n");
+            reopenOnCommit.enabled = true;
+            flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
+            tryCompare(flow, "active", false);
+            verify(!reopenOnCommit.enabled, "the draft was opened again before the answer");
+            verify(!screen.csvMode, "the draft opened since keeps its own targets");
+            compare(screen.validationText, "");
+            while (importedFiles.count)
+                importedFiles.remove(0);
+        }
+
+        function test_closing_cancels_a_target_import() {
+            var flow = findChild(screen, "targetCsvImport");
+            var source = testContext.writeFixtureCsv("scan-closed-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\n");
+            var count = importedFiles.count;
+            testContext.holdImports(true);
+            flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
+            verify(flow.copying);
+            screen.visible = false;
+            tryCompare(flow, "active", false);
+            testContext.holdImports(false);
+            screen.visible = true;
+            compare(importedFiles.count, count, "the cancelled copy added nothing");
+            verify(!screen.csvMode);
         }
 
         function test_edit_entries_and_persist() {

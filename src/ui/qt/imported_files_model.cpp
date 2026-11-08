@@ -853,8 +853,6 @@ ImportedFilesModel::replaceBundleRow(int row, const QVariantMap& staged, const Q
     }
     QVariantMap result = replaceRowFile(row, replacement, false, created);
     if (result.value(QStringLiteral("ok")).toBool()) {
-        // Kept until the screens read the library's revision: they list entriesForType() again when the count changes.
-        Q_EMIT countChanged();
         const Row& stored = m_rows[row];
         if (!stored.bundleRoot.isEmpty()) {
             reclaimRevisions({BundleRevisions{stored.path, stored.bundleRoot, stored.type}});

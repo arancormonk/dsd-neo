@@ -1064,7 +1064,7 @@ Item {
                         width: content.width
                         listName: name
                         entryCount: {
-                            var changed = importedFiles.count;
+                            var changed = importedFiles.revision;
                             return scanLists.entryCount({targetSource: targetSource, entries: entries, targetsCsvPath: targetsCsvPath || ""});
                         }
                         onPlay: screen.playScanList(index)

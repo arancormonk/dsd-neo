@@ -1247,9 +1247,22 @@ decoder runs. Removing the bundle removes its owned copies. Target replacement a
 remain unavailable during an active or transitioning decoder session.
 
 `CsvImportFlow.pick()` (primary picker) and `begin()` (already selected document)
-start an import. `finished(result)` fires exactly once when it succeeds, fails, or
-is cancelled. Cancel, Back/Escape, scrim dismissal, and primary picker rejection
-all complete with `{ok:false, error:"cancelled"}`. Rejecting a companion picker
+start an import, each with the host's context (the field it fills, the stored path of
+a row it updates, which opening of the screen it belongs to). The file is copied and
+checked in the background, so the flow's sheet shows at once with "Copying
+<name>…" and **Cancel**, and nothing behind it takes input meanwhile.
+`finished(result, context)` fires exactly once when the import succeeds, fails, or is
+cancelled, and hands the context back: a screen closed or opened again since ignores
+it, and closing the wizard, Imported files or a scan list cancels a copy still running.
+Cancel, Back/Escape, scrim dismissal, and primary picker rejection all cancel. While a
+copy runs, Cancel reads "Cancelling…" until the import answers: `{ok:false,
+error:"cancelled"}`, or the import's own result when the file was already stored. A
+new pick is refused while a copy runs. "Import complete bundle" reads "Importing…"
+while its copy runs. Each failure has its own message (`Util.importMessage()`): too
+large (32 MiB for a CSV, 64 MiB for a CSV and its companions together), could not be
+read, could not be saved on this device (and, when storage is full, to free some),
+not valid for its kind, changed while being replaced, the decoder still running, or
+the library not saved. Rejecting a companion picker
 clears only that slot and returns to the still-active sheet: it does **not** finish
 the import. The user can choose again or cancel the sheet. Abandoning the flow leaves
 the library unchanged. The Home scan-list shortcut changes the draft to CSV mode only
