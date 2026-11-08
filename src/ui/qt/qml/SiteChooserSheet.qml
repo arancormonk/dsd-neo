@@ -20,6 +20,11 @@ ModalSheet {
         onInteraction: sheet.userAction()
     }
     property string notice: ""
+    // Issue #801 B7: the site whose avoid change could not be saved, and the
+    // change asked for, so its row says so. Kept here, not on the row: the
+    // rows are rebuilt on every change.
+    property string avoidFailedUid: ""
+    property bool avoidFailedWanted: false
     readonly property int groupRow: (revision, savedSystems.rowForUid(groupUid))
     readonly property int nearest: (revision, prefs.lastFixAt > 0 ? savedSystems.nearestRow(groupRow, prefs.lastLat, prefs.lastLon) : -1)
     readonly property var nearestSite: (revision, savedSystems.get(nearest))
@@ -73,6 +78,7 @@ ModalSheet {
     function openFor(row) {
         groupUid = savedSystems.get(row).uid || "";
         notice = "";
+        avoidFailedUid = "";
         locationUpdated = false;
         refresh();
         visible = rows.length > 0;
@@ -103,8 +109,21 @@ ModalSheet {
     }
     function setAvoid(row, avoid) {
         userAction();
-        savedSystems.setAvoidSite(row, avoid);
+        var saved = savedSystems.setAvoidSite(row, avoid);
+        avoidFailedUid = saved ? "" : savedSystems.get(row).uid || "";
+        avoidFailedWanted = avoid;
+        // Rebuilt either way, so the toggle shows what is saved.
         refresh();
+    }
+    // Issue #801: does what the button read (@a offeredPinned: Unpin). pin()'s
+    // refusal needs no line of its own: the sheet is modal, so nothing fills
+    // the row behind it, and a full row's Pin is disabled with the reason.
+    function togglePin(uid, offeredPinned) {
+        userAction();
+        if (offeredPinned)
+            listenPins.unpin("site", uid);
+        else
+            listenPins.pin("site", uid);
     }
     function useLocation() {
         userAction();
@@ -276,11 +295,46 @@ ModalSheet {
                     sheet.editSite(siteRow.modelData);
                 }
             }
+            // Issue #801 D4: one site pinned to Listen on its own. It re-reads
+            // the pins, so it flips in place; while Pinned is full it is
+            // disabled and the line under it says why, here in the chooser.
+            OutlineButton {
+                id: sitePin
+                objectName: "sitePin" + siteRow.modelData
+                readonly property var action: (listenPins.revision, listenPins.action("site", siteRow.site.uid || ""))
+                width: parent.width
+                text: action.text
+                accessibleName: action.accessibleName
+                enabled: action.enabled
+                onClicked: sheet.togglePin(siteRow.site.uid || "", action.pinned)
+            }
+            ReadableText {
+                objectName: "sitePinReason" + siteRow.modelData
+                width: parent.width
+                visible: text.length > 0
+                text: sitePin.action.description
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(14)
+                color: Theme.textSecondary
+            }
             PlexToggle {
                 objectName: "siteAvoid" + siteRow.modelData
                 text: qsTr("Avoid site")
                 checked: !!siteRow.site.avoidSite
                 onToggled: sheet.setAvoid(siteRow.modelData, checked)
+            }
+            ReadableText {
+                objectName: "siteAvoidError" + siteRow.modelData
+                width: parent.width
+                visible: sheet.avoidFailedUid.length > 0 && sheet.avoidFailedUid === siteRow.site.uid
+                text: sheet.avoidFailedWanted ? qsTr("Could not avoid this site. Try again.") : qsTr("Could not stop avoiding this site. Try again.")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(14)
+                color: Theme.alert
             }
             OutlineButton {
                 width: parent.width

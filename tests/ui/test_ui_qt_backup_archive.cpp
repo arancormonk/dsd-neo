@@ -24,6 +24,7 @@
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
+#include <QObject>
 #include <QSet>
 #include <QStandardPaths>
 #include <QString>
@@ -58,6 +59,7 @@
 #include "decryption_profiles_model.h"
 #include "imported_files_model.h"
 #include "json_store.h"
+#include "qt_ui.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 #include "signal_search_model.h"
@@ -173,6 +175,7 @@ test_kdf() {
 struct Fixture {
     QString groups, keys, bandplan, src, mapping, chan, chanRoot, targets, targetsRoot, updated, updatedRoot;
     QString systemUid, replayUid;
+    QString pinned; // issue #801: listen/pinned as stored
 };
 
 QString
@@ -219,6 +222,145 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Fixture& f) {
     f.updatedRoot = library.get(row).value("bundleRoot").toString();
     expect("updated map stays beside its bundle", !f.updatedRoot.isEmpty() && !f.updated.startsWith(f.updatedRoot + '/')
                                                       && f.updated.startsWith(dsd_qt::json_store_path("imports/")));
+}
+
+/* A directory where store @p name goes fails every save to it, whatever the permissions the test runs with. */
+bool
+block_store(const char* name) {
+    const QString path = dsd_qt::json_store_path(QLatin1String(name));
+    return QFile::rename(path, path + ".held") && QDir().mkdir(path);
+}
+
+bool
+unblock_store(const char* name) {
+    const QString path = dsd_qt::json_store_path(QLatin1String(name));
+    return QDir().rmdir(path) && QFile::rename(path + ".held", path);
+}
+
+/* Issue #801: the library saves its index without a file that is gone before the startup cleanup clears what names
+ * it, so a clear whose save fails is not in the next launch's pruned list. The next launch still clears it: every
+ * library path whose file is gone is. A missing file outside the library is the user's own and stays named. */
+void
+test_startup_clears_missing_library_paths_twice() {
+    const QStringList stores{"imported_files.json", "saved_systems.json", "scan_lists.json"};
+    QMap<QString, QJsonArray> before;
+    for (const QString& store : stores) {
+        before.insert(store, dsd_qt::json_store_load_array(store));
+    }
+    const QString gone = dsd_qt::ImportedFilesModel::libraryRoot() + "/gone.csv";
+    const QString kept = dsd_qt::ImportedFilesModel::libraryRoot() + "/kept.csv";
+    const QString outside = dsd_qt::json_store_path("elsewhere/mine.csv");
+    expect("write a library file", write_file(kept, "TG,Mode,Name\n1,D,Dispatch\n"));
+    {
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        expect("systems name the files",
+               systems.add({{"name", "Gone"}, {"sourceType", "usb"}, {"groupCsvPath", gone}, {"srcCsvPath", kept}})
+                   && systems.add({{"name", "Outside"}, {"sourceType", "usb"}, {"groupCsvPath", outside}}));
+        expect("lists name the gone file",
+               scans.add({{"name", "Fallback"}, {"groupCsvPath", gone}, {"srcCsvPath", kept}})
+                   && scans.add({{"name", "Targets"}, {"targetSource", "csv"}, {"targetsCsvPath", gone}}));
+    }
+    expect(
+        "the index names both library files",
+        dsd_qt::json_store_save_array(
+            "imported_files.json", QJsonArray{QJsonObject{{"name", "gone.csv"}, {"path", gone}, {"type", "group"}},
+                                              QJsonObject{{"name", "kept.csv"}, {"path", kept}, {"type", "group"}}}));
+    const auto first = [](const dsd_qt::SavedSystemsModel& systems) { return systems.get(systems.count() - 2); };
+    const auto list = [](const dsd_qt::ScanListsModel& scans) { return scans.get(scans.count() - 1); };
+    const auto fallback = [](const dsd_qt::ScanListsModel& scans) { return scans.get(scans.count() - 2); };
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        expect("launch 1: stores blocked", block_store("saved_systems.json") && block_store("scan_lists.json"));
+        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        expect("launch 1: the unsaved clears change nothing", first(systems).value("groupCsvPath") == gone
+                                                                  && list(scans).value("targetsCsvPath") == gone
+                                                                  && fallback(scans).value("groupCsvPath") == gone);
+        expect("launch 1: stores unblocked", unblock_store("saved_systems.json") && unblock_store("scan_lists.json"));
+    }
+    expect("the index no longer names the gone file",
+           !QJsonDocument(dsd_qt::json_store_load_array("imported_files.json")).toJson().contains("gone.csv"));
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        expect("launch 2: the system's gone file is cleared", first(systems).value("groupCsvPath") == "");
+        expect("launch 2: the list's gone file is cleared",
+               list(scans).value("targetsCsvPath") == "" && list(scans).value("isDraft").toBool());
+        expect("launch 2: the gone fallback file is cleared, and the list is no draft",
+               fallback(scans).value("groupCsvPath") == "" && !fallback(scans).value("isDraft").toBool());
+    }
+    {
+        const dsd_qt::SavedSystemsModel systems;
+        const dsd_qt::ScanListsModel scans;
+        expect("the clears are saved",
+               first(systems).value("groupCsvPath") == "" && list(scans).value("targetsCsvPath") == "");
+        expect("a library file that exists stays named",
+               first(systems).value("srcCsvPath") == kept && fallback(scans).value("srcCsvPath") == kept);
+        expect("the fallback clear is saved", fallback(scans).value("groupCsvPath") == "");
+        expect("a missing file outside the library stays named",
+               systems.get(systems.count() - 1).value("groupCsvPath") == outside);
+    }
+    remove_file(kept);
+    for (const QString& store : stores) {
+        expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
+    }
+}
+
+/* Issue #801: the startup cleanup that takes a pinned system's row out of its RadioReference group (a library file the
+ * row names is gone) moves the pin to the group's lead, as an edit out of the group does. That needs the pins built
+ * before the cleanup runs, while they can still see the row's group. */
+void
+test_startup_cleanup_moves_a_system_pin_to_its_group() {
+    const QStringList stores{"saved_systems.json", "scan_lists.json"};
+    QMap<QString, QJsonArray> before;
+    for (const QString& store : stores) {
+        before.insert(store, dsd_qt::json_store_load_array(store));
+    }
+    const QString gone = dsd_qt::ImportedFilesModel::libraryRoot() + "/county-north.csv";
+    QString north;
+    QString south;
+    {
+        dsd_qt::SavedSystemsModel systems;
+        const auto site = [&systems](const QString& name, int siteId, const QString& groupCsv) {
+            expect("add a County site", systems.add({{"name", "County"},
+                                                     {"freqMhz", QStringLiteral("851.%1").arg(siteId)},
+                                                     {"rrSid", 7801},
+                                                     {"rrSiteId", siteId},
+                                                     {"siteName", name},
+                                                     {"groupCsvPath", groupCsv}}));
+            return systems.get(systems.count() - 1).value("uid").toString();
+        };
+        north = site("North", 1, gone);
+        south = site("South", 2, QString());
+        site("East", 3, QString());
+    }
+    dsd_qt::AppPrefs prefs;
+    prefs.setPinned({QVariantMap{{"kind", "system"}, {"uid", north}}});
+    {
+        TestHost host;
+        QObject owner;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        expect("the startup cleanup builds the pins",
+               dsd_qt::load_listen_pins(&prefs, &library, &systems, &scans, &owner) != nullptr);
+        expect("the cleanup takes North out of its group",
+               systems.get(systems.rowForUid(north)).value("groupCsvPath") == ""
+                   && systems.siblingRows(systems.rowForUid(north)).isEmpty());
+        const QVariantList pinned = prefs.pinned();
+        expect("the system pin moves to the group's lead",
+               pinned.size() == 1 && pinned.first().toMap().value("uid").toString() == south);
+    }
+    prefs.setPinned({});
+    for (const QString& store : stores) {
+        expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
+    }
 }
 
 /** Systems, scan lists, the library, profiles, ranges, avoids and settings, all through the production models. */
@@ -287,7 +429,13 @@ populate(TestHost& host) {
     expect("avoid 156800000", dsd_app_signal_search_permanent_avoid(156800000U) >= DSD_APP_SEARCH_AVOID_ADDED);
     expect("avoid 162550000", dsd_app_signal_search_permanent_avoid(162550000U) >= DSD_APP_SEARCH_AVOID_ADDED);
 
+    // Issue #801: shortcuts pinned to Listen name a system and a list by the UIDs a restore keeps.
+    const QJsonArray pins{QJsonObject{{"kind", "system"}, {"uid", f.systemUid}},
+                          QJsonObject{{"kind", "scan"}, {"uid", scans.get(0).value("uid").toString()}},
+                          QJsonObject{{"kind", "search"}, {"uid", ""}}};
+    f.pinned = QString::fromUtf8(QJsonDocument(pins).toJson(QJsonDocument::Compact));
     expect("write portable settings", dsd_qt::AppPrefs::replacePortable({{"decode/extraArgs", "-Z"},
+                                                                         {"listen/pinned", f.pinned},
                                                                          {"rr/username", "scanner"},
                                                                          {"tuner/gainDb", "30"},
                                                                          {"explore/sourceType", "airspy"},
@@ -548,6 +696,9 @@ test_round_trip(const Fixture& f) {
                && parsed.prefs.value("search/sourceType").toString() == "rtltcp"
                && parsed.prefs.value("search/host").toString() == "10.0.2.2"
                && parsed.prefs.value("search/port").toInt() == 1235);
+    expect("the pinned shortcuts travel with the backup",
+           snapshot.prefs.value("listen/pinned").toString() == f.pinned
+               && parsed.prefs.value("listen/pinned").toString() == f.pinned);
     expect("avoids equal", parsed.avoids == snapshot.avoids);
     check_round_trip_files(parsed, opened, f);
     const auto& p = parsed.summary;
@@ -608,8 +759,7 @@ test_saved_tetra_system_round_trip() {
     expect("tetra backup: restore summary counts it with no extra options",
            parsed.summary.systems == 3 && parsed.summary.systemsWithExtraArgs == 1);
 
-    systems.remove(row);
-    expect("tetra backup: the fixture is back to two systems", systems.rowCount() == row);
+    expect("tetra backup: the fixture is back to two systems", systems.remove(row) && systems.rowCount() == row);
 }
 
 void
@@ -852,6 +1002,36 @@ test_export_repairs() {
                && lists(built.summary.notIncluded, "mismatched.csv: companion files"));
     remove_tree(snapshot.root + "/imports/bundles/stray-bundle");
     remove_tree(other);
+}
+
+/* Issue #801: a scan list the load gave a UID (none stored) is saved with it, so a backup taken straight away carries
+ * that UID rather than minting its own, and the next load keeps it too. */
+void
+test_repaired_scan_uid_survives_export() {
+    const QString store = QStringLiteral("scan_lists.json");
+    const QJsonArray before = dsd_qt::json_store_load_array(store);
+    QJsonArray lists = before;
+    lists.append(QJsonObject{{"name", "Hand edited"}, {"sourceType", "usb"}});
+    expect("write a list with no uid", dsd_qt::json_store_save_array(store, lists));
+    QString uid;
+    {
+        const dsd_qt::ScanListsModel scans;
+        uid = scans.get(scans.count() - 1).value("uid").toString();
+        expect("the load gives the list a uid", scans.uidsRepaired() && !uid.isEmpty());
+    }
+    const auto built = build(dsd_qt::backup::backup_take_snapshot());
+    expect("the repaired store exports", built.error == BackupError::None);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, dsd_qt::json_store_root());
+    const QJsonArray exported = parsed.stores.value("scan_lists.json");
+    expect("the backup carries the uid the load gave",
+           parsed.error == BackupError::None && exported.size() == lists.size()
+               && exported.at(exported.size() - 1).toObject().value("uid").toString() == uid);
+    {
+        const dsd_qt::ScanListsModel scans;
+        expect("the next load keeps it",
+               !scans.uidsRepaired() && scans.get(scans.count() - 1).value("uid").toString() == uid);
+    }
+    expect("scan lists restored", dsd_qt::json_store_save_array(store, before));
 }
 
 /* A row whose file lies in another row's bundle is dropped; the bundle it names of its own is not carried either, since
@@ -1640,6 +1820,8 @@ main(int argc, char** argv) {
     test_unknown_store_name();
     test_passphrases();
     test_host_document_copies();
+    test_startup_clears_missing_library_paths_twice();
+    test_startup_cleanup_moves_a_system_pin_to_its_group();
     {
         TestHost host;
         const Fixture fixture = populate(host);
@@ -1659,6 +1841,7 @@ main(int argc, char** argv) {
         test_decode_flag_standard(host);
         test_decode_flag_counts(base.archive);
         test_export_repairs();
+        test_repaired_scan_uid_survives_export();
         test_export_drops_foreign_bundle(fixture);
         test_export_folded_bundle_paths(fixture);
         test_build_caps_and_cancel();

@@ -59,6 +59,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -230,6 +231,8 @@ typedef struct {
     double visit_since_m;
     int visit_rearm_pending;
     double idle_since_m;
+    /* The idle dwell start dsd_engine_trunk_scan_dwell_due() last asked the hunt to yield for: one yield per dwell. */
+    double dwell_yield_from_m;
     double retry_until_m;
     double last_allowed_activity_m;
     uint64_t tune_request_id;
@@ -2767,6 +2770,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         /* Nothing is parked yet: the first switch anchors the visit when its retune lands. */
         rt->visit_since_m = -1.0;
         rt->idle_since_m = now_m;
+        rt->dwell_yield_from_m = -1.0;
     }
     return 0;
 }
@@ -3021,6 +3025,17 @@ trunk_scan_release_active_carrier(dsd_opts* opts, dsd_state* state, dsd_trunk_sc
     rt->last_allowed_activity_m = 0.0;
 }
 
+/* The idle dwell runs from the park's landing, as the visit does (discussion #717): the retune armed it when it was
+   asked for, and a tune that blocks (rigctl) or completes later would otherwise count its latency as listening time.
+   A dwell disarmed since (an operator's hold toggled, activity reported) stays disarmed, so the next tick grants it
+   fresh from then. */
+static void
+trunk_scan_arm_idle_at_landing(dsd_trunk_scan_target_runtime* rt) {
+    if (rt->idle_since_m >= 0.0 && rt->visit_since_m >= 0.0) {
+        rt->idle_since_m = rt->visit_since_m;
+    }
+}
+
 /*
  * Close out a retune the tuner accepted. A request still in flight is remembered so the tick can
  * resolve it later; one the backend already completed anchors the visit at the stamp it completed
@@ -3058,6 +3073,7 @@ trunk_scan_arm_tune_completion(dsd_opts* opts, dsd_state* state, const dsd_trunk
         (void)p25_sm_restart_pending_cc_acquisition(&rt->p25_ctx, opts, state, completed_m, "scan-retune");
     }
     trunk_scan_arm_visit(rt, completed_m);
+    trunk_scan_arm_idle_at_landing(rt);
 }
 
 /* An RTL stream that has published no DSP rate yet: an analog target's width cannot be checked, so the checks wait. */
@@ -4013,11 +4029,12 @@ trunk_scan_resolve_pending_retune(const dsd_opts* opts, dsd_state* state, dsd_tr
     if (result == DSD_TRUNK_TUNE_RESULT_OK) {
         rt->tune_request_id = 0U;
         rt->tune_pending = 0;
-        rt->idle_since_m = -1.0;
         trunk_scan_note_landing(state, coord, rt);
         trunk_scan_reapply_analog_width(opts, rt);
-        /* The visit began when the backend finished the tune, not when this tick noticed. */
+        /* The visit began when the backend finished the tune, not when this tick noticed, and so did the idle dwell
+           (discussion #717): this tick may come a no-sync pass after the landing. */
         trunk_scan_arm_visit(rt, completed_m);
+        trunk_scan_arm_idle_at_landing(rt);
         trunk_scan_entry_park_landed(state, coord, rt, request_id);
         return 1;
     }
@@ -4585,6 +4602,47 @@ trunk_scan_tick_targets_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_
     if ((now_m - rt->idle_since_m) >= dwell_s) {
         trunk_scan_advance(opts, state, coord);
     }
+}
+
+/* When the idle dwell of the target on air started, or would start once a tick notices its landing: the park's
+   completion (trunk_scan_arm_idle_at_landing()). -1 while nothing is armed, the park is in flight, or its dwell was
+   disarmed (the tick that notices the landing arms it afresh then). */
+static double
+trunk_scan_idle_dwell_start(const dsd_trunk_scan_target_runtime* rt) {
+    if (!rt->tune_pending || rt->idle_since_m < 0.0) {
+        return rt->idle_since_m;
+    }
+    double completed_m = 0.0;
+    if (dsd_trunk_tuning_request_status(rt->tune_request_id, &completed_m) != DSD_TRUNK_TUNE_RESULT_OK) {
+        return -1.0;
+    }
+    const double now_m = trunk_scan_now_m();
+    return (completed_m > 0.0 && completed_m <= now_m) ? completed_m : now_m;
+}
+
+int
+dsd_engine_trunk_scan_dwell_due(const dsd_opts* opts, const dsd_state* state) {
+    dsd_trunk_scan_coord* coord = state ? trunk_scan_get(state) : NULL;
+    if (!opts || !coord || coord->paused || coord->hold_active || coord->count < 2 || coord->active >= coord->count) {
+        return 0;
+    }
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    /* A failed forced eviction recovers its park before any idle dwell (trunk_scan_tick_targets_locked()). */
+    if (rt->retry_released_park) {
+        return 0;
+    }
+    const double start_m = trunk_scan_idle_dwell_start(rt);
+    if (start_m < 0.0 || fabs(start_m - rt->dwell_yield_from_m) < 1e-9) {
+        return 0;
+    }
+    const double dwell_s = (double)trunk_scan_target_dwell_ms(opts, rt) / 1000.0;
+    if ((trunk_scan_now_m() - start_m) < dwell_s) {
+        return 0;
+    }
+    /* Once per dwell: a tick that keeps the target (activity, a hold, nowhere else to go) re-arms the dwell before
+       another yield, so a refusal never makes the hunt hand back every 300 symbols. */
+    rt->dwell_yield_from_m = start_m;
+    return 1;
 }
 
 /* The body above has a dozen early returns and can rotate; publishing here, once, means the
@@ -5203,6 +5261,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.p25_ctx = dsd_engine_trunk_scan_active_p25_ctx;
     hooks.dmr_ctx = dsd_engine_trunk_scan_active_dmr_ctx;
     hooks.tick = dsd_engine_trunk_scan_tick;
+    hooks.dwell_due = dsd_engine_trunk_scan_dwell_due;
     hooks.dmr_conventional_activity = dsd_engine_trunk_scan_dmr_conventional_activity;
     hooks.nxdn_conventional_activity = dsd_engine_trunk_scan_nxdn_conventional_activity;
     hooks.p25_conventional_activity = dsd_engine_trunk_scan_p25_conventional_activity;

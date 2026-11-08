@@ -99,7 +99,7 @@ opts_6000_mode_count(const dsd_opts* opts) {
     if (!opts) {
         return 0;
     }
-    return opts_flag_is_set(opts->frame_p25p2) + opts_flag_is_set(opts->frame_x2tdma);
+    return opts_flag_is_set(opts->frame_p25p2);
 }
 
 static int
@@ -125,8 +125,8 @@ opts_has_4800_four_level_mode(const dsd_opts* opts) {
     if (!opts) {
         return 0;
     }
-    return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
-            || opts->frame_m17 == 1);
+    return (opts->frame_p25p1 == 1 || opts->frame_x2tdma == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1
+            || opts->frame_ysf == 1 || opts->frame_m17 == 1);
 }
 
 static int
@@ -141,8 +141,7 @@ opts_symbol_rate_hz(const dsd_opts* opts) {
     if (opts->frame_provoice == 1 && digital_count == 1) {
         return 9600;
     }
-    if ((opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) && opts->frame_p25p1 == 0
-        && digital_count == opts_6000_mode_count(opts)) {
+    if (opts->frame_p25p2 == 1 && opts->frame_p25p1 == 0 && digital_count == opts_6000_mode_count(opts)) {
         return 6000;
     }
     if ((opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) && digital_count == opts_2400_mode_count(opts)) {
@@ -176,20 +175,14 @@ opts_has_6k25_mode(const dsd_opts* opts) {
     return (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1 || opts->frame_dstar == 1);
 }
 
+/* X2-TDMA runs on the P25 Phase 1 modulation (C4FM, or CQPSK/LSM on simulcast) at 4800 sym/s, so it takes the P25
+   channel filters (discussion #717). */
 static int
 opts_has_p25_mode(const dsd_opts* opts) {
     if (!opts) {
         return 0;
     }
-    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1);
-}
-
-static int
-opts_has_6000_mode(const dsd_opts* opts) {
-    if (!opts) {
-        return 0;
-    }
-    return (opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1);
+    return (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1);
 }
 
 static int
@@ -220,8 +213,8 @@ opts_channel_profile_for_symbol_rate(const dsd_opts* opts, int symbol_rate_hz) {
             }
             break;
         case 6000:
-            if (opts_has_6000_mode(opts)) {
-                return (opts->frame_p25p2 == 1) ? DSD_CH_LPF_PROFILE_P25_CQPSK : DSD_CH_LPF_PROFILE_12K5;
+            if (opts->frame_p25p2 == 1) {
+                return DSD_CH_LPF_PROFILE_P25_CQPSK;
             }
             break;
         default: break;
@@ -247,9 +240,6 @@ opts_channel_profile_for_rate(const dsd_opts* opts, const demod_state* demod, in
     }
     if (opts_has_6k25_mode(opts)) {
         return DSD_CH_LPF_PROFILE_6K25;
-    }
-    if (opts->frame_x2tdma == 1) {
-        return DSD_CH_LPF_PROFILE_12K5;
     }
     if (opts->frame_provoice == 1) {
         return DSD_CH_LPF_PROFILE_PROVOICE;
@@ -941,7 +931,7 @@ rtl_demod_ted_symbol_profile(const struct demod_state* demod, const dsd_opts* op
                           : opts_symbol_levels_for_rate(opts, sym_rate);
         return;
     }
-    /* When only P25P2/X2-TDMA is enabled (without P25P1), use 6000 sym/s.
+    /* When only P25P2 is enabled (without P25P1), use 6000 sym/s.
      * When mod_qpsk is set for P25P1 CQPSK/LSM, use 4800 sym/s.
      * When both P25P1 and P25P2 are enabled (trunking mode), default to
      * P25P1 rate (4800) since CC is typically encountered first; the trunk

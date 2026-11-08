@@ -104,6 +104,7 @@ Item {
             app.spectrumOpen = false;
             app.talkgroupsOpen = false;
             app.diagnosticsOpen = false;
+            app.exploreSetupOpen = false;
             testContext.setRadioReference("available", false);
             testContext.setMetric("radioInput", false);
             while (scanLists.count)
@@ -602,15 +603,60 @@ Item {
             compare(scanLists.get(0).uid, uid);
             verify(!item("homeScreen").managementSheetOpen);
         }
+        // Issue #801 B4: a removal that cannot be saved keeps the system and says so, as a scan list's does.
+        function test_system_removal_failure_notice_data() {
+            return [{tag: "system", grouped: false}, {tag: "site", grouped: true}];
+        }
+        function test_system_removal_failure_notice(data) {
+            if (data.grouped) {
+                savedSystems.update(0, {rrSid: 12, rrSiteId: 100, siteName: "North"});
+                savedSystems.add({name: "County radio", sourceType: "usb", freqMhz: "852.5",
+                    rrSid: 12, rrSiteId: 101, siteName: "South"});
+            }
+            var count = savedSystems.count;
+            var uid = savedSystems.get(0).uid;
+            var opened = openRemove();
+            var store = testContext.storePath("saved_systems.json");
+            verify(testContext.blockPath(store, true), "could not block the store");
+            try {
+                tap(item("confirmActionButton", opened.sheet));
+            } finally {
+                verify(testContext.blockPath(store, false), "could not unblock the store");
+            }
+            compare(savedSystems.count, count, "the system stays");
+            compare(savedSystems.rowForUid(uid), 0);
+            var notice = item("systemRemovalError");
+            tryCompare(notice, "visible", true);
+            compare(notice.title, data.grouped ? "Site removal failed" : "System removal failed");
+            compare(notice.message, data.grouped
+                ? "Could not remove site North of County radio. It is still saved. Try again."
+                : "Could not remove County radio. It is still saved. Try again.");
+            verify(item("homeScreen").managementSheetOpen);
+            verify(uiController.autoStartBlocked);
+            var button = item("confirmActionButton", notice);
+            compare(button.text, "OK");
+            verify(!item("confirmCancelButton", notice).visible);
+            tap(button);
+            tryCompare(notice, "visible", false);
+            verify(!item("homeScreen").managementSheetOpen);
+            // Once the store takes it, the same removal goes through.
+            opened = openRemove();
+            tap(item("confirmActionButton", opened.sheet));
+            compare(savedSystems.rowForUid(uid), -1);
+            verify(!notice.visible);
+        }
         function test_grouped_menu_sites() {
+            var keys = function (menu) {
+                return menu.actions.map(function (action) { return action.key; }).join();
+            };
             var menu = openManage().sheet;
-            compare(menu.actions.length, 2);
+            compare(keys(menu), "edit,pin,remove");
             menu.cancel();
             savedSystems.update(0, {rrSid: 12, rrSiteId: 100});
             savedSystems.add({name: "County radio", sourceType: "usb", freqMhz: "852.5",
                 rrSid: 12, rrSiteId: 101});
             menu = openManage().sheet;
-            compare(menu.actions.length, 3);
+            compare(keys(menu), "edit,sites,pin,remove");
             tap(item("sitesSavedSystemButton", menu));
             verify(!menu.visible);
             tryCompare(item("siteChooserSheet"), "visible", true);
@@ -690,6 +736,7 @@ Item {
         function test_auto_start_consumed_data() {
             return [{tag: "Home", kind: "home"}, {tag: "Remove", kind: "remove"},
                 {tag: "Scan menu", kind: "scan"}, {tag: "Scan remove", kind: "scanRemove"},
+                {tag: "Explore menu", kind: "explore"}, {tag: "Signal search menu", kind: "search"},
                 {tag: "Add system", kind: "add"}, {tag: "History", kind: "history"},
                 {tag: "Licenses", kind: "licenses"}, {tag: "Account", kind: "account"}];
         }
@@ -710,6 +757,15 @@ Item {
                     tap(item("removeScanListButton", sheet));
                     sheet = item("removeScanListConfirm");
                 }
+            } else if (data.kind === "explore" || data.kind === "search") {
+                var more = item(data.kind === "explore" ? "exploreManageButton" : "signalSearchManageButton");
+                var scroll = item("dongleScrollBody");
+                verify(waitForPolish(app.contentItem));
+                scroll.contentY = Math.min(more.mapToItem(scroll.contentItem, 0, 0).y, scroll.contentHeight - scroll.height);
+                tap(more);
+                sheet = item(data.kind === "explore" ? "exploreManageSheet" : "signalSearchManageSheet");
+                tryCompare(sheet, "visible", true);
+                verify(item("homeScreen").managementSheetOpen);
             } else if (data.kind === "add") {
                 testContext.setRadioReference("available", true);
                 tap(item("addSystemButton"));

@@ -91,6 +91,7 @@ static int g_cc_tune_count = 0;
 static int g_skip_dibit_count = 0;
 static long g_last_vc_freq = 0;
 static long g_last_cc_freq = 0;
+static uint64_t g_last_cc_request = 0U;
 static long g_rigctl_current_freq = 0;
 static int g_rigctl_freq_queries = 0;
 static int g_tcp_read_count = 0;
@@ -336,9 +337,9 @@ edacs_hook_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted
 
 static dsd_trunk_tune_result
 edacs_hook_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)request_id;
     (void)opts;
     (void)ted_sps;
+    g_last_cc_request = request_id;
     g_cc_tune_count++;
     g_last_cc_freq = freq;
     if (dsd_trunk_tune_result_is_ok(g_cc_result) && state) {
@@ -2545,12 +2546,30 @@ edacs_run_analog_tune_gate_cases(void) {
     g_tcp_publish_at = 1000;
     g_tcp_publish_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     g_tcp_fail_at = 4 * 2880;
-    edacs_run_tcp_analog_call(48000, DSD_TRUNK_TUNE_RESULT_PENDING);
+    const edacs_grant_case* failed_grant = edacs_prepare_tcp_analog_call(48000, DSD_TRUNK_TUNE_RESULT_PENDING);
+    g_opts.frame_provoice = 1; /* an EDACS session, which owns the failed tune's recovery */
+    edacs_start_tcp_analog_call(failed_grant);
     rc |= edacs_expect(g_udp_blast_count == 0, "analog-633", "failed-tune", "nothing of the failed tune played");
     rc |= edacs_expect(g_tcp_read_count == 2880, "analog-633", "failed-tune",
                        "the call left at the first triplet after the failure");
-    rc |= edacs_expect(dsd_trunk_tuning_pending_request() != 0U, "analog-633", "failed-tune",
-                       "the failed tune still holds the retune gate");
+    /* Discussion #717. The PENDING tune was accepted, so it set trunk_is_tuned (the engine's
+       dsd_engine_update_vc_tune_state() does the same; the hook here mirrors it). The tune then failed and the call
+       left: the radio reads the previous channel, the control channel, again. Left set, trunk_is_tuned makes edacs()
+       skip every control-channel message (its trunk_is_tuned early-out), so no later grant is followed; the hangtime
+       return only runs from noCarrier(), which a control channel that keeps syncing never reaches, and with trunking
+       on the engine never retires the failed request (engine_trunk_tuning_owner_active()), so its frames stay
+       withheld too. The call's leaving returns the session to the control channel and lets the failure go. */
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 0, "analog-717", "failed-tune",
+                       "the failed tune left the session back on the control channel (trunk_is_tuned cleared)");
+    rc |= edacs_expect(g_state.edacs_tuned_lcn == -1 && g_state.edacs_tune_request == 0U, "analog-717", "failed-tune",
+                       "the failed tune left no tuned LCN or watched request behind");
+    rc |= edacs_expect(g_cc_tune_count == 1 && g_last_cc_freq == 851012500L, "analog-717", "failed-tune",
+                       "the control channel was tuned again once");
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == 0U, "analog-717", "failed-tune",
+                       "the rolled-back failure no longer withholds frames");
+    dsd_call_snapshot failed_call = {0};
+    rc |= edacs_expect(dsd_call_state_get(&g_state, 0U, &failed_call) > 0 && failed_call.phase == DSD_CALL_PHASE_ENDED,
+                       "analog-717", "failed-tune", "the grant's call ended with the failed tune");
 
     edacs_reset_audio_hook_state();
     g_tcp_publish_at = 4000;
@@ -2571,6 +2590,331 @@ edacs_run_analog_tune_gate_cases(void) {
     rc |= edacs_expect(g_udp_blast_count == 3, "analog-633", "discarded-triplet", "the cut triplet did not play");
     dsd_trunk_tuning_requests_reset();
     edacs_reset_audio_hook_state();
+    return rc;
+}
+
+/*
+ * Discussion #717, a digital (ProVoice) grant. It never enters the analog loop, so nothing in the grant sees
+ * its in-flight tune fail: edacs_trunk_tick(), which the engine runs between frames (withheld ones too), rolls it back
+ * to the control channel. A tune that lands is only forgotten, so its record leaving the bounded history later cannot
+ * read as a failure.
+ */
+static int
+edacs_run_digital_failed_tune_cases(void) {
+    int rc = 0;
+    for (int fails = 1; fails >= 0; fails--) {
+        const char* const label = fails ? "failed-tune" : "landed-tune";
+        const edacs_grant_case call = {"digital-individual",
+                                       edacs_standard_individual_msg1(6, 4321, 1),
+                                       2345ULL,
+                                       852512500L,
+                                       0,
+                                       6,
+                                       EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL | EDACS_IS_DIGITAL,
+                                       4321,
+                                       2345};
+        g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+        g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+        dsd_trunk_tuning_requests_reset();
+        edacs_setup_fixture(&call);
+        g_opts.frame_provoice = 1;
+        edacs_install_hooks();
+        edacs_process_valid_frame(&g_opts, &g_state, call.msg_1, call.msg_2);
+        const uint64_t request = g_last_vc_request;
+        rc |= edacs_expect(g_opts.trunk_is_tuned == 1 && g_state.edacs_tuned_lcn == 6 && request != 0U
+                               && g_state.edacs_tune_request == request,
+                           "digital-717", label, "the grant's tune was accepted in flight and is watched");
+        edacs_trunk_tick(&g_opts, &g_state);
+        rc |= edacs_expect(g_opts.trunk_is_tuned == 1 && g_state.edacs_tune_request == request && g_cc_tune_count == 0,
+                           "digital-717", label, "a tune still in flight is waited for");
+        dsd_trunk_tuning_request_mark_ready(request);
+        dsd_trunk_tuning_request_publish(request, fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
+        edacs_trunk_tick(&g_opts, &g_state);
+        rc |= edacs_expect(g_state.edacs_tune_request == 0U, "digital-717", label, "the request is no longer watched");
+        rc |= edacs_expect(dsd_trunk_tuning_pending_request() == 0U, "digital-717", label, "no frame is withheld");
+        if (fails) {
+            rc |= edacs_expect(g_opts.trunk_is_tuned == 0 && g_state.edacs_tuned_lcn == -1
+                                   && g_state.trunk_vc_freq[0] == 0,
+                               "digital-717", label, "the session is back on the control channel");
+            rc |= edacs_expect(g_cc_tune_count == 1 && g_last_cc_freq == 851012500L, "digital-717", label,
+                               "the control channel was tuned again once");
+            dsd_call_snapshot snap = {0};
+            rc |= edacs_expect(dsd_call_state_get(&g_state, 0U, &snap) > 0 && snap.phase == DSD_CALL_PHASE_ENDED,
+                               "digital-717", label, "the grant's call ended");
+        } else {
+            rc |= edacs_expect(g_opts.trunk_is_tuned == 1 && g_state.edacs_tuned_lcn == 6 && g_cc_tune_count == 0,
+                               "digital-717", label, "a landed tune stays on the voice channel");
+        }
+    }
+    dsd_trunk_tuning_requests_reset();
+    return rc;
+}
+
+/* A digital grant whose in-flight tune failed, rolled back with the control-channel tune answering @p cc_result. */
+static void
+edacs_roll_back_failed_grant(dsd_trunk_tune_result cc_result) {
+    const edacs_grant_case call = {"digital-individual",
+                                   edacs_standard_individual_msg1(6, 4321, 1),
+                                   2345ULL,
+                                   852512500L,
+                                   0,
+                                   6,
+                                   EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL | EDACS_IS_DIGITAL,
+                                   4321,
+                                   2345};
+    g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_requests_reset();
+    edacs_setup_fixture(&call);
+    g_opts.frame_provoice = 1;
+    edacs_install_hooks();
+    g_last_cc_request = 0U;
+    edacs_process_valid_frame(&g_opts, &g_state, call.msg_1, call.msg_2);
+    dsd_trunk_tuning_request_publish(g_last_vc_request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_cc_result = cc_result;
+    edacs_trunk_tick(&g_opts, &g_state);
+}
+
+/* Settle the control-channel request @p request with @p result and tick, the retry (if one is asked for) answering
+   @p retry_result. */
+static void
+edacs_settle_cc_return(uint64_t request, dsd_trunk_tune_result result, dsd_trunk_tune_result retry_result) {
+    g_cc_result = retry_result;
+    dsd_trunk_tuning_request_publish(request, result);
+    edacs_trunk_tick(&g_opts, &g_state);
+}
+
+static int
+edacs_expect_settled(const char* label, int cc_tunes) {
+    int rc = 0;
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 0 && g_state.edacs_tuned_lcn == -1, "cc-return-717", label,
+                       "the session reads as on the control channel");
+    rc |= edacs_expect(g_state.edacs_cc_return_request == 0U, "cc-return-717", label, "nothing is watched any more");
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == 0U, "cc-return-717", label, "no frame is withheld");
+    rc |= edacs_expect(g_cc_tune_count == cc_tunes, "cc-return-717", label, "the control channel was asked for");
+    return rc;
+}
+
+/*
+ * Discussion #717: the return to the control channel a failed grant's rollback (or eot_cc()) asks for can itself be
+ * accepted in flight and then fail. The session already reads as on the control channel, so nothing else would settle
+ * that failure, and it would withhold every frame for good. It is watched, asked for again while the tuner takes the
+ * request, and let go when the tuner refuses: on a radio (in flight) and on rigctl or PCM-style tuning (answered at
+ * once).
+ */
+static int
+edacs_run_cc_return_failure_cases(void) {
+    int rc = 0;
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    const uint64_t first = g_last_cc_request;
+    rc |= edacs_expect(first != 0U && g_state.edacs_cc_return_request == first, "cc-return-717", "pending-ok",
+                       "the return in flight is watched");
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == first, "cc-return-717", "pending-ok",
+                       "only the return in flight withholds frames");
+    edacs_settle_cc_return(first, DSD_TRUNK_TUNE_RESULT_OK, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect_settled("pending-ok", 1);
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    const uint64_t failed = g_last_cc_request;
+    edacs_settle_cc_return(failed, DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_PENDING);
+    const uint64_t retry = g_last_cc_request;
+    rc |= edacs_expect(retry != failed && g_state.edacs_cc_return_request == retry && g_cc_tune_count == 2,
+                       "cc-return-717", "pending-failed", "a failed return is asked for again");
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == retry, "cc-return-717", "pending-failed",
+                       "the failed return no longer withholds frames, only the retry in flight");
+    edacs_settle_cc_return(retry, DSD_TRUNK_TUNE_RESULT_OK, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect_settled("pending-failed", 2);
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    edacs_settle_cc_return(g_last_cc_request, DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= edacs_expect_settled("pending-failed-retry-refused", 2);
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= edacs_expect_settled("refused-at-once", 1);
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect_settled("answered-at-once", 1);
+
+    /* The end of a call's return (eot_cc()) is the same request: accepted in flight, failed, asked for again. */
+    g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    dsd_trunk_tuning_requests_reset();
+    edacs_setup_eot_fixture();
+    g_opts.frame_provoice = 1;
+    edacs_install_hooks();
+    eot_cc(&g_opts, &g_state);
+    const uint64_t eot_return = g_last_cc_request;
+    rc |= edacs_expect(eot_return != 0U && g_state.edacs_cc_return_request == eot_return, "cc-return-717", "eot",
+                       "the end of a call's return in flight is watched");
+    edacs_settle_cc_return(eot_return, DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect(g_cc_tune_count == 2 && g_state.edacs_cc_return_request == 0U
+                           && dsd_trunk_tuning_pending_request() == 0U,
+                       "cc-return-717", "eot", "a failed end-of-call return is asked for again and lands");
+
+    dsd_trunk_tuning_requests_reset();
+    g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    return rc;
+}
+
+static int
+edacs_hook_tuner_taken(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
+/* The receiver handed to another owner while EDACS waits on its control-channel return: nothing is asked for again
+   when that return then fails, the failure is let go, and nothing stays watched. */
+static int
+edacs_expect_handed_over(const char* label) {
+    int rc = 0;
+    rc |= edacs_expect(g_cc_tune_count == 1, "handover-717", label, "the old control channel was not asked for again");
+    rc |= edacs_expect(g_state.edacs_cc_return_request == 0U, "handover-717", label, "nothing is watched any more");
+    return rc;
+}
+
+/* An EDACS digital grant to LCN 6 whose tune is in flight, in a trunked EDACS session. */
+static uint64_t
+edacs_start_pending_grant(void) {
+    const edacs_grant_case call = {"digital-individual",
+                                   edacs_standard_individual_msg1(6, 4321, 1),
+                                   2345ULL,
+                                   852512500L,
+                                   0,
+                                   6,
+                                   EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL | EDACS_IS_DIGITAL,
+                                   4321,
+                                   2345};
+    g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_requests_reset();
+    edacs_setup_fixture(&call);
+    g_opts.frame_provoice = 1;
+    edacs_install_hooks();
+    edacs_process_valid_frame(&g_opts, &g_state, call.msg_1, call.msg_2);
+    return g_last_vc_request;
+}
+
+/*
+ * Discussion #717: a failure EDACS no longer owns is not EDACS's to settle. (1) A mode change and a newer tune between
+ * frames: the failed grant's tune was retired by the newer one's success, and the call now in slot 0, the tuned flag,
+ * the frequencies and the crypto are the new owner's; EDACS forgets its grant and touches none of them. (2) Trunking
+ * turned off while a tune is in flight: its failure stays in the tuning ledger for the engine, which reconciles the
+ * tuner frequency with the radio before it retires a failure no trunking owns; EDACS only forgets it, and does not
+ * come back to it.
+ */
+static int
+edacs_run_handed_over_teardown_cases(void) {
+    int rc = 0;
+
+    const uint64_t grant = edacs_start_pending_grant();
+    dsd_trunk_tuning_request_publish(grant, DSD_TRUNK_TUNE_RESULT_FAILED);
+    g_opts.frame_provoice = 0;                               /* another mode */
+    const uint64_t newer = dsd_trunk_tuning_request_begin(); /* its retune, which lands */
+    dsd_trunk_tuning_request_mark_ready(newer);
+    dsd_trunk_tuning_request_publish(newer, DSD_TRUNK_TUNE_RESULT_OK);
+    g_state.trunk_vc_freq[0] = 853000000L; /* the new owner's call */
+    g_state.payload_algid = 0x84;
+    edacs_trunk_tick(&g_opts, &g_state);
+    dsd_call_snapshot slot0 = {0};
+    rc |= edacs_expect(g_opts.trunk_is_tuned == 1 && g_state.trunk_vc_freq[0] == 853000000L
+                           && g_state.payload_algid == 0x84,
+                       "handover-717", "mode-change", "the new owner's tuned state, frequency and crypto stand");
+    rc |= edacs_expect(dsd_call_state_get(&g_state, 0U, &slot0) > 0 && slot0.phase == DSD_CALL_PHASE_ACTIVE,
+                       "handover-717", "mode-change", "the call in slot 0 was not ended");
+    rc |= edacs_expect(g_state.edacs_tune_request == 0U && g_cc_tune_count == 0, "handover-717", "mode-change",
+                       "EDACS forgot its grant and tuned nothing");
+
+    const uint64_t off_grant = edacs_start_pending_grant();
+    g_opts.trunk_enable = 0;
+    dsd_trunk_tuning_request_publish(off_grant, DSD_TRUNK_TUNE_RESULT_FAILED);
+    edacs_trunk_tick(&g_opts, &g_state);
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == off_grant && g_state.edacs_tune_request == 0U
+                           && g_cc_tune_count == 0,
+                       "handover-717", "trunking-off-grant", "the failed grant is left for the engine and forgotten");
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    const uint64_t off_return = g_last_cc_request;
+    g_opts.trunk_enable = 0;
+    edacs_settle_cc_return(off_return, DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == off_return && g_state.edacs_cc_return_request == 0U
+                           && g_cc_tune_count == 1,
+                       "handover-717", "trunking-off-return", "the failed return is left for the engine and forgotten");
+    dsd_trunk_tuning_retire_failed_requests_through(off_return); /* the engine's reconcile and retire */
+    edacs_trunk_tick(&g_opts, &g_state);
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == 0U && g_cc_tune_count == 1, "handover-717",
+                       "trunking-off-return", "EDACS does not come back to it");
+    return rc;
+}
+
+/*
+ * Discussion #717: a return to the control channel EDACS is waiting on belongs to the receiver it was asked of. When
+ * the receiver is handed to another owner before that return fails, EDACS must not retune it to the old control
+ * channel: an input or device switch (the tuning ledger reset), a typed tune (a carrier boundary; the io_control leg
+ * leaves the ledger alone), a trunk-scan park (another owner's newer request), or a tuner a scan or a manual tune owns.
+ * Nor does a grant whose tune the ledger no longer knows retune anything.
+ */
+static int
+edacs_run_handed_over_recovery_cases(void) {
+    int rc = 0;
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    dsd_trunk_tuning_requests_reset(); /* an input or device switch */
+    edacs_trunk_tick(&g_opts, &g_state);
+    rc |= edacs_expect_handed_over("input-switch");
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    g_state.carrier_seq++; /* a typed tune's carrier boundary */
+    edacs_settle_cc_return(g_last_cc_request, DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect_handed_over("typed-tune");
+    rc |= edacs_expect(dsd_trunk_tuning_pending_request() == 0U, "handover-717", "typed-tune",
+                       "the failed return no longer withholds frames");
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    const uint64_t pending_return = g_last_cc_request;
+    const uint64_t park = dsd_trunk_tuning_request_begin(); /* a trunk-scan park to another target */
+    dsd_trunk_tuning_request_mark_ready(park);
+    dsd_trunk_tuning_request_publish(park, DSD_TRUNK_TUNE_RESULT_OK);
+    edacs_settle_cc_return(pending_return, DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect_handed_over("trunk-scan-park");
+
+    edacs_roll_back_failed_grant(DSD_TRUNK_TUNE_RESULT_PENDING);
+    dsd_trunk_tuning_hooks taken = {0};
+    taken.tune_to_freq_request = edacs_hook_tune_to_freq;
+    taken.tune_to_cc_request = edacs_hook_tune_to_cc;
+    taken.tuner_free_for_protocol = edacs_hook_tuner_taken; /* a trunk scan, a -Y scan or a manual tune owns it */
+    dsd_trunk_tuning_hooks_set(taken);
+    edacs_settle_cc_return(g_last_cc_request, DSD_TRUNK_TUNE_RESULT_FAILED, DSD_TRUNK_TUNE_RESULT_OK);
+    rc |= edacs_expect_handed_over("tuner-taken");
+    edacs_install_hooks();
+
+    /* A grant in flight across an input switch: its failure is no longer EDACS's to roll back with a retune. */
+    const edacs_grant_case call = {"digital-individual",
+                                   edacs_standard_individual_msg1(6, 4321, 1),
+                                   2345ULL,
+                                   852512500L,
+                                   0,
+                                   6,
+                                   EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL | EDACS_IS_DIGITAL,
+                                   4321,
+                                   2345};
+    g_vc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_trunk_tuning_requests_reset();
+    edacs_setup_fixture(&call);
+    g_opts.frame_provoice = 1;
+    edacs_install_hooks();
+    edacs_process_valid_frame(&g_opts, &g_state, call.msg_1, call.msg_2);
+    dsd_trunk_tuning_requests_reset(); /* the switch drops the grant's request */
+    edacs_trunk_tick(&g_opts, &g_state);
+    rc |=
+        edacs_expect(g_cc_tune_count == 0 && g_state.edacs_tune_request == 0U && g_state.edacs_cc_return_request == 0U,
+                     "handover-717", "grant-across-switch", "no control channel was asked for, nothing is watched");
+
+    rc |= edacs_run_handed_over_teardown_cases();
+    dsd_trunk_tuning_requests_reset();
+    g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
     return rc;
 }
 
@@ -3509,6 +3853,9 @@ main(void) {
     rc |= edacs_run_analog_stop_cases();
     rc |= edacs_run_analog_wav_reopen_mark_cases();
     rc |= edacs_run_analog_tune_gate_cases();
+    rc |= edacs_run_digital_failed_tune_cases();
+    rc |= edacs_run_cc_return_failure_cases();
+    rc |= edacs_run_handed_over_recovery_cases();
     rc |= edacs_run_golden_48k_cases();
 #ifdef USE_RADIO
     rc |= edacs_run_analog_call_release_cases();

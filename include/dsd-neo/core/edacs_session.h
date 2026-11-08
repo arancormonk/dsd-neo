@@ -35,8 +35,8 @@ extern "C" {
  *
  * Every EDACS/ProVoice preset qualifies: -fh/-fH/-fe/-fE select an addressing mode, and -fp, which selects none, runs
  * ProVoice alone. Auto qualifies once EDACS addressing is selected (-fh -fa, an EDACS-to-Auto switch, Auto with
- * edacs_ea, the EA toggle); plain Auto, which leaves ea_mode at -1, does not. A NULL @p state counts as no addressing
- * selected.
+ * edacs_addressing or edacs_ea, the EA toggle); plain Auto, which leaves ea_mode at -1, does not. A NULL @p state
+ * counts as no addressing selected.
  */
 static inline int
 dsd_edacs_session(const dsd_opts* opts, const dsd_state* state) {
@@ -50,7 +50,8 @@ dsd_edacs_session(const dsd_opts* opts, const dsd_state* state) {
  * @brief The -8 override of a trunked EDACS session on UDP output: with trunking on, UDP output (port + 2 carrying the
  * analog audio) and an EDACS session, turn the -8 source monitor off. Engine output setup applies it at start
  * (`-fh -T -8 -o udp`); the EA toggle, a decode-mode switch and a config apply when they turn a running session into an
- * EDACS one (`-fa -T -8 -o udp`, then the toggle, a switch to EDACS/ProVoice, or a config with edacs_ea).
+ * EDACS one (`-fa -T -8 -o udp`, then the toggle, a switch to EDACS/ProVoice, or a config with edacs_addressing or
+ * edacs_ea).
  *
  * @return 1 when it turned -8 off, else 0.
  */

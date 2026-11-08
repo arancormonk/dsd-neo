@@ -60,6 +60,7 @@ target_sources(
         spectrum_model.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
+        listen_pins.cpp # Issue #801
         spectrum_view_item.cpp
         screen_reader_state.cpp # Issue #782
         session_args.cpp
@@ -151,6 +152,8 @@ qt_add_resources(
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PassbandSheet.qml
+        qml/PinButton.qml
+        qml/PinnedSheet.qml
         qml/ScanAvoidSheet.qml
         qml/ScanListsSheet.qml
         qml/ScanTogetherSheet.qml

@@ -1860,9 +1860,8 @@ namespace {
 enum RtlFskModeBits : uint32_t {
     kFskModeProvoice = 1U << 0,   /* frame_provoice */
     kFskModeNxdn48Dpmr = 1U << 1, /* frame_nxdn48 or frame_dpmr */
-    kFskModeX2tdma = 1U << 2,     /* frame_x2tdma */
     kFskModeWide4800 = 1U << 3,   /* dsd_opts_uses_wide_4800_profile() */
-    kFskModeP25 = 1U << 4,        /* frame_p25p1 or frame_p25p2 */
+    kFskModeP25 = 1U << 4,        /* frame_p25p1, frame_p25p2 or frame_x2tdma (P25 Phase 1 modulation) */
     kFskModeDstar = 1U << 5,      /* frame_dstar */
     kFskModesNoted = 1U << 31,    /* g_noted_digital_modes holds a note */
 };
@@ -1882,9 +1881,8 @@ rtl_stream_fsk_modes_from_opts(const dsd_opts* opts) {
     uint32_t modes = 0U;
     modes |= opts->frame_provoice == 1 ? (uint32_t)kFskModeProvoice : 0U;
     modes |= (opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1) ? (uint32_t)kFskModeNxdn48Dpmr : 0U;
-    modes |= opts->frame_x2tdma == 1 ? (uint32_t)kFskModeX2tdma : 0U;
     modes |= dsd_opts_uses_wide_4800_profile(opts) ? (uint32_t)kFskModeWide4800 : 0U;
-    modes |= (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1) ? (uint32_t)kFskModeP25 : 0U;
+    modes |= (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1) ? (uint32_t)kFskModeP25 : 0U;
     modes |= opts->frame_dstar == 1 ? (uint32_t)kFskModeDstar : 0U;
     return modes;
 }
@@ -1896,9 +1894,6 @@ rtl_stream_fsk_profile_for_modes_by_sym_rate(uint32_t modes, int sym_rate) {
     }
     if (sym_rate == 2400 && (modes & kFskModeNxdn48Dpmr) != 0U) {
         return DSD_CH_LPF_PROFILE_6K25;
-    }
-    if (sym_rate == 6000 && (modes & kFskModeX2tdma) != 0U) {
-        return DSD_CH_LPF_PROFILE_12K5;
     }
     return -1;
 }
@@ -1913,9 +1908,6 @@ rtl_stream_fsk_profile_for_modes_by_frame(uint32_t modes) {
     }
     if ((modes & (kFskModeNxdn48Dpmr | kFskModeDstar)) != 0U) {
         return DSD_CH_LPF_PROFILE_6K25;
-    }
-    if ((modes & kFskModeX2tdma) != 0U) {
-        return DSD_CH_LPF_PROFILE_12K5;
     }
     if ((modes & kFskModeProvoice) != 0U) {
         return DSD_CH_LPF_PROFILE_PROVOICE;

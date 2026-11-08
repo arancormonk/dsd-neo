@@ -33,7 +33,9 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -92,6 +94,10 @@ stream_next_dibit(void) {
    it pushes no symbol, as dsd_symbol.c's read does. 0 for none. */
 static long g_interrupt_at_read = 0;
 static long g_reads = 0;
+/* Non-zero: every symbol read steps the TEST decode clock by one symbol period at this rate, so the clock is the
+   stream's own (discussion #717). */
+static int g_symbol_clock_rate = 0;
+static const uint64_t k_symbol_clock_t0_ns = 1000000000000ULL;
 
 float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-internal-linkage)
@@ -107,6 +113,10 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     const float symbol = (dibit == '3') ? -3.0f : 3.0f;
     dsd_symbol_history_push(state, symbol);
     state->symbolcnt++;
+    if (g_symbol_clock_rate > 0) {
+        dsd_decode_clock_test_set_ns(k_symbol_clock_t0_ns
+                                     + (uint64_t)g_symbols_emitted * 1000000000ULL / (uint64_t)g_symbol_clock_rate);
+    }
     return symbol;
 }
 
@@ -651,6 +661,82 @@ test_idle_rotation_period_is_unchanged(void) {
     assert(r.symbols_at_step < dwell_symbols + 200);
 }
 
+/* A trunk-scan dwell the coordinator would rotate on: due once the stream's clock reaches its deadline, once. */
+static double g_dwell_deadline_s = 0.0;
+static int g_dwell_yielded = 0;
+static long g_dwell_asks = 0;
+
+static int
+fake_trunk_scan_dwell_due(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_dwell_asks++;
+    if (g_dwell_yielded || dsd_decode_now_mono_s() < g_dwell_deadline_s) {
+        return 0;
+    }
+    g_dwell_yielded = 1;
+    return 1;
+}
+
+/* Symbols one getFrameSync() call reads on dead air, the stream clocked at @p symbol_rate, with a trunk-scan dwell of
+   @p dwell_ms that started at the call's first symbol (0: no trunk scan installed). */
+static long
+dead_air_return_symbols(int symbol_rate, int dwell_ms, long* asks) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_hunt_opts_state(&opts, &state, 0);
+    assert(init_state_buffers(&state));
+    stream_reset("", 0);
+    dsd_frame_sync_reset_mod_state();
+    g_symbol_clock_rate = symbol_rate;
+    dsd_decode_clock_use_test(k_symbol_clock_t0_ns);
+    g_dwell_deadline_s = dsd_decode_now_mono_s() + (double)dwell_ms / 1000.0;
+    g_dwell_yielded = 0;
+    g_dwell_asks = 0;
+    dsd_trunk_scan_hooks dwell_hooks = {0};
+    dwell_hooks.dwell_due = fake_trunk_scan_dwell_due;
+    dsd_trunk_scan_hooks_set(dwell_ms > 0 ? &dwell_hooks : NULL);
+
+    const int sync = getFrameSync(&opts, &state);
+    const long read = g_symbols_emitted;
+
+    dsd_trunk_scan_hooks_set(NULL);
+    dsd_decode_clock_use_system();
+    g_symbol_clock_rate = 0;
+    free_state_buffers(&state);
+    assert(sync == DSD_SYNC_NONE);
+    *asks = g_dwell_asks;
+    return read;
+}
+
+/*
+ * Discussion #717: a trunk-scan target's idle dwell is honoured from inside the hunt. On dead air getFrameSync() hands
+ * back once per 1800-symbol pass (375 ms at 4800 sym/s), and the coordinator used to see its dwell only then: a 250 ms
+ * dwell ran a whole pass. The hunt now asks the coordinator every 300 symbols (62.5 ms at 4800/s) and hands back once
+ * the dwell is due, so the rotation lands within 300 symbols of the deadline; the ask stays off the per-symbol path.
+ */
+static void
+test_a_trunk_scan_dwell_returns_inside_the_pass(void) {
+    long asks = 0;
+    /* No trunk scan: the pass runs whole. */
+    const long whole = dead_air_return_symbols(4800, 0, &asks);
+    assert(whole >= DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+
+    /* 250 ms at 4800 sym/s is 1200 symbols, a multiple of the 300-symbol ask. */
+    const long early = dead_air_return_symbols(4800, 250, &asks);
+    if (early < 1200 - 1 || early > 1200 + 300) {
+        DSD_FPRINTF(stderr, "FAIL #717: a 250 ms dwell at 4800 sym/s handed back after %ld symbols (want 1200..1500)\n",
+                    early);
+    }
+    assert(early >= 1200 - 1 && early <= 1200 + 300);
+    assert(asks >= 1 && asks <= early / 300 + 1);
+
+    /* 400 ms is 1920 symbols, past one pass: the pass's own return comes first, and the hook was asked, never due. */
+    const long past_pass = dead_air_return_symbols(4800, 400, &asks);
+    assert(past_pass >= DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS && past_pass < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS + 300);
+    assert(!g_dwell_yielded);
+}
+
 /* The locked half of the contract, and the other rotation the hunt has: under a generic
  * modulation lock (-mc) frame_sync_no_sync_sps_hunt() takes the equal-timing walk instead,
  * so from 4800/4 it reaches the only other 20-sps profile, D-STAR's 4800/2, and
@@ -900,6 +986,7 @@ main(void) {
     test_a_proven_verdict_buys_one_dwell_and_no_more();
     test_a_verdict_is_read_once_and_cleared();
     test_idle_rotation_period_is_unchanged();
+    test_a_trunk_scan_dwell_returns_inside_the_pass();
     test_locked_modulation_rotates_within_equal_timing();
     test_withheld_syncs_do_not_rotate_a_profile();
     test_withheld_syncs_do_not_hold_a_wrong_profile();

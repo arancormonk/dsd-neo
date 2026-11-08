@@ -2281,6 +2281,16 @@ struct dsd_state {
     int edacs_a_mask;    //Calculated Mask for A Bits
     int edacs_f_mask;    //Calculated Mask for F Bits
     int edacs_s_mask;    //Calculated Mask for S Bits
+    /* The trunk tune request of the grant tuned to edacs_tuned_lcn while it is still in flight (0 once landed, or for a
+       tune that completed when asked): edacs_trunk_tick() rolls the grant back when it fails. */
+    uint64_t edacs_tune_request;
+    /* The return to the control channel EDACS asked for (eot_cc(), a failed grant's rollback) while it is still in
+       flight: edacs_trunk_tick() asks for it again when it fails, so no failure is left withholding every frame. */
+    uint64_t edacs_cc_return_request;
+    /* dsd_state::carrier_seq when each was asked for: a carrier boundary since (a typed tune, an input or device
+       switch) hands the receiver to another owner, so EDACS no longer recovers from that tune's failure. */
+    uint32_t edacs_tune_carrier_seq;
+    uint32_t edacs_cc_return_carrier_seq;
 
     //trunking lcn freq list
     int lcn_freq_count;

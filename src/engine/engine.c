@@ -71,6 +71,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/edacs/edacs.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
@@ -3958,6 +3959,10 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     /* A TETRA carrier syncs on every burst, so the synced-frames loop may never hand back to the outer one: the TETRA
      * state machine settles its tune and runs its hangtime here too, withheld frames included. */
     dsd_engine_tetra_trunk_tick_locked(opts, state);
+    /* An EDACS grant or control-channel return whose in-flight tune failed is settled here, withheld frames included:
+       those frames are what the failure withholds, and edacs() acts on no control-channel message while the session
+       reads as tuned. */
+    edacs_trunk_tick(opts, state);
     /* A stream of syncs that never validate must not starve startup hunts (issue #703) or a known DMR owner's
        recovery. Data frames need not reach a DMR voice handler's tick, so loss grace, probe acquisition and pending
        tunes must keep progressing here after validated control ends the startup hunt. */
@@ -4220,6 +4225,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         if (!dsd_trunk_scan_owns_tuner(opts, state) && p25_sm_tick_guard_try_enter()) {
             dsd_engine_cold_start_tick_locked(opts, state);
             dsd_engine_tetra_trunk_tick_locked(opts, state);
+            edacs_trunk_tick(opts, state);
             p25_sm_tick_guard_leave();
         }
         dsd_trunk_scan_hook_tick(opts, state);

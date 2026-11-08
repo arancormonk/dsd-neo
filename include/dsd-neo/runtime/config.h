@@ -529,6 +529,14 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_DEMOD_QPSK
 } dsdneoUserDemodPath;
 
+/* [mode] edacs_addressing: the EDACS addressing mode, dsd_state::ea_mode -1/0/1. NONE is ProVoice alone (-fp). */
+typedef enum DSD_ATTR_PACKED {
+    DSDCFG_EDACS_ADDRESSING_UNSET = 0,
+    DSDCFG_EDACS_ADDRESSING_NONE,
+    DSDCFG_EDACS_ADDRESSING_STANDARD,
+    DSDCFG_EDACS_ADDRESSING_EXTENDED
+} dsdneoUserEdacsAddressing;
+
 typedef struct dsdneoUserConfig {
     /* [input] */
     int has_input;
@@ -599,10 +607,14 @@ typedef struct dsdneoUserConfig {
     char dmr_udp_comp_ports[400];
     /* The EDACS EA/ESK variant. Applied AFTER the decode preset, which resets
        both: see apply_mode_config(). esk is a boolean over the single 0xA0 mask
-       the four CLI variants and the RadioReference apply handler all use. */
+       the four CLI variants and the RadioReference apply handler all use.
+       has_edacs_variant is set by any of edacs_addressing, edacs_ea and edacs_esk.
+       edacs_addressing, when not UNSET, wins over the older edacs_ea boolean
+       (which can say only standard or extended), wherever each sits in the file. */
     int has_edacs_variant;
     int edacs_ea;
     int edacs_esk;
+    dsdneoUserEdacsAddressing edacs_addressing;
     int has_demod;
     dsdneoUserDemodPath demod_path;
 

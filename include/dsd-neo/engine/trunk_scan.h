@@ -301,6 +301,11 @@ void dsd_engine_trunk_scan_stream_reopened(const dsd_opts* opts, const dsd_state
 int dsd_engine_trunk_scan_paused(const dsd_state* state);
 
 void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
+/** Whether the idle dwell of the target on air has run out, so the next tick would rotate (discussion #717): the
+ * frame-sync hunt asks every 300 symbols through dsd_trunk_scan_hook_dwell_due() and returns early, and the tick then
+ * advances under its guard. Counts a park still unnoticed from its landing, as the tick arms it. 1 at most once per
+ * dwell start. Decoder thread only. */
+int dsd_engine_trunk_scan_dwell_due(const dsd_opts* opts, const dsd_state* state);
 /** Maintain the visit clock and report expiry without tuning or releasing the call.
  * Decoder thread only; the caller must hold the SM guard. Used by long protocol loops
  * to unwind before the next coordinator tick performs the advance. */

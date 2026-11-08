@@ -54,6 +54,7 @@ extern "C" {
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <functional>
@@ -801,6 +802,63 @@ test_scan_bundle_prefs_and_uid_repair() {
     looked.setAcceptedRowsLookup([](const QString& path) { return path == "/imports/targets.csv" ? 12 : -1; });
     check(looked.entryCount(csv) == 12);
     check(looked.entryCount({{"targetSource", "csv"}, {"targetsCsvPath", "/gone.csv"}}) == 0);
+}
+
+/* Scan-list repair warnings so far. The log tap is installed once and never replaced, so what it counts into must live
+ * as long as the process. */
+static int g_scan_repair_warnings = 0;
+
+static void
+count_scan_repair_warnings() {
+    dsd_neo_log_set_tap(
+        [](dsd_neo_log_level_t level, const char* text, void*) {
+            if (level == LOG_LEVEL_WARN && QString::fromUtf8(text).contains("Scan-list")) {
+                ++g_scan_repair_warnings;
+            }
+        },
+        nullptr);
+}
+
+// Issue #801: a UID the load mints is saved, so the next load gives the list the same one (a pinned shortcut or a
+// remembered scan session names it). A store the save cannot replace keeps the minted UIDs for this run and says so.
+static void
+test_scan_list_uid_repair_persists() {
+    count_scan_repair_warnings();
+    const QString store = QStringLiteral("scan_lists.json");
+    check(dsd_qt::json_store_save_array(store, QJsonArray{QJsonObject{{"name", "No uid"}},
+                                                          QJsonObject{{"uid", "a"}, {"name", "A"}},
+                                                          QJsonObject{{"uid", "a"}, {"name", "A copy"}},
+                                                          QJsonObject{{"uid", 7}, {"name", "Numbered"}}}));
+    QString minted, copy;
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(lists.count() == 4 && lists.uidsRepaired() && lists.get(3).value("uid") == "7");
+        minted = lists.get(0).value("uid").toString();
+        copy = lists.get(2).value("uid").toString();
+        check(!minted.isEmpty() && copy != "a" && lists.get(1).value("uid") == "a");
+    }
+    const QJsonArray stored = dsd_qt::json_store_load_array(store);
+    check(stored.size() == 4 && stored.at(0).toObject().value("uid").toString() == minted
+          && stored.at(2).toObject().value("uid").toString() == copy && stored.at(3).toObject().value("uid") == "7");
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(!lists.uidsRepaired() && lists.get(0).value("uid") == minted && lists.get(2).value("uid") == copy
+              && lists.get(3).value("uid") == "7");
+    }
+    // A store the app can read but not replace: the minted UID holds for this run, and the failure is logged once.
+    check(dsd_qt::json_store_save_array(store, QJsonArray{QJsonObject{{"name", "Unsaved"}}}));
+    const QString path = dsd_qt::json_store_path(store);
+    const auto permissions = QFile::permissions(path);
+    check(QFile::setPermissions(path, QFileDevice::ReadOwner));
+    const int before = g_scan_repair_warnings;
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(lists.count() == 1 && lists.uidsRepaired() && !lists.get(0).value("uid").toString().isEmpty());
+        check(g_scan_repair_warnings - before == 1);
+    }
+    check(QFile::setPermissions(path, permissions));
+    check(!dsd_qt::json_store_load_array(store).at(0).toObject().contains("uid"));
+    check(dsd_qt::json_store_save_array(store, QJsonArray{}));
 }
 
 namespace {
@@ -1595,6 +1653,7 @@ main(int argc, char** argv) {
     test_auto_start_follows_the_attached_kind();
     test_auto_start_carries_the_scan_bundle();
     test_scan_bundle_prefs_and_uid_repair();
+    test_scan_list_uid_repair_persists();
     test_scan_lists_start_together();
     test_attachment_kind();
     test_initial_usb_record();

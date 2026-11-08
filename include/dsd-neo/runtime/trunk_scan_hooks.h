@@ -95,6 +95,7 @@ typedef struct {
     void* (*p25_ctx)(void);
     void* (*dmr_ctx)(void);
     void (*tick)(dsd_opts* opts, dsd_state* state);
+    int (*dwell_due)(const dsd_opts* opts, const dsd_state* state);
     void (*dmr_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                       int is_private, int encrypted, int data_call);
     void (*nxdn_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
@@ -154,6 +155,13 @@ int dsd_trunk_nxdn_recovery_allowed(const dsd_opts* opts, const dsd_state* state
  * control-channel tune of the session, such as the engine's no-carrier return, keeps the sync rule. */
 int dsd_trunk_p25_cold_start_presumed(const dsd_opts* opts, const dsd_state* state);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Whether the idle dwell of the target on air has run out (discussion #717): the frame-sync hunt, which on dead
+ * air hands back only once per no-sync pass (1800 symbols), asks every 300 symbols and returns early so the next
+ * coordinator tick rotates on time. 1 at most once per dwell the coordinator arms; 0 with no trunk scan installed.
+ * Decoder thread.
+ */
+int dsd_trunk_scan_hook_dwell_due(const dsd_opts* opts, const dsd_state* state);
 /**
  * @brief Report decoded conventional DMR/NXDN/P25 activity to the scan coordinator.
  *

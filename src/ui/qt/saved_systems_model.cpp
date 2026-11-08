@@ -420,6 +420,8 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
         if (previous.value("rrSid").toInt() > 0 && fields.contains(key) && fields.value(key) != previous.value(key)) {
             fields.insert("rrSid", 0);
             fields.insert("rrSiteId", 0);
+            // Only the group's site chooser lifts an avoid; a site out of its group would stay avoided for good.
+            fields.insert("avoidSite", false);
             break;
         }
     }
@@ -456,18 +458,25 @@ SavedSystemsModel::updateRadioSettings(const QString& uid, const QVariantMap& ch
     return update(row, fields);
 }
 
-void
+bool
 SavedSystemsModel::remove(int row) {
     if (row < 0 || row >= m_rows.size()) {
-        return;
+        return false;
+    }
+    // Saved first: a removal that did not reach the disk comes back at the next launch, so the card (and anything
+    // that follows rows out of the model) must keep it.
+    auto next = m_rows;
+    next.removeAt(row);
+    if (!saveRows(next)) {
+        return false;
     }
     beginRemoveRows(QModelIndex(), row, row);
-    m_rows.removeAt(row);
+    m_rows = std::move(next);
     endRemoveRows();
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
-    save();
+    return true;
 }
 
 QVariantMap
@@ -509,9 +518,9 @@ SavedSystemsModel::distanceKm(int row, double lat, double lon) const {
                : -1;
 }
 
-void
+bool
 SavedSystemsModel::setAvoidSite(int row, bool avoid) {
-    update(row, {{"avoidSite", avoid}});
+    return update(row, {{"avoidSite", avoid}});
 }
 
 int
@@ -541,11 +550,17 @@ SavedSystemsModel::touch(int row) {
     if (row < 0 || row >= m_rows.size()) {
         return;
     }
-    m_rows[row].lastHeard = m_realtime_now_ms() / 1000;
+    // Recency is advisory, so a failed save is not reported; it stays out of memory, though, so the most recent row
+    // shown now is the one the next launch shows.
+    auto next = m_rows;
+    next[row].lastHeard = m_realtime_now_ms() / 1000;
+    if (!saveRows(next)) {
+        return;
+    }
+    m_rows = std::move(next);
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx, {LastHeardRole});
     Q_EMIT mostRecentRowChanged();
-    save();
 }
 
 QStringList
@@ -563,47 +578,59 @@ SavedSystemsModel::systemsReferencingPath(const QString& path) const {
     return names;
 }
 
-void
+QStringList
+SavedSystemsModel::csvPaths() const {
+    QStringList paths;
+    for (const Row& row : m_rows) {
+        for (const QString* path :
+             {&row.chanCsvPath, &row.groupCsvPath, &row.keyCsvPath, &row.p25BandplanCsvPath, &row.srcCsvPath}) {
+            if (!path->isEmpty() && !paths.contains(*path)) {
+                paths.append(*path);
+            }
+        }
+    }
+    return paths;
+}
+
+bool
 SavedSystemsModel::clearCsvPath(const QString& path) {
     if (path.isEmpty()) {
-        return;
+        return true;
     }
-    bool changed = false;
-    for (int i = 0; i < m_rows.size(); i++) {
-        Row& row = m_rows[i];
+    auto next = m_rows;
+    QList<int> changed;
+    for (int i = 0; i < next.size(); i++) {
+        Row& row = next[i];
         bool rowChanged = false;
-        if (row.chanCsvPath == path) {
-            row.chanCsvPath.clear();
-            rowChanged = true;
-        }
-        if (row.groupCsvPath == path) {
-            row.groupCsvPath.clear();
-            rowChanged = true;
-        }
-        if (row.keyCsvPath == path) {
-            row.keyCsvPath.clear();
-            rowChanged = true;
-        }
-        if (row.p25BandplanCsvPath == path) {
-            row.p25BandplanCsvPath.clear();
-            rowChanged = true;
-        }
-        if (row.srcCsvPath == path) {
-            row.srcCsvPath.clear();
-            rowChanged = true;
+        for (QString Row::* field :
+             {&Row::chanCsvPath, &Row::groupCsvPath, &Row::keyCsvPath, &Row::p25BandplanCsvPath, &Row::srcCsvPath}) {
+            if (row.*field == path) {
+                (row.*field).clear();
+                rowChanged = true;
+            }
         }
         if (rowChanged) {
+            // The site leaves its group, and with it the only chooser that could lift its avoid.
             row.rrSid = 0;
             row.rrSiteId = 0;
-            const QModelIndex idx = index(i);
-            Q_EMIT dataChanged(idx, idx);
-            Q_EMIT sitesChanged();
-            changed = true;
+            row.avoidSite = false;
+            changed.append(i);
         }
     }
-    if (changed) {
-        save();
+    if (changed.isEmpty()) {
+        return true;
     }
+    // Saved first, so a failure leaves every reference in place for a retry to clear.
+    if (!saveRows(next)) {
+        return false;
+    }
+    m_rows = std::move(next);
+    for (const int i : changed) {
+        const QModelIndex idx = index(i);
+        Q_EMIT dataChanged(idx, idx);
+    }
+    Q_EMIT sitesChanged();
+    return true;
 }
 
 int
@@ -699,6 +726,12 @@ SavedSystemsModel::load() {
         // Phase 1 and Phase 2.
         if (row.decodeFlag == QLatin1String("-f1 -mq")) {
             row.decodeFlag = QStringLiteral("-mq");
+        }
+        // An avoid outside a group, kept by edits before they dropped it, could never be lifted: the site chooser
+        // that lifts it lists only a group's sites. A lone RadioReference site keeps it; its "1 site" chooser opens.
+        if (row.avoidSite && (row.rrSid <= 0 || row.rrSiteId <= 0)) {
+            row.avoidSite = false;
+            migrated = true;
         }
         rows.append(row);
     }

@@ -169,8 +169,13 @@ ImportedFilesModel::validate(const QString& path, const QString& type, int* acce
 }
 
 QString
+ImportedFilesModel::libraryRoot() {
+    return json_store_path(QStringLiteral("imports"));
+}
+
+QString
 ImportedFilesModel::newTalkgroupListPath() const {
-    QDir dir(json_store_path(QStringLiteral("imports")));
+    QDir dir(libraryRoot());
     if (!dir.mkpath(QStringLiteral("."))) {
         return {};
     }
@@ -181,7 +186,7 @@ ImportedFilesModel::newTalkgroupListPath() const {
 bool
 ImportedFilesModel::registerTalkgroupList(const QString& path) {
     const QFileInfo file(path);
-    const QDir dir(json_store_path(QStringLiteral("imports")));
+    const QDir dir(libraryRoot());
     if (!file.isFile() || file.isSymLink()
         || file.canonicalPath() != QFileInfo(dir.absolutePath()).canonicalFilePath()) {
         return false;
@@ -733,16 +738,21 @@ ImportedFilesModel::remove(int row) {
         return false;
     }
     const auto item = m_rows.at(row);
-    auto next = m_rows;
-    next.removeAt(row);
-    if (!saveRows(next)) {
+    // The file goes before the row (issue #801). A file that will not go keeps its row, so the removal can be tried
+    // again; a row whose index save fails after it names a file already gone, which a retry finishes and the next
+    // load prunes. Dropping the row first could leave a copy, keys included, that no row names and nothing deletes.
+    if (!QFile::remove(item.path) && QFileInfo::exists(item.path)) {
         return false;
     }
-    QFile::remove(item.path);
     if (!item.bundleRoot.isEmpty()) {
         CsvBundleImport bundle;
         bundle.root = item.bundleRoot;
         discard_csv_bundle(bundle);
+    }
+    auto next = m_rows;
+    next.removeAt(row);
+    if (!saveRows(next)) {
+        return false;
     }
     beginRemoveRows(QModelIndex(), row, row);
     m_rows = std::move(next);

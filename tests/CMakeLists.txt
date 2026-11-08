@@ -4625,6 +4625,9 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        # Issue #801: the pinned Listen shortcuts, over both models.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_persistence
@@ -5309,6 +5312,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
             # Issue #644: the known-frequency index Main offers Listen with its settings from.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/known_frequency_index.cpp
+            # Issue #801: the shortcuts pinned to Listen.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
             # Issue #782: whether a screen reader is on, as views read it.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
@@ -8114,6 +8119,30 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(
         NAME ENGINE_SYNCED_TRUNK_SCAN_TICK
         COMMAND dsd-neo_test_engine_synced_trunk_scan_tick
+    )
+    # Discussion #717: a failed EDACS grant tune must not leave a session whose
+    # control channel keeps syncing tuned to the voice channel forever.
+    add_executable(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        engine/test_engine_edacs_failed_grant_stall.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_edacs_failed_grant_stall
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_EDACS_FAILED_GRANT_STALL
+        COMMAND dsd-neo_test_engine_edacs_failed_grant_stall
     )
     add_executable(
         dsd-neo_test_engine_cold_start_hunt
@@ -14723,6 +14752,42 @@ target_link_libraries(
 add_test(
     NAME FRAME_SYNC_SPS_HUNT_FALSE_SYNC
     COMMAND dsd-neo_test_frame_sync_sps_hunt_false_sync
+)
+
+# X2-TDMA syncs at 4800 sym/s, the P25 Phase 1 rate, and not at P25 Phase 2's 6000 (discussion #717): synthetic bursts
+# through the real WAV reader, symbol slicer and frame sync, under -fx and Auto.
+add_executable(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    dsp/test_frame_sync_x2tdma_rate.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_x2tdma_rate
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/dsp
+        ${LIBSNDFILE_INCLUDE_DIR}
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_x2tdma_rate
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        dsd-neo_test_audio_activity
+        dsd-neo_test_audio_sink
+        dsd-neo_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_X2TDMA_RATE
+    COMMAND dsd-neo_test_frame_sync_x2tdma_rate
 )
 
 # The frame sync's history across a no-sync exit: a TETRA control uplink burst that straddles the end of a matchless
