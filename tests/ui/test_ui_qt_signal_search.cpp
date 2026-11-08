@@ -1437,15 +1437,24 @@ main(int argc, char** argv) {
     assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000);
     model.removeAvoid(451000000);
     assert(model.avoids().isEmpty() && model.error().isEmpty());
-    // After Stop, a row's permanent avoid leaves the (engine's, now empty) session list alone.
+    // After Stop, a row's permanent avoid leaves the session list alone: the engine is its only writer. A list the
+    // runtime still holds for the stopped session, the row's frequency included, keeps every entry and stays hidden.
     stopped.revision = 6002;
     dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    const uint32_t leftover[] = {463600000, 451000000};
+    dsd_signal_search_avoids_session_set(18, leftover, 2);
+    const uint64_t sessionRevision = dsd_signal_search_avoids_session_revision();
     model.refresh();
+    assert(model.sessionAvoids().isEmpty());
     assert(model.avoidPermanently(451000000));
-    uint64_t sessionOwner = 1;
-    assert(dsd_signal_search_avoids_session_get(&sessionOwner, permanent, 4) == 0 && sessionOwner == 0);
+    uint64_t sessionOwner = 0;
+    assert(dsd_signal_search_avoids_session_get(&sessionOwner, permanent, 4) == 2 && sessionOwner == 18);
+    assert(permanent[0] == 463600000 && permanent[1] == 451000000);
+    assert(dsd_signal_search_avoids_session_revision() == sessionRevision);
+    assert(dsd_app_signal_search_session_avoids_get(permanent, 4) == 0);
     assert(model.sessionAvoids().isEmpty() && model.avoids().size() == 1);
     assert(dsd_app_signal_search_avoid_remove(451000000) == 0);
+    dsd_signal_search_avoids_session_set(0, nullptr, 0);
     model.refresh();
     assert(model.avoids().isEmpty() && model.sessionAvoids().isEmpty());
 

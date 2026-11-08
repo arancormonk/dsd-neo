@@ -318,18 +318,22 @@ class StagingReader {
 
     bool
     readAvoids(const QJsonArray& list) {
-        if (list.size() > DSD_SEARCH_MAX_AVOIDS) {
-            return false;
-        }
+        /* A repeat is kept once, and only more than DSD_SEARCH_MAX_AVOIDS different frequencies is refused, as the
+           avoid store loads its file (issue #828 A-B6). */
+        QSet<quint32> seen;
         for (const auto& value : list) {
             const qint64 frequency = value.isDouble() ? value.toInteger(-1) : -1;
             if (frequency < 1 || frequency > static_cast<qint64>(UINT32_MAX)) {
                 return false;
             }
-            /* A repeat is kept once, as the avoid store loads it (issue #828 A-B6). */
-            if (!m_staging->avoids.contains(static_cast<quint32>(frequency))) {
-                m_staging->avoids.append(static_cast<quint32>(frequency));
+            if (seen.contains(static_cast<quint32>(frequency))) {
+                continue;
             }
+            if (seen.size() == DSD_SEARCH_MAX_AVOIDS) {
+                return false;
+            }
+            seen.insert(static_cast<quint32>(frequency));
+            m_staging->avoids.append(static_cast<quint32>(frequency));
         }
         return true;
     }

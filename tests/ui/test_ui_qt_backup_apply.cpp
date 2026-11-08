@@ -2077,6 +2077,24 @@ test_repeated_avoids(TestHost& host, const Backup& b, const Old& old) {
     expect("the native store loads it once",
            dsd_app_signal_search_avoids_get(avoids, 4) == 2 && avoids[0] == 162550000U && avoids[1] == 156800000U);
     dsd_app_signal_search_store_close();
+
+    // The cap counts different frequencies, as the avoid store does: 1,024 of them and a repeat apply, 1,025 do not.
+    parsed.avoids.clear();
+    for (quint32 i = 1; i <= DSD_SEARCH_MAX_AVOIDS; ++i) {
+        parsed.avoids.append(150000000U + i * 12500U);
+    }
+    parsed.avoids.append(150012500U);
+    expect("stage 1,024 different avoids and a repeat", stage_over(parsed, b.archive, old.tree));
+    expect("they apply", apply().outcome == ApplyOutcome::Applied);
+    dsd_qt::SignalSearchModel full(&host, nullptr);
+    std::vector<uint32_t> all(DSD_SEARCH_MAX_AVOIDS + 1);
+    expect("the native store loads 1,024",
+           dsd_app_signal_search_avoids_get(all.data(), all.size()) == DSD_SEARCH_MAX_AVOIDS);
+    dsd_app_signal_search_store_close();
+    parsed.avoids.last() = 170000000U;
+    expect("stage 1,025 different avoids", stage_over(parsed, b.archive, old.tree));
+    expect("they fail", apply().outcome == ApplyOutcome::Failed);
+    check_failed_state("1,025 different staged avoids", old);
 }
 
 /** A backup of one channel map kept beside its bundle, and the configuration it was exported from. */

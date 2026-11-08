@@ -43,6 +43,7 @@
 #include <dsd-neo/crypto/backup_seal.h>
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <functional>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qanystringview.h>
@@ -1402,6 +1403,17 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     expect("a repeated avoid is kept once", repeated.error == BackupError::None
                                                 && repeated.avoids == QList<quint32>({162550000U, 156800000U})
                                                 && repeated.summary.avoids == 2);
+    // The cap counts different frequencies, as the avoid store does: 1,024 of them and a repeat are taken.
+    QJsonArray full;
+    for (int i = 1; i <= DSD_SEARCH_MAX_AVOIDS; ++i) {
+        full.append(i);
+    }
+    full.append(1);
+    forged.manifest.insert("avoids", full);
+    const auto capped = dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root());
+    expect("1,024 different avoids and a repeat are taken", capped.error == BackupError::None
+                                                                && capped.avoids.size() == DSD_SEARCH_MAX_AVOIDS
+                                                                && capped.summary.avoids == DSD_SEARCH_MAX_AVOIDS);
 }
 
 QByteArray

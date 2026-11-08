@@ -287,18 +287,25 @@ class Parser {
     readAvoids() {
         const QJsonValue avoids = m_manifest.value(QLatin1String("avoids"));
         const QJsonArray list = avoids.toArray();
-        if (!avoids.isArray() || list.size() > DSD_SEARCH_MAX_AVOIDS) {
+        if (!avoids.isArray()) {
             return fail(BackupError::Damaged, QStringLiteral("avoids: not a list the avoid store takes"));
         }
+        /* A repeat is kept once, and only more than DSD_SEARCH_MAX_AVOIDS different frequencies is refused, as the
+           avoid store loads its file (issue #828 A-B6). */
+        QSet<quint32> seen;
         for (const auto& value : list) {
             const qint64 frequency = value.isDouble() ? value.toInteger(-1) : -1;
             if (frequency < 1 || frequency > static_cast<qint64>(UINT32_MAX)) {
                 return fail(BackupError::Damaged, QStringLiteral("avoids: frequency out of range"));
             }
-            /* A repeat is kept once, as the avoid store loads it (issue #828 A-B6). */
-            if (!m_result.avoids.contains(static_cast<quint32>(frequency))) {
-                m_result.avoids.append(static_cast<quint32>(frequency));
+            if (seen.contains(static_cast<quint32>(frequency))) {
+                continue;
             }
+            if (seen.size() == DSD_SEARCH_MAX_AVOIDS) {
+                return fail(BackupError::Damaged, QStringLiteral("avoids: not a list the avoid store takes"));
+            }
+            seen.insert(static_cast<quint32>(frequency));
+            m_result.avoids.append(static_cast<quint32>(frequency));
         }
         return true;
     }
