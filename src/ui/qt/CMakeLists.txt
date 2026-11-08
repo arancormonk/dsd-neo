@@ -1,7 +1,8 @@
-# QuickDialogs2 backs WizardScreen.qml's `import QtQuick.Dialogs` (FileDialog).
-# It must be a declared, linked dependency: androiddeployqt packages the QML
-# plugin only for Qt modules it can see, and an undeclared one ships an APK
-# whose WizardScreen fails to load.
+# QuickDialogs2 backs `import QtQuick.Dialogs` (FileDialog): DocumentPicker.qml's
+# desktop path (issue #829) and any screen that still declares a FileDialog of
+# its own. It must be a declared, linked dependency: androiddeployqt packages the
+# QML plugin only for Qt modules it can see, and an undeclared one ships an APK
+# whose importing QML fails to load, even where the dialog never opens.
 find_package(
     Qt6
     REQUIRED
@@ -91,6 +92,7 @@ qt_add_resources(
         qml/BackupFlow.qml
         qml/BackupResultCard.qml
         qml/CsvImportFlow.qml
+        qml/DocumentPicker.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml
         qml/DetectionRecordingsSheet.qml
@@ -298,4 +300,5 @@ set_property(
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_device_status.qml" # #647
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_main_receiver_notice.qml" # #647
             "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_monitor_receiver.qml" # #647
+            "${PROJECT_SOURCE_DIR}/tests/ui/qml/tst_document_picker.qml" # #829
 )

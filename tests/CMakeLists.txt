@@ -5428,6 +5428,7 @@ if(DSD_ENABLE_QT_UI)
                 device_status
                 main_receiver_notice
                 monitor_receiver
+                document_picker
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(

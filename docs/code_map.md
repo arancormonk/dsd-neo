@@ -12850,6 +12850,18 @@ Qt Quick frontend (`src/ui/qt`):
   `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
   `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
   Test: `UI_QT_IMPORTED_FILES` (base defaults).
+- `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
+  `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
+  own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
+  since `visible` here means "a request is waiting" and Item's is FINAL; a Loader would leave the dialog without a
+  window). Each `open()` ends in exactly one `accepted(reference, displayName)`, `rejected()` or `unavailable(reason,
+  message)`, the message from `messageFor(reason)`, unless `close()` ends it silently first. Owners that go away or are
+  reused call `cancel()` (emits `rejected` only while a request waits), so their own cancel path runs; flows that are
+  ending call `close()`. Only the live id is answered; a Download-folder pick for a request this picker gave up goes
+  to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
+  went to the Download folder. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
+  `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
+  `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
