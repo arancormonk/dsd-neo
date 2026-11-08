@@ -133,6 +133,10 @@ static int g_facch_mac_calls = 0;
 static int g_facch_mac_last_opcode = -1;
 static int g_sacch_mac_calls = 0;
 static int g_sacch_mac_last_opcode = -1;
+/* Whether a stub decode hands back a word whose MAC CRC-12 checks (stub_seal_crc12()). */
+static int g_xcch_stub_seal_crc = 1;
+/* SACCH MAC PDUs dispatched as an LCCH (dsd_state::p2_is_lcch set while the PDU ran). */
+static int g_sacch_mac_lcch_calls = 0;
 static int g_isch_lookup_result = -1;
 static uint8_t g_isch_last_reliab[40] = {0};
 /* Blocks the Phase 2 playout emitted, and the slot-0 crypto tuple and first sample when the first one played. */
@@ -365,26 +369,55 @@ isch_lookup_soft(uint64_t isch, const uint8_t reliab40[40]) {
     return isch_lookup(isch);
 }
 
+/* A decode that succeeds hands back a word whose MAC CRC-12 checks, as the decode of a sent FACCH (CRC over 144 bits)
+   or SACCH (168) would: the frame decoder takes a FACCH or SACCH as decoded only once its checksum passes too
+   (issue #804). The CRC is x^12 + x^11 + x^7 + x^4 + x^2 + x + 1, zero initial value, inverted (p25_crc.c). */
+static void
+stub_seal_crc12(int* payload, int len) {
+    unsigned int reg = 0U;
+    for (int i = 0; i < len; i++) {
+        const unsigned int feedback = ((reg >> 11) & 1U) ^ ((unsigned int)payload[i] & 1U);
+        reg = (reg << 1) & 0xFFFU;
+        if (feedback) {
+            reg ^= 0x897U;
+        }
+    }
+    reg ^= 0xFFFU;
+    for (int i = 0; i < 12; i++) {
+        payload[len + i] = (int)((reg >> (11 - i)) & 1U);
+    }
+}
+
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_facch(int* payload, int* parity, const int* erasures, int n_erasures) {
-    (void)payload;
     (void)parity;
     (void)erasures;
     g_facch_calls++;
     g_facch_last_erasures = n_erasures;
-    return n_erasures >= g_facch_min_success ? g_facch_success_rc : -1;
+    if (n_erasures < g_facch_min_success) {
+        return -1;
+    }
+    if (g_xcch_stub_seal_crc) {
+        stub_seal_crc12(payload, 156 - 12);
+    }
+    return g_facch_success_rc;
 }
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 ez_rs28_sacch(int* payload, int* parity, const int* erasures, int n_erasures) {
-    (void)payload;
     (void)parity;
     (void)erasures;
     g_sacch_calls++;
     g_sacch_last_erasures = n_erasures;
-    return n_erasures >= g_sacch_min_success ? g_sacch_success_rc : -1;
+    if (n_erasures < g_sacch_min_success) {
+        return -1;
+    }
+    if (g_xcch_stub_seal_crc) {
+        stub_seal_crc12(payload, 180 - 12);
+    }
+    return g_sacch_success_rc;
 }
 
 int
@@ -421,6 +454,7 @@ process_SACCH_MAC_PDU(dsd_opts* opts, dsd_state* state, int* bits) {
     }
     mac_stub_end_calls(state);
     g_sacch_mac_calls++;
+    g_sacch_mac_lcch_calls += state->p2_is_lcch == 1;
     g_sacch_mac_last_opcode = (bits[0] << 2) | (bits[1] << 1) | bits[2];
 }
 
@@ -523,6 +557,8 @@ reset_xcch_stubs(void) {
     g_facch_mac_last_opcode = -1;
     g_sacch_mac_calls = 0;
     g_sacch_mac_last_opcode = -1;
+    g_sacch_mac_lcch_calls = 0;
+    g_xcch_stub_seal_crc = 1;
     g_isch_lookup_result = -1;
     DSD_MEMSET(g_isch_last_reliab, 0, sizeof(g_isch_last_reliab));
     g_sacch_mac_hook = NULL;
@@ -981,6 +1017,8 @@ test_facchc_success_routes_opcode_and_counters(void) {
     reset_xcch_stubs();
 
     state.currentslot = 1;
+    state.dmr_so = 0x55U;
+    state.dmr_soR = 0x77U;
     g_facch_success_rc = 3;
     seed_xcch_opcode(2, 5);
 
@@ -990,10 +1028,12 @@ test_facchc_success_routes_opcode_and_counters(void) {
     rc |= expect_int("facch ok", (int)state.p25_p2_rs_facch_ok, 1);
     rc |= expect_int("facch err", (int)state.p25_p2_rs_facch_err, 0);
     rc |= expect_int("facch corr", (int)state.p25_p2_rs_facch_corr, 3);
-    rc |= expect_int("facch slot1 opcode", state.dmr_soR, 5);
+    /* The MAC opcode is no service option (issue #804): neither slot's changes. */
+    rc |= expect_int("facch keeps slot 2's service options", (int)state.dmr_soR, 0x77);
+    rc |= expect_int("facch keeps slot 1's service options", (int)state.dmr_so, 0x55);
     rc |= expect_int("facch mac calls", g_facch_mac_calls, 1);
     rc |= expect_int("facch mac opcode", g_facch_mac_last_opcode, 5);
-    rc |= expect_int("facch fixed erasures", g_facch_last_erasures, 18);
+    rc |= expect_int("facch fixed erasures", g_facch_last_erasures, 9);
     if (rc == 0) {
         printf("PASS\n");
     } else {
@@ -1011,6 +1051,7 @@ test_facchc_failure_preserves_mac_and_counts_error(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     p25_p2_frame_reset();
     reset_xcch_stubs();
+    DSD_MEMSET(p2llr, 0, sizeof(p2llr));
 
     state.currentslot = 0;
     state.dmr_so = 99;
@@ -1022,9 +1063,71 @@ test_facchc_failure_preserves_mac_and_counts_error(void) {
     int rc = 0;
     rc |= expect_int("facch failure ok", (int)state.p25_p2_rs_facch_ok, 0);
     rc |= expect_int("facch failure err", (int)state.p25_p2_rs_facch_err, 1);
-    rc |= expect_int("facch failure opcode captured", state.dmr_so, 3);
+    rc |= expect_int("facch failure keeps the service options", (int)state.dmr_so, 99);
     rc |= expect_int("facch failure no mac", g_facch_mac_calls, 0);
     rc |= expect_int("facch failure tried ranked erasures", g_facch_calls > 1, 1);
+    /* Every sent symbol is unreliable, so the ladder runs to its ceiling: the 9 punctured plus 4 (issue #804). */
+    rc |= expect_int("facch failure stops at the soft-erasure ceiling", g_facch_last_erasures, 9 + 4);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/* Issue #804: the SACCH ladder stops at its ceiling too, the 6 punctured symbols plus 6. */
+static int
+test_sacchc_failure_stops_at_the_soft_erasure_ceiling(void) {
+    printf("Test 20b: SACCHc failure stops at the soft-erasure ceiling... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+    DSD_MEMSET(p2llr, 0, sizeof(p2llr));
+    g_sacch_min_success = 99;
+
+    p25p2_process_sacchc(&opts, &state, 1);
+
+    int rc = 0;
+    rc |= expect_int("sacch failure err", (int)state.p25_p2_rs_sacch_err, 1);
+    rc |= expect_int("sacch failure stops at the soft-erasure ceiling", g_sacch_last_erasures, 6 + 6);
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
+/* Issue #804: a received FACCH that is already a codeword (the fixed-erasure decode changed nothing) but fails its
+   checksum decodes to itself on every soft rung, so none is tried; one the decode changed tries them all. Either way
+   the word that passed RS is still dispatched, for the MAC PDU's own CRC check. */
+static int
+test_codeword_with_failed_checksum_skips_the_ladder(void) {
+    printf("Test 20c: a codeword whose checksum fails skips the soft-erasure ladder... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (int changed = 0; changed < 2; changed++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        p25_p2_frame_reset();
+        reset_xcch_stubs();
+        DSD_MEMSET(p2llr, 0, sizeof(p2llr));
+        g_xcch_stub_seal_crc = 0;
+        g_facch_success_rc = changed;
+        seed_xcch_opcode(0, 1);
+
+        p25p2_process_facchc(&opts, &state, 0);
+
+        rc |= expect_int(changed ? "changed word tries every rung" : "codeword tries no soft rung", g_facch_calls,
+                         changed ? 1 + 4 : 1);
+        rc |= expect_int("the word that passed RS is dispatched", g_facch_mac_calls, 1);
+    }
+    reset_xcch_stubs();
     if (rc == 0) {
         printf("PASS\n");
     } else {
@@ -1045,7 +1148,9 @@ test_sacchc_dynamic_erasure_success_maps_inverse_slot(void) {
     set_p25p2_threshold(64);
 
     state.currentslot = 0;
-    g_sacch_min_success = 12;
+    state.dmr_so = 0x55U;
+    state.dmr_soR = 0x77U;
+    g_sacch_min_success = 7;
     g_sacch_success_rc = 4;
     seed_xcch_opcode(1, 6);
 
@@ -1056,10 +1161,11 @@ test_sacchc_dynamic_erasure_success_maps_inverse_slot(void) {
     rc |= expect_int("sacch err", (int)state.p25_p2_rs_sacch_err, 0);
     rc |= expect_int("sacch corr", (int)state.p25_p2_rs_sacch_corr, 4);
     rc |= expect_int("sacch dynamic erasure", (int)state.p25_p2_soft_erasure_ok, 1);
-    rc |= expect_int("sacch inverse opcode", state.dmr_soR, 6);
+    rc |= expect_int("sacch keeps slot 2's service options", (int)state.dmr_soR, 0x77);
+    rc |= expect_int("sacch keeps slot 1's service options", (int)state.dmr_so, 0x55);
     rc |= expect_int("sacch mac calls", g_sacch_mac_calls, 1);
     rc |= expect_int("sacch mac opcode", g_sacch_mac_last_opcode, 6);
-    rc |= expect_int("sacch erasure depth", g_sacch_last_erasures, 12);
+    rc |= expect_int("sacch erasure depth", g_sacch_last_erasures, 7);
     rc |= expect_int("sacch dynamic erasure retried after the first attempt", g_sacch_calls > 1, 1);
     if (rc == 0) {
         printf("PASS\n");
@@ -1333,6 +1439,36 @@ test_duid_invalid_burst_aborts_without_reopening_crypto(void) {
     return rc;
 }
 
+/* Issue #804: DUID 10 (a scrambled data channel burst, DATCH) is a known burst, not a DUID error. A window that opens
+   with two of them, as windows of the real-air capture tests/fixtures/iq/p25p2_cc.iq do, still dispatches the SACCH
+   after them. */
+static int
+test_duid10_is_no_duid_error(void) {
+    printf("Test 27b: DUID 10 bursts do not abort the window... ");
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    p25_p2_frame_reset();
+    reset_xcch_stubs();
+    seed_duid_bits(0, 0xA3U);
+    seed_duid_bits(1, 0xA3U);
+    seed_duid_bits(2, 0xC6U);
+    seed_duid_bits(3, 0xA3U);
+
+    p25p2_process_duid(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("the SACCH after two DUID 10 bursts dispatches", g_sacch_mac_calls, 1);
+    reset_xcch_stubs();
+    if (rc == 0) {
+        printf("PASS\n");
+    } else {
+        printf("FAIL\n");
+    }
+    return rc;
+}
+
 static int
 test_duid_abort_resolves_staged_rekey(void) {
     printf("Test 28: DUID abort plays the retired pair and then resolves a staged rekey... ");
@@ -1420,7 +1556,7 @@ descramble_with_site_seed(dsd_opts* opts, dsd_state* state) {
 }
 
 /* The same, with the seed changed after the buffer was descrambled, as a network status broadcast decoded from an
-   earlier burst of the buffer changes it (under -F even one that failed its CRC). */
+   earlier burst of the buffer (one that passed its CRC) changes it. */
 static void
 run_reseeded_superframe(dsd_opts* opts, dsd_state* state, const uint8_t duids[4]) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -1479,12 +1615,12 @@ test_seed_proof_needs_a_descrambled_burst(void) {
     /* A scrambled burst that decodes only once soft erasures are added checked less of its parity than its fixed
        erasures leave, possibly none of it: it still decodes, but proves nothing. */
     reset_xcch_stubs();
-    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
+    g_facch_min_success = 10; /* one dynamic erasure past the 9 fixed */
     run_seeded_superframe(&opts, &state, scrambled_facch);
     rc |= expect_int("soft-erasure scrambled FACCH decodes", g_facch_mac_calls > 0, 1);
     rc |= expect_int("soft-erasure scrambled FACCH proves nothing", state.p2_cc_verified, 0);
     reset_xcch_stubs();
-    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    g_sacch_min_success = 7; /* one dynamic erasure past the 6 fixed */
     run_seeded_superframe(&opts, &state, scrambled_sacch);
     rc |= expect_int("soft-erasure scrambled SACCH decodes", g_sacch_mac_calls > 0, 1);
     rc |= expect_int("soft-erasure scrambled SACCH proves nothing", state.p2_cc_verified, 0);
@@ -1744,8 +1880,8 @@ test_checked_block_marks_two_slot_carrier(void) {
     rc |= expect_int("failed scrambled SACCH marks nothing", state.tdma_carrier, 0);
 
     reset_xcch_stubs();
-    g_facch_min_success = 19; /* one dynamic erasure past the 18 fixed */
-    g_sacch_min_success = 12; /* one dynamic erasure past the 11 fixed */
+    g_facch_min_success = 10; /* one dynamic erasure past the 9 fixed */
+    g_sacch_min_success = 7;  /* one dynamic erasure past the 6 fixed */
     run_seeded_superframe(&opts, &state, unscrambled);
     rc |= expect_int("soft-erasure unscrambled bursts decode", g_facch_mac_calls > 0 && g_sacch_mac_calls > 0, 1);
     rc |= expect_int("soft-erasure unscrambled bursts mark nothing", state.tdma_carrier, 0);
@@ -1896,7 +2032,9 @@ test_duid_lcch_release_defers_during_vc_grace(void) {
     int rc = 0;
     rc |= expect_int("grace release force", state.p25_sm_force_release, 0);
     rc |= expect_int("grace tuned remains", opts.trunk_is_tuned, 1);
-    rc |= expect_int("grace lcch seen", state.p2_is_lcch, 1);
+    /* Each LCCH's MAC PDU runs as an LCCH, and the kind ends with it (issue #804). */
+    rc |= expect_int("grace lcch seen", g_sacch_mac_lcch_calls, 4);
+    rc |= expect_int("grace lcch kind ends with its pdu", state.p2_is_lcch, 0);
     rc |= expect_int("grace sacch dispatches", g_sacch_mac_calls, 4);
     if (rc == 0) {
         printf("PASS\n");
@@ -2505,6 +2643,8 @@ main(void) {
     failures += test_ess_decode_failure_refreshes_existing_aes_state();
     failures += test_facchc_success_routes_opcode_and_counters();
     failures += test_facchc_failure_preserves_mac_and_counts_error();
+    failures += test_sacchc_failure_stops_at_the_soft_erasure_ceiling();
+    failures += test_codeword_with_failed_checksum_skips_the_ladder();
     failures += test_sacchc_dynamic_erasure_success_maps_inverse_slot();
     failures += test_isch_channel_one_location_sets_scramble_offset();
     failures += test_duid_exact_or_null_soft_metrics_preserve_hard_decision();
@@ -2512,6 +2652,7 @@ main(void) {
     failures += test_teardown_flushes_partial_int16_audio_and_resets_call_state();
     failures += test_teardown_without_partial_int16_audio_skips_playback_but_clears_state();
     failures += test_duid_invalid_burst_aborts_without_reopening_crypto();
+    failures += test_duid10_is_no_duid_error();
     failures += test_duid_abort_resolves_staged_rekey();
     failures += test_duid_lcch_release_defers_during_vc_grace();
     failures += test_duid_lcch_release_tears_down_after_vc_grace();

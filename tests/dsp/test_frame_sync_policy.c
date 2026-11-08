@@ -167,5 +167,21 @@ main(void) {
     assert(frame_sync_sps_hunt_p25_probe_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == -1);
     assert(frame_sync_sps_hunt_p25_probe_next_index(NULL, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == -1);
 
+    /* A Signal search probe identifying an Auto detection (issue #804) spends the search dwell on 6000/4, the ordinary
+     * three passes elsewhere; without the probe, or under a -m lock, every profile keeps three. */
+    _Static_assert(DSD_FRAME_SYNC_SEARCH_6000_4_PASSES < 3, "the search dwell on 6000/4 is shorter than the ordinary");
+    reset(&opts, &state);
+    for (int idx = 0; idx < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; idx++) {
+        state.sps_hunt_idx = idx;
+        state.sps_hunt_search_order = 0;
+        assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+        state.sps_hunt_search_order = 1;
+        const int want = idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4 ? DSD_FRAME_SYNC_SEARCH_6000_4_PASSES : 3;
+        assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == want);
+        opts.mod_cli_lock = 1;
+        assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+        opts.mod_cli_lock = 0;
+    }
+
     return 0;
 }

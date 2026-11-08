@@ -24,6 +24,13 @@ dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks) {
 }
 
 void
+dsd_frame_sync_hooks_get(dsd_frame_sync_hooks* out) {
+    if (out) {
+        *out = g_frame_sync_hooks;
+    }
+}
+
+void
 dsd_frame_sync_note_replay_center(dsd_opts* opts, dsd_state* state, uint32_t center_hz) {
     if (dsd_opts_note_iq_replay_center(opts, center_hz) && g_frame_sync_hooks.replay_retune) {
         g_frame_sync_hooks.replay_retune(opts, state);
@@ -98,6 +105,11 @@ dsd_frame_sync_hook_tick_guard_leave(int taken) {
 int
 dsd_frame_sync_hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
     return g_frame_sync_hooks.p25_probe_in_flight ? g_frame_sync_hooks.p25_probe_in_flight(opts, state) : 0;
+}
+
+int
+dsd_frame_sync_hook_signal_search_probe(const dsd_opts* opts, const dsd_state* state) {
+    return g_frame_sync_hooks.signal_search_probe ? g_frame_sync_hooks.signal_search_probe(opts, state) : 0;
 }
 
 int

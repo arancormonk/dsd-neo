@@ -67,6 +67,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "p25_site_snapshot.h"
 #include "scan_analog_internal.h"
 #include "scan_entry_internal.h"
 #include "scan_landing.h"
@@ -89,15 +90,12 @@
 #define TRUNK_SCAN_RETUNE_RETRY_COOLDOWN_S 2.0
 
 typedef struct {
-    unsigned long long p2_wacn;
-    unsigned long long p2_sysid;
-    unsigned long long p2_cc;
-    unsigned long long p2_siteid;
-    unsigned long long p2_rfssid;
-    long int p25_cc_freq;
-    long int trunk_cc_freq;
+    /* The target's P25 site identity: its Phase 2 code, RFSS and site, control channel, IDEN tables, its own user band
+       plan (its p25_bandplan_csv, re-seeded by p25_update_system_identity() once the target's WACN/SYS resolves), its
+       channel map, and its site broadcasts (pending announcements, secondary control channels, protection, services,
+       LRA, network active). */
+    dsd_p25_site_snapshot site;
     int trunk_recovery_protocol;
-    uint64_t trunk_chan_map_seq;
     time_t p25_sys_time;
     long p25_cc_eval_freq;
     double p25_cc_eval_start_m;
@@ -126,33 +124,10 @@ typedef struct {
     long int lcn_back_retry_freq;
     dsd_trunk_cc_candidates cc_candidates;
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX];
-    p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
-    p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
-    p25_iden_entry_t p25_iden_fdma[16];
-    p25_iden_entry_t p25_iden_tdma[16];
-    /* The target's own user band plan (its p25_bandplan_csv), re-seeded by
-     * p25_update_system_identity() once the target's WACN/SYS resolves. */
-    p25_bandplan_row_t p25_bandplan_rows[DSD_P25_BANDPLAN_MAX_ROWS];
-    int p25_bandplan_row_count;
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
-    /* Sparse channel map: only the channels state->trunk_chan_map_used[] lists, held in the same
-     * ascending order, with chan_map_freq[i] the frequency for chan_map_chan[i]. Dense copies of
-     * trunk_chan_map[] and trunk_chan_map_used[] were 655 KB of the 738 KB every parked target
-     * cost, and each rotation memcpy'd all of it; real sites map a few hundred channels. Grown on
-     * demand by trunk_scan_snapshot_chan_map_reserve() and released by trunk_scan_snapshot_clear()
-     * and trunk_scan_coord_free(). trunk_chan_map_used_count is the number of valid entries. */
-    uint16_t* chan_map_chan;
-    long int* chan_map_freq;
-    size_t chan_map_capacity;
-    uint32_t trunk_chan_map_used_count;
-    uint32_t p25_sys_services_available;
-    uint32_t p25_sys_services_supported;
     unsigned int dmr_color_code;
-    int p25_chan_iden;
-    int p25_cc_is_tdma;
-    int p25_sys_is_tdma;
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
     int p25_p1_validated_rf_mod;
@@ -167,8 +142,6 @@ typedef struct {
     int p25_aff_count;
     int p25_ga_count;
     int p25_nb_count;
-    int p25_secondary_cc_count;
-    int p25_pending_announcement_count;
     uint32_t p25_src_nid;
     int dmr_mfid;
     int dmr_rest_channel;
@@ -201,16 +174,8 @@ typedef struct {
     uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
-    uint8_t p25_cc_prot_valid;
-    uint8_t p25_cc_prot_algid;
     uint8_t p25_sys_time_valid;
     uint8_t p25_sys_time_offset_valid;
-    uint8_t p25_sys_services_valid;
-    uint8_t p25_sys_services_request_priority;
-    uint8_t p25_site_lra_valid;
-    uint8_t p25_site_lra;
-    uint8_t p25_site_network_active_valid;
-    uint8_t p25_site_network_active;
     uint8_t p25_cc_cache_loaded;
     uint8_t p25_patch_is_patch[8];
     uint8_t p25_patch_active[8];
@@ -230,7 +195,6 @@ typedef struct {
     uint8_t dmr_confidence_voice_count[2];
     uint8_t dmr_confidence_mismatch_count;
     double dmr_confidence_voice_m[2];
-    uint8_t p25_chan_tdma_explicit[16];
     uint8_t dmr_lcn_trust[0x1000];
     uint16_t nxdn_grant_chan;
     long int nxdn_grant_freq;
@@ -1573,140 +1537,20 @@ trunk_scan_snapshot_lcn_ext_reserve(dsd_trunk_scan_snapshot* snapshot, size_t ex
     return 0;
 }
 
-/*
- * Grow the sparse channel-map arrays to hold at least @p needed entries, doubling like
- * trunk_scan_snapshot_lcn_ext_reserve(). Both arrays are grown together so an index is valid in
- * either or in neither; on failure the snapshot keeps the arrays it already had.
- */
-static int
-trunk_scan_snapshot_chan_map_reserve(dsd_trunk_scan_snapshot* snapshot, size_t needed) {
-    if (needed <= snapshot->chan_map_capacity) {
-        return 0;
-    }
-    size_t capacity = snapshot->chan_map_capacity > 0 ? snapshot->chan_map_capacity : 64;
-    while (capacity < needed) {
-        if (capacity > SIZE_MAX / 2) {
-            capacity = needed;
-            break;
-        }
-        capacity *= 2;
-    }
-    if (capacity > SIZE_MAX / sizeof(long int)) {
-        return -1;
-    }
-    uint16_t* chans = (uint16_t*)realloc(snapshot->chan_map_chan, capacity * sizeof *chans);
-    if (!chans) {
-        return -1;
-    }
-    snapshot->chan_map_chan = chans;
-    long int* freqs = (long int*)realloc(snapshot->chan_map_freq, capacity * sizeof *freqs);
-    if (!freqs) {
-        /* chan_map_chan already grew; capacity stays at the old value so the two arrays are
-         * never both indexed past the shorter one. */
-        return -1;
-    }
-    snapshot->chan_map_freq = freqs;
-    snapshot->chan_map_capacity = capacity;
-    return 0;
-}
-
-/*
- * Capture state's channel map as (channel, frequency) pairs. state->trunk_chan_map_used[] is
- * already the exact sorted set of mapped channels, so this walks it directly rather than
- * scanning 64K slots.
- */
-static void
-trunk_scan_save_chan_map_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    uint32_t used = state->trunk_chan_map_used_count;
-    if (used > (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {
-        used = (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE;
-    }
-    if (used > 0 && trunk_scan_snapshot_chan_map_reserve(snapshot, (size_t)used) != 0) {
-        LOG_WARN("trunk scan: could not capture %u mapped channels for the parked target; its "
-                 "channel map will be relearned\n",
-                 (unsigned int)used);
-        used = 0;
-    }
-    for (uint32_t i = 0; i < used; i++) {
-        const uint16_t chan = state->trunk_chan_map_used[i];
-        snapshot->chan_map_chan[i] = chan;
-        snapshot->chan_map_freq[i] = state->trunk_chan_map[chan];
-    }
-    snapshot->trunk_chan_map_used_count = used;
-    snapshot->trunk_chan_map_seq = state->trunk_chan_map_seq;
-}
-
-/*
- * Reinstate a saved channel map. Only the outgoing target's mapped channels are cleared - a
- * DSD_MEMSET of the whole 64K-entry map would cost half a megabyte on every rotation.
- */
-static void
-trunk_scan_restore_chan_map_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    uint32_t stale = state->trunk_chan_map_used_count;
-    if (stale > (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {
-        stale = (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE;
-    }
-    for (uint32_t i = 0; i < stale; i++) {
-        state->trunk_chan_map[state->trunk_chan_map_used[i]] = 0;
-    }
-
-    /* Bounded by all three of: what the snapshot claims, what it actually allocated, and what
-     * state->trunk_chan_map_used[] can hold - this loop writes into that fixed-size array. */
-    size_t used = snapshot->trunk_chan_map_used_count;
-    if (!snapshot->chan_map_chan || !snapshot->chan_map_freq) {
-        used = 0;
-    }
-    if (used > snapshot->chan_map_capacity) {
-        used = snapshot->chan_map_capacity;
-    }
-    if (used > (size_t)DSD_TRUNK_CHAN_MAP_SIZE) {
-        used = (size_t)DSD_TRUNK_CHAN_MAP_SIZE;
-    }
-    for (size_t i = 0; i < used; i++) {
-        const uint16_t chan = snapshot->chan_map_chan[i];
-        state->trunk_chan_map[chan] = snapshot->chan_map_freq[i];
-        state->trunk_chan_map_used[i] = chan;
-    }
-    state->trunk_chan_map_used_count = (uint32_t)used;
-    state->trunk_chan_map_seq = snapshot->trunk_chan_map_seq;
-}
-
-/*
- * nxdn_trunk_diag_chan_freq_fn over a snapshot's sparse channel map. chan_map_chan[] is kept in
- * the ascending order state->trunk_chan_map_used[] maintains, so this binary-searches it.
- */
+/* nxdn_trunk_diag_chan_freq_fn over a snapshot's sparse channel map. */
 static long int
 trunk_scan_snapshot_chan_lookup(const void* ctx, uint16_t channel) {
     const dsd_trunk_scan_snapshot* snapshot = (const dsd_trunk_scan_snapshot*)ctx;
-    if (!snapshot || !snapshot->chan_map_chan || !snapshot->chan_map_freq) {
-        return 0;
-    }
-    size_t lo = 0;
-    size_t hi = snapshot->trunk_chan_map_used_count;
-    if (hi > snapshot->chan_map_capacity) {
-        hi = snapshot->chan_map_capacity;
-    }
-    while (lo < hi) {
-        const size_t mid = lo + ((hi - lo) / 2U);
-        const uint16_t at = snapshot->chan_map_chan[mid];
-        if (at == channel) {
-            return snapshot->chan_map_freq[mid];
-        }
-        if (at < channel) {
-            lo = mid + 1U;
-        } else {
-            hi = mid;
-        }
-    }
-    return 0;
+    return snapshot ? dsd_p25_site_snapshot_chan_freq(&snapshot->site, channel) : 0;
 }
 
 static void
 trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     free(snapshot->trunk_lcn_freq_ext);
-    free(snapshot->chan_map_chan);
-    free(snapshot->chan_map_freq);
+    free(snapshot->site.chan_map_chan);
+    free(snapshot->site.chan_map_freq);
     DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
+    dsd_p25_site_snapshot_clear(&snapshot->site);
     snapshot->dmr_mfid = -1;
     snapshot->dmr_color_code = 16;
     snapshot->dmr_confidence_color_code = 16;
@@ -1714,7 +1558,6 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     snapshot->dmr_rest_channel = -1;
     snapshot->lcn_on_air_row = -1;
     snapshot->lcn_back_retry_row = -1;
-    snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
     snapshot->p25_p1_validated_rf_mod = -1;
@@ -1826,14 +1669,12 @@ trunk_scan_restore_enc_lockout_snapshot(dsd_state* state, const dsd_trunk_scan_s
 
 static void
 trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    snapshot->p2_wacn = state->p2_wacn;
-    snapshot->p2_sysid = state->p2_sysid;
-    snapshot->p2_cc = state->p2_cc;
+    if (dsd_p25_site_snapshot_save(state, &snapshot->site) != 0) {
+        LOG_WARN("trunk scan: could not capture %u mapped channels for the parked target; its "
+                 "channel map will be relearned\n",
+                 (unsigned int)state->trunk_chan_map_used_count);
+    }
     snapshot->p2_cc_verified = state->p2_cc_verified;
-    snapshot->p2_siteid = state->p2_siteid;
-    snapshot->p2_rfssid = state->p2_rfssid;
-    snapshot->p25_cc_freq = state->p25_cc_freq;
-    snapshot->trunk_cc_freq = state->trunk_cc_freq;
     snapshot->trunk_recovery_protocol = state->trunk_recovery_protocol;
     DSD_MEMCPY(snapshot->p25_vc_freq, state->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
     DSD_MEMCPY(snapshot->p25_conventional_grant_freq, state->p25_conventional_grant_freq,
@@ -1857,17 +1698,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     } else {
         snapshot->trunk_lcn_freq_ext_count = 0;
     }
-    trunk_scan_save_chan_map_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->dmr_lcn_trust, state->dmr_lcn_trust, sizeof(snapshot->dmr_lcn_trust));
-    DSD_MEMCPY(snapshot->p25_chan_tdma_explicit, state->p25_chan_tdma_explicit,
-               sizeof(snapshot->p25_chan_tdma_explicit));
-    snapshot->p25_chan_iden = state->p25_chan_iden;
-    DSD_MEMCPY(snapshot->p25_iden_fdma, state->p25_iden_fdma, sizeof(snapshot->p25_iden_fdma));
-    DSD_MEMCPY(snapshot->p25_iden_tdma, state->p25_iden_tdma, sizeof(snapshot->p25_iden_tdma));
-    DSD_MEMCPY(snapshot->p25_bandplan_rows, state->p25_bandplan_rows, sizeof(snapshot->p25_bandplan_rows));
-    snapshot->p25_bandplan_row_count = state->p25_bandplan_row_count;
-    snapshot->p25_cc_is_tdma = state->p25_cc_is_tdma;
-    snapshot->p25_sys_is_tdma = state->p25_sys_is_tdma;
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
     /* A chain comparison in flight has the other chain's frames in p25_p1_validated_rf_mod: the target keeps the chain
@@ -1884,14 +1715,11 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
 
 static void
 trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    state->p2_wacn = snapshot->p2_wacn;
-    state->p2_sysid = snapshot->p2_sysid;
-    state->p2_cc = snapshot->p2_cc;
+    /* A target holds its site, not the session's hand-set flag: -X stays as the session set it. */
+    const int hardset = state->p2_hardset;
+    dsd_p25_site_snapshot_restore(state, &snapshot->site);
+    state->p2_hardset = hardset;
     state->p2_cc_verified = snapshot->p2_cc_verified;
-    state->p2_siteid = snapshot->p2_siteid;
-    state->p2_rfssid = snapshot->p2_rfssid;
-    state->p25_cc_freq = snapshot->p25_cc_freq;
-    state->trunk_cc_freq = snapshot->trunk_cc_freq;
     state->trunk_recovery_protocol = snapshot->trunk_recovery_protocol;
     DSD_MEMCPY(state->p25_vc_freq, snapshot->p25_vc_freq, sizeof(state->p25_vc_freq));
     DSD_MEMCPY(state->p25_conventional_grant_freq, snapshot->p25_conventional_grant_freq,
@@ -1901,16 +1729,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
-    trunk_scan_restore_chan_map_snapshot(state, snapshot);
     DSD_MEMCPY(state->dmr_lcn_trust, snapshot->dmr_lcn_trust, sizeof(state->dmr_lcn_trust));
-    DSD_MEMCPY(state->p25_chan_tdma_explicit, snapshot->p25_chan_tdma_explicit, sizeof(state->p25_chan_tdma_explicit));
-    state->p25_chan_iden = snapshot->p25_chan_iden;
-    DSD_MEMCPY(state->p25_iden_fdma, snapshot->p25_iden_fdma, sizeof(state->p25_iden_fdma));
-    DSD_MEMCPY(state->p25_iden_tdma, snapshot->p25_iden_tdma, sizeof(state->p25_iden_tdma));
-    DSD_MEMCPY(state->p25_bandplan_rows, snapshot->p25_bandplan_rows, sizeof(state->p25_bandplan_rows));
-    state->p25_bandplan_row_count = snapshot->p25_bandplan_row_count;
-    state->p25_cc_is_tdma = snapshot->p25_cc_is_tdma;
-    state->p25_sys_is_tdma = snapshot->p25_sys_is_tdma;
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     state->p25_p1_validated_rf_mod = snapshot->p25_p1_validated_rf_mod;
@@ -1931,20 +1750,10 @@ trunk_scan_save_p25_metadata_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p25_prot_valid = state->p25_prot_valid;
     snapshot->p25_prot_algid = state->p25_prot_algid;
     snapshot->p25_prot_kid = state->p25_prot_kid;
-    snapshot->p25_cc_prot_valid = state->p25_cc_prot_valid;
-    snapshot->p25_cc_prot_algid = state->p25_cc_prot_algid;
     snapshot->p25_sys_time_valid = state->p25_sys_time_valid;
     snapshot->p25_sys_time = state->p25_sys_time;
     snapshot->p25_sys_time_offset_valid = state->p25_sys_time_offset_valid;
     snapshot->p25_sys_time_offset = state->p25_sys_time_offset;
-    snapshot->p25_sys_services_valid = state->p25_sys_services_valid;
-    snapshot->p25_sys_services_available = state->p25_sys_services_available;
-    snapshot->p25_sys_services_supported = state->p25_sys_services_supported;
-    snapshot->p25_sys_services_request_priority = state->p25_sys_services_request_priority;
-    snapshot->p25_site_lra_valid = state->p25_site_lra_valid;
-    snapshot->p25_site_lra = state->p25_site_lra;
-    snapshot->p25_site_network_active_valid = state->p25_site_network_active_valid;
-    snapshot->p25_site_network_active = state->p25_site_network_active;
 }
 
 static void
@@ -1952,20 +1761,10 @@ trunk_scan_restore_p25_metadata_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p25_prot_valid = snapshot->p25_prot_valid;
     state->p25_prot_algid = snapshot->p25_prot_algid;
     state->p25_prot_kid = snapshot->p25_prot_kid;
-    state->p25_cc_prot_valid = snapshot->p25_cc_prot_valid;
-    state->p25_cc_prot_algid = snapshot->p25_cc_prot_algid;
     state->p25_sys_time_valid = snapshot->p25_sys_time_valid;
     state->p25_sys_time = snapshot->p25_sys_time;
     state->p25_sys_time_offset_valid = snapshot->p25_sys_time_offset_valid;
     state->p25_sys_time_offset = snapshot->p25_sys_time_offset;
-    state->p25_sys_services_valid = snapshot->p25_sys_services_valid;
-    state->p25_sys_services_available = snapshot->p25_sys_services_available;
-    state->p25_sys_services_supported = snapshot->p25_sys_services_supported;
-    state->p25_sys_services_request_priority = snapshot->p25_sys_services_request_priority;
-    state->p25_site_lra_valid = snapshot->p25_site_lra_valid;
-    state->p25_site_lra = snapshot->p25_site_lra;
-    state->p25_site_network_active_valid = snapshot->p25_site_network_active_valid;
-    state->p25_site_network_active = snapshot->p25_site_network_active;
 }
 
 static void
@@ -2013,12 +1812,6 @@ trunk_scan_save_p25_catalog_snapshot(const dsd_state* state, dsd_trunk_scan_snap
     DSD_MEMCPY(snapshot->p25_ga_last_seen, state->p25_ga_last_seen, sizeof(snapshot->p25_ga_last_seen));
     snapshot->p25_nb_count = state->p25_nb_count;
     DSD_MEMCPY(snapshot->p25_nb_entries, state->p25_nb_entries, sizeof(snapshot->p25_nb_entries));
-    snapshot->p25_secondary_cc_count = state->p25_secondary_cc_count;
-    DSD_MEMCPY(snapshot->p25_secondary_cc_entries, state->p25_secondary_cc_entries,
-               sizeof(snapshot->p25_secondary_cc_entries));
-    snapshot->p25_pending_announcement_count = state->p25_pending_announcement_count;
-    DSD_MEMCPY(snapshot->p25_pending_announcements, state->p25_pending_announcements,
-               sizeof(snapshot->p25_pending_announcements));
     snapshot->p25_src_nid = state->p25_src_nid;
 }
 
@@ -2033,12 +1826,6 @@ trunk_scan_restore_p25_catalog_snapshot(dsd_state* state, const dsd_trunk_scan_s
     DSD_MEMCPY(state->p25_ga_last_seen, snapshot->p25_ga_last_seen, sizeof(state->p25_ga_last_seen));
     state->p25_nb_count = snapshot->p25_nb_count;
     DSD_MEMCPY(state->p25_nb_entries, snapshot->p25_nb_entries, sizeof(state->p25_nb_entries));
-    state->p25_secondary_cc_count = snapshot->p25_secondary_cc_count;
-    DSD_MEMCPY(state->p25_secondary_cc_entries, snapshot->p25_secondary_cc_entries,
-               sizeof(state->p25_secondary_cc_entries));
-    state->p25_pending_announcement_count = snapshot->p25_pending_announcement_count;
-    DSD_MEMCPY(state->p25_pending_announcements, snapshot->p25_pending_announcements,
-               sizeof(state->p25_pending_announcements));
     state->p25_src_nid = snapshot->p25_src_nid;
 }
 
@@ -2297,6 +2084,7 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     }
     trunk_scan_restore_snapshot(state, &rt->snapshot);
     state->nac = 0;
+    state->p25_frame_nac_valid = 0U; // the last Phase 1 frame's NAC is the target left's (issue #804)
     state->p2_cc_verified = 0;
     state->dmr_color_code = 16;
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
@@ -2313,7 +2101,7 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     DSD_MEMSET(state->dmr_pi_precall_m, 0, sizeof(state->dmr_pi_precall_m));
     DSD_MEMSET(state->dmr_crypto_inherited, 0, sizeof(state->dmr_crypto_inherited));
     state->trunk_chan_map_seq = trunk_scan_next_chan_map_seq(coord, state->trunk_chan_map_seq);
-    rt->snapshot.trunk_chan_map_seq = state->trunk_chan_map_seq;
+    rt->snapshot.site.trunk_chan_map_seq = state->trunk_chan_map_seq;
 }
 
 static void
@@ -2323,7 +2111,7 @@ trunk_scan_save_target_snapshot(dsd_trunk_scan_coord* coord, const dsd_state* st
         return;
     }
     trunk_scan_save_snapshot(state, &rt->snapshot);
-    trunk_scan_note_chan_map_seq(coord, rt->snapshot.trunk_chan_map_seq);
+    trunk_scan_note_chan_map_seq(coord, rt->snapshot.site.trunk_chan_map_seq);
 }
 
 static dsd_trunk_scan_coord*
@@ -2978,7 +2766,7 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         p25_sm_init_ctx(&rt->p25_ctx, opts, state);
         dmr_sm_init_ctx(&rt->dmr_ctx, opts, state);
         trunk_scan_save_snapshot(state, &rt->snapshot);
-        trunk_scan_note_chan_map_seq(coord, rt->snapshot.trunk_chan_map_seq);
+        trunk_scan_note_chan_map_seq(coord, rt->snapshot.site.trunk_chan_map_seq);
         /* Nothing is parked yet: the first switch anchors the visit when its retune lands. */
         rt->visit_since_m = -1.0;
         rt->idle_since_m = now_m;
@@ -3066,7 +2854,7 @@ trunk_scan_share_peer_iden_slot(const dsd_trunk_scan_coord* coord, size_t self, 
             continue;
         }
         const dsd_trunk_scan_snapshot* peer = &coord->targets[j].snapshot;
-        const p25_iden_entry_t* src = is_tdma ? &peer->p25_iden_tdma[iden] : &peer->p25_iden_fdma[iden];
+        const p25_iden_entry_t* src = is_tdma ? &peer->site.p25_iden_tdma[iden] : &peer->site.p25_iden_fdma[iden];
         if (!src->populated || !dsd_p25_iden_params_usable(src->base_freq, src->chan_spac)) {
             continue;
         }
@@ -5446,19 +5234,16 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
     }
     for (size_t i = 0; i < coord->count; i++) {
         free(coord->targets[i].snapshot.trunk_lcn_freq_ext);
-        free(coord->targets[i].snapshot.chan_map_chan);
-        free(coord->targets[i].snapshot.chan_map_freq);
+        dsd_p25_site_snapshot_clear(&coord->targets[i].snapshot.site);
         dsd_key_set_free(&coord->targets[i].keys);
         dsd_scan_profile_free(coord->targets[i].profile);
         DSD_SECURE_ZERO(&coord->targets[i].target.single_key_scalars,
                         sizeof(coord->targets[i].target.single_key_scalars));
     }
     free(coord->scratch_snapshot.trunk_lcn_freq_ext);
-    free(coord->scratch_snapshot.chan_map_chan);
-    free(coord->scratch_snapshot.chan_map_freq);
+    dsd_p25_site_snapshot_clear(&coord->scratch_snapshot.site);
     free(coord->empty_snapshot.trunk_lcn_freq_ext);
-    free(coord->empty_snapshot.chan_map_chan);
-    free(coord->empty_snapshot.chan_map_freq);
+    dsd_p25_site_snapshot_clear(&coord->empty_snapshot.site);
     free(coord->targets);
     free(coord);
 }
@@ -6590,8 +6375,8 @@ dsd_engine_trunk_scan_append_p25_idens(const dsd_state* state, struct p25_bandpl
             continue; /* live in state: the caller collects those; a paused target's are in its snapshot */
         }
         const dsd_trunk_scan_snapshot* snapshot = &coord->targets[i].snapshot;
-        count =
-            dsd_p25_bandplan_append_tables(rows, count, cap, snapshot->p25_iden_fdma, snapshot->p25_iden_tdma, skipped);
+        count = dsd_p25_bandplan_append_tables(rows, count, cap, snapshot->site.p25_iden_fdma,
+                                               snapshot->site.p25_iden_tdma, skipped);
     }
     return count;
 }

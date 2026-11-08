@@ -2788,6 +2788,9 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
      * dispatches, so a Phase 1 call on the next carrier would read this one's. The no-carrier pass resets it as well
      * (no_carrier_reset_voice_and_audio_metrics()). */
     state->nac = 0;
+    /* So is the NAC of the last Phase 1 frame (issue #804): a network status on the next carrier is never paired with
+     * it. */
+    state->p25_frame_nac_valid = 0U;
     /* The Phase 2 seed's proof is the carrier's too: the next carrier's bursts, or a network status broadcast, prove it
      * again. p2_cc itself is the descrambling key and stays. */
     state->p2_cc_verified = 0U;
@@ -4482,6 +4485,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_close_output_files(opts, state);
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
+    /* The final call snapshots are taken: a session that ended during a Signal search visit gets its own P25 site back
+       now, so the band plan export below never writes a visited system's IDEN tables (issue #804). */
+    dsd_engine_signal_search_release_site(state);
     // Before the scan coordinator goes: the parked targets' IDEN tables live in its snapshots.
     if (opts->p25_bandplan_export_file[0] != '\0') {
         const int rows = dsd_engine_p25_bandplan_export(opts, state, opts->p25_bandplan_export_file);

@@ -42,6 +42,7 @@ target_sources(
         phase2/p25p2_frame.c
         phase2/p25p2_retune.c
         phase2/p25p2_scramble.c
+        phase2/p25p2_seed_recover.c
         phase2/p25p2_mac_tables.c
         phase2/p25p2_mac_parse.c
         phase2/p25p2_vpdu.c

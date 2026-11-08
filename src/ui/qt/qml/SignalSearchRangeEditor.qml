@@ -149,7 +149,7 @@ ModalSheet {
         }
         ReadableText {
             width: parent.width
-            text: qsTr("Auto needs about six seconds to try all symbol profiles. A two-second probe may leave digital identification unresolved.")
+            text: qsTr("With Auto, a three-second probe has time to identify P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and M17. ProVoice needs about five seconds, D-STAR about seven.")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.family: Theme.sans

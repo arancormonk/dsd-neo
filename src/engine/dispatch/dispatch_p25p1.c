@@ -159,17 +159,32 @@ static void
 p25p1_apply_nac_update(dsd_state* state, int new_nac) {
     int valid_nac = p25p1_valid_decoded_nac(new_nac);
 
-    /* The NAC of a NID the BCH accepted is the carrier's received access code, an unchanged repeat included. */
+    /* A NID split by a carrier boundary names no carrier's NAC (issue #804): the BCH may accept the split word, but
+       neither the received identity nor state->nac, the seed's NAC or the frame's takes it. The boundary zeroed
+       state->nac so the next carrier never reads the old one. */
+    if (state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq)) {
+        return;
+    }
+    /* The NAC of a NID the BCH accepted is the carrier's received access code, an unchanged repeat included, and the
+       NAC of the frame being decoded (issue #804), which a network status in it is paired with. */
     if (valid_nac) {
         dsd_rxid_note_access(state, DSD_RXID_FAMILY_P25, (uint8_t)DSD_ACCESS_CODE_NAC, (uint16_t)new_nac);
+        state->p25_frame_nac = (uint16_t)new_nac;
+        state->p25_frame_nac_valid = 1U;
+    }
+    /* The seed's NAC follows a NID that names a new NAC, and comes back from the next NID once cleared by hand on this
+       carrier (issue #804). A repeat of the NAC state->nac holds leaves any other seed NAC alone: on a system whose
+       Phase 2 colour code differs from its Phase 1 control channel's NAC, a network status that passed its CRC set it,
+       and repeats of the control channel's NAC keep it. A carrier boundary, a trunked voice channel tune included,
+       zeroes state->nac, so the first NID after one still rewrites a seed NAC that differs. */
+    if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac
+        && (state->p2_cc == 0ULL || new_nac != state->nac)) {
+        state->p2_cc = (unsigned long long)new_nac;
+        state->p2_cc_verified = 0U; // a Phase 1 NID proves no Phase 2 seed (issue #575)
     }
     if (new_nac != state->nac) {
         if (valid_nac) {
             state->nac = new_nac;
-        }
-        if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac) {
-            state->p2_cc = (unsigned long long)new_nac;
-            state->p2_cc_verified = 0U; // a Phase 1 NID proves no Phase 2 seed (issue #575)
         }
         state->debug_header_errors++;
     }
@@ -196,7 +211,13 @@ p25p1_handle_nid_decode_success(const dsd_opts* opts, dsd_state* state, uint8_t*
         }
     }
 
-    p25p1_apply_nac_update(state, decoded->nac);
+    /* A NID that decoded only once the observed NAC stood in for its received NAC field carries the decoder's own NAC
+       (a hand-set seed's, the last NID's, or the seed's, which a carrier boundary keeps), not one read off the air
+       (issue #804): its DUID stands, but neither the received NAC, the received identity, the seed's NAC nor the
+       frame's NAC a network status pairs with takes it. */
+    if (!decoded->nac_borrowed) {
+        p25p1_apply_nac_update(state, decoded->nac);
+    }
     p25p1_apply_duid_update(state, duid, decoded->duid);
 }
 
@@ -227,6 +248,8 @@ p25p1_decode_nid_and_duid(dsd_opts* opts, dsd_state* state) {
     int observed_nac;
     uint8_t duid = P25P1_DUID_INVALID;
 
+    /* The previous frame's NAC is not this one's: only this frame's NID, once decoded, names it. */
+    state->p25_frame_nac_valid = 0U;
     p25p1_read_nid_fields(opts, state, &duid, bch_code, bch_reliab, &parity, &parity_reliab);
     /* An input interruption cut the NID (a Signal search left the frame): the rest of it is erasures the reader stood
        in, which the BCH can take for the all-zero codeword (NAC 0, an HDU). Nothing of it decodes. */

@@ -6246,7 +6246,7 @@ add_test(
 add_executable(
     dsd-neo_test_runtime_signal_search_visit_init_failure
     runtime/test_runtime_signal_search_visit_init_failure.c
-    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_visit.c
 )
 target_include_directories(
     dsd-neo_test_runtime_signal_search_visit_init_failure
@@ -8348,6 +8348,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
     ${PROJECT_SOURCE_DIR}/src/engine/scan_entry.c
     # A target restore unlinks the call recordings waiting for their rows (issue #708).
@@ -10130,7 +10131,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_search_site_notes
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/p25
 )
 target_link_libraries(
     dsd-neo_test_p25_search_site_notes
@@ -10203,6 +10204,95 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_p2_rs28_limits PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_P2_RS28_LIMITS COMMAND dsd-neo_test_p25_p2_rs28_limits)
+
+# P25 P2 FACCH/SACCH as shortened, punctured RS(63,35) codes
+add_executable(
+    dsd-neo_test_p25_p2_rs_shortened
+    protocol/p25/test_p25_p2_rs_shortened.cpp
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_rs_shortened
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_p25_p2_rs_shortened PRIVATE dsd-neo_fec)
+add_test(NAME P25_P2_RS_SHORTENED COMMAND dsd-neo_test_p25_p2_rs_shortened)
+
+# P25 P2 FACCH/SACCH/LCCH checksum verdict through the real RS, CRC and XCCH handlers (issue #804)
+add_executable(
+    dsd-neo_test_p25_p2_acch_verdict
+    protocol/p25/test_p25_p2_acch_verdict.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_acch_verdict
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real XCCH and frame processing reach the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_acch_verdict
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_acch_verdict
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+    )
+endif()
+add_test(NAME P25_P2_ACCH_VERDICT COMMAND dsd-neo_test_p25_p2_acch_verdict)
+
+# P25 P2 scrambling code recovery from a carrier's own FACCH/SACCH, through processP2() and the real RS, CRC and XCCH
+# handlers (issue #804)
+add_executable(
+    dsd-neo_test_p25_p2_seed_recover
+    protocol/p25/test_p25_p2_seed_recover.c
+    protocol/p25/p25p2_burst_builder.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_seed_recover
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+        ${_PUBLIC_INCLUDES}
+)
+# Real XCCH and frame processing reach the core vocoder, which reaches the DMR and NXDN ciphers.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_seed_recover
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+            ${DSD_NEO_TEST_MATH_LIB}
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_seed_recover
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            ${DSD_NEO_TEST_MATH_LIB}
+    )
+endif()
+add_test(NAME P25_P2_SEED_RECOVER COMMAND dsd-neo_test_p25_p2_seed_recover)
 
 # P25 P1 trunk SM core
 add_executable(dsd-neo_test_p25_p1_trunk_sm protocol/p25/test_p25_p1_trunk_sm.c)
@@ -10281,6 +10371,7 @@ target_include_directories(
     dsd-neo_test_p25_p1_sync_dispatch
     PRIVATE
         ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25
         ${PROJECT_SOURCE_DIR}/include
 )
 target_include_directories(
@@ -10660,6 +10751,7 @@ add_test(NAME P25_CC_CACHE_PATH COMMAND dsd-neo_test_p25_cc_cache_path)
 add_executable(
     dsd-neo_test_p25_p2_2v_first_frame_gate
     protocol/p25/test_p25_p2_2v_first_frame_gate.c
+    protocol/p25/p25p2_no_seed_tables.c
 )
 target_include_directories(
     dsd-neo_test_p25_p2_2v_first_frame_gate
@@ -14986,6 +15078,7 @@ dsd_neo_add_dmr_synth_test(
 add_executable(
     dsd-neo_test_p25_p2_reliability
     protocol/p25/test_p25_p2_reliability.c
+    protocol/p25/p25p2_no_seed_tables.c
 )
 target_include_directories(
     dsd-neo_test_p25_p2_reliability
@@ -17828,7 +17921,26 @@ if(DSD_HAS_RADIO)
         ""
         6
     )
-    dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
+    # Every burst of this capture but its SACCHs is a scrambled data channel burst (DUID 10), a known kind: none is a
+    # DUID error, which would abort its window before the SACCHs that follow it (issue #804). Nothing in the capture
+    # names the site's scrambling code: it is recovered from the SACCHs themselves (the first SACCH window gives it, a
+    # SACCH at another superframe slot of the next one confirms it), and from then on every SACCH decodes its MAC, 8 of
+    # the capture's 10 (6 leaves a margin).
+    add_test(
+        NAME DECODE_IQ_P25P2_CC
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-f2
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/p25p2_cc.iq.json"
+            "-DEXPECTED=P25p2 SACCH"
+            "-DEXPECTED2=P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161"
+            "-DEXPECTED3=P25p2 SACCH  MAC_IDLE" -DMIN_MATCHES3=6
+            "-DNOT_EXPECTED=DUID ERR 10" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_P25P2_CC
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
     # A clear BS voice call on slot 1 (slot 2 idle) from the DMR test generator (issue #729).
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_DMR_VOICE
@@ -17903,6 +18015,78 @@ if(DSD_HAS_RADIO)
     set_tests_properties(
         DECODE_IQ_FP_MODE
         PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
+    # How long a Signal search probe takes to identify a carrier (issue #804): the real chain on a replay with the
+    # search's probe forced, from an Auto visit's 4800/4 start, landing 0, 350 and 700 ms into the capture (a scratch
+    # copy that runs on cyclically from there), each within the default three-second probe. P25 Phase 2 (profile 3)
+    # recovers its scrambling code from the SACCHs and confirms 1.8-2.1 s in, NXDN48 joined mid-call 1.7-2.3 s in; the
+    # ordinary rotation reaches neither the first in time: tests/engine/search_schedule_replay.c.
+    add_executable(
+        dsd-neo_test_search_schedule_replay
+        engine/search_schedule_replay.c
+    )
+    target_include_directories(
+        dsd-neo_test_search_schedule_replay
+        PRIVATE ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_search_schedule_replay
+        PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
+    )
+    # The run replays only the fixtures its own list names, from this directory.
+    target_compile_definitions(
+        dsd-neo_test_search_schedule_replay
+        PRIVATE DSD_SEARCH_SCHEDULE_FIXTURE_DIR="${_DSD_NEO_IQ_FIXTURE_DIR}"
+    )
+    function(
+        dsd_neo_add_search_schedule_test
+        name
+        fixture
+        protocol
+        profile
+        deadline_ms
+    )
+        foreach(_offset 0 350 700)
+            add_test(
+                NAME DECODE_IQ_SEARCH_SCHEDULE_${name}_${_offset}
+                COMMAND
+                    dsd-neo_test_search_schedule_replay ${fixture} ${_offset}
+                    ${deadline_ms} --expect ${protocol} --expect-profile
+                    ${profile} -- ${ARGN}
+            )
+            set_tests_properties(
+                DECODE_IQ_SEARCH_SCHEDULE_${name}_${_offset}
+                PROPERTIES LABELS "iq-decode" TIMEOUT 120
+            )
+        endforeach()
+    endfunction()
+    dsd_neo_add_search_schedule_test(P25P1_C4FM_CC p25p1_c4fm_cc P25 0 3000 -fa)
+    dsd_neo_add_search_schedule_test(P25P2_CC p25p2_cc P25 3 3000 -fa)
+    dsd_neo_add_search_schedule_test(DMR_VOICE dmr_voice DMR 0 3000 -fa)
+    dsd_neo_add_search_schedule_test(NXDN96 nxdn96 NXDN96 0 3000 -fa)
+    dsd_neo_add_search_schedule_test(NXDN48 nxdn48 NXDN48 1 3000 -fa)
+    # dPMR within 1.9 s pins the one-pass 6000/4 dwell (DSD_FRAME_SYNC_SEARCH_6000_4_PASSES): it confirms 1.63-1.69 s
+    # in, and a second pass, which puts 2400/4 300 ms later, made it 1.95-2.01 s.
+    dsd_neo_add_search_schedule_test(DPMR_SYNTH dpmr_synth dPMR 1 1900 -fa)
+    dsd_neo_add_search_schedule_test(YSF ysf YSF 0 3000 -fa)
+    dsd_neo_add_search_schedule_test(M17 m17 M17 0 3000 -fa)
+    # A -mq lock (Settings > Extra decoder arguments) keeps CQPSK on 4800/4; the unlocked hunt reads this capture too.
+    dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC_LOCKED p25p1_cqpsk_cc P25 0 3000 -fa -mq)
+    dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC p25p1_cqpsk_cc P25 0 3000 -fa)
+    # A fixture the list does not hold names no scratch file, and the run ends on the refusal with nothing removed that
+    # it did not name.
+    add_test(
+        NAME DECODE_IQ_SEARCH_SCHEDULE_MISSING_FIXTURE
+        COMMAND
+            dsd-neo_test_search_schedule_replay search_schedule_missing 0 3000
+    )
+    set_tests_properties(
+        DECODE_IQ_SEARCH_SCHEDULE_MISSING_FIXTURE
+        PROPERTIES
+            LABELS "iq-decode"
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION
+                "SEARCH SCHEDULE: search_schedule_missing is not a schedule fixture"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.
@@ -18171,8 +18355,8 @@ if(DSD_HAS_RADIO)
     # 78,125 or 93,750 Hz) and runs the I/Q rate step to the DSP bandwidth rate, as the live Airspy stream does
     # (ENGINE_AIRSPY_FORCED_RATE_*, which feeds the same samples live). Each must decode at least what the same samples
     # decode at the native rate (48 kHz, 72 kHz for TETRA, with no step) less a frame or two at the excerpt's edges:
-    # p25p1_cqpsk_cc 41 network status and 18 grants, the simulcast control channel the same, p25p2_cc 10 SACCH (its
-    # DUID FEC alone: the capture is remodulated audio with no RS-checkable payload, so weak evidence), dmr_voice_synth's
+    # p25p1_cqpsk_cc 41 network status and 18 grants, the simulcast control channel the same, p25p2_cc 10 SACCH (and
+    # its scrambling code recovered from them, after which the next SACCH's MAC decodes), dmr_voice_synth's
     # first 2 s 16 voice bursts (one superframe of allowance), tetra_call_real_air_72k's first 2 s 70 identities and 25
     # TCH/FS bursts whose CRC passed. Before issue #806 the replay ran these chains unstepped at 78,125 or 93,750 Hz: the
     # two P25 Phase 1 control channels decoded no network status and no grant, P25 Phase 2 one SACCH, and TETRA ran only
@@ -18183,7 +18367,7 @@ if(DSD_HAS_RADIO)
         ITEMS
             "P25P1_CQPSK_CC_AIRSPY_312K@@p25p1_cqpsk_cc_airspy_312k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel@@16@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
             "P25P1_CQPSK_SIMULCAST_AIRSPY_375K@@p25p1_cqpsk_simulcast_airspy_375k@@-f1 -mq@@WACN: 92065. SYS: 0D5@@39@@Group Voice Channel Grant Update - Implicit@@16@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
-            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@-@@0@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
+            "P25P2_CC_AIRSPY_375K@@p25p2_cc_airspy_375k@@-f2@@P25p2 SACCH@@8@@P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE@@1@@capture=375000 Hz, base_decim=4, I/Q step L/M=64/125"
             "DMR_VOICE_AIRSPY_312K@@dmr_voice_airspy_312k@@-fs@@Color Code=02 \\| VC@@10@@Color Code=02 \\| VLC@@1@@capture=312500 Hz, base_decim=4, I/Q step L/M=384/625"
             "TETRA_CALL_AIRSPY_375K@@tetra_call_airspy_375k@@-fT -Z@@\\[TETRA BSCH\\] MCC=228 MNC=8889 CC=0x01@@66@@\\[TETRA TCH/FS\\] CC=1  dec_bits=274  crc=ok@@23@@capture=375000 Hz, base_decim=4, I/Q step L/M=96/125"
     )
@@ -20022,7 +20206,8 @@ if(DSD_HAS_RADIO)
     # The CQPSK path decoding real frames: p25p2_cc under -f2 runs the front end's CQPSK
     # chain for the whole capture (fsk_samples=0 cqpsk_symbols=11992 media_ms=2000, so
     # 95,936 of its 96,000 samples), and fast, short-read and jitter legs must decode its
-    # SACCH the same way. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
+    # SACCH the same way, recovering its scrambling code and decoding the SACCH MAC that
+    # follows. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
     # The jitter leg sleeps after about one read in 16 of the decoder's ~690 and must still
     # be sleeping past 1.5 s.
     dsd_neo_add_iq_determinism_test(
@@ -20030,7 +20215,7 @@ if(DSD_HAS_RADIO)
         p25p2_cc
         -f2
         "fast;short:19;jitter:23:120:16:1500"
-        "P25p2 SACCH"
+        "P25p2 scrambling code recovered: WACN BEE00 SYSID 164 NAC 161.[0-9: ]+P25p2 SACCH  MAC_IDLE"
         0
         11900
         95000
@@ -23316,6 +23501,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search
         engine/test_engine_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )
@@ -23336,6 +23522,7 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_engine_signal_search_scene
         engine/test_engine_signal_search_scene.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
     )

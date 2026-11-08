@@ -34,7 +34,15 @@ void dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, cons
 int dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state);
 int dsd_engine_signal_search_active(const dsd_state* state);
 int dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);
+/** Runtime frame-sync signal_search_probe hook (issue #804): 1 while a visit to a range with Auto identification is
+ * probing (no protocol evidence yet, the probe time running, the detection not ended); 0 for a typed or analog range,
+ * the probe's analog fallback, a listening or ended visit, a span tune, a paused or stopped search. */
+int dsd_engine_signal_search_probe(const dsd_opts* opts, const dsd_state* state);
 void dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state);
+/** Puts the session's own P25 site back (issue #804) when the decoder session ended during a visit: the search's
+ * shutdown left the visit's code and tables for the session's final call snapshots. The engine's teardown calls it
+ * after them, before anything that reads the site (the band plan export). Unproven; a no-op otherwise, and again. */
+void dsd_engine_signal_search_release_site(dsd_state* state);
 /** Only call with protocol-confirmed observations from runtime evidence hooks. */
 void dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot,
                                           uint32_t target, uint32_t source, const char* access);
@@ -43,6 +51,14 @@ void dsd_engine_signal_search_evidence(const dsd_state* state, const char* proto
 /** Runtime site hook: joins a CRC/FEC-checked site note to the visit's site record and publishes the hit when its shown
  * site changes. Notes outside a visit, or from a frame an input interruption cut, are dropped. */
 void dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_site_note* note);
+/** Runtime P25 Phase 2 codes hook (issue #804): copies up to @p cap of the session's learned scrambling codes, most
+ * recently confirmed first, into @p out while a digital visit is receiving; 0 otherwise. */
+size_t dsd_engine_signal_search_p25p2_codes(const dsd_state* state, uint64_t* out, size_t cap);
+/** Runtime P25 Phase 2 code hook (issue #804): a complete scrambling code from content that passed its CRC/FEC check,
+ * with its dsd_p25p2_code_source, joins the session's list (or moves to its front) while a visit is receiving. A code
+ * with a reserved field, or an unknown source, joins nothing. The list holds 16; Pause and Resume keep it, a new
+ * session starts with none. */
+void dsd_engine_signal_search_p25p2_code(const dsd_state* state, uint64_t code, int source);
 /** Runtime call hook: reads @p slot's canonical call record (active, CRC-clean, a protocol the search identifies) and
  * makes it the hit's call tuple -- IDs, texts, slot and crypt from that one record -- when it is the tuple's own call or
  * a call that began no earlier; publishes the hit when the shown tuple changes. Outside a visit, or from a frame an

@@ -7,7 +7,9 @@
  * Signal search site notes from P25: every broadcast that passed its CRC (a TSBK RFSS status through the vPDU bridge,
  * an MBT network or RFSS status, a Phase 2 network or RFSS status MAC) notes the identity it carries, and nothing else
  * does: a Phase 2 MAC_SIGNAL that failed its CRC (-F, which the decoder does not apply either), a voice LCW, a
- * secondary control channel fill-in or an adjacent site. Decoder state is left to the decoders.
+ * secondary control channel fill-in or an adjacent site. Decoder state is left to the decoders. The same checked
+ * network statuses give the session's list of P25 Phase 2 scrambling codes (issue #804): a Phase 2 one its own three
+ * parts, a Phase 1 one its WACN and SYSID with the NAC of the NID of the frame that carried it.
  */
 
 #include <dsd-neo/core/access_code.h>
@@ -26,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25_search_site.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -148,6 +151,31 @@ expect_site(const char* tag, const char* want) {
     return 0;
 }
 
+#define CODE_OF(wacn, sysid, nac) ((((uint64_t)(wacn)) << 24) | (((uint64_t)(sysid)) << 12) | (uint64_t)(nac))
+
+/* Scrambling code notes, and the last one. */
+static int g_code_notes;
+static uint64_t g_code;
+static int g_code_source;
+
+static void
+capture_code(const dsd_state* state, uint64_t code, int source) {
+    (void)state;
+    ++g_code_notes;
+    g_code = code;
+    g_code_source = source;
+}
+
+static int
+expect_code(const char* tag, int notes, uint64_t code, int source) {
+    if (g_code_notes != notes || (notes > 0 && (g_code != code || g_code_source != source))) {
+        DSD_FPRINTF(stderr, "%s: got %d notes, last %011llX source %d; want %d, %011llX source %d\n", tag, g_code_notes,
+                    (unsigned long long)g_code, g_code_source, notes, (unsigned long long)code, source);
+        return 1;
+    }
+    return 0;
+}
+
 static dsd_opts g_opts;
 static dsd_state g_state;
 
@@ -158,6 +186,9 @@ reset(void) {
     g_notes = 0;
     DSD_MEMSET(&g_note, 0, sizeof(g_note));
     dsd_signal_search_site_clear(&g_record);
+    g_code_notes = 0;
+    g_code = 0;
+    g_code_source = 0;
 }
 
 /* An RFSS status in MAC form: header @p header (0x07 for a TSBK the vPDU bridge carries), opcode 0x7A (abbreviated)
@@ -177,9 +208,9 @@ rfss_mac(unsigned long long mac[24], unsigned long long header, unsigned long lo
     mac[8] = 0x01;
 }
 
-/* A network status in MAC form: opcode 0x7B (abbreviated) or 0xFB (extended), NAC 0x293. */
+/* A network status in MAC form: opcode 0x7B (abbreviated) or 0xFB (extended), carrying NAC @p nac. */
 static void
-network_mac(unsigned long long mac[24], unsigned long long opcode, uint32_t wacn, uint16_t sysid) {
+network_mac_nac(unsigned long long mac[24], unsigned long long opcode, uint32_t wacn, uint16_t sysid, uint16_t nac) {
     DSD_MEMSET(mac, 0, 24 * sizeof(mac[0]));
     mac[0] = 0x00;
     mac[1] = opcode;
@@ -191,8 +222,14 @@ network_mac(unsigned long long mac[24], unsigned long long opcode, uint32_t wacn
     mac[7] = 0x10; // CHAN-T
     mac[8] = 0x01;
     const int nac_at = opcode == 0xFB ? 12 : 10;
-    mac[nac_at] = 0x02;
-    mac[nac_at + 1] = 0x93;
+    mac[nac_at] = (nac >> 8) & 0xF;
+    mac[nac_at + 1] = nac & 0xFF;
+}
+
+/* A network status in MAC form with NAC 0x293. */
+static void
+network_mac(unsigned long long mac[24], unsigned long long opcode, uint32_t wacn, uint16_t sysid) {
+    network_mac_nac(mac, opcode, wacn, sysid, 0x293);
 }
 
 static int
@@ -499,16 +536,183 @@ test_received_identity(void) {
     return rc;
 }
 
+/* A Phase 2 network status that passed its CRC gives the session one complete scrambling code, all three parts the
+   broadcast's own, under a hand-set seed of another system too. One that failed its CRC (-F), or whose WACN, SYSID or
+   NAC is zero or all ones (no site's code), gives none. */
+static int
+test_p2_nsb_notes_code(void) {
+    int rc = 0;
+    unsigned long long mac[24];
+    static const unsigned long long opcodes[2] = {0x7B, 0xFB};
+    static const uint32_t bad_wacn[4] = {0xFFFFF, 0xBEE00, 0xBEE00, 0xBEE00};
+    static const uint16_t bad_sysid[4] = {0x1A3, 0xFFF, 0x1A3, 0x1A3};
+    static const uint16_t bad_nac[4] = {0x293, 0x293, 0x000, 0xFFF};
+    for (int i = 0; i < 2; ++i) {
+        reset();
+        network_mac(mac, opcodes[i], 0xBEE00, 0x1A3);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_code("p2 network notes its code", 1, CODE_OF(0xBEE00, 0x1A3, 0x293), DSD_P25P2_CODE_P2_NETWORK);
+
+        reset();
+        network_mac(mac, opcodes[i], 0xBEE00, 0x1A3);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
+        rc |= expect_code("failed-crc network notes no code", 0, 0, 0);
+
+        reset();
+        g_state.p2_hardset = 1;
+        g_state.p2_wacn = 0xAAAAA;
+        g_state.p2_sysid = 0x111;
+        g_state.p2_cc = 0x222;
+        network_mac(mac, opcodes[i], 0xBEE00, 0x1A3);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("hand-set seed stays", (long)g_state.p2_wacn, 0xAAAAA);
+        rc |= expect_code("hand-set seed: the broadcast's code", 1, CODE_OF(0xBEE00, 0x1A3, 0x293),
+                          DSD_P25P2_CODE_P2_NETWORK);
+
+        for (int b = 0; b < 4; ++b) {
+            reset();
+            network_mac_nac(mac, opcodes[i], bad_wacn[b], bad_sysid[b], bad_nac[b]);
+            process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+            rc |= expect_code("a part that names no code notes no code", 0, 0, 0);
+        }
+    }
+    return rc;
+}
+
+/* A Phase 1 network status that passed its CRC gives the session its WACN and SYSID with the NAC of the NID of the
+   frame that carried it, never the received NAC state->nac keeps, the seed's NAC or the seed's WACN and SYSID. A frame
+   whose NID gave no valid NAC pairs nothing (the site note stands). */
+static int
+test_p1_net_sts_pairs_frame_nac(void) {
+    int rc = 0;
+    uint8_t mbt[48];
+    reset();
+    g_state.p25_frame_nac = 0x2C1;
+    g_state.p25_frame_nac_valid = 1;
+    g_state.nac = 0x111;
+    g_state.p2_wacn = 0xAAAAA;
+    g_state.p2_sysid = 0x222;
+    g_state.p2_cc = 0x333;
+    mbt_network(mbt, 0xBEE00, 0x1A3);
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    rc |= expect_code("mbt network pairs the frame nac", 1, CODE_OF(0xBEE00, 0x1A3, 0x2C1), DSD_P25P2_CODE_P1_NETWORK);
+
+    reset();
+    g_state.p25_frame_nac = 0x2C1;
+    g_state.p25_frame_nac_valid = 0;
+    g_state.nac = 0x2C1;
+    g_state.p2_cc = 0x2C1;
+    mbt_network(mbt, 0xBEE00, 0x1A3);
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    rc |= expect_int("no frame nac: the site is still noted", g_notes, 1);
+    rc |= expect_code("no frame nac: no code", 0, 0, 0);
+
+    reset();
+    g_state.p25_frame_nac = 0x2C1;
+    g_state.p25_frame_nac_valid = 1;
+    mbt_network(mbt, 0xFFFFF, 0x1A3);
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    rc |= expect_code("an all-ones wacn names no code", 0, 0, 0);
+    return rc;
+}
+
+/* A Phase 1 carrier visited right after a Phase 2 one (Signal search): the Phase 2 carrier's checked network status
+   gives its code and leaves the decoder's seed on that system. The carrier boundary drops the frame NAC and the
+   received NAC (dsd_engine_forget_carrier_code_values(), ENGINE_NO_CARRIER_RESET). On the Phase 1 carrier a frame whose
+   NID gave no NAC pairs nothing, though the seed still holds the Phase 2 system's WACN and SYSID and an earlier NID
+   left its NAC in state->nac and p2_cc; a voice LCW pairs nothing; a frame whose NID decoded pairs its own network
+   status's WACN and SYSID with that NAC, never the previous carrier's. */
+static int
+test_frame_nac_cleared_at_boundary(void) {
+    int rc = 0;
+    unsigned long long mac[24];
+    uint8_t mbt[48];
+    reset();
+    network_mac(mac, 0x7B, 0xBEE00, 0x1A3);
+    process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+    rc |= expect_code("phase 2 carrier: its code", 1, CODE_OF(0xBEE00, 0x1A3, 0x293), DSD_P25P2_CODE_P2_NETWORK);
+    rc |= expect_int("phase 2 carrier: the seed's wacn", (long)g_state.p2_wacn, 0xBEE00);
+
+    /* The boundary, then an earlier NID of the Phase 1 carrier (NAC 0x2C1), then this frame's NID, which failed. */
+    g_state.p25_frame_nac_valid = 0;
+    g_state.nac = 0x2C1;
+    g_state.p2_cc = 0x2C1;
+    mbt_network(mbt, 0xCAFE1, 0x2B4);
+    g_state.p2_hardset = 1; // keep the Phase 2 system's WACN/SYSID in the seed for the rest of this test
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    rc |= expect_code("phase 1 frame without a nid: no code", 1, CODE_OF(0xBEE00, 0x1A3, 0x293),
+                      DSD_P25P2_CODE_P2_NETWORK);
+
+    uint8_t lcw[72];
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    put_bits(lcw, 0, 0x64, 8);
+    put_bits(lcw, 16, 0xBEE00, 20);
+    put_bits(lcw, 36, 0x1A3, 12);
+    g_state.p25_frame_nac = 0x2C1;
+    g_state.p25_frame_nac_valid = 1;
+    p25_lcw(&g_opts, &g_state, lcw, 0);
+    rc |= expect_code("phase 1 voice lcw: no code", 1, CODE_OF(0xBEE00, 0x1A3, 0x293), DSD_P25P2_CODE_P2_NETWORK);
+
+    (void)p25_decode_pdu_trunking(&g_opts, &g_state, mbt, sizeof(mbt));
+    rc |= expect_code("phase 1 frame with its nid: its own system's code", 2, CODE_OF(0xCAFE1, 0x2B4, 0x2C1),
+                      DSD_P25P2_CODE_P1_NETWORK);
+    return rc;
+}
+
+/* A voice LCW network status passes only a Reed-Solomon check that takes a large share of random input: it gives no
+   code, with a valid frame NAC too. */
+static int
+test_lcw_never_notes_code(void) {
+    uint8_t lcw[72];
+    reset();
+    g_state.p25_frame_nac = 0x2C1;
+    g_state.p25_frame_nac_valid = 1;
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    put_bits(lcw, 0, 0x64, 8);
+    put_bits(lcw, 16, 0xBEE00, 20);
+    put_bits(lcw, 36, 0x1A3, 12);
+    p25_lcw(&g_opts, &g_state, lcw, 0);
+    int rc = expect_int("lcw network is decoded", (long)g_state.p2_wacn, 0xBEE00);
+    rc |= expect_code("lcw network notes no code", 0, 0, 0);
+    return rc;
+}
+
+/* A recovered code's network note (D7) names only a usable system: a zero or all-ones WACN or SYSID gives none. */
+static int
+test_recovered_network_validity(void) {
+    static const uint32_t wacn[5] = {0xBEE00, 0x00000, 0xFFFFF, 0xBEE00, 0xBEE00};
+    static const uint16_t sysid[5] = {0x164, 0x164, 0x164, 0x000, 0xFFF};
+    int rc = 0;
+    for (int i = 0; i < 5; ++i) {
+        reset();
+        p25_search_note_recovered_network(&g_state, wacn[i], sysid[i]);
+        rc |= expect_int("recovered network notes only a usable system", g_notes, i == 0 ? 1 : 0);
+    }
+    reset();
+    p25_search_note_recovered_network(&g_state, 0xBEE00, 0x164);
+    rc |= expect_int("recovered network kind", g_note.kind, DSD_SEARCH_SITE_NOTE_P25_NETWORK);
+    rc |= expect_site("recovered network names the system", "WACN BEE00 \xC2\xB7 SYS 164");
+    rc |= expect_int("recovered network leaves the received identity", (long)g_state.rx_id.valid, 0);
+    return rc;
+}
+
 int
 main(void) {
     dsd_signal_search_site_set(capture_site);
+    dsd_signal_search_p25p2_code_set(capture_code);
     int rc = 0;
     rc |= test_vpdu_rfss();
     rc |= test_vpdu_network();
     rc |= test_mbt();
     rc |= test_lcw_and_fill_in();
     rc |= test_received_identity();
+    rc |= test_p2_nsb_notes_code();
+    rc |= test_p1_net_sts_pairs_frame_nac();
+    rc |= test_frame_nac_cleared_at_boundary();
+    rc |= test_lcw_never_notes_code();
+    rc |= test_recovered_network_validity();
     dsd_signal_search_site_set(NULL);
+    dsd_signal_search_p25p2_code_set(NULL);
     return rc;
 }
 

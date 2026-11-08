@@ -743,6 +743,245 @@ test_sps_hunt_p25_probe_rotation(void) {
     dsd_frame_sync_hooks_set(NULL);
 }
 
+static int g_search_probe;
+static int g_search_probe_queries;
+
+static int
+fake_search_probe(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_search_probe_queries++;
+    return g_search_probe;
+}
+
+/* The profiles the candidate flag bits of @p mask enable (bit = profile index), on top of nothing. */
+static void
+enable_profiles(dsd_opts* opts, unsigned mask) {
+    opts->frame_dmr = (mask & (1U << DSD_FRAME_SYNC_SPS_PROFILE_4800_4)) ? 1 : 0;
+    opts->frame_nxdn48 = (mask & (1U << DSD_FRAME_SYNC_SPS_PROFILE_2400_4)) ? 1 : 0;
+    opts->frame_provoice = (mask & (1U << DSD_FRAME_SYNC_SPS_PROFILE_9600_2)) ? 1 : 0;
+    opts->frame_p25p2 = (mask & (1U << DSD_FRAME_SYNC_SPS_PROFILE_6000_4)) ? 1 : 0;
+    opts->frame_dstar = (mask & (1U << DSD_FRAME_SYNC_SPS_PROFILE_4800_2)) ? 1 : 0;
+    opts->frame_tetra = (mask & (1U << DSD_FRAME_SYNC_SPS_PROFILE_18000_4)) ? 1 : 0;
+}
+
+/*
+ * Issue #804: a Signal search probe identifying an Auto detection tries 4800/4 -> 6000/4 -> 2400/4 -> 9600/2 -> 4800/2
+ * (-> 18000/4), for every set of enabled protocols: each step goes to the next profile in that order that has a
+ * candidate, wrapping to the first, stays on a lone candidate, and gives -1 (the ordinary rotation) with none.
+ */
+static void
+test_search_order_each_flag_subset(void) {
+    static dsd_opts opts;
+    static const int order[] = {
+        DSD_FRAME_SYNC_SPS_PROFILE_4800_4, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4,
+        DSD_FRAME_SYNC_SPS_PROFILE_9600_2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, DSD_FRAME_SYNC_SPS_PROFILE_18000_4,
+    };
+    for (unsigned mask = 0; mask < (1U << DSD_FRAME_SYNC_SPS_PROFILE_COUNT); mask++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        enable_profiles(&opts, mask);
+        for (int at = 0; at < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; at++) {
+            int want = -1;
+            for (int step = 1; step <= DSD_FRAME_SYNC_SPS_PROFILE_COUNT && want < 0; step++) {
+                const int idx = order[(at + step) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT];
+                want = (mask & (1U << idx)) ? idx : -1;
+            }
+            assert(frame_sync_sps_hunt_search_next_index(&opts, order[at]) == want);
+        }
+    }
+    /* Auto as a search applies it (no TETRA): the whole order, written out. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.frame_p25p1 = opts.frame_p25p2 = opts.frame_dmr = opts.frame_nxdn48 = opts.frame_nxdn96 = 1;
+    opts.frame_dpmr = opts.frame_provoice = opts.frame_dstar = opts.frame_x2tdma = opts.frame_ysf = opts.frame_m17 = 1;
+    assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+    assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_9600_2)
+           == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_2)
+           == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    /* X2-TDMA runs at 4800/4, so without P25 Phase 2 the order skips 6000/4. */
+    opts.frame_p25p2 = 0;
+    assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+           == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+}
+
+/* An Auto session set up as the hunt tests it: every Auto protocol at 48 kHz, 4800/4 timing. */
+static void
+auto_hunt_session(dsd_opts* opts, dsd_state* state) {
+    reset(opts, state);
+    opts->audio_in_type = AUDIO_IN_WAV;
+    opts->wav_sample_rate = 48000;
+    opts->frame_p25p1 = opts->frame_p25p2 = opts->frame_dmr = opts->frame_nxdn48 = opts->frame_nxdn96 = 1; // -fa
+    opts->frame_dpmr = opts->frame_provoice = opts->frame_dstar = opts->frame_x2tdma = opts->frame_ysf = 1;
+    opts->frame_m17 = 1;
+    state->samplesPerSymbol = 10;
+    state->symbolCenter = 4;
+    state->min = -3.0f;
+    state->max = 3.0f;
+}
+
+/*
+ * With no search probe the hunt runs today's rotation, 4800/4 -> 2400/4 -> 9600/2 -> 6000/4 -> 4800/2, on today's
+ * three-pass dwell everywhere, whether nothing is installed or the installed hook answers 0; and the hook is asked
+ * once per step, never while a dwell runs.
+ */
+static void
+test_search_order_off_is_todays_order(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const int rotation[] = {
+        DSD_FRAME_SYNC_SPS_PROFILE_4800_4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, DSD_FRAME_SYNC_SPS_PROFILE_9600_2,
+        DSD_FRAME_SYNC_SPS_PROFILE_6000_4, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, DSD_FRAME_SYNC_SPS_PROFILE_4800_4,
+    };
+    auto_hunt_session(&opts, &state);
+    for (int installed = 0; installed < 2; installed++) {
+        dsd_frame_sync_hooks_set(installed ? &(dsd_frame_sync_hooks){.signal_search_probe = fake_search_probe} : NULL);
+        g_search_probe = 0;
+        g_search_probe_queries = 0;
+        for (int i = 0; i + 1 < (int)(sizeof(rotation) / sizeof(rotation[0])); i++) {
+            state.sps_hunt_idx = rotation[i];
+            assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+            assert(step_auto_hunt_from(&opts, &state, rotation[i]) == rotation[i + 1]);
+            assert(state.sps_hunt_search_order == 0);
+        }
+        assert(g_search_probe_queries == (installed ? 5 : 0));
+        state.sps_hunt_counter = 0;
+        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+        assert(g_search_probe_queries == (installed ? 5 : 0));
+    }
+    dsd_frame_sync_hooks_set(NULL);
+}
+
+/*
+ * While the probe answers 1 the hunt steps in the search order, the answer kept from each step (and from an
+ * acquisition reset, as a search visit's tune runs one); its dwell is DSD_FRAME_SYNC_SEARCH_6000_4_PASSES on 6000/4.
+ * A -m lock keeps its own walk and its dwell.
+ */
+static void
+test_search_dwell_6000(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    auto_hunt_session(&opts, &state);
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.signal_search_probe = fake_search_probe});
+    g_search_probe = 1;
+    g_search_probe_queries = 0;
+    dsd_frame_sync_reset_acquisition(&opts, &state, 1);
+    assert(state.sps_hunt_search_order == 1 && g_search_probe_queries == 1);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    /* Asked at the spent dwell and again on adopting 6000/4. */
+    assert(state.sps_hunt_search_order == 1 && g_search_probe_queries == 3);
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == DSD_FRAME_SYNC_SEARCH_6000_4_PASSES);
+
+    /* The 6000/4 dwell ends after its search passes, not three. */
+    const int dwell = DSD_FRAME_SYNC_SEARCH_6000_4_PASSES * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    /* Every other profile keeps the ordinary dwell. */
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_2400_4) == DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_9600_2) == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_2) == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+
+    /* A -m lock: the probe's order and dwell do not apply to its equal-timing walk. */
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 1;
+    state.sps_hunt_search_order = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    assert(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    dsd_frame_sync_hooks_set(NULL);
+}
+
+/*
+ * Evidence ends the probe: the engine's answer is 0 from then on, and the hunt asks again when the probe's dwell is
+ * spent (frame_sync_no_sync_sps_hunt()). The carrier that confirmed keeps its profile for the ordinary dwell, and the
+ * listening visit's next step runs today's order. The question is asked once per spent dwell, never per symbol.
+ */
+static void
+test_order_flag_cleared_on_evidence(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    auto_hunt_session(&opts, &state);
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.signal_search_probe = fake_search_probe});
+    g_search_probe = 1;
+    state.sps_hunt_search_order = 1; // kept from the visit's acquisition reset
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state.sps_hunt_search_order == 1);
+    /* Evidence on 6000/4: the engine answers 0 from here, and the kept flag still says the probe runs. */
+    g_search_probe = 0;
+    g_search_probe_queries = 0;
+    const int dwell = DSD_FRAME_SYNC_SEARCH_6000_4_PASSES * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(g_search_probe_queries == 0 && state.sps_hunt_search_order == 1); // the dwell runs: nothing asked
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4 && state.sps_hunt_search_order == 0);
+    assert(g_search_probe_queries == 1 && dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) == 3);
+    /* The symbols after it ask nothing more. */
+    state.sps_hunt_counter = dwell + 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(g_search_probe_queries == 1);
+    /* The listening visit's next step runs today's order. */
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4) == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    assert(state.sps_hunt_search_order == 0);
+    /* A flag kept when the probe answers 0 by the time a 4800/4 dwell is spent: the step asks, and runs today's order. */
+    state.sps_hunt_search_order = 1;
+    assert(step_auto_hunt_from(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4) == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(state.sps_hunt_search_order == 0);
+    dsd_frame_sync_hooks_set(NULL);
+}
+
+static void arm_2400_4_proof(dsd_state* state, uint32_t at_symbolcnt);
+
+/*
+ * A 2400/4 proof while the probe still runs: the search order's way back to 4800/4 (2400/4, 9600/2, 4800/2) skips
+ * 6000/4, so DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS, sized for the ordinary way back, still stands through the
+ * whole first 4800/4 dwell, where the matchers it holds off live.
+ */
+static void
+test_proven_2400_4_hold_spans_the_search_order(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    auto_hunt_session(&opts, &state);
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){.signal_search_probe = fake_search_probe});
+    g_search_probe = 1;
+    state.sps_hunt_search_order = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    arm_2400_4_proof(&state, 1000);
+    /* The proof restarted the 2400/4 dwell: the longest stay is that dwell plus one on each profile back to and
+       including the first 4800/4 dwell. */
+    static const int way_back[] = {
+        DSD_FRAME_SYNC_SPS_PROFILE_2400_4, DSD_FRAME_SYNC_SPS_PROFILE_9600_2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2,
+        DSD_FRAME_SYNC_SPS_PROFILE_4800_4, DSD_FRAME_SYNC_SPS_PROFILE_6000_4,
+    };
+    uint32_t spent = 0;
+    for (int i = 0; i + 1 < (int)(sizeof(way_back) / sizeof(way_back[0])); i++) {
+        state.sps_hunt_idx = way_back[i];
+        spent += (uint32_t)(dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+        assert(step_auto_hunt_from(&opts, &state, way_back[i]) == way_back[i + 1]);
+        assert(state.sps_hunt_search_order == 1);
+    }
+    /* The last symbol of the first 4800/4 dwell is still under the hold. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.symbolcnt = 1000U + spent - 1U;
+    assert(spent <= DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS);
+    assert(dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(&opts, &state) == 1);
+    dsd_frame_sync_hooks_set(NULL);
+}
+
 /*
  * The hunt's dwell is a symbol budget that survives sync returns (issue #388). A sync that
  * raises carrier but yields no frame used to stop the hunt outright: it blocked the step and
@@ -5168,6 +5407,11 @@ main(void) {
     test_sps_hunt_restart_dwell_resets_the_whole_budget();
     test_sps_hunt_holds_the_profile_on_a_tuned_voice_channel();
     test_sps_hunt_p25_probe_rotation();
+    test_search_order_each_flag_subset();
+    test_search_order_off_is_todays_order();
+    test_search_dwell_6000();
+    test_order_flag_cleared_on_evidence();
+    test_proven_2400_4_hold_spans_the_search_order();
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();

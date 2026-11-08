@@ -90,6 +90,12 @@ hook_p25_probe_in_flight(const dsd_opts* opts, const dsd_state* state) {
     return g_yield_requested;
 }
 
+static int
+hook_signal_search_probe(const dsd_opts* opts, const dsd_state* state) {
+    record_args(opts, state);
+    return g_yield_requested;
+}
+
 static void
 test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
     dsd_frame_sync_hooks_set(NULL);
@@ -104,6 +110,7 @@ test_empty_hooks_are_noops(dsd_opts* opts, dsd_state* state) {
 
     assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 0);
     assert(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 0); // no engine: no probe
+    assert(dsd_frame_sync_hook_signal_search_probe(opts, state) == 0); // no engine: no search probe
     assert(g_try_tick_calls == 0);
     assert(g_release_calls == 0);
     assert(g_vc_sync_calls == 0);
@@ -125,8 +132,15 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
         .no_carrier = hook_no_carrier,
         .scan_visit_should_yield = hook_scan_visit_should_yield,
         .p25_probe_in_flight = hook_p25_probe_in_flight,
+        .signal_search_probe = hook_signal_search_probe,
     };
     dsd_frame_sync_hooks_set(&hooks);
+    /* A host replacing one slot reads the table back whole. */
+    dsd_frame_sync_hooks got = {0};
+    dsd_frame_sync_hooks_get(&got);
+    assert(got.p25_sm_try_tick == hook_try_tick && got.signal_search_probe == hook_signal_search_probe);
+    assert(got.p25_probe_in_flight == hook_p25_probe_in_flight && got.no_carrier == hook_no_carrier);
+    dsd_frame_sync_hooks_get(NULL);
     reset_counters();
     g_yield_requested = 0;
     assert(dsd_frame_sync_hook_scan_visit_should_yield(opts, state) == 0);
@@ -139,6 +153,12 @@ test_installed_hooks_forward_args(dsd_opts* opts, dsd_state* state) {
     assert(g_last_opts == opts && g_last_state == state);
     g_yield_requested = 0;
     assert(dsd_frame_sync_hook_p25_probe_in_flight(opts, state) == 0);
+    reset_counters();
+    g_yield_requested = 1;
+    assert(dsd_frame_sync_hook_signal_search_probe(opts, state) == 1);
+    assert(g_last_opts == opts && g_last_state == state);
+    g_yield_requested = 0;
+    assert(dsd_frame_sync_hook_signal_search_probe(opts, state) == 0);
 
     dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     assert(g_try_tick_calls == 1);
