@@ -803,10 +803,10 @@ test_search_order_each_flag_subset(void) {
            == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
     assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_2)
            == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
-    /* X2-TDMA alone keeps 6000/4 a candidate, as P25 Phase 2 does. */
+    /* X2-TDMA runs at 4800/4, so without P25 Phase 2 the order skips 6000/4. */
     opts.frame_p25p2 = 0;
     assert(frame_sync_sps_hunt_search_next_index(&opts, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-           == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+           == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
 }
 
 /* An Auto session set up as the hunt tests it: every Auto protocol at 48 kHz, 4800/4 timing. */
