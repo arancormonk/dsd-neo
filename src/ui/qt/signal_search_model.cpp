@@ -478,24 +478,16 @@ SignalSearchModel::avoidFrequency(const QString& session, double frequency) {
     return true;
 }
 
+/* A history row's permanent avoid changes the store alone, on this thread: the store sets the runtime's permanent
+   list, which a running search takes at its next tick and leaves a visit to the frequency at once, so no decoder action
+   is needed, and none can be lost or refused at the Stop edge (issue #828 A-B5). */
 bool
-SignalSearchModel::avoidPermanently(const QString& session, double frequency) {
-    dsd_signal_search_control c{};
-    if (!controlFrequency(frequency, &c.frequency_hz)) {
+SignalSearchModel::avoidPermanently(double frequency) {
+    uint32_t hz = 0;
+    if (!controlFrequency(frequency, &hz)) {
         return false;
     }
-    if (m_owned) {
-        /* Permanent first, then this session, both on the decoder thread once it has checked the session. */
-        c.action = DSD_SEARCH_ACTION_AVOID_PERMANENT;
-        c.session_id = session.toULongLong();
-        if (dsd_app_signal_search_control(&c) < 0) {
-            m_error = tr("The decoder did not accept this action.");
-            Q_EMIT changed();
-            return false;
-        }
-        return true;
-    }
-    const int saved = dsd_app_signal_search_permanent_avoid(c.frequency_hz);
+    const int saved = dsd_app_signal_search_permanent_avoid(hz);
     const QString refusal = saved == DSD_APP_SEARCH_AVOID_FULL ? tr("The permanent avoid list is full")
                             : saved < 0                        ? tr("This frequency cannot be avoided")
                                                                : QString();
@@ -507,6 +499,7 @@ SignalSearchModel::avoidPermanently(const QString& session, double frequency) {
     return saved >= 0;
 }
 
+/* The store alone, as avoidPermanently(): a running search lifts the frequency at its next tick. */
 void
 SignalSearchModel::removeAvoid(double frequency) {
     if (std::isfinite(frequency) && frequency > 0 && frequency <= UINT32_MAX) {
@@ -515,10 +508,6 @@ SignalSearchModel::removeAvoid(double frequency) {
         if (m_error == tr("The permanent avoid list is full")) {
             m_error.clear();
             Q_EMIT changed();
-        }
-        /* A running session loaded this avoid when it started; lift it there too. */
-        if (m_owned) {
-            (void)unavoid((uint32_t)frequency);
         }
         refresh();
     }

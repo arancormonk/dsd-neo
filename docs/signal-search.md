@@ -144,8 +144,9 @@ While a search runs, the screen is laid out for what is on the air now:
   of each frequency's codes. Each row's actions button
   (**Actions for 463.5521 MHz**) opens what can be done with that
   detection: **Explore here**, **Start “<saved system>”** for each saved system
-  it matched, **Save as system**, **Avoid this session** (while a search runs),
-  and **Avoid permanently**, or **Remove permanent avoid** when it already is.
+  it matched, **Save as system**, **Avoid this session** (while a search runs,
+  unless the frequency is a permanent avoid or the search failed), and **Avoid
+  permanently**, or **Remove permanent avoid** when it already is.
   A matched system whose site is avoided is listed but cannot start: remove the
   avoid in its site list first.
 - A row whose detection kept call recordings says how many under its details
@@ -337,23 +338,33 @@ showed.
   back when its identification window expires, even one that heard only traffic a
   receive filter rejects.
 - **Skip** suppresses this frequency for the current pass.
-- **Avoid this session** lasts until the session ends. Session avoids are listed
+- The search keeps two avoid lists, and a frequency is in one of them at most.
+  **Avoid this session** lasts until the session ends. Session avoids are listed
   under **Avoided this session**, and **Stop avoiding** lifts one for the following
   measurements; a frequency already visited in the current pass returns with the next
   pass. A history row's avoid works the same way, and leaves the frequency at once if
-  the search is visiting it. **Avoid permanently** also saves it for future searches;
-  removing a permanent avoid during a search lifts it from the running session too.
-  With no search running, a row's permanent avoid only saves it.
-- Each list holds 1,024 frequencies. A full list is said on the screen: **The
-  avoid list is full** for this session's list and **The permanent avoid list is
-  full** for the permanent one, and nothing changes, not even a skip. A
-  permanent avoid is saved first, so when only this session's list is full the
-  screen says **Saved as a permanent avoid; this session's avoid list is full**:
-  it applies from the next search. A full-list message clears when the search
-  tunes to its next detection, and a failed search keeps its own error. An avoid
+  the search is visiting it. **Avoid permanently** saves the frequency for this and
+  every later search and moves it to **Permanent avoids**: a running search leaves it
+  at once if it is visiting it, and drops it from **Avoided this session** if it was
+  there. A row's permanent avoid, and **Remove avoid**, change the saved list whether a
+  search runs or not; a running search follows within a moment. Removing a permanent
+  avoid lifts it from the running search too. **Stop avoiding** only lifts a session
+  avoid, so it never brings back a permanent one, and a row whose frequency is already
+  a permanent avoid does not offer **Avoid this session**.
+- Each list holds 1,024 frequencies, and permanent avoids take no room in the
+  session's list. A full list is said on the screen: **The avoid list is full** for
+  this session's list and **The permanent avoid list is full** for the permanent
+  one, and nothing changes, not even a skip. A full-list message clears when the
+  search tunes to its next detection. A search that failed keeps its own error,
+  shows no session list and offers no **Avoid this session**: its session avoids
+  ended with it, while permanent avoids stay listed and can be removed. An avoid
   for a detection the search has already left (the panel was a moment old)
   changes neither list and shows nothing: the panel already shows what the
   search is doing now.
+- Taps that change the avoids are taken in order, each against both lists as they
+  stand when the search runs it (within a moment of the tap), and the screen reads
+  both lists from the same place the search does, so what it lists is what the
+  search avoids.
 - **Pause** ends any call in progress on the channel and permits range edits. A search
   that fails (its input stalls, for example) ends that call too.
   **Resume** applies them and restarts the pass under the same session, retaining
@@ -676,7 +687,11 @@ once measurements succeed again, and publish no level for an ended visit. Coordi
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
-live strength, lifting session avoids, pause/restart and scoped restoration, that a
+live strength, the two avoid lists (1,024 permanent and 1,024 session avoids at once,
+a session avoid of a permanent frequency adding nothing, Stop avoiding keeping a
+permanent avoid, a permanent avoid added or removed mid-search taking effect at the
+next tick, even on a held visit, and session avoids refused after a failure),
+pause/restart and scoped restoration, that a
 Pause or a failure (a stalled or lost input during a held visit) runs the carrier boundary
 once, so a call it interrupts ends there, and that a session ending under a search leaves
 the frequency it started from.
@@ -695,7 +710,10 @@ receiver settings and the detection's gain mode reaching the saved system), phon
 text scaling and navigation ownership. They also check that connection and USB-access
 failures reported after Start or Resume still reach the search screen beside its own
 refusals, that status-only refreshes leave history untouched (it is copied only when its store
-revision moves), session avoids, the aggregate 100,000-channel check before a start
+revision moves), session avoids (read from the search's own list, shown only for the running
+search and never after it failed or stopped), permanent avoids changed by a row
+action without the decoder (including at the Stop edge) and loaded once when the
+file or a backup repeats one, the aggregate 100,000-channel check before a start
 is submitted, and that a start the engine rejects with no search left owns nothing
 and is retired when the decoder session ends, so a recreated frontend never restores
 the search screen over a later ordinary session (a path Qt 6.11.2 never takes; see

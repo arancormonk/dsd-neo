@@ -29,7 +29,7 @@ Item {
         function cancelArm() { cancels++; }
         function removeAvoid(frequency) {}
         function avoidFrequency(session, frequency) { return true; }
-        function avoidPermanently(session, frequency) { return true; }
+        function avoidPermanently(frequency) { return true; }
         // The shape SignalSearchModel::systemForHit() gives a detection without a recorded receiver: the source it is
         // handed, retuned to the detection with its mode and gain.
         // A detection that recorded its receiver ("inputSpec") gets that receiver's own settings instead: an RTL's

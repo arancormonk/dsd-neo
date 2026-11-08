@@ -22,6 +22,8 @@ int dsd_app_signal_search_control(const dsd_signal_search_control* control);
  * the avoid list in "<path>.avoids.json". While no version 2 journal exists, the version 1 rows load with those
  * details empty and the first write creates the version 2 journal from them; once it exists it alone is read. */
 int dsd_app_signal_search_store_open(const char* path);
+/** Stop the worker after one last attempt at any write owed. The store then holds no permanent avoids, and neither does
+ * the runtime's permanent list, until the next open loads the file again. */
 void dsd_app_signal_search_store_close(void);
 void dsd_app_signal_search_store_flush(void);
 void dsd_app_signal_search_status_get(dsd_signal_search_status* status, char* error, size_t capacity);
@@ -32,17 +34,19 @@ size_t dsd_app_signal_search_history_get(dsd_signal_search_hit* hits, size_t cap
 uint64_t dsd_app_signal_search_history_revision(void);
 /** dsd_app_signal_search_history_get() and the revision of that copy, taken together. */
 size_t dsd_app_signal_search_history_snapshot(dsd_signal_search_hit* hits, size_t capacity, uint64_t* revision);
-/** Permanent avoids. */
+/** Permanent avoids, as loaded (a repeated frequency once) and changed since. The store is the only writer of the
+ * runtime's permanent list (<dsd-neo/runtime/signal_search_avoids.h>) and sets it at the load and at every add and
+ * remove, so a running search takes each change at its next tick (issue #828). */
 size_t dsd_app_signal_search_avoids_get(uint32_t* frequencies, size_t capacity);
+/** Remove a permanent avoid; -1 when it is not one. Thread-safe; the store saves it in the background. */
 int dsd_app_signal_search_avoid_remove(uint32_t frequency);
-/** Bumped by every change to the permanent or session avoid lists. */
+/** Moves whenever what dsd_app_signal_search_avoids_get() or dsd_app_signal_search_session_avoids_get() return can
+ * change: the permanent list, the runtime's session list, or whether the store's search shows one. */
 uint64_t dsd_app_signal_search_avoids_revision(void);
-/** Frequencies avoided for the running search session only; cleared when it stops. */
+/** The running search's own avoids: the engine's session list in the runtime, returned only while it belongs to the
+ * session the store's status names and that search has neither stopped nor failed, so a frontend never shows another
+ * session's list or one that no longer applies. Never holds a permanent avoid. */
 size_t dsd_app_signal_search_session_avoids_get(uint32_t* frequencies, size_t capacity);
-/** Decoder-thread mirror of the session's own avoid list, kept by the control actions. */
-void dsd_app_signal_search_session_avoid_add(uint64_t session, uint32_t frequency);
-void dsd_app_signal_search_session_avoid_remove(uint32_t frequency);
-void dsd_app_signal_search_session_avoids_clear(void);
 /** Decoder session teardown: no status may outlive it as a running or owned search. */
 void dsd_app_signal_search_session_ended(void);
 /** Decoder-thread publication; no disk access. */
@@ -59,9 +63,9 @@ typedef enum {
     DSD_APP_SEARCH_AVOID_INVALID = -2
 } dsd_app_search_avoid_result;
 
-/** Add a permanent avoid. Thread-safe; the store saves it in the background.
- * DSD_SEARCH_ACTION_AVOID_PERMANENT runs it on the decoder thread before the session's own avoid, after validating
- * the target; a control with hit_id 0 names a history row's frequency_hz instead of the current hit. */
+/** Add a permanent avoid. Thread-safe; the store saves it in the background. A frontend calls it directly for a
+ * history row; DSD_SEARCH_ACTION_AVOID_PERMANENT runs it on the decoder thread for the hit being visited, after
+ * validating the hit and before the coordinator leaves it. */
 int dsd_app_signal_search_permanent_avoid(uint32_t frequency);
 #ifdef __cplusplus
 }

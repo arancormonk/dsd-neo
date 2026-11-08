@@ -11,6 +11,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <mutex>
 #include <numeric>
 #include <stdint.h>
@@ -236,6 +237,8 @@ parse_avoid_frequency(const char*& p, uint32_t& frequency) {
     return true;
 }
 
+/* A frequency the file repeats is kept once (issue #828 A-B6), so one removal lifts it; more than
+   DSD_SEARCH_MAX_AVOIDS different frequencies is not a list the store takes. */
 bool
 parse_avoids(const char* p, std::vector<uint32_t>& result) {
     p = skip_space(p);
@@ -246,12 +249,17 @@ parse_avoids(const char* p, std::vector<uint32_t>& result) {
     if (*p == ']') {
         return !*skip_space(p + 1);
     }
-    while (result.size() < DSD_SEARCH_MAX_AVOIDS) {
+    for (;;) {
         uint32_t frequency = 0;
         if (!parse_avoid_frequency(p, frequency)) {
             return false;
         }
-        result.push_back(frequency);
+        if (std::find(result.begin(), result.end(), frequency) == result.end()) {
+            if (result.size() == DSD_SEARCH_MAX_AVOIDS) {
+                return false;
+            }
+            result.push_back(frequency);
+        }
         if (*p == ']') {
             return !*skip_space(p + 1);
         }
@@ -260,7 +268,6 @@ parse_avoids(const char* p, std::vector<uint32_t>& result) {
         }
         p = skip_space(p);
     }
-    return false;
 }
 
 bool
@@ -287,16 +294,19 @@ struct Store {
        every release shares one avoid list). `path` is the version 2 journal this store reads and writes. */
     std::string base, path, avoid_path, error;
     std::vector<Hit> history, pending;
-    std::vector<uint32_t> avoids, session_avoids;
+    /* The permanent avoids. The runtime's permanent list, which the running search reads, is set from it under the
+       mutex at every change, so the two never disagree and only this store writes that list (issue #828). */
+    std::vector<uint32_t> avoids;
     dsd_signal_search_status status{};
     bool stop = false, dirty_avoids = false, busy = false, compact = true;
     /* A file whose write failed stays owed until its own write succeeds; every worker pass retries it. `retry` wakes
        the worker for one more attempt (flush, close) without looping on storage that keeps failing. */
     bool history_failed = false, avoids_failed = false, retry = false;
     size_t records = 0;
-    /* Bumped on every change a frontend shows: history rows (upserts, trims, reloads) and either avoid list. */
+    /* Bumped on every change a frontend shows: history rows (upserts, trims, reloads), the permanent avoids, and
+       which session's avoid list is shown (session_avoids_shown_locked()); the runtime's session revision adds the
+       rest. */
     uint64_t history_revision = 1, avoids_revision = 1;
-    uint64_t session_avoids_session = 0;
 
     ~Store() { close(); }
 
@@ -511,11 +521,27 @@ struct Store {
 
 Store store;
 
+/* Hand the permanent avoids to the runtime list the search reads. Under the store's mutex, so the runtime takes every
+   change in the order the store made it. */
 void
-session_avoids_clear_locked() {
-    if (!store.session_avoids.empty() || store.session_avoids_session) {
-        store.session_avoids.clear();
-        store.session_avoids_session = 0;
+avoids_publish_locked() {
+    dsd_signal_search_avoids_permanent_set(store.avoids.data(), store.avoids.size());
+}
+
+/* The session whose own avoid list the frontends are shown: the store's running or paused search, none once it failed
+   or stopped. The list itself is the engine's, in the runtime. */
+uint64_t
+session_avoids_shown_locked() {
+    const int phase = store.status.phase;
+    return phase == DSD_SEARCH_STOPPED || phase == DSD_SEARCH_ERROR ? 0 : store.status.session_id;
+}
+
+/* Replace the published status, moving the avoid revision when that changes which session's avoids are shown. */
+void
+status_set_locked(const dsd_signal_search_status& status) {
+    const uint64_t shown = session_avoids_shown_locked();
+    store.status = status;
+    if (session_avoids_shown_locked() != shown) {
         ++store.avoids_revision;
     }
 }
@@ -544,16 +570,22 @@ dsd_app_signal_search_store_open(const char* path) {
     store.retry = false;
     store.error.clear();
     store.pending.clear();
-    store.session_avoids.clear();
-    store.session_avoids_session = 0;
     store.load();
+    avoids_publish_locked();
     store.worker = std::thread([] { store.run(); });
     return 0;
 }
 
+/* A closed store keeps no permanent avoids, and a search reads none from it; the next open loads the file again. */
 extern "C" void
 dsd_app_signal_search_store_close(void) {
     store.close();
+    std::lock_guard<std::mutex> lock(store.mutex);
+    if (!store.avoids.empty()) {
+        store.avoids.clear();
+        ++store.avoids_revision;
+    }
+    avoids_publish_locked();
 }
 
 extern "C" void
@@ -574,10 +606,7 @@ extern "C" void
 dsd_app_signal_search_publish(const dsd_signal_search_status* status, const Hit* hit, void* context) {
     (void)context;
     std::lock_guard<std::mutex> lock(store.mutex);
-    store.status = *status;
-    if (status->phase == DSD_SEARCH_STOPPED) {
-        session_avoids_clear_locked();
-    }
+    status_set_locked(*status);
     if (hit && hit->hit_id) {
         auto found =
             std::find_if(store.history.begin(), store.history.end(), [&](const Hit& h) { return same(h, *hit); });
@@ -632,66 +661,38 @@ dsd_app_signal_search_history_snapshot(Hit* hits, size_t capacity, uint64_t* rev
     return history_copy_locked(hits, capacity);
 }
 
+/* Both counters only grow, so their sum moves whenever either does. */
 extern "C" uint64_t
 dsd_app_signal_search_avoids_revision(void) {
     std::lock_guard<std::mutex> lock(store.mutex);
-    return store.avoids_revision;
+    return store.avoids_revision + dsd_signal_search_avoids_session_revision();
 }
 
 extern "C" size_t
 dsd_app_signal_search_session_avoids_get(uint32_t* frequencies, size_t capacity) {
     std::lock_guard<std::mutex> lock(store.mutex);
-    size_t n = frequencies ? std::min(capacity, store.session_avoids.size()) : 0;
-    for (size_t i = 0; i < n; ++i) {
-        frequencies[i] = store.session_avoids[i];
+    const uint64_t shown = session_avoids_shown_locked();
+    if (!frequencies || !capacity || !shown) {
+        return 0;
     }
-    return n;
-}
-
-extern "C" void
-dsd_app_signal_search_session_avoid_add(uint64_t session, uint32_t frequency) {
-    std::lock_guard<std::mutex> lock(store.mutex);
-    if (session != store.session_avoids_session) {
-        store.session_avoids.clear();
-        store.session_avoids_session = session;
-        ++store.avoids_revision;
-    }
-    if (frequency
-        && std::find(store.session_avoids.begin(), store.session_avoids.end(), frequency) == store.session_avoids.end()
-        && store.session_avoids.size() < DSD_SEARCH_MAX_AVOIDS) {
-        store.session_avoids.push_back(frequency);
-        ++store.avoids_revision;
-    }
-}
-
-extern "C" void
-dsd_app_signal_search_session_avoid_remove(uint32_t frequency) {
-    std::lock_guard<std::mutex> lock(store.mutex);
-    auto found = std::find(store.session_avoids.begin(), store.session_avoids.end(), frequency);
-    if (found != store.session_avoids.end()) {
-        store.session_avoids.erase(found);
-        ++store.avoids_revision;
-    }
-}
-
-extern "C" void
-dsd_app_signal_search_session_avoids_clear(void) {
-    std::lock_guard<std::mutex> lock(store.mutex);
-    session_avoids_clear_locked();
+    uint64_t session = 0;
+    const size_t n = dsd_signal_search_avoids_session_get(&session, frequencies, capacity);
+    return session == shown ? n : 0;
 }
 
 extern "C" void
 dsd_app_signal_search_session_ended(void) {
     std::lock_guard<std::mutex> lock(store.mutex);
-    session_avoids_clear_locked();
     /* A rejected start leaves an error with no coordinator to publish STOPPED. Keep its message for the idle screen,
        but nothing the next session sees may claim the tuner or a running phase. */
     if (store.status.phase != DSD_SEARCH_STOPPED || store.status.owned) {
-        store.status.phase = DSD_SEARCH_STOPPED;
-        store.status.owned = 0;
-        store.status.identifying = 0;
-        store.status.live_power_valid = 0;
-        ++store.status.revision;
+        dsd_signal_search_status ended = store.status;
+        ended.phase = DSD_SEARCH_STOPPED;
+        ended.owned = 0;
+        ended.identifying = 0;
+        ended.live_power_valid = 0;
+        ++ended.revision;
+        status_set_locked(ended);
     }
 }
 
@@ -719,6 +720,7 @@ dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
     }
     store.avoids.push_back(frequency);
     ++store.avoids_revision;
+    avoids_publish_locked();
     store.dirty_avoids = true;
     store.wake.notify_all();
     return DSD_APP_SEARCH_AVOID_ADDED;
@@ -733,6 +735,7 @@ dsd_app_signal_search_avoid_remove(uint32_t frequency) {
     }
     store.avoids.erase(found);
     ++store.avoids_revision;
+    avoids_publish_locked();
     store.dirty_avoids = true;
     store.wake.notify_all();
     return 0;

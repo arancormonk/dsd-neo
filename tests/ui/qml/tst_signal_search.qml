@@ -29,7 +29,7 @@ Item {
         property string armError: ""
         function control(action, session, hit) { actions = [action, session, hit]; return true; }
         function avoidFrequency(session, frequency) { actions = ["session", session, frequency]; return true; }
-        function avoidPermanently(session, frequency) { actions = ["permanent", session, frequency]; return true; }
+        function avoidPermanently(frequency) { actions = ["permanent", frequency]; return true; }
         function removeSessionAvoid(frequency) { lifted = lifted.concat(["session:" + frequency]); return true; }
         function removeAvoid(frequency) { lifted = lifted.concat(["permanent:" + frequency]); }
         function arm() { arms++; return armError; }
@@ -537,7 +537,16 @@ Item {
             verify(permanent && permanent.enabled);
             permanent.clicked();
             compare(model.lifted.join(","), "session:463550000,permanent:154430000");
+            // A failed search has no session list and refuses to lift from it
+            // (issue #828): nothing to offer, while permanent avoids stay listed.
+            model.status = Object.assign({}, model.status, {phase: 7, hit: {}});
+            wait(0);
+            verify(!findChild(loader.item, "searchSessionAvoid"));
+            verify(findChild(loader.item, "searchPermanentAvoid"));
             // Session avoids end with the session: nothing to list once it stopped.
+            model.status = Object.assign({}, model.status, {phase: 4});
+            wait(0);
+            verify(findChild(loader.item, "searchSessionAvoid"));
             loader.item.sessionActive = false;
             wait(0);
             verify(!findChild(loader.item, "searchSessionAvoid"));
@@ -1281,7 +1290,9 @@ Item {
         }
         // Each detection row offers what can be done with it, by state: saved
         // systems it matched (an avoided one disabled, saying why), avoiding it
-        // this session only while one runs, and the permanent avoid both ways.
+        // this session only while one runs and the frequency is no permanent
+        // avoid (issue #828: it is excluded already), never in a failed search,
+        // and the permanent avoid both ways.
         // With Record calls off (the app's default) and no recordings kept, a
         // disabled Recordings comes last (issue #809).
         function test_history_menu_per_state_data() {
@@ -1294,7 +1305,11 @@ Item {
                 {tag: "no session", hit: {}, session: false, avoided: false,
                     want: ["Explore here", "Save as system", "Avoid permanently", "Recordings (disabled)"]},
                 {tag: "permanently avoided", hit: {}, session: true, avoided: true,
-                    want: ["Explore here", "Save as system", "Avoid this session", "Remove permanent avoid", "Recordings (disabled)"]},
+                    want: ["Explore here", "Save as system", "Remove permanent avoid", "Recordings (disabled)"]},
+                {tag: "search failed", hit: {}, session: true, avoided: false, phase: 7,
+                    want: ["Explore here", "Save as system", "Avoid permanently", "Recordings (disabled)"]},
+                {tag: "paused", hit: {}, session: true, avoided: false, phase: 6,
+                    want: ["Explore here", "Save as system", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]},
                 {tag: "permanently avoided, no session", hit: {matches: matched}, session: false, avoided: true,
                     want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Remove permanent avoid", "Recordings (disabled)"]},
                 // Issue #809: with Record calls on, a detection that kept no recordings offers none.
@@ -1307,6 +1322,8 @@ Item {
             screen.sessionActive = data.session;
             if (!data.session)
                 model.status = {phase: 0, session: "17", owned: false};
+            else if (data.phase)
+                model.status = Object.assign({}, model.status, {phase: data.phase, hit: {}});
             model.avoids = data.avoided ? [462575000] : [];
             testContext.setPrefs("recordCalls", data.record === true);
             model.history = [historyHit(data.hit)];
@@ -1351,7 +1368,7 @@ Item {
             compare(model.actions.join(","), "session,17,462575000");
             open();
             menuItem("searchActionAvoidPermanent").activate();
-            compare(model.actions.join(","), "permanent,17,462575000");
+            compare(model.actions.join(","), "permanent,462575000");
             model.avoids = [462575000];
             open();
             menuItem("searchActionRemovePermanent").activate();
@@ -1384,13 +1401,14 @@ Item {
             model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
             verify(!more.visible);
         }
-        // An avoid the decoder refuses (either list full, from the Now panel or
-        // a row) is the status message, which the screen shows; with no session
-        // a refused permanent avoid is the model's error.
+        // An avoid the decoder refuses (either list full, from the Now panel) is
+        // the status message, which the screen shows; a refused row permanent
+        // avoid is the model's error. A permanent avoid takes no room in the
+        // session's list, so no "saved, but" message exists (issue #828).
         function test_avoid_refusals_are_shown_data() {
             return [{tag: "session list full", message: "The avoid list is full"},
                 {tag: "permanent list full", message: "The permanent avoid list is full"},
-                {tag: "permanent saved, session full", message: "Saved as a permanent avoid; this session's avoid list is full"}];
+                {tag: "no channel", message: "This frequency cannot be avoided"}];
         }
         function test_avoid_refusals_are_shown(data) {
             var message = findChild(loader.item, "searchMessage");

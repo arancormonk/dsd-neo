@@ -326,7 +326,10 @@ class StagingReader {
             if (frequency < 1 || frequency > static_cast<qint64>(UINT32_MAX)) {
                 return false;
             }
-            m_staging->avoids.append(static_cast<quint32>(frequency));
+            /* A repeat is kept once, as the avoid store loads it (issue #828 A-B6). */
+            if (!m_staging->avoids.contains(static_cast<quint32>(frequency))) {
+                m_staging->avoids.append(static_cast<quint32>(frequency));
+            }
         }
         return true;
     }

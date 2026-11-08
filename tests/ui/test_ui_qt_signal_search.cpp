@@ -43,6 +43,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>
@@ -1368,59 +1369,98 @@ main(int argc, char** argv) {
     assert(dsd_app_signal_search_history_snapshot(newest.data(), newest.size(), &snapshotRevision) == 2);
     assert(newest[0].hit_id == 79 && snapshotRevision == dsd_app_signal_search_history_revision());
 
-    // Session avoids are mirrored per session, listed apart from permanent ones and cleared when the session stops.
-    dsd_app_signal_search_session_avoid_add(17, 463550000);
-    dsd_app_signal_search_session_avoid_add(17, 463550000);
-    dsd_app_signal_search_session_avoid_add(17, 463575000);
+    // Issue #828: a session's own avoids are the engine's runtime list, shown through the store only for the store's
+    // running session and apart from the permanent ones. The status published above is session 17's, listening.
+    const uint32_t sessionList[] = {463550000, 463575000};
+    dsd_signal_search_avoids_session_set(17, sessionList, 2);
+    const int avoidSignalsBefore = avoidSignals;
     model.refresh();
-    assert(avoidSignals == 1 && model.sessionAvoids().size() == 2 && model.avoids().isEmpty());
-    dsd_app_signal_search_session_avoid_remove(463550000);
+    assert(avoidSignals == avoidSignalsBefore + 1 && model.sessionAvoids().size() == 2 && model.avoids().isEmpty());
+    model.refresh();
+    assert(avoidSignals == avoidSignalsBefore + 1); // nothing changed, nothing copied
+    dsd_signal_search_avoids_session_set(17, sessionList + 1, 1);
     model.refresh();
     assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463575000);
-    dsd_app_signal_search_session_avoid_add(18, 463600000); // another session starts its own list
+    const uint32_t nextList[] = {463600000};
+    dsd_signal_search_avoids_session_set(18, nextList, 1); // another session's list is not this search's
     model.refresh();
-    assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463600000);
-    dsd_signal_search_status stopped{};
-    stopped.session_id = 18;
-    stopped.revision = 6000;
-    stopped.phase = DSD_SEARCH_STOPPED;
-    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
-    model.refresh();
-    assert(model.sessionAvoids().isEmpty() && !model.status().value(QStringLiteral("owned")).toBool());
-
-    // While a search owns the tuner, both history avoids go to the decoder thread, which checks the session first:
-    // nothing changes here until it has.
-    dsd_signal_search_status running = stopped;
-    running.revision = 6001;
+    assert(model.sessionAvoids().isEmpty());
+    dsd_signal_search_status running{};
+    running.session_id = 18;
+    running.revision = 5990;
     running.phase = DSD_SEARCH_LISTENING;
     running.owned = 1;
     dsd_app_signal_search_publish(&running, nullptr, nullptr);
     model.refresh();
+    assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463600000);
+    // A failed or stopped search shows no session list, even before the engine's clearing reaches the runtime.
+    dsd_signal_search_status failed = running;
+    failed.revision = 5991;
+    failed.phase = DSD_SEARCH_ERROR;
+    dsd_app_signal_search_publish(&failed, nullptr, nullptr);
+    model.refresh();
+    assert(model.sessionAvoids().isEmpty());
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    model.refresh();
+    assert(model.sessionAvoids().size() == 1);
+    dsd_signal_search_status stopped = running;
+    stopped.revision = 6000;
+    stopped.phase = DSD_SEARCH_STOPPED;
+    stopped.owned = 0;
+    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    model.refresh();
+    assert(model.sessionAvoids().isEmpty() && !model.status().value(QStringLiteral("owned")).toBool());
+    dsd_signal_search_avoids_session_set(0, nullptr, 0);
+
+    // A history row's permanent avoid and its removal change the store alone, here, whether or not a search runs: the
+    // store sets the runtime's permanent list, which a running search takes at its next tick. Nothing is queued for
+    // the decoder, so a model a tick behind the decoder at the Stop edge (command admission already closed) still
+    // saves the avoid and shows no error (A-B5). An avoid for this session only still goes to the decoder thread.
+    uint32_t permanent[4];
+    uint64_t permanentRevision = 0;
+    running.revision = 6001;
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    model.refresh();
     dsd_app_frontend_runtime_start(nullptr, nullptr);
-    assert(model.avoidPermanently(QStringLiteral("18"), 451000000) && startQueued());
-    assert(model.avoids().isEmpty());
-    reopenAdmission();
+    assert(model.avoidPermanently(451000000) && !startQueued() && model.error().isEmpty());
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000);
+    assert(dsd_signal_search_avoids_permanent_snapshot(permanent, 4, &permanentRevision) == 1
+           && permanent[0] == 451000000);
+    model.removeAvoid(451000000);
+    assert(!startQueued() && model.avoids().isEmpty() && model.error().isEmpty());
+    assert(dsd_signal_search_avoids_permanent_snapshot(permanent, 4, &permanentRevision) == 0);
     assert(!model.avoidFrequency(QStringLiteral("17"), 451000000)); // not the running session
     assert(model.avoidFrequency(QStringLiteral("18"), 451000000) && startQueued());
     reopenAdmission();
     dsd_app_frontend_runtime_stop();
+    assert(model.avoidPermanently(451000000) && model.error().isEmpty());
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000);
+    model.removeAvoid(451000000);
+    assert(model.avoids().isEmpty() && model.error().isEmpty());
+    // After Stop, a row's permanent avoid leaves the (engine's, now empty) session list alone.
     stopped.revision = 6002;
     dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    model.refresh();
+    assert(model.avoidPermanently(451000000));
+    uint64_t sessionOwner = 1;
+    assert(dsd_signal_search_avoids_session_get(&sessionOwner, permanent, 4) == 0 && sessionOwner == 0);
+    assert(model.sessionAvoids().isEmpty() && model.avoids().size() == 1);
+    assert(dsd_app_signal_search_avoid_remove(451000000) == 0);
     model.refresh();
     assert(model.avoids().isEmpty() && model.sessionAvoids().isEmpty());
 
     // With no search running, a history row's permanent avoid changes the permanent list alone, at once; a full
     // list is refused with a message, and an avoid for this session only needs a session.
     assert(!model.avoidFrequency(QStringLiteral("18"), 451000000));
-    assert(model.avoidPermanently(QStringLiteral("18"), 451000000));
+    assert(model.avoidPermanently(451000000));
     assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000 && model.error().isEmpty());
-    assert(model.avoidPermanently(QString(), 451000000)); // already avoided: as asked
+    assert(model.avoidPermanently(451000000)); // already avoided: as asked
     assert(model.avoids().size() == 1 && model.error().isEmpty());
-    assert(!model.avoidPermanently(QString(), 0) && !model.avoidPermanently(QString(), -5));
+    assert(!model.avoidPermanently(0) && !model.avoidPermanently(-5));
     for (uint32_t i = 1; i < DSD_SEARCH_MAX_AVOIDS; ++i) {
         assert(dsd_app_signal_search_permanent_avoid(451000000U + i * 12500U) == DSD_APP_SEARCH_AVOID_ADDED);
     }
-    assert(!model.avoidPermanently(QString(), 470000000));
+    assert(!model.avoidPermanently(470000000));
     assert(model.error() == QStringLiteral("The permanent avoid list is full"));
     assert((uint32_t)model.avoids().size() == DSD_SEARCH_MAX_AVOIDS);
     // Lifting one through the model makes room, and the refusal goes with it.
@@ -1429,12 +1469,12 @@ main(int argc, char** argv) {
     for (const auto& avoided : model.avoids()) {
         assert(dsd_app_signal_search_avoid_remove(avoided.toUInt()) == 0);
     }
-    assert(model.avoidPermanently(QString(), 470000000) && model.error().isEmpty());
+    assert(model.avoidPermanently(470000000) && model.error().isEmpty());
     assert(dsd_app_signal_search_avoid_remove(470000000) == 0);
     model.refresh();
     assert(model.avoids().isEmpty());
     // A frequency above 2^31 Hz (2.4 GHz) is avoided as itself on every platform, including those whose long is 32 bits.
-    assert(model.avoidPermanently(QString(), 2400000000.0) && model.error().isEmpty());
+    assert(model.avoidPermanently(2400000000.0) && model.error().isEmpty());
     assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 2400000000U);
     assert(dsd_app_signal_search_avoid_remove(2400000000U) == 0);
     model.refresh();

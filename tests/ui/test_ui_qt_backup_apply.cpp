@@ -2059,6 +2059,26 @@ test_empty_avoids(TestHost& host, const Backup& b, const Old& old) {
     dsd_app_signal_search_store_close();
 }
 
+/** A staged avoid list that repeats a frequency (an edited staging) is written, and loads, with it once (issue #828
+ * A-B6), so a single removal lifts it. */
+void
+test_repeated_avoids(TestHost& host, const Backup& b, const Old& old) {
+    put_back(old.tree);
+    dsd_qt::backup::ParseResult parsed = b.parsed;
+    parsed.avoids = {162550000U, 156800000U, 162550000U};
+    const QString dir = dsd_qt::backup::staging_dir_for_job("repeated");
+    QString error;
+    expect("stage a repeated avoid", dsd_qt::backup::stage_restore(root(), parsed, b.archive, dir, &error)
+                                         && dsd_qt::backup::promote_staging(dir) && dsd_qt::backup::commit_pending());
+    expect("apply it", apply().outcome == ApplyOutcome::Applied);
+    expect("the avoid file holds it once", read_file(at(kAvoidsFile)) == "[162550000,156800000]\n");
+    dsd_qt::SignalSearchModel search(&host, nullptr);
+    uint32_t avoids[4] = {};
+    expect("the native store loads it once",
+           dsd_app_signal_search_avoids_get(avoids, 4) == 2 && avoids[0] == 162550000U && avoids[1] == 156800000U);
+    dsd_app_signal_search_store_close();
+}
+
 /** A backup of one channel map kept beside its bundle, and the configuration it was exported from. */
 struct Beside {
     QByteArray archive;
@@ -2279,6 +2299,7 @@ main(int argc, char** argv) {
         test_links_inside_removed_trees(backup, old, reference);
         test_journal_leftover(backup, old);
         test_empty_avoids(host, backup, old);
+        test_repeated_avoids(host, backup, old);
         test_two_restores_in_a_row(backup, old, reference);
         test_bundle_named_from_outside(host, old);
     }

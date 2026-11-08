@@ -20,6 +20,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -73,6 +74,25 @@ publish_hit(const dsd_signal_search_hit* hit) {
     s.phase = DSD_SEARCH_LISTENING;
     s.hit = *hit;
     dsd_app_signal_search_publish(&s, &s.hit, NULL);
+}
+
+/* A status with no detection: session @p session in @p phase. */
+static void
+publish_phase(uint64_t session, int phase, uint64_t revision) {
+    dsd_signal_search_status s;
+    DSD_MEMSET(&s, 0, sizeof(s));
+    s.session_id = session;
+    s.revision = revision;
+    s.phase = phase;
+    s.owned = phase != DSD_SEARCH_STOPPED;
+    dsd_app_signal_search_publish(&s, NULL, NULL);
+}
+
+/* The runtime's permanent avoid list, the one the running search reads; returns its length. */
+static size_t
+runtime_permanent(uint32_t* out, size_t cap) {
+    uint64_t revision = 0;
+    return dsd_signal_search_avoids_permanent_snapshot(out, cap, &revision);
 }
 
 static void
@@ -391,6 +411,73 @@ main(void) {
     assert(!store_error());
     dsd_app_signal_search_store_close();
 
+    // Issue #828: the store alone writes the runtime's permanent avoid list, which a running search reads at its next
+    // tick: the list as loaded, then at every add and remove; closing the store withdraws it. A file that repeats a
+    // frequency loads it once (A-B6), so a single removal lifts it everywhere.
+    store_paths shared;
+    paths_init(&shared, root, "shared");
+    assert(dsd_mkdir(shared.dir, 0700) == 0);
+    {
+        FILE* f = dsd_fopen_private(shared.avoids, "wb");
+        assert(f);
+        assert(fputs("[462700000, 462725000,462700000]\n", f) >= 0);
+        assert(fclose(f) == 0);
+    }
+    uint32_t runtime[4];
+    assert(dsd_app_signal_search_store_open(shared.journal) == 0);
+    assert(!store_error());
+    assert(dsd_app_signal_search_avoids_get(avoids, 4) == 2 && avoids[0] == 462700000 && avoids[1] == 462725000);
+    assert(runtime_permanent(runtime, 4) == 2 && runtime[0] == 462700000 && runtime[1] == 462725000);
+    assert(dsd_app_signal_search_permanent_avoid(462750000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(runtime_permanent(runtime, 4) == 3 && runtime[2] == 462750000);
+    const uint64_t permanent_revision = dsd_signal_search_avoids_permanent_revision();
+    assert(dsd_app_signal_search_permanent_avoid(462750000) == DSD_APP_SEARCH_AVOID_DUPLICATE);
+    assert(dsd_signal_search_avoids_permanent_revision() == permanent_revision);
+    assert(dsd_app_signal_search_avoid_remove(462700000) == 0);
+    assert(runtime_permanent(runtime, 4) == 2 && runtime[0] == 462725000 && runtime[1] == 462750000);
+    assert(dsd_app_signal_search_avoid_remove(462700000) == -1);
+    assert(dsd_app_signal_search_avoids_get(avoids, 4) == 2);
+    dsd_app_signal_search_store_close();
+    assert(runtime_permanent(runtime, 4) == 0 && dsd_app_signal_search_avoids_get(avoids, 4) == 0);
+    assert(dsd_app_signal_search_store_open(shared.journal) == 0);
+    assert(runtime_permanent(runtime, 4) == 2 && runtime[0] == 462725000 && runtime[1] == 462750000);
+
+    // The session list is the engine's, read from the runtime, and shown only for the store's own running session:
+    // never another session's, nor one that failed or stopped, even while the runtime still holds it. A change to the
+    // list, or to whether it is shown, moves the avoid revision the frontends copy by.
+    const uint32_t session_list[] = {462800000, 462825000};
+    publish_phase(41, DSD_SEARCH_SEARCHING, 1);
+    uint64_t avoid_revision = dsd_app_signal_search_avoids_revision();
+    dsd_signal_search_avoids_session_set(41, session_list, 2);
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 2 && avoids[0] == 462800000);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 1) == 1 && avoids[0] == 462800000);
+    dsd_signal_search_avoids_session_set(42, session_list, 1);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    dsd_signal_search_avoids_session_set(41, session_list + 1, 1);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1 && avoids[0] == 462825000);
+    avoid_revision = dsd_app_signal_search_avoids_revision();
+    publish_phase(41, DSD_SEARCH_PAUSED, 2);
+    assert(dsd_app_signal_search_avoids_revision() == avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1);
+    publish_phase(41, DSD_SEARCH_ERROR, 3);
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    avoid_revision = dsd_app_signal_search_avoids_revision();
+    publish_phase(41, DSD_SEARCH_PAUSED, 4);
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1);
+    publish_phase(41, DSD_SEARCH_STOPPED, 5);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    publish_phase(41, DSD_SEARCH_LISTENING, 6);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1);
+    avoid_revision = dsd_app_signal_search_avoids_revision();
+    dsd_app_signal_search_session_ended();
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    dsd_signal_search_avoids_session_set(0, NULL, 0);
+    dsd_app_signal_search_store_close();
+
     // A version 1 journal loads every row, with no checked site, slot or encryption. The first write creates the
     // version 2 journal holding all of them; the version 1 journal is never touched, so an earlier release still
     // reads its own history.
@@ -557,6 +644,7 @@ main(void) {
     paths_remove(&details);
     paths_remove(&hostile);
     paths_remove(&limits);
+    paths_remove(&shared);
     paths_remove(&clean);
     paths_remove(&late);
     paths_remove(&blocked);

@@ -1396,6 +1396,12 @@ refuse_prefs_and_avoids(const QByteArray& archive) {
     expect("largest avoid frequency is kept",
            dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root()).avoids
                == QList<quint32>({4294967295U}));
+    // Issue #828 A-B6: an edited backup's repeated avoid is kept once, in its first place, and counted once.
+    forged.manifest.insert("avoids", QJsonArray{162550000, 156800000, 162550000});
+    const auto repeated = dsd_qt::backup::backup_parse_archive(assemble(forged), dsd_qt::json_store_root());
+    expect("a repeated avoid is kept once", repeated.error == BackupError::None
+                                                && repeated.avoids == QList<quint32>({162550000U, 156800000U})
+                                                && repeated.summary.avoids == 2);
 }
 
 QByteArray

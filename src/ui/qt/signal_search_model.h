@@ -79,13 +79,13 @@ class SignalSearchModel : public QObject {
      * decoder's verdict, a full list included, arrives in the status message. */
     Q_INVOKABLE bool avoidFrequency(const QString& session, double frequency);
     /**
-     * @brief Avoid a history row's frequency permanently, and for the running session too.
+     * @brief Avoid a history row's frequency permanently.
      *
-     * While this model's search owns the tuner the decoder thread validates @p session, saves the avoid and then
-     * avoids it in the session, its verdict arriving in the status message. Otherwise only the permanent list
-     * changes, here, and a refusal is this model's error.
+     * Only the store changes, here, with or without a search: a running search takes the permanent list at its next
+     * tick and leaves the frequency if it is visiting it. A refusal (a full list, no frequency) is this model's error.
      */
-    Q_INVOKABLE bool avoidPermanently(const QString& session, double frequency);
+    Q_INVOKABLE bool avoidPermanently(double frequency);
+    /** Remove a permanent avoid from the store, here; a running search lifts it at its next tick. */
     Q_INVOKABLE void removeAvoid(double frequency);
     Q_INVOKABLE bool removeSessionAvoid(double frequency);
     Q_INVOKABLE QVariantMap systemForHit(const QVariantMap& hit, const QVariantMap& source) const;

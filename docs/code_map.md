@@ -4128,16 +4128,26 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     neither retires it nor clears the error. Each later worker pass, flush and close
     retries it; a history retry compacts every retained record, so nothing is appended
     twice. The worker survives QML teardown; it never reads live decoder state. History
-    and avoid revisions let frontends copy history only when it changed. The control
-    actions mirror the session's own avoid list (cleared when it stops), only after the
-    coordinator accepted the avoid, and with the frequency `dsd_engine_signal_search_target()`
-    resolved on the decoder thread, never an older published hit; a stale session or hit
-    changes neither list. `dsd_app_signal_search_permanent_avoid()` returns
-    `DSD_APP_SEARCH_AVOID_ADDED`/`DUPLICATE`/`FULL`/`INVALID`. `AVOID_PERMANENT` is
-    permanent-first: validate, save (a full list refuses with a notice and no skip or session
-    avoid), then the session's avoid (the current hit, or by frequency for a history row's
-    hit ID 0); a full session list after the save is reported as "Saved as a permanent
-    avoid; this session's avoid list is full" (`APP_SIGNAL_SEARCH_PROVENANCE`,
+    and avoid revisions let frontends copy history only when it changed. Avoids (issue
+    #828): the store is the only writer of the runtime's permanent avoid list
+    (`signal_search_avoids.h`, Runtime) and sets it under its mutex, in the order it
+    changes, at the load (a repeated frequency loads once, `parse_avoids()`), at every
+    add and remove, and empty at `dsd_app_signal_search_store_close()`, which also drops
+    its own copy until the next open; a running search takes it at its next tick. The
+    store keeps no session list: `dsd_app_signal_search_session_avoids_get()` returns the
+    engine's runtime session list only while it belongs to the session the store's
+    status names and that phase is neither STOPPED nor ERROR, so no stale or failed
+    session's list is ever shown. `dsd_app_signal_search_avoids_revision()` is the
+    store's own avoid revision (permanent changes, and status changes that switch which
+    session is shown, `status_set_locked()`) plus the runtime session revision. The
+    session avoid actions (`AVOID`, `AVOID_FREQUENCY`, `UNAVOID`) go to the coordinator
+    alone, which validates them on the decoder thread. `dsd_app_signal_search_permanent_avoid()`
+    returns `DSD_APP_SEARCH_AVOID_ADDED`/`DUPLICATE`/`FULL`/`INVALID`. `AVOID_PERMANENT`
+    (the Now panel, hit-tied; a hit ID 0 is refused) is permanent-first: validate the hit
+    with `dsd_engine_signal_search_target()` (never an older published hit; a stale
+    session or hit changes nothing), save (a full list refuses with a notice and no skip),
+    then the coordinator's `AVOID_PERMANENT`, which finds the frequency permanent, takes
+    no session room and leaves the visit (`APP_SIGNAL_SEARCH_PROVENANCE`,
     `APP_SIGNAL_SEARCH_STORE`). A rejected start
     with no coordinator left publishes an unowned error, and
     `dsd_app_frontend_runtime_stop()` retires any status left behind
@@ -10547,10 +10557,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
   Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
   (an avoided site's row disabled with its reason), Save as system, Avoid this session
-  while a search owns the tuner (`SignalSearchModel::avoidFrequency()`), and Avoid
-  permanently or Remove permanent avoid (`avoidPermanently()`: through the decoder thread
-  while a search runs, the store directly when none does). The verdicts arrive as the
-  status message or the model's error. That message (`searchMessage`, an `AlertMessage`) is
+  while a search owns the tuner and has not failed (`sessionAvoidsLive`), unless the
+  frequency is a permanent avoid (`SignalSearchModel::avoidFrequency()`), and Avoid
+  permanently or Remove permanent avoid (`avoidPermanently()`/`removeAvoid()`: the store
+  alone on the GUI thread, search or not, with no decoder action and no `owned` gate, so
+  nothing is lost or refused at the Stop edge; the running search follows at its next
+  tick, issue #828). The verdicts arrive as the status message or the model's error.
+  "Avoided this session" (Stop avoiding) lists `sessionAvoids` only while
+  `sessionAvoidsLive`. That message (`searchMessage`, an `AlertMessage`) is
   reparented by `sessionActive`: under the Now panel while a session runs, so it never moves
   the panel, and above the setup while idle (`test_message_never_moves_the_now_panel`).
   Leaving for another session is one Main operation,

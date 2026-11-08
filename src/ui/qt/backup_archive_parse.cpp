@@ -295,7 +295,10 @@ class Parser {
             if (frequency < 1 || frequency > static_cast<qint64>(UINT32_MAX)) {
                 return fail(BackupError::Damaged, QStringLiteral("avoids: frequency out of range"));
             }
-            m_result.avoids.append(static_cast<quint32>(frequency));
+            /* A repeat is kept once, as the avoid store loads it (issue #828 A-B6). */
+            if (!m_result.avoids.contains(static_cast<quint32>(frequency))) {
+                m_result.avoids.append(static_cast<quint32>(frequency));
+            }
         }
         return true;
     }

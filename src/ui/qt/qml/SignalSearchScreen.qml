@@ -65,6 +65,9 @@ Item {
         status.rangeName || "", hit.id || "", hit.freqMHz || "", hit.confirmed === true, hit.protocol || ""].join("|")
     readonly property bool editable: !sessionActive || phase === 6
     readonly property bool ownedSession: sessionActive && !!status.owned
+    // Issue #828: the session's own avoid list exists while a search runs or
+    // is paused; a failed search (phase 7) has none, and refuses avoids.
+    readonly property bool sessionAvoidsLive: sessionActive && phase !== 7
     signal closed
     signal backRequested
     signal start(string sourceType, string host, int port, string frequency)
@@ -365,7 +368,9 @@ Item {
         if (!all)
             return items;
         items.push({ text: qsTr("Save as system"), key: "save", objectName: "searchActionSave" });
-        if (ownedSession && phase !== 0)
+        // A permanent avoid is excluded already: avoiding it this session too
+        // would do nothing (issue #828).
+        if (ownedSession && phase !== 0 && sessionAvoidsLive && !permanentlyAvoided(h))
             items.push({ text: qsTr("Avoid this session"), key: "avoidSession", objectName: "searchActionAvoidSession" });
         if (permanentlyAvoided(h))
             items.push({ text: qsTr("Remove permanent avoid"), key: "removePermanent", objectName: "searchActionRemovePermanent" });
@@ -891,9 +896,9 @@ Item {
                 visible: active
                 sourceComponent: recentDetections
             }
-            ReadableText { heading: true; visible: screen.sessionActive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: screen.sessionAvoidsLive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
-                model: screen.sessionActive && searchModel ? (searchModel.sessionAvoids || []) : []
+                model: screen.sessionAvoidsLive && searchModel ? (searchModel.sessionAvoids || []) : []
                 OutlineButton {
                     required property var modelData
                     objectName: "searchSessionAvoid"
@@ -1043,7 +1048,7 @@ Item {
             else if (item.key === "avoidSession")
                 searchModel.avoidFrequency(String(screen.status.session || ""), screen.hitHz(h));
             else if (item.key === "avoidPermanent")
-                searchModel.avoidPermanently(String(screen.status.session || ""), screen.hitHz(h));
+                searchModel.avoidPermanently(screen.hitHz(h));
             else if (item.key === "removePermanent")
                 searchModel.removeAvoid(screen.hitHz(h));
             else if (item.key === "recordings")
