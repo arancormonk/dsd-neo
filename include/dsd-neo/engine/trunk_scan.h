@@ -379,8 +379,9 @@ int dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state,
 int dsd_engine_trunk_scan_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
                                    uint32_t request);
 /**
- * @brief Whether the target on air owes a departure that is due now (issue #697): it is out of the rotation (its list
- * is off, or it is the avoided fallback) and another target can take the receiver, or could when it was last asked.
+ * @brief Whether the target on air owes a departure that is due now (issue #697): it is out of the rotation (every
+ * list that holds it is off, or it is the avoided fallback) and another target can take the receiver, or could when
+ * it was last asked.
  *
  * Joins the frame loop's yield (scan_visit_should_yield) beside visit expiry and receive rejection, so a continuously
  * keyed DMR carrier unwinds at a burst boundary and the next coordinator tick departs after protocol cleanup. Reads

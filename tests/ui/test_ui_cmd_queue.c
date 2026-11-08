@@ -27770,9 +27770,10 @@ test_scan_list_set_judged_by_the_lists_holding_the_target(void) {
     return rc;
 }
 
-/* While a target on air owes a departure (its list off, or the avoided fallback), a scan flag edit of that scan starts
-   or cancels it, so a list switch, a trunk-scan put back and a clear take the frame loop; with no departure owed, or
-   for another scan, a put back of a -Y row or a malformed one, they wait for the carrier to end (issue #672, #697).
+/* While a target on air owes a departure (every list that holds it off, or the avoided fallback), a scan flag edit of
+   that scan starts or cancels it, so a list switch, a trunk-scan put back and a clear take the frame loop; with no
+   departure owed, or for another scan, a put back of a -Y row or a malformed one, they wait for the carrier to end
+   (issue #672, #697).
    Judged against the asking decoder's state, here written by hand. */
 static int
 test_scan_flag_edits_while_a_departure_is_owed(void) {

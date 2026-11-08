@@ -18010,24 +18010,20 @@ test_lists_union_target_cap(void) {
 
 /* --- Issue #697: one target id in several lists is one shared target. --- */
 
-/* Whether list @p l (0-based) has own run [@p first, + @p count), the members @p members (row order) and the shared
-   targets @p shared. */
+/* Whether list @p l (0-based) has own run [@p first, + @p count) and the members @p members (row order). */
 static int
 expect_list_layout(const dsd_state* state, int l, size_t first, size_t count, const size_t* members,
-                   size_t member_count, const size_t* shared, size_t shared_count) {
+                   size_t member_count) {
     trunk_scan_test_layout got;
     DSD_MEMSET(&got, 0, sizeof got);
     int bad = trunk_scan_test_list_layout(state, l, &got) != 0 || got.first != first || got.count != count
-              || got.member_count != member_count || got.shared_count != shared_count;
+              || got.member_count != member_count;
     for (size_t i = 0; !bad && i < member_count; i++) {
         bad = got.members[i] != members[i];
     }
-    for (size_t i = 0; !bad && i < shared_count; i++) {
-        bad = got.shared[i] != shared[i];
-    }
     if (bad) {
-        DSD_FPRINTF(stderr, "list %d layout: run %zu+%zu, %zu members, %zu shared; want run %zu+%zu, %zu, %zu\n", l + 1,
-                    got.first, got.count, got.member_count, got.shared_count, first, count, member_count, shared_count);
+        DSD_FPRINTF(stderr, "list %d layout: run %zu+%zu, %zu members; want run %zu+%zu, %zu\n", l + 1, got.first,
+                    got.count, got.member_count, first, count, member_count);
         return 1;
     }
     return 0;
@@ -18101,13 +18097,11 @@ test_lists_share_a_target_id(void) {
     test_rc |= expect_list_published(&state, "start", 2, "low", 1U, 4U);
     test_rc |= expect_list_published(&state, "start", 3, "fav", 0U, 3U);
     static const size_t conv_members[] = {0U, 1U, 2U};
-    static const size_t conv_shared[] = {1U};
     static const size_t low_members[] = {3U, 1U, 4U, 5U};
-    static const size_t low_shared[] = {3U};
     static const size_t fav_members[] = {1U, 3U, 6U};
-    test_rc |= expect_list_layout(&state, 0, 0U, 3U, conv_members, 3U, conv_shared, 1U);
-    test_rc |= expect_list_layout(&state, 1, 3U, 3U, low_members, 4U, low_shared, 1U);
-    test_rc |= expect_list_layout(&state, 2, 6U, 1U, fav_members, 3U, NULL, 0U);
+    test_rc |= expect_list_layout(&state, 0, 0U, 3U, conv_members, 3U);
+    test_rc |= expect_list_layout(&state, 1, 3U, 3U, low_members, 4U);
+    test_rc |= expect_list_layout(&state, 2, 6U, 1U, fav_members, 3U);
     test_rc |= expect_target_lists(&state, 0U, 0x1, 0U);
     test_rc |= expect_target_lists(&state, 1U, 0x7, 0U);
     test_rc |= expect_target_lists(&state, 3U, 0x6, 1U);
@@ -20037,7 +20031,7 @@ test_lists_wholly_shared_list_and_last_usable(void) {
         return 1;
     }
     static const size_t low_members[] = {1U, 0U};
-    int test_rc = expect_list_layout(&state, 1, 3U, 0U, low_members, 2U, NULL, 0U);
+    int test_rc = expect_list_layout(&state, 1, 3U, 0U, low_members, 2U);
     test_rc |= expect_published_target(&state, "start", "a1", 1U, 3U);
     test_rc |= expect_list_on_air(&state, "start", 1U, 0U, 1U, 3U);
     test_rc |= expect_active_lists(&state, "start", 0x3U);
@@ -20086,6 +20080,66 @@ test_lists_wholly_shared_list_and_last_usable(void) {
     test_rc |= expect_list_rc("conv off, ROK put back", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
     test_rc |= expect_published_target(&state, "conv off, ROK put back", "ROK", 2U, 3U);
     test_rc |= expect_list_on_air(&state, "conv off, ROK put back", 2U, 0U, 2U, 2U);
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* A shared target avoided while only one of its lists is on (issue #697): it leaves the rotation, and stays out of it
+ * when its other list comes on, since the avoid is the target's, not a list's; put back by its id, the rotation
+ * reaches it again. */
+static int
+test_lists_avoid_a_shared_target_with_one_of_its_lists_on(void) {
+    static const char* const names[] = {"conv", "low"};
+    static const char* const bodies[] = {
+        "a1,p25-trunk,851000000,,250,,\nROK,p25-trunk,853000000,,250,,\n",
+        "ROK,p25-trunk,853000000,,250,,\nb1,p25-trunk,854000000,,250,,\n",
+    };
+    static const int off[] = {1, 0};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, off, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    /* Targets a1 ROK | b1; conv off, so the rotation is ROK, b1. */
+    int test_rc = expect_published_target(&state, "start", "ROK", 2U, 3U);
+    test_rc |= expect_list_on_air(&state, "start", 2U, 0U, 1U, 2U);
+    trunk_scan_test_set_now(0.10);
+    test_rc |= expect_control_rc("avoid ROK",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_published_target(&state, "avoid ROK", "b1", 3U, 3U);
+    if (state.trunk_scan_avoided_count != 1U) {
+        DSD_FPRINTF(stderr, "ROK avoided: %u avoided, want 1\n", (unsigned)state.trunk_scan_avoided_count);
+        test_rc = 1;
+    }
+    /* Out of the rotation: nowhere else to go, b1 stays. */
+    tick_at(&opts, &state, 0.40);
+    test_rc |= expect_published_target(&state, "ROK avoided, low alone", "b1", 3U, 3U);
+    /* conv on: ROK is conv's too, and still avoided, so the rotation goes a1, b1 and passes it over. */
+    trunk_scan_test_set_now(0.45);
+    test_rc |= expect_list_rc("conv on", list_set(&opts, &state, 1, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+
+    static const struct {
+        double at;
+        const char* id;
+        unsigned identity;
+    } k_avoided[] = {{0.75, "a1", 1U}, {1.05, "b1", 3U}, {1.35, "a1", 1U}};
+
+    for (size_t i = 0; i < sizeof k_avoided / sizeof k_avoided[0]; i++) {
+        tick_at(&opts, &state, k_avoided[i].at);
+        test_rc |= expect_published_target(&state, "ROK avoided, both on", k_avoided[i].id, k_avoided[i].identity, 3U);
+    }
+    /* Put back by its id: the rotation reaches ROK again. */
+    trunk_scan_test_set_now(1.40);
+    test_rc |= expect_control_rc(
+        "put back ROK", dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "ROK", NULL),
+        DSD_TRUNK_SCAN_CONTROL_OK);
+    tick_at(&opts, &state, 1.70);
+    test_rc |= expect_published_target(&state, "ROK put back", "ROK", 2U, 3U);
+    test_rc |= expect_list_on_air(&state, "ROK put back", 1U, 0U, 2U, 3U);
+    tick_at(&opts, &state, 2.00);
+    test_rc |= expect_published_target(&state, "after ROK", "b1", 3U, 3U);
     scan_lists_finish(&files, &opts, &state);
     return test_rc;
 }
@@ -21645,6 +21699,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_alternate_walk_skips_a_list_off);
     rc |= run_with_default_tune_hook(test_lists_shared_target_rotation_and_switches);
     rc |= run_with_default_tune_hook(test_lists_wholly_shared_list_and_last_usable);
+    rc |= run_with_default_tune_hook(test_lists_avoid_a_shared_target_with_one_of_its_lists_on);
     rc |= run_with_default_tune_hook(test_failed_park_beside_an_unprepared_alternate_is_retried);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);

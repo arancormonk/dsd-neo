@@ -499,8 +499,7 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `coord->lists[]` holds each list's name (file name without folder and extension, `DSD_TRUNK_SCAN_LIST_NAME_SIZE`
   32), `enabled`, its owned run `first`/`count` (contiguous, possibly empty for a list wholly shared), `members[]`/
   `member_count` (every row of its file as a target index, row order, shared ones included: what the list holds and
-  counts) and `shared[]`/`shared_count` (the targets of its own run another list holds too); both arrays live in
-  `coord->list_index`, freed with the coordinator. Walks must not assume a list's targets are only its own run.
+  counts), which lives in `coord->list_index`, freed with the coordinator. Walks must not assume a list's targets are only its own run.
   `coord->membership_counts[mask - 1]` (distinct targets in exactly the lists of each mask) is counted at the attach
   and published as `dsd_state::trunk_scan_membership_counts` with the lists, cleared at detach and `initState()`, so
   a frontend can total any set of lists without summing per-list counts; each list's published `targets` is its

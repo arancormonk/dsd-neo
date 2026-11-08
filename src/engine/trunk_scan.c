@@ -288,9 +288,7 @@ dsd_trunk_scan_max_targets(void) {
      no earlier list holds, in row order. Empty for a list whose every row an earlier list holds.
    - members, member_count: every row of its file as its target's index in coord->targets, in row order, the targets
      it shares with an earlier list included: what the list holds, which is what it counts.
-   - shared, shared_count: the targets of its own run another (later) list holds too, ascending, so a walk in target
-     order that passes the run of a list that is off can still stop at those.
-   members and shared point into dsd_trunk_scan_coord::list_index, which owns them. */
+   members points into dsd_trunk_scan_coord::list_index, which owns it. */
 typedef struct {
     char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE];
     int enabled;
@@ -298,8 +296,6 @@ typedef struct {
     size_t count;
     const size_t* members;
     size_t member_count;
-    const size_t* shared;
-    size_t shared_count;
 } dsd_trunk_scan_list_entry;
 
 typedef struct {
@@ -366,7 +362,7 @@ typedef struct {
     size_t rotation_count;
     size_t ordinal;
     size_t ordinal_active;
-    /* The storage every lists[l].members and lists[l].shared point into, and how many distinct targets each set of
+    /* The storage every lists[l].members points into, and how many distinct targets each set of
        lists holds together (index: the membership mask - 1, dsd_state::trunk_scan_membership_counts), counted once
        at the start: the lists' files never change while the scan runs. */
     size_t* list_index;
@@ -5922,7 +5918,7 @@ trunk_scan_load_list_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_
 
 /* The lists merged into the session's targets (issue #697), as trunk_scan_merge_lists() hands them to
    trunk_scan_attach_lists(): each list's entry, each target's lists (bit l for list l) and the storage every entry's
-   members and shared indices point into. trunk_scan_merged_lists_release() frees what the attach did not take. */
+   members point into. trunk_scan_merged_lists_release() frees what the attach did not take. */
 typedef struct {
     dsd_trunk_scan_list_entry lists[DSD_TRUNK_SCAN_MAX_LISTS];
     uint8_t* masks;
@@ -5962,29 +5958,15 @@ trunk_scan_merge_list_rows(const dsd_trunk_scan_target_list* list, int l, const 
     return 0;
 }
 
-/* The targets of @p entry's own run that another list holds too (dsd_trunk_scan_list_entry::shared), into @p out;
-   returns how many. */
-static size_t
-trunk_scan_list_shared(const dsd_trunk_scan_list_entry* entry, const uint8_t* masks, int l, size_t* out) {
-    size_t shared = 0U;
-    for (size_t i = entry->first; i < entry->first + entry->count; i++) {
-        if ((masks[i] & (uint8_t)~(1U << l)) != 0U) {
-            out[shared++] = i;
-        }
-    }
-    return shared;
-}
-
 /* The storage a merge of @p rows rows into @p distinct targets fills: @p out's targets (its capacity set) and
-   @p merged's masks and indices (every row's member index, then the shared indices, at most one per target). Returns
-   whether all of it allocated. */
+   @p merged's masks and member indices (one per row). Returns whether all of it allocated. */
 static int
 trunk_scan_merged_lists_alloc(size_t rows, size_t distinct, dsd_trunk_scan_target_list* out,
                               trunk_scan_merged_lists* merged) {
     const size_t slots = distinct > 0U ? distinct : 1U;
     out->targets = (dsd_trunk_scan_target*)calloc(slots, sizeof *out->targets);
     merged->masks = (uint8_t*)calloc(slots, sizeof *merged->masks);
-    merged->index = (size_t*)calloc(rows + slots, sizeof *merged->index);
+    merged->index = (size_t*)calloc(rows > 0U ? rows : 1U, sizeof *merged->index);
     const int allocated = out->targets != NULL && merged->masks != NULL && merged->index != NULL;
     out->capacity = allocated ? distinct : 0U;
     return allocated;
@@ -5992,7 +5974,7 @@ trunk_scan_merged_lists_alloc(size_t rows, size_t distinct, dsd_trunk_scan_targe
 
 /* Put @p count loaded lists into @p out: the @p distinct rows that load a new target (@p row_targets, every row of
    every list in order, from dsd_trunk_scan_check_target_lists()), in list order, then row order; and into @p merged
-   each list's name, start state, own run, members and shared targets, and each target's lists. On a failure nothing
+   each list's name, start state, own run and members, and each target's lists. On a failure nothing
    is kept. */
 static int
 trunk_scan_merge_lists(const dsd_opts* opts, const dsd_trunk_scan_target_list* lists, int count,
@@ -6004,18 +5986,13 @@ trunk_scan_merge_lists(const dsd_opts* opts, const dsd_trunk_scan_target_list* l
     }
     const int allocated = trunk_scan_merged_lists_alloc(rows, distinct, out, merged);
     int rc = allocated ? 0 : -1;
-    /* Each list's members sit where its rows sit in row_targets, and the shared indices follow every list's members. */
+    /* Each list's members sit where its rows sit in row_targets. */
     size_t at = 0U;
     for (int l = 0; l < count && rc == 0; l++) {
         merged->lists[l].enabled = opts->trunk_scan_lists[l].start_off ? 0 : 1;
         trunk_scan_list_name(opts->trunk_scan_lists[l].path, merged->lists[l].name, sizeof merged->lists[l].name);
         rc = trunk_scan_merge_list_rows(&lists[l], l, row_targets + at, merged->index + at, out, merged);
         at += lists[l].count;
-    }
-    for (int l = 0; l < count && rc == 0; l++) {
-        merged->lists[l].shared = merged->index + at;
-        merged->lists[l].shared_count = trunk_scan_list_shared(&merged->lists[l], merged->masks, l, merged->index + at);
-        at += merged->lists[l].shared_count;
     }
     if (rc != 0) {
         /* Past the allocation, only a row index the merge rule did not hand out fails. */
@@ -6074,7 +6051,7 @@ trunk_scan_load_lists(const dsd_opts* opts, dsd_trunk_scan_target_list* out, tru
 }
 
 /* Give the coordinator the lists (issue #697): each target learns its owner and every list that holds it, the
-   coordinator takes the lists' member and shared indices, and counts the distinct targets of each set of lists. */
+   coordinator takes the lists' member indices, and counts the distinct targets of each set of lists. */
 static void
 trunk_scan_attach_lists(dsd_trunk_scan_coord* coord, trunk_scan_merged_lists* merged, int count) {
     for (int l = 0; l < count; l++) {
@@ -6933,8 +6910,6 @@ trunk_scan_test_list_layout(const dsd_state* state, int l, trunk_scan_test_layou
     out->count = entry->count;
     out->members = entry->members;
     out->member_count = entry->member_count;
-    out->shared = entry->shared;
-    out->shared_count = entry->shared_count;
     return 0;
 }
 
