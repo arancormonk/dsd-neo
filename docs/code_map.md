@@ -12747,7 +12747,14 @@ Qt Quick frontend (`src/ui/qt`):
     the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is set
     starts nothing, and entering a restore drops pending starts (`dropPendingStarts()`). An unlock error about the file
     (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
-    picker inside the same flow. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
+    picker inside the same flow as a new request, so only a new answer is taken, never the failed file again (#829 B2).
+    Both pickers are `DocumentPicker`s (`backupSavePicker`: save, `application/octet-stream`, `suggestedName` from
+    `suggestedFileName()` before each open; `backupOpenPicker`: open). A picker that is `unavailable` ends the flow
+    through `finish(message, true)`, the save after `discardExport()`, so the card shows the reason as a problem
+    (`AlertMessage`) and `setNotice()` announces it once (`announcements` counts them for tests); `finish()` closes
+    both pickers silently. A save that went to the Download folder (`savedToDownloads`) reads "Backup saved to
+    Download/DSD-neo as <name>." with `decoderHost.savedDocumentName()`, or "Backup saved." when that is empty, then
+    the "Not included" text. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
     (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. Settings' Backup card
     gates the Restore row on `restoreAllowed` and `!restorePending`, and it and the Home card offer "Cancel
     restore"/"Discard restore" only while `restoreCancellable`, else `Util.restorePartWayText()`. The confirmation, the

@@ -464,25 +464,27 @@ leaves that reference out and lists it under **Not included** on the Settings ca
 ### Exporting
 
 **Export backup** works while listening too. Type a passphrase of at least 8 characters twice (**Show passphrases**
-reveals both fields), then **Encrypt**. The save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`
-(on a phone with none, the backup goes to Download/DSD-neo; see "Choosing files"); keep DSD-neo open until Settings
-reads **Backup saved.** The passphrase is the only way to open the backup. DSD-neo
-keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session keeps adding to its
-talkgroup lists; if a file changes while the backup is being made, the export stops with **Your setup changed while the
-backup was being made. Try again.**
+reveals both fields), then **Encrypt**. The save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak` (on a
+phone with none, the backup goes to Download/DSD-neo; see "Choosing files"); keep DSD-neo open until Settings reads
+**Backup saved.** (**Backup saved to Download/DSD-neo as** the file's name, when it went there). When the picker fails
+and the backup has nowhere to go, it is thrown away and the Settings card says why. The passphrase is the only way to
+open the backup. DSD-neo keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session
+keeps adding to its talkgroup lists; if a file changes while the backup is being made, the export stops with **Your
+setup changed while the backup was being made. Try again.**
 
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
-listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its
-name) and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or
-the file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
-damaged, or unreadable), **Choose another file** opens the picker again. DSD-neo checks the whole backup before it
-changes anything. An imported file this phone cannot read (a channel map whose companion files it refuses, say) is left
-out of the restore rather than refusing the whole backup; whatever named it loses that reference. Then it asks **Replace
-your setup?** with the backup's date, app version and counts, how many replay systems will need their recording chosen
-again, how many systems carry extra decoder options, and what is **Not included** (what the export could not carry, and
-files left out on this phone).
+listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its name)
+and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or the
+file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
+damaged, or unreadable), **Choose another file** opens the picker again and takes only the file picked there. When no
+picker can open, either time, the restore stops, the Settings card says why, and **Restore from backup** starts over.
+DSD-neo checks the whole backup before it changes anything. An imported file this phone cannot read (a channel map whose
+companion files it refuses, say) is left out of the restore rather than refusing the whole backup; whatever named it
+loses that reference. Then it asks **Replace your setup?** with the backup's date, app version and counts, how many
+replay systems will need their recording chosen again, how many systems carry extra decoder options, and what is **Not
+included** (what the export could not carry, and files left out on this phone).
 
 **Replace and close** closes DSD-neo. If DSD-neo is still stopping a session, the confirmation says so and stays open:
 confirm again in a moment, or **Cancel** to drop the restore. Open DSD-neo again: the restore is applied before
