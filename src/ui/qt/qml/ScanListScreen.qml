@@ -14,6 +14,14 @@ Rectangle {
     property string validationText: ""
     property Item validationField: null
     property bool validationRevealPending: false
+    // The validation line reports a target CSV pick that went wrong (issue
+    // #829): a screen reader hears it once, as an alert.
+    property bool validationIsProblem: false
+    property string announced: ""
+    property int announcements: 0
+    // Bumped by every choice of target CSV or of target source, so a pick
+    // that comes back after a newer choice is dropped (issue #829).
+    property int targetsGeneration: 0
     readonly property bool csvMode: draft.targetSource === "csv"
     property var targetRows: []
     property bool advancedOpen: false
@@ -65,6 +73,7 @@ Rectangle {
         Theme.revealFocus(scroll, content, validationField || validationMessage);
     }
     function showValidation(text, field) {
+        validationIsProblem = false;
         validationField = field || null;
         validationText = text;
         validationRevealPending = text.length > 0;
@@ -81,7 +90,19 @@ Rectangle {
         }
     }
 
+    function showImportProblem(text) {
+        showValidation(text);
+        validationIsProblem = true;
+        if (!Navigation.allows(validationMessage))
+            return;
+        announced = text;
+        announcements++;
+        if (typeof Accessible.announce === "function")
+            Accessible.announce(text);
+    }
+
     function selectTargets(path) {
+        targetsGeneration++;
         draft = Object.assign({}, draft, {
             "targetSource": "csv",
             "targetsCsvPath": path
@@ -92,7 +113,13 @@ Rectangle {
     }
 
     function importTargets() {
-        targetImport.pick("trunkTargets");
+        targetImport.pick("trunkTargets", -1, {generation: targetsGeneration});
+    }
+
+    // Issue #829: closing the editor, by any route, ends a pick still out.
+    onVisibleChanged: {
+        if (!visible)
+            targetImport.cancel();
     }
 
     CsvImportFlow {
@@ -100,11 +127,14 @@ Rectangle {
         objectName: "targetCsvImport"
 
         overlayParent: screen
+        wanted: function (context) {
+            return context.generation === screen.targetsGeneration;
+        }
         onFinished: function (result) {
             if (result.ok)
                 screen.selectTargets(result.path);
             else if (result.error !== "cancelled")
-                screen.showValidation(result.detail || qsTr("Could not import the target CSV."));
+                screen.showImportProblem(result.detail || qsTr("Could not import the target CSV."));
         }
     }
 
@@ -174,6 +204,8 @@ Rectangle {
     }
 
     function openFor(row) {
+        // A pick from the list this editor showed before is not this one's.
+        targetImport.cancel();
         editRow = row;
         draft = row >= 0 ? scanLists.get(row) : scanLists.newDraft();
         editUid = row >= 0 ? draft.uid || "" : "";
@@ -505,6 +537,7 @@ Rectangle {
                 model: [qsTr("Saved systems & frequencies"), qsTr("Target CSV")]
                 currentIndex: screen.csvMode ? 1 : 0
                 onSelected: function (index) {
+                    screen.targetsGeneration++;
                     screen.setDraft("targetSource", index ? "csv" : "entries");
                 }
             }
@@ -1167,6 +1200,7 @@ Rectangle {
                 color: Theme.textPrimary
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
+                Accessible.role: screen.validationIsProblem ? Accessible.AlertMessage : Accessible.StaticText
                 onYChanged: Qt.callLater(screen.revealValidation)
                 onHeightChanged: Qt.callLater(screen.revealValidation)
             }

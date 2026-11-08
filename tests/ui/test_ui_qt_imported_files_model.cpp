@@ -360,6 +360,68 @@ test_update_rejects_invalid_pick(void) {
 }
 
 /*
+ * Issue #829: an update names its row by the stored path it had when the pick
+ * was asked for. A row removed while the picker was up shifts the later rows'
+ * indexes, so an index would replace the next file instead; the path either
+ * finds the row that was asked for or refuses with "changed".
+ */
+void
+test_replace_by_stored_path(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    TestHost host;
+    const QTemporaryDir sourceDir;
+    expect("replace-by-path source dir created", sourceDir.isValid());
+    dsd_qt::ImportedFilesModel model(&host);
+    QStringList stored;
+    QList<QByteArray> bytes;
+    for (int i = 0; i < 3; i++) {
+        const QByteArray body = QStringLiteral("TG,Mode,Name\n%1,A,Group %1\n").arg(101 + i).toUtf8();
+        const QString source = sourceDir.filePath(QStringLiteral("group-%1.csv").arg(i));
+        expect("replace-by-path source written", write_file(source, body));
+        const QVariantMap imported = model.importFile(QUrl::fromLocalFile(source).toString(),
+                                                      QStringLiteral("group-%1.csv").arg(i), QStringLiteral("group"));
+        expect("replace-by-path import ok", imported.value(QStringLiteral("ok")).toBool());
+        stored.append(imported.value(QStringLiteral("path")).toString());
+        bytes.append(body);
+    }
+    const QByteArray replacement = "TG,Mode,Name\n201,A,Replacement\n202,A,Second\n";
+    const QString pick = sourceDir.filePath(QStringLiteral("replacement.csv"));
+    expect("replace-by-path pick written", write_file(pick, replacement));
+    const QString reference = QUrl::fromLocalFile(pick).toString();
+
+    /* The second file's update was asked for; the first goes while the picker is up. */
+    expect("replace-by-path first row removed", model.remove(0));
+    QVariantMap result = model.importBundleReplacing(reference, QStringLiteral("replacement.csv"),
+                                                     QStringLiteral("group"), {}, stored.at(1));
+    expect("replace-by-path replaces the row asked for", result.value(QStringLiteral("ok")).toBool());
+    expect("replace-by-path keeps the stored path", result.value(QStringLiteral("path")).toString() == stored.at(1));
+    expect("replace-by-path wrote the pick", read_file(stored.at(1)) == replacement);
+    expect("replace-by-path leaves the next file alone", read_file(stored.at(2)) == bytes.at(2));
+    expect("replace-by-path adds no row", model.rowCount() == 2);
+
+    /* The row asked for goes while the picker is up: nothing is replaced. */
+    expect("replace-by-path asked-for row removed", model.remove(model.rowForPath(stored.at(1))));
+    result = model.importBundleReplacing(reference, QStringLiteral("replacement.csv"), QStringLiteral("group"), {},
+                                         stored.at(1));
+    expect("replace-by-path refuses a removed row", !result.value(QStringLiteral("ok")).toBool());
+    expect("replace-by-path says it changed", result.value(QStringLiteral("error")).toString() == "changed");
+    expect("replace-by-path explains",
+           result.value(QStringLiteral("detail")).toString() == "That file changed while you were picking. Try again.");
+    expect("replace-by-path refusal leaves the other file alone", read_file(stored.at(2)) == bytes.at(2));
+    expect("replace-by-path refusal adds no row", model.rowCount() == 1);
+
+    /* No path: a new import. */
+    result = model.importBundleReplacing(reference, QStringLiteral("replacement.csv"), QStringLiteral("group"), {},
+                                         QString());
+    expect("replace-by-path empty path imports", result.value(QStringLiteral("ok")).toBool());
+    expect("replace-by-path empty path adds a row", model.rowCount() == 2);
+    while (model.rowCount() > 0) {
+        model.remove(0);
+    }
+}
+
+/*
  * Pins the ORDER of the replace flows, which the case above cannot: an
  * unreadable source fails at the copy, so it would look the same whether the
  * validation ran before or after the stored file was replaced.
@@ -1789,6 +1851,7 @@ main(int argc, char** argv) {
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();
+    test_replace_by_stored_path();
     test_replace_validates_before_touching_the_stored_file();
     test_generated_import_and_refresh();
     test_p25_bandplan_kind();

@@ -198,7 +198,7 @@ Item {
             verify(flow !== null);
             if (data.tag === "primary") {
                 flow.pick("chan");
-                findChild(flow, "csvPrimaryPicker").reject();
+                testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
             } else {
                 var source = testContext.writeFixtureCsv("cancel-consumer.csv",
                     "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
@@ -208,6 +208,117 @@ Item {
             compare(tc.screen.pendingRow, -1);
             compare(tc.screen.notice, "");
             verify(!tc.screen.noticeIsProblem);
+        }
+
+        // ---- issue #829: an update replaces the file it was asked for ----
+
+        function groupFile(name, rows) {
+            var path = testContext.writeFixtureCsv(name, "id,mode,name\n" + rows);
+            verify(path.length > 0);
+            return path;
+        }
+        function addGroup(name) {
+            var result = importedFiles.importFile(groupFile(name, "3001,A," + name + "\n"), name, "group");
+            verify(result.ok, "the fixture " + name + " did not import");
+            return result.path;
+        }
+        function readRows(path) {
+            return importedFiles.get(importedFiles.rowForPath(path)).accepted;
+        }
+        // "Update" from a row's action sheet, as the screen runs it.
+        function startUpdate(path) {
+            tc.screen.notice = "";
+            tc.screen.noticeIsProblem = false;
+            tc.screen.pendingRow = importedFiles.rowForPath(path);
+            tc.screen.importPickedFile();
+            var request = testContext.lastDocumentRequest();
+            compare(request.kind, "open");
+            return request.id;
+        }
+        // A row above the one being updated goes while the picker is out:
+        // the update still lands on its own file, never the one that moved
+        // into its place.
+        function test_update_follows_its_file_when_an_earlier_row_goes() {
+            var first = addGroup("first.csv");
+            var second = addGroup("second.csv");
+            var third = addGroup("third.csv");
+            try {
+                var id = startUpdate(second);
+                importedFiles.remove(importedFiles.rowForPath(first));
+                testContext.answerDocumentPicked(id, "file://" + groupFile("second-new.csv", "4001,A,One\n4002,A,Two\n"), "second-new.csv", false);
+                compare(readRows(second), 2, "the asked-for file was replaced");
+                compare(readRows(third), 1, "the file that moved up is untouched");
+                verify(!tc.screen.noticeIsProblem, tc.screen.notice);
+            } finally {
+                for (var path of [first, second, third]) {
+                    if (importedFiles.rowForPath(path) >= 0)
+                        importedFiles.remove(importedFiles.rowForPath(path));
+                }
+                tryCompare(tc.list, "count", 2);
+            }
+        }
+        // The row being updated goes while the picker is out: nothing is
+        // replaced, and the notice says so, read out once as an alert.
+        function test_update_of_a_removed_file_is_refused() {
+            var second = addGroup("second.csv");
+            var third = addGroup("third.csv");
+            try {
+                var said = tc.screen.announcements;
+                var id = startUpdate(second);
+                importedFiles.remove(importedFiles.rowForPath(second));
+                var count = importedFiles.count;
+                testContext.answerDocumentPicked(id, "file://" + groupFile("second-new.csv", "4001,A,One\n4002,A,Two\n"), "second-new.csv", false);
+                compare(importedFiles.count, count, "nothing was added");
+                compare(readRows(third), 1, "the file now in its place is untouched");
+                compare(tc.screen.notice, "That file changed while you were picking. Try again.");
+                verify(tc.screen.noticeIsProblem);
+                compare(tc.screen.pendingRow, -1);
+                var line = findChild(tc.screen, "importsNotice");
+                verify(line.visible);
+                compare(line.Accessible.role, Accessible.AlertMessage);
+                compare(tc.screen.announcements, said + 1);
+                compare(tc.screen.announced, tc.screen.notice);
+            } finally {
+                for (var path of [second, third]) {
+                    if (importedFiles.rowForPath(path) >= 0)
+                        importedFiles.remove(importedFiles.rowForPath(path));
+                }
+                tryCompare(tc.list, "count", 2);
+            }
+        }
+        // A picker failure shows its reason, read out once per failure.
+        function test_picker_failure_is_shown_and_read_out() {
+            var said = tc.screen.announcements;
+            tc.screen.pendingRow = -1;
+            tc.screen.pendingType = "group";
+            for (var i = 1; i <= 2; ++i) {
+                tc.screen.importPickedFile();
+                testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "noResult");
+                compare(tc.screen.notice, "No file came back from the picker. Try again.");
+                verify(tc.screen.noticeIsProblem);
+                compare(tc.screen.announcements, said + i);
+            }
+            compare(importedFiles.count, 2);
+            tc.screen.notice = "";
+            compare(findChild(tc.screen, "importsNotice").Accessible.role, Accessible.AlertMessage);
+            tc.screen.noticeIsProblem = false;
+            compare(findChild(tc.screen, "importsNotice").Accessible.role, Accessible.StaticText);
+        }
+        // Leaving the screen ends a pick still out; its late answer imports nothing.
+        function test_a_pick_ends_when_the_screen_closes() {
+            var flow = findChild(tc.screen, "importsCsvImport");
+            tc.screen.pendingRow = -1;
+            tc.screen.pendingType = "group";
+            tc.screen.importPickedFile();
+            var id = testContext.lastDocumentRequest().id;
+            screenLoader.visible = false;
+            try {
+                verify(!flow.active);
+                testContext.answerDocumentPicked(id, "file://" + groupFile("late-group.csv", "5001,A,Late\n"), "late.csv", false);
+                compare(importedFiles.count, 2, "nothing was imported");
+            } finally {
+                screenLoader.visible = true;
+            }
         }
 
         function test_the_cards_sit_centred_between_the_screen_edges() {
@@ -277,6 +388,13 @@ Item {
                 compare(kindTc.screen.pendingType, kinds[i]);
             }
             root.width = 420;
+            // Close the sheet again: left open it would be the screen's top
+            // modal for the cases after this one.
+            var sheet = picker;
+            while (sheet && typeof sheet.requestDismiss !== "function")
+                sheet = sheet.parent;
+            verify(sheet !== null);
+            sheet.visible = false;
         }
     }
 }

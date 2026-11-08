@@ -73,12 +73,34 @@ Item {
             verify(editor.initialDraft.length > 0);
             compare(editor.fingerprint(), editor.initialDraft);
             editor.importTargets();
-            findChild(editor, "csvPrimaryPicker").reject();
+            testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
+            verify(!findChild(editor, "targetCsvImport").active);
             compare(editor.draft.targetSource, "entries");
             verify(!editor.csvMode);
             compare(editor.fingerprint(), editor.initialDraft);
             editor.requestClose();
             verify(!app.scanListOpen);
+        }
+        // Issue #829: closing the scan list editor through Main ends a target
+        // CSV pick still out; its late answer imports and selects nothing.
+        function test_editor_close_ends_a_target_pick() {
+            testContext.useLifecycleHost(true, true, false);
+            item("homeScreen").addScanList();
+            var editor = item("scanListScreen");
+            var flow = findChild(editor, "targetCsvImport");
+            var count = importedFiles.count;
+            editor.importTargets();
+            var id = testContext.lastDocumentRequest().id;
+            verify(flow.active);
+            editor.requestClose();
+            verify(!app.scanListOpen);
+            verify(!editor.visible);
+            verify(!flow.active, "closing the editor ended the pick");
+            var path = testContext.writeFixtureCsv("late-main-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\n");
+            testContext.answerDocumentPicked(id, "file://" + path, "late.csv", false);
+            compare(importedFiles.count, count, "nothing was imported");
+            compare(editor.draft.targetSource, "entries");
         }
         function test_monitor_scrim_data() {
             return [

@@ -106,9 +106,10 @@ Item {
     readonly property bool encryptionValid: encryptionEditor.valid
     property string p25BandplanCsvPath: ""
     property string srcCsvPath: ""
-    // Which field the shared FileDialog is serving: "source" is the step-1
-    // audio/capture pick; "chan"/"group"/"keys"/"p25Bandplan"/"src" are the
-    // trunking-data picks.
+    // Which field the picker sheet serves: "chan"/"group"/"keys"/
+    // "p25Bandplan"/"src" are the trunking-data fields ("source", the step-1
+    // Browse, opens no sheet). An import carries its own field in its context
+    // (issue #829), so changing this never redirects a pick still out.
     property string pickerTarget: "source"
     // Dec/hex choice for a new key-file import from the picker sheet.
     property bool pickerKeyHex: false
@@ -117,6 +118,13 @@ Item {
     // leaves the row reading "None" with no explanation.
     property string csvNotice: ""
     property bool csvNoticeIsProblem: false
+    // The last import problem read out and how many have been, for tests.
+    property string announced: ""
+    property int announcements: 0
+    // Issue #829: one generation per trunking-data field, bumped by every
+    // choice for it (a library file, None, an import, RadioReference). A pick
+    // that comes back after a newer choice for its field is dropped.
+    property var csvGenerations: ({})
 
     // Step 3 state
     property alias nameText: nameField.text
@@ -178,7 +186,52 @@ Item {
         return row >= 0 && importedFiles.get(row).origin === "radioreference";
     }
 
+    // Issue #829: a pick still out belongs to the session it was asked in;
+    // closing the wizard by any route (Save clears wizardOpen in Main
+    // directly) or reopening it for another system ends it.
+    onVisibleChanged: {
+        if (!visible)
+            csvImport.cancel();
+    }
+
+    function csvGeneration(target) {
+        return csvGenerations[target] || 0;
+    }
+    function bumpCsvGeneration(target) {
+        var next = Object.assign({}, csvGenerations);
+        next[target] = csvGeneration(target) + 1;
+        csvGenerations = next;
+    }
+    // Whether a pick asked for with @p context may still fill its field.
+    function csvPickCurrent(context) {
+        return !!context.target && context.generation === csvGeneration(context.target);
+    }
+    // "Import new file" on the picker sheet: the pick carries the field, key
+    // format and generation it was asked with, so nothing changed afterwards
+    // (another field's sheet, Browse, the key format) can redirect it.
+    function importCsvFile() {
+        var target = pickerTarget;
+        var keyFormat = target === "keys" ? (pickerKeyHex ? "hex" : "dec") : "";
+        var type = target === "keys" ? (keyFormat === "hex" ? "keysHex" : "keysDec") : target;
+        csvImport.pick(type, -1, {
+            target: target,
+            keyFormat: keyFormat,
+            generation: csvGeneration(target)
+        });
+    }
+    function showCsvProblem(text) {
+        csvNotice = text;
+        csvNoticeIsProblem = true;
+        if (!Navigation.allows(csvNoticeLine))
+            return;
+        announced = text;
+        announcements++;
+        if (typeof Accessible.announce === "function")
+            Accessible.announce(text);
+    }
+
     function openForAdd(preferNetwork) {
+        csvImport.cancel();
         retainedKeySourceUid = "";
         resetImport();
         decryptionProfileUid = "";
@@ -228,6 +281,7 @@ Item {
      * supplies the decoder, gain, bandwidth and receiver settings it captured.
      */
     function openForFound(sys, freqMhz, detection) {
+        csvImport.cancel();
         resetImport();
         retainedKeySourceUid = "";
         decryptionProfileUid = "";
@@ -284,6 +338,7 @@ Item {
     }
 
     function openForEdit(row) {
+        csvImport.cancel();
         resetImport();
         var sys = savedSystems.get(row);
         retainedKeySourceUid = sys.uid || "";
@@ -562,6 +617,7 @@ Item {
     function assignCsvPath(target, path, hex) {
         csvNotice = "";
         csvNoticeIsProblem = false;
+        bumpCsvGeneration(target);
         if (target === "chan") {
             chanCsvPath = path;
             chanCsvGenerated = false;
@@ -613,11 +669,13 @@ Item {
         var keepPicked = editRow >= 0;
         var chan = result.chanCsvPath || "";
         if (chan.length > 0 || chanCsvGenerated || !keepPicked) {
+            bumpCsvGeneration("chan");
             chanCsvPath = chan;
             chanCsvGenerated = chan.length > 0;
         }
         var group = result.groupCsvPath || "";
         if (group.length > 0 || groupCsvGenerated || !keepPicked) {
+            bumpCsvGeneration("group");
             groupCsvPath = group;
             groupCsvGenerated = group.length > 0;
         }
@@ -664,27 +722,29 @@ Item {
         id: csvImport
         objectName: "wizardCsvImport"
         overlayParent: wizard
+        wanted: function (context) {
+            return wizard.csvPickCurrent(context);
+        }
+        // The field comes from the pick's own context, never pickerTarget,
+        // which the next sheet or Browse rewrites.
         onFinished: function (result) {
-            var target = wizard.pickerTarget;
-            var keyHex = wizard.pickerKeyHex;
-            wizard.pickerTarget = "";
-            wizard.csvNotice = "";
-            wizard.csvNoticeIsProblem = false;
-            if (result.error === "cancelled")
+            var context = result.context || ({});
+            if (result.error === "cancelled") {
+                // The user backed out of this field's pick; a pick dropped
+                // for a newer choice leaves that choice's notice alone.
+                if (wizard.csvPickCurrent(context)) {
+                    wizard.csvNotice = "";
+                    wizard.csvNoticeIsProblem = false;
+                }
                 return;
+            }
             if (!result.ok) {
-                wizard.csvNotice = qsTr("Could not read that file");
-                wizard.csvNoticeIsProblem = true;
+                wizard.showCsvProblem(result.detail || qsTr("Could not read that file"));
                 return;
             }
-            wizard.assignCsvPath(target, result.path, keyHex);
-            if (result.error === "empty") {
-                wizard.csvNotice = qsTr("%1 has no usable rows — check the file format.").arg(result.name);
-                wizard.csvNoticeIsProblem = true;
-            } else {
-                wizard.csvNotice = "";
-                wizard.csvNoticeIsProblem = false;
-            }
+            wizard.assignCsvPath(context.target, result.path, context.keyFormat === "hex");
+            if (result.error === "empty")
+                wizard.showCsvProblem(qsTr("%1 has no usable rows — check the file format.").arg(result.name));
         }
     }
 
@@ -1254,6 +1314,8 @@ Item {
                         }
 
                         ReadableText {
+                            id: csvNoticeLine
+                            objectName: "wizardCsvNotice"
                             width: parent.width
                             leftPadding: Theme.cardPadding
                             rightPadding: Theme.cardPadding
@@ -1264,6 +1326,7 @@ Item {
                             font.pixelSize: Theme.fontSize(12)
                             color: wizard.csvNoticeIsProblem ? Theme.magenta : Theme.textSubdued
                             wrapMode: Text.Wrap
+                            Accessible.role: wizard.csvNoticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText
                         }
 
                         ReadableText {
@@ -1811,12 +1874,12 @@ Item {
         }
 
         GradientButton {
+            objectName: "wizardCsvImportNew"
             width: parent.width
             text: qsTr("Import new file")
             onClicked: {
                 csvSheet.visible = false;
-                var type = wizard.pickerTarget === "keys" ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget;
-                csvImport.pick(type);
+                wizard.importCsvFile();
             }
         }
 

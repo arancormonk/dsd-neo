@@ -13,10 +13,18 @@ Item {
     id: screen
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
-    onVisibleChanged: if (visible) Qt.callLater(function () {
-        if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
-            screen.forceActiveFocus();
-    })
+    onVisibleChanged: {
+        // Issue #829: every way off this screen (Back clears importsOpen in
+        // Main directly) ends a pick still out, so it never lands later.
+        if (!visible) {
+            csvImport.cancel();
+            return;
+        }
+        Qt.callLater(function () {
+            if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
+                screen.forceActiveFocus();
+        });
+    }
 
     signal closed
     // Asks Main.qml to push the RadioReference screen over this one.
@@ -32,6 +40,9 @@ Item {
     // Transient outcome line under the header; magenta when it reports a problem.
     property string notice: ""
     property bool noticeIsProblem: false
+    // The last import problem read out and how many have been, for tests.
+    property string announced: ""
+    property int announcements: 0
     // The saved system the running session was started from, or null. Bound by
     // Main.qml, which owns it. A refresh only pushes a file into the live
     // session when that session is actually using it: re-importing a channel map
@@ -138,9 +149,20 @@ Item {
             screen.pendingRow = -1;
             screen.notice = "";
             screen.noticeIsProblem = false;
-            if (result.error !== "cancelled")
-                screen.resultNotice(qsTr("Imported"), result);
+            if (result.error === "cancelled")
+                return;
+            screen.resultNotice(qsTr("Imported"), result);
+            screen.announceProblem();
         }
+    }
+    // An import that went wrong is read out once, each time it happens.
+    function announceProblem() {
+        if (!noticeIsProblem || !notice.length || !Navigation.allows(noticeLine))
+            return;
+        announced = notice;
+        announcements++;
+        if (typeof Accessible.announce === "function")
+            Accessible.announce(notice);
     }
     DecryptionApplyFlow {
         id: mapApply
@@ -197,6 +219,7 @@ Item {
 
     ReadableText {
         id: noticeLine
+        objectName: "importsNotice"
 
         anchors.top: countLabel.bottom
         anchors.left: parent.left
@@ -210,6 +233,7 @@ Item {
         font.pixelSize: Theme.fontSize(13)
         color: screen.noticeIsProblem ? Theme.magenta : Theme.textSubdued
         wrapMode: Text.Wrap
+        Accessible.role: screen.noticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText
     }
 
     ListView {

@@ -265,6 +265,15 @@ Android. The companion selection flow copies referenced files into a private bun
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 
+Picks go through the app's document picker (issue #829). A pick belongs to the screen
+that asked for it: leaving Imported files, the scan list editor or the wizard, or
+reopening the editor or the wizard for another item, cancels it. A file or "None"
+chosen for the same field while the picker is out wins over the pick that comes
+back later, and "Update" replaces the file it was started on, or says "That file
+changed while you were picking. Try again." when that file was removed meanwhile.
+When no picker can open, the import ends with the reason; on the companion sheet
+the reason shows above the companions and the files already chosen stay.
+
 Both uses are reached through `DecoderHost` virtuals (`importContentUri` /
 `importDocument`); the desktop default of `importDocument` implements the same
 semantics under `QStandardPaths::AppDataLocation`, which is what

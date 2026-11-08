@@ -333,6 +333,23 @@ ImportedFilesModel::importBundle(const QString& reference, const QString& fileNa
     return replaceBundle(replaceRow, bundle, type);
 }
 
+QVariantMap
+ImportedFilesModel::importBundleReplacing(const QString& reference, const QString& fileName, const QString& type,
+                                          const QVariantMap& companions, const QString& replacePath) {
+    if (replacePath.isEmpty()) {
+        return importBundle(reference, fileName, type, companions);
+    }
+    const int row = rowForPath(replacePath);
+    if (row < 0) {
+        return {
+            {"ok", false},
+            {"error", QStringLiteral("changed")},
+            {"detail", tr("That file changed while you were picking. Try again.")},
+        };
+    }
+    return importBundle(reference, fileName, type, companions, row);
+}
+
 static bool
 replacementBundleBytes(const CsvBundleImport& bundle, const QString& destination, QByteArray& bytes) {
     QFile staged(bundle.path);
