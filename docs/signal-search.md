@@ -3,7 +3,7 @@
 
 # Signal search
 
-Choose **Signal search** beside **Explore** in the Qt/Android Home screen. Select
+Choose **Signal search** on the **Explore** tab of the Qt/Android Listen screen. Select
 USB, Airspy or RTL-TCP, add or edit frequency ranges, and choose **Start search**.
 Search measures RF power across the radio's capture bandwidth without drawing a
 spectrum. It visits strong candidates to identify and monitor them, then continues

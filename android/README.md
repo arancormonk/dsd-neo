@@ -78,10 +78,10 @@ a new path; late results from abandoned requests never associate a file.
 The shell has two modes, switched on `DecoderHost::sessionState` — a phone cannot
 do both at once:
 
-- **Idle** (`Idle`, `Failed`) — the tab shell: saved systems on Home (one tap to
-  listen, long-press to edit or remove), the persistent call log on History,
-  Settings, plus the add-system wizard and a failure banner when a start was
-  abandoned.
+- **Idle** (`Idle`, `Failed`) — the tab shell: Listen (Home), with its **Systems**,
+  **Scan lists** and **Explore** tabs (a saved system is one tap to listen,
+  long-press to edit or remove), the persistent call log on History, Settings,
+  plus the add-system wizard and a failure banner when a start was abandoned.
 - **Monitor** (`Starting`, `Running`, `Stopping`) — the live session takes the
   screen: the hero call, mute, hold, skip and avoid, the signal strip, and the session's
   recent calls. On a radio source the signal strip opens with **FREQ**, the frequency
@@ -431,7 +431,8 @@ profiles with their keys, Signal search ranges and permanent avoids, and your se
 decoder arguments and the RadioReference username and application-key override.
 
 It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
-detection history, diagnostics, the last location fix and first-run state. The RadioReference password is never saved,
+detection history, diagnostics, the last location fix, the Listen tab the phone opens on (each phone remembers its
+own, and a restore keeps it) and first-run state. The RadioReference password is never saved,
 so it is never in a backup.
 Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again. A
 file that a saved system, scan list or profile names outside DSD-neo's imported files cannot be carried: the export
@@ -952,8 +953,8 @@ libusb target, and Java retains descriptor ownership until native transfers end.
 ### Receiver status on Listen
 
 Listen keeps the receiver's status in a pill beside the title, in a header that
-stays put while the list scrolls (the desktop has no pill and its title scrolls
-as before). One shared reading (`DeviceStatus.qml`) names the receiver —
+stays put while the list scrolls (the desktop has no pill; its title stays put
+above the Listen tabs as well). One shared reading (`DeviceStatus.qml`) names the receiver —
 RTL-SDR, Airspy, or "receiver" when it cannot tell — for Listen, Onboarding and
 the Monitor:
 
@@ -2014,7 +2015,7 @@ imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup
 
 ### Navigation, accessibility and replay
 
-**Signal search**, beside Explore on Home, searches configured frequency ranges
+**Signal search**, first on Listen's **Explore** tab, searches configured frequency ranges
 using internal RF power measurements, then identifies and monitors detections.
 Ranges have independent detection sensitivity and listening squelch. The default
 digital probe is two seconds, followed by explicitly unresolved NFM monitoring;
@@ -2228,7 +2229,7 @@ or finish removing the file says so and keeps the file's row in the library;
 remove it again to finish. Validation reports the failing row/field without
 displaying key values.
 
-Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
+Listen's **Scan lists** tab combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
 modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
 individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
@@ -2266,9 +2267,26 @@ list's effective alias file must be readable.
 Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 
+### Listen tabs
+
+Listen shows one group at a time under three tabs, **Systems**, **Scan lists** and **Explore**, which stay in place
+under the title (and the Pinned row) while the list scrolls:
+
+- **Systems**: **+ Add a system**, then the saved systems.
+- **Scan lists**: **+ Add a scan list**, a line saying what a scan list is for while there is none, then the lists.
+- **Explore**: **Signal search**, then **Explore the band**.
+
+A failure, a finished replay, a backup's result and the receiver's details show at the top on every tab. The tab's
+name is the group's heading. Listen opens on the tab last chosen on this phone; that choice is not in backups, and a
+restore keeps it. While a Listen menu or sheet is open the tabs are greyed out and do nothing.
+
+From a keyboard the tabs are one Tab stop, the current tab: Left and Right move to the next tab and show it, Home
+and End go to the first and last, and Enter or Space shows the focused one. TalkBack reads each tab as a radio
+button, "checked" on the current one, because Qt's Android bridge has no tab role.
+
 ### Pinned shortcuts
 
-Listen keeps up to 6 shortcuts in a **Pinned** row above its list: a saved system (the whole card), one site of a
+Listen keeps up to 6 shortcuts in a **Pinned** row above its tabs: a saved system (the whole card), one site of a
 grouped system, a scan list, Signal search or Explore. A tap does what the shortcut's own control does: a system or
 site starts (a grouped system opens its site list when it has no playable site or more than one), a scan list starts
 on its own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text

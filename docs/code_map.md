@@ -10684,20 +10684,50 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
-- Listen creation actions (issue #709): `qml/HomeScreen.qml` places Add a system and Add a scan list after the status
-  cards and before either saved collection, inside the same modal-guarded scroll body. Two equal columns fit only
-  when both can hold the wider button's complete label plus padding (`DashedActionButton.implicitWidth`); otherwise
-  they stack in focus order, keeping the source hint beneath Add a system. The available content width, including
-  the supporting pane, and the current font determine reflow. Empty collection headings are hidden. Tests:
-  `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
+- Listen creation actions (issue #709, #646 D4): in `qml/HomeScreen.qml` each Listen tab's section starts with its own
+  creation action, inside the same modal-guarded scroll body, so it is in reach however long the section is: Add a
+  system (`addSystemButton`, with the source hint `addSystemHint` beneath it) heads Systems, Add a scan list
+  (`addScanListButton`) heads Scan lists. Each fills the column width; its label wraps at large text. There are no
+  in-body headings: the tab's label is the section's heading. While there is no scan list, `scanListsEmptyHint` ("A
+  scan list steps through saved systems and frequencies one at a time.") sits under Add a scan list. Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`: each action first in its section, in view with 20 items, whole
+  label and touch size at 7 sizes x 3 scales, long-label reflow, keyboard order and activation, modal blocking for each
+  with its own section shown, status cards first on a short screen; plus the existing Home and Back/modal cases).
+- Listen tabs on Home (issue #646 D2-D5, D10). `qml/HomeScreen.qml` places `ListenTabs` (`listenTabs`, below "Qt QML
+  editing convention") fixed on the content column, 8 px under the Pinned strip, or under the title with nothing
+  pinned (`tabsFixed`, always true for now). `fixedTitle` includes `tabsFixed`, so the title is fixed in
+  `listenHeader` on both hosts and the body's own title row is hidden. The body starts at the tabs' bottom edge, whose
+  hairline marks where cards scroll away (the header's own scroll divider is not drawn under fixed tabs), and the
+  content column starts `Theme.gap` below it. The tabs are disabled while `managementSheetOpen`. `section` (`systems`,
+  `scanLists`, `explore`) is read once, in `Component.onCompleted`, from `prefsStore.listenSection` (`prefsStore` is
+  `prefs`; anything unknown reads `systems`) and is Home's own from then on: `showSection(id)` sets it and writes the
+  preference whether or not the store keeps it (the QML fixture's plain map keeps nothing), and ignores unknown ids.
+  Home follows every `selected(id)` through `showSection()`. The body holds the status cards (backup result, USB
+  details, failure, replay completion) on every tab, then three section Columns, `listenSystemsSection` (Add a system
+  and hint, saved-system cards), `listenScanListsSection` (Add a scan list, `scanListsEmptyHint`, scan-list cards) and
+  `listenExploreSection` (the Signal search row, then `exploreCard`). Each is `visible` and `enabled` only while its
+  tab is current, and its height is `shown ? implicitHeight : 0`, keyed on the tab, never on `visible` (B1). Disabled,
+  a hidden section's controls take no focus, key or press (Qt keeps focus and key delivery on an item that only goes
+  invisible), and `Accessible.ignored` follows `visible`. Before the outgoing section hides, `showSection()` moves
+  keyboard focus inside it to the current tab (`focusCurrent()`), else to the body, and the tabs then hand it to the
+  new current tab. The Repeaters stay bound while their section is hidden, a decided limit (a visibility toggle
+  costs a screen reader far fewer events than rebuilding the cards). Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_home_tabs.qml`: Explore one tap away with 30 systems and 10 lists, each tab only its
+  section, sections led by their action, no headings, the empty Scan lists line, status cards on every tab, the
+  remembered tab read once through the real AppPrefs and damaged values read as Systems, the choice standing without
+  the store, hidden-section focus/keys/presses, focus handed to the current tab, tabs disabled under a sheet, Tab
+  order pill, pins, More, tab, body on both hosts, layout at 320/360/411 x 1.0/1.6/2.0 and Home 900/1000 px beside
+  Recent activity, the fixed title on both hosts, a hidden card's layout; the migrated Home suites select the tab a
+  case needs), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on each tab; `tst_a11y_scan_churn.qml`:
+  the Explore face on a hidden tab raises nothing).
 - Pinned strip and sheet (issue #801; the pins themselves are `listen_pins.{h,cpp}`, below). `qml/HomeScreen.qml` places
   `pinnedStrip` between `listenHeader` and the scroll body, on the content column, 8 px under the header. The order is
-  title, strip, body on both hosts: `fixedTitle` (`pinnedHeader` or the strip shown) fixes `listenHeader` above the
-  body, so on the desktop with pins the header holds the title alone (no receiver pill, height `max(44, title)`), and
-  the body's own title row is hidden, so the title is read once. The strip is shown while `heldPins` is non-empty and is
-  then one line tall, `max(48, pin label height + 24)` at any text size; the body's top margin adds it plus the 6 px
-  clearance, and the scroll divider shows under it. Header and strip heights follow `heldPins`, not `visible`, so a tab
-  switch moves nothing. With nothing pinned the layout is as before on both hosts. `heldPins` takes `listenPins.entries`
+  title, strip, Listen tabs, body on both hosts: `fixedTitle` (`pinnedHeader`, the strip shown or the fixed Listen
+  tabs) fixes `listenHeader` above the body, so on the desktop the header holds the title alone (no receiver pill,
+  height `max(44, title)`), and the body's own title row is hidden, so the title is read once. The strip is shown while
+  `heldPins` is non-empty and is then one line tall, `max(48, pin label height + 24)` at any text size; the Listen tabs
+  sit 8 px under it, and the body under them. Header and strip heights follow `heldPins`, not `visible`, so a tab
+  switch moves nothing. With nothing pinned the tabs sit 8 px under the title. `heldPins` takes `listenPins.entries`
   only while Home is visible and holds the last list while hidden ([r1-7]), with the line it is laid out on
   (`heldStripWidth`, `heldPinFont`), so a rename, removal or unpin, a rotation or a text-size change behind the wizard,
   Monitor or another tab adds, removes or renames no pin there and keeps the strip's height and the body's scroll; shown
@@ -10712,7 +10742,8 @@ Qt Quick frontend (`src/ui/qt`):
   leaving adds or removes only its own; a departing button is not drawn (`shown`) and reads as nothing, leaves the tree
   and takes no focus or press (`live`, `PinButton.live`) for the rest of its turn. A pin starts the entry `placed` holds
   for its key. More (`pinnedStripMore`, "All pinned shortcuts") always ends the strip. No Flickable, so the strip adds
-  no container node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, body. A pin or a sheet row emits
+  no container node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, the current Listen tab, body. A pin
+  or a sheet row emits
   Home's `startPin(kind, uid)`, which Main connects to `startPin()` (the start gate below); pins are disabled while
   `decoderHost.transitioning`, and the strip while `managementSheetOpen`. `qml/PinButton.qml` is FilterPill's rounded
   chip with `OutlineButton`'s gate (focused-control `activeFocusOnTab` retention, `Navigation.allows()` read first,
@@ -10727,7 +10758,8 @@ Qt Quick frontend (`src/ui/qt`):
   replaces the rows when the last is unpinned. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_pinned_strip.qml` on Home alone:
   hidden without pins, one line at 320/360/411 px x 1.0/1.3/1.6 portrait and landscape and the 900 px desktop, order and
   activation, keyboard order on both hosts, the sheet, focus after a keyboard Unpin, departing rows, modal blocking,
-  hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip;
+  hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip; while the
+  Listen tabs are always fixed, the body of a landscape phone with pins is under half its height, an expected failure;
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).
@@ -10743,11 +10775,12 @@ Qt Quick frontend (`src/ui/qt`):
   Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
   `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
   scroll writer cancel a pending reveal. `Theme.revealFocus` maps the target into `scroll.contentItem`, so a content
-  column that starts below the top (Home's starts 7 or 18 px down) is scrolled far enough; every other caller's column
-  starts at 0. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_layout_fixes.qml`: range and place held through frames drawn
-  while hidden, refresh-hint and plain cards at 320 px x 1.0/1.6/2.0, Tab through 12 systems at 411 x 700 on both hosts,
-  the helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
-  `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
+  column that starts below the top (Home's starts 13 px under the Listen tabs) is scrolled far enough; every other
+  caller's column starts at 0. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_layout_fixes.qml`: range and place held through
+  frames drawn while hidden, refresh-hint and plain cards at 320 px x 1.0/1.6/2.0, Tab through 12 systems and through 12
+  scan lists on their tabs at 411 x 700 on both hosts, the helper with an offset column, the site button held while
+  hidden; the scroll-across-tabs cases in `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after
+  a layout while hidden).
 - Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
   (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
   not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
@@ -10759,7 +10792,8 @@ Qt Quick frontend (`src/ui/qt`):
   own row; the scan-list menu (Edit, Scan with other lists…, Pin, Remove…) pins `scan`. Both handlers route `remove`
   explicitly and do nothing for any other key (before #801 an unknown key fell through to Remove). Signal search is a
   row: the button fills it up to a 48 px More (`signalSearchManageButton`), placed from the Explore card's More just
-  below so it shares the cards' More column, opening `searchMenu` [Pin]. Explore's card: a card-wide `TapHandler` (tap
+  below on the Explore tab so it shares the cards' More column, opening `searchMenu` [Pin]. Explore's card: a card-wide
+  `TapHandler` (tap
   starts, long press opens `exploreMenu` [Edit connection, Pin]) and pressed tint, the face `exploreStart`, and More
   (`exploreManageButton`, "More options for Explore"). The face is a sibling of More, stopping at More's column (`width:
   exploreMore.x`), so its focus ring and accessible bounds leave More out and no key pressed on More reaches it; the
@@ -10779,8 +10813,9 @@ Qt Quick frontend (`src/ui/qt`):
   `tst_home_scan_lists.qml` and `tst_back_modals.qml`, whose auto-start case covers the new menus),
   `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: the hidden face raises nothing on a frequency change).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
-  access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
-  layout, Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery is reset and reopened once per
+  access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself, has no receiver pill or
+  details panel on Listen, and keeps its Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery
+  is reset and reopened once per
   stall before its session would end (IO, "USB stall recovery"; a brokered one through its descriptor, after the
   unplug-owner grace, "Android descriptor recovery"), so only a stall that recovery could not clear, or an Airspy's,
   ends its session as described here.
@@ -10807,8 +10842,10 @@ Qt Quick frontend (`src/ui/qt`):
     it found.
   - Listen (`qml/HomeScreen.qml`): the title row is a fixed `listenHeader` above the scroll body, on the content
     column's x and width (`columnX`/`columnWidth`; the supporting pane is untouched; safe areas come from the parent),
-    so the pill (`dongleStatusPill`, label `dongleStatusLabel`) never scrolls away. The body is clipped 6 px under the
-    header, and a 1 px `Theme.divider` shows at that edge only while the body is scrolled. Title and pill share a row
+    so the pill (`dongleStatusPill`, label `dongleStatusLabel`) never scrolls away. The Listen tabs follow it (above),
+    and the body starts at their hairline. Without fixed tabs the body is clipped 6 px under the header
+    (`headerClearance`), and a 1 px `Theme.divider` shows at that edge only while the body is scrolled. Title and pill
+    share a row
     while `title.implicitWidth + gap + pill.implicitWidth` fits the column; otherwise the pill drops under the title,
     left-aligned and at most the column wide, its label wrapping at spaces (never elided) and its height following the
     label (at least `max(48, 30 * fontScale)`). Header and details-panel heights are keyed on the host, not on
