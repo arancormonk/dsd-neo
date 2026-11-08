@@ -6,31 +6,47 @@
  * returns to the MCCH it used before the assignment (EN 300 392-2 clause 23.3.1.2.1.2), so the state machine keeps the
  * control channel the follow started from, its home, and every way back goes there (tetra_sm_return_cc_hz()).
  *
- * Signalling goes through the real BSCH parser (tetra_bsch_parse()) and MAC (tetra_mac_parse_schd()) the way tetra.c
- * decodes a burst, into the real call records and state machine; the tuning backend is a pair of stand-in hooks that
- * do to the shared tuning state what the engine's do. Time is the decode clock's TEST source.
+ * Once synchronised an MS takes on only the SYNC of its own colour code (EN 300 392-2 clause 23.6.2; ETR 300-1 clause
+ * 5.8.1.1.1), and only the home cell's SYSINFO names the home's main carrier: while the state machine guards a follow,
+ * another cell's SYNC, a direct mode burst and another cell's SYSINFO on the followed carrier are not taken on, so the
+ * session's control channel, cell, call records and the carrier's evidence stay the home's.
+ *
+ * What is heard on the followed carrier goes through the decoder's burst entry (processTetraSBFrame(),
+ * processTetraFrame()) as real bursts from the test transmit chain (tetra_test_burst.h): another cell's blocks are
+ * scrambled with its own colour code and fail their CRC under the home's, as on air. The control channel side goes
+ * through the real BSCH parser (tetra_bsch_parse()) and MAC (tetra_mac_parse_schd()) the way tetra.c decodes a block.
+ * Both reach the real call records and state machine; the tuning backend is a pair of stand-in hooks that do to the
+ * shared tuning state what the engine's do. Time is the decode clock's TEST source.
  */
 
 #include <assert.h>
+#include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 #include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "test_support.h"
+#include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
+#include "tetra_test_burst.h"
 #include "tetra_test_pdu.h"
 
 #define SECOND_NS 1000000000ULL
@@ -41,7 +57,7 @@ enum { MCC = 262, MNC = 1001, COL_A = 10, COL_B = 20, LA_A = 100, LA_B = 200 };
 
 enum { CARR_A_CC = 50, CARR_F = 60, CARR_G = 70, CARR_H = 80 };
 
-enum { CALL_A = 0x0BEE, CALL_B = 0x0CAF, GSSI_A = 0x00BEEF, GSSI_B = 0x00CAFE };
+enum { CALL_A = 0x0BEE, CALL_B = 0x0CAF, GSSI_A = 0x00BEEF, GSSI_B = 0x00CAFE, GSSI_HELD = 0x00F00D };
 
 static int g_tunes;
 static int g_returns;
@@ -129,6 +145,7 @@ typedef struct {
     dsd_opts* opts;
     dsd_state* state;
     double t; /* the decode clock, seconds */
+    char path[DSD_TEST_PATH_MAX];
 } session;
 
 static void
@@ -152,7 +169,7 @@ bsch_burst(session* s, uint32_t colour) {
     ttb_block b = {0};
     ttb_sync_pdu(&b, MCC, MNC, colour);
     tetra_confirm_burst_begin(s->state);
-    assert(tetra_bsch_parse(b.bits, b.n, s->opts, s->state) == 1);
+    assert(tetra_bsch_parse(b.bits, b.n, s->opts, s->state) == TETRA_BSCH_TAKEN);
     tetra_confirm_note_signalling(s->state);
     (void)tetra_confirm_burst_end(s->state);
     tetra_sm_after_burst(s->opts, s->state);
@@ -165,29 +182,60 @@ sysinfo_burst(session* s, uint32_t main_carrier, uint32_t la) {
     mac_burst(s, &b);
 }
 
-/* A D-SETUP to group @p gssi for @p call_id with a downlink allocation of timeslot bitmap @p timeslots on @p carrier. */
+/* A downlink allocation of timeslot bitmap @p timeslots on @p carrier (table 21.87), with @p extended carrier numbering
+ * naming the band and offset of the cell's SYSINFO. */
+static void
+allocation(ttb_block* b, uint32_t timeslots, uint32_t carrier, int extended) {
+    if (!extended) {
+        ttb_allocation(b, timeslots, 1, carrier);
+        return;
+    }
+    ttb_put(b, 0, 2);         /* allocation type: replace current channel */
+    ttb_put(b, timeslots, 4); /* timeslot assigned */
+    ttb_put(b, 1, 2);         /* downlink only */
+    ttb_put(b, 0, 2);         /* CLCH permission, cell change flag */
+    ttb_put(b, carrier, 12);  /* carrier number */
+    ttb_put(b, 1, 1);         /* extended carrier numbering */
+    ttb_put(b, 4, 4);         /* frequency band */
+    ttb_put(b, 2, 2);         /* offset */
+    ttb_put(b, 0, 4);         /* duplex spacing, reverse operation */
+    ttb_put(b, 1, 2);         /* monitoring pattern: one */
+}
+
+/* A D-SETUP to group @p gssi for @p call_id with a downlink allocation of timeslot bitmap @p timeslots on @p carrier
+ * (allocation()): an SCH/HD block, or with @p extended carrier numbering, which an SCH/HD has no room for, an SCH/F. */
+static void
+setup_block(ttb_block* b, uint32_t gssi, uint32_t call_id, uint32_t timeslots, uint32_t carrier, int extended) {
+    const int start = ttb_resource(b, 0, 1 /* SSI */, gssi);
+    ttb_resource_flags(b, 1);
+    allocation(b, timeslots, carrier, extended);
+    ttb_put(b, 2, 4); /* BL-UDATA */
+    ttb_d_setup(b, call_id, TTB_SPEECH_GROUP);
+    ttb_close_resource(b, start);
+    ttb_finish(b, extended ? TTB_SCH_F_BITS : TTB_SCH_HD_BITS, -1);
+}
+
 static void
 setup_burst(session* s, uint32_t gssi, uint32_t call_id, uint32_t timeslots, uint32_t carrier) {
     ttb_block b = {0};
-    const int start = ttb_resource(&b, 0, 1 /* SSI */, gssi);
-    ttb_resource_flags(&b, 1);
-    ttb_allocation(&b, timeslots, 1, carrier);
-    ttb_put(&b, 2, 4); /* BL-UDATA */
-    ttb_d_setup(&b, call_id, TTB_SPEECH_GROUP);
-    ttb_close_resource(&b, start);
-    ttb_finish(&b, TTB_SCH_HD_BITS, -1);
+    setup_block(&b, gssi, call_id, timeslots, carrier, 0);
     mac_burst(s, &b);
 }
 
-/* A live RTL session with a 2 s hangtime, on A's control channel by A's BSCH and SYSINFO. */
+/* A live RTL session with a 2 s hangtime, on A's control channel by A's BSCH and SYSINFO, whose D-MLE-SYSINFO names
+ * A's location area unless @p no_la: then the SYSINFO carries none (its MAC part only). */
 static session
-open_on_a(void) {
+open_on_a_as(int no_la) {
     session s;
+    DSD_MEMSET(&s, 0, sizeof s);
     s.opts = (dsd_opts*)calloc(1U, sizeof(*s.opts));
     s.state = (dsd_state*)calloc(1U, sizeof(*s.state));
     assert(s.opts != NULL && s.state != NULL);
     s.t = 1000.0;
     at(s.t);
+    initOpts(s.opts);
+    initState(s.state);
+    s.opts->payload = 0;
     s.opts->trunk_enable = 1;
     s.opts->trunk_hangtime = 2.0F;
     s.opts->frame_tetra = 1;
@@ -199,18 +247,42 @@ open_on_a(void) {
     s.opts->trunk_tune_data_calls = 1;
     s.opts->trunk_tune_enc_calls = 1;
     s.state->samplesPerSymbol = 10;
+    /* A symbol file replays each dibit at its nominal level (+1, +3, -1, -3): slice there. */
+    s.state->max = 3;
+    s.state->umid = 2;
+    s.state->center = 0;
+    s.state->lmid = -2;
+    s.state->min = -3;
     assert(tetra_st(s.state) != NULL);
     tetra_sm_init(s.opts, s.state);
     bsch_burst(&s, COL_A);
-    sysinfo_burst(&s, CARR_A_CC, LA_A);
+    ttb_block si = {0};
+    ttb_sysinfo(&si, CARR_A_CC, 4U, 2U, LA_A);
+    if (no_la) {
+        si.n = 82; /* through the optional field: no room for a D-MLE-SYSINFO */
+    }
+    mac_burst(&s, &si);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.state->trunk_cc_freq == hz(CARR_A_CC));
+    assert(tetra_st_peek(s.state)->sysinfo_known == !no_la);
     assert(tetra_sm_return_cc_hz(s.state) == 0 && !tetra_sm_guarding(s.opts, s.state));
     return s;
 }
 
+static session
+open_on_a(void) {
+    return open_on_a_as(0);
+}
+
 static void
 close_session(session* s) {
-    dsd_state_ext_free_all(s->state);
+    if (s->opts->symbolfile) {
+        (void)fclose(s->opts->symbolfile);
+        s->opts->symbolfile = NULL;
+    }
+    if (s->path[0] != '\0') {
+        (void)remove(s->path);
+    }
+    freeState(s->state);
     free(s->state);
     free(s->opts);
 }
@@ -256,6 +328,253 @@ assert_back_home(const session* s, int returns) {
     assert(!tetra_st_peek(s->state)->sm.home.valid && !tetra_st_peek(s->state)->sm.return_required);
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * Bursts on air, through the decoder's burst entry.
+ * ------------------------------------------------------------------------------------------------------------- */
+
+enum { SB_BB_DIBITS = 15, NDB_AACH2_DIBITS = 8 };
+
+/* A cell as its bursts show it: network and colour code, which its scrambling seed is made of. */
+typedef struct {
+    uint32_t mcc;
+    uint32_t mnc;
+    uint32_t colour;
+} cell;
+
+static const cell k_cell_a = {MCC, MNC, COL_A};
+
+static uint32_t
+seed_of(const cell* c) {
+    return ttb_seed(c->mcc, c->mnc, c->colour);
+}
+
+/* The symbols the burst decoder reads after the training sequence, as a symbol file (one dibit a byte). */
+static void
+feed(session* s, const uint8_t* dibits, int count) {
+    if (s->opts->symbolfile) {
+        (void)fclose(s->opts->symbolfile);
+        (void)remove(s->path);
+    }
+    const int fd = dsd_test_mkstemp(s->path, sizeof s->path, "tetra_foreign");
+    assert(fd >= 0);
+    FILE* f = dsd_test_fdopen(fd, "w+b");
+    assert(f != NULL);
+    const size_t written = fwrite(dibits, 1U, (size_t)count, f);
+    const int rewound = fseek(f, 0L, SEEK_SET);
+    assert(written == (size_t)count && rewound == 0);
+    s->opts->symbolfile = f;
+    s->state->symbol_replay_header_checked = 0;
+}
+
+/* One burst through the burst entry, @p sync a synchronisation burst, whose symbols after the training sequence are
+ * @p tail. The decoder reads them from a symbol file, so the input is one while the burst is read and the radio again
+ * after it; while a call is followed nothing in the burst asks the radio's frequency (tetra_sm_receiver_freq() is the
+ * followed channel's). 1 when the burst decoded a block whose CRC passed. */
+static int
+air_burst(session* s, int sync, const uint8_t* tail, int count) {
+    feed(s, tail, count);
+    s->opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    const int proven = sync ? processTetraSBFrame(s->opts, s->state) : processTetraFrame(s->opts, s->state);
+    s->opts->audio_in_type = AUDIO_IN_RTL;
+    return proven;
+}
+
+/* The training polarity of a synchronisation burst received @p inverted (every dibit's sign bit flipped), handed over
+ * with its capture as the frame sync hands it; the carrier's polarity is the decoder's to set. */
+static void
+sync_captured(session* s, int inverted) {
+    s->state->tetra_sync.sb1_valid = 1;
+    s->state->tetra_sync.phase_rot = 0;
+    s->state->tetra_sync.sb_polarity = (uint8_t)(inverted != 0);
+    s->state->lastsynctype = inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS;
+    s->state->synctype = s->state->lastsynctype;
+}
+
+/* A trunked synchronisation burst: BSCH @p sync_pdu (60 type-1 bits), captured before the training sequence, then the
+ * broadcast block and block 2, @p block2 (124 type-1 bits) scrambled with @p seed, or noise for NULL. */
+static int
+sync_burst_on_air(session* s, const ttb_block* sync_pdu, const ttb_block* block2, uint32_t seed, int inverted) {
+    const uint8_t flip = inverted ? 2U : 0U;
+    uint8_t bsch[TTB_BSCH_DIBITS];
+    uint8_t b2[TTB_BLOCK_DIBITS] = {0};
+    ttb_encode_bsch(sync_pdu->bits, bsch);
+    if (block2) {
+        ttb_encode_sch_hd(block2->bits, seed, b2);
+    }
+    uint8_t tail[SB_BB_DIBITS + TTB_BLOCK_DIBITS];
+    for (size_t i = 0; i < sizeof tail; i++) {
+        tail[i] = (uint8_t)((i < SB_BB_DIBITS ? 0U : b2[i - SB_BB_DIBITS]) ^ flip);
+    }
+    for (size_t i = 0; i < TTB_BSCH_DIBITS; i++) {
+        s->state->tetra_sync.sb1_dibuf[i] = (uint8_t)(bsch[i] ^ flip);
+    }
+    s->state->tetra_sync.sb1_soft_valid = 0;
+    sync_captured(s, inverted);
+    return air_burst(s, 1, tail, (int)sizeof tail);
+}
+
+/* Cell @p c's synchronisation burst: its SYNC (sharing mode @p sharing, table 21.76: 0 continuous transmission, 1
+ * carrier sharing, 2 MCCH sharing) and block 2 @p block2 scrambled with its own seed. */
+static int
+cell_sync_burst(session* s, const cell* c, uint32_t sharing, const ttb_block* block2, int inverted) {
+    ttb_block sync = {0};
+    ttb_sync_pdu(&sync, c->mcc, c->mnc, c->colour);
+    ttb_set(&sync, 23, sharing, 2);
+    return sync_burst_on_air(s, &sync, block2, seed_of(c), inverted);
+}
+
+/* A normal downlink burst, its AACH not captured: block 1 @p b1 as the frame sync captured it, then block 2 @p b2
+ * (108 dibits each); @p nts2 two half-slot blocks, else one full-slot channel across both. */
+static int
+ndb_on_air(session* s, int nts2, const uint8_t* b1, const uint8_t* b2) {
+    uint8_t tail[NDB_AACH2_DIBITS + TTB_BLOCK_DIBITS] = {0};
+    DSD_MEMCPY(tail + NDB_AACH2_DIBITS, b2, TTB_BLOCK_DIBITS);
+    DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, b1, TTB_BLOCK_DIBITS);
+    s->state->tetra_sync.b1_valid = 1;
+    s->state->tetra_sync.b1_soft_valid = 0;
+    s->state->tetra_sync.aach1_valid = 0;
+    s->state->tetra_sync.nts2 = (uint8_t)(nts2 != 0);
+    s->state->tetra_sync.cb = 0;
+    s->state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    return air_burst(s, 0, tail, (int)sizeof tail);
+}
+
+/* An NTS2 normal downlink burst of cell @p c: half-slot blocks @p block1 and @p block2 (124 type-1 bits each)
+ * scrambled with its seed, either noise for NULL. */
+static int
+cell_ndb(session* s, const cell* c, const ttb_block* block1, const ttb_block* block2) {
+    uint8_t b1[TTB_BLOCK_DIBITS] = {0};
+    uint8_t b2[TTB_BLOCK_DIBITS] = {0};
+    if (block1) {
+        ttb_encode_sch_hd(block1->bits, seed_of(c), b1);
+    }
+    if (block2) {
+        ttb_encode_sch_hd(block2->bits, seed_of(c), b2);
+    }
+    return ndb_on_air(s, 1, b1, b2);
+}
+
+/* An NTS1 normal downlink burst of cell @p c: an SCH/F of @p block (268 type-1 bits) scrambled with its seed. */
+static int
+cell_ndb_full(session* s, const cell* c, const ttb_block* block) {
+    uint8_t slot[2 * TTB_BLOCK_DIBITS];
+    ttb_encode_signalling(block->bits, TTB_SCH_F_BITS, 432, 103, seed_of(c), slot);
+    return ndb_on_air(s, 0, slot, slot + TTB_BLOCK_DIBITS);
+}
+
+/* The nominal level of dibit @p d (+1 00, +3 01, -1 10, -3 11), as a soft symbol. */
+static float
+level_of(uint8_t d) {
+    static const float k_levels[4] = {1.0F, 3.0F, -1.0F, -3.0F};
+    return k_levels[d & 3U];
+}
+
+/* A direct mode synchronisation burst (EN 300 396-2 clause 9.4.3.3): a DMAC-SYNC SCH/S of a direct MS-MS call,
+ * captured before the training sequence like a BSCH, and an all-zero SCH/H right after it, then 15 dibits, scrambled
+ * with the all-zero colour code (EN 300 396-3 clause 8.2.4) and received @p inverted. With @p soft_only the captured
+ * hard decisions of SCH/S are lost and only its soft values carry it, so it is a DSB only to the soft decision. */
+static int
+dsb_on_air(session* s, int inverted, int soft_only) {
+    ttb_block sch_s = {0};
+    ttb_put(&sch_s, 0xD, 4); /* system code: DMO */
+    ttb_put(&sch_s, 0, 2);   /* SYNC PDU type: DMAC-SYNC */
+    ttb_put(&sch_s, 0, 2);   /* communication type: direct MS-MS */
+    ttb_put(&sch_s, 0, 4);   /* reserved; channel A, normal mode */
+    ttb_put(&sch_s, 0, 2);   /* slot 1 */
+    ttb_put(&sch_s, 3, 5);   /* frame 3 */
+    ttb_put(&sch_s, 0, 2);   /* air interface encryption state: clear */
+    while (sch_s.n < TTB_BSCH_BITS) {
+        ttb_put(&sch_s, 0, 1);
+    }
+    const ttb_block sch_h = {{0}, TTB_SCH_HD_BITS};
+    const uint8_t flip = inverted ? 2U : 0U;
+    uint8_t sch_s_dibits[TTB_BSCH_DIBITS];
+    uint8_t tail[TTB_BLOCK_DIBITS + SB_BB_DIBITS] = {0};
+    ttb_encode_bsch(sch_s.bits, sch_s_dibits);
+    ttb_encode_sch_hd(sch_h.bits, TTB_BSCH_SEED, tail);
+    for (size_t i = 0; i < sizeof tail; i++) {
+        tail[i] ^= flip;
+    }
+    for (size_t i = 0; i < TTB_BSCH_DIBITS; i++) {
+        const uint8_t d = (uint8_t)(sch_s_dibits[i] ^ flip);
+        s->state->tetra_sync.sb1_dibuf[i] = soft_only ? 0U : d;
+        s->state->tetra_sync.sb1_soft[i] = level_of(d);
+    }
+    s->state->tetra_sync.sb1_soft_valid = (uint8_t)(soft_only != 0);
+    sync_captured(s, inverted);
+    return air_burst(s, 1, tail, (int)sizeof tail);
+}
+
+/* What the follow and the cell it started on hold, to compare across bursts that must change none of it. */
+typedef struct {
+    int tuned;
+    tetra_sm_grant followed;
+    int record;
+    tetra_chan_alloc alloc;
+    int proven;
+    uint8_t rx_perm;
+    uint8_t published;
+    int candidates;
+    long trunk_cc_hz;
+    long dl_carrier_hz;
+    uint16_t la;
+    uint16_t calls_la;
+    uint16_t mcc;
+    uint16_t mnc;
+    uint8_t colour;
+    uint32_t seed;
+    uint16_t access;
+    uint8_t polarity;
+} follow_view;
+
+static follow_view
+view_of(const session* s) {
+    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    follow_view v;
+    DSD_MEMSET(&v, 0, sizeof v);
+    v.tuned = tetra_sm_followed(s->state, &v.followed);
+    const tetra_call_t* const c = tetra_calls_peek(s->state, CALL_A);
+    v.record = c != NULL;
+    if (c) {
+        v.alloc = c->alloc;
+    }
+    v.proven = tetra_confirm_followed_call_proven(s->state);
+    v.rx_perm = ts->confirm.rx_perm;
+    v.published = ts->calls.published;
+    const dsd_trunk_cc_candidates* const cand = dsd_trunk_cc_candidates_peek(s->state);
+    v.candidates = cand ? cand->count : 0;
+    v.trunk_cc_hz = s->state->trunk_cc_freq;
+    v.dl_carrier_hz = ts->dl_carrier_hz;
+    v.la = ts->la;
+    v.calls_la = ts->calls.la;
+    v.mcc = ts->mcc;
+    v.mnc = ts->mnc;
+    v.colour = ts->colour;
+    v.seed = ts->lfsr_seed;
+    v.access = s->state->rx_id.access;
+    v.polarity = s->state->tetra_sync.polarity;
+    return v;
+}
+
+/* Nothing of the follow or of the home cell changed: still following A's call on its channel, its record, allocation,
+ * proof, receive permission and publication, the trunking candidates, the session's control channel (A's), cell,
+ * location area, network, colour code, scrambling seed, received identity and the carrier's polarity. */
+static void
+assert_unchanged(const session* s, const follow_view* before) {
+    const follow_view now = view_of(s);
+    assert(now.tuned == before->tuned && now.followed.freq_hz == before->followed.freq_hz);
+    assert(now.followed.call_id == before->followed.call_id && now.followed.timeslots == before->followed.timeslots);
+    assert(now.record == before->record && now.alloc.carrier == before->alloc.carrier);
+    assert(now.alloc.timeslots == before->alloc.timeslots && now.alloc.freq_hz == before->alloc.freq_hz);
+    assert(now.proven == before->proven && now.rx_perm == before->rx_perm && now.published == before->published);
+    assert(now.candidates == before->candidates);
+    assert(now.trunk_cc_hz == hz(CARR_A_CC) && now.trunk_cc_hz == before->trunk_cc_hz);
+    assert(now.dl_carrier_hz == before->dl_carrier_hz && now.la == before->la && now.calls_la == before->calls_la);
+    assert(now.mcc == before->mcc && now.mnc == before->mnc && now.colour == before->colour);
+    assert(now.seed == before->seed && now.access == before->access && now.polarity == before->polarity);
+}
+
 /* What is decoded on F after A's call landed there. */
 typedef struct {
     const char* name;
@@ -277,15 +596,25 @@ static const foreign_case k_cases[] = {
     {"(d, control) A's own BSCH and SYSINFO on F", COL_A, CARR_A_CC, LA_A, 1, 0},
 };
 
+static int
+is_home_case(const foreign_case* c) {
+    return c->colour == COL_A && c->main_carrier == CARR_A_CC && c->la == LA_A;
+}
+
+/* The case's cell (A itself for d) heard on F: its synchronisation burst, with its SYSINFO in block 2 when it has one,
+ * then a normal burst carrying that SYSINFO again; for f, A's synchronisation burst after them. */
 static void
 hear_on_f(session* s, const foreign_case* c) {
+    const cell b = {MCC, MNC, c->colour};
+    ttb_block si = {0};
+    ttb_sysinfo(&si, c->main_carrier, 4U, 2U, c->la);
     advance(s, 0.2);
-    bsch_burst(s, c->colour);
+    (void)cell_sync_burst(s, &b, 0U, c->sysinfo ? &si : NULL, 0);
     if (c->sysinfo) {
-        sysinfo_burst(s, c->main_carrier, c->la);
+        (void)cell_ndb(s, &b, NULL, &si);
     }
     if (c->a_bsch_then) {
-        bsch_burst(s, COL_A);
+        (void)cell_sync_burst(s, &k_cell_a, 0U, NULL, 0);
     }
 }
 
@@ -306,11 +635,15 @@ end_follow(session* s, int how) {
     }
 }
 
-/* Whatever cell B decoded on A's traffic carrier F did to the session's control channel -- cleared it (B's BSCH),
- * named F (B's SYSINFO there), named B's own main carrier H -- the hangtime, a release and the grant timeout each
- * return once to A's control channel and rest ON_CC there (regression: main stayed on F as B's control channel,
- * stranded IDLE with none, or returned to H). Back there, A's BSCH and SYSINFO are taken on and A's next grant is
- * followed with A's control channel as its home again. */
+/* Cell B on A's traffic carrier F takes nothing: B's SYNC of another colour code is not taken on, so its SYSINFO fails
+ * its CRC under A's scrambling, and a SYSINFO of B's that A's scrambling decodes (same colour code) names another main
+ * carrier or location area and is not applied. The session's control channel, cell, call records, the followed call's
+ * proof and the trunking candidates stay A's (regression: B's BSCH cleared the control channel and forgot A's cell,
+ * calls' allocations and proof; B's SYSINFO named F or H as the control channel, added it as a candidate, and with
+ * another location area ended A's call records). The hangtime, a release and the grant timeout each return once to
+ * A's control channel and rest ON_CC there (regression: main stayed on F as B's control channel, stranded IDLE with
+ * none, or returned to H). Back there, A's BSCH and SYSINFO are taken on and A's next grant is followed with A's
+ * control channel as its home again. A's own SYNC and SYSINFO on F (d) are taken on all along. */
 static void
 test_every_return_goes_home(void) {
     for (size_t k = 0; k < sizeof k_cases / sizeof k_cases[0]; k++) {
@@ -324,10 +657,14 @@ test_every_return_goes_home(void) {
                 follow_a(&s, CARR_F);
             }
             assert_home_is_a(&s);
+            const follow_view before = view_of(&s);
+            const uint32_t sysinfos = tetra_st_peek(s.state)->frames_sysinfo;
             hear_on_f(&s, &k_cases[k]);
-            /* What the session reads as its control channel now may be B's; the return target is not. */
             assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
             assert(tetra_sm_return_cc_hz(s.state) == hz(CARR_A_CC) && tetra_sm_guarding(s.opts, s.state));
+            assert_unchanged(&s, &before);
+            assert(tetra_st_peek(s.state)->frames_sysinfo == sysinfos + (is_home_case(&k_cases[k]) ? 2U : 0U));
+            assert_home_is_a(&s);
             end_follow(&s, how);
             assert_back_home(&s, 1);
 
@@ -350,8 +687,8 @@ test_reallocation_keeps_the_home(void) {
     reset_backend();
     session s = open_on_a();
     follow_a(&s, CARR_F);
-    sysinfo_burst(&s, CARR_F, LA_A); /* B, same colour and LA: the control channel now reads F */
-    assert(s.state->trunk_cc_freq == hz(CARR_F));
+    sysinfo_burst(&s, CARR_F, LA_A); /* B, same colour and LA: not applied, the control channel stays A's */
+    assert(s.state->trunk_cc_freq == hz(CARR_A_CC));
     const tetra_sm_grant moved = {hz(CARR_G), CARR_G, 0x4U, CALL_A};
     assert(tetra_sm_on_grant(s.opts, s.state, &moved) == 1 && g_tuned_hz == hz(CARR_G));
     assert_home_is_a(&s);
@@ -417,23 +754,23 @@ test_pending_grant(void) {
     close_session(&s);
 }
 
-/* Following A on F with B's SYSINFO having named F as the control channel, the hangtime passed. */
+/* Following A on F, B heard there, and the session's control channel set to F since by another owner (as a frontend
+ * may), the hangtime passed. */
 static session
 open_released_on_f(void) {
     reset_backend();
     session s = open_on_a();
     follow_a(&s, CARR_F);
-    advance(&s, 0.2);
-    bsch_burst(&s, COL_B);
-    sysinfo_burst(&s, CARR_F, LA_B);
-    assert(s.state->trunk_cc_freq == hz(CARR_F));
+    hear_on_f(&s, &k_cases[0]);
+    assert(s.state->trunk_cc_freq == hz(CARR_A_CC));
+    s.state->trunk_cc_freq = hz(CARR_F);
     advance(&s, 3.0);
     return s;
 }
 
 /* The return asked for at the hangtime goes home and the backend takes it in flight: the state machine still holds the
  * follow (its home and the session's control channel are A's) until the backend answers. A completion rests ON_CC on
- * A. A failure puts the follow back, its home and the session's control channel as they were (B's F) -- unless
+ * A. A failure puts the follow back, its home and the session's control channel as they were (F) -- unless
  * something changed that since, which stays -- and the next tick returns home again. */
 static void
 test_pending_return(void) {
@@ -536,18 +873,29 @@ test_letting_go_drops_the_home(void) {
     }
 }
 
-/* What is taken on while trunking is off and the receiver stays on the followed channel. */
-enum { OFF_HEARS_B, OFF_HEARS_OTHER_LA };
+/* What is taken on while trunking is off and the receiver stays on the followed channel. Nothing guards the follow
+ * then, so all of it is taken on as ever: B's SYNC, after which B's SYSINFO in block 2 decodes with B's own scrambling
+ * and names F, a SYSINFO naming another location area, a direct mode burst. Each sets the carrier's polarity. */
+enum { OFF_HEARS_B, OFF_HEARS_OTHER_LA, OFF_HEARS_DMO };
 
 static void
 hear_while_untrunked(session* s, int what) {
     advance(s, 0.2);
+    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    ttb_block si = {0};
     if (what == OFF_HEARS_B) {
-        bsch_burst(s, COL_B);
-        sysinfo_burst(s, CARR_F, LA_B);
-        assert(s->state->trunk_cc_freq == hz(CARR_F));
+        const cell b = {MCC, MNC, COL_B};
+        ttb_sysinfo(&si, CARR_F, 4U, 2U, LA_B);
+        assert(cell_sync_burst(s, &b, 0U, &si, 1) == 1);
+        assert(ts->colour == COL_B && ts->lfsr_seed == seed_of(&b) && s->state->tetra_sync.polarity == 1);
+        assert(ts->la == LA_B && s->state->trunk_cc_freq == hz(CARR_F));
+    } else if (what == OFF_HEARS_OTHER_LA) {
+        ttb_sysinfo(&si, CARR_A_CC, 4U, 2U, LA_B);
+        assert(cell_ndb(s, &k_cell_a, NULL, &si) == 1);
+        assert(ts->la == LA_B);
     } else {
-        sysinfo_burst(s, CARR_A_CC, LA_B);
+        assert(dsb_on_air(s, 1, 0) == 1);
+        assert(ts->dmo && s->state->tetra_sync.polarity == 1);
     }
 }
 
@@ -569,13 +917,13 @@ open_untrunked_on_f(int what) {
 }
 
 /* Trunking on again while TUNED ends the follow at once, speech or not: the call was let go when trunking went off and
- * what the carrier delivered since (another cell, another location area) cannot be trusted. The session's control
- * channel is A's again as soon as trunking is seen on -- by the tick, or by the trunk command before it -- and the
- * return goes home (regression: main kept the channel until the hangtime and then stayed on F as B's control
- * channel). */
+ * what the carrier delivered since (another cell, another location area, direct mode) cannot be trusted. The
+ * session's control channel is A's again as soon as trunking is seen on -- by the tick, or by the trunk command before
+ * it -- and the return goes home (regression: main kept the channel until the hangtime and then stayed on F as B's
+ * control channel). */
 static void
 test_trunking_back_on_returns_home(void) {
-    for (int what = OFF_HEARS_B; what <= OFF_HEARS_OTHER_LA; what++) {
+    for (int what = OFF_HEARS_B; what <= OFF_HEARS_DMO; what++) {
         for (int by_command = 0; by_command <= 1; by_command++) {
             session s = open_untrunked_on_f(what);
             if (by_command) {
@@ -667,6 +1015,180 @@ test_trunking_back_on_on_the_home_carrier(void) {
     close_session(&s);
 }
 
+/* A synchronisation burst of another cell on the followed carrier -- another colour code, another MCC, another MNC --
+ * received inverted, is not taken on. The cell, its scrambling seed, the received identity, the session's control
+ * channel, the call records and the carrier's polarity stay A's; the burst is no evidence about the carrier (its BSCH
+ * counts for the burst's verdict only); and its block 2 is not decoded, scrambled with its cell's own seed or, to show
+ * it is skipped rather than failing, with A's (regression: the BSCH was taken on, forgot A's cell, its block 2 decoded
+ * with its seed, and the burst set the carrier's polarity). A's own synchronisation burst there, in MCCH sharing mode,
+ * is taken on: its polarity becomes the carrier's and its SYSINFO in block 2 is applied. */
+static void
+test_foreign_sync_burst_is_not_taken(void) {
+    static const cell k_foreign[] = {{MCC, MNC, COL_B}, {MCC + 1U, MNC, COL_A}, {MCC, MNC + 1U, COL_A}};
+    for (size_t k = 0; k < sizeof k_foreign / sizeof k_foreign[0]; k++) {
+        for (int own_seed = 0; own_seed <= 1; own_seed++) {
+            reset_backend();
+            session s = open_on_a();
+            follow_a(&s, CARR_F);
+            const tetra_state_t* const ts = tetra_st_peek(s.state);
+            const follow_view before = view_of(&s);
+            const uint32_t sysinfos = ts->frames_sysinfo;
+            const uint32_t decoded = ts->decode_ok;
+            const uint32_t signalling = ts->confirm.signalling_blocks;
+            const uint32_t carrier = ts->confirm.carrier_blocks;
+            ttb_block sync = {0};
+            ttb_sync_pdu(&sync, k_foreign[k].mcc, k_foreign[k].mnc, k_foreign[k].colour);
+            ttb_block si = {0};
+            ttb_sysinfo(&si, CARR_F, 4U, 2U, LA_B);
+            const uint32_t seed = own_seed ? seed_of(&k_foreign[k]) : seed_of(&k_cell_a);
+            advance(&s, 0.2);
+            assert(sync_burst_on_air(&s, &sync, &si, seed, 1) == 1);
+            assert_unchanged(&s, &before);
+            assert(ts->frames_sysinfo == sysinfos && ts->decode_ok == decoded + 1U);
+            assert(ts->confirm.signalling_blocks == signalling && ts->confirm.carrier_blocks == carrier);
+            assert_home_is_a(&s);
+            close_session(&s);
+        }
+    }
+
+    reset_backend();
+    session s = open_on_a();
+    follow_a(&s, CARR_F);
+    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    const uint32_t sysinfos = ts->frames_sysinfo;
+    const uint32_t signalling = ts->confirm.signalling_blocks;
+    ttb_block si = {0};
+    ttb_sysinfo(&si, CARR_A_CC, 4U, 2U, LA_A);
+    advance(&s, 0.2);
+    assert(cell_sync_burst(&s, &k_cell_a, 2U, &si, 1) == 1);
+    assert(s.state->tetra_sync.polarity == 1 && ts->frames_sysinfo == sysinfos + 1U);
+    assert(ts->confirm.signalling_blocks == signalling + 2U);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && s.state->trunk_cc_freq == hz(CARR_A_CC));
+    assert_home_is_a(&s);
+    close_session(&s);
+}
+
+/* Cell B, of another colour code, allocates the followed timeslot of F to a call of its own, then grants a call of the
+ * group the operator holds on G. B's SYNC is not taken on, so its D-SETUPs fail their CRC under A's scrambling, as at
+ * an MS, and nothing of them is acted on: no tune, no record of B's calls, and the follow, A's record, proof, receive
+ * permission and publication unchanged (regression: B's SYNC set B's scrambling and its SYSINFO named its control
+ * channel; its first D-SETUP took the followed timeslot over for B's call, and the held group's grant tuned to G). */
+static void
+test_other_colour_signalling_is_not_acted_on(void) {
+    reset_backend();
+    session s = open_on_a();
+    follow_a(&s, CARR_F);
+    s.state->tg_hold = GSSI_HELD;
+    const cell b = {MCC, MNC, COL_B};
+    const follow_view before = view_of(&s);
+    const int tunes = g_tunes;
+    ttb_block si = {0};
+    ttb_sysinfo(&si, CARR_H, 4U, 2U, LA_A);
+    advance(&s, 0.2);
+    (void)cell_sync_burst(&s, &b, 0U, &si, 0);
+    ttb_block here = {0};
+    ttb_block there = {0};
+    setup_block(&here, GSSI_B, CALL_B, 0x4U, CARR_F, 0);
+    setup_block(&there, GSSI_HELD, CALL_B + 1U, 0x4U, CARR_G, 0);
+    const int proven = cell_ndb(&s, &b, &here, NULL) + cell_ndb(&s, &b, &there, NULL);
+    assert(g_tunes == tunes && g_returns == 0);
+    assert(tetra_calls_peek(s.state, CALL_B) == NULL && tetra_calls_peek(s.state, CALL_B + 1U) == NULL);
+    assert_unchanged(&s, &before);
+    assert(proven == 0);
+    assert_home_is_a(&s);
+    close_session(&s);
+}
+
+/* A direct mode synchronisation burst on the followed carrier, received inverted and read from its hard decisions or
+ * only by the soft decision, is consumed and nothing more: the carrier does not go direct mode, and the followed
+ * call's proof, the call records, the session's control channel and the carrier's polarity stay (regression: the
+ * carrier went direct mode, which forgot the followed call's proof and the trunked carrier's state, and the burst set
+ * the polarity). The follow then ends on its hangtime and returns home. */
+static void
+test_guarded_direct_mode_is_not_taken(void) {
+    for (int soft_only = 0; soft_only <= 1; soft_only++) {
+        reset_backend();
+        session s = open_on_a();
+        follow_a(&s, CARR_F);
+        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const follow_view before = view_of(&s);
+        advance(&s, 0.2);
+        assert(dsb_on_air(&s, 1, soft_only) == 1);
+        assert(!ts->dmo && !ts->calls.dmo.active);
+        assert_unchanged(&s, &before);
+        assert_home_is_a(&s);
+        end_follow(&s, END_HANGTIME);
+        assert_back_home(&s, 1);
+        close_session(&s);
+    }
+}
+
+/* A follow that started before a D-MLE-SYSINFO named the home cell's location area. A SYSINFO naming the home's main
+ * carrier on the followed carrier is the home cell's: one without a D-MLE-SYSINFO is applied as ever, and one with it
+ * gives the home its location area. A SYSINFO naming the home's main carrier with another location area after that is
+ * another cell's, and is not applied: the session's cell and location area, A's records and the follow stay
+ * (regression: it was taken as a change of location area, which forgot A's cell and ended A's call records, the
+ * followed call's with them). */
+static void
+test_home_location_area_learned_on_the_carrier(void) {
+    reset_backend();
+    session s = open_on_a_as(1);
+    follow_a(&s, CARR_F);
+    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    assert(ts->sm.home.valid && ts->sm.home.cc_hz == hz(CARR_A_CC) && !ts->sm.home.la_known);
+    uint32_t sysinfos = ts->frames_sysinfo;
+
+    ttb_block bare = {0};
+    ttb_sysinfo(&bare, CARR_A_CC, 4U, 2U, LA_A);
+    bare.n = 82;
+    advance(&s, 0.1);
+    mac_burst(&s, &bare);
+    sysinfos++;
+    assert(ts->frames_sysinfo == sysinfos && !ts->sysinfo_known && !ts->sm.home.la_known);
+
+    ttb_block si = {0};
+    ttb_sysinfo(&si, CARR_A_CC, 4U, 2U, LA_A);
+    assert(cell_ndb(&s, &k_cell_a, NULL, &si) == 1);
+    sysinfos++;
+    assert(ts->frames_sysinfo == sysinfos && ts->sysinfo_known && ts->la == LA_A);
+    assert_home_is_a(&s);
+
+    const follow_view before = view_of(&s);
+    ttb_block other = {0};
+    ttb_sysinfo(&other, CARR_A_CC, 4U, 2U, LA_B);
+    advance(&s, 0.1);
+    (void)cell_ndb(&s, &k_cell_a, NULL, &other);
+    assert(ts->frames_sysinfo == sysinfos);
+    assert_unchanged(&s, &before);
+    assert_home_is_a(&s);
+    end_follow(&s, END_HANGTIME);
+    assert_back_home(&s, 1);
+    close_session(&s);
+}
+
+/* The home cell's signalling on the followed carrier goes on being acted on: a reallocation of the followed call to
+ * another carrier, in a D-SETUP scrambled with A's colour code, is followed there, with the allocation naming its
+ * carrier by the cell's band and offset or by extended carrier numbering, and the home stays the way back. */
+static void
+test_home_reallocation_still_followed(void) {
+    for (int extended = 0; extended <= 1; extended++) {
+        reset_backend();
+        session s = open_on_a();
+        follow_a(&s, CARR_F);
+        const int tunes = g_tunes;
+        ttb_block b = {0};
+        setup_block(&b, GSSI_A, CALL_A, 0x4U, CARR_G, extended);
+        advance(&s, 0.2);
+        assert((extended ? cell_ndb_full(&s, &k_cell_a, &b) : cell_ndb(&s, &k_cell_a, &b, NULL)) == 1);
+        tetra_sm_grant g = {0};
+        assert(g_tunes == tunes + 1 && g_tuned_hz == hz(CARR_G));
+        assert(tetra_sm_followed(s.state, &g) && g.freq_hz == hz(CARR_G) && g.call_id == CALL_A);
+        assert(s.state->trunk_cc_freq == hz(CARR_A_CC));
+        assert_home_is_a(&s);
+        close_session(&s);
+    }
+}
+
 int
 main(void) {
     test_every_return_goes_home();
@@ -678,6 +1200,11 @@ main(void) {
     test_trunking_back_on_returns_home();
     test_return_required_until_home();
     test_trunking_back_on_on_the_home_carrier();
+    test_foreign_sync_burst_is_not_taken();
+    test_other_colour_signalling_is_not_acted_on();
+    test_guarded_direct_mode_is_not_taken();
+    test_home_location_area_learned_on_the_carrier();
+    test_home_reallocation_still_followed();
     printf("TETRA foreign cell: OK\n");
     return 0;
 }

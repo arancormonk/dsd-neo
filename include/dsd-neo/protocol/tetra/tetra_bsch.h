@@ -35,8 +35,19 @@ extern "C" {
 #define TETRA_TDMA_SB_PARSE_SYMBOL 249u
 #define TETRA_TDMA_NDB_SYNC_SYMBOL 133u
 
+/* What tetra_bsch_parse() made of a SYNC PDU. */
+enum {
+    TETRA_BSCH_UNREAD = 0,  /* too short, or no TETRA state: nothing taken */
+    TETRA_BSCH_TAKEN = 1,   /* the cell's network, colour code, scrambling seed and clock taken on */
+    TETRA_BSCH_FOREIGN = 2, /* another cell's, on the carrier of a guarded follow: logged, nothing taken */
+};
+
 /* Parse a CRC-checked SYNC PDU (`len` >= 60 type-1 bits): network identity, scrambling seed and TDMA clock. A change of
- * cell drops the hyperframe number, which belongs to the cell. Returns 1 when the PDU was read. */
+ * cell drops the hyperframe number, which belongs to the cell. While the trunking state machine guards a follow
+ * (tetra_sm_guarding()), a SYNC naming another network or colour code than the cell the follow started on is another
+ * cell on the followed carrier, and is not taken on: once synchronised, an MS takes on only the SYNC of its own colour
+ * code (EN 300 392-2 clause 23.6.2; ETSI ETR 300-1 clause 5.8.1.1.1: the BSCH is not scrambled, so nothing else keeps
+ * an adjacent cell's out). Returns TETRA_BSCH_TAKEN, TETRA_BSCH_FOREIGN or TETRA_BSCH_UNREAD. */
 int tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state);
 
 /* Forget the cell being received as a BSCH of another cell does (its SYSINFO, timebase, partial TM-SDUs, the channels

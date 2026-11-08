@@ -15,6 +15,7 @@
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 
 #include <stdint.h>
@@ -262,17 +263,38 @@ tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, 
     }
 }
 
+/* Whether a SYNC is another cell's on the carrier of a guarded follow (tetra_sm_guarding()): another network or colour
+ * code than the cell the follow started on (tetra_sm_home). A home whose network was not known has nothing to tell it
+ * by. With the same network and colour code two cells' bursts are alike, and their SYNC is taken on: only a SYSINFO
+ * tells them apart (tetra_mac.c). */
+static int
+bsch_foreign(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, const tetra_sync_pdu* p) {
+    const tetra_sm_home* const home = &ts->sm.home;
+    if (!tetra_sm_guarding(opts, state) || !home->net_known) {
+        return 0;
+    }
+    return home->mcc != p->mcc || home->mnc != p->mnc || home->colour != p->colour;
+}
+
 int
 tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
     tetra_sync_pdu p;
     if (!bits || !ts) {
-        return 0;
+        return TETRA_BSCH_UNREAD;
     }
     DSD_MEMSET(&p, 0, sizeof(p));
     if (!tetra_sync_pdu_read(bits, len, &p)) {
         TETRA_LOG_PAYLOAD(ts, "[TETRA BSCH] short PDU len=%d, need %d\n", len, TETRA_SYNC_PDU_BITS);
-        return 0;
+        return TETRA_BSCH_UNREAD;
+    }
+    /* Before anything of it is taken: the cell, the seed the followed call's blocks descramble with, the received
+       identity, the publication and the clock stay the home cell's. */
+    if (bsch_foreign(opts, state, ts, &p)) {
+        TETRA_LOG_VERBOSE(ts, 1,
+                          "[TETRA BSCH] MCC=%u MNC=%u CC=0x%02x: another cell on the followed carrier; not taken on\n",
+                          (unsigned)p.mcc, (unsigned)p.mnc, (unsigned)p.colour);
+        return TETRA_BSCH_FOREIGN;
     }
     bsch_identity_change(opts, state, ts, &p);
     ts->mcc = p.mcc;
@@ -291,5 +313,5 @@ tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* state)
     DSD_FPRINTF(stderr, "[TETRA BSCH] MCC=%u MNC=%u CC=0x%02x TN=%u FN=%u MN=%u\n", (unsigned)p.mcc, (unsigned)p.mnc,
                 (unsigned)p.colour, (unsigned)p.tn, (unsigned)p.fn, (unsigned)p.mn);
     TETRA_LOG_PAYLOAD(ts, "[TETRA BSCH] scrambling seed=0x%08x\n", (unsigned)ts->lfsr_seed);
-    return 1;
+    return TETRA_BSCH_TAKEN;
 }

@@ -834,9 +834,29 @@ tetra_dmo_dsb_commit_polarity(dsd_state* state) {
     state->tetra_sync.polarity = state->tetra_sync.sb_polarity;
 }
 
+/* A DSB whose SCH/S (@p sch_s, CRC passed) came while the state machine guards a follow (tetra_sm_guarding()): a
+   trunked call's carrier is no direct mode channel, so the burst is consumed and logged and nothing more. It does not
+   enter direct mode, forget what the trunked carrier proved or publish, and its polarity is not the carrier's. Outside
+   a guarded follow direct mode is taken on as ever. 1 when the burst was such a one. */
+static int
+tetra_dmo_guarded(const dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
+    if (!tetra_sm_guarding(opts, state)) {
+        return 0;
+    }
+    tetra_dmo_sync_s_t s;
+    (void)tetra_dmo_parse_sync_s(sch_s, &s);
+    TETRA_LOG_VERBOSE(tetra_st_peek(state), 1,
+                      "[TETRA DMO DSB] sys=%u comm=%u: direct mode on the followed carrier; not taken on\n",
+                      s.system_code, s.comm_type);
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
+    return 1;
+}
+
 /* A direct-mode synchronisation burst is told from a trunked one by its SCH/S system code (EN 300 396-3 clause
    9.3.29), decoded from the hard decisions first: they do not consume symbols or depend on the slicer, so a trunked
-   burst then takes exactly the path it would have taken. 1 when the burst was a DSB and is done. */
+   burst then takes exactly the path it would have taken. 1 when the burst was a DSB and is done; a guarded one
+   (tetra_dmo_guarded()) is read past undecoded, as many dibits as any synchronisation burst. */
 static int
 tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -851,15 +871,40 @@ tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
     ts->decode_ok++;
     tetra_confirm_note_block(state);
     tetra_sb_log_bits(state, ts, pre);
+    if (tetra_dmo_guarded(opts, state, pre)) {
+        skipDibit(opts, state, SB_BKN2_DIBITS + SB_BB_DIBITS);
+        return 1;
+    }
     tetra_dmo_process_dsb(opts, state, pre);
     tetra_dmo_dsb_commit_polarity(state);
     return 1;
 }
 
-/* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when its CRC passed. A DMO
-   system code that only the soft decision decoded is a DSB whose SCH/H went by unread; timing and mode come from its
-   SCH/S. A BSCH that failed its CRC still sits in the slot after the last burst's: the TDMA clock runs to it on the
-   symbol count, as for a normal burst, so block 2 is decoded in its own timeslot rather than the last burst's. */
+/* A DSB that only the soft decision decoded (@p sch_s, its SCH/S): its SCH/H went by unread, and timing and mode come
+   from its SCH/S. */
+static void
+tetra_sb_soft_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
+    tetra_confirm_note_block(state);
+    if (tetra_dmo_guarded(opts, state, sch_s)) {
+        return;
+    }
+    tetra_dmo_sync_s_t s;
+    (void)tetra_dmo_parse_sync_s(sch_s, &s);
+    tetra_dmo_dsb_commit_polarity(state);
+    tetra_enter_dmo(opts, state);
+    tetra_dmo_apply_sync(state, &s, NULL);
+    tetra_calls_dmo_protection(opts, state);
+    DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n", s.system_code,
+                s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
+}
+
+/* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when block 2 is to be
+   decoded as the cell's, 0 when the burst is not the cell's. A DMO system code that only the soft decision decoded is
+   a DSB (tetra_sb_soft_dsb()). A BSCH that failed its CRC still sits in the slot after the last burst's: the TDMA clock
+   runs to it on the symbol count, as for a normal burst, so block 2 is decoded in its own timeslot rather than the last
+   burst's. So does one of another cell on the followed carrier (TETRA_BSCH_FOREIGN), whose burst is that cell's: its
+   block 2 is scrambled with another colour code and is not decoded, and the BSCH is no evidence about the carrier nor
+   sets its polarity. */
 static int
 tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     uint8_t decoded[SB_TYPE2];
@@ -868,23 +913,19 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     tetra_sb_log_bits(state, ts, decoded);
     if (!crc_ok) {
         tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
-        return 0;
+        return 1;
     }
     ts->decode_ok++;
     if (tetra_dmo_system_code_is_dmo(decoded)) {
-        tetra_dmo_sync_s_t s;
-        (void)tetra_dmo_parse_sync_s(decoded, &s);
-        tetra_dmo_dsb_commit_polarity(state);
-        tetra_enter_dmo(opts, state);
-        tetra_dmo_apply_sync(state, &s, NULL);
-        tetra_calls_dmo_protection(opts, state);
-        tetra_confirm_note_block(state);
-        DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n",
-                    s.system_code, s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
-        return 1;
+        tetra_sb_soft_dsb(opts, state, decoded);
+        return 0;
     }
     tetra_dmo_leave(opts, state);
-    (void)tetra_bsch_parse(decoded, SB_TYPE1, opts, state);
+    if (tetra_bsch_parse(decoded, SB_TYPE1, opts, state) == TETRA_BSCH_FOREIGN) {
+        tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
+        tetra_confirm_note_block(state);
+        return 0;
+    }
     tetra_tmo_sb_commit_polarity(state);
     tetra_confirm_note_signalling(state);
     return 1;
@@ -940,8 +981,9 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     }
     skipDibit(opts, state, SB_BB_DIBITS);
     tetra_read_dibits(opts, state, b2_dibits, b2_soft, SB_BKN2_DIBITS);
-    (void)tetra_sb_bsch(opts, state, ts);
-    tetra_sb_block2(opts, state, b2_dibits, b2_soft);
+    if (tetra_sb_bsch(opts, state, ts)) {
+        tetra_sb_block2(opts, state, b2_dibits, b2_soft);
+    }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "BSCH");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");

@@ -1042,12 +1042,46 @@ tetra_mac_broadcast_decode(const uint8_t* bits, int nbits, tetra_mac_broadcast* 
     }
 }
 
+/* Whether a SYSINFO is the cell's to apply. While the trunking state machine guards a follow (tetra_sm_guarding()) it
+ * is only when it is the home cell's (tetra_sm_home): every carrier of a cell names the cell's own main carrier
+ * (EN 300 392-2 clause 21.4.4.1), so one naming another main carrier, none valid, or another location area than the
+ * home's when both are known is another cell's on the followed carrier, perhaps of the home's colour code. That one
+ * is logged and not applied. A home SYSINFO naming the location area of a home that had none gives the home one: it
+ * names the home's main carrier, as only the home cell's does. */
+static int
+sysinfo_applies(const mac_block* b, long dl_hz, const tetra_mac_sysinfo* si) {
+    if (!tetra_sm_guarding(b->opts, b->state)) {
+        return 1;
+    }
+    tetra_sm_home* const home = &b->ts->sm.home;
+    const int other_area = si->mle_present && home->la_known && si->la != home->la;
+    if (dl_hz <= 0L || dl_hz != home->cc_hz || other_area) {
+        char la[8] = "-";
+        if (si->mle_present) {
+            DSD_SNPRINTF(la, sizeof la, "%u", (unsigned)si->la);
+        }
+        TETRA_LOG_VERBOSE(
+            b->ts, 1, "[TETRA SYSINFO] main carrier %ld Hz LA %s: another cell on the followed carrier; not applied\n",
+            dl_hz, la);
+        return 0;
+    }
+    if (si->mle_present && !home->la_known) {
+        home->la = si->la;
+        home->la_known = 1;
+    }
+    return 1;
+}
+
 /* Cache SYSINFO, once a main carrier or location area other than the cell's has forgotten the last cell
- * (tetra_bsch_sysinfo_cell()). The control channel moves to the main carrier only when it is a valid frequency. */
-static void
+ * (tetra_bsch_sysinfo_cell()), unless it is another cell's on the carrier of a guarded follow (sysinfo_applies()). The
+ * control channel moves to the main carrier only when it is a valid frequency. 1 when the SYSINFO was applied. */
+static int
 apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     tetra_state_t* const ts = b->ts;
     const long dl_hz = carrier_frequency_hz(si->main_carrier, si->band, si->offset);
+    if (!sysinfo_applies(b, dl_hz, si)) {
+        return 0;
+    }
     tetra_bsch_sysinfo_cell(b->opts, b->state, dl_hz, si->mle_present, si->la);
     /* The received identity: the location area, and this carrier as the control channel only when it is the main
        carrier the SYSINFO names (every carrier of the cell broadcasts the same SYSINFO), before anything here retunes. */
@@ -1088,9 +1122,11 @@ apply_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
         ts->sysinfo_known = 1;
         tetra_calls_note_location_area(b->opts, b->state, si->la);
     }
+    return 1;
 }
 
-static void
+/* 1 when the SYSINFO was applied (apply_sysinfo()). */
+static int
 report_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
     static const char* const k_option_name[4] = {"even-MF", "odd-MF", "access-code", "ext-svc"};
     char mle[64] = "";
@@ -1106,7 +1142,7 @@ report_sysinfo(const mac_block* b, const tetra_mac_sysinfo* si) {
                 (unsigned)si->rxlev_access_min, (unsigned)si->access_parameter, (unsigned)si->radio_dl_timeout,
                 si->cck_flag ? "cck_id" : "hyperframe", (unsigned)si->hyperframe_or_cck,
                 k_option_name[si->option_flag & 3u], (unsigned)si->option, mle);
-    apply_sysinfo(b, si);
+    return apply_sysinfo(b, si);
 }
 
 static void
@@ -1142,13 +1178,17 @@ parse_broadcast(mac_block* b, const uint8_t* bits, int nbits) {
         return bc.access_define.nbits;
     }
     if (bc.type == TETRA_MAC_BC_SYSINFO && b->first) {
+        int taken = 1;
         if (complete) {
-            report_sysinfo(b, &bc.sysinfo);
+            taken = report_sysinfo(b, &bc.sysinfo);
         } else {
             TETRA_LOG_PAYLOAD(b->ts, "[TETRA SYSINFO] CC=%d  too short (%d bits)\n", b->cc, nbits);
         }
-        /* Counted once it is taken: a SYSINFO of another cell first forgets the last cell's. */
-        b->ts->frames_sysinfo++;
+        /* Counted once it is taken: a SYSINFO of another cell first forgets the last cell's, and one of another cell
+           on the carrier of a guarded follow is not taken at all. */
+        if (taken) {
+            b->ts->frames_sysinfo++;
+        }
         return nbits;
     }
     /* A SYSINFO behind another PDU is not a pi/4-DQPSK SYSINFO; SYSINFO-DA and the reserved type have no length
