@@ -1684,6 +1684,50 @@ test_example_targets() {
     model.remove(model.rowForPath(path));
 }
 
+/* Issue #829: a host without a picker answers every request "unsupported", but only after the request returned, so a
+   caller that stores the id first sees the answer; each request gets a larger id. */
+static void
+test_document_picker_defaults() {
+    TestHost host;
+    expect("desktop has no document picker", !host.documentPickerSupported());
+    QList<qint64> unavailableIds;
+    QStringList reasons;
+    int otherAnswers = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickUnavailable, &host,
+                     [&unavailableIds, &reasons](qint64 id, const QString& reason) {
+                         unavailableIds.append(id);
+                         reasons.append(reason);
+                     });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPicked, &host,
+                     [&otherAnswers](qint64, const QString&, const QString&, bool) { otherAnswers++; });
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickCancelled, &host,
+                     [&otherAnswers](qint64) { otherAnswers++; });
+
+    const qint64 openId = host.requestOpenDocument();
+    expect("first request id is 1", openId == 1);
+    expect("no answer before the open request returns", unavailableIds.isEmpty());
+    const qint64 saveId =
+        host.requestSaveDocument(QStringLiteral("dsd-neo-backup.dsdbak"), QStringLiteral("application/octet-stream"));
+    expect("save request id is larger", saveId > openId);
+    expect("no answer before the save request returns", unavailableIds.isEmpty());
+    QCoreApplication::processEvents();
+    expect("each request answered once, in order, with its own id", unavailableIds == QList<qint64>({openId, saveId}));
+    expect("answered unsupported",
+           reasons == QStringList({QStringLiteral("unsupported"), QStringLiteral("unsupported")}));
+    expect("no pick or cancel answer", otherAnswers == 0);
+
+    host.cancelDocumentRequest(saveId);
+    host.discardPendingDownload(QStringLiteral("content://media/external/downloads/1"));
+    expect("no saved name on a host without Downloads",
+           host.savedDocumentName(QStringLiteral("content://media/external/downloads/1")).isEmpty());
+    const qint64 nextId = host.requestOpenDocument();
+    expect("ids keep rising after a cancel", nextId > saveId);
+    QCoreApplication::processEvents();
+    expect("the later request is answered too", unavailableIds.size() == 3 && unavailableIds.last() == nextId);
+    expect("the property publishes the capability",
+           host.property("documentPickerSupported").isValid() && !host.property("documentPickerSupported").toBool());
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -1733,6 +1777,7 @@ main(int argc, char** argv) {
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();
+    test_document_picker_defaults();
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

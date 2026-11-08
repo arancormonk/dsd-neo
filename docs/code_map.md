@@ -12835,6 +12835,21 @@ Qt Quick frontend (`src/ui/qt`):
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
   host (`android/decoder_host_android.cpp` today).
+- Document picker (issue #829): `DecoderHost::documentPickerSupported` (CONSTANT; base false) tells QML to ask the
+  host for documents instead of opening Qt's `FileDialog`; QML branches on it, never on `Qt.platform.os`.
+  `requestOpenDocument()` and `requestSaveDocument(suggestedName, mimeType)` return a new id, larger than every earlier
+  one (`nextDocumentRequestId()`, protected, so a platform host numbers its own requests the same way). Each id is
+  answered exactly once, after the request returned, by `documentPicked(id, reference, displayName, inDownloads)`,
+  `documentPickCancelled(id)` (backed out, or superseded by a newer request) or `documentPickUnavailable(id, reason)`
+  (`noPicker`, `noSavePicker`, `unreadable`, `noResult`, `failed`, `unsupported`). The base host answers every request
+  `unsupported`, queued. `cancelDocumentRequest(id)` drops a pending answer; `savedDocumentName(reference)` names a
+  finished Download-folder write without I/O (base: empty). These run on the Qt thread; `discardPendingDownload(
+  reference)` (base no-op) may run on any thread and never blocks. The reference is a plain string from end to end,
+  never a QML `url` or `QUrl::toString()`. QML tests: the `decoderHost` map and `ImportOnlyHost` both fake the picker
+  (`documentPickerSupported` true unless `testContext.setDocumentPickerSupported(false)`); a case reads
+  `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
+  `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
+  Test: `UI_QT_IMPORTED_FILES` (base defaults).
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 

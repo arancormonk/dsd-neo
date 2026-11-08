@@ -421,6 +421,27 @@ DecoderHost::announceTransferEnd(int selection, int result, int missing) {
         Qt::QueuedConnection);
 }
 
+qint64
+DecoderHost::requestOpenDocument() {
+    return refuseDocumentRequest();
+}
+
+qint64
+DecoderHost::requestSaveDocument(const QString& suggestedName, const QString& mimeType) {
+    (void)suggestedName;
+    (void)mimeType;
+    return refuseDocumentRequest();
+}
+
+qint64
+DecoderHost::refuseDocumentRequest() {
+    const qint64 id = nextDocumentRequestId();
+    QMetaObject::invokeMethod(
+        this, [this, id]() { Q_EMIT documentPickUnavailable(id, QStringLiteral("unsupported")); },
+        Qt::QueuedConnection);
+    return id;
+}
+
 bool
 DecoderHost::shareRecording(const QString& path, const QString& title) {
     if (path.isEmpty() || !shareSupported() || !m_recordingIndexed || !m_recordingIndexed(path)) {

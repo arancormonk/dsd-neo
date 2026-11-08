@@ -179,6 +179,67 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         locationCancelRequested = id;
     }
 
+    /* Issue #829: the picker as the decoderHost map plays it (see ReadingMap); a case answers the requests through
+     * testContext. The ids are the base host's own. */
+    bool pickerSupported = true;
+    QVariantMap lastDocumentRequest;
+    QVariantList documentCalls;
+    QMap<QString, QString> savedDocumentNames;
+
+    bool
+    documentPickerSupported() const override {
+        return pickerSupported;
+    }
+
+    qint64
+    requestOpenDocument() override {
+        const qint64 id = nextDocumentRequestId();
+        lastDocumentRequest = documentRequest(id, QStringLiteral("open"), QString(), QString());
+        documentCalls.append(documentCall(QStringLiteral("requestOpenDocument"), lastDocumentRequest));
+        return id;
+    }
+
+    qint64
+    requestSaveDocument(const QString& suggestedName, const QString& mimeType) override {
+        const qint64 id = nextDocumentRequestId();
+        lastDocumentRequest = documentRequest(id, QStringLiteral("save"), suggestedName, mimeType);
+        documentCalls.append(documentCall(QStringLiteral("requestSaveDocument"), lastDocumentRequest));
+        return id;
+    }
+
+    void
+    cancelDocumentRequest(qint64 requestId) override {
+        documentCalls.append(
+            documentCall(QStringLiteral("cancelDocumentRequest"), {{QStringLiteral("id"), requestId}}));
+    }
+
+    QString
+    savedDocumentName(const QString& reference) const override {
+        return savedDocumentNames.value(reference);
+    }
+
+    void
+    discardPendingDownload(const QString& reference) override {
+        documentCalls.append(
+            documentCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}}));
+    }
+
+    /** @brief What lastDocumentRequest() reports: {id, kind ("open" or "save"), name, mime}. */
+    static QVariantMap
+    documentRequest(qint64 id, const QString& kind, const QString& name, const QString& mime) {
+        return {{QStringLiteral("id"), id},
+                {QStringLiteral("kind"), kind},
+                {QStringLiteral("name"), name},
+                {QStringLiteral("mime"), mime}};
+    }
+
+    /** @brief A recorded picker call, shaped as ReadingMap's calls are: {name, ...}. */
+    static QVariantMap
+    documentCall(const QString& name, QVariantMap args) {
+        args.insert(QStringLiteral("name"), name);
+        return args;
+    }
+
     qreal keyboardBoundary = -1;
 
     qreal
@@ -2224,6 +2285,40 @@ class ReadingMap : public QQmlPropertyMap {
         return shareAccepted;
     }
 
+    /* Issue #829: the document picker. A request only records itself and returns a new id; a case answers it through
+     * testContext (answerDocumentPicked() and the like), as a platform host would later. Calls are kept in `calls`
+     * with the rest; the `documentPickerSupported` reading is in the map. */
+    Q_INVOKABLE qint64
+    requestOpenDocument() {
+        lastDocumentRequest =
+            ImportOnlyHost::documentRequest(++m_documentRequestId, QStringLiteral("open"), QString(), QString());
+        noteCall(QStringLiteral("requestOpenDocument"), lastDocumentRequest);
+        return m_documentRequestId;
+    }
+
+    Q_INVOKABLE qint64
+    requestSaveDocument(const QString& suggestedName, const QString& mimeType) {
+        lastDocumentRequest =
+            ImportOnlyHost::documentRequest(++m_documentRequestId, QStringLiteral("save"), suggestedName, mimeType);
+        noteCall(QStringLiteral("requestSaveDocument"), lastDocumentRequest);
+        return m_documentRequestId;
+    }
+
+    Q_INVOKABLE void
+    cancelDocumentRequest(qint64 requestId) {
+        noteCall(QStringLiteral("cancelDocumentRequest"), {{QStringLiteral("id"), requestId}});
+    }
+
+    Q_INVOKABLE QString
+    savedDocumentName(const QString& reference) const {
+        return savedDocumentNames.value(reference);
+    }
+
+    Q_INVOKABLE void
+    discardPendingDownload(const QString& reference) {
+        noteCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}});
+    }
+
     void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
@@ -2236,6 +2331,8 @@ class ReadingMap : public QQmlPropertyMap {
     }
 
     QVariantList calls;
+    QVariantMap lastDocumentRequest;
+    QMap<QString, QString> savedDocumentNames;
     bool shareAccepted = true;
     /* Issue #782: false for a host that ignores a seek (a platform player that clamps it or drops it). */
     bool seekApplied = true;
@@ -2262,8 +2359,13 @@ class ReadingMap : public QQmlPropertyMap {
     void locationResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                         bool geocodeOk, const QString& postal, const QString& country, const QString& error);
     void locationCancelled(qint64 requestId);
+    void documentPicked(qint64 requestId, const QString& reference, const QString& displayName, bool inDownloads);
+    void documentPickCancelled(qint64 requestId);
+    void documentPickUnavailable(qint64 requestId, const QString& reason);
 
   private:
+    qint64 m_documentRequestId = 0;
+
     void
     noteCall(const QString& name, QVariantMap args) {
         args.insert(QStringLiteral("name"), name);
@@ -3929,6 +4031,84 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Claim or deny the app's document picker (#829) on every host a case can use; true until a case says.
+     *
+     * Production reads it as a CONSTANT, so set it before loading the screen under test.
+     */
+    Q_INVOKABLE void
+    setDocumentPickerSupported(bool supported) {
+        m_import_host->pickerSupported = supported;
+        m_initializing_host->pickerSupported = supported;
+        m_host[QStringLiteral("documentPickerSupported")] = supported;
+        m_host_readings->insert(QStringLiteral("documentPickerSupported"), supported);
+        if (hostReadingsInstalled()) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+        }
+    }
+
+    /** @brief The installed host's last document request, {id, kind ("open" or "save"), name, mime}; {} before one. */
+    Q_INVOKABLE QVariantMap
+    lastDocumentRequest() const {
+        return hostReadingsInstalled() ? m_host_readings->lastDocumentRequest : m_lifecycle_host->lastDocumentRequest;
+    }
+
+    /** @brief The installed host's picker calls (requests, cancels, discards), oldest first, as {name, ...}. */
+    Q_INVOKABLE QVariantList
+    documentCalls() const {
+        if (!hostReadingsInstalled()) {
+            return m_lifecycle_host->documentCalls;
+        }
+        static const QStringList names = {QStringLiteral("requestOpenDocument"), QStringLiteral("requestSaveDocument"),
+                                          QStringLiteral("cancelDocumentRequest"),
+                                          QStringLiteral("discardPendingDownload")};
+        QVariantList picker;
+        for (const QVariant& call : m_host_readings->calls) {
+            if (names.contains(call.toMap().value(QStringLiteral("name")).toString())) {
+                picker.append(call);
+            }
+        }
+        return picker;
+    }
+
+    /** @brief Answer request @p id on the installed host with a document, as a platform picker does. */
+    Q_INVOKABLE void
+    answerDocumentPicked(qint64 id, const QString& reference, const QString& displayName, bool inDownloads) {
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->documentPicked(id, reference, displayName, inDownloads);
+        } else {
+            Q_EMIT m_lifecycle_host->documentPicked(id, reference, displayName, inDownloads);
+        }
+    }
+
+    /** @brief Answer request @p id on the installed host: no document (backed out, or superseded). */
+    Q_INVOKABLE void
+    answerDocumentCancelled(qint64 id) {
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->documentPickCancelled(id);
+        } else {
+            Q_EMIT m_lifecycle_host->documentPickCancelled(id);
+        }
+    }
+
+    /** @brief Answer request @p id on the installed host: the picker could not ask, for @p reason. */
+    Q_INVOKABLE void
+    answerDocumentUnavailable(qint64 id, const QString& reason) {
+        if (hostReadingsInstalled()) {
+            Q_EMIT m_host_readings->documentPickUnavailable(id, reason);
+        } else {
+            Q_EMIT m_lifecycle_host->documentPickUnavailable(id, reason);
+        }
+    }
+
+    /** @brief The Download folder name every host reports for @p reference through savedDocumentName(). */
+    Q_INVOKABLE void
+    setSavedDocumentName(const QString& reference, const QString& name) {
+        m_import_host->savedDocumentNames.insert(reference, name);
+        m_initializing_host->savedDocumentNames.insert(reference, name);
+        m_host_readings->savedDocumentNames.insert(reference, name);
+    }
+
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
     Q_INVOKABLE void
     setHostRunning(bool running) {
@@ -4870,6 +5050,9 @@ class Setup : public QObject {
         host[QStringLiteral("localDeviceStatus")] = QString();
         host[QStringLiteral("locationSupported")] = false;
         host[QStringLiteral("shareSupported")] = false;
+        /* Issue #829: unlike the base host's, true, so the screens take the app's picker, which a case answers
+         * through testContext; setDocumentPickerSupported(false) puts Qt's FileDialog back. */
+        host[QStringLiteral("documentPickerSupported")] = true;
         host[QStringLiteral("localDeviceFailureKind")] = 0;
         host[QStringLiteral("localDeviceRequestPending")] = false;
         host[QStringLiteral("localDeviceRequestedSource")] = QString();
@@ -5060,6 +5243,13 @@ class Setup : public QObject {
     }
 
   private:
+    /* Whether `decoderHost` is the readings map now, rather than a lifecycle host useLifecycleHost() put in. */
+    bool
+    hostReadingsInstalled() const {
+        return m_engine->rootContext()->contextProperty(QStringLiteral("decoderHost")).value<QObject*>()
+               == m_host_readings;
+    }
+
     /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */
     bool m_accessibility_activated = false;
     /* Issue #782: the URLs QML opened while captureOpenedUrls() held the handler. */
