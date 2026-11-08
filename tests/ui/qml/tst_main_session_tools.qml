@@ -1808,17 +1808,21 @@ Item {
                 header + "GATE,p25-conventional,851012500,,,,,Gate\n");
             var twinSource = testContext.writeFixtureCsv("refused-twin.csv",
                 header + "GATE,p25-conventional,854012500,,,,,Gate\n");
-            var gateFile = importedFiles.importFile(gateSource, "Gate.csv", "trunkTargets");
-            var twinFile = importedFiles.importFile(twinSource, "Twin.csv", "trunkTargets");
-            verify(gateFile.ok && twinFile.ok);
             var list = function (name, path) {
-                scanLists.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, targetSource: "csv",
-                               targetsCsvPath: path});
+                verify(scanLists.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                                      targetSource: "csv", targetsCsvPath: path}));
                 return scanLists.get(scanLists.count - 1);
             };
-            var security = list("Security", gateFile.path);
-            var twin = list("Twin", twinFile.path);
+            var gateFile = null;
+            var twinFile = null;
+            var security = null;
+            var twin = null;
             try {
+                gateFile = importedFiles.importFile(gateSource, "Gate.csv", "trunkTargets");
+                twinFile = importedFiles.importFile(twinSource, "Twin.csv", "trunkTargets");
+                verify(gateFile.ok && twinFile.ok);
+                security = list("Security", gateFile.path);
+                twin = list("Twin", twinFile.path);
                 testContext.setLifecyclePhase(0);
                 var before = testContext.lastStartArgs();
                 app.startScanBundle(scanLists.rowForUid(security.uid), [twin.uid]);
@@ -1829,13 +1833,15 @@ Item {
             } finally {
                 app.startError = "";
                 testContext.setLifecyclePhase(2);
-                removeScanLists([security.uid, twin.uid]);
+                removeScanLists([security, twin].filter(Boolean).map(function (l) { return l.uid; }));
                 // An imported target file is removed only while no session runs.
                 testContext.setLifecyclePhase(0);
-                for (var path of [gateFile.path, twinFile.path]) {
-                    var row = importedFiles.rowForPath(path);
+                for (var file of [gateFile, twinFile]) {
+                    if (!file || !file.ok)
+                        continue;
+                    var row = importedFiles.rowForPath(file.path);
                     if (row >= 0)
-                        verify(importedFiles.remove(row), "the imported file stays: " + path);
+                        verify(importedFiles.remove(row), "the imported file stays: " + file.path);
                 }
                 testContext.setLifecyclePhase(2);
             }

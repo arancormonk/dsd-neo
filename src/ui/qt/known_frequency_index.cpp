@@ -842,7 +842,7 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
         }
         if (std::abs(distance - nearest) < 0.5) {
             // Two rows of one list on one frequency under one name are two targets, each its own id; rows of two
-            // lists stay apart too, even under one name with one entry uid.
+            // lists stay apart too, even under one name with one target id (two of a person's target CSVs).
             QString key = entry.value.value(QStringLiteral("listUid")).toString() + QLatin1Char('/')
                           + entry.value.value(QStringLiteral("systemUid")).toString() + QLatin1Char('/')
                           + entry.value.value(QStringLiteral("name")).toString() + QString::number(entry.hz)

@@ -493,11 +493,12 @@ testRecordingKey() {
                .isEmpty());
 }
 
-/* Issue #644: two lists under one name, each with an entry on one frequency, are two Listen choices, each starting its
-   own list: the matches stay apart by list. Issue #697: the second list was given the first's entry uid, and its save
-   gave it another (one id is one target), so each match names its own list's entry. */
+/* Issue #644: two lists under one name, each with a target on one frequency, are two Listen choices, each starting its
+   own list: the matches stay apart by list. Issue #697: a manual list given another's entry uid is saved with another
+   (the app's lists never share an id), so each match names its own list's entry; two imported lists whose files hold
+   one target id stay two matches, one per list, under that one id. */
 static void
-testKnownFrequencyListsApart() {
+testKnownFrequencyListsApart(const QString& dir) {
     dsd_qt::SavedSystemsModel systems;
     dsd_qt::ScanListsModel lists;
     const QVariantMap desk{
@@ -529,6 +530,38 @@ testKnownFrequencyListsApart() {
     QStringList expected{uids[0] + QLatin1Char('/') + entryUids[0], uids[1] + QLatin1Char('/') + entryUids[1]};
     expected.sort();
     assert(pairs == expected);
+    // Every model reads the one saved store, so the manual lists go before the imported ones are indexed.
+    for (const QString& uid : uids) {
+        assert(lists.remove(lists.rowForUid(uid)));
+    }
+
+    dsd_qt::ScanListsModel csvLists;
+    QStringList csvUids;
+    for (const char* file : {"apart-a.csv", "apart-b.csv"}) {
+        const QString targets = QDir(dir).filePath(QString::fromLatin1(file));
+        writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                           "entry,dmr-conventional,450125000,,,,,Desk\n");
+        assert(csvLists.add({{QStringLiteral("name"), QStringLiteral("Gate")},
+                             {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                             {QStringLiteral("targetsCsvPath"), targets}}));
+        csvUids << csvLists.get(csvLists.count() - 1).value(QStringLiteral("uid")).toString();
+    }
+    assert(csvUids[0] != csvUids[1]);
+    dsd_qt::KnownFrequencyIndex csvIndex(&systems, &csvLists);
+    const QVariantList csvMatches = csvIndex.tunedMatches(450125000, 12500);
+    assert(csvMatches.size() == 2);
+    QStringList csvListUids;
+    for (const QVariant& match : csvMatches) {
+        assert(match.toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("entry"));
+        assert(match.toMap().value(QStringLiteral("selectable")).toBool());
+        csvListUids << match.toMap().value(QStringLiteral("listUid")).toString();
+    }
+    csvListUids.sort();
+    csvUids.sort();
+    assert(csvListUids == csvUids);
+    for (const QString& uid : csvUids) {
+        assert(csvLists.remove(csvLists.rowForUid(uid)));
+    }
 }
 
 /* Issue #644: a target CSV row's id is what the engine loads, so a held start or an in-place go-to names a target the
@@ -1560,7 +1593,7 @@ main(int argc, char** argv) {
     testRestartAfterPausedStop(&index);
     testStoredMarginBelowMinimum(&index);
     testKnownFrequencyIdentity(temp.path());
-    testKnownFrequencyListsApart();
+    testKnownFrequencyListsApart(temp.path());
     testKnownFrequencyEngineIds(temp.path());
     testKnownFrequencyEngineGrammar(temp.path());
     testKnownFrequencySessionTargetsShared(temp.path());
