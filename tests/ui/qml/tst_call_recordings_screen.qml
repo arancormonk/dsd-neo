@@ -33,6 +33,20 @@ Item {
             var calls = testContext.hostCalls();
             return calls.length > 0 ? calls[calls.length - 1] : ({});
         }
+        function hostCallsNamed(name) {
+            return testContext.hostCalls().filter(function (call) { return call.name === name; });
+        }
+        // Issue #829: the save request the export waits on, answered by the host.
+        function exportRequest() {
+            var request = testContext.lastDocumentRequest();
+            compare(request.kind, "save");
+            compare(request.mime, "application/zip");
+            verify(item("callRecordingsExportPicker").visible, "the picker waits");
+            return request.id;
+        }
+        function pick(reference, inDownloads) {
+            testContext.answerDocumentPicked(exportRequest(), reference, reference.split("/").pop(), inDownloads === true);
+        }
         function fill() {
             recordings.folders = [county, metro, {uid: "empty", kind: "saved", name: "Quiet", count: 0, bytes: 0, first: 0, last: 0, available: true}];
             recordings.recordingCount = 843;
@@ -64,6 +78,8 @@ Item {
         function cleanup() {
             for (var name of ["callRecordingsFolderMenu", "callRecordingsRange", "callRecordingsDeleteConfirm"])
                 item(name).visible = false;
+            item("callRecordingsExportPicker").cancel();
+            screen().visible = true;
             recordings.reset();
             testContext.resetHostPlayback();
             testContext.setHostReading("recordingExportSupported", false);
@@ -140,9 +156,11 @@ Item {
             compare(lastStoreCall().preset, "last7");
             var selection = screen().exportSelection;
             verify(selection > 0);
-            screen().exportPicked("content://picked/doc.zip");
+            // B1: the reference reaches the export as the host sent it.
+            var reference = "content://com.Example.Provider/document/primary%3ADownload%2Fmy%20calls.zip";
+            pick(reference);
             compare(lastHostCall().name, "exportRecordings");
-            compare(lastHostCall().reference, "content://picked/doc.zip");
+            compare(lastHostCall().reference, reference);
             compare(lastHostCall().selection.selection, selection);
 
             // Running: progress and a way out.
@@ -191,12 +209,13 @@ Item {
             compare(lastStoreCall().folderUid, "");
             compare(lastStoreCall().preset, "all");
             var selection = screen().exportSelection;
-            screen().exportPicked("content://picked/all.zip");
+            pick("content://picked/all.zip");
             testContext.finishRecordingTransfer(selection + 50, 1, 0);
             compare(item("callRecordingsNotice").text, "", "a save from a detail sheet is not this screen's");
             testContext.finishRecordingTransfer(selection, data.result, data.missing);
             compare(item("callRecordingsNotice").text, data.text);
             compare(screen().noticeProblem, data.problem);
+            compare(item("callRecordingsNotice").Accessible.role, data.problem ? Accessible.AlertMessage : Accessible.StaticText);
             compare(screen().exportSelection, 0);
         }
 
@@ -206,11 +225,135 @@ Item {
             screen().beginExport(county, "last30");
             var selection = screen().exportSelection;
             verify(selection > 0);
-            screen().exportPickCancelled();
+            var id = exportRequest();
+            testContext.answerDocumentCancelled(id);
             compare(lastStoreCall().name, "releaseSelection");
             compare(lastStoreCall().selection, selection, "a dismissed picker lets the files go");
             compare(screen().exportSelection, 0);
-            compare(testContext.hostCalls().length, 0, "and nothing was written");
+            compare(hostCallsNamed("exportRecordings").length, 0, "and nothing was written");
+            compare(screen().notice, "", "backing out says nothing");
+        }
+
+        // Issue #829: no picker could ask. The files go again at once, the
+        // reason shows as a problem and is read out, and Export works again.
+        function test_export_picker_unavailable() {
+            fill();
+            recordings.setSelection(12, 40000000, ["/r/a.wav"]);
+            var said = screen().announcements;
+            screen().beginExport(county, "last30");
+            var selection = screen().exportSelection;
+            var id = exportRequest();
+            testContext.answerDocumentUnavailable(id, "noSavePicker");
+            compare(lastStoreCall().name, "releaseSelection");
+            compare(lastStoreCall().selection, selection, "the hold is let go");
+            compare(screen().exportSelection, 0);
+            compare(hostCallsNamed("exportRecordings").length, 0);
+            var message = "This device has no save picker, and DSD-neo could not save to the Download folder.";
+            compare(item("callRecordingsNotice").text, message);
+            verify(screen().noticeProblem);
+            compare(item("callRecordingsNotice").Accessible.role, Accessible.AlertMessage);
+            compare(screen().announcements, said + 1, "read out once");
+            compare(screen().announced, message);
+            testContext.answerDocumentPicked(id, "content://late/doc.zip", "doc.zip", false);
+            compare(hostCallsNamed("exportRecordings").length, 0, "a late answer writes nothing");
+            verify(item("callRecordingsExportAll").enabled, "Export works again");
+            screen().beginExport(county, "last30");
+            testContext.answerDocumentUnavailable(exportRequest(), "noSavePicker");
+            compare(screen().announcements, said + 2, "a repeat is read out again");
+        }
+
+        // B5: while the picker is still asking nothing is exported yet. Export
+        // all waits like a folder's Export does, and "An export is running"
+        // is said only once a transfer runs.
+        function test_export_all_waits_for_the_picker_without_saying_running() {
+            fill();
+            recordings.setSelection(12, 40000000, ["/r/a.wav"]);
+            screen().beginExport(county, "last30");
+            var selection = screen().exportSelection;
+            verify(selection > 0);
+            verify(!decoderHost.recordingTransferActive);
+            verify(!item("callRecordingsExportAll").enabled, "Export all waits while the picker asks");
+            var selects = recordings.calls().filter(function (call) { return call.name === "selectForExport"; }).length;
+            screen().beginExport(metro, "today");
+            compare(item("callRecordingsNotice").text, "", "no export is running yet");
+            compare(recordings.calls().filter(function (call) { return call.name === "selectForExport"; }).length, selects, "nothing new is selected");
+            compare(screen().exportSelection, selection);
+            pick("content://picked/doc.zip");
+            verify(!item("callRecordingsExportAll").enabled);
+            screen().beginExport(metro, "today");
+            compare(item("callRecordingsNotice").text, "An export is running. Export again when it finishes.");
+            testContext.finishRecordingTransfer(selection, 0, 0);
+            verify(item("callRecordingsExportAll").enabled);
+        }
+
+        // Issue #829: with no save picker the export went to Download/DSD-neo;
+        // the result names the file there, followed by what was left out.
+        function test_export_saved_to_downloads_data() {
+            return [
+                {tag: "named", name: "Call recordings County P25 2026-11-08 (1).zip", missing: 2, text: "Saved to Download/DSD-neo as Call recordings County P25 2026-11-08 (1).zip. 2 were gone and left out."},
+                {tag: "named-all-there", name: "Call recordings 2026-11-08.zip", missing: 0, text: "Saved to Download/DSD-neo as Call recordings 2026-11-08.zip."},
+                {tag: "no-name", name: "", missing: 1, text: "Exported 11 recordings. 1 was gone and left out."}
+            ];
+        }
+        function test_export_saved_to_downloads(data) {
+            fill();
+            recordings.setSelection(12, 40000000, ["/r/a.wav"]);
+            screen().beginExport(county, "all");
+            var selection = screen().exportSelection;
+            var reference = "content://media/external/downloads/" + data.tag;
+            if (data.name.length > 0)
+                testContext.setSavedDocumentName(reference, data.name);
+            pick(reference, true);
+            compare(lastHostCall().name, "exportRecordings");
+            compare(lastHostCall().reference, reference);
+            testContext.finishRecordingTransfer(selection, 0, data.missing);
+            compare(item("callRecordingsNotice").text, data.text);
+            verify(!screen().noticeProblem);
+
+            // A failed write never claims the Download folder; the next export
+            // through a picker reads as before.
+            screen().beginExport(county, "all");
+            selection = screen().exportSelection;
+            pick(reference, true);
+            testContext.finishRecordingTransfer(selection, 1, 0);
+            compare(item("callRecordingsNotice").text, "The export couldn't be written. Try another location.");
+            screen().beginExport(county, "all");
+            selection = screen().exportSelection;
+            pick("content://picked/other.zip", false);
+            testContext.finishRecordingTransfer(selection, 0, 0);
+            compare(item("callRecordingsNotice").text, "Exported 12 recordings.");
+        }
+
+        // Issue #829: leaving the screen (Back clears callRecordingsOpen in
+        // Main) while the picker asks lets the files go, and its late answer
+        // writes nothing; an export already writing runs on.
+        function test_closing_ends_the_picker_and_lets_the_files_go() {
+            fill();
+            recordings.setSelection(12, 40000000, ["/r/a.wav"]);
+            screen().beginExport(county, "all");
+            var selection = screen().exportSelection;
+            var id = exportRequest();
+            screen().visible = false;
+            verify(testContext.documentCalls().some(function (call) {
+                return call.name === "cancelDocumentRequest" && call.id === id;
+            }), "the host request was cancelled");
+            compare(lastStoreCall().name, "releaseSelection");
+            compare(lastStoreCall().selection, selection);
+            compare(screen().exportSelection, 0);
+            testContext.answerDocumentPicked(id, "content://late/doc.zip", "doc.zip", false);
+            compare(hostCallsNamed("exportRecordings").length, 0);
+            screen().visible = true;
+
+            screen().beginExport(county, "all");
+            selection = screen().exportSelection;
+            pick("content://picked/doc.zip");
+            var calls = recordings.calls().length;
+            screen().visible = false;
+            compare(recordings.calls().length, calls, "a running export keeps its files");
+            compare(hostCallsNamed("cancelRecordingTransfer").length, 0, "and runs on");
+            compare(screen().exportSelection, selection);
+            screen().visible = true;
+            testContext.finishRecordingTransfer(selection, 0, 0);
         }
 
         function test_export_unsupported() {
@@ -338,9 +481,10 @@ Item {
             recordings.recordingCount = 2;
             recordings.setSelection(2, 2000, ["/r/a.wav"]);
             screen().beginExport(recordings.folders[0], "all");
-            var name = findChild(screen(), "callRecordingsExportPicker").selectedFile.toString();
+            var name = findChild(screen(), "callRecordingsExportPicker").suggestedName;
             verify(name.indexOf("Fire_EMS_ _North_ _1_") >= 0, name);
-            screen().exportPickCancelled();
+            compare(testContext.lastDocumentRequest().name, name, "the host is asked with that name");
+            testContext.answerDocumentCancelled(exportRequest());
         }
 
         function test_storage_away_wording_matches_settings() {

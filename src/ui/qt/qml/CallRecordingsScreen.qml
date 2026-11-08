@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 import QtQuick.Window
 import "Util.js" as Util
 
@@ -13,7 +12,8 @@ import "Util.js" as Util
 //
 // An export holds its files from the selection to its end (the store), so the
 // picker comes after the selection: an empty range says so without asking for a
-// file, and a picker dismissed lets the files go again.
+// file, and a picker dismissed, one that cannot ask, or one still out when the
+// screen closes lets the files go again.
 Item {
     id: screen
     signal closed
@@ -21,8 +21,13 @@ Item {
     // The export this screen began, 0 while none: its result is this screen's to show.
     property int exportSelection: 0
     property var exportSelectionMap: ({})
+    // Where that export is written, once picked.
+    property string exportReference: ""
     property string notice: ""
     property bool noticeProblem: false
+    // The last problem read out and how many have been, for tests.
+    property string announced: ""
+    property int announcements: 0
     // What the open folder menu, the date choice and the delete confirmation are about.
     property var subject: null
     // What the storage limit removed and which deletes failed, taken from the store
@@ -52,8 +57,13 @@ Item {
     Keys.onBackPressed: Navigation.back(screen.Window.window)
     // The layer clears input during activation; take focus after its bindings settle.
     onVisibleChanged: {
-        if (!visible)
+        // Issue #829: a picker still out ends with the screen (Back clears
+        // callRecordingsOpen in Main), and its files go again. An export
+        // already writing runs on.
+        if (!visible) {
+            exportPicker.cancel();
             return;
+        }
         removedShown = 0;
         failuresShown = 0;
         failureReason = "";
@@ -98,9 +108,16 @@ Item {
             parts.push(spanText(folder));
         return parts.join(" · ");
     }
+    // A problem is read out once each time it is said, a repeat included.
     function say(text, problem) {
         notice = text;
         noticeProblem = problem;
+        if (!problem || !text.length || !Navigation.allows(noticeText))
+            return;
+        announced = text;
+        announcements++;
+        if (typeof Accessible.announce === "function")
+            Accessible.announce(text);
     }
 
     function openFolder(folder) {
@@ -136,7 +153,10 @@ Item {
     }
     function beginExport(folder, preset) {
         if (exportSelection > 0) {
-            say(qsTr("An export is running. Export again when it finishes."), true);
+            // Issue #829 B5: only a transfer is an export running; while the
+            // picker is still asking there is nothing to say.
+            if (exporting)
+                say(qsTr("An export is running. Export again when it finishes."), true);
             return;
         }
         var selection = recordings.selectForExport(folder ? folder.uid : "", preset);
@@ -149,12 +169,13 @@ Item {
         var stamp = Qt.formatDate(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
         say("", false);
         var owner = folder ? Util.fileNameText(folder.name) : "";
-        exportPicker.selectedFile = (owner.length > 0 ? qsTr("Call recordings %1 %2").arg(owner).arg(stamp) : qsTr("Call recordings %1").arg(stamp)) + ".zip";
+        exportPicker.suggestedName = (owner.length > 0 ? qsTr("Call recordings %1 %2").arg(owner).arg(stamp) : qsTr("Call recordings %1").arg(stamp)) + ".zip";
         exportPicker.open();
     }
     function exportPicked(reference) {
         if (exportSelection <= 0)
             return;
+        exportReference = reference;
         decoderHost.exportRecordings(exportSelectionMap, reference);
     }
     function exportPickCancelled() {
@@ -163,14 +184,26 @@ Item {
         recordings.releaseSelection(exportSelection);
         exportSelection = 0;
     }
+    // No picker could ask (issue #829): the files go again, and the reason shows.
+    function exportPickUnavailable(message) {
+        if (exportSelection <= 0)
+            return;
+        exportPickCancelled();
+        say(message, true);
+    }
     // DecoderHost::RecordingTransferResult for the export this screen began.
     function exportFinished(selection, result, missing) {
         if (selection !== exportSelection)
             return;
         var count = exportSelectionMap.count - missing;
+        // The Download folder's name for a save no picker took ("" otherwise).
+        var saved = exportPicker.savedToDownloads ? decoderHost.savedDocumentName(exportReference) : "";
         exportSelection = 0;
+        exportReference = "";
         if (result === 0) {
             var done = count === 1 ? qsTr("Exported 1 recording.") : qsTr("Exported %1 recordings.").arg(Util.countText(count));
+            if (saved.length > 0)
+                done = qsTr("Saved to Download/DSD-neo as %1.").arg(saved);
             if (missing > 0)
                 done += " " + (missing === 1 ? qsTr("1 was gone and left out.") : qsTr("%1 were gone and left out.").arg(Util.countText(missing)));
             say(done, false);
@@ -367,6 +400,7 @@ Item {
             }
 
             Text {
+                id: noticeText
                 objectName: "callRecordingsNotice"
                 width: parent.width
                 visible: text.length > 0
@@ -462,7 +496,8 @@ Item {
                     visible: decoderHost.recordingExportSupported && recordings.recordingCount > 0
                     width: (parent.width - parent.spacing) / 2
                     text: qsTr("Export all")
-                    enabled: !screen.exporting && recordings.available
+                    // Issue #829 B5: one export at a time, from the selection on.
+                    enabled: screen.exportSelection === 0 && recordings.available
                     onClicked: screen.chooseRange(null)
                 }
                 OutlineButton {
@@ -529,14 +564,19 @@ Item {
         onConfirmed: screen.deleteConfirmed()
     }
 
-    FileDialog {
+    DocumentPicker {
         id: exportPicker
         objectName: "callRecordingsExportPicker"
-        fileMode: FileDialog.SaveFile
-        // Android takes the new document's MIME type from the first filter.
+        mode: "save"
+        mimeType: "application/zip"
         nameFilters: [qsTr("Zip archive") + " (*.zip)"]
         defaultSuffix: "zip"
-        onAccepted: screen.exportPicked(selectedFile.toString())
+        onAccepted: function (reference, displayName) {
+            screen.exportPicked(reference);
+        }
         onRejected: screen.exportPickCancelled()
+        onUnavailable: function (reason, message) {
+            screen.exportPickUnavailable(message);
+        }
     }
 }

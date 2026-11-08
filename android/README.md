@@ -395,10 +395,13 @@ from Explore); **Export all** and **Delete all** sit below the rows. An export f
 **Yesterday**, **Last 7 days**, **Last 30 days** or **All**, by the day each call started on the phone's calendar. Then
 the save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
 gains little from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count
-limit. A progress line with **Cancel export** shows while it runs, one export at a time. On a phone with no save
-picker, the export (and **Save to file**) goes to Download/DSD-neo ("Choosing files"); Cancel still stops it until the
-file is finished, and a cancelled or failed export leaves nothing there. A recording deleted meanwhile
-is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
+limit. A progress line with **Cancel export** shows while it runs, one export at a time: **Export all** and a row's
+**Export as zip** wait from the moment the save picker opens. On a phone with no save picker, the export (and **Save to
+file**) goes to Download/DSD-neo ("Choosing files") and the result reads **Saved to Download/DSD-neo as** the file's
+name; Cancel still stops it until the file is finished, and a cancelled or failed export leaves nothing there. When
+the file can't be saved anywhere, the screen (or the call's sheet) says why and the recordings are free again, as they
+are when you back out of the picker or leave the screen while it is open. A recording deleted meanwhile is left out,
+and the result says how many. A recording that is playing, being exported or still waiting for an
 rdio-scanner upload is deleted once it is free.
 
 ### Storage limit
@@ -2129,7 +2132,9 @@ are explained when background listening first becomes useful; denial leaves the
 foreground UI usable. Audio output reports the active device route and follows
 Android's routing controls.
 
-New replay picks are copied to durable app-private storage. Existing saved cache
+New replay picks are copied to durable app-private storage. When a copy fails, the wizard says **Could not copy that
+file.** under the file, adding **The previous file is still selected.** when one was; when no picker can open, it
+gives the reason there instead. Existing saved cache
 copies are migrated when available; missing files can be reselected through Edit.
 File details show the basename, size and modification time. Replay completion is
 retained with a Play again action. Progress is not invented when the input backend

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 import QtQuick.Window
 import "Util.js" as Util
 
@@ -107,9 +106,10 @@ Item {
     property string p25BandplanCsvPath: ""
     property string srcCsvPath: ""
     // Which field the picker sheet serves: "chan"/"group"/"keys"/
-    // "p25Bandplan"/"src" are the trunking-data fields ("source", the step-1
-    // Browse, opens no sheet). An import carries its own field in its context
-    // (issue #829), so changing this never redirects a pick still out.
+    // "p25Bandplan"/"src" are the trunking-data fields ("source", the resting
+    // value, opens no sheet; the step-1 Browse never sets it). An import
+    // carries its own field in its context (issue #829), so changing this
+    // never redirects a pick still out.
     property string pickerTarget: "source"
     // Dec/hex choice for a new key-file import from the picker sheet.
     property bool pickerKeyHex: false
@@ -118,7 +118,12 @@ Item {
     // leaves the row reading "None" with no explanation.
     property string csvNotice: ""
     property bool csvNoticeIsProblem: false
-    // The last import problem read out and how many have been, for tests.
+    // Issue #829 B8: why the last Browse left the replay file as it was (the
+    // copy failed, or no picker could open), under the Replay file row; empty
+    // while there is nothing to say.
+    property string sourceNotice: ""
+    // The last problem read out (an import's or the replay file's) and how
+    // many have been, for tests.
     property string announced: ""
     property int announcements: 0
     // Issue #829: one generation per trunking-data field, bumped by every
@@ -191,7 +196,12 @@ Item {
     // directly) or reopening it for another system ends it.
     onVisibleChanged: {
         if (!visible)
-            csvImport.cancel();
+            endSessionPicks();
+    }
+    function endSessionPicks() {
+        csvImport.cancel();
+        sourcePicker.cancel();
+        sourceNotice = "";
     }
 
     function csvGeneration(target) {
@@ -222,7 +232,11 @@ Item {
     function showCsvProblem(text) {
         csvNotice = text;
         csvNoticeIsProblem = true;
-        if (!Navigation.allows(csvNoticeLine))
+        announceProblem(csvNoticeLine, text);
+    }
+    // Read out once per failure, a repeat included, while @p line is reachable.
+    function announceProblem(line, text) {
+        if (!Navigation.allows(line))
             return;
         announced = text;
         announcements++;
@@ -230,8 +244,29 @@ Item {
             Accessible.announce(text);
     }
 
+    // Browse for the replay file. The picked document is copied into the
+    // app's own storage; until a copy lands the previous file stays.
+    function browseReplayFile() {
+        sourceNotice = "";
+        sourcePicker.open();
+    }
+    function replayFilePicked(reference, displayName) {
+        var name = displayName.length > 0 ? displayName : reference.substring(reference.lastIndexOf('/') + 1);
+        var path = decoderHost.importContentUri(reference, name);
+        if (path.length > 0) {
+            fileText = path;
+            sourceNotice = "";
+            return;
+        }
+        showSourceProblem(fileText.length > 0 ? qsTr("Could not copy that file. The previous file is still selected.") : qsTr("Could not copy that file."));
+    }
+    function showSourceProblem(text) {
+        sourceNotice = text;
+        announceProblem(sourceNoticeLine, text);
+    }
+
     function openForAdd(preferNetwork) {
-        csvImport.cancel();
+        endSessionPicks();
         retainedKeySourceUid = "";
         resetImport();
         decryptionProfileUid = "";
@@ -281,7 +316,7 @@ Item {
      * supplies the decoder, gain, bandwidth and receiver settings it captured.
      */
     function openForFound(sys, freqMhz, detection) {
-        csvImport.cancel();
+        endSessionPicks();
         resetImport();
         retainedKeySourceUid = "";
         decryptionProfileUid = "";
@@ -338,7 +373,7 @@ Item {
     }
 
     function openForEdit(row) {
-        csvImport.cancel();
+        endSessionPicks();
         resetImport();
         var sys = savedSystems.get(row);
         retainedKeySourceUid = sys.uid || "";
@@ -701,15 +736,17 @@ Item {
             wizard.step = 1;
     }
 
-    // Audio/IQ source documents keep their existing host import path.
-    FileDialog {
-        id: fileDialog
-        onAccepted: {
-            var reference = selectedFile.toString();
-            var hint = reference.substring(reference.lastIndexOf('/') + 1);
-            var path = decoderHost.importContentUri(reference, hint);
-            if (path.length > 0)
-                wizard.fileText = path;
+    // The replay file's Browse (issue #829): the host's own picker where it
+    // has one. Backing out changes nothing.
+    DocumentPicker {
+        id: sourcePicker
+        objectName: "wizardSourcePicker"
+        mode: "open"
+        onAccepted: function (reference, displayName) {
+            wizard.replayFilePicked(reference, displayName);
+        }
+        onUnavailable: function (reason, message) {
+            wizard.showSourceProblem(message);
         }
     }
 
@@ -976,13 +1013,25 @@ Item {
 
                         OutlineButton {
                             id: browse
+                            objectName: "wizardBrowse"
                             width: 96
                             text: qsTr("Browse")
-                            onClicked: {
-                                wizard.pickerTarget = "source";
-                                fileDialog.open();
-                            }
+                            onClicked: wizard.browseReplayFile()
                         }
+                    }
+                    // Why the last Browse kept the file above (B8). Only a
+                    // problem ever shows here.
+                    ReadableText {
+                        id: sourceNoticeLine
+                        objectName: "wizardSourceNotice"
+                        width: parent.width
+                        visible: wizard.sourceNotice.length > 0
+                        text: wizard.sourceNotice
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
+                        color: Theme.magenta
+                        wrapMode: Text.Wrap
+                        Accessible.role: Accessible.AlertMessage
                     }
                     DisclosureRow {
                         width: parent.width

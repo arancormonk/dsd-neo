@@ -65,6 +65,27 @@ Item {
         function hostCallNames() {
             return testContext.hostCalls().map(function (call) { return call.name; });
         }
+        function hostCallsNamed(name) {
+            return testContext.hostCalls().filter(function (call) { return call.name === name; });
+        }
+        function lastStoreCall() {
+            var calls = recordings.calls();
+            return calls.length > 0 ? calls[calls.length - 1] : ({});
+        }
+        // Issue #829: the save request Save to file waits on, answered by the host.
+        function saveRequest() {
+            var request = testContext.lastDocumentRequest();
+            compare(request.kind, "save");
+            compare(request.mime, "audio/x-wav");
+            verify(findChild(item("historyRecording"), "recordingSavePicker").visible, "the picker waits");
+            return request.id;
+        }
+        // Tap Save to file on the shown part; the request it waits on.
+        function startSave() {
+            tap("recordingSave");
+            verify(item("historyRecording").saveSelection > 0);
+            return saveRequest();
+        }
         function tap(name) {
             var target = item(name);
             verify(target !== null, name);
@@ -86,6 +107,7 @@ Item {
             callHistory.clearAll();
         }
         function cleanup() {
+            findChild(item("historyRecording"), "recordingSavePicker").cancel();
             sheet().visible = false;
             testContext.resetHostPlayback();
             testContext.setHostReading("shareSupported", false);
@@ -481,9 +503,13 @@ Item {
             verify(player.saveSelection > 0);
             verify(!item("recordingSave").enabled, "one save at a time");
             var selection = player.saveSelection;
-            player.savePicked("file:///tmp/A.wav");
+            var id = saveRequest();
+            compare(testContext.lastDocumentRequest().name, "A.wav", "offered under the part's own name");
+            // B1: the reference reaches the save as the host sent it.
+            var reference = "content://com.Example.Provider/document/primary%3ADownload%2Fmy%20call.wav";
+            testContext.answerDocumentPicked(id, reference, "my call.wav", false);
             compare(lastHostCall().name, "saveRecording");
-            compare(lastHostCall().reference, "file:///tmp/A.wav");
+            compare(lastHostCall().reference, reference);
             compare(lastHostCall().selection.selection, selection);
 
             testContext.finishRecordingTransfer(selection + 100, 1, 0);
@@ -504,11 +530,151 @@ Item {
             recordings.setSelection(1, 96000, [pathA]);
             tap("recordingSave");
             var selection = player.saveSelection;
-            player.saveCancelled();
+            testContext.answerDocumentCancelled(saveRequest());
             var calls = recordings.calls();
             compare(calls[calls.length - 1].name, "releaseSelection");
             compare(calls[calls.length - 1].selection, selection, "a dismissed picker lets the file go");
             compare(player.saveSelection, 0);
+            compare(hostCallsNamed("saveRecording").length, 0);
+            verify(!item("recordingNotice").visible, "backing out says nothing");
+        }
+
+        // Issue #829: no picker could ask. The recording goes again at once,
+        // the reason shows as a problem and is read out, and Save works again.
+        function test_save_picker_unavailable() {
+            openWith([rec("t-1", pathA, 12000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            var player = item("historyRecording");
+            var said = player.announcements;
+            var id = startSave();
+            var selection = player.saveSelection;
+            testContext.answerDocumentUnavailable(id, "noSavePicker");
+            compare(lastStoreCall().name, "releaseSelection");
+            compare(lastStoreCall().selection, selection, "the hold is let go");
+            compare(player.saveSelection, 0);
+            var message = "This device has no save picker, and DSD-neo could not save to the Download folder.";
+            compare(item("recordingNotice").text, message);
+            compare(item("recordingNotice").Accessible.role, Accessible.AlertMessage);
+            compare(player.announcements, said + 1, "read out once");
+            compare(player.announced, message);
+            testContext.answerDocumentPicked(id, "content://late/A.wav", "A.wav", false);
+            compare(hostCallsNamed("saveRecording").length, 0, "a late answer writes nothing");
+            verify(item("recordingSave").enabled, "Save works again");
+            testContext.answerDocumentUnavailable(startSave(), "noSavePicker");
+            compare(player.announcements, said + 2, "a repeat is read out again");
+        }
+
+        // Issue #829: with no save picker the recording went to
+        // Download/DSD-neo; the result names the file there.
+        function test_save_to_downloads_data() {
+            return [
+                {tag: "named", name: "A (1).wav", text: "Saved to Download/DSD-neo as A (1).wav."},
+                {tag: "no-name", name: "", text: "Saved."}
+            ];
+        }
+        function test_save_to_downloads(data) {
+            openWith([rec("t-1", pathA, 12000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            var player = item("historyRecording");
+            var id = startSave();
+            var selection = player.saveSelection;
+            var reference = "content://media/external/downloads/" + data.tag;
+            if (data.name.length > 0)
+                testContext.setSavedDocumentName(reference, data.name);
+            testContext.answerDocumentPicked(id, reference, "A.wav", true);
+            testContext.finishRecordingTransfer(selection, 0, 0);
+            compare(item("recordingNotice").text, data.text);
+            verify(!player.noticeProblem);
+
+            // The next save through a picker reads as before.
+            id = startSave();
+            selection = player.saveSelection;
+            testContext.answerDocumentPicked(id, "content://picked/A.wav", "A.wav", false);
+            testContext.finishRecordingTransfer(selection, 0, 0);
+            compare(item("recordingNotice").text, "Saved.");
+        }
+
+        // r1 #5: a save whose sheet moved to another row ends there, success or
+        // failure: the hold is gone, Save works on the new row, and nothing is
+        // said about another call's file, here or back on its own row.
+        function test_save_ends_after_switching_rows_data() {
+            return [{tag: "downloads-done", result: 0}, {tag: "failed", result: 1}];
+        }
+        function test_save_ends_after_switching_rows(data) {
+            openWith([rec("t-1", pathA, 12000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            var player = item("historyRecording");
+            var id = startSave();
+            var selection = player.saveSelection;
+            var reference = "content://media/external/downloads/switch";
+            testContext.setSavedDocumentName(reference, "A (2).wav");
+            testContext.answerDocumentPicked(id, reference, "A.wav", true);
+            compare(hostCallsNamed("cancelDocumentRequest").length, 0);
+            openWith([rec("t-2", pathB, 12000)]);
+            compare(hostCallsNamed("cancelDocumentRequest").length, 0, "an accepted save is not a pick to end");
+            testContext.finishRecordingTransfer(selection, data.result, 0);
+            compare(player.saveSelection, 0, "the save is over");
+            compare(player.saveReference, "", "and forgotten");
+            compare(player.savePath, "");
+            verify(!item("recordingNotice").visible, "nothing about another call's file");
+            verify(item("recordingSave").enabled, "Save works on this row");
+
+            // The new row's own save names its own file.
+            recordings.setSelection(1, 96000, [pathB]);
+            id = startSave();
+            selection = player.saveSelection;
+            testContext.answerDocumentPicked(id, "content://picked/B.wav", "B.wav", false);
+            testContext.finishRecordingTransfer(selection, 0, 0);
+            compare(item("recordingNotice").text, "Saved.");
+        }
+
+        // Issue #829: a picker still out ends with what it was asked for. The
+        // sheet closing (Back), another row, the row losing its recording, or
+        // another part shown cancels it and lets the recording go; its late
+        // answer writes nothing.
+        function test_save_picker_ends_with_its_recording_data() {
+            return [{tag: "sheet-closed"}, {tag: "other-row"}, {tag: "row-trimmed"}, {tag: "other-part"}];
+        }
+        function test_save_picker_ends_with_its_recording(data) {
+            var uid = openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            var player = item("historyRecording");
+            var id = startSave();
+            var selection = player.saveSelection;
+            if (data.tag === "sheet-closed")
+                sheet().visible = false;
+            else if (data.tag === "other-row")
+                openWith([rec("t-3", pathC, 12000)]);
+            else if (data.tag === "row-trimmed")
+                verify(callHistory.setRowRecordings(uid, []));
+            else
+                player.select(1);
+            verify(!findChild(player, "recordingSavePicker").visible, "the pick ended");
+            verify(testContext.documentCalls().some(function (call) {
+                return call.name === "cancelDocumentRequest" && call.id === id;
+            }), "the host request was cancelled");
+            compare(lastStoreCall().name, "releaseSelection");
+            compare(lastStoreCall().selection, selection, "the recording is let go");
+            compare(player.saveSelection, 0);
+            testContext.answerDocumentPicked(id, "content://late/A.wav", "A.wav", false);
+            compare(hostCallsNamed("saveRecording").length, 0, "the late pick writes nothing");
+        }
+
+        // The recording's list read again (a fold, another part added) keeps
+        // a pick for the part still shown.
+        function test_save_picker_survives_a_reread() {
+            var uid = openWith([rec("t-1", pathA, 12000)]);
+            recordings.setSelection(1, 96000, [pathA]);
+            var player = item("historyRecording");
+            var id = startSave();
+            var selection = player.saveSelection;
+            verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]));
+            verify(findChild(player, "recordingSavePicker").visible, "the pick is still out");
+            compare(hostCallsNamed("cancelDocumentRequest").length, 0);
+            testContext.answerDocumentPicked(id, "content://picked/A.wav", "A.wav", false);
+            compare(hostCallsNamed("saveRecording").length, 1);
+            testContext.finishRecordingTransfer(selection, 0, 0);
+            compare(item("recordingNotice").text, "Saved.");
         }
 
         function test_delete() {
@@ -618,7 +784,7 @@ Item {
             var player = item("historyRecording");
             var selection = player.saveSelection;
             verify(selection > 0);
-            player.savePicked("file:///tmp/A.wav");
+            testContext.answerDocumentPicked(saveRequest(), "file:///tmp/A.wav", "A.wav", false);
             sheet().visible = false;
             openWith([rec("t-2", pathB, 12000)]);
             testContext.finishRecordingTransfer(selection, 0, 0);

@@ -11678,28 +11678,42 @@ Qt Quick frontend (`src/ui/qt`):
     Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed picker
     releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of its
     own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen opened,
-    and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording`
-    is true (History, Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows
-    its row by uid (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold:
-    play/pause, position and seek with a status line ("Opening…", "Paused") whose line stays laid out, empty and
-    unread, when there is none, so the block is as tall stopped, opening, playing and paused and a sheet centred on
-    its content does not move at a tap (`test_height_steady_across_states`), the parts (the one shown kept on its
-    recording by path) with a Play all parts action
+    and `deletesWaiting`. Issue #829: the picker (`callRecordingsExportPicker`) is a `DocumentPicker` (save,
+    `application/zip`, `suggestedName` the zip's name); one that is `unavailable` releases the selection and says its
+    message as a problem, and the screen `cancel()`s it when it stops being visible (Back clears `callRecordingsOpen`
+    in `Main.qml`), so the hold goes too; an export already writing runs on. Export all is enabled only while
+    `exportSelection === 0`, like a row's Export as zip, and "An export is running" is said only while a transfer runs
+    (B5). A Done export whose picker saved to the Download folder reads "Saved to Download/DSD-neo as <name>." with
+    `decoderHost.savedDocumentName()`, falling back to the exported count when it has no name, then the missing count.
+    `say()` reads every problem out once (`Accessible.announce`, a repeat again) while `Navigation.allows` the notice
+    (`announced`/`announcements` for tests). `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a
+    row whose `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
+    `HistoryDetailSheet.qml` follows its row by uid (`recordingsForUid()` again on every model change) and shows
+    `CallRecordingPlayer.qml` above Hold: play/pause, position and seek with a status line ("Opening…", "Paused") whose
+    line stays laid out, empty and unread, when there is none, so the block is as tall stopped, opening, playing and
+    paused and a sheet centred on its content does not move at a tap (`test_height_steady_across_states`), the parts
+    (the one shown kept on its recording by path) with a Play all parts action
     (the host keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a
-    stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part
-    the host reports "missing" leaves the block at once, until the store lists it as away (its storage went): from then
-    on the store's availability speaks for it, so it shows away and plays again once the storage is back, without
-    reopening the sheet; closing the sheet stops what it played; a pause the host made in the background (D10) reads as
-    Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted. History and
-    detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say the same of
-    their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal search
-    detection, so "the call stays in History" would not hold (issue #809 B3). `DetectionRecordingsSheet.qml` (Signal
-    search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows Listening
-    (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from
-    what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows `saveFailing`. Tests:
-    `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
-    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
-    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. Save to
+    file's picker (`recordingSavePicker`) is a `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is
+    `unavailable` releases the selection and says why, and the block `cancel()`s a picker still asking when it stops
+    being visible (the sheet closed, the row emptied) or another recording becomes the shown part (issue #829), which
+    releases the hold. `saveFinished()` takes the Download-folder name (`savedDocumentName()` when the picker's
+    `savedToDownloads`) and ends the save before its shown-part return, so a save that finished on another row's sheet
+    leaves nothing behind; a Done one shown here reads "Saved to Download/DSD-neo as <name>." (else "Saved."). Problems
+    are read out once each, as on the screen. A part the host reports "missing" leaves the block at once, until the
+    store lists it as away (its storage went): from then on the store's availability speaks for it, so it shows away and
+    plays again once the storage is back, without reopening the sheet; closing the sheet stops what it played; a pause
+    the host made in the background (D10) reads as Paused. A single recording's delete confirmation says `deleteMessage`
+    ("Only the audio is deleted. History and detections are unchanged.", a host may set its own), and the Call
+    recordings screen's bulk deletes say the same of their count: a recording may have no History row (never linked, or
+    trimmed) and may belong to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
+    `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
+    editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
+    with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added
+    listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`,
+    `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`,
+    `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
     `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
@@ -12894,8 +12908,8 @@ Qt Quick frontend (`src/ui/qt`):
   owner with `wanted` must carry that owner's context, or it is dropped); a pick that comes back after a newer choice
   ends as cancelled with nothing imported and no notice, and a late companion pick leaves the slot alone (B6: a later
   pick never carries an earlier reference). The wizard's `finished` handler fills `result.context.target` with its key
-  format, never `pickerTarget`, which the next sheet and Browse rewrite. An update names its row by the stored path
-  taken at pick time (`replacePath`); `ImportedFilesModel:: importBundleReplacing()` resolves it at delivery and refuses
+  format, never `pickerTarget`, which the next sheet rewrites. An update names its row by the stored path
+  taken at pick time (`replacePath`); `ImportedFilesModel::importBundleReplacing()` resolves it at delivery and refuses
   a row that went, or an empty path, with `error` "changed" ("That file changed while you were picking. Try again."), so
   an update never becomes a new import; a new file goes through `importBundle()`. Choosing a decryption profile in the
   wizard clears the key file and bumps its generation too. A primary picker that is `unavailable` ends the flow with
@@ -12906,6 +12920,15 @@ Qt Quick frontend (`src/ui/qt`):
   reports a problem and is read out once per failure while `Navigation.allows` it (`announced`/`announcements` for
   tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan list, imports, wizard band plan,
   modal input and settings layout QML suites.
+- The wizard's Replay file Browse (`WizardScreen.qml`, issue #829) opens `wizardSourcePicker`, a `DocumentPicker`
+  (open, no filter), and never touches `pickerTarget`. An accepted pick goes to `decoderHost.importContentUri(reference,
+  displayName)`; a path replaces `fileText`, and "" (the copy failed) keeps it and sets `sourceNotice` to "Could not
+  copy that file.", plus " The previous file is still selected." only when there was one (B8). An `unavailable` picker
+  sets `sourceNotice` to its message; backing out changes nothing. `wizardSourceNotice`, under the Replay file row, is
+  an `AlertMessage` read out once per failure while `Navigation.allows` it (`announced`/`announcements`, shared with
+  `csvNotice`); it clears on the next Browse, a successful copy, and the wizard opening or closing.
+  `endSessionPicks()` (on hide and in `openForAdd/openForFound/openForEdit`) cancels Browse with the CSV import. Test:
+  `tst_wizard_browse.qml` in `UI_QT_QML_CALL_LISTS`.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 

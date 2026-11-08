@@ -1,8 +1,9 @@
-# QuickDialogs2 backs `import QtQuick.Dialogs` (FileDialog): DocumentPicker.qml's
-# desktop path (issue #829) and any screen that still declares a FileDialog of
-# its own. It must be a declared, linked dependency: androiddeployqt packages the
-# QML plugin only for Qt modules it can see, and an undeclared one ships an APK
-# whose importing QML fails to load, even where the dialog never opens.
+# QuickDialogs2 backs `import QtQuick.Dialogs` (FileDialog), which only
+# DocumentPicker.qml's desktop path imports (issue #829); every screen picks
+# through DocumentPicker. It must be a declared, linked dependency:
+# androiddeployqt packages the QML plugin only for Qt modules it can see, and an
+# undeclared one ships an APK whose importing QML fails to load, even where the
+# dialog never opens.
 find_package(
     Qt6
     REQUIRED

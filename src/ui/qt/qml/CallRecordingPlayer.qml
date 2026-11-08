@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 import "Util.js" as Util
 
 // Issue #708: a call's recordings in its detail sheet: play and pause, where it
@@ -45,12 +44,17 @@ Column {
     // What the last share, save or delete came to; empty when there is nothing to say.
     property string notice: ""
     property bool noticeProblem: false
+    // The last problem read out and how many have been, for tests.
+    property string announced: ""
+    property int announcements: 0
     // The selection a Save to file holds while its picker and transfer run, 0 while none.
     property int saveSelection: 0
     property var saveSelectionMap: ({})
     // The recording that save is of: its end is reported only while that
     // recording is shown here, never on another row's sheet.
     property string savePath: ""
+    // Where that save is written, once picked.
+    property string saveReference: ""
     // The recording the host found missing, while that failure stands.
     readonly property string missingPath: decoderHost.playbackState === 4 && decoderHost.playbackError === "missing" ? decoderHost.playbackPath : ""
     // That recording once the store has listed it as away since: no longer
@@ -204,9 +208,16 @@ Column {
         notice = "";
         noticeProblem = false;
     }
+    // A problem is read out once each time it is said, a repeat included.
     function say(text, problem) {
         notice = text;
         noticeProblem = problem;
+        if (!problem || !text.length || !Navigation.allows(recordingNoticeText))
+            return;
+        announced = text;
+        announcements++;
+        if (typeof Accessible.announce === "function")
+            Accessible.announce(text);
     }
 
     function share() {
@@ -228,13 +239,14 @@ Column {
         saveSelection = selection.selection;
         saveSelectionMap = selection;
         savePath = part.path;
-        savePicker.selectedFile = part.fileName;
+        savePicker.suggestedName = part.fileName;
         say("", false);
         savePicker.open();
     }
     function savePicked(reference) {
         if (saveSelection <= 0)
             return;
+        saveReference = reference;
         decoderHost.saveRecording(saveSelectionMap, reference);
     }
     function saveCancelled() {
@@ -244,11 +256,22 @@ Column {
         saveSelection = 0;
         savePath = "";
     }
+    // No picker could ask (issue #829): the recording goes again, and the reason shows.
+    function savePickUnavailable(message) {
+        if (saveSelection <= 0)
+            return;
+        saveCancelled();
+        say(message, true);
+    }
     // DecoderHost::RecordingTransferResult for the save this block began.
     function saveFinished(selection, result) {
         if (selection !== saveSelection)
             return;
+        // Everything about the save is taken and ended here, before the
+        // shown-part check: the save is over whichever row shows now.
+        var saved = savePicker.savedToDownloads ? decoderHost.savedDocumentName(saveReference) : "";
         saveSelection = 0;
+        saveReference = "";
         var shown = false;
         for (var i = 0; i < parts.length; i++)
             shown = shown || parts[i].path === savePath;
@@ -256,7 +279,7 @@ Column {
         if (!shown)
             return;
         if (result === 0)
-            say(qsTr("Saved."), false);
+            say(saved.length > 0 ? qsTr("Saved to Download/DSD-neo as %1.").arg(saved) : qsTr("Saved."), false);
         else if (result === 3)
             say(qsTr("This recording is gone."), true);
         else if (result === 4)
@@ -281,6 +304,19 @@ Column {
         playAll = false;
         recordings.deleteRecording(target.id);
         say("", false);
+    }
+
+    // Issue #829: a save picker still out belongs to the recording shown when
+    // it was asked for. The block hidden (its sheet closed, its row gone) or
+    // another recording shown ends it, and the recording goes again; a save
+    // already writing runs on.
+    onVisibleChanged: {
+        if (!visible)
+            savePicker.cancel();
+    }
+    onPartChanged: {
+        if (savePicker.visible && (!part || part.path !== savePath))
+            savePicker.cancel();
     }
 
     onMissingPathChanged: {
@@ -621,14 +657,20 @@ Column {
         Accessible.ignored: !Navigation.allows(recordingNoticeText) || !visible
     }
 
-    FileDialog {
+    DocumentPicker {
         id: savePicker
         objectName: "recordingSavePicker"
-        fileMode: FileDialog.SaveFile
+        mode: "save"
+        mimeType: "audio/x-wav"
         nameFilters: [qsTr("WAV audio") + " (*.wav)"]
         defaultSuffix: "wav"
-        onAccepted: player.savePicked(selectedFile.toString())
+        onAccepted: function (reference, displayName) {
+            player.savePicked(reference);
+        }
         onRejected: player.saveCancelled()
+        onUnavailable: function (reason, message) {
+            player.savePickUnavailable(message);
+        }
     }
 
     ConfirmDialog {

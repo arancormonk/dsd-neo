@@ -2319,6 +2319,15 @@ class ReadingMap : public QQmlPropertyMap {
         noteCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}});
     }
 
+    /* The wizard's replay file copy: the reference itself, as the base host answers, unless a case set what the copy
+     * gives (testContext.setImportContentResult(); "" is a copy that failed). */
+    Q_INVOKABLE QString
+    importContentUri(const QString& reference, const QString& fileName) {
+        noteCall(QStringLiteral("importContentUri"),
+                 {{QStringLiteral("reference"), reference}, {QStringLiteral("fileName"), fileName}});
+        return importContentAnswered ? importContentResult : reference;
+    }
+
     void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
@@ -2333,6 +2342,9 @@ class ReadingMap : public QQmlPropertyMap {
     QVariantList calls;
     QVariantMap lastDocumentRequest;
     QMap<QString, QString> savedDocumentNames;
+    /* What importContentUri() answers once a case set it; until then it echoes the reference. */
+    bool importContentAnswered = false;
+    QString importContentResult;
     bool shareAccepted = true;
     /* Issue #782: false for a host that ignores a seek (a platform player that clamps it or drops it). */
     bool seekApplied = true;
@@ -3587,15 +3599,20 @@ class Setup : public QObject {
 
     /**
      * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
-     * document picker's records go too, on every host: no lastDocumentRequest() from before the reset.
+     * document picker's records go too, on every host: no lastDocumentRequest() from before the reset, no name set
+     * through setSavedDocumentName() and no importContentUri() answer set through setImportContentResult().
      */
     Q_INVOKABLE void
     resetHostPlayback() {
         m_host_readings->calls.clear();
         m_host_readings->lastDocumentRequest.clear();
+        m_host_readings->savedDocumentNames.clear();
+        m_host_readings->importContentAnswered = false;
+        m_host_readings->importContentResult.clear();
         for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
             host->lastDocumentRequest.clear();
             host->documentCalls.clear();
+            host->savedDocumentNames.clear();
         }
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;
@@ -4115,6 +4132,13 @@ class Setup : public QObject {
         m_import_host->savedDocumentNames.insert(reference, name);
         m_initializing_host->savedDocumentNames.insert(reference, name);
         m_host_readings->savedDocumentNames.insert(reference, name);
+    }
+
+    /** @brief What the decoderHost map's importContentUri() answers until the next reset; "" is a failed copy. */
+    Q_INVOKABLE void
+    setImportContentResult(const QString& path) {
+        m_host_readings->importContentAnswered = true;
+        m_host_readings->importContentResult = path;
     }
 
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
