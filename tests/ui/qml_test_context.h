@@ -62,6 +62,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -4113,6 +4114,14 @@ class Setup : public QObject {
         if (m_app_prefs != nullptr) {
             m_app_prefs->setListenSection(QStringLiteral("systems"));
         }
+    }
+
+    /** @brief Issue #646: store @p value under the settings key @p key as it is, past AppPrefs' checks, as a damaged
+     *         file or another build would leave it. The real AppPrefs reads the same file. */
+    Q_INVOKABLE void
+    storeRawPref(const QString& key, const QVariant& value) {
+        QSettings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"), QStringLiteral("dsd-neo-app"))
+            .setValue(key, value);
     }
 
     /** @brief No scan lists: an empty frame, and every switch and answer forgotten. */

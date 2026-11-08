@@ -58,9 +58,11 @@ Item {
 
         function init() {
             emptyModels();
+            home.showSection("systems");
         }
         function cleanup() {
             root.forceActiveFocus();
+            home.showSection("systems");
             home.visible = true;
             emptyModels();
             if (libraryPath.length)
@@ -102,7 +104,8 @@ Item {
         }
         function cards() {
             var out = [];
-            for (var child of body().contentItem.children[0].children) {
+            // Issue #646: on the Systems tab's section.
+            for (var child of findChild(home, "listenSystemsSection").children) {
                 if (child.hasOwnProperty("refreshHint") && child.hasOwnProperty("siblings"))
                     out.push(child);
             }
@@ -252,9 +255,13 @@ Item {
 
         // B3: Tab down the body and round again: every control it stops on in the body is in full view once the
         // layout settles, the last one too, flush with the bottom although the content column starts below the
-        // body's top. The desktop starts the column 18 px down, the brokered header 7 px.
+        // body's top (13 px under the Listen tabs, issue #646). On the Systems and on the Scan lists tab, each
+        // with 12 cards, whose last Play ends the body's controls.
         function test_tab_stops_scroll_into_view_data() {
-            return [{tag: "desktop", brokered: false}, {tag: "brokered header", brokered: true}];
+            return [{tag: "desktop", brokered: false, section: "systems"},
+                {tag: "brokered header", brokered: true, section: "systems"},
+                {tag: "desktop scan lists", brokered: false, section: "scanLists"},
+                {tag: "brokered header scan lists", brokered: true, section: "scanLists"}];
         }
         function test_tab_stops_scroll_into_view(data) {
             if (data.brokered) {
@@ -264,17 +271,35 @@ Item {
             }
             root.width = 411;
             root.height = 700;
-            for (var i = 0; i < 12; ++i)
-                addSystem("System " + i);
+            for (var i = 0; i < 12; ++i) {
+                if (data.section === "systems")
+                    addSystem("System " + i);
+                else
+                    addList("List " + i);
+            }
+            home.showSection(data.section);
             verify(waitForPolish(home));
             waitForRendering(home);
             compare(home.pinnedHeader, data.brokered);
             verify(body().contentItem.children[0].y > 0, "the content column starts below the body's top");
-            findChild(home, "addSystemButton").forceActiveFocus();
+            findChild(home, data.section === "systems" ? "addSystemButton" : "addScanListButton").forceActiveFocus();
             var window = root.Window.window;
             var stops = 0;
             var scrolledDown = false;
-            var lastStop = findChild(home, "exploreStart");
+            // The last card's Play, the lowest control of the section and so of the body.
+            var plays = [];
+            (function look(node) {
+                for (var child of node.children) {
+                    if (child.objectName === (data.section === "systems" ? "savedSystemPlay" : "scanListPlay"))
+                        plays.push(child);
+                    look(child);
+                }
+            })(findChild(home, data.section === "systems" ? "listenSystemsSection" : "listenScanListsSection"));
+            compare(plays.length, 12);
+            plays.sort(function (a, b) {
+                return a.mapToItem(body().contentItem, 0, 0).y - b.mapToItem(body().contentItem, 0, 0).y;
+            });
+            var lastStop = plays[plays.length - 1];
             var reachedLast = false;
             for (var n = 0; n < 40; ++n) {
                 keyClick(Qt.Key_Tab);
@@ -291,12 +316,13 @@ Item {
                     scrolledDown = true;
                 if (focus === lastStop) {
                     reachedLast = true;
-                    // The Explore card ends the column: its face is revealed down to the body's bottom edge.
+                    // The last card ends the column: its Play is revealed down to the body's bottom edge.
                     var bottom = focus.mapToItem(body(), 0, 0).y + focus.height;
                     fuzzyCompare(bottom, body().height, 0.5, label + ": the bottom control is shown to its end");
                 }
             }
-            verify(stops >= 28, "Tab stopped on the body's controls: " + stops);
+            // At least the action and each card's Play and More.
+            verify(stops >= 25, "Tab stopped on the body's controls: " + stops);
             verify(scrolledDown, "the body scrolled down to follow the focus");
             verify(reachedLast, "Tab reached the last control");
         }

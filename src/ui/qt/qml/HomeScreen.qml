@@ -4,7 +4,8 @@
 import QtQuick
 import "Util.js" as Util
 
-// Home: saved systems and scan lists, with consistent listen and manage actions.
+// Home (Listen): saved systems, scan lists and Explore, one group at a time under
+// the Listen tabs, with consistent listen and manage actions.
 Item {
     id: screen
 
@@ -88,13 +89,18 @@ Item {
     // #647 WP6: where the host brokers USB access the title and the receiver
     // pill are pinned above the scrolling body, so the receiver's state and its
     // Connect or Retry never scroll away. The desktop opens its receiver itself
-    // and keeps the title in the body, as before, while nothing is pinned.
+    // and has no pill; its title is fixed above the body only while the Pinned
+    // strip or the Listen tabs are (fixedTitle).
     readonly property bool pinnedHeader: !!decoderHost && decoderHost.localDeviceBrokered === true
+    // Issue #646: the Listen tabs sit fixed under the header and the Pinned
+    // strip, above the body.
+    readonly property bool tabsFixed: true
     // Issue #801: the title is fixed above the body wherever the header is
-    // pinned, and on the desktop too while the Pinned strip shows, so the order
-    // is title, strip, body on both hosts. The desktop's header then holds the
-    // title alone. Keyed on the strip's stored pins, not on `visible` (below).
-    readonly property bool fixedTitle: pinnedHeader || pinnedStrip.shown
+    // pinned, and on the desktop too while the Pinned strip or the Listen tabs
+    // are fixed, so the order is title, strip, tabs, body on both hosts. The
+    // desktop's header then holds the title alone. Keyed on the strip's stored
+    // pins, not on `visible` (below).
+    readonly property bool fixedTitle: pinnedHeader || pinnedStrip.shown || tabsFixed
     readonly property bool dongleReady: pinnedHeader && deviceStatus.state === "ready"
     readonly property bool showDeviceDetails: pinnedHeader && localDeviceRelevant && !dongleReady && !(failure.message || "").length
     // The content column, which the pinned header lines up with.
@@ -125,7 +131,51 @@ Item {
     onVisibleChanged: takePins()
     onColumnWidthChanged: takePins()
     onPinLabelFontChanged: takePins()
-    Component.onCompleted: takePins()
+    Component.onCompleted: {
+        section = knownSection(prefsStore ? prefsStore.listenSection : "");
+        takePins();
+    }
+
+    // Issue #646 D5: the Listen tab shown. It is read once from the tab this
+    // device remembers (AppPrefs listen/section), anything unknown reading as
+    // Systems, and is Home's own from then on: a choice writes the preference
+    // but never waits on it, so a store that keeps nothing (a test's plain map)
+    // still switches the tab. prefsStore is the app's AppPrefs; a test may
+    // hand in its own.
+    property var prefsStore: typeof prefs !== "undefined" ? prefs : null
+    property string section: "systems"
+    readonly property var sectionTabs: [
+        {id: "systems", label: qsTr("Systems")},
+        {id: "scanLists", label: qsTr("Scan lists")},
+        {id: "explore", label: qsTr("Explore")}
+    ]
+    function knownSection(id) {
+        return id === "scanLists" || id === "explore" ? id : "systems";
+    }
+    function sectionItem(id) {
+        return id === "scanLists" ? listenScanListsSection : id === "explore" ? listenExploreSection : listenSystemsSection;
+    }
+    function holdsFocus(item) {
+        var window = screen.Window.window;
+        for (var at = window ? window.activeFocusItem : null; at; at = at.parent) {
+            if (at === item)
+                return true;
+        }
+        return false;
+    }
+    // Shows the section @a id names (`systems`, `scanLists` or `explore`);
+    // any other id does nothing. Keyboard focus inside the section being
+    // hidden moves first to the current tab, else to the body, so nothing
+    // hidden keeps it; the tabs then hand it to the new current tab.
+    function showSection(id) {
+        if (id !== knownSection(id) || id === section)
+            return;
+        if (holdsFocus(sectionItem(section)) && !listenTabs.focusCurrent())
+            scrollBody.forceActiveFocus();
+        section = id;
+        if (prefsStore && prefsStore.listenSection !== undefined)
+            prefsStore.listenSection = id;
+    }
     Connections {
         target: listenPins
         function onEntriesChanged() {
@@ -431,6 +481,26 @@ Item {
         }
     }
 
+    // Issue #646: the Listen tabs, under the Pinned strip (or the title with
+    // nothing pinned) on the content column, the last of the fixed region and
+    // the last Tab stop before the body. Their own hairline marks where the
+    // body's cards scroll away, so the body starts right under it.
+    ListenTabs {
+        id: listenTabs
+
+        visible: screen.tabsFixed
+        enabled: !screen.managementSheetOpen
+        x: screen.columnX
+        y: (pinnedStrip.shown ? pinnedStrip.y + pinnedStrip.height : listenHeader.y + listenHeader.height) + pinnedStrip.pinGap
+        width: screen.columnWidth
+        height: implicitHeight
+        model: screen.sectionTabs
+        currentId: screen.section
+        onSelected: function (id) {
+            screen.showSection(id);
+        }
+    }
+
     PlexFlickable {
         id: scrollBody
 
@@ -440,7 +510,9 @@ Item {
         // scroll away short of the pill; the rest of the header's gap to the
         // first card stays at the body's top, and nothing moves at rest.
         // The Pinned strip, when shown, sits between them on the same terms.
-        anchors.topMargin: pinnedStrip.shown ? pinnedStrip.y + pinnedStrip.height + screen.headerClearance
+        // Under the fixed Listen tabs it starts at their hairline.
+        anchors.topMargin: screen.tabsFixed ? listenTabs.y + listenTabs.height
+            : pinnedStrip.shown ? pinnedStrip.y + pinnedStrip.height + screen.headerClearance
             : screen.fixedTitle ? listenHeader.y + listenHeader.height + screen.headerClearance : 0
         contentHeight: content.y + content.height + Theme.screenPadding
         clip: true
@@ -453,7 +525,7 @@ Item {
             id: content
 
             x: screen.columnX
-            y: screen.fixedTitle ? Theme.gap - screen.headerClearance : Theme.screenPadding
+            y: screen.tabsFixed ? Theme.gap : screen.fixedTitle ? Theme.gap - screen.headerClearance : Theme.screenPadding
             width: screen.columnWidth
             spacing: Theme.gap
 
@@ -552,21 +624,28 @@ Item {
                 }
             }
 
-            // Keep creation within reach regardless of either collection's size.
-            Grid {
-                id: addActions
+            // Issue #646: then the selected tab's section alone. A hidden
+            // section is also disabled, so nothing in it takes the focus, a
+            // key or a press, and its cards keep following their models (a
+            // decided limit). Each section's height is keyed on the tab, never
+            // on `visible`, which also goes false while Main hides Home (B1).
+            // The tab's label is the section's heading, and each section
+            // starts with its creation action, in reach however long it is.
+            Column {
+                id: listenSystemsSection
+
+                objectName: "listenSystemsSection"
+                readonly property bool shown: screen.section === "systems"
+                visible: shown
+                enabled: shown
                 width: parent.width
+                height: shown ? implicitHeight : 0
                 spacing: Theme.gap
-                // Both equal cells must fit the wider complete label. Measure
-                // the actual font so larger text and translations stack early.
-                columns: width >= 2 * Math.max(addSystemAction.implicitWidth, addScanListAction.implicitWidth) + spacing ? 2 : 1
-                readonly property real cellWidth: Math.floor((width - (columns - 1) * spacing) / columns)
 
                 Column {
-                    width: addActions.cellWidth
+                    width: parent.width
                     spacing: 6
                     DashedActionButton {
-                        id: addSystemAction
                         objectName: "addSystemButton"
                         width: parent.width
                         text: qsTr("+ Add a system")
@@ -582,380 +661,408 @@ Item {
                         font.pixelSize: Theme.fontSize(13)
                     }
                 }
-                DashedActionButton {
-                    id: addScanListAction
-                    objectName: "addScanListButton"
-                    width: addActions.cellWidth
-                    text: qsTr("+ Add a scan list")
-                    onClicked: screen.addScanList()
+
+                Repeater {
+                    model: savedSystems
+
+                    UiPanel {
+                        id: card
+
+                        required property int index
+                        required property string name
+                        required property string sourceType
+                        required property string host
+                        required property int port
+                        required property string freqMhz
+                        required property string decodeFlag
+                        required property bool trunking
+                        required property string filePath
+                        required property string encKeyType
+                        required property string keyCsvPath
+                        required property double lastHeard
+
+                        width: content.width
+                        property var siblings: (screen.siteRevision, savedSystems.siblingRows(index))
+                        // One card per group of sites, on its first site. Keyed on
+                        // its own condition, not on `visible`, which also goes false
+                        // while Main hides Home and would collapse the body (issue #646 B1).
+                        readonly property bool shown: siblings.length === 0 || siblings[0] === index
+                        readonly property bool hasSites: siblings.length > 0
+                        visible: shown
+                        height: shown ? fullHeight : 0
+                        readonly property var playableSites: siblings.filter(function (row) {
+                            return !savedSystems.get(row).avoidSite;
+                        })
+                        // Play's own condition, which the site button lines up
+                        // against: never Play's `visible`, which also goes false
+                        // with the section or Home hidden (issue #646).
+                        readonly property bool playShown: siblings.length === 0 || playableSites.length === 1
+                        property bool refreshHint: (screen.siteRevision, screen.needsSiteRefresh(index))
+
+                        // Issue #646 B8: as tall as what it holds, so larger text grows
+                        // the card instead of running its labels into the hint or past
+                        // its edges. At normal text that is the actions' 122 px, as
+                        // before. Play counts even while it is hidden (several sites to
+                        // play): the site button is centred on it.
+                        readonly property real actionsBottom: Math.max(manageButton.y + manageButton.height, play.y + play.height,
+                            hasSites ? siteButton.y + siteButton.height : 0)
+                        readonly property real labelsBottom: labels.y + labels.height
+                        // The hint takes the full width, so it starts below both.
+                        readonly property real hintTop: Math.max(labelsBottom, actionsBottom) + 8
+                        readonly property real fullHeight: (refreshHint ? hintTop + refreshHintText.height : Math.max(labelsBottom, actionsBottom)) + Theme.cardPadding
+
+                        Column {
+                            id: labels
+                            anchors.left: parent.left
+                            anchors.right: card.hasSites ? siteButton.left : play.left
+                            anchors.leftMargin: Theme.cardPadding
+                            anchors.rightMargin: 12
+                            // Centred 10 px above the middle of the actions' box: the
+                            // actions plus the bottom padding, 122 px at normal text,
+                            // so they sit where they always have; never above the top
+                            // padding.
+                            y: Math.max(Theme.cardPadding, (card.actionsBottom + Theme.cardPadding - height) / 2 - 10)
+                            spacing: 4
+
+                            ReadableText {
+                                width: parent.width
+                                objectName: "savedSystemTitle"
+                                text: card.name
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(17)
+                                font.weight: Font.Bold
+                                color: Theme.textPrimary
+                                elide: Text.ElideRight
+                            }
+
+                            ReadableText {
+                                width: parent.width
+                                text: Util.systemMeta(card)
+                                font.family: Theme.mono
+                                font.pixelSize: Theme.fontSize(12)
+                                color: Theme.textSubdued
+                                elide: Text.ElideRight
+                            }
+
+                            ReadableText {
+                                width: parent.width
+                                // heardTick forces the minute-by-minute refresh.
+                                objectName: "savedSystemMeta"
+                                text: ((card.encKeyType.length > 0 || card.keyCsvPath.length > 0) ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(card.lastHeard, savedSystems.realtimeNowMs()))
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(13)
+                                color: Theme.textSecondary
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        ReadableText {
+                            id: refreshHintText
+                            objectName: "savedSystemRefreshHint"
+                            x: Theme.cardPadding
+                            y: card.hintTop
+                            width: parent.width - 2 * Theme.cardPadding
+                            visible: card.refreshHint
+                            text: qsTr("Refresh from RadioReference to enable site grouping")
+                            wrapMode: Text.Wrap
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontSize(12)
+                        }
+                        OutlineButton {
+                            id: siteButton
+                            objectName: "homeSiteChooserButton"
+                            accessibleName: qsTr("Choose sites for %1").arg(card.name)
+                            width: implicitWidth
+                            anchors.right: parent.right
+                            anchors.verticalCenter: play.verticalCenter
+                            anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
+                            text: card.siblings.length === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(card.siblings.length)
+                            visible: card.hasSites
+                            onClicked: screen.chooseSites(card.index)
+                        }
+                        PlayCircle {
+                            id: play
+                            accessibleName: card.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
+                            objectName: "savedSystemPlay"
+                            visible: card.playShown
+                            anchors.right: parent.right
+                            anchors.rightMargin: Theme.cardPadding
+                            anchors.top: parent.top
+                            anchors.topMargin: Theme.minimumTouchSize + 6
+                            enabled: !decoderHost.transitioning
+                            onClicked: screen.playSystem(card.playableSites.length === 1 ? card.playableSites[0] : card.index)
+                        }
+
+                        IconButton {
+                            id: manageButton
+                            objectName: "savedSystemManageButton"
+                            icon: "more"
+                            accessibleName: qsTr("More options for %1").arg(card.name)
+                            anchors.right: parent.right
+                            anchors.rightMargin: Theme.cardPadding + (play.width - width) / 2
+                            anchors.top: parent.top
+                            onClicked: manageMenu.openFor(card.index, card.name)
+                        }
+                        // Long-press manages the card: the design keeps card faces clean,
+                        // so destructive actions hide behind the press.
+                        TapHandler {
+                            acceptedButtons: Qt.LeftButton
+                            onLongPressed: manageMenu.openFor(card.index, card.name)
+                        }
+                    }
                 }
             }
 
-            MicroLabel {
-                objectName: "savedSystemsHeading"
-                visible: savedSystems.count > 0
-                text: qsTr("Saved systems")
-            }
+            Column {
+                id: listenScanListsSection
 
-            Repeater {
-                model: savedSystems
+                objectName: "listenScanListsSection"
+                readonly property bool shown: screen.section === "scanLists"
+                visible: shown
+                enabled: shown
+                width: parent.width
+                height: shown ? implicitHeight : 0
+                spacing: Theme.gap
 
-                UiPanel {
-                    id: card
-
-                    required property int index
-                    required property string name
-                    required property string sourceType
-                    required property string host
-                    required property int port
-                    required property string freqMhz
-                    required property string decodeFlag
-                    required property bool trunking
-                    required property string filePath
-                    required property string encKeyType
-                    required property string keyCsvPath
-                    required property double lastHeard
-
-                    width: content.width
-                    property var siblings: (screen.siteRevision, savedSystems.siblingRows(index))
-                    // One card per group of sites, on its first site. Keyed on
-                    // its own condition, not on `visible`, which also goes false
-                    // while Main hides Home and would collapse the body (issue #646 B1).
-                    readonly property bool shown: siblings.length === 0 || siblings[0] === index
-                    readonly property bool hasSites: siblings.length > 0
-                    visible: shown
-                    height: shown ? fullHeight : 0
-                    readonly property var playableSites: siblings.filter(function (row) {
-                        return !savedSystems.get(row).avoidSite;
-                    })
-                    // Play's own condition, which the site button lines up
-                    // against: never Play's `visible`, which also goes false
-                    // while Main hides Home (issue #646 B1).
-                    readonly property bool playShown: siblings.length === 0 || playableSites.length === 1
-                    property bool refreshHint: (screen.siteRevision, screen.needsSiteRefresh(index))
-
-                    // Issue #646 B8: as tall as what it holds, so larger text grows
-                    // the card instead of running its labels into the hint or past
-                    // its edges. At normal text that is the actions' 122 px, as
-                    // before. Play counts even while it is hidden (several sites to
-                    // play): the site button is centred on it.
-                    readonly property real actionsBottom: Math.max(manageButton.y + manageButton.height, play.y + play.height,
-                        hasSites ? siteButton.y + siteButton.height : 0)
-                    readonly property real labelsBottom: labels.y + labels.height
-                    // The hint takes the full width, so it starts below both.
-                    readonly property real hintTop: Math.max(labelsBottom, actionsBottom) + 8
-                    readonly property real fullHeight: (refreshHint ? hintTop + refreshHintText.height : Math.max(labelsBottom, actionsBottom)) + Theme.cardPadding
-
-                    Column {
-                        id: labels
-                        anchors.left: parent.left
-                        anchors.right: card.hasSites ? siteButton.left : play.left
-                        anchors.leftMargin: Theme.cardPadding
-                        anchors.rightMargin: 12
-                        // Centred 10 px above the middle of the actions' box: the
-                        // actions plus the bottom padding, 122 px at normal text,
-                        // so they sit where they always have; never above the top
-                        // padding.
-                        y: Math.max(Theme.cardPadding, (card.actionsBottom + Theme.cardPadding - height) / 2 - 10)
-                        spacing: 4
-
-                        ReadableText {
-                            width: parent.width
-                            objectName: "savedSystemTitle"
-                            text: card.name
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(17)
-                            font.weight: Font.Bold
-                            color: Theme.textPrimary
-                            elide: Text.ElideRight
-                        }
-
-                        ReadableText {
-                            width: parent.width
-                            text: Util.systemMeta(card)
-                            font.family: Theme.mono
-                            font.pixelSize: Theme.fontSize(12)
-                            color: Theme.textSubdued
-                            elide: Text.ElideRight
-                        }
-
-                        ReadableText {
-                            width: parent.width
-                            // heardTick forces the minute-by-minute refresh.
-                            objectName: "savedSystemMeta"
-                            text: ((card.encKeyType.length > 0 || card.keyCsvPath.length > 0) ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(card.lastHeard, savedSystems.realtimeNowMs()))
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(13)
-                            color: Theme.textSecondary
-                            elide: Text.ElideRight
-                        }
+                Column {
+                    width: parent.width
+                    spacing: 6
+                    DashedActionButton {
+                        objectName: "addScanListButton"
+                        width: parent.width
+                        text: qsTr("+ Add a scan list")
+                        onClicked: screen.addScanList()
                     }
-
+                    // With no list yet, what one is for.
                     ReadableText {
-                        id: refreshHintText
-                        objectName: "savedSystemRefreshHint"
-                        x: Theme.cardPadding
-                        y: card.hintTop
-                        width: parent.width - 2 * Theme.cardPadding
-                        visible: card.refreshHint
-                        text: qsTr("Refresh from RadioReference to enable site grouping")
+                        objectName: "scanListsEmptyHint"
+                        width: parent.width
+                        visible: scanLists.count === 0
+                        text: qsTr("A scan list steps through saved systems and frequencies one at a time.")
                         wrapMode: Text.Wrap
                         color: Theme.textSecondary
-                        font.pixelSize: Theme.fontSize(12)
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(13)
                     }
-                    OutlineButton {
-                        id: siteButton
-                        objectName: "homeSiteChooserButton"
-                        accessibleName: qsTr("Choose sites for %1").arg(card.name)
-                        width: implicitWidth
-                        anchors.right: parent.right
-                        anchors.verticalCenter: play.verticalCenter
-                        anchors.rightMargin: card.playShown ? Theme.cardPadding + play.width + 8 : Theme.cardPadding
-                        text: card.siblings.length === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(card.siblings.length)
-                        visible: card.hasSites
-                        onClicked: screen.chooseSites(card.index)
-                    }
-                    PlayCircle {
-                        id: play
-                        accessibleName: card.sourceType === "file" ? qsTr("Play %1").arg(card.name) : qsTr("Listen to %1").arg(card.name)
-                        objectName: "savedSystemPlay"
-                        visible: card.playShown
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.cardPadding
-                        anchors.top: parent.top
-                        anchors.topMargin: Theme.minimumTouchSize + 6
-                        enabled: !decoderHost.transitioning
-                        onClicked: screen.playSystem(card.playableSites.length === 1 ? card.playableSites[0] : card.index)
-                    }
+                }
 
-                    IconButton {
-                        id: manageButton
-                        objectName: "savedSystemManageButton"
-                        icon: "more"
-                        accessibleName: qsTr("More options for %1").arg(card.name)
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.cardPadding + (play.width - width) / 2
-                        anchors.top: parent.top
-                        onClicked: manageMenu.openFor(card.index, card.name)
-                    }
-                    // Long-press manages the card: the design keeps card faces clean,
-                    // so destructive actions hide behind the press.
-                    TapHandler {
-                        acceptedButtons: Qt.LeftButton
-                        onLongPressed: manageMenu.openFor(card.index, card.name)
+                // WP-S1: same play/edit gestures as saved systems.
+                Repeater {
+                    model: scanLists
+                    ScanListCard {
+                        required property int index
+                        required property string name
+                        required property var entries
+                        required property string targetSource
+                        required property var targetsCsvPath
+                        required isDraft
+                        width: content.width
+                        listName: name
+                        entryCount: {
+                            var changed = importedFiles.count;
+                            return scanLists.entryCount({targetSource: targetSource, entries: entries, targetsCsvPath: targetsCsvPath || ""});
+                        }
+                        onPlay: screen.playScanList(index)
+                        onEdit: scanMenu.openFor(index)
                     }
                 }
             }
 
-            // WP-S1: same play/edit gestures as saved systems.
-            MicroLabel {
-                objectName: "scanListsHeading"
-                visible: scanLists.count > 0
-                text: qsTr("Scan lists")
-            }
-            Repeater {
-                model: scanLists
-                ScanListCard {
-                    required property int index
-                    required property string name
-                    required property var entries
-                    required property string targetSource
-                    required property var targetsCsvPath
-                    required isDraft
-                    width: content.width
-                    listName: name
-                    entryCount: {
-                        var changed = importedFiles.count;
-                        return scanLists.entryCount({targetSource: targetSource, entries: entries, targetsCsvPath: targetsCsvPath || ""});
-                    }
-                    onPlay: screen.playScanList(index)
-                    onEdit: scanMenu.openFor(index)
-                }
-            }
-            MicroLabel {
-                text: qsTr("Or go looking")
-            }
-            // Issue #801 D5: the button fills the row; its More holds Pin to Listen.
-            Item {
+            // Issue #646: Signal search first, then Explore the band.
+            Column {
+                id: listenExploreSection
+
+                objectName: "listenExploreSection"
+                readonly property bool shown: screen.section === "explore"
+                visible: shown
+                enabled: shown
                 width: parent.width
-                height: searchButton.height
+                height: shown ? implicitHeight : 0
+                spacing: Theme.gap
 
-                OutlineButton {
-                    id: searchButton
-                    objectName: "homeSignalSearch"
-                    width: searchMore.x - 8
-                    text: qsTr("Signal search")
-                    accessibleName: qsTr("Signal search across frequency ranges")
-                    onClicked: screen.signalSearch()
-                }
-                IconButton {
-                    id: searchMore
-                    objectName: "signalSearchManageButton"
-                    icon: "more"
-                    accessibleName: qsTr("More options for Signal search")
-                    anchors.right: parent.right
-                    // On the column of the Explore card's More just below, the
-                    // axis every card's More shares.
-                    anchors.rightMargin: exploreCard.width - exploreMore.x - exploreMore.width
-                    anchors.verticalCenter: parent.verticalCenter
-                    onClicked: searchMenu.openFor()
-                }
-            }
-
-            // Deliberately not a system card: there is nothing saved here, nothing
-            // named, and nothing to come back to. It is a door, so it carries a
-            // chevron rather than a play button, and its meta line states what the
-            // tap will actually do so that starting is never a surprise.
-            UiPanel {
-                id: exploreCard
-
-                objectName: "exploreCard"
-                width: content.width
-                height: Math.max(96, exploreLabels.implicitHeight + 2 * Theme.cardPadding)
-
-                readonly property string sourceLabel: screen.exploreSource === "rtltcp" ? qsTr("RTL-TCP") : screen.exploreSource === "airspy" ? qsTr("Airspy") : qsTr("USB dongle")
-                readonly property bool configured: prefs.exploreSourceType.length > 0
-
-                // The whole card is the tap target, More's spot aside (More takes
-                // its own press). Long-press manages the card, as a system card's does.
-                TapHandler {
-                    id: faceTap
-                    enabled: exploreFace.enabled
-                    onTapped: exploreFace.activate()
-                    onLongPressed: exploreMenu.openFor()
-                }
-                Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: 1
-                    radius: Theme.radiusPanel - 1
-                    color: faceTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : "transparent"
-
-                    Behavior on color {
-                        ColorAnimation {
-                            duration: 120
-                        }
-                    }
-                }
-
-                // B3: the card's face is the button that starts Explore, beside
-                // More rather than around it: it stops short of More's column, so
-                // its focus ring and its bounds leave More out, and a key pressed
-                // on More never reaches it. Its name carries both lines, which
-                // read nothing on their own, so nothing is said twice.
+                // Issue #801 D5: the button fills the row; its More holds Pin to Listen.
                 Item {
-                    id: exploreFace
+                    width: parent.width
+                    height: searchButton.height
 
-                    objectName: "exploreStart"
-                    width: exploreMore.x
-                    height: parent.height
-                    enabled: !decoderHost.transitioning
-                    readonly property bool navigationAllowed: Navigation.allows(exploreFace)
-                    // Held while focused, and the gate read first: see OutlineButton.
-                    activeFocusOnTab: (navigationAllowed && enabled && visible) || activeFocus
-                    Accessible.role: Accessible.Button
-                    // No name while out of the tree, as ReadableText: a frequency
-                    // changed in Explore's setup, Home hidden, renames nothing.
-                    Accessible.name: Accessible.ignored ? "" : exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
-                    Accessible.focusable: navigationAllowed && visible
-                    Accessible.ignored: !navigationAllowed || !visible
-                    Accessible.onPressAction: activate()
-                    // Nothing remembered means nothing to start from, so the first
-                    // press asks rather than guessing at a radio and a frequency.
-                    function activate() {
-                        if (!enabled || !Navigation.allows(exploreFace))
-                            return;
-                        if (exploreCard.configured)
-                            screen.explore();
-                        else
-                            screen.exploreSetup();
+                    OutlineButton {
+                        id: searchButton
+                        objectName: "homeSignalSearch"
+                        width: searchMore.x - 8
+                        text: qsTr("Signal search")
+                        accessibleName: qsTr("Signal search across frequency ranges")
+                        onClicked: screen.signalSearch()
                     }
-                    Keys.onReturnPressed: activate()
-                    Keys.onEnterPressed: activate()
-                    Keys.onSpacePressed: activate()
-                    FocusFrame {
-                        radius: Theme.radiusPanel + 2
-                    }
-
-                    Column {
-                        id: exploreLabels
-                        anchors.left: parent.left
+                    IconButton {
+                        id: searchMore
+                        objectName: "signalSearchManageButton"
+                        icon: "more"
+                        accessibleName: qsTr("More options for Signal search")
                         anchors.right: parent.right
-                        anchors.leftMargin: Theme.cardPadding
+                        // On the column of the Explore card's More just below, the
+                        // axis every card's More shares.
+                        anchors.rightMargin: exploreCard.width - exploreMore.x - exploreMore.width
                         anchors.verticalCenter: parent.verticalCenter
-                        spacing: 4
-
-                        Text {
-                            objectName: "exploreTitle"
-                            width: parent.width
-                            Accessible.ignored: true
-                            text: qsTr("Explore the band")
-                            font.family: Theme.sans
-                            font.pixelSize: Theme.fontSize(17)
-                            font.weight: Font.Bold
-                            color: Theme.textPrimary
-                            elide: Text.ElideRight
-                        }
-
-                        Text {
-                            width: parent.width
-                            objectName: "homeExploreSubtitle"
-                            Accessible.ignored: true
-                            text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
-                            font.family: exploreCard.configured ? Theme.mono : Theme.sans
-                            font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
-                            color: Theme.textSubdued
-                            // Two lines before it elides, so the frequency a tap
-                            // starts on stays whole at large text; the card grows
-                            // with the labels.
-                            wrapMode: Text.Wrap
-                            maximumLineCount: 2
-                            elide: Text.ElideRight
-                        }
+                        onClicked: searchMenu.openFor()
                     }
                 }
 
-                // In More's column, under More: drawn, not read (the face's name
-                // says where a tap goes), and inside the card's tap target.
-                Caret {
-                    id: exploreCaret
+                // Deliberately not a system card: there is nothing saved here, nothing
+                // named, and nothing to come back to. It is a door, so it carries a
+                // chevron rather than a play button, and its meta line states what the
+                // tap will actually do so that starting is never a surprise.
+                UiPanel {
+                    id: exploreCard
 
-                    anchors.right: parent.right
-                    anchors.rightMargin: Theme.cardPadding + 6
-                    anchors.bottom: parent.bottom
-                    anchors.bottomMargin: Theme.cardPadding
-                    // Larger than the default: at the size a filter pill uses it
-                    // reads as a speck against a full-width card, and this is the
-                    // only thing saying the card goes somewhere.
-                    width: 13
-                    height: 9
-                    // Points down at rotation 0; a quarter turn anticlockwise reads
-                    // as forward navigation.
-                    rotation: -90
-                    color: Theme.cyan
-                }
+                    objectName: "exploreCard"
+                    width: content.width
+                    height: Math.max(96, exploreLabels.implicitHeight + 2 * Theme.cardPadding)
 
-                // Issue #801 D5: a menu, as a system card's More opens: Edit
-                // connection and Pin to Listen. It never starts Explore.
-                IconButton {
-                    id: exploreMore
-                    objectName: "exploreManageButton"
-                    icon: "more"
-                    accessibleName: qsTr("More options for Explore")
-                    anchors.right: parent.right
-                    // Match the axis of the 52 px play circles above.
-                    anchors.rightMargin: Theme.cardPadding + 2
-                    anchors.top: parent.top
-                    onClicked: exploreMenu.openFor()
-                    z: 2
+                    readonly property string sourceLabel: screen.exploreSource === "rtltcp" ? qsTr("RTL-TCP") : screen.exploreSource === "airspy" ? qsTr("Airspy") : qsTr("USB dongle")
+                    readonly property bool configured: prefs.exploreSourceType.length > 0
+
+                    // The whole card is the tap target, More's spot aside (More takes
+                    // its own press). Long-press manages the card, as a system card's does.
+                    TapHandler {
+                        id: faceTap
+                        enabled: exploreFace.enabled
+                        onTapped: exploreFace.activate()
+                        onLongPressed: exploreMenu.openFor()
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: 1
+                        radius: Theme.radiusPanel - 1
+                        color: faceTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : "transparent"
+
+                        Behavior on color {
+                            ColorAnimation {
+                                duration: 120
+                            }
+                        }
+                    }
+
+                    // B3: the card's face is the button that starts Explore, beside
+                    // More rather than around it: it stops short of More's column, so
+                    // its focus ring and its bounds leave More out, and a key pressed
+                    // on More never reaches it. Its name carries both lines, which
+                    // read nothing on their own, so nothing is said twice.
+                    Item {
+                        id: exploreFace
+
+                        objectName: "exploreStart"
+                        width: exploreMore.x
+                        height: parent.height
+                        enabled: !decoderHost.transitioning
+                        readonly property bool navigationAllowed: Navigation.allows(exploreFace)
+                        // Held while focused, and the gate read first: see OutlineButton.
+                        activeFocusOnTab: (navigationAllowed && enabled && visible) || activeFocus
+                        Accessible.role: Accessible.Button
+                        // No name while out of the tree, as ReadableText: a frequency
+                        // changed in Explore's setup, Home hidden, renames nothing.
+                        Accessible.name: Accessible.ignored ? "" : exploreCard.configured ? qsTr("Explore the band, start on %1 from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Explore the band, set up a radio to tune around and find what is on the air")
+                        Accessible.focusable: navigationAllowed && visible
+                        Accessible.ignored: !navigationAllowed || !visible
+                        Accessible.onPressAction: activate()
+                        // Nothing remembered means nothing to start from, so the first
+                        // press asks rather than guessing at a radio and a frequency.
+                        function activate() {
+                            if (!enabled || !Navigation.allows(exploreFace))
+                                return;
+                            if (exploreCard.configured)
+                                screen.explore();
+                            else
+                                screen.exploreSetup();
+                        }
+                        Keys.onReturnPressed: activate()
+                        Keys.onEnterPressed: activate()
+                        Keys.onSpacePressed: activate()
+                        FocusFrame {
+                            radius: Theme.radiusPanel + 2
+                        }
+
+                        Column {
+                            id: exploreLabels
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: Theme.cardPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 4
+
+                            Text {
+                                objectName: "exploreTitle"
+                                width: parent.width
+                                Accessible.ignored: true
+                                text: qsTr("Explore the band")
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.fontSize(17)
+                                font.weight: Font.Bold
+                                color: Theme.textPrimary
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                width: parent.width
+                                objectName: "homeExploreSubtitle"
+                                Accessible.ignored: true
+                                text: exploreCard.configured ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz) : qsTr("Tune around and find what is on the air")
+                                font.family: exploreCard.configured ? Theme.mono : Theme.sans
+                                font.pixelSize: Theme.fontSize(exploreCard.configured ? 12 : 13)
+                                color: Theme.textSubdued
+                                // Two lines before it elides, so the frequency a tap
+                                // starts on stays whole at large text; the card grows
+                                // with the labels.
+                                wrapMode: Text.Wrap
+                                maximumLineCount: 2
+                                elide: Text.ElideRight
+                            }
+                        }
+                    }
+
+                    // In More's column, under More: drawn, not read (the face's name
+                    // says where a tap goes), and inside the card's tap target.
+                    Caret {
+                        id: exploreCaret
+
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.cardPadding + 6
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: Theme.cardPadding
+                        // Larger than the default: at the size a filter pill uses it
+                        // reads as a speck against a full-width card, and this is the
+                        // only thing saying the card goes somewhere.
+                        width: 13
+                        height: 9
+                        // Points down at rotation 0; a quarter turn anticlockwise reads
+                        // as forward navigation.
+                        rotation: -90
+                        color: Theme.cyan
+                    }
+
+                    // Issue #801 D5: a menu, as a system card's More opens: Edit
+                    // connection and Pin to Listen. It never starts Explore.
+                    IconButton {
+                        id: exploreMore
+                        objectName: "exploreManageButton"
+                        icon: "more"
+                        accessibleName: qsTr("More options for Explore")
+                        anchors.right: parent.right
+                        // Match the axis of the 52 px play circles on the cards.
+                        anchors.rightMargin: Theme.cardPadding + 2
+                        anchors.top: parent.top
+                        onClicked: exploreMenu.openFor()
+                        z: 2
+                    }
                 }
             }
         }
     }
 
     // Once cards pass under the pinned header or the Pinned strip, a hairline
-    // marks where they go, as the bottom navigation's top edge does.
+    // marks where they go, as the bottom navigation's top edge does. Under the
+    // fixed Listen tabs their own hairline does, so there is one line only.
     Rectangle {
-        visible: screen.fixedTitle && scrollBody.contentY > scrollBody.originY + 0.5
+        visible: screen.fixedTitle && !screen.tabsFixed && scrollBody.contentY > scrollBody.originY + 0.5
         y: scrollBody.y - 1
         width: screen.supportingPane ? screen.columnX + screen.columnWidth : screen.width
         height: 1

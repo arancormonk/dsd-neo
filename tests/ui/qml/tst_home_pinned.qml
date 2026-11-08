@@ -58,6 +58,7 @@ Item {
             app.startError = "";
             app.attemptedSource = null;
             app.dismissedFailure = "";
+            findChild(app, "homeScreen").showSection("systems");
         }
 
         function cleanup() {
@@ -508,6 +509,15 @@ Item {
             waitForRendering(home);
             return home;
         }
+        // Issue #646: taps Home's Listen tab @p id, as a finger does, and waits for its section.
+        function showTab(id) {
+            var home = showHome();
+            var tab = homeItem("listenTab_" + id);
+            mouseClick(tab, tab.width / 2, tab.height / 2);
+            compare(home.section, id);
+            verify(waitForPolish(app.contentItem));
+            waitForRendering(home);
+        }
         // Scrolls Home's body to @p control and taps it.
         function tapOnHome(control) {
             var scroll = homeItem("dongleScrollBody");
@@ -580,7 +590,7 @@ Item {
 
         function test_pin_from_scan_menu() {
             var list = addList("Patrol");
-            showHome();
+            showTab("scanLists");
             var menu = openMenu(homeItem("scanListManageButton"), "scanListManageSheet");
             compare(keys(menu), "edit,pin,remove");
             tapPin(menu, "pinScanListButton", "Pin to Listen", "Pin Patrol to Listen");
@@ -614,7 +624,7 @@ Item {
         // D5: Explore's More and Signal search's More each open a menu that pins it; Edit connection opens setup.
         function test_pin_explore_and_search_menus() {
             prefs.exploreSourceType = "rtltcp";
-            showHome();
+            showTab("explore");
             var searchMore = homeItem("signalSearchManageButton");
             compare(searchMore.accessibleName, "More options for Signal search");
             var menu = openMenu(searchMore, "signalSearchManageSheet");
@@ -662,11 +672,13 @@ Item {
             showHome();
             var menu;
             var pin;
-            var sources = [{opener: function () { return cardMore("Solo"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
-                {opener: function () { return cardMore("County"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
-                {opener: function () { return homeItem("signalSearchManageButton"); }, menu: "signalSearchManageSheet", pin: "pinSignalSearchButton"},
-                {opener: function () { return homeItem("exploreManageButton"); }, menu: "exploreManageSheet", pin: "pinExploreButton"}];
+            var sources = [{tab: "systems", opener: function () { return cardMore("Solo"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
+                {tab: "systems", opener: function () { return cardMore("County"); }, menu: "savedSystemManageSheet", pin: "pinSavedSystemButton"},
+                {tab: "explore", opener: function () { return homeItem("signalSearchManageButton"); }, menu: "signalSearchManageSheet", pin: "pinSignalSearchButton"},
+                {tab: "explore", opener: function () { return homeItem("exploreManageButton"); }, menu: "exploreManageSheet", pin: "pinExploreButton"}];
             for (var source of sources) {
+                if (findChild(app, "homeScreen").section !== source.tab)
+                    showTab(source.tab);
                 menu = openMenu(source.opener(), source.menu);
                 pin = findChild(menu, source.pin);
                 compare(pin.text, "Pin to Listen", source.menu);
@@ -736,7 +748,11 @@ Item {
         // The new menus hold Home and auto-start as every Home sheet does.
         function test_new_menus_block_background() {
             prefs.exploreSourceType = "rtltcp";
+            // Issue #646: on the Explore tab, so the face is on screen and its block below is not a given.
+            showTab("explore");
             var home = showHome();
+            var shownFace = homeItem("exploreStart");
+            verify(shownFace.visible && shownFace.enabled && shownFace.activeFocusOnTab, "the face is live before a menu opens");
             for (var name of ["exploreManageSheet", "signalSearchManageSheet"]) {
                 var sheet = homeItem(name);
                 sheet.openFor();

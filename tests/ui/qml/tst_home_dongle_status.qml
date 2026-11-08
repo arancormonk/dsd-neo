@@ -33,6 +33,7 @@ Item {
             // The brokered capability is CONSTANT: set it before publishing the host.
             testContext.setDongleStatus(false, 0, "");
             testContext.useLifecycleHost(true);
+            home.showSection("systems");
         }
         function cleanup() {
             // Leave no focus on the pill for the next case's state changes.
@@ -52,6 +53,14 @@ Item {
             Ui.Theme.resetFontScale();
             home.visible = true;
             onboarding.visible = false;
+            home.showSection("systems");
+            while (savedSystems.count)
+                savedSystems.remove(0);
+        }
+        // Issue #646: saved systems enough that Listen's Systems tab scrolls at 360 x 400.
+        function fillSystems() {
+            for (var i = 0; i < 4; ++i)
+                verify(savedSystems.add({name: "System " + i, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
         }
         // Draws @a count frames while Home stays as it is: every polish a hidden Home would see runs in them.
         function waitFrames(count) {
@@ -140,6 +149,8 @@ Item {
             var oldSource = prefs.exploreSourceType;
             prefs.exploreSourceType = "rtltcp";
             try {
+                // Issue #646: on the Explore tab.
+                home.showSection("explore");
                 var card = findChild(home, "exploreCard");
                 var more = findChild(home, "exploreManageButton");
                 var face = findChild(home, "exploreStart");
@@ -196,6 +207,7 @@ Item {
                 prefs.exploreFreqMhz = "851.0125";
                 root.width = data.width;
                 Ui.Theme.fontScale = 1.6;
+                home.showSection("explore");
                 var card = findChild(home, "exploreCard");
                 var subtitle = findChild(home, "homeExploreSubtitle");
                 verify(waitForPolish(home));
@@ -219,6 +231,7 @@ Item {
             var oldSource = prefs.exploreSourceType;
             prefs.exploreSourceType = data.source;
             try {
+                home.showSection("explore");
                 var face = findChild(home, "exploreStart");
                 var more = findChild(home, "exploreManageButton");
                 var menu = findChild(home, "exploreManageSheet");
@@ -316,6 +329,7 @@ Item {
         function test_header_stays_pinned() {
             root.width = 360;
             root.height = 400;
+            fillSystems();
             testContext.setAttachedDeviceSource("usb");
             var header = findChild(home, "listenHeader");
             var body = findChild(home, "dongleScrollBody");
@@ -338,7 +352,9 @@ Item {
         function test_reveal_top() {
             root.width = 360;
             root.height = 400;
+            fillSystems();
             var body = findChild(home, "dongleScrollBody");
+            verify(waitForPolish(home));
             waitForRendering(home);
             body.contentY = body.contentHeight - body.height;
             verify(body.contentY > 0);
@@ -555,22 +571,26 @@ Item {
             }
         }
 
-        function test_non_brokered_layout_unchanged() {
+        // Issue #646: the desktop's title is fixed above the Listen tabs as the brokered host's is, shown once, with
+        // no receiver pill; the body starts under the tabs and runs to the bottom.
+        function test_non_brokered_title_above_the_tabs() {
             testContext.useLifecycleHost(false);
             var body = findChild(home, "dongleScrollBody");
-            var title = findChild(home, "listenTitle");
-            verify(title !== null);
-            tryCompare(title, "visible", true);
-            verify(within(title, body), "the title scrolls with the body, as before");
-            compare(title.text, "Listen");
-            compare(title.parent.height, 44);
-            compare(title.parent.mapToItem(body.contentItem, 0, 0).y, Ui.Theme.screenPadding);
             var header = findChild(home, "listenHeader");
-            verify(header === null || !header.visible, "no pinned header");
+            var title = findChild(home, "listenHeaderTitle");
+            tryCompare(header, "visible", true);
+            verify(title.visible);
+            verify(!within(header, body), "the title stays put above the body");
+            compare(title.text, "Listen");
+            compare(header.y, Ui.Theme.screenPadding);
+            compare(header.height, Math.max(44, title.implicitHeight));
+            verify(!findChild(home, "listenTitle").visible, "the body's own title row is not shown as well");
             var pill = findChild(home, "dongleStatusPill");
             verify(pill === null || !pill.visible, "no pill");
-            compare(body.y, 0);
-            compare(body.height, home.height);
+            var tabs = findChild(home, "listenTabs");
+            verify(rectOf(tabs).y >= rectOf(header).y + header.height, "the tabs under the title");
+            compare(body.y, tabs.y + tabs.height);
+            compare(body.height, home.height - body.y);
         }
 
         function test_onboarding_names_the_receiver_data() {

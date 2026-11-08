@@ -86,6 +86,7 @@ Item {
             app.requestActivate();
             tryCompare(app, "active", true);
             tryCompare(item("homeScreen"), "enabled", true);
+            item("homeScreen").showSection("systems");
             item("dongleScrollBody").contentY = 0;
             wait(200); // Wait for the idle shell's opacity transition.
         }
@@ -382,9 +383,16 @@ Item {
             compare(historyCleared.count, 1);
             compare(confirmed.count, 1);
         }
+        // Issue #646: taps Home's Listen tab @p id, as a finger does.
+        function showTab(id) {
+            var tab = item("listenTab_" + id, item("homeScreen"));
+            tap(tab);
+            compare(item("homeScreen").section, id);
+        }
         function openScanMenu() {
             scanLists.add({name: "First list", sourceType: "usb"});
             scanLists.add({name: "Keep list", sourceType: "usb"});
+            showTab("scanLists");
             var menu = item("scanListManageSheet");
             var card = visualChild(item("homeScreen"), function (entry) {
                 return entry.objectName === "scanListCard" && entry.listName === "First list";
@@ -758,6 +766,7 @@ Item {
                     sheet = item("removeScanListConfirm");
                 }
             } else if (data.kind === "explore" || data.kind === "search") {
+                showTab("explore");
                 var more = item(data.kind === "explore" ? "exploreManageButton" : "signalSearchManageButton");
                 var scroll = item("dongleScrollBody");
                 verify(waitForPolish(app.contentItem));

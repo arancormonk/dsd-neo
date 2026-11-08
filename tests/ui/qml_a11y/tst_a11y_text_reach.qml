@@ -454,6 +454,27 @@ Item {
             compare(problems.length, 0, report(problems));
         }
 
+        // Issue #646: Home on each Listen tab, as a tap there shows it: every text of the section shown is reached,
+        // the empty Scan lists line among them.
+        function test_2b_home_on_each_tab_data() {
+            return [{tag: "systems"}, {tag: "scanLists"}, {tag: "explore"}];
+        }
+        function test_2b_home_on_each_tab(data) {
+            var item = build({file: "HomeScreen"});
+            open(item, {});
+            item.showSection(data.tag);
+            waitForRendering(host);
+            wait(20);
+            var shown = findChild(item, {systems: "listenSystemsSection", scanLists: "listenScanListsSection",
+                explore: "listenExploreSection"}[data.tag]);
+            verify(shown !== null && shown.visible, data.tag + " shown");
+            if (data.tag === "scanLists" && scanLists.count === 0)
+                verify(findChild(item, "scanListsEmptyHint").visible, "the empty line is part of the walk");
+            var problems = unexplained(item, [], "HomeScreen on " + data.tag);
+            dispose(item);
+            compare(problems.length, 0, report(problems));
+        }
+
         // Each screen and sheet with every branch shown at once; each sheet inside it on its own, as the top layer.
         function test_3_every_branch_shown_data() {
             return components_data();
