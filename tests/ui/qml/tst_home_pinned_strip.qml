@@ -255,10 +255,12 @@ Item {
             verify(t.y >= s.y + s.h, "the tabs below the strip");
             verify(b.y >= t.y + t.h, "body below the tabs");
             compare(b.y + b.h, home.height, "the body runs to the bottom");
-            // Issue #646: the Listen tabs are fixed under the strip at every size for now, which leaves a landscape
-            // phone less than half its height for the body.
-            if (b.h < home.height / 2)
-                expectFail("", "the fixed Listen tabs take the body below half of a landscape phone");
+            // Issue #646: the Listen tabs are fixed under the strip at every size for now, which leaves these landscape
+            // phones less than half their height for the body. Named rows, not the outcome: every other row still
+            // asserts, and these pass again (failing the run) once the tabs move into the body on short screens.
+            if (["320 px landscape at 1", "320 px landscape at 1.3", "320 px landscape at 1.6",
+                    "360 px landscape at 1.6"].indexOf(data.tag) >= 0)
+                expectFailContinue(data.tag, "the fixed Listen tabs take the body below half of a landscape phone");
             verify(b.h >= home.height / 2, "the body keeps most of the screen: " + b.h + " of " + home.height);
             var header = rectOf(findChild(home, "listenHeader"));
             verify(s.y >= header.y + header.h, "strip under the header");

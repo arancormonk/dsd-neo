@@ -10692,7 +10692,8 @@ Qt Quick frontend (`src/ui/qt`):
   scan list steps through saved systems and frequencies one at a time.") sits under Add a scan list. Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`: each action first in its section, in view with 20 items, whole
   label and touch size at 7 sizes x 3 scales, long-label reflow, keyboard order and activation, modal blocking for each
-  with its own section shown, status cards first on a short screen; plus the existing Home and Back/modal cases).
+  with its own section shown, status cards first on a short screen, no heading in the body on any tab; plus the
+  existing Home and Back/modal cases).
 - Listen tabs on Home (issue #646 D2-D5, D10). `qml/HomeScreen.qml` places `ListenTabs` (`listenTabs`, below "Qt QML
   editing convention") fixed on the content column, 8 px under the Pinned strip, or under the title with nothing
   pinned (`tabsFixed`, always true for now). `fixedTitle` includes `tabsFixed`, so the title is fixed in
@@ -10713,7 +10714,7 @@ Qt Quick frontend (`src/ui/qt`):
   new current tab. The Repeaters stay bound while their section is hidden, a decided limit (a visibility toggle
   costs a screen reader far fewer events than rebuilding the cards). Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_tabs.qml`: Explore one tap away with 30 systems and 10 lists, each tab only its
-  section, sections led by their action, no headings, the empty Scan lists line, status cards on every tab, the
+  section, sections led by their action, the empty Scan lists line, status cards on every tab, the
   remembered tab read once through the real AppPrefs and damaged values read as Systems, the choice standing without
   the store, hidden-section focus/keys/presses, focus handed to the current tab, tabs disabled under a sheet, Tab
   order pill, pins, More, tab, body on both hosts, layout at 320/360/411 x 1.0/1.6/2.0 and Home 900/1000 px beside
@@ -10759,7 +10760,8 @@ Qt Quick frontend (`src/ui/qt`):
   hidden without pins, one line at 320/360/411 px x 1.0/1.3/1.6 portrait and landscape and the 900 px desktop, order and
   activation, keyboard order on both hosts, the sheet, focus after a keyboard Unpin, departing rows, modal blocking,
   hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip; while the
-  Listen tabs are always fixed, the body of a landscape phone with pins is under half its height, an expected failure;
+  Listen tabs are always fixed, four named landscape rows leave the body under half the height, expected failures that
+  pass, and so fail the run, once the tabs can leave the fixed region;
   `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
   title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
   the strip or the closed sheet).

@@ -248,22 +248,6 @@ Item {
             verify(rectIn(hint, section("systems")).y + hint.height <= rectIn(firstCard, section("systems")).y, "the hint before the first card");
         }
 
-        // D4: the old in-body headings are gone; the tab's label is each section's heading.
-        function test_tab_labels_are_the_headings() {
-            addSystems(1);
-            addLists(1);
-            var headings = ["Saved systems", "Scan lists", "Or go looking"];
-            for (var id of ids) {
-                choose(id);
-                compare(shownTexts(body().contentItem, headings).length, 0, "no heading in the body on the " + id + " tab");
-            }
-            compare(findChild(home, "savedSystemsHeading"), null);
-            compare(findChild(home, "scanListsHeading"), null);
-            compare(ids.map(function (id) {
-                return tab(id).Accessible.name;
-            }).join(), "Systems,Scan lists,Explore");
-        }
-
         // D4: with no scan list, one line under Add a scan list says what a list is for; a list replaces it.
         function test_empty_scan_lists_line() {
             choose("scanLists");
