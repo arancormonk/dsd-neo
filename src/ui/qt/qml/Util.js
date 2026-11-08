@@ -812,16 +812,17 @@ function csvSizeMessage(result, name) {
 
 // A replay capture the free space cannot hold. The store keeps some space
 // spare (reserveBytes) and counts it in neededBytes, so the numbers shown are
-// the file's own size, the free space and that spare part: a file smaller
-// than the free space then still reads as not fitting, and says why.
+// the file's own size, the free space and that spare part, rounded the way a
+// person says it: a file smaller than the free space then still reads as not
+// fitting, and says why.
 function replaySpaceMessage(result, name) {
     var file = name || qsTr("this file")
     var free = keptWhole(sizeText(result.freeBytes))
-    var spare = keptWhole(sizeText(result.reserveBytes))
+    var spare = keptWhole(qsTr("%1 GB").arg(fixed((Number(result.reserveBytes) || 0) / 1e9, 1)))
     var size = Number(result.neededBytes) - (Number(result.reserveBytes) || 0)
     if (Number(result.neededBytes) > 0 && size >= 0)
-        return qsTr("%1 does not fit on this device. It is %2 and %3 is free, and DSD-neo always leaves %4 spare.").arg(file).arg(keptWhole(sizeText(size))).arg(free).arg(spare)
-    return qsTr("There is not enough free space on this device to copy %1. %2 is free, and DSD-neo always leaves %3 spare.").arg(file).arg(free).arg(spare)
+        return qsTr("There is not enough free space to copy %1 (%2). This device has %3 free, and DSD-neo keeps about %4 spare.").arg(file).arg(keptWhole(sizeText(size))).arg(free).arg(spare)
+    return qsTr("There is not enough free space to copy %1. This device has %2 free, and DSD-neo keeps about %3 spare.").arg(file).arg(free).arg(spare)
 }
 
 function localCopyMessage(noSpace, name) {

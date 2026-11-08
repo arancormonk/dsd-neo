@@ -146,7 +146,7 @@ Item {
         function test_failure_keeps_the_earlier_file_data() {
             return [
                 {tag: "read", result: {ok: false, error: "read"}, text: "Could not read cap.wav. Check that it is still available, then try again."},
-                {tag: "too large", result: {ok: false, error: "too_large", neededBytes: 3.4e9 + 536870912, freeBytes: 1.2e9, reserveBytes: 536870912}, text: "cap.wav does not fit on this device. It is 3.4\u00a0GB and 1.2\u00a0GB is free, and DSD-neo always leaves 537\u00a0MB spare."},
+                {tag: "too large", result: {ok: false, error: "too_large", neededBytes: 3.4e9 + 536870912, freeBytes: 1.2e9, reserveBytes: 536870912}, text: "There is not enough free space to copy cap.wav (3.4\u00a0GB). This device has 1.2\u00a0GB free, and DSD-neo keeps about 0.5\u00a0GB spare."},
                 {tag: "no space", result: {ok: false, error: "local", noSpace: true}, text: "Could not save a copy of cap.wav on this device. Free up some storage, then try again."}
             ];
         }
