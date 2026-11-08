@@ -6241,7 +6241,7 @@ add_test(
 add_executable(
     dsd-neo_test_runtime_signal_search_visit_init_failure
     runtime/test_runtime_signal_search_visit_init_failure.c
-    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_visit.c
 )
 target_include_directories(
     dsd-neo_test_runtime_signal_search_visit_init_failure
