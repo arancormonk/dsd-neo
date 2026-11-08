@@ -26,11 +26,26 @@ QString json_store_root();
 /** @brief Absolute path of @p fileName inside the app data directory. */
 QString json_store_path(const QString& fileName);
 
+/** @brief How a store load went: a missing file is a normal first run, a failure is not. */
+enum class JsonStoreLoad {
+    Ok,     ///< The file held a JSON array (possibly empty).
+    Absent, ///< No such file; the array is empty and valid.
+    Failed, ///< The file could not be opened or read, or is not a JSON array; the array is empty.
+};
+
 /**
  * @brief Read @p fileName as a JSON array.
  * @return The array, or an empty one when the file is missing or not an array.
  */
 QJsonArray json_store_load_array(const QString& fileName);
+
+/**
+ * @brief Read @p fileName as a JSON array and say how it went.
+ * @param status  Receives Ok, Absent (no file) or Failed (open or read error, malformed JSON, not an array). Callers
+ *                that delete anything on the strength of the store's contents must do nothing on Failed.
+ * @return The array, empty unless @p status is Ok.
+ */
+QJsonArray json_store_load_array(const QString& fileName, JsonStoreLoad* status);
 
 /**
  * @brief Atomically write @p array to @p fileName, creating directories as needed.

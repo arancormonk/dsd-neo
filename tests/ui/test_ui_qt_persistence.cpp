@@ -62,6 +62,7 @@ using dsd_qt::AppPrefs;
 using dsd_qt::json_store_load_array;
 using dsd_qt::json_store_path;
 using dsd_qt::json_store_save_array;
+using dsd_qt::JsonStoreLoad;
 using dsd_qt::ListenPins;
 using dsd_qt::SavedSystemsModel;
 using dsd_qt::ScanListsModel;
@@ -76,6 +77,67 @@ expect(const char* what, bool ok) {
         DSD_FPRINTF(stderr, "FAIL: %s\n", what);
         g_failures++;
     }
+}
+
+/* Issue #832: a startup cleanup may delete only when the store behind it loaded, so a missing file, a good one and an
+ * unreadable or mangled one report differently. */
+void
+write_store_fixture(const char* name, const char* text) {
+    QFile file(json_store_path(QString::fromLatin1(name)));
+    expect("status fixture opens", file.open(QIODevice::WriteOnly));
+    file.write(text);
+    file.close();
+}
+
+void
+test_json_store_status(void) {
+    JsonStoreLoad status = JsonStoreLoad::Failed;
+    expect("absent file is an empty array",
+           json_store_load_array(QStringLiteral("status_absent.json"), &status).isEmpty());
+    expect("absent file reports Absent", status == JsonStoreLoad::Absent);
+
+    write_store_fixture("status_ok.json", "[1]");
+    status = JsonStoreLoad::Failed;
+    expect("good file loads its row", json_store_load_array(QStringLiteral("status_ok.json"), &status).size() == 1);
+    expect("good file reports Ok", status == JsonStoreLoad::Ok);
+
+    write_store_fixture("status_empty.json", "[]");
+    status = JsonStoreLoad::Failed;
+    expect("empty array loads empty", json_store_load_array(QStringLiteral("status_empty.json"), &status).isEmpty());
+    expect("empty array reports Ok", status == JsonStoreLoad::Ok);
+
+    write_store_fixture("status_object.json", "{}");
+    status = JsonStoreLoad::Ok;
+    expect("an object loads empty", json_store_load_array(QStringLiteral("status_object.json"), &status).isEmpty());
+    expect("an object reports Failed", status == JsonStoreLoad::Failed);
+
+    write_store_fixture("status_cut.json", "[1,");
+    status = JsonStoreLoad::Ok;
+    expect("a cut file loads empty", json_store_load_array(QStringLiteral("status_cut.json"), &status).isEmpty());
+    expect("a cut file reports Failed", status == JsonStoreLoad::Failed);
+
+    /* A folder where the file should be cannot be read. */
+    QDir().mkpath(json_store_path(QStringLiteral("status_dir.json")));
+    status = JsonStoreLoad::Ok;
+    expect("a folder loads empty", json_store_load_array(QStringLiteral("status_dir.json"), &status).isEmpty());
+    expect("a folder reports Failed", status == JsonStoreLoad::Failed);
+
+#ifndef Q_OS_WIN
+    write_store_fixture("status_locked.json", "[1]");
+    const QString locked = json_store_path(QStringLiteral("status_locked.json"));
+    QFile::setPermissions(locked, QFileDevice::Permissions());
+    if (!QFile(locked).open(QIODevice::ReadOnly)) { /* a superuser reads it anyway */
+        status = JsonStoreLoad::Ok;
+        expect("an unreadable file loads empty",
+               json_store_load_array(QStringLiteral("status_locked.json"), &status).isEmpty());
+        expect("an unreadable file reports Failed", status == JsonStoreLoad::Failed);
+    }
+    QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+#endif
+
+    /* The one-argument form keeps its old behaviour. */
+    expect("one-argument load still returns the row",
+           json_store_load_array(QStringLiteral("status_ok.json")).size() == 1);
 }
 
 void
@@ -2356,6 +2418,7 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
 
     test_json_store();
+    test_json_store_status();
     test_private_key_store();
     test_saved_systems();
     test_saved_systems_past_int_range();

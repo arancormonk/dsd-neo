@@ -9,9 +9,11 @@
 #include <QChar>
 #include <QDir>
 #include <QFile>
+#include <QFileDevice>
 #include <QFileInfo>
 #include <QIODevice>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QSaveFile>
 #include <QStandardPaths>
 
@@ -28,13 +30,30 @@ json_store_path(const QString& fileName) {
 }
 
 QJsonArray
-json_store_load_array(const QString& fileName) {
+json_store_load_array(const QString& fileName, JsonStoreLoad* status) {
+    JsonStoreLoad result = JsonStoreLoad::Failed;
+    QJsonArray array;
     QFile file(json_store_path(fileName));
-    if (!file.open(QIODevice::ReadOnly)) {
-        return QJsonArray();
+    if (!file.exists()) {
+        result = JsonStoreLoad::Absent;
+    } else if (file.open(QIODevice::ReadOnly)) {
+        const QByteArray data = file.readAll();
+        QJsonParseError parse;
+        const QJsonDocument doc = QJsonDocument::fromJson(data, &parse);
+        if (file.error() == QFileDevice::NoError && parse.error == QJsonParseError::NoError && doc.isArray()) {
+            array = doc.array();
+            result = JsonStoreLoad::Ok;
+        }
     }
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    return doc.isArray() ? doc.array() : QJsonArray();
+    if (status != nullptr) {
+        *status = result;
+    }
+    return array;
+}
+
+QJsonArray
+json_store_load_array(const QString& fileName) {
+    return json_store_load_array(fileName, nullptr);
 }
 
 bool
