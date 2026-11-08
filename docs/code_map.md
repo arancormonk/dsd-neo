@@ -8757,15 +8757,26 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   channel only when it names this site with Curr or New alone, under valid parameters, with a frequency, and the CC is
   not pinned (`nxdn_cch_info_names_this_control_channel()`): Add and Del edit a hunt list and another site's switch
   reaches this one by ADJ_SITE_INFO (TS 1-C §16.5). Channels of any other CCH_INFO, and every ADJ_SITE_INFO channel,
-  are resolved with the display resolver and never learned. The record is cleared by `dsd_nxdn_ca_reset()` and travels
-  with a trunk scan target.
+  are resolved with the display resolver and never learned. Under plain `-T` the first adoption writes the hunt's row 0
+  (`dsd_state_trunk_lcn_freq_write()`), and from then on the control channel is pinned like an imported list
+  (`nxdn_cc_is_operator_pinned()`: any LCN row counts), as before; under trunk scan only a target with its own
+  `chan_csv` LCN rows is pinned, so a park a few kHz off is corrected by this site's Curr or New. The record is
+  cleared by `dsd_nxdn_ca_reset()` and travels with a trunk scan target. Known limits: the latch has no confirmation
+  gate of its own, only the message's CRC. While no call is followed, a noise FACCH1 that passes its CRC-12 and names
+  another valid site latches that site, which invalidates this site's parameters: nothing resolves by DFA until the
+  next SITE_INFO of the site heard (every superframe on a dedicated control channel; a CAC carries CRC-16 and is far
+  less exposed). A call followed before any latch (a grant decoded before the first SITE_INFO or SRV_INFO) writes no
+  site identity from the traffic channel's broadcasts until the return, since none of them can be told to be this
+  site's.
 - NXDN composite control channels (RTCH_C, TS 1-A §5.2.1, TS 1-C §16.3). Their outbound LICH values 0x61, 0x69, 0x6F,
   0x71, 0x73, 0x75 and 0x77 are also Type-D RTCH2 values; `nxdn_frame.c` reads them as RTCH_C (SACCH, FACCH1, FACCH2,
   UDCH, as an RTCH's; plus the idle 0x79) once the session decoded Type-C trunking (`dsd_nxdn_type_c()`: a CRC-good CAC,
-  a CCH_INFO, or a SITE_INFO on a frame not read as Type-D, messages Type-D does not send), and as Type-D until then.
-  Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as
-  Type-D left. The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never a retune within a
-  trunked system or a stream gap) forgets it with the foreign control stamp (`dsd_nxdn_forget_carrier_system()`).
+  a CCH_INFO, or a SITE_INFO on a frame not read as Type-D, messages Type-D does not send), and as Type-D until then:
+  a session that starts on a composite control channel during a call reads its first frames as Type-D until one of
+  those decodes. Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite
+  SRV_INFO read as Type-D left. The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never
+  a retune within a trunked system or a stream gap) forgets it with the foreign control stamp
+  (`dsd_nxdn_forget_carrier_system()`).
 - NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
   on, a voice channel tuned, and the followed frequency not this site's control channel; compared by channel,
   `dsd_nxdn_same_channel()`: closer than half the 6.25 kHz raster, since the control channel fields may hold the
@@ -8777,6 +8788,23 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   written; its site broadcasts are printed only, every other message prints its type only (no grant, call, release or
   control-sync effect); and the frame neither stamps carrier sync nor plays voice. A call on this site's control channel
   itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is the site's own.
+- NXDN return from a voice channel that is another site's control channel (discussion #748). That control channel keeps
+  NXDN frame sync on the followed frequency, so once the call's DISC is missed the synced-frames loop never reaches
+  noCarrier(), whose hangtime return is the only other way back. `dsd_engine_trunk_receive_release_due()` (the synced
+  loop's release check, `live_scanner_receive_should_yield()` and `scan_visit_should_yield_from_frame()`) therefore has
+  an NXDN case that runs whether or not a receive filter is on (`nxdn_foreign_control_release_due()` in `engine.c`):
+  another channel's control frame heard there since the call's last voice (`dsd_nxdn_foreign_control_last_m()` later
+  than `last_vc_sync_time_m`, which the voice-channel tune also stamps, so a stamp left from an earlier follow never
+  counts), the hangtime run since that voice (`no_carrier_is_cc_return_due()`, whole seconds), and nothing of the call
+  heard within it (`receive_admitted_still_heard()`, a data call included). The loop then drops sync and noCarrier()
+  returns to the control channel as on a carrier loss. It applies only while the frame's (or the last) sync is NXDN and
+  the followed channel is not this site's control channel (`dsd_nxdn_control_heard_is_foreign()`), so a call on this
+  site's own composite control channel never takes it, and P25 and DMR are untouched. The marker is read first, so a
+  session that never heard foreign control traffic pays one load per frame. The other site's assignments heard
+  meanwhile, a VCALL_ASSGN_DUP past the hangtime included, are never followed (the bullet above). Tests:
+  `ENGINE_NXDN_FOREIGN_CONTROL_RETURN` (the real engine loop and NXDN frame decoder, the other site's dedicated and
+  composite control channel on the followed frequency, and the carrier-loss return as a control),
+  `ENGINE_P25_POLICY_STORE_GUARD` (`test_trunk_receive_release_due_nxdn_foreign_control`).
 - NXDN trunking admission and preemption (`nxdn_element.c`; NXDN has no trunk state machine). Two records in
   `dsd_state`, both saved with a trunk scan target's snapshot (and so restored by a failed switch's rollback):
   - `nxdn_follow` (`dsd_nxdn_follow_route`): the route the receiver last followed a grant or busy repeater message to
@@ -14529,9 +14557,11 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   needs a REJECTED verdict: traffic still Checking is left to the P25/DMR trunk state machine's acquisition window, or
   on other trunked protocols (NXDN) gets a 4 s window from the tune, and admitted traffic or one no filter judges keeps
   the channel); an admitted call in progress (`dsd_call_state_admitted_call_active()`, data included) keeps it, as it
-  keeps a `-Y` channel with voice-only off. The single-slot DMR lane is re-proven when a burst names the other slot. A
-  voice LC header the single-slot output folds onto lane 0 applies that rule once the lane's call took it (its epoch or
-  revision moved during the dispatch, on the header's slot; `dmr_data_header_opened_lane_call()`), instead of the voice
+  keeps a `-Y` channel with voice-only off. Filters or not, it also lets a followed NXDN voice channel go that only
+  another site's control channel holds (discussion #748; Protocols, NXDN). The single-slot DMR lane is re-proven
+  when a burst names the other slot. A voice LC header the single-slot output folds onto lane 0 applies that rule once
+  the lane's call took it (its epoch or revision moved during the dispatch, on the header's slot;
+  `dmr_data_header_opened_lane_call()`), instead of the voice
   lane's restored proof, so the call it opens on the other slot is not ended by the previous call's proof; its `-J` line
   names the row's proven over-the-air slot (`watchdog_event_log_slot_number()`), the lane only while none is proven. A
   rejected Phase 2 call's queued audio never plays under a talkgroup hold. A P25 start while

@@ -635,6 +635,21 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - M17: `-fz` (radio); `-fU` (M17 UDP/IP frame)
 - NXDN48: `-fi` (6.25 kHz)
 - NXDN96: `-fn` (12.5 kHz)
+  With `-T` on an NXDN Type-C system (NXDN48 or NXDN96), the decoder keeps to the site whose control channel it chose:
+  the site information (SITE_INFO or SRV_INFO) heard while no call is followed names it, and only that site's messages
+  set the site shown and, on a DFA site, the base and step channel frequencies are counted from. Messages naming other
+  sites (a CCH_INFO, the adjacent sites, another site's broadcasts heard on a traffic channel) are printed only. A DFA
+  site moves the control channel only when its own CCH_INFO names one current or new, never for a candidate added or
+  removed; under plain `-T` the first such move is then kept like a channel map row. A composite control channel, one
+  that carries calls itself, is read as one once the session has decoded Type-C trunking there (a CAC, a CCH_INFO or a
+  SITE_INFO); until then its frames read as Type-D, so a session started on one during a call shows Type-D details until
+  that call ends or one of those messages arrives. A voice channel can also be another site's control channel: while a
+  call is followed there, that control channel's traffic is printed only (`(other channel's control; log only)`) and
+  none of its calls is followed, and when the call's end is missed the decoder goes back to its own control channel once
+  the hangtime (`-t`) has passed since the call's last voice, though the other control channel keeps the frequency busy.
+  Known limits: the site is taken from any site information whose CRC passes while no call is followed, so a noise frame
+  naming another site can leave DFA channels unknown until the site's next SITE_INFO, and a call followed before any
+  site information was heard shows no site until the decoder is back on the control channel.
 - ProVoice: `-fp`
 - EDACS/ProVoice: `-fh` (standard), `-fH` (with ESK 0xA0)
   - Custom AFS bit splits: `-fh344`, `-fH434`
