@@ -108,9 +108,10 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
     return _stat64(path, st);
 }
 
-/* The POSIX errno for a GetDiskFreeSpaceExW() failure, as statvfs() would set it for the same path. */
+/* The POSIX errno for a failed path call (GetDiskFreeSpaceExW(), CreateFile()), as POSIX would set it for the same
+   path. */
 static int
-dsd_free_space_errno(DWORD err) {
+dsd_path_errno(DWORD err) {
     switch (err) {
         case ERROR_FILE_NOT_FOUND:
         case ERROR_PATH_NOT_FOUND: return ENOENT;
@@ -178,7 +179,7 @@ dsd_path_free_bytes(const char* path) {
     const DWORD err = ok ? ERROR_SUCCESS : GetLastError();
     free(wide);
     if (!ok) {
-        errno = dsd_free_space_errno(err);
+        errno = dsd_path_errno(err);
         return -1;
     }
     return available.QuadPart > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)available.QuadPart;
@@ -553,6 +554,50 @@ dsd_path_canonical(const char* path, char* out, size_t out_size) {
         errno = ENAMETOOLONG;
         return -1;
     }
+    return 0;
+}
+
+/* The volume serial number and file index of the file at @p path, which open from any spelling of its name. The handle
+   asks only for attributes and shares every access, so it never stands in the way of a writer or a delete. */
+static int
+dsd_file_identity(const char* path, BY_HANDLE_FILE_INFORMATION* info) {
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    HANDLE h =
+        wide ? CreateFileW(wide, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL)
+             : CreateFileA(path, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD err = h == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    free(wide);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = dsd_path_errno(err);
+        return -1;
+    }
+    const BOOL ok = GetFileInformationByHandle(h, info);
+    err = ok ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(h);
+    if (!ok) {
+        errno = dsd_path_errno(err);
+        return -1;
+    }
+    return 0;
+}
+
+int
+dsd_path_same_file(const char* a, const char* b, int* same) {
+    if (same) {
+        *same = 0;
+    }
+    if (!a || a[0] == '\0' || !b || b[0] == '\0' || !same) {
+        errno = EINVAL;
+        return -1;
+    }
+    BY_HANDLE_FILE_INFORMATION info_a;
+    BY_HANDLE_FILE_INFORMATION info_b;
+    if (dsd_file_identity(a, &info_a) != 0 || dsd_file_identity(b, &info_b) != 0) {
+        return -1;
+    }
+    *same = info_a.dwVolumeSerialNumber == info_b.dwVolumeSerialNumber && info_a.nFileIndexHigh == info_b.nFileIndexHigh
+            && info_a.nFileIndexLow == info_b.nFileIndexLow;
     return 0;
 }
 

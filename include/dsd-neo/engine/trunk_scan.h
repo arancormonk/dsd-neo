@@ -134,8 +134,9 @@ int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_
  *
  * Each list's own rules stay its parser's (no id or (type, frequency) twice in one file). A row whose id an earlier
  * list already holds is that earlier target, now in both lists, when every parsed setting is the same: every field of
- * dsd_trunk_scan_target but csv_row, a row option only where it is set, a companion path as the file it names (both
- * canonicalised, the strings compared when either cannot be), direct keys compared in constant time. Any difference
+ * dsd_trunk_scan_target but csv_row, a row option only where it is set, a companion path as the file it names (its
+ * identity, dsd_path_same_file(); when either cannot be read both canonicalised, and the strings when either cannot be
+ * that), direct keys compared in constant time. Any difference
  * refuses the lists, naming both files and rows (from @p names[i], list i's file) and the first column that differs,
  * by the column's name in the target CSV or the row option's switch; a key difference is said as "the key columns
  * differ", never with key material. The distinct targets fit dsd_trunk_scan_max_targets().

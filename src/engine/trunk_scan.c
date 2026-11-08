@@ -1481,9 +1481,10 @@ static const char k_scan_key_columns[] = "the key columns";
    yet. */
 static const char k_scan_options_column[] = "options column";
 
-/* Whether two resolved companion paths name one file: the same text, or the same canonical path, so `keys.csv` and
-   `./keys.csv` beside one list file are one file. A path that cannot be canonicalised (a file that is missing) compares
-   as its text. */
+/* Whether two resolved companion paths name one file: the same text, or one file by its identity
+   (dsd_path_same_file()), so `keys.csv` and `./keys.csv` beside one list file, a link to it and, on Windows, another case
+   of its name are one file. When either identity cannot be read the canonical paths compare, and a path that cannot be
+   canonicalised either (a file that is missing) compares as its text. */
 static int
 scan_paths_same(const char* a, const char* b) {
     if (strcmp(a, b) == 0) {
@@ -1491,6 +1492,10 @@ scan_paths_same(const char* a, const char* b) {
     }
     if (a[0] == '\0' || b[0] == '\0') {
         return 0;
+    }
+    int same = 0;
+    if (dsd_path_same_file(a, b, &same) == 0) {
+        return same;
     }
     char canonical_a[4096];
     char canonical_b[4096];

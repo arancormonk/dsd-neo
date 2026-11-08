@@ -469,7 +469,9 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   and finds each row's id among earlier lists' rows through an id index sorted once (never a walk of every earlier
   list). A row whose id an earlier list holds is that target, shared, when every parsed field of
   `dsd_trunk_scan_target` but `csv_row` is the same (`scan_target_first_difference()`: companion paths compared as the
-  file they name through `dsd_path_canonical()`, the strings when either cannot be; direct keys in constant time; a row
+  file they name by its identity through `dsd_path_same_file()`, so a link or, on Windows, another case or short name
+  of one file is that file; through `dsd_path_canonical()` when either identity cannot be read, and the strings when
+  either cannot be canonicalised; direct keys in constant time; a row
   option only where its `DSD_SCAN_OPT_*` bit is set, from the `k_scan_option_columns` table, tone set and receive
   filters/names included, an unknown bit still telling rows apart). Any difference refuses the lists, naming both files
   and rows and the first differing column by its target-CSV name or its switches (`the key columns differ` for direct
@@ -1211,6 +1213,12 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `GetDiskFreeSpaceExW()`, which refuses a file's path; Win32 errors map to errno),
     never the volume's label, which Android's SELinux policy denies the app (QStorageInfo reads it). The recording
     store and the backup export and restore use it. Test: `PLATFORM_FILE_COMPAT`
+  - File identity: `dsd_path_same_file()` (issue #697) says whether two paths name one existing file, however each is
+    spelled: `stat()` device and inode on POSIX; on Windows `CreateFileW()` (attributes only, every share mode,
+    `FILE_FLAG_BACKUP_SEMANTICS`; the ANSI call for a path that is not UTF-8) and `GetFileInformationByHandle()`'s
+    volume serial number and file index, so another case, a short (8.3) name or a hard link is the same file. A file it
+    cannot read fails with errno (ENOENT for a missing one). The trunk-scan list merge compares companion paths by it.
+    Test: `PLATFORM_FILE_COMPAT` (POSIX: spellings, a hard link, a symbolic link, two files, a missing file)
   - Large files: `dsd_stat_t` is `struct _stat64` on Windows (`_stat64`/`_fstat64`), so `st_size` holds sizes past
     2 GiB everywhere. `dsd_fseek64()`/`dsd_ftell64()` take and give 64-bit offsets (`_fseeki64`/`_ftelli64` on
     Windows, `fseeko`/`ftello` elsewhere); use them for any offset in a capture file. Test: `PLATFORM_FILE_LARGE`

@@ -253,6 +253,21 @@ int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left)
 int dsd_path_canonical(const char* path, char* out, size_t out_size);
 
 /**
+ * @brief Whether two paths name one existing file, however each is spelled.
+ *
+ * POSIX compares the device and inode stat() gives each (a symbolic link counts as the file it points to); Windows the
+ * volume serial number and file index GetFileInformationByHandle() gives each. A hard link, another case of the same
+ * name on a file system that ignores case, and a Windows short (8.3) name each name the file they spell.
+ *
+ * @param a     A path (UTF-8 on Windows, where a path that is not opens as the ANSI code page).
+ * @param b     Another path.
+ * @param same  Set to 1 when @p a and @p b name one file, 0 when they name two.
+ * @return 0 with @p same set, or -1 with errno set when either file cannot be read (ENOENT for a missing file, EINVAL
+ *         for NULL or an empty path); @p same is then 0.
+ */
+int dsd_path_same_file(const char* a, const char* b, int* same);
+
+/**
  * @brief The bytes free to this user on the volume that holds @p path.
  *
  * Free space only: statvfs() on POSIX and Android, GetDiskFreeSpaceExW() on Windows. Nothing else about the volume is

@@ -616,8 +616,8 @@ written to its file.
   same target, now in both lists, as long as every setting of the two rows is the same: type, frequency, label,
   modulation, dwell, hold, gain, the channel map, band plan and key files, the direct keys and every switch in
   `options`. A file is compared as the file it opens, so `keys.csv` and `./keys.csv` next to one list are one file, and
-  `keys.csv` next to two lists in different folders are two. Column order, `notes` and the order of the switches in
-  `options` do not matter. Any difference refuses the start, naming both files and rows and the first setting that
+  so are a link to it and, on Windows, `KEYS.csv` or its short name; `keys.csv` next to two lists in different folders
+  are two. Column order, `notes` and the order of the switches in `options` do not matter. Any difference refuses the start, naming both files and rows and the first setting that
   differs, as its column name or its switches (`-G`, `--squelch/--squelch-db`):
 
   ```text

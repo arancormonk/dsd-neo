@@ -41,6 +41,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
@@ -66,6 +67,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <unistd.h>
+#endif
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
@@ -18596,6 +18600,54 @@ test_lists_shared_row_key_file_named_two_ways(void) {
     return test_rc;
 }
 
+#if !DSD_PLATFORM_WIN_NATIVE
+/* A key file one row names and the other names through a hard link to it is the same file (issue #697): both rows load
+   the same keys, so they are one target; the canonical path of a hard link is its own, so only the file's identity
+   tells. */
+static int
+test_lists_shared_row_key_file_hard_link(void) {
+    static const char* const names[] = {"one", "two"};
+    const char* bodies[] = {
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n"
+        "ROK,dmr-conventional,461000000,,1500,1200,,keys.csv\n",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n"
+        "ROK,dmr-conventional,461000000,,1500,1200,,keys-link.csv\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char keys[DSD_TEST_PATH_MAX];
+    char keys_link[DSD_TEST_PATH_MAX];
+    if (scan_list_files_write(&files, "", names, bodies, 2) != 0
+        || dsd_test_path_join(keys, sizeof keys, files.dir, "keys.csv") != 0
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0
+        || dsd_test_path_join(keys_link, sizeof keys_link, files.dir, "keys-link.csv") != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    int test_rc = 0;
+    if (link(keys, keys_link) == 0) {
+        reset_scan_opts_state(&opts, &state);
+        scan_list_files_to_opts(&files, NULL, &opts);
+        char err[2048] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+            || dsd_engine_trunk_scan_target_count(&state) != 1U) {
+            DSD_FPRINTF(stderr, "a key file and a hard link to it did not share: %zu targets, err \"%s\"\n",
+                        dsd_engine_trunk_scan_target_count(&state), err);
+            test_rc = 1;
+        }
+        test_rc |= expect_target_lists(&state, 0U, 0x3, 0U);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+    }
+    (void)remove(keys_link);
+    (void)remove(keys);
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+#endif
+
 /* The target budget counts distinct targets: two lists over half the budget each fit when they hold the same targets
    (test_lists_union_target_cap() refuses them under ids of their own). */
 static int
@@ -21759,6 +21811,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_shared_row_layouts_share);
     rc |= run_with_default_tune_hook(test_lists_shared_row_set_options_any_order);
     rc |= run_with_default_tune_hook(test_lists_shared_row_key_file_named_two_ways);
+#if !DSD_PLATFORM_WIN_NATIVE
+    rc |= run_with_default_tune_hook(test_lists_shared_row_key_file_hard_link);
+#endif
     rc |= run_with_default_tune_hook(test_lists_budget_counts_distinct_targets);
     rc |= run_with_default_tune_hook(test_lists_short_row_targets_refused);
     rc |= run_with_default_tune_hook(test_hold_on_shared_target_lists_off);

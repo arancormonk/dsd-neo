@@ -506,6 +506,24 @@ dsd_path_canonical(const char* path, char* out, size_t out_size) {
     return 0;
 }
 
+int
+dsd_path_same_file(const char* a, const char* b, int* same) {
+    if (same) {
+        *same = 0;
+    }
+    if (!a || a[0] == '\0' || !b || b[0] == '\0' || !same) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct stat st_a;
+    struct stat st_b;
+    if (stat(a, &st_a) != 0 || stat(b, &st_b) != 0) {
+        return -1;
+    }
+    *same = st_a.st_dev == st_b.st_dev && st_a.st_ino == st_b.st_ino;
+    return 0;
+}
+
 static int
 dsd_copy_resolved_local_name(const char* name, char* out, size_t out_size) {
     int n = DSD_SNPRINTF(out, out_size, "%s", name);
