@@ -597,8 +597,12 @@ Item {
 
                     width: content.width
                     property var siblings: (screen.siteRevision, savedSystems.siblingRows(index))
-                    visible: siblings.length === 0 || siblings[0] === index
-                    height: visible ? (refreshHint ? 154 : 122) : 0
+                    // One card per group of sites, on its first site. Keyed on
+                    // its own condition, not on `visible`, which also goes false
+                    // while Main hides Home and would collapse the body (issue #646 B1).
+                    readonly property bool shown: siblings.length === 0 || siblings[0] === index
+                    visible: shown
+                    height: shown ? (refreshHint ? 154 : 122) : 0
                     readonly property var playableSites: siblings.filter(function (row) {
                         return !savedSystems.get(row).avoidSite;
                     })

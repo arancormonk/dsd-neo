@@ -471,6 +471,12 @@ Item {
                 compare(header.height, headerHeight, "the hidden header keeps its height");
                 compare(panel.height, panelHeight, "the hidden details panel keeps its height");
                 compare(body.contentHeight - body.height >= scrolled, true, "the hidden body still scrolls that far");
+                // And still after the hidden body's next layout passes (issue #646 B1).
+                verify(waitForPolish(root.Window.window));
+                wait(100);
+                compare(header.height, headerHeight, "the header keeps its height through a layout while hidden");
+                compare(panel.height, panelHeight, "the details panel keeps its height through a layout while hidden");
+                compare(body.contentY, scrolled, "the hidden body keeps its place through a layout");
                 home.visible = true;
                 verify(waitForPolish(home));
                 compare(body.contentY, scrolled, "scroll position after a tab switch");

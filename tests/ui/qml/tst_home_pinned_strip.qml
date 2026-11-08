@@ -654,7 +654,9 @@ Item {
             for (var scrolled of [40, 1e9]) {
                 for (var uid of uids)
                     pin("system", uid);
-                verify(waitForPolish(home));
+                // The whole window's layout, so the body's range is measured with the cards laid out.
+                verify(waitForPolish(root.Window.window));
+                waitForRendering(home);
                 var stripHeight = strip().height;
                 verify(stripHeight > 0);
                 scrolled = Math.min(scrolled, body().contentHeight - body().height);
@@ -668,6 +670,12 @@ Item {
                 compare(strip().height, stripHeight, "the hidden strip keeps its height");
                 compare(body().contentHeight - body().height >= scrolled, true, "the hidden body still scrolls that far");
                 compare(body().contentY, scrolled, "the hidden body keeps its place");
+                // And still after the hidden body's next layout passes: the cards keep their heights (issue #646 B1).
+                verify(waitForPolish(root.Window.window));
+                wait(100);
+                compare(strip().height, stripHeight, "the hidden strip keeps its height through a layout");
+                compare(body().contentHeight - body().height >= scrolled, true, "the hidden body still scrolls that far after a layout");
+                compare(body().contentY, scrolled, "the hidden body keeps its place through a layout");
                 home.visible = true;
                 verify(waitForPolish(home));
                 // Back on Home the strip goes and the body grows by its height: the place is kept, short of the end.
