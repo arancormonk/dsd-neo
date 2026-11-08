@@ -1481,6 +1481,15 @@ test_async_bundle_limits_and_failures() {
     expect("a companion over 32 MiB is too large, with the file limit and its name",
            result.value("error") == "too_large" && result.value("limitBytes").toLongLong() == 32LL * 1024 * 1024
                && result.value("name") == "huge.csv");
+    // Only 4 MiB of the bundle's budget is left when huge.csv comes, but it is over the file limit on its own.
+    const QString late = source.filePath("late-huge.csv");
+    expect("late huge fixture", write_file(late, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,a.csv\n"
+                                                 "2,851025000,p25,b.csv\n3,851037500,p25,huge.csv\n"));
+    result = importAndWait(model, late, "late-huge.csv", "chan");
+    expect("a companion over 32 MiB is too large with the file limit, whatever the bundle has left",
+           result.value("error") == "too_large" && result.value("limitBytes").toLongLong() == 32LL * 1024 * 1024
+               && result.value("name") == "huge.csv");
+
     const QString keyed = source.filePath("keyed.csv");
     expect("read fixture", write_file(keyed, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,gone.csv\n"));
     result =

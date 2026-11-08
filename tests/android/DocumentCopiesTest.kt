@@ -367,8 +367,10 @@ private fun copyImport(resolver: FakeResolver, request: Long, uri: String, dest:
 
 private fun progressOf(request: Long) = DocumentCopies.importProgress(request).toList()
 
-private fun checkNotRunning(request: Long, what: String) {
-    check(progressOf(request) == listOf(-1L, -1L)) { "$what reports no progress: ${progressOf(request)}" }
+private fun checkNotRunning(request: Long, what: String, declared: Long = -1L) {
+    check(progressOf(request) == listOf(-1L, declared)) {
+        "$what reports no progress, only its declared size: ${progressOf(request)}"
+    }
 }
 
 /** One import copy on its own thread, as the import worker runs it. */
@@ -400,11 +402,12 @@ private fun anImportCopiesWholeAndKeepsItsName() {
     check(resolver.projections == listOf(listOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE))) {
         "one query asks for the name and the size: ${resolver.projections}"
     }
-    checkNotRunning(request, "a finished import")
+    checkNotRunning(request, "a finished import", content.size.toLong())
     check(DocumentCopies.importName(request) == "Talkgroups.csv") { "the request keeps its document's name" }
     check(!DocumentCopies.importNoSpace(request)) { "a good import reports no full disk" }
     DocumentCopies.forgetImport(request)
     check(DocumentCopies.importName(request) == null) { "a forgotten request keeps nothing" }
+    checkNotRunning(request, "a forgotten request")
     check(DocumentCopies.importName(newRequest()) == null) { "an unknown request has no name" }
     checkNotRunning(newRequest(), "an unknown request")
     checkNoTransferInFlight("an import")
@@ -421,7 +424,7 @@ private fun anImportOverItsCapIsTooLargeAndLeavesNothing() {
     }
     check(resolver.callsFor(declaredOver) == listOf("query $declaredOver")) { "an import declared too large is never opened" }
     check(DocumentCopies.importName(request) == "big.csv") { "a refused import still names its document" }
-    checkNotRunning(request, "a refused import")
+    checkNotRunning(request, "a refused import", cap + 1)
     // A lie in the other direction: the provider says small, the bytes say large.
     val liar = resolver.add(bytes(cap.toInt() + 1)) { declaredSize = 10 }
     check(copyImport(resolver, request, liar, File(directory, "b.csv"), cap) == DocumentTransfer.TOO_LARGE) {
@@ -511,7 +514,7 @@ private fun aCancelStopsTheProviderCallAnImportWaitsIn() {
     check(opening.finish() == DocumentTransfer.CANCELLED) { "a cancel during the open cancels the import" }
     check(!resolver.heldTooLong) { "every held provider call was cancelled" }
     check(directory.list()!!.isEmpty()) { "cancelled imports leave nothing" }
-    checkNotRunning(inOpen, "a cancelled import")
+    checkNotRunning(inOpen, "a cancelled import", 10L)
     DocumentCopies.forgetImport(inQuery)
     DocumentCopies.forgetImport(inOpen)
     checkNoTransferInFlight("imports cancelled in a provider call")
@@ -533,7 +536,7 @@ private fun aCancelMidCopyStopsAtTheNextChunk() {
     pause.proceed.release()
     check(copy.finish() == DocumentTransfer.CANCELLED) { "a cancel mid-copy cancels the import" }
     check(directory.list()!!.isEmpty()) { "an import cancelled mid-copy leaves nothing" }
-    checkNotRunning(request, "an import cancelled mid-copy")
+    checkNotRunning(request, "an import cancelled mid-copy", content.size.toLong())
     DocumentCopies.forgetImport(request)
     checkNoTransferInFlight("an import cancelled mid-copy")
 }

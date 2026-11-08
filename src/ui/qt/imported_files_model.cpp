@@ -155,6 +155,7 @@ make_fetch(const ImportJob& job) {
                                          : DecoderHost::DocumentLocalFailed;
         const ImportCopyProgress progress = job.transport->progress(job.id);
         copy.name = sanitized_import_name(progress.displayName, hint);
+        copy.size = progress.total;
         copy.noSpace = progress.noSpace;
         copy.bytes = copy.code == DecoderHost::DocumentCopied ? QFileInfo(copy.path).size() : 0;
         return copy;

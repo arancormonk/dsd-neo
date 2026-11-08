@@ -200,10 +200,14 @@ object DocumentCopies {
         signal?.cancel()
     }
 
-    /** Import [request]'s running copy: bytes copied, then the declared size (-1 when unknown); -1, -1 when none runs. */
+    /**
+     * Import [request]'s latest copy: bytes copied while it runs (-1 once it has ended), then the declared size (-1 when
+     * unknown); -1, -1 when there is none. The size outlives the copy, so a refused one can still say how large its
+     * document is.
+     */
     @JvmStatic
     fun importProgress(request: Long): LongArray = synchronized(inFlight) {
-        imports[request]?.copy?.takeIf { it.running }?.let { longArrayOf(it.bytes, it.declared) }
+        imports[request]?.copy?.let { longArrayOf(if (it.running) it.bytes else -1L, it.declared) }
     } ?: longArrayOf(-1L, -1L)
 
     /** The name the provider gave the document of import [request]'s latest copy, or null. */

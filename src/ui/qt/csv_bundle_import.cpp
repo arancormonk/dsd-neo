@@ -256,10 +256,13 @@ class CopyBudget {
         return std::min(backup::kMaxFileBytes, m_limit - m_copied);
     }
 
-    /* The limit a refused copy ran into: the bundle's once it is what holds the copy back. */
+    /*
+     * The limit a refused copy of a document of @p size bytes (-1: unknown) ran into: the bundle's once it is what held
+     * the copy back, unless the document is over the per-file limit anyway.
+     */
     qint64
-    limitFor(qint64 allowed) const {
-        return allowed < backup::kMaxFileBytes ? m_limit : backup::kMaxFileBytes;
+    limitFor(qint64 allowed, qint64 size) const {
+        return allowed < backup::kMaxFileBytes && size <= backup::kMaxFileBytes ? m_limit : backup::kMaxFileBytes;
     }
 
     qint64
@@ -289,7 +292,7 @@ fetchDocument(const ImportFetch& fetch, CopyBudget& budget, const QString& sourc
               CsvBundleImport& result, QString* name) {
     const qint64 cap = budget.cap();
     if (cap <= 0) {
-        tooLarge(result, budget.limitFor(cap), hint);
+        tooLarge(result, budget.limitFor(cap, -1), hint);
         return {};
     }
     const ImportFetchResult copy = fetch(documentReference(source), hint, cap);
@@ -298,7 +301,7 @@ fetchDocument(const ImportFetch& fetch, CopyBudget& budget, const QString& sourc
             result.copiedBytes = budget.add(copy.bytes);
             *name = copy.name;
             return copy.path;
-        case DecoderHost::DocumentTooLarge: tooLarge(result, budget.limitFor(cap), copy.name); return {};
+        case DecoderHost::DocumentTooLarge: tooLarge(result, budget.limitFor(cap, copy.size), copy.name); return {};
         case DecoderHost::DocumentLocalFailed:
             result.error = QStringLiteral("local");
             result.noSpace = copy.noSpace;

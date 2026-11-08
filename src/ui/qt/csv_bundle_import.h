@@ -27,6 +27,8 @@ struct ImportFetchResult {
     /** The document's name: its provider's, else the hint (sanitized_import_name()). */
     QString name;
     qint64 bytes = 0;
+    /** The document's size as its source declared it; -1 when unknown. */
+    qint64 size = -1;
     /** DocumentLocalFailed because this device ran out of space. */
     bool noSpace = false;
 };
