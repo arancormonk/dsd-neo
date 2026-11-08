@@ -41,7 +41,9 @@ Rectangle {
             Rectangle {
                 required property int index
                 required property var modelData
-                readonly property real textHeight: segmentLabel.implicitHeight
+                // The label's laid-out height (code_map "Qt QML editing
+                // convention"), at the size it is drawn at.
+                readonly property real textHeight: segmentLabel.height
                 onTextHeightChanged: Qt.callLater(control.measureLabels)
 
                 activeFocusOnTab: Navigation.allows(control) && enabled
@@ -71,15 +73,16 @@ Rectangle {
                 border.width: active ? 1 : 0
                 border.color: Theme.cyan
 
-                Text {
+                // Issue #646: whole words at every text size; the segment's
+                // name reads the label in full when it is elided.
+                WholeWordLabel {
                     id: segmentLabel
                     anchors.centerIn: parent
                     width: parent.width - 12
-                    wrapMode: Text.Wrap
                     horizontalAlignment: Text.AlignHCenter
                     text: modelData
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(13)
+                    basePixelSize: 13
+                    measureWeight: Font.DemiBold
                     font.weight: parent.active ? Font.DemiBold : Font.Normal
                     color: parent.active ? Theme.cyan : Theme.textSecondary
                 }

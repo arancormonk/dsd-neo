@@ -13428,6 +13428,17 @@ changes itself under the binding reading it. Deferred work in a component that c
 runs from a `Timer` it owns, not `Qt.callLater`, whose queued call outlives the object (`FollowLatest.qml`). The QML
 tests pin these with `failOnWarning`.
 
+Short control labels keep whole words (issue #646). `Text.Wrap` breaks a word wider than its line anywhere, so at large
+text a segment split "Automatic" or "simulcast" over two lines. `qml/WholeWordLabel.qml` (the `SegmentedControl`
+segments' label) wraps between words only. When its widest word does not fit at `Theme.fontSize(basePixelSize)` it is
+drawn at the largest whole pixel size at which every word fits, never below its normal-text size; a word that still does
+not fit makes the whole label one elided line (Qt elides only the last line it lays out), and the control's accessible
+name keeps the whole text. Words are measured at `measureWeight`, the heaviest weight the label is shown in, so
+selecting a segment never changes its size, and a `FontMetrics` measures at the rounded size a `Text` draws (`Qt.font`
+truncates a fractional size). The fit runs when the text, width or text size changes, never per frame; a control sizes
+from the label's `height`. Tests: `tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every
+`SegmentedControl` label set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
+
 Accessibility churn (issue #782). On Android, Qt 6.11.3's accessibility bridge turns each ObjectShow or ObjectHide into
 a main-thread task that makes 8 blocking round trips to the Qt thread, so a screen that creates or toggles accessible
 items on every metrics tick stalls the app (the bridge runs only under TalkBack now, "Android foundation integration

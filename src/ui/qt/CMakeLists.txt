@@ -181,6 +181,7 @@ qt_add_resources(
         qml/ReceivePolicySheet.qml
         qml/TunerMarker.qml
         qml/UiPanel.qml
+        qml/WholeWordLabel.qml
         qml/WizardScreen.qml
         fonts/IBMPlexSans-Regular.ttf
         fonts/IBMPlexSans-SemiBold.ttf
