@@ -22,6 +22,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
@@ -298,6 +299,48 @@ __wrap_dsd_tg_policy_clear_active_call(dsd_state* state, int slot) {
     }
     return __real_dsd_tg_policy_clear_active_call(state, slot);
 }
+
+#ifdef DSD_NEO_TEST_TG_POLICY_WRAP
+/* Allocation failures injected where the group importer stores a row: armed at N, the Nth row it stores from then on
+   (counting from 0) fails as an out-of-memory insert would. A detached load stores through
+   dsd_tg_policy_store_append(), a startup import through dsd_tg_policy_append_exact(). */
+static int g_group_row_fail_at = -1;
+static int g_group_row_stores = 0;
+static int g_group_clear_refused = 0;
+int __real_dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry);
+int __wrap_dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry);
+int __real_dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
+int __wrap_dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry);
+int __real_dsd_tg_policy_clear(dsd_state* state);
+int __wrap_dsd_tg_policy_clear(dsd_state* state);
+
+static void
+arm_group_row_failure(int at) {
+    g_group_row_fail_at = at;
+    g_group_row_stores = 0;
+}
+
+static int
+group_row_store_fails(void) {
+    return g_group_row_fail_at >= 0 && g_group_row_stores++ == g_group_row_fail_at;
+}
+
+int
+__wrap_dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_entry* entry) {
+    return group_row_store_fails() ? -1 : __real_dsd_tg_policy_store_append(store, entry);
+}
+
+int
+__wrap_dsd_tg_policy_append_exact(dsd_state* state, const dsd_tg_policy_entry* entry) {
+    return group_row_store_fails() ? -1 : __real_dsd_tg_policy_append_exact(state, entry);
+}
+
+/* Clearing allocates the empty list it installs; refused here as that allocation failing would be. */
+int
+__wrap_dsd_tg_policy_clear(dsd_state* state) {
+    return g_group_clear_refused ? -1 : __real_dsd_tg_policy_clear(state);
+}
+#endif
 
 /* An armed connect succeeds or fails without a socket; a success leaves the options as the
    real service's input switch does (issue #634): TCP input on the requested endpoint, named for it, a new stream. */
@@ -23654,6 +23697,276 @@ test_dmr_policy_command_ticks_owner(int command) {
 }
 #endif
 
+/* The rows, path, table version and temporary avoid a refused group list load must leave as they were. */
+typedef struct {
+    char path[DSD_TEST_PATH_MAX];
+    uint64_t context;
+    unsigned int generation;
+} group_list_mark;
+
+static void
+group_list_mark_take(const dsd_opts* opts, const dsd_state* state, group_list_mark* mark) {
+    DSD_SNPRINTF(mark->path, sizeof mark->path, "%s", opts->group_in_file);
+    dsd_tg_policy_table_version(state, &mark->context, &mark->generation);
+}
+
+static int
+expect_group_list_kept(const char* what, const dsd_opts* opts, const dsd_state* state, const group_list_mark* mark) {
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(state, &context, &generation);
+    dsd_tg_policy_lookup lookup;
+    int rc = expect_str(what, opts->group_in_file, mark->path);
+    rc |= expect_true(what, context == mark->context && generation == mark->generation);
+    rc |= expect_true(what, dsd_tg_policy_session_avoid_contains(state, 300));
+    rc |= expect_int(what, dsd_tg_policy_lookup_id(state, 100, &lookup), 0);
+    rc |= expect_str(what, lookup.entry.name, "Dispatch");
+    return rc;
+}
+
+static int
+make_group_file(char* path, size_t size, const char* prefix, const char* content) {
+    const int fd = dsd_test_mkstemp(path, size, prefix);
+    if (fd < 0) {
+        return 1;
+    }
+    dsd_close(fd);
+    return content ? write_file_bytes(path, content, strlen(content)) : remove(path) != 0;
+}
+
+/* A live import replaces the whole list, so a file that does not hold one is refused with its reason, keeping the
+   rows, their file, the table version and the temporary avoids (spec R1): an Excel CSV saved with ';' separators, a
+   header with no rows, a missing file. The toasts lead with the outcome and the counts (R5). */
+static int
+test_group_import_refuses_unusable_files(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char good[DSD_TEST_PATH_MAX], excel[DSD_TEST_PATH_MAX], header[DSD_TEST_PATH_MAX], missing[DSD_TEST_PATH_MAX];
+    const char* good_csv = "id,mode,name\n100,A,Dispatch\n200,A,Fire\nnot a row\n";
+    const char* excel_csv = "id;mode;name\n100;B;Dispatch\n200;B;Fire\n";
+    const char* header_csv = "id,mode,name\n";
+    int rc = make_group_file(good, sizeof good, "dsd_r1_good", good_csv);
+    rc |= make_group_file(excel, sizeof excel, "dsd_r1_excel", excel_csv);
+    rc |= make_group_file(header, sizeof header, "dsd_r1_header", header_csv);
+    rc |= make_group_file(missing, sizeof missing, "dsd_r1_missing", NULL);
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, good);
+    rc |= expect_int("R1 good import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R1 good import toast counts rows", state.ui_msg,
+                     "Applied: Group list imported -> 2 rows, 1 skipped");
+    rc |= expect_str("R1 good import takes the path", opts.group_in_file, good);
+    rc |= expect_int("R1 seed temporary avoid", dsd_tg_policy_session_avoid_add(&state, 300), 0);
+    group_list_mark mark;
+    group_list_mark_take(&opts, &state, &mark);
+
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, excel);
+    rc |= expect_int("R1 ';' import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R1 ';' import toast", state.ui_msg,
+                     "Failed: Group list import -> no usable rows (2 skipped); list unchanged");
+    rc |= expect_group_list_kept("R1 ';' import keeps the list", &opts, &state, &mark);
+
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, header);
+    rc |= expect_int("R1 header-only import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R1 header-only import toast", state.ui_msg,
+                     "Failed: Group list import -> no usable rows; list unchanged");
+    rc |= expect_group_list_kept("R1 header-only import keeps the list", &opts, &state, &mark);
+
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, missing);
+    rc |= expect_int("R1 missing import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("R1 missing import toast", state.ui_msg,
+                     "Failed: Group list import -> file not found; list unchanged");
+    rc |= expect_group_list_kept("R1 missing import keeps the list", &opts, &state, &mark);
+
+    // The next saved change still goes to the list's own file, and the refused files are untouched.
+    dsd_app_tg_listen_payload edit = {.id_start = 200, .id_end = 200, .listen = 0, .table_index = -1};
+    rc |= expect_true("R1 edit after refusals queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R1 edit after refusals drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(good, "id,mode,name\n100,A,Dispatch\n200,B,Fire\n");
+    rc |= expect_file_bytes(excel, excel_csv);
+    rc |= expect_file_bytes(header, header_csv);
+    freeState(&state);
+    (void)remove(good);
+    (void)remove(excel);
+    (void)remove(header);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_TG_POLICY_WRAP
+/* A row the importer cannot store makes a live import refuse the whole file (spec R1): adopting the rows that did
+   store would let the next saved change write the partial table over the full file. */
+static int
+test_group_import_refuses_a_partial_load(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char good[DSD_TEST_PATH_MAX], next[DSD_TEST_PATH_MAX];
+    const char* next_csv = "id,mode,name\n500,A,Five\n600,A,Six\n700,A,Seven\n";
+    int rc = make_group_file(good, sizeof good, "dsd_r1_alloc_good", "id,mode,name\n100,A,Dispatch\n");
+    rc |= make_group_file(next, sizeof next, "dsd_r1_alloc_next", next_csv);
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, good);
+    rc |= expect_int("R1 alloc seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("R1 alloc seed temporary avoid", dsd_tg_policy_session_avoid_add(&state, 300), 0);
+    group_list_mark mark;
+    group_list_mark_take(&opts, &state, &mark);
+
+    arm_group_row_failure(1);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, next);
+    rc |= expect_int("R1 alloc import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    arm_group_row_failure(-1);
+    rc |=
+        expect_str("R1 alloc import toast", state.ui_msg, "Failed: Group list import -> out of memory; list unchanged");
+    rc |= expect_group_list_kept("R1 alloc import keeps the list", &opts, &state, &mark);
+    rc |= expect_int("R1 alloc import adopts no row", (int)dsd_tg_policy_entry_count(&state), 1);
+    rc |= expect_file_bytes(next, next_csv);
+    freeState(&state);
+    (void)remove(good);
+    (void)remove(next);
+    return rc;
+}
+
+/* Startup keeps a list it could only partly store, for decoding, but never writes it back (spec R1): a saved change
+   or an export stays in the session and says why, until a complete import of the file replaces the list. */
+static int
+test_group_startup_partial_load_is_not_saved(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX], exported[DSD_TEST_PATH_MAX];
+    const char* csv = "id,mode,name\n100,A,Dispatch\n200,A,Fire\n300,A,EMS\n";
+    int rc = make_group_file(path, sizeof path, "dsd_r1_startup", csv);
+    rc |= make_group_file(exported, sizeof exported, "dsd_r1_startup_export", NULL);
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", path);
+    arm_group_row_failure(1);
+    rc |= expect_int("startup partial load keeps decoding", csvGroupImport(&opts, &state), 0);
+    arm_group_row_failure(-1);
+    rc |= expect_int("startup partial load keeps the rows it stored", (int)dsd_tg_policy_entry_count(&state), 2);
+
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("incomplete list edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("incomplete list edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("incomplete list edit applies", dsd_tg_policy_lookup_id(&state, 100, &lookup), 0);
+    rc |= expect_str("incomplete list edit is in the session", lookup.entry.mode, "B");
+    rc |= expect_str("incomplete list edit toast", state.ui_msg,
+                     "Talkgroup change kept for this session only; group list incomplete, reload it");
+    rc |= expect_file_bytes(path, csv);
+
+    union {
+        unsigned char bytes[sizeof(dsd_app_tg_export_payload) + DSD_TEST_PATH_MAX];
+        // cppcheck-suppress unusedStructMember -- this member provides alignment for the payload header.
+        uint64_t align;
+    } storage = {0};
+
+    dsd_app_tg_export_payload* exp = (dsd_app_tg_export_payload*)storage.bytes;
+    DSD_SNPRINTF(exp->path, sizeof storage.bytes - offsetof(dsd_app_tg_export_payload, path), "%s", exported);
+    dsd_tg_policy_table_version(&state, &exp->policy_context, &exp->policy_generation);
+    dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, exp, sizeof storage);
+    rc |= expect_int("incomplete list export drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("incomplete list export toast", state.ui_msg,
+                     "Talkgroup export refused: group list incomplete; reload it");
+    rc |= expect_str("incomplete list export keeps the path", opts.group_in_file, path);
+    FILE* written = dsd_fopen_existing_regular_file(exported, "r");
+    rc |= expect_true("incomplete list export writes no file", written == NULL);
+    if (written) {
+        (void)fclose(written);
+    }
+
+    // A complete import of the file ends it: the list stands for its file again, and changes are saved.
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("complete reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("complete reload toast", state.ui_msg, "Applied: Group list imported -> 3 rows");
+    rc |= expect_true("complete reload edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("complete reload edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(path, "id,mode,name\n100,B,Dispatch\n200,A,Fire\n300,A,EMS\n");
+    freeState(&state);
+    (void)remove(path);
+    (void)remove(exported);
+    return rc;
+}
+
+/* Clear forgets the list's file only once the list is gone: a clear that fails keeps both (spec R1). */
+static int
+test_group_clear_failure_keeps_the_path(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    const char* csv = "id,mode,name\n100,A,Dispatch\n";
+    int rc = make_group_file(path, sizeof path, "dsd_r1_clear", csv);
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("clear seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_group_clear_refused = 1;
+    post_empty(DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR);
+    rc |= expect_int("failed clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_group_clear_refused = 0;
+    rc |= expect_str("failed clear toast", state.ui_msg, "Failed: Group list clear -> out of memory; list unchanged");
+    rc |= expect_str("failed clear keeps the path", opts.group_in_file, path);
+    rc |= expect_int("failed clear keeps the rows", (int)dsd_tg_policy_entry_count(&state), 1);
+    // The kept pair still saves together.
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("edit after failed clear queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("edit after failed clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(path, "id,mode,name\n100,B,Dispatch\n");
+    freeState(&state);
+    (void)remove(path);
+    return rc;
+}
+#endif
+
+/* A startup list from a file none of whose rows loaded (an Excel CSV with ';' separators) decodes as empty but is not
+   written back: the first saved change would otherwise replace the user's rows with that one row. A header-only file
+   is an empty list on purpose, and saves as usual. */
+static int
+test_group_startup_unusable_file_is_not_saved(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char excel[DSD_TEST_PATH_MAX], header[DSD_TEST_PATH_MAX];
+    const char* excel_csv = "id;mode;name\n100;A;Dispatch\n200;A;Fire\n";
+    int rc = make_group_file(excel, sizeof excel, "dsd_r1_startup_excel", excel_csv);
+    rc |= make_group_file(header, sizeof header, "dsd_r1_startup_header", "id,mode,name\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", excel);
+    rc |= expect_int("startup ';' file loads", csvGroupImport(&opts, &state), 0);
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("startup ';' edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("startup ';' edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(excel, excel_csv);
+    rc |= expect_contains("startup ';' edit toast", state.ui_msg, "group list incomplete");
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", header);
+    rc |= expect_int("startup header-only file loads", csvGroupImport(&opts, &state), 0);
+    rc |= expect_true("startup header-only edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("startup header-only edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(header, "id,mode,name\n100,B,\n");
+    freeState(&state);
+    (void)remove(excel);
+    (void)remove(header);
+    return rc;
+}
+
 static int
 test_config_group_path_reloads_before_persist(int scoped) {
     static dsd_opts opts;
@@ -28409,6 +28722,13 @@ main(void) {
     rc |= test_patched_call_user_blocks_target_supergroup();
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
+    rc |= test_group_import_refuses_unusable_files();
+    rc |= test_group_startup_unusable_file_is_not_saved();
+#ifdef DSD_NEO_TEST_TG_POLICY_WRAP
+    rc |= test_group_import_refuses_a_partial_load();
+    rc |= test_group_startup_partial_load_is_not_saved();
+    rc |= test_group_clear_failure_keeps_the_path();
+#endif
     rc |= test_lockout_and_skip_pass_only_an_edacs_call();
     rc |= test_lockout_refuses_a_private_call();
     rc |= test_skip_commands(0);

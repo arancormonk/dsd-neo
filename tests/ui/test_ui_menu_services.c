@@ -475,6 +475,20 @@ dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out, dsd_t
     return -1;
 }
 
+size_t
+dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end) {
+    (void)state;
+    (void)start;
+    (void)end;
+    return 0;
+}
+
+int
+dsd_tg_policy_call_skip_empty(const dsd_state* state) {
+    (void)state;
+    return 1;
+}
+
 void
 dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded) {
     (void)state;
@@ -485,12 +499,13 @@ dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded) {
  * owes the caller is that the policy was asked to empty itself, and the emptying
  * itself belongs to CORE_TALKGROUP_POLICY. */
 static int g_tg_policy_clear_calls = 0;
+static int g_tg_policy_clear_result = 0;
 
 int
 dsd_tg_policy_clear(dsd_state* state) {
     (void)state;
     g_tg_policy_clear_calls++;
-    return 0;
+    return g_tg_policy_clear_result;
 }
 
 int
@@ -2285,8 +2300,10 @@ test_file_network_and_import_failure_contracts(void) {
     g_chan_import_result = -1;
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);
     rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
-    rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv"), -1);
+    svc_group_list_result group_result;
+    rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv", &group_result), -1);
     rc |= expect_str("failed group import keeps path", opts.group_in_file, "");
+    rc |= expect_int("group import failure names a missing file", (int)group_result.status, SVC_GROUP_LIST_NOT_FOUND);
     rc |= expect_int("keys dec import failure", svc_import_keys_dec(&opts, &state, "keys.csv"), -1);
     rc |= expect_str("keys dec import path stored", opts.key_in_file, "keys.csv");
     rc |= expect_int("keys hex import failure", svc_import_keys_hex(&opts, &state, "keys.hex"), -1);
@@ -2708,6 +2725,11 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     opts.trunk_scan_enabled = 0;
 
     DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "groups.csv");
+    // A clear that could not empty the list keeps the file it is saved to: the rows and their file go together.
+    g_tg_policy_clear_result = -1;
+    rc |= expect_int("group list clear failure", svc_clear_group_list(&opts, &state), -1);
+    rc |= expect_str("failed group list clear keeps the path", opts.group_in_file, "groups.csv");
+    g_tg_policy_clear_result = 0;
     const int clears_before = g_tg_policy_clear_calls;
     rc |= expect_int("group list clear ok", svc_clear_group_list(&opts, &state), 0);
     rc |= expect_str("group list clear forgets the path", opts.group_in_file, "");

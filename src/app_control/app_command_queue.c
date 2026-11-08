@@ -3041,19 +3041,52 @@ ui_cmd_handle_export_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct
     return result;
 }
 
+/* Why a group list load changed nothing, as the end of a toast or log line. */
+static const char*
+group_list_refusal_text(svc_group_list_status status) {
+    switch (status) {
+        case SVC_GROUP_LIST_NOT_FOUND: return "file not found";
+        case SVC_GROUP_LIST_UNREADABLE: return "file not readable";
+        case SVC_GROUP_LIST_NO_MEMORY: return "out of memory";
+        case SVC_GROUP_LIST_NO_USABLE_ROWS: return "no usable rows";
+        default: return "invalid path";
+    }
+}
+
+/* An import's (or reload's) feedback: the outcome and its counts in the toast, which ui_msg must hold; the path, and
+   whether temporary avoids and call skips went with the old list, in the log. Each skipped row was logged as it was
+   read. @p verb is "import" or "reload", @p done its past tense. */
+static void
+group_list_load_feedback(dsd_state* state, const char* verb, const char* done, const char* path,
+                         const svc_group_list_result* r) {
+    char skipped[32] = "";
+    if (r->rows.skipped > 0u) {
+        DSD_SNPRINTF(skipped, sizeof skipped, "%u skipped", r->rows.skipped);
+    }
+    if (r->status == SVC_GROUP_LIST_LOADED) {
+        ui_set_toast(state, 3, "Applied: Group list %s -> %u %s%s%s", done, r->rows.accepted,
+                     r->rows.accepted == 1u ? "row" : "rows", skipped[0] ? ", " : "", skipped);
+        LOG_INFO("NOTICE: Group list %s from %s: %u rows loaded, %u skipped%s.\n", done, path, r->rows.accepted,
+                 r->rows.skipped, r->cleared_temporary ? "; temporary TG avoids and call skips cleared" : "");
+        return;
+    }
+    const char* why = group_list_refusal_text(r->status);
+    const int show_skipped = r->status == SVC_GROUP_LIST_NO_USABLE_ROWS && skipped[0];
+    ui_set_toast(state, 4, "Failed: Group list %s -> %s%s%s%s; list unchanged", verb, why, show_skipped ? " (" : "",
+                 show_skipped ? skipped : "", show_skipped ? ")" : "");
+    LOG_WARN("WARNING: Group list not %s from %s: %s; the list in use is unchanged.\n", done, path, why);
+}
+
 static int
 ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
-            int rc = svc_import_group_list(opts, state, path);
+            svc_group_list_result loaded;
+            int rc = svc_import_group_list(opts, state, path, &loaded);
             result = ui_cmd_apply_status_from_service_rc(rc);
-            if (rc == 0) {
-                ui_set_toast(state, 3, "Applied: Group list reloaded -> %s", path);
-            } else {
-                ui_set_toast(state, 4, "Failed: Group list reload -> %s", path);
-            }
+            group_list_load_feedback(state, "import", "imported", path, &loaded);
         }
     }
     return result;
@@ -3146,7 +3179,8 @@ ui_cmd_handle_import_group_list_clear(dsd_opts* opts, dsd_state* state, const st
     if (rc == 0) {
         ui_set_toast(state, 3, "Applied: Group list cleared");
     } else {
-        ui_set_toast(state, 4, "Failed: Group list clear");
+        // Clearing allocates the empty list, so memory is all it can run out of.
+        ui_set_toast(state, 4, "Failed: Group list clear -> out of memory; list unchanged");
     }
     return ui_cmd_apply_status_from_service_rc(rc);
 }
@@ -6759,7 +6793,7 @@ rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload*
         (void)svc_clear_channel_map(opts, state);
     }
     if (p->has_group) {
-        if (svc_import_group_list(opts, state, p->group_path) != 0) {
+        if (svc_import_group_list(opts, state, p->group_path, NULL) != 0) {
             failed |= RR_APPLY_GROUP_FAILED;
         }
     } else {
@@ -7243,7 +7277,13 @@ tg_listen_persist(dsd_opts* opts, dsd_state* state) {
     if (dsd_scan_groups_row_active(state)) {
         return;
     }
-    if (dsd_tg_policy_write_group_file(opts, state) != 0) {
+    const int rc = dsd_tg_policy_write_group_file(opts, state);
+    if (rc == 1) {
+        LOG_WARN("WARNING: Talkgroup change not saved to '%s': the group list loaded incomplete. Reload the list, then "
+                 "make the change again.\n",
+                 opts->group_in_file);
+        ui_set_toast(state, 4, "Talkgroup change kept for this session only; group list incomplete, reload it");
+    } else if (rc != 0) {
         LOG_WARN("WARNING: Talkgroup list changes could not be written to '%s'.\n", opts->group_in_file);
         ui_set_toast(state, 4, "Talkgroup change kept for this session only");
     }
@@ -7435,6 +7475,11 @@ apply_cmd_tg_list_export(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     DSD_SNPRINTF(output->group_in_file, sizeof output->group_in_file, "%s", path);
     int rc = dsd_tg_policy_write_group_file(output, state);
     free(output);
+    if (rc == 1) {
+        // The export would become the list's file, and the list is missing rows of the one it came from.
+        ui_set_toast(state, 4, "Talkgroup export refused: group list incomplete; reload it");
+        return UI_CMD_APPLY_FAILED;
+    }
     if (rc != 0) {
         ui_set_toast(state, 3, "Talkgroup export failed");
         return UI_CMD_APPLY_FAILED;
@@ -9165,7 +9210,7 @@ cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUs
     if (strcmp(opts->group_in_file, cfg->trunk_group_csv) == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (svc_load_group_list(opts, cfg->trunk_group_csv, groups) != 0) {
+    if (svc_load_group_list(opts, cfg->trunk_group_csv, groups, NULL) != 0) {
         ui_set_toast(state, 4, "Config not applied: group list could not be loaded");
         return UI_CMD_APPLY_FAILED;
     }

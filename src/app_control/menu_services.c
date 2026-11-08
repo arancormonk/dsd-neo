@@ -954,8 +954,12 @@ svc_clear_group_list(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
+    // The path goes only with the rows: a failed clear keeps the list, and the file it is saved to.
+    if (dsd_tg_policy_clear(state) != 0) {
+        return -1;
+    }
     opts->group_in_file[0] = '\0';
-    return dsd_tg_policy_clear(state);
+    return 0;
 }
 
 int
@@ -1000,12 +1004,35 @@ svc_clear_src_list(dsd_opts* opts, dsd_state* state) {
     return dsd_source_alias_clear(state);
 }
 
+/* Why the core refused a file, from what its read found. */
+static svc_group_list_status
+group_list_refusal(const dsd_tg_policy_load_report* rows) {
+    if (rows->not_found) {
+        return SVC_GROUP_LIST_NOT_FOUND;
+    }
+    if (rows->unreadable) {
+        return SVC_GROUP_LIST_UNREADABLE;
+    }
+    if (rows->failed == 0u && rows->accepted == 0u && rows->skipped > 0u) {
+        return SVC_GROUP_LIST_NO_USABLE_ROWS;
+    }
+    return SVC_GROUP_LIST_NO_MEMORY;
+}
+
 int
-svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out) {
+svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out, svc_group_list_result* result) {
+    svc_group_list_result local;
+    svc_group_list_result* r = result ? result : &local;
+    DSD_MEMSET(r, 0, sizeof *r);
     if (!opts || !path || !*path || !out || strlen(path) >= sizeof opts->group_in_file) {
+        r->status = SVC_GROUP_LIST_BAD_PATH;
         return -1;
     }
-    return dsd_tg_policy_load_group_file(path, out, NULL);
+    if (dsd_tg_policy_load_group_file(path, out, &r->rows) != 0) {
+        r->status = group_list_refusal(&r->rows);
+        return -1;
+    }
+    return 0;
 }
 
 void
@@ -1019,11 +1046,21 @@ svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_t
 }
 
 int
-svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path) {
+svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path, svc_group_list_result* result) {
+    svc_group_list_result local;
+    svc_group_list_result* r = result ? result : &local;
     dsd_tg_policy_store* loaded = NULL;
-    if (!state || svc_load_group_list(opts, path, &loaded) != 0) {
+    if (svc_load_group_list(state ? opts : NULL, path, &loaded, r) != 0) {
         return -1;
     }
+    // A file with nothing to load is a wrong file far more often than an empty list; Clear empties the list.
+    if (r->rows.accepted == 0u) {
+        r->status = SVC_GROUP_LIST_NO_USABLE_ROWS;
+        dsd_tg_policy_release(loaded);
+        return -1;
+    }
+    r->cleared_temporary =
+        dsd_tg_policy_session_avoid_count(state, 0u, UINT32_MAX) > 0u || !dsd_tg_policy_call_skip_empty(state);
     svc_install_group_list(opts, state, path, loaded);
     dsd_tg_policy_release(loaded);
     return 0;

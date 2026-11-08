@@ -9361,7 +9361,7 @@ test_config_stopping_the_scan_ends_its_calls_under_the_old_groups(void) {
         (void)remove(new_groups);
         return 1;
     }
-    rc |= expect_case(what, "the old groups are imported", svc_import_group_list(opts, state, old_groups) == 0);
+    rc |= expect_case(what, "the old groups are imported", svc_import_group_list(opts, state, old_groups, NULL) == 0);
     rc |= expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
     rc |= expect_case(what, "a call is heard", open_unrendered_call(state, tg) == 0);
     static dsdneoUserConfig cfg;

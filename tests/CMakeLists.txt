@@ -9212,7 +9212,10 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_command_queue
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+        PRIVATE
+            DSD_NEO_TEST_IO_CONTROL_WRAP
+            DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+            DSD_NEO_TEST_TG_POLICY_WRAP
     )
     target_link_options(
         dsd-neo_test_app_command_queue
@@ -9229,6 +9232,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_tg_policy_clear_active_call"
+            "LINKER:--wrap=dsd_tg_policy_store_append"
+            "LINKER:--wrap=dsd_tg_policy_append_exact"
+            "LINKER:--wrap=dsd_tg_policy_clear"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
             "LINKER:--wrap=svc_tcp_connect_audio"

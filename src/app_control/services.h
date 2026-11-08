@@ -294,12 +294,40 @@ int svc_channel_map_refused_rows(const dsd_opts* opts, const dsd_state* state, c
  * @return 1 when advice was written to @p out, 0 when there is none, -1 on a NULL or empty buffer.
  */
 int svc_tetra_rate_advice(const dsd_opts* opts, const dsd_state* state, int brief, char* out, size_t out_size);
-/** @brief Import a group list CSV into runtime state; a failure keeps the live list and its path. */
-int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
+
+/** Why a live group list load did or did not take the file. */
+typedef enum {
+    SVC_GROUP_LIST_LOADED = 0,     /**< loaded */
+    SVC_GROUP_LIST_BAD_PATH,       /**< no path, or one too long to keep as the list's file */
+    SVC_GROUP_LIST_NOT_FOUND,      /**< no such file */
+    SVC_GROUP_LIST_UNREADABLE,     /**< the file could not be opened, or a read failed part way */
+    SVC_GROUP_LIST_NO_MEMORY,      /**< a row, or the list, could not be stored */
+    SVC_GROUP_LIST_NO_USABLE_ROWS, /**< data rows none of which loaded; for an import, also a file with none at all */
+} svc_group_list_status;
+
+/** What a live group list load did: its status, what the read found, and whether taking the file cleared temporary TG
+ * avoids or call skips (a new list resets them). */
+typedef struct {
+    svc_group_list_status status;
+    dsd_tg_policy_load_report rows;
+    uint8_t cleared_temporary;
+} svc_group_list_result;
+
+/**
+ * @brief Import a group list CSV into runtime state; a failure keeps the live list and its path.
+ *
+ * Refuses, changing nothing (rows, path, generations, temporary avoids and call skips), a file that cannot be read in
+ * full, a row that cannot be stored, and a file with no usable rows: Clear is how a list is emptied. @p result (may be
+ * NULL) says what happened either way. Returns 0 when the file became the live list, -1 otherwise.
+ */
+int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path, svc_group_list_result* result);
 /** svc_import_group_list() in two steps, for a caller that must know the file loads before it changes anything: the
  * load changes nothing (0 with a new reference in @p out to release, -1 untouched); the install makes @p loaded the
- * live list, saved to @p path, and cannot fail (dsd_tg_policy_load_group_file(), dsd_tg_policy_adopt_group_file()). */
-int svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out);
+ * live list, saved to @p path, and cannot fail (dsd_tg_policy_load_group_file(), dsd_tg_policy_adopt_group_file()).
+ * The load refuses a file it cannot read in full or store, as an import does, but takes one with no data rows at all
+ * (a list emptied on purpose): refusing that is the import's call. @p result may be NULL. */
+int svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out,
+                        svc_group_list_result* result);
 void svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_tg_policy_store* loaded);
 /** Adopt a nonempty source alias CSV; failure preserves the live list and path. */
 int svc_import_src_list(dsd_opts* opts, dsd_state* state, const char* path);
@@ -334,7 +362,7 @@ int svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path);
  */
 /** @brief Drop the runtime channel map, its LCN list and its trust bytes. */
 int svc_clear_channel_map(dsd_opts* opts, dsd_state* state);
-/** @brief Drop every loaded talkgroup entry. */
+/** @brief Drop every loaded talkgroup entry, then forget the list's file; a failure keeps both. */
 int svc_clear_group_list(dsd_opts* opts, dsd_state* state);
 /** Clear the source alias list and its recorded path. */
 int svc_clear_src_list(dsd_opts* opts, dsd_state* state);

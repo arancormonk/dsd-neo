@@ -2860,7 +2860,8 @@ test_ui_import_and_dsp_output_commands_report_service_results(void) {
     applied = dsd_app_drain_cmds(opts, state);
     rc |= expect_int_eq("group import command drains", applied, 1);
     rc |= expect_true("failed group import preserves configured path", opts->group_in_file[0] == '\0');
-    rc |= expect_true("group import failure toast", strstr(state->ui_msg, "Failed: Group list reload") != NULL);
+    rc |= expect_true("group import failure toast",
+                      strcmp(state->ui_msg, "Failed: Group list import -> file not found; list unchanged") == 0);
 
     const char* missing_dec = "./missing-keys-dec.csv";
     dsd_app_command_submit(DSD_APP_CMD_IMPORT_KEYS_DEC, missing_dec, strlen(missing_dec) + 1U);
