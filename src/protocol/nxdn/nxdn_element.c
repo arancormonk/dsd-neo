@@ -98,9 +98,9 @@ static void nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state,
                                          size_t elements_bits);
 static void nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                          size_t elements_bits);
-static void nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+static void nxdn_element_handle_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                           size_t elements_bits);
-static void nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+static void nxdn_element_handle_adj_site(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                          size_t elements_bits);
 static void nxdn_element_handle_tx_release(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                            size_t elements_bits);
@@ -406,6 +406,9 @@ nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* el
 
 static void
 nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
+    if (state->nxdn_frame_foreign) {
+        return; // another control channel's broadcast: this one's sync is not refreshed by it
+    }
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
 }
@@ -442,14 +445,16 @@ nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8
  * frame took; a SITE_INFO, too long for a FACCH1, on a frame read as Type-D came through a layout of Type-D's own. */
 static void
 nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    dsd_nxdn_note_type_c(state);
+    if (!state->nxdn_frame_foreign) {
+        dsd_nxdn_note_type_c(state);
+    }
     NXDN_decode_cch_info(opts, state, elements, elements_bits);
     nxdn_element_mark_control_sync(opts, state);
 }
 
 static void
-nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+nxdn_element_handle_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign) {
         dsd_nxdn_note_type_c(state);
     }
     NXDN_decode_site_info(opts, state, elements, elements_bits);
@@ -457,7 +462,7 @@ nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* e
 }
 
 static void
-nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+nxdn_element_handle_adj_site(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     /* On a Type-D (IDAS) RTCH2 the same type code is a traffic channel's ADJ_SITE_INFO (NXDN TS 1-E §6.4.3.2), with
      * a layout of its own, and says nothing of where a control channel is. */
     if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
@@ -537,9 +542,6 @@ nxdn_element_dispatch_handler(uint8_t message_type) {
         {0x04, nxdn_element_handle_call_assignment},
         {0x0E, nxdn_element_handle_call_assignment},
         {0x17, nxdn_element_handle_dst_info},
-        {0x1A, nxdn_element_handle_cch_info},
-        {0x18, nxdn_element_handle_site_info},
-        {0x1B, nxdn_element_handle_adj_site},
         {0x07, nxdn_element_handle_tx_release},
         {0x08, nxdn_element_handle_tx_release},
         {0x01, nxdn_element_handle_vcall},
@@ -555,6 +557,24 @@ nxdn_element_dispatch_handler(uint8_t message_type) {
     }
 
     return NULL;
+}
+
+/* SITE_INFO, SRV_INFO, CCH_INFO and ADJ_SITE_INFO: decoded for the log whoever sent them, their handlers keep only
+ * what this site's own say (nxdn_site_broadcast_is_this_site()). */
+static int
+nxdn_element_is_site_broadcast(uint8_t message_type) {
+    return message_type >= 0x18U && message_type <= 0x1BU;
+}
+
+static void
+nxdn_element_handle_site_broadcast(dsd_opts* opts, dsd_state* state, uint8_t message_type, const uint8_t* elements,
+                                   size_t elements_bits) {
+    switch (message_type) {
+        case 0x18U: nxdn_element_handle_site_info(opts, state, elements, elements_bits); break;
+        case 0x19U: nxdn_element_handle_srv_info(opts, state, elements, elements_bits); break;
+        case 0x1AU: nxdn_element_handle_cch_info(opts, state, elements, elements_bits); break;
+        default: nxdn_element_handle_adj_site(opts, state, elements, elements_bits); break;
+    }
 }
 
 void
@@ -593,6 +613,13 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
 
     nxdn_message_type(opts, state, MessageTypeExt);
 
+    if (state->nxdn_frame_foreign && !nxdn_element_is_site_broadcast(MessageTypeDispatch)) {
+        /* Another control channel's message on the followed traffic channel: its grants, calls and releases are that
+           channel's, so none is followed or recorded here. */
+        DSD_FPRINTF(stderr, " (other channel's control; log only)");
+        return;
+    }
+
     if (MessageTypeExt == 0xE7U) {
         /* Six characters from element 24. */
         if (nxdn_element_has_bits("ARIB ALIAS", elements_bits, 72U)) {
@@ -608,8 +635,8 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
         return;
     }
 
-    if (MessageTypeDispatch == 0x19U) {
-        nxdn_element_handle_srv_info(opts, state, ElementsContent, elements_bits);
+    if (nxdn_element_is_site_broadcast(MessageTypeDispatch)) {
+        nxdn_element_handle_site_broadcast(opts, state, MessageTypeDispatch, ElementsContent, elements_bits);
         return;
     }
 
@@ -1339,11 +1366,12 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
  * Whether a Type-C SITE_INFO or SRV_INFO naming @p location_id speaks for this site. While no traffic channel is
  * followed the receiver is on the control channel it chose, a composite one included, so its broadcast latches this
  * site (dsd_nxdn_site_latch()); while one is followed, only this site's own broadcast on the traffic channel counts.
- * A SITE_INFO on a frame read as Type-D is not a Type-C site's (nxdn_element_handle_site_info()).
+ * A SITE_INFO on a frame read as Type-D is not a Type-C site's (nxdn_element_handle_site_info()), and another
+ * control channel's broadcast heard on the followed channel (dsd_state::nxdn_frame_foreign) is that channel's.
  */
 static int
 nxdn_site_broadcast_is_this_site(const dsd_opts* opts, dsd_state* state, uint32_t location_id) {
-    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D || state->nxdn_frame_foreign) {
         return 0;
     }
     const nxdn_location loc = nxdn_location_parse(location_id);
@@ -2351,7 +2379,7 @@ nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
 static int
 nxdn_cch_info_names_this_control_channel(const dsd_state* state, uint32_t location_id, uint8_t channel1sts) {
     const uint8_t flags = channel1sts & 0x3CU;
-    return dsd_nxdn_site_is(state, location_id) && (flags == 0x20U || flags == 0x10U);
+    return !state->nxdn_frame_foreign && dsd_nxdn_site_is(state, location_id) && (flags == 0x20U || flags == 0x10U);
 }
 
 /* A channel a CCH_INFO names: this site's control channel is resolved and kept in the channel map; any other is
@@ -2533,7 +2561,7 @@ NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Mess
     }
 
     //clear stale active channel listing -- consider best placement for this (NXDN Type C Trunking -- inside SRV_INFO)
-    if (dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
+    if (!state->nxdn_frame_foreign && dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
         state->nxdn_grant_chan = 0;
         state->nxdn_grant_freq = 0;
     }

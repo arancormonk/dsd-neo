@@ -86,6 +86,8 @@ typedef struct {
 
     /* The LICH read as a composite control channel's (RTCH_C) rather than a Type-D RTCH2's (nxdn_apply_lich_profile()). */
     int composite;
+    /* Another channel's control traffic heard on the followed traffic channel (dsd_nxdn_control_heard_is_foreign()). */
+    int foreign;
 
     uint8_t lich_rf;
     uint8_t direction;
@@ -720,9 +722,14 @@ nxdn_finalize_sync_reject(dsd_state* state) {
 }
 
 /* A frame whose channels decoded on the carrier it was read on: a confirmed transmission keeps the carrier active, and
-   its voice plays. */
+   its voice plays. Another channel's control traffic on the followed traffic channel does neither: the call followed is
+   not on it, and its voice is another call's. */
 static void
 nxdn_finish_decoded_frame(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (ctx->foreign) {
+        DSD_FPRINTF(stderr, "\n");
+        return;
+    }
     if (nxdn_confirm_is_confirmed(state)) {
         nxdn_mark_carrier_sync_active(state);
         if (opts->scanner_mode == 1) {
@@ -801,8 +808,13 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
     nxdn_update_sacch_mode(state, ctx.lich);
     state->nxdn_frame_channel = nxdn_frame_channel_of(&ctx);
+    /* Decided before any channel of the frame decodes: none of its checks may confirm the transmission, and none of its
+       messages may name, follow or play anything here. */
+    ctx.foreign = (ctx.cac || ctx.composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
+    state->nxdn_frame_foreign = (uint8_t)ctx.foreign;
     const int left_carrier = nxdn_decode_control_channels(opts, state, &ctx);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
+    state->nxdn_frame_foreign = 0U;
     nxdn_confirm_end_frame(state);
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
@@ -818,6 +830,7 @@ END:
     if (!frame_read) {
         nxdn_confirm_frame_rejected(state);
         state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
+        state->nxdn_frame_foreign = 0U;
     }
     nxdn_finalize_sync_reject(state);
     /* The sticky flag, not this frame's evidence: a confirmed transmission whose current

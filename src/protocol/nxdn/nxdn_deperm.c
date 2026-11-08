@@ -273,7 +273,7 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
     const int sacch_crc_ok = (crc == check);
     if (sacch_crc_ok) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
-        if (nxdn_confirm_is_confirmed(state)) {
+        if (nxdn_confirm_is_confirmed(state) && !state->nxdn_frame_foreign) {
             state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_last_ran_stand_in = 0U;
             nxdn_note_received_ran(state, nxdn_ran_from_trellis(trellis_buf));
@@ -316,7 +316,9 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
 
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
-        if (nxdn_confirm_is_confirmed(state)) {
+        /* Another channel's RAN (a composite control channel's on the followed traffic channel) is not this one's: a
+           confirmation the followed call left behind must not let it through. */
+        if (nxdn_confirm_is_confirmed(state) && !state->nxdn_frame_foreign) {
             const int ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_ran = state->nxdn_last_ran = ran;
             state->nxdn_last_ran_stand_in = 0U;
@@ -522,9 +524,11 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
 
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
-        state->nxdn_last_ran = (unsigned int)ran;
-        state->nxdn_last_ran_stand_in = 0U;
-        nxdn_note_received_ran(state, ran);
+        if (!state->nxdn_frame_foreign) {
+            state->nxdn_last_ran = (unsigned int)ran;
+            state->nxdn_last_ran_stand_in = 0U;
+            nxdn_note_received_ran(state, ran);
+        }
         nxdn_print_last_ran(state);
         state->nxdn_part_of_frame = 3 - sf;
     } else {
@@ -643,8 +647,17 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     }
 
     nxdn_print_last_ran(state);
+    /* A CAC heard while the receiver follows a call elsewhere than this site's control channel is another control
+       channel's on the followed frequency: decided before anything below confirms, names or follows from it. */
+    const uint8_t was_foreign = state->nxdn_frame_foreign;
+    if (dsd_nxdn_control_heard_is_foreign(opts, state)) {
+        state->nxdn_frame_foreign = 1U;
+    }
     if (crc == 0) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+        state->data_header_format[0] = 2;
+    }
+    if (crc == 0 && !state->nxdn_frame_foreign) {
         /* Only an outbound control channel carries a CAC: this one names the control channel, before its elements
            (a grant among them) are decoded, and in the received identity before anything here can tune away from
            this carrier. */
@@ -653,7 +666,6 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
         // Only a Type-C system has a control channel: from now on a composite one's frames read as Type-C.
         dsd_nxdn_note_type_c(state);
         nxdn_cc_hunt_note_control(opts, state);
-        state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
         state->nxdn_last_ran_stand_in = 0U;
     }
@@ -666,6 +678,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     if (crc == 0) {
         NXDN_Elements_Content_decode(opts, state, cac_message_buffer, sizeof(cac_message_buffer));
     }
+    state->nxdn_frame_foreign = was_foreign;
     nxdn_print_cac_payload(opts, m_data);
     rotate_symbol_out_file(opts, state);
 }
@@ -1271,7 +1284,8 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     //CRC-verified content alone, so this is positive end evidence decoded over the air -- the
     //terminator reason lets the event layer keep an audible epoch whose call identity never
     //decoded, where EXPLICIT reads as a retune.
-    if (nxdn_message_type_resets_call(MessageType)) {
+    /* Another channel's release ends nothing here (dsd_state::nxdn_frame_foreign). */
+    if (nxdn_message_type_resets_call(MessageType) && !state->nxdn_frame_foreign) {
         if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }

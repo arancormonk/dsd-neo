@@ -8724,9 +8724,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `nxdn_confirm_scch_confirmed()`; neither writes a RAN or the Type-C fields. Which SRV_INFO layout applies, and
   whether it places the control channel here, comes from the frame's own LICH, which `nxdn_frame()` holds in
   `dsd_state::nxdn_frame_channel` while the frame's channels decode (`nxdn_frame_channel` in
-  `<dsd-neo/protocol/nxdn/nxdn.h>`: a CAC is the control channel, an RTCH2 profile Type-D, anything else traffic), never
-  from the retained "Type-D" category: only a control channel's SRV_INFO refreshes the control-channel sync and anchors
-  the CC to the tuner. An outbound SCCH INFO2 has the INFO4 format (§6.5.3.3), so its idle, halt, free repeater and site
+  `<dsd-neo/protocol/nxdn/nxdn.h>`: a CAC is the control channel, an RTCH_C profile a composite control channel, an
+  RTCH2 profile Type-D, anything else traffic), never from the retained "Type-D" category: only a control channel's
+  SRV_INFO, a composite one's included (TS 1-C §5.1.2), refreshes the control-channel sync and anchors the CC to the
+  tuner. An outbound SCCH INFO2 has the INFO4 format (§6.5.3.3), so its idle, halt, free repeater and site
   ID messages (IDs 2046, 2045, 2044, 2041) go through the INFO4 handling (`nxdn_scch_handle_repeater_status()`) and never
   become the call's target; its busy repeater message keeps the target handling of `nxdn_scch_handle_info2()`. The
   terminal's IDAS line and the Qt site view show the IDAS fields, the NXDN ones the Type-C location.
@@ -8746,6 +8747,31 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   so an imported row is never dropped. `nxdn_channel_to_frequency_display()` resolves for display only and keeps
   nothing. A DFA CCH_INFO prints its Curr/New/Add/Del status from the same four bits as the channel notation
   (TS 1-A §6.4.3.3); the DFA layout's two low bits only say which channel fields are present.
+- NXDN "this site" (`dsd_state::nxdn_site`, `dsd_nxdn_site_record`, same header). A SITE_INFO or SRV_INFO ("for
+  current site") decoded while no traffic channel is followed (`trunk_is_tuned == 0`, whatever the frame's channel, a
+  composite control channel included) latches its Location ID (`dsd_nxdn_site_latch()`); an SRV_INFO naming a new site
+  invalidates the old site's parameters until the new site's SITE_INFO. Only this site's SITE_INFO/SRV_INFO write the
+  site identity and only its SITE_INFO the parameters (`nxdn_site_broadcast_is_this_site()`); while a call is followed,
+  another site's broadcast on the traffic channel is printed only, and a SITE_INFO on a frame read as Type-D always is.
+  CCH_INFO names "certain site" (TS 1-A §6.4.3.3) and never writes the identity. A DFA CCH_INFO moves the control
+  channel only when it names this site with Curr or New alone, under valid parameters, with a frequency, and the CC is
+  not pinned (`nxdn_cch_info_names_this_control_channel()`): Add and Del edit a hunt list and another site's switch
+  reaches this one by ADJ_SITE_INFO (TS 1-C §16.5). Channels of any other CCH_INFO, and every ADJ_SITE_INFO channel,
+  are resolved with the display resolver and never learned. The record is cleared by `dsd_nxdn_ca_reset()` and travels
+  with a trunk scan target.
+- NXDN composite control channels (RTCH_C, TS 1-A §5.2.1, TS 1-C §16.3). Their outbound LICH values 0x61, 0x69, 0x6F,
+  0x71, 0x73, 0x75 and 0x77 are also Type-D RTCH2 values; `nxdn_frame.c` reads them as RTCH_C (SACCH, FACCH1, FACCH2,
+  UDCH, as an RTCH's; plus the idle 0x79) once the session decoded Type-C trunking (`dsd_nxdn_type_c()`: a CRC-good CAC,
+  a CCH_INFO, or a SITE_INFO on a frame not read as Type-D, messages Type-D does not send), and as Type-D until then.
+- NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
+  on, a voice channel tuned, and the followed frequency not this site's control channel). A CAC (decided in
+  `nxdn_handle_cac()`) or an RTCH_C frame (decided in `nxdn_frame()` before its channels decode) heard there sets
+  `dsd_state::nxdn_frame_foreign` while it decodes: its checks confirm nothing and stamp
+  `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with
+  `dsd_nxdn_foreign_control_last_m()`, decode clock); no RAN, received control channel, CC hunt note or Type-C note is
+  written; its site broadcasts are printed only, every other message prints its type only (no grant, call, release or
+  control-sync effect); and the frame neither stamps carrier sync nor plays voice. A call on this site's control channel
+  itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is the site's own.
 - NXDN trunking admission and preemption (`nxdn_element.c`; NXDN has no trunk state machine). Two records in
   `dsd_state`, both saved with a trunk scan target's snapshot (and so restored by a failed switch's rollback):
   - `nxdn_follow` (`dsd_nxdn_follow_route`): the route the receiver last followed a grant or busy repeater message to

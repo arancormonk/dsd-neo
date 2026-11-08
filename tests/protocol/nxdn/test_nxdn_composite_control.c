@@ -11,14 +11,18 @@
  * Type-D until then.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+#include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
-#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -114,8 +118,9 @@ put_bits(uint8_t* bits, size_t at, uint32_t value, size_t width) {
 /* The rate-1/2 K=5 code every NXDN channel uses (nxdn_conv_decode_soft()), over @p n input bits. */
 static void
 conv_encode(const uint8_t* in, size_t n, uint8_t* coded) {
-    static const uint8_t PARITY[32] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
-                                       1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1};
+    static const uint8_t PARITY[32] = {
+        0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1,
+    };
     unsigned int reg = 0U;
     for (size_t i = 0; i < n; i++) {
         reg = ((reg << 1U) | in[i]) & 0x1FU;
@@ -332,6 +337,186 @@ test_type_d_reading_unchanged(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* RTCH_C outbound, superframe SACCH, voice in both halves (TS 1-A Table 5.2-2); a Type-D RTCH2's voice frame too. */
+enum { LICH_COMPOSITE_VOICE = 0x77 };
+
+/* Site A's control channel, the voice channel F the receiver follows (site B's control channel), and the channel a
+ * grant heard on F names. */
+enum {
+    CC_A_HZ = 451012500,
+    FOLLOWED_F_HZ = 452512500,
+    GRANT_CHANNEL = 16,
+    GRANT_HZ = 453012500,
+};
+
+static int g_tunes;
+
+static dsd_trunk_tune_result
+count_tune(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)freq;
+    (void)ted_sps;
+    (void)request_id;
+    ++g_tunes;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* A CAC (its trellis output: RAN, then the message) carrying @p bits element bits, CRC-good. */
+static void
+send_cac(dsd_opts* opts, dsd_state* state, uint8_t ran, const uint8_t* elements, size_t bits) {
+    uint8_t trellis[400];
+    uint8_t m_data[32];
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    put_bits(trellis, 2U, ran, 6U);
+    DSD_MEMCPY(&trellis[8], elements, bits);
+    nxdn_handle_cac(opts, state, trellis, m_data, 0U);
+}
+
+/* A SITE_INFO (0x18) naming @p location, channel notation (144 element bits). */
+static void
+site_info(uint8_t elements[160], uint32_t location) {
+    DSD_MEMSET(elements, 0, 160U);
+    put_bits(elements, 2U, 0x18U, 6U);
+    put_bits(elements, 8U, location, 24U);
+}
+
+/* A group VCALL_ASSGN_DUP (0x05) to talkgroup 1100 on GRANT_CHANNEL: a call the receiver would follow. */
+static void
+grant_dup(uint8_t elements[80]) {
+    DSD_MEMSET(elements, 0, 80U);
+    put_bits(elements, 2U, 0x05U, 6U);
+    put_bits(elements, 16U, 1U, 3U);     // group call
+    put_bits(elements, 24U, 2100U, 16U); // source
+    put_bits(elements, 40U, 1100U, 16U); // target
+    put_bits(elements, 62U, GRANT_CHANNEL, 10U);
+}
+
+/*
+ * The receiver on site A's control channel (RAN 33), then following a call to F: Type-C, this site latched, the control
+ * channel and RAN in the received identity, a grant channel mapped.
+ */
+static void
+follow_call_to_f(dsd_opts* opts, dsd_state* state) {
+    uint8_t site[160];
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->trunk_hangtime = 2;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = CC_A_HZ;
+    dsd_state_set_trunk_chan_freq(state, GRANT_CHANNEL, GRANT_HZ);
+    site_info(site, SITE_A);
+    send_cac(opts, state, 0x21U, site, 144U);
+    state->p25_cc_freq = CC_A_HZ;
+    state->trunk_cc_freq = CC_A_HZ;
+
+    opts->trunk_is_tuned = 1; // a grant followed to F
+    opts->rtlsdr_center_freq = FOLLOWED_F_HZ;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = FOLLOWED_F_HZ;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    g_tunes = 0;
+}
+
+/* What another channel's control traffic heard on F must leave as it was: this site, its RAN (the access code a call
+ * row reads), the received identity's control channel, the followed call's voice clock and the receiver on F. */
+static int
+expect_followed_call_untouched(const char* tag, const dsd_state* state, const dsd_opts* opts) {
+    char label[128];
+    int rc = 0;
+    uint16_t code = 0U;
+    DSD_SNPRINTF(label, sizeof(label), "%s: this site", tag);
+    rc |= expect_long(label, dsd_nxdn_site_is(state, SITE_A), 1L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: site identity", tag);
+    rc |= expect_long(label, state->nxdn_location_site_code, 0x21L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: RAN", tag);
+    rc |= expect_long(label, (long)state->nxdn_last_ran, 0x21L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: access code", tag);
+    rc |= expect_long(label, dsd_access_code_current(state, DSD_SYNC_NXDN_POS, 0U, 0U, NULL, &code) ? (long)code : -1L,
+                      0x21L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: received RAN", tag);
+    rc |= expect_long(label, state->rx_id.access, 0x21L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: received control channel", tag);
+    rc |= expect_long(label, (long)state->rx_id.cc_freq_hz, (long)CC_A_HZ);
+    DSD_SNPRINTF(label, sizeof(label), "%s: no grant followed", tag);
+    rc |= expect_long(label, g_tunes, 0L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: still on F", tag);
+    rc |= expect_long(label, opts->trunk_is_tuned, 1L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: no voice activity", tag);
+    rc |= expect_long(label, (long)state->last_vc_sync_time, 0L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: heard as another channel's control", tag);
+    rc |= expect_long(label, dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
+    return rc;
+}
+
+/*
+ * Site B's control channel on F, which the receiver follows a site A call to: B's CAC, with another RAN or with A's
+ * own, is decoded for the log only. Its SITE_INFO, its RAN, its carrier as a control channel and its grant change
+ * nothing, and its checks say a foreign control channel is here (dsd_nxdn_foreign_control_last_m()).
+ */
+static int
+test_foreign_cac_on_followed_channel(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t k_rans[2] = {0x22U, 0x21U}; // B's own RAN, then one A also uses
+    uint8_t site[160];
+    uint8_t grant[80];
+    int rc = 0;
+    for (size_t i = 0; i < 2U; i++) {
+        follow_call_to_f(opts, state);
+        site_info(site, SITE_B);
+        send_cac(opts, state, k_rans[i], site, 144U);
+        grant_dup(grant);
+        send_cac(opts, state, k_rans[i], grant, 80U);
+        rc |=
+            expect_followed_call_untouched(i == 0U ? "foreign CAC, other RAN" : "foreign CAC, reused RAN", state, opts);
+    }
+    return rc;
+}
+
+/*
+ * Site B's control channel on F has turned composite (RTCH_C) for a call of its own: its SACCH RAN, its SRV_INFO and
+ * grant on FACCH1 and its voice are another channel's, so none reaches the call followed, whose transmission the
+ * receiver had confirmed.
+ */
+static int
+test_foreign_composite_on_followed_channel(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t k_rans[2] = {0x22U, 0x21U};
+    uint8_t srv[80];
+    uint8_t grant[80];
+    int rc = 0;
+    for (size_t i = 0; i < 2U; i++) {
+        follow_call_to_f(opts, state);
+        srv_info(srv, SITE_B);
+        grant_dup(grant);
+        send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, k_rans[i], srv, grant);
+        send_frame(opts, state, LICH_COMPOSITE_VOICE, k_rans[i], NULL, NULL);
+        rc |= expect_followed_call_untouched(i == 0U ? "foreign RTCH_C, other RAN" : "foreign RTCH_C, reused RAN",
+                                             state, opts);
+    }
+    return rc;
+}
+
+/*
+ * Control: a call on site A's control channel itself (composite operation: the followed frequency is the control
+ * channel) is the site's own. Its SRV_INFO keeps the site, its voice plays, and nothing is heard as foreign.
+ */
+static int
+test_call_on_this_sites_composite_control_channel(dsd_opts* opts, dsd_state* state) {
+    uint8_t srv[80];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    opts->rtlsdr_center_freq = CC_A_HZ;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = CC_A_HZ;
+    srv_info(srv, SITE_A);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, srv, NULL);
+    send_frame(opts, state, LICH_COMPOSITE_VOICE, 0x21U, NULL, NULL);
+    rc |= expect_long("own composite call: this site", dsd_nxdn_site_is(state, SITE_A), 1L);
+    rc |= expect_long("own composite call: voice plays", state->last_vc_sync_time != 0, 1L);
+    rc |= expect_long("own composite call: not foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0, 0L);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -342,10 +527,20 @@ main(void) {
         free(opts);
         return 1;
     }
+    dsd_decode_clock_use_test(1000000000000ULL);
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_freq_request = count_tune;
+    hooks.tune_to_cc_request = count_tune;
+    dsd_trunk_tuning_hooks_set(hooks);
     int rc = 0;
     rc |= test_type_d_reading_unchanged(opts, state);
     rc |= test_startup_on_composite_control_channel(opts, state);
     rc |= test_composite_after_control_channel(opts, state);
+    rc |= test_foreign_cac_on_followed_channel(opts, state);
+    rc |= test_foreign_composite_on_followed_channel(opts, state);
+    rc |= test_call_on_this_sites_composite_control_channel(opts, state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+    dsd_decode_clock_use_system();
 
     dsd_state_ext_free_all(state);
     free(state);

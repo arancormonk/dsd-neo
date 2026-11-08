@@ -772,13 +772,16 @@ typedef struct {
    it decodes, forgotten with the channel access parameters (dsd_nxdn_ca_reset()). Only a SITE_INFO or SRV_INFO decoded
    while no traffic channel is followed names this site (TS 1-A §6.4.3.1-2 "for current site"): a CCH_INFO may name any
    site, and a broadcast heard on a followed channel may be another site's. <dsd-neo/core/nxdn_channel_access.h> owns
-   every write. */
+   every write but the foreign control stamp (nxdn_confirm_note_evidence()). */
 typedef struct {
     uint32_t location_id; /**< this site's 24-bit Location ID, while known is 1 */
     uint8_t known;        /**< 1 once a SITE_INFO or SRV_INFO named this site */
     /** 1 once Type-C trunking decoded here (a CAC, a CCH_INFO or a SITE_INFO): the LICH values a composite control
      * channel (RTCH_C) shares with a Type-D RTCH2 are read as RTCH_C (nxdn_frame.c). */
     uint8_t type_c;
+    /** Decode clock (dsd_decode_now_mono_s()): when a check of another channel's control traffic last passed on the
+     * followed traffic channel (dsd_state::nxdn_frame_foreign); 0 never. */
+    double foreign_control_m;
 } dsd_nxdn_site_record;
 
 enum { DSD_NXDN_DFA_LEARNED_MAX = 128 };
@@ -2379,6 +2382,11 @@ struct dsd_state {
      * <dsd-neo/protocol/nxdn/nxdn.h>), set only while that frame's channels decode: element parsers whose layout or
      * meaning depends on the channel read it, never anything retained from an earlier frame. */
     uint8_t nxdn_frame_channel;
+    /* 1 while the channels being decoded are another channel's control traffic heard on the followed traffic channel
+     * (a CAC, or a composite control channel's frame, while the receiver follows a call elsewhere than this site's
+     * control channel, dsd_nxdn_control_heard_is_foreign()): they are decoded for the log only, and their checks stamp
+     * dsd_nxdn_site_record::foreign_control_m instead of confirming the transmission. */
+    uint8_t nxdn_frame_foreign;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
     uint8_t nxdn_alias_block_number;

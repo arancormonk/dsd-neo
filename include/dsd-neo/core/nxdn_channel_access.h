@@ -10,7 +10,8 @@
  * This site (`dsd_state::nxdn_site`) is the one the receiver chose: a SITE_INFO or SRV_INFO ("for current site", TS 1-A
  * §6.4.3.1-2) decoded while no traffic channel is followed latches it (dsd_nxdn_site_latch()). Only its SITE_INFO sets
  * the parameters below, and only its own CCH_INFO Curr or New moves the control channel; a CCH_INFO naming any site,
- * and another site's broadcast heard on a followed traffic channel, are printed.
+ * another site's broadcast heard on a followed traffic channel, and another channel's control traffic heard there
+ * (dsd_nxdn_control_heard_is_foreign()) are printed.
  *
  * A site's SITE_INFO carries its Channel Access Information (TS 1-A §6.5.36): the radio channel notation (RCN 0 a
  * channel number, RCN 1 Direct Frequency Assignment) and, for DFA, the base frequency and step an OFN/IFN is counted
@@ -29,6 +30,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_NXDN_CHANNEL_ACCESS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_NXDN_CHANNEL_ACCESS_H_H
 
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -208,6 +211,32 @@ dsd_nxdn_note_type_c(dsd_state* state) {
 static inline int
 dsd_nxdn_type_c(const dsd_state* state) {
     return state && state->nxdn_site.type_c != 0U;
+}
+
+/**
+ * Whether a control frame heard now (a CAC, or a composite control channel's frame) is another channel's: the receiver
+ * follows a traffic channel (trunking on, a voice channel tuned) other than this site's control channel. An ordinary
+ * traffic channel carries no control channel's frames, so one heard there is another site's or system's control channel
+ * on the same frequency. A call on the control channel itself (a composite control channel, TS 1-C §16.3) is the
+ * site's own.
+ */
+static inline int
+dsd_nxdn_control_heard_is_foreign(const dsd_opts* opts, const dsd_state* state) {
+    if (!state || !dsd_opts_trunk_vc_followed(opts)) {
+        return 0;
+    }
+    const long int followed = state->trunk_vc_freq[0];
+    return followed == 0 || (followed != state->p25_cc_freq && followed != state->trunk_cc_freq);
+}
+
+/**
+ * When a check of another channel's control traffic last passed on the followed traffic channel (decode clock,
+ * dsd_decode_now_mono_s()); 0 never. Such a control channel keeps NXDN frame sync on the followed frequency, so the
+ * call's end may show only here: compare against the followed call's last voice (dsd_state::last_vc_sync_time_m).
+ */
+static inline double
+dsd_nxdn_foreign_control_last_m(const dsd_state* state) {
+    return state ? state->nxdn_site.foreign_control_m : 0.0;
 }
 
 #ifdef __cplusplus
