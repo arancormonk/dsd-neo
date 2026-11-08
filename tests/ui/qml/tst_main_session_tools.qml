@@ -1799,24 +1799,45 @@ Item {
             }
         }
 
-        // A list that cannot join, or two lists sharing a target id, start nothing; the refusal names the list.
+        // Two imported lists whose files hold one target id on different rows start nothing; the refusal names the
+        // column that differs. (The app's own lists never share an id: a list saved with another's entry uid is given
+        // a new one.)
         function test_a_scan_bundle_refused_starts_nothing() {
-            var security = addScanList("Security", "Gate", "851.0125");
-            scanLists.add({name: "Twin", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
-                entries: [{uid: security.entries[0].uid, kind: "freq", name: "Gate", protocol: "p25", freqMhz: "854.0125",
-                    enabled: true}]});
-            var twin = scanLists.get(scanLists.count - 1);
+            var header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n";
+            var gateSource = testContext.writeFixtureCsv("refused-gate.csv",
+                header + "GATE,p25-conventional,851012500,,,,,Gate\n");
+            var twinSource = testContext.writeFixtureCsv("refused-twin.csv",
+                header + "GATE,p25-conventional,854012500,,,,,Gate\n");
+            var gateFile = importedFiles.importFile(gateSource, "Gate.csv", "trunkTargets");
+            var twinFile = importedFiles.importFile(twinSource, "Twin.csv", "trunkTargets");
+            verify(gateFile.ok && twinFile.ok);
+            var list = function (name, path) {
+                scanLists.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, targetSource: "csv",
+                               targetsCsvPath: path});
+                return scanLists.get(scanLists.count - 1);
+            };
+            var security = list("Security", gateFile.path);
+            var twin = list("Twin", twinFile.path);
             try {
                 testContext.setLifecyclePhase(0);
                 var before = testContext.lastStartArgs();
                 app.startScanBundle(scanLists.rowForUid(security.uid), [twin.uid]);
                 verify(app.startError.indexOf("Scan lists rejected: ") === 0, app.startError);
+                verify(app.startError.indexOf("frequency_hz") > 0, app.startError);
                 compare(testContext.lastStartArgs(), before);
                 compare(decoderHost.sessionState, 0);
             } finally {
                 app.startError = "";
                 testContext.setLifecyclePhase(2);
                 removeScanLists([security.uid, twin.uid]);
+                // An imported target file is removed only while no session runs.
+                testContext.setLifecyclePhase(0);
+                for (var path of [gateFile.path, twinFile.path]) {
+                    var row = importedFiles.rowForPath(path);
+                    if (row >= 0)
+                        verify(importedFiles.remove(row), "the imported file stays: " + path);
+                }
+                testContext.setLifecyclePhase(2);
             }
         }
 

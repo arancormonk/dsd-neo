@@ -14269,7 +14269,13 @@ Several lists in one session (issue #697):
   out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
   list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. That load also saves the
   repaired uids (issue #801), so the next load keeps them and a backup taken at once carries them; a failed save logs
-  one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). A start hold (issue #644) is
+  one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). Entry uids are the
+  targets' ids, and one id names one target in a session, so the app's lists never share one (only a person's own target
+  CSVs can): the load, `add()` and `update()` give an entry a new uid when it has none, repeats one of its list or names
+  one another list holds (at load the first list keeps it; a list being updated is no conflict with itself). A load that
+  gives one is saved the same way, with one warning on failure, but forgets no companions, since it names no list.
+  History rows logged under a uid two lists shared keep the name `historyChannelNames()` gives (no list is recorded
+  with them). A start hold (issue #644) is
   no part of the identity: `startWithMap()` takes it in `options.holdTarget` for that start, across a USB permission
   wait in `pendingStartHold` (set by every wait, read once by the grant), and never in `attemptedSource` or prefs.
   Pinned Listen shortcuts (issue #801) name lists by uid too, but portably, since a restore keeps every list's uid.

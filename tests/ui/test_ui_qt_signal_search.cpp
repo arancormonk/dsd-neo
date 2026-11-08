@@ -493,8 +493,9 @@ testRecordingKey() {
                .isEmpty());
 }
 
-/* Issue #644: two lists under one name, each with an entry of one uid on one frequency, are two Listen choices, each
-   starting its own list: the matches stay apart by list as well as by id. */
+/* Issue #644: two lists under one name, each with an entry on one frequency, are two Listen choices, each starting its
+   own list: the matches stay apart by list. Issue #697: the second list was given the first's entry uid, and its save
+   gave it another (one id is one target), so each match names its own list's entry. */
 static void
 testKnownFrequencyListsApart() {
     dsd_qt::SavedSystemsModel systems;
@@ -504,24 +505,30 @@ testKnownFrequencyListsApart() {
         {QStringLiteral("name"), QStringLiteral("Desk")},        {QStringLiteral("protocol"), QStringLiteral("dmr")},
         {QStringLiteral("freqMhz"), QStringLiteral("450.1250")}, {QStringLiteral("enabled"), true}};
     QStringList uids;
+    QStringList entryUids;
     for (int i = 0; i < 2; ++i) {
         assert(lists.add(
             {{QStringLiteral("name"), QStringLiteral("Gate")}, {QStringLiteral("entries"), QVariantList{desk}}}));
-        uids << lists.get(lists.count() - 1).value(QStringLiteral("uid")).toString();
+        const QVariantMap list = lists.get(lists.count() - 1);
+        uids << list.value(QStringLiteral("uid")).toString();
+        entryUids
+            << list.value(QStringLiteral("entries")).toList().value(0).toMap().value(QStringLiteral("uid")).toString();
     }
     assert(uids[0] != uids[1]);
+    assert(entryUids[0] == QStringLiteral("entry") && !entryUids[1].isEmpty() && entryUids[1] != entryUids[0]);
     dsd_qt::KnownFrequencyIndex index(&systems, &lists);
     const QVariantList matches = index.tunedMatches(450125000, 12500);
     assert(matches.size() == 2);
-    QStringList listUids;
+    QStringList pairs;
     for (const QVariant& match : matches) {
-        assert(match.toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("entry"));
         assert(match.toMap().value(QStringLiteral("selectable")).toBool());
-        listUids << match.toMap().value(QStringLiteral("listUid")).toString();
+        pairs << match.toMap().value(QStringLiteral("listUid")).toString() + QLatin1Char('/')
+                     + match.toMap().value(QStringLiteral("targetId")).toString();
     }
-    listUids.sort();
-    uids.sort();
-    assert(listUids == uids);
+    pairs.sort();
+    QStringList expected{uids[0] + QLatin1Char('/') + entryUids[0], uids[1] + QLatin1Char('/') + entryUids[1]};
+    expected.sort();
+    assert(pairs == expected);
 }
 
 /* Issue #644: a target CSV row's id is what the engine loads, so a held start or an in-place go-to names a target the
