@@ -880,6 +880,57 @@ Item {
             compare(county.rows.length, 0, "an unfetched level did not read as empty")
         }
 
+        // Issue #802 B12: RadioReference's own words (a place, a site, its
+        // colour code) are drawn and measured as written, never as markup.
+        function textShowing(item, value) {
+            if (item.textFormat !== undefined && item.text === value && item.visible)
+                return item
+            var kids = item.children || []
+            for (var i = 0; i < kids.length; ++i) {
+                var found = textShowing(kids[i], value)
+                if (found)
+                    return found
+            }
+            return null
+        }
+        function verifyDrawnAsWritten(item, value, tag) {
+            var text = null
+            tryVerify(function () { text = textShowing(item, value); return text !== null }, 2000, tag + " is not shown")
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root)
+            mirror.font = text.font
+            mirror.text = text.text
+            var plainWidth = mirror.implicitWidth
+            mirror.destroy()
+            verify(Math.abs(text.implicitWidth - plainWidth) <= 0.5, tag + " draws as written: " + text.implicitWidth + " vs " + plainWidth)
+            compare(text.textFormat, Text.PlainText, tag + " is plain text")
+        }
+        function test_07b_radioreference_names_draw_as_written() {
+            testContext.setRadioReference("hasAppKey", true)
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("countries", [
+                                              { "coid": 1, "name": "<b>United</b> States", "code": "US" }
+                                          ])
+            var sheet = findChild(tc.screen, "radioReferenceCountrySheet")
+            sheet.visible = true
+            verifyDrawnAsWritten(sheet, "<b>United</b> States", "a browse row")
+            sheet.visible = false
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("trunked", false)
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 9340,
+                                              "name": "Users Group",
+                                              "typeDescr": "DMR",
+                                              "flavorDescr": "Conventional Networked"
+                                          })
+            testContext.setRadioReference("sites", [
+                                              { "siteNumber": 310011, "descr": "<b>Zeta</b>", "freqCount": 1,
+                                                "controlFreqMhz": "", "simulcast": false,
+                                                "freqMhz": "444.525", "colorCode": "<i>1</i>" }
+                                          ])
+            verifyDrawnAsWritten(tc.screen, "<b>Zeta</b>", "a repeater's name")
+            verifyDrawnAsWritten(tc.screen, "444.525 MHz · CC <i>1</i>", "a repeater's detail")
+        }
+
         // A build that bakes the application key in never asks for one: the
         // field would sit under the password box looking like a second secret,
         // and anything typed there becomes a stored override that breaks the

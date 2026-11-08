@@ -3251,11 +3251,13 @@ test_p2_identity_lifecycle(void) {
     state->p25_iden_tdma[4].sysid = 0xCFF;
     state->p25_chan_tdma_explicit[4] = 3;
     state->p2_cc_verified = 1;
+    state->p2_proven_nac = 0x293;
     svc_set_p2_params(state, 0x1490E, 0xCFF, 0xCF1);
     int rc = expect_int("T18 first learn reconciles", fdma->populated, 0);
     rc |= expect_int("T18 hint TDMA", state->p25_chan_tdma_explicit[4], 2);
     rc |= expect_int("T18 hardset", state->p2_hardset, 1);
     rc |= expect_int("T18 hand-set not verified", state->p2_cc_verified, 0);
+    rc |= expect_int("T18 hand-set proves no NAC", state->p2_proven_nac, -1);
     svc_set_p2_params(state, 0, 0, 0);
     rc |= expect_int("T18 clear keeps tables", state->p25_iden_tdma[4].populated, 1);
     rc |= expect_int("T18 clear hardset", state->p2_hardset, 0);

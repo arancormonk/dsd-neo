@@ -124,6 +124,9 @@ static int g_evidence_notes;
 static int g_call_notes;
 static int g_site_notes;
 static dsd_signal_search_site_note g_site_note;
+/* The carrier's proof when the latest site note came: what the Signal search's receive-filter gate reads. */
+static int g_site_note_proven_nac;
+static unsigned g_site_note_verified;
 
 static size_t
 learned_codes(const dsd_state* state, uint64_t* out, size_t cap) {
@@ -159,9 +162,10 @@ evidence_note(const dsd_state* state, const char* protocol, int sync, int slot, 
 
 static void
 site_note(const dsd_state* state, const dsd_signal_search_site_note* note) {
-    (void)state;
     g_site_notes++;
     g_site_note = *note;
+    g_site_note_proven_nac = state->p2_proven_nac;
+    g_site_note_verified = state->p2_cc_verified;
 }
 
 static void
@@ -210,6 +214,9 @@ fresh_decoder(int relaxed) {
     g_call_notes = 0;
     g_site_notes = 0;
     DSD_MEMSET(&g_site_note, 0, sizeof(g_site_note));
+    g_site_note_proven_nac = 0;
+    g_site_note_verified = 0U;
+    dsd_state_forget_p2_proof(g_state);
 }
 
 static void
@@ -952,9 +959,11 @@ test_no_side_effects_before_acceptance(void) {
     return rc;
 }
 
-/* A recovered code names its system to the Signal search the way a network status does (D7): one network site note at
-   the commit, with the code's WACN and SYSID and nothing else (no RFSS or site: the code carries none). The confirming
-   burst's MAC is then evidence like any checked MAC. */
+/* A recovered code names its system to the Signal search the way a network status does (D7): one network site note,
+   with the code's WACN and SYSID and nothing else (no RFSS or site: the code carries none). The confirming burst's MAC
+   is then evidence like any checked MAC. The note comes once the confirming burst proved the code, with the carrier's
+   proven NAC already the code's (issue #802 B11): the search judges a site note by that NAC, so a carrier whose NAC a
+   receive filter blocks names no site. */
 static int
 test_recovered_code_site_note(void) {
     dsd_signal_search_site_set(site_note);
@@ -968,6 +977,8 @@ test_recovered_code_site_note(void) {
     one_burst_window(TEST_CODE, 6, 2, DUID_FACCH_S, 2);
     feed(GAP_INDEPENDENT);
     rc |= expect("the commit notes the site once", code_in_force() == TEST_CODE && g_site_notes == 1);
+    rc |= expect("after the proof named the code's NAC",
+                 g_site_note_verified == 1U && g_site_note_proven_nac == (int)(TEST_CODE & 0xFFFU));
     rc |= expect("a network note", g_site_note.kind == DSD_SEARCH_SITE_NOTE_P25_NETWORK);
     rc |= expect("with the code's WACN and SYSID", g_site_note.wacn == 0xBEE00U && g_site_note.sysid == 0x164U);
     rc |= expect("and nothing else", g_site_note.rfss == 0U && g_site_note.site == 0U && g_site_note.text[0] == '\0'

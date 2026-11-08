@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -91,6 +92,8 @@ typedef struct {
     int analog_visit, listen_ready;
     /* Paused or failed, the search has ended what the decoder was receiving (search_end_reception()). */
     int reception_ended;
+    /* The visit heard protocol-confirmed traffic the receive policy rejects (issue #802 B9); cleared at each tune. */
+    int refused;
     uint32_t ticket, target, before_generation;
     /* The current visit's checked site identity, from site notes alone; cleared at each landing. */
     dsd_signal_search_site site;
@@ -357,6 +360,7 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
     c->probing = visit && !analog;
     c->analog_visit = visit && analog;
     c->listen_ready = 0;
+    c->refused = 0;
     c->before_generation = rtl_stream_output_generation();
     c->ticket = 0;
     c->tune_started = dsd_realtime_mono_ms();
@@ -609,6 +613,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     dsd_signal_search_evidence_set(dsd_engine_signal_search_evidence_at);
     dsd_signal_search_site_set(dsd_engine_signal_search_site);
     dsd_signal_search_call_set(dsd_engine_signal_search_call);
+    dsd_signal_search_access_set(dsd_engine_signal_search_access);
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
     dsd_signal_search_p25p2_codes_set(dsd_engine_signal_search_p25p2_codes);
     dsd_signal_search_p25p2_code_set(dsd_engine_signal_search_p25p2_code);
@@ -715,19 +720,32 @@ dsd_engine_signal_search_evidence(const dsd_state* state, const char* protocol, 
     dsd_engine_signal_search_evidence_at(state, protocol, -1, -1, target, source, access);
 }
 
+/* The receive policy's verdict on reported traffic, by the protocol and slot the report names when it names them, else
+   by the decoder's current ones. The default policy (every filter off) answers before reading any identity. */
+static dsd_receive_verdict
+search_evidence_verdict(const search_coord* c, const dsd_state* state, int sync, int slot) {
+    if (!dsd_receive_filters_enabled(c->opts)) {
+        return DSD_RECEIVE_OFF;
+    }
+    return sync >= 0 ? dsd_receive_status(c->opts, state, sync, slot)
+                     : dsd_receive_current_status(c->opts, state, state->currentslot);
+}
+
 void
 dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
                                      uint32_t source, const char* access) {
     search_coord* c = search_get(state);
     /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. Traffic the receive
-       policy rejects or is still checking neither confirms the hit nor keeps the search listening (issue #637), judged
-       by the protocol and slot the report names when it names them. */
+       policy rejects or is still checking neither confirms the hit nor keeps the search listening (issue #637); traffic
+       it rejects also has the visit leave when its probe ends unconfirmed (issue #802 B9). */
     if (!c || !search_receiving(c, state)) {
         return;
     }
-    const int admitted = sync >= 0 ? dsd_receive_allows(c->opts, state, sync, slot)
-                                   : dsd_receive_current_allows(c->opts, state, state->currentslot);
-    if (!admitted) {
+    const dsd_receive_verdict verdict = search_evidence_verdict(c, state, sync, slot);
+    if (verdict == DSD_RECEIVE_REJECTED) {
+        c->refused = 1;
+    }
+    if (verdict != DSD_RECEIVE_OFF && verdict != DSD_RECEIVE_ALLOWED) {
         return;
     }
     c->activity = dsd_decode_now_mono_ms();
@@ -756,12 +774,30 @@ dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protoco
     search_publish(c, 1);
 }
 
+/* The sync type whose access code judges a site note of @p kind: the decoder's current one while it is of the note's
+   family (P25 Phase 1 and Phase 2 read their NACs apart), else one of that family. */
+static int
+search_site_sync(const dsd_state* state, int kind) {
+    int family = DSD_SYNC_P25P1_POS;
+    if (kind == DSD_SEARCH_SITE_NOTE_DMR_TIII) {
+        family = DSD_SYNC_DMR_BS_DATA_POS;
+    } else if (kind == DSD_SEARCH_SITE_NOTE_NXDN) {
+        family = DSD_SYNC_NXDN_POS;
+    }
+    const char* name = dsd_engine_signal_search_sync_protocol(family);
+    return dsd_engine_signal_search_family_matches(name, state->synctype) ? state->synctype : family;
+}
+
 void
 dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
     search_coord* c = search_get(state);
-    /* A repeated broadcast changes nothing and publishes nothing; a new identity publishes the hit at once, so the
-       last broadcast before the channel falls silent still reaches it. */
-    if (!c || !search_receiving(c, state) || !dsd_signal_search_site_apply(&c->site, note)) {
+    /* A site broadcast is the carrier's: one carrying an access code the receive policy rejects names no site of the
+       visit, before the hit is confirmed or after, whichever slot carried it (issue #802 B11). A repeated broadcast
+       changes nothing and publishes nothing; a new identity publishes the hit at once, so the last broadcast before
+       the channel falls silent still reaches it. */
+    if (!c || !note || !search_receiving(c, state)
+        || dsd_receive_code_rejects(c->opts, state, search_site_sync(state, note->kind))
+        || !dsd_signal_search_site_apply(&c->site, note)) {
         return;
     }
     if (search_refresh_site(c)) {
@@ -817,31 +853,24 @@ dsd_engine_signal_search_p25p2_code(const dsd_state* state, uint64_t code, int s
     c->p2_codes[0] = code;
 }
 
-/* The search's name for a call record's protocol, or NULL for one the search does not identify by its calls. */
-static const char*
-search_call_protocol(int protocol) {
-    if (DSD_SYNC_IS_DMR(protocol)) {
-        return "DMR";
+/* Whether an access note may republish the hit: a visit is receiving, its hit is confirmed, the decoder's current sync
+   type is of the hit's protocol family ("NXDN" for NXDN48 and NXDN96), the family whose code the observer reads, and
+   the receive policy does not reject that code, judged by the code alone (issue #802 B11). */
+static int
+search_access_note_applies(const search_coord* c, const dsd_state* state) {
+    if (!c || !search_receiving(c, state) || !c->status.hit.confirmed) {
+        return 0;
     }
-    if (DSD_SYNC_IS_P25(protocol)) {
-        return "P25";
+    return dsd_engine_signal_search_family_matches(c->status.hit.protocol, state->synctype)
+           && !dsd_receive_code_rejects(c->opts, state, state->synctype);
+}
+
+void
+dsd_engine_signal_search_access(const dsd_state* state) {
+    search_coord* c = search_get(state);
+    if (search_access_note_applies(c, state)) {
+        search_publish(c, 1);
     }
-    if (DSD_SYNC_IS_NXDN(protocol)) {
-        return "NXDN";
-    }
-    if (DSD_SYNC_IS_DPMR(protocol)) {
-        return "dPMR";
-    }
-    if (DSD_SYNC_IS_M17(protocol)) {
-        return "M17";
-    }
-    if (DSD_SYNC_IS_YSF(protocol)) {
-        return "YSF";
-    }
-    if (DSD_SYNC_IS_DSTAR(protocol)) {
-        return "D-STAR";
-    }
-    return NULL;
 }
 
 /* "ALG 84 · KID 0001" with only the parts the call received over the air, "Encrypted" when its classification says
@@ -889,9 +918,9 @@ search_call_admit(const search_coord* c, const dsd_state* state, uint8_t slot, d
         || record->crc_invalid != 0U || !dsd_receive_allows(c->opts, state, record->protocol, slot)) {
         return NULL;
     }
-    const char* protocol = search_call_protocol(record->protocol);
+    const char* protocol = dsd_engine_signal_search_sync_protocol(record->protocol);
     const dsd_signal_search_hit* hit = &c->status.hit;
-    if (!protocol || (hit->protocol[0] && strncmp(hit->protocol, protocol, strlen(protocol)) != 0)) {
+    if (!protocol || (hit->protocol[0] && !dsd_engine_signal_search_family_matches(hit->protocol, record->protocol))) {
         return NULL;
     }
     return protocol;
@@ -1492,6 +1521,20 @@ search_measure_tick(search_coord* c, dsd_opts* opts, dsd_state* state, const dsd
     return 1;
 }
 
+/* An unconfirmed probe falls back to NFM monitoring, unless it heard traffic the receive policy rejects (and, being
+   unconfirmed, none it admits) and is not held (issue #802 B9): there any open carrier, the rejected digital audio
+   included, would count as activity and keep the search on it until the maximum visit, so the detection is left
+   instead. A held probe keeps its documented fallback, and one that heard only traffic still being checked, or none,
+   falls back as before. */
+static void
+search_probe_expired(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    if (c->refused && !c->hold && !c->status.hit.confirmed) {
+        search_return_to_span(c, opts, state);
+        return;
+    }
+    (void)search_queue_tune(c, opts, state, c->status.hit.frequency_hz, 1, 1);
+}
+
 static int
 search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
     uint64_t now = dsd_decode_now_mono_ms();
@@ -1502,7 +1545,7 @@ search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
         return 1;
     }
     if (c->probing && now - c->probe_started >= (uint64_t)r->probe_ms) {
-        (void)search_queue_tune(c, opts, state, c->status.hit.frequency_hz, 1, 1);
+        search_probe_expired(c, opts, state);
         return 1;
     }
     if (!c->hold && !c->probing && now - c->activity >= SEARCH_QUIET_MS) {
@@ -1640,7 +1683,7 @@ dsd_engine_signal_search_release_site(dsd_state* state) {
     search_restore_site(c, state);
     /* The visit's proof was its carrier's; the final no-carrier pass has cleared it, and the session's code was never
        proven here. */
-    state->p2_cc_verified = 0U;
+    dsd_state_forget_p2_proof(state);
 #else
     (void)state;
 #endif

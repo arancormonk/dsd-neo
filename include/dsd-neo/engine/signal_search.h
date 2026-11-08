@@ -64,6 +64,19 @@ void dsd_engine_signal_search_p25p2_code(const dsd_state* state, uint64_t code, 
  * a call that began no earlier; publishes the hit when the shown tuple changes. Outside a visit, or from a frame an
  * input interruption cut, it does nothing. */
 void dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot);
+/** Runtime access hook: a checked proof gave the access code of the decoder's current protocol a new value (a P25
+ * Phase 2 NAC proven after the transmission's last evidence, issue #802). While a visit receives a confirmed hit of
+ * that sync type's family, it publishes the hit as changed, so the observer reads the code again; it confirms nothing
+ * and changes no phase or activity. Anything else it drops. */
+void dsd_engine_signal_search_access(const dsd_state* state);
+/** The Signal search family name of @p synctype ("DMR", "P25", "NXDN", "dPMR", "M17", "YSF", "D-STAR"), the name a
+ * hit's protocol starts with when that sync type's protocol confirmed it ("NXDN" for NXDN48 and NXDN96); NULL for a
+ * sync type the search does not identify by its calls (ProVoice, EDACS, X2-TDMA, TETRA, analog, none). */
+const char* dsd_engine_signal_search_sync_protocol(int synctype);
+/** Whether @p synctype is of the family of a hit whose protocol is @p hit_protocol: the sync type has a family name
+ * (dsd_engine_signal_search_sync_protocol()) and @p hit_protocol starts with it ("NXDN" for NXDN48 and NXDN96). 0 for a
+ * sync type with no family name, or a NULL @p hit_protocol. */
+int dsd_engine_signal_search_family_matches(const char* hit_protocol, int synctype);
 #ifdef __cplusplus
 }
 #endif

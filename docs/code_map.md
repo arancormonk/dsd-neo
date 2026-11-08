@@ -151,10 +151,13 @@ Generated (do not edit/commit):
     record's, copied whole by `dsd_engine_signal_search_call()` (installed as the runtime call
     hook) from the slot a call note names, under the same receiving gate: the record must be
     ACTIVE, CRC-clean (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN,
-    dPMR, M17, YSF, D-STAR). The tuple is the most recent call on the hit: a note for the
-    tuple's own call (slot and epoch) updates it, a call that began no earlier (`started_m`)
-    replaces it whole on either slot, and an older call still running on the other slot leaves
-    it, so two DMR slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
+    dPMR, M17, YSF, D-STAR: `dsd_engine_signal_search_sync_protocol()` in
+    `signal_search_protocol.c`, public and in radio-off builds, gives a sync type's name, NULL
+    for ProVoice, EDACS, X2-TDMA, TETRA, analog and none; `ENGINE_SIGNAL_SEARCH_PROTOCOL`).
+    The tuple is the most recent call on the hit: a note for the tuple's own call
+    (slot and epoch) updates it, a call that began no earlier (`started_m`) replaces it whole
+    on either slot, and an older call still running on the other slot leaves it, so two DMR
+    slots never mix. `slot` is the record's slot plus one for DMR and P25 Phase
     2, else 0; `crypt` is "ALG xx · KID xxxx" from the record's received bits only
     (`crypto_received`), "Encrypted" when its classification is encrypted, pending or
     decryptable with none received and the call's own checked signalling says encrypted
@@ -166,7 +169,28 @@ Generated (do not edit/commit):
     shows once the hit's protocol matches, clears at each landing and on a change to another
     protocol, and stays on the ended hit; evidence IDs fill `target`/`source` only while no
     tuple belongs to the hit. `site`, `slot` and `crypt` are persisted with the rest of the hit
-    (journal version 2). Published status carries `owned` (a coordinator holds the tuner) and
+    (journal version 2). The access note (`dsd_engine_signal_search_access()`, installed as the
+    runtime access hook, issue #802 B7) republishes the hit as changed when a checked proof gives
+    the decoder's current access code a new value: only while a visit is receiving, the hit is
+    confirmed and the current sync type's family is the hit's protocol
+    (`dsd_engine_signal_search_family_matches()`) and the receive policy does not reject that sync type's code, the
+    decision `search_access_note_applies()` makes. It confirms nothing
+    and changes no phase or activity, so the visit's quiet timing still runs from its last
+    evidence; the observer then reads the code through its usual family gate. It exists for a
+    P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols).
+    A site note applies only when the policy does not reject the code of the note's family either
+    (`search_site_sync()`: the current sync type when it is of that family, else one of it), before confirmation as
+    after, so a rejected code's site never joins a later admitted identity. Both judge by the code alone
+    (`dsd_receive_code_rejects()`, issue #802 B11): site broadcasts and the access code are the carrier's, so a slot
+    filter blocking the slot the decoder is on keeps neither from the hit, and a code still CHECKING passes.
+    Evidence the receive policy rejects (`search_evidence_verdict()`: `dsd_receive_status()` for the sync type and slot
+    the report names, else `dsd_receive_current_status()`; REJECTED only, never CHECKING) sets the visit's private
+    `refused` flag, which every tune clears (`search_queue_tune()`). At probe expiry an unheld, unconfirmed visit with
+    the flag returns to the span (`search_probe_expired()`, issue #802 B9) instead of the NFM re-tune, where the
+    rejected carrier would count as activity until the maximum visit: its hit ends unconfirmed and its reception closes
+    under its tag as at any return to the span. A held probe keeps the NFM fallback, and a probe with CHECKING-only or
+    no evidence falls back as before (`ENGINE_SIGNAL_SEARCH`).
+    Published status carries `owned` (a coordinator holds the tuner) and
     the landed channel's live RF level. Receive profiles, gain and frequency are restored on
     exit: a search Stop tunes back, running the carrier boundary and acquisition reset as each
     visit's tune does, and its retune carries the session's receive family
@@ -1588,10 +1612,11 @@ suite runs under this compiler.
   outside `state.h` so app-control views can name the kinds) pins the kinds (NONE 0, COLOR_CODE 1, NAC 2, RAN 3, CAN 4;
   the Qt store persists them), maps a protocol to its kind (`dsd_access_code_kind_for_protocol()`) and reads the live
   code from state the protocol set only from checked content (`dsd_access_code_current()`; the header names each check):
-  DMR `dmr_color_code` 0..15, P25 Phase 1 `nac` only and Phase 2 `p2_cc` only (0x001..0xFFE; no fallback between them,
-  since a Phase 1 NID of 0x000/0xFFF leaves `nac` 0 beside a stale `p2_cc`), and `p2_cc` only while `p2_cc_verified`
-  says this carrier proved it (see Protocols), NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in` marks it as a
-  value the terminal shows where the RAN goes but that is none (an IDAS area bit or DCR's fixed 7; see
+  DMR `dmr_color_code` 0..15, P25 Phase 1 `nac` only and Phase 2 `p2_proven_nac` only (0x001..0xFFE, dsd-neo's own
+  acceptance rule: a dead or stuck input decodes as NAC 0x000 or 0xFFF; no fallback between them, since a Phase 1 NID
+  of 0x000/0xFFF leaves `nac` 0 beside a stale seed), the NAC the latest checked Phase 2 proof on this carrier named
+  (see Protocols), never `p2_cc` unproven nor `rx_id`, NXDN `nxdn_last_ran` < 64 unless `nxdn_last_ran_stand_in`
+  marks it as a value the terminal shows where the RAN goes but that is none (an IDAS area bit or DCR's fixed 7; see
   Protocols), dPMR `dpmr_color_code` 0..63, M17 the service options' low nibble once the call has service metadata,
   TETRA the 6-bit colour code a CRC-checked trunked mode BSCH or a CRC-checked downlink block descrambled with it proved
   on this carrier, from the received identity record (`dsd_state::rx_id`), never `tetra_pub`'s network, which a
@@ -2086,7 +2111,10 @@ suite runs under this compiler.
   and `gate_no_tone`, the CTCSS/DCS receive policy's verdict (issue #527: OFF with no policy in force, PENDING while it
   checks, ALLOWED, REJECTED; `gate_no_tone` when no confirmed value decided it), `gate_rejected_ended` (1 once a
   rejected reception has ended with its carrier, until the next carrier or any other reset), a `generation`
-  bumped by every reset, input switch and input-rate change, and `stale_after_ms`, the real-time monotonic deadline
+  bumped by every reset, input switch and input-rate change, a `lock_epoch` bumped each time the verdict locks a tone
+  or code it did not hold the block before (a first lock, a lock after none within one carrier too, another value;
+  after the DCS precedence, never while one lock holds, never reset; issue #802), and `stale_after_ms`, the real-time
+  monotonic deadline
   (`dsd_realtime_mono_ms()`) past which the publication of an input that may pause (stdin, UDP, TCP, a live RTL-family
   radio stream) no longer describes the channel, 0 on inputs that never pause: files, Pulse and IQ replay).
   It rides the `vertex_ks_count..ui_msg` snapshot range beside `scan_timing`, pinned by a `_Static_assert` in
@@ -2825,8 +2853,10 @@ suite runs under this compiler.
     and conservative DC/edge-safe capture planning (`signal_search.h/.c`). `signal_search_hooks.h/.c`
     carries validated protocol evidence, CRC/FEC-checked site notes
     (`dsd_signal_search_note_site()`), call notes (`dsd_signal_search_note_call()`: a slot whose
-    canonical call record a protocol just published after its check; the engine reads the record)
-    and the decoder-thread active query, with no-op defaults. P25 Phase 2 scrambling codes (issue #804): code recovery
+    canonical call record a protocol just published after its check; the engine reads the record),
+    access notes (`dsd_signal_search_note_access()`: a checked proof gave the current protocol's
+    access code a new value; the engine reads the code, issue #802) and the decoder-thread active
+    query, with no-op defaults. P25 Phase 2 scrambling codes (issue #804): code recovery
     asks `dsd_signal_search_p25p2_codes()` once per window for the session's learned codes (at most what it asked for;
     0 without a provider), and the protocol reports each complete code checked content gave it through
     `dsd_signal_search_note_p25p2_code()` with its `dsd_p25p2_code_source` (`p25_search_site.h`, below). It also holds
@@ -4023,7 +4053,26 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     and carries nothing forward from an earlier publication. The access code is formatted only
     on confirmation callbacks, from the service options of the call the tuple names (its slot,
     the same ACTIVE, protocol and CRC checks); periodic status refreshes cannot promote it from
-    a subsequent unconfirmed sync, and keep the access code and tone the hit last had. The
+    a subsequent unconfirmed sync, and keep the access code and tone the hit last had. It is
+    read only while the decoder's sync type is of the hit's protocol family
+    (`dsd_engine_signal_search_family_matches()`: the coordinator's call-protocol name of the
+    sync type, `dsd_engine_signal_search_sync_protocol()`, is a prefix of the hit's protocol
+    as "NXDN" is of NXDN48; the coordinator's call and access gates use the same test): another protocol's site note
+    publishes the hit as changed too, and then the code the hit carries stays (issue #802
+    B1). Nor is it read while the receive policy rejects the code the decoder holds for that sync type
+    (`dsd_receive_code_rejects()`, the code alone: a slot filter never applies, and a code still CHECKING passes), so
+    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). M17's CAN read at the link setup
+    frame is carried through the stream frames after it, whose sync type the LSF's call record does not answer. The
+    received tone (issue #802 B3) is read from the rx tone view on every live publication of the hit: the latest
+    lock shows at once until some lock has been seen held 1 s (`SEARCH_TONE_HELD_MS`, decode
+    clock), and from then on the hit keeps the last lock so held, so a brief later lock (a
+    talk-off, a 150.0/151.4 Hz neighbour read, the old channel's tone) never replaces it. A
+    lock is held only while publications keep seeing the same `generation` and `lock_epoch`
+    with no unlocked view between them, which publication spacing cannot fake; anything but
+    a lock keeps the tones seen, the ended publication keeps the hit's tone, and a new
+    session, hit or protocol starts over. Holding 1 s does not validate a tone: a false lock
+    on a digital carrier held that long is the detection's tone. Test:
+    `APP_SIGNAL_SEARCH_PROVENANCE` (`test_detection_tone`). The
     callback reads the access code from state as it runs, so a protocol reports a confirmation
     only after committing the content that passed the check: M17's LSF, D-STAR's
     slow-data header and YSF's DCH report after publishing their callsigns (and M17's
@@ -5036,7 +5085,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   UDP or TCP producer that stopped sending, or a live radio stream whose source stopped, while the decoder waits for
   samples and cannot say so itself) reads as the em dash. A locked value this build cannot name (an unsupported
   frequency, a DCS code that is unsupported or not the canonical member of its alias class) reads `detecting`, never a
-  value. It carries the locked code and polarity in `dcs_code` / `dcs_inverted` beside `ctcss_tenths_hz`, and the same
+  value. It carries the publication's `generation` and `lock_epoch` (issue #802), and the locked code and polarity in
+  `dcs_code` / `dcs_inverted` beside `ctcss_tenths_hz`, and the same
   signal's other supported spelling in `dcs_alias_code` / `dcs_alias_inverted`: the text names both, canonical first.
   The first polarity reads normal and the second inverted for every supported code, whose
   inverted signal is another supported code's normal one; both are kept because a code is named with its polarity
@@ -5508,6 +5558,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     glue: the working state in `DSD_STATE_EXT_DSP_ANALOG_RX` (slot 9, heap, never deep-copied), the publication
     `dsd_state::analog_rx`, and the `Received tone:` LOG_INFO line on each change of verdict (every reset moves the
     publication's generation on and starts a new reception, which logs its verdict again, the same tone included).
+    The core numbers locks (issue #802): after every block the detectors heard, `core_note_lock()` compares the merged
+    verdict's lock (kind and tone or code, after the DCS precedence) with the one the block before left, and a lock
+    where there was none or another value moves `lock_epoch` on; a reset clears the comparison, never the count, and
+    a new session continues the published value as it continues the generation. So a reader that polls the
+    publication tells one unbroken lock from the same value locked again after a gap between its reads. The key it
+    compares is the `Received tone:` log key (`analog_rx_lock_key()`). Tests: `DSP_ANALOG_CTCSS`
+    (`test_lock_epoch_counts_each_lock`), `DSP_ANALOG_DCS` (`test_a_code_outranks_a_tone`), `ENGINE_CLEANUP_AUDIO`
+    (the count goes on across a reset with no session and into the next session).
     The publication's `boundaries` epoch (issue #756) is the session's count of hard boundaries the tap crossed: an
     announced reset (`dsd_analog_rx_reset()`, a TCP reconnect included, also at a block boundary with nothing
     collected), a generation or receive-profile move, a detected stream pause, a rate move and an FM/AM switch. Every
@@ -5612,7 +5670,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     closes a hop instead would let a carrier that keeps dropping out keep a stopped tone for good, once its openings
     missed every hop's end; this way each opening makes the two hops that read it count, and a dropout the hangover
     allows leaves at most three hops in a row without one. Every threshold is a ratio, so the RTL (~1/pi, live and
-    replay) and int16 PCM scales read the same.
+    replay) and int16 PCM scales read the same. Neither this detector nor the DCS one below knows when a carrier
+    is digital (issue #802 B2): they run only under analog-only monitoring, where no digital decoder runs, and a
+    digital carrier's repeated frames make steady sub-audible lines that can lock a CTCSS tone (233.6 Hz on
+    `dmr_voice`, 141.3 Hz on `tetra_cc_marginal_real_air_144k`) or a DCS code (one synthetic TETRA-frame signal),
+    which the tone policy, the rx tone view and analog call history then take as received; `docs/cli.md` "Received
+    tone" documents it as a limit.
   - `src/dsp/analog_dcs.c` is the DCS detector (issue #523), the first row of the table, so its lock outranks a CTCSS
     one. It undoes the front end's known 10 Hz DC blocker (`DSD_ANALOG_RX_DC_CORNER_HZ`) and puts a 0.5 Hz pole in its
     place, integrates each bit (the NRZ matched filter) at bit ends recovered by square-law timing recovery (the edge
@@ -8538,10 +8601,13 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   boundary, `p25p2_frame_forget_carrier()`, a contradicted window and any window on a proven carrier drop it; a
   contradicted window, or one only continuity places, neither solves nor confirms. The confirmed code is committed
   like a checked network status: WACN/SYSID through `p25_update_system_identity()`, the NAC into `p2_cc` (both clear
-  `p2_cc_verified` on a change), the line " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX" and
-  `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)` and a Signal search network site note with the
-  code's WACN and SYSID alone (`p25_search_note_recovered_network()`; no LRA, RFSS or site); the window then
-  descrambles with it and its confirming burst proves it through the verdict. Nothing else changes before the commit:
+  the seed's proof on a change, `dsd_state_forget_p2_proof()`), the line " P25p2 scrambling code recovered: WACN
+  %05llX SYSID %03llX NAC %03llX" and `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)`; the window
+  then descrambles with it and its confirming burst proves it through the verdict. The Signal search network site note
+  with the code's WACN and SYSID alone (`p25_search_note_recovered_network()`; no LRA, RFSS or site) waits for that
+  proof (`p25p2_seed_recover_note_proven()`, from `p25p2_note_seed_proven()` after the proven NAC is recorded), so the
+  search judges it by the code's NAC (issue #802 B11): a carrier whose NAC a receive filter blocks names no site. The
+  owed note goes with the first proof and with the carrier (`p25p2_seed_recover_forget()`). Nothing else changes before the commit:
   no counter, MAC, proof, identity, event or evidence. Allocation: the tables once per process and the context once
   per decoder state (at its first located window on an unproven carrier, freed with the state's extensions); nothing
   per window or burst. Cost: a `p2_cc_verified` read and a slot lookup per window on a proven carrier; on an unproven
@@ -8813,8 +8879,35 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`p25_frame_nac` with `p25_frame_nac_valid`), which a network status in that frame is paired with: invalid from every
   P25p1 sync until its NID decodes, after a NID that failed, was cut or was split by a carrier boundary, at every
   carrier boundary (`dsd_engine_forget_carrier_code_values()`) and at a trunk scan target switch.
+- A Phase 2 call's NAC is the carrier's proven NAC (`p2_proven_nac`, issue #802 B7/B8), -1 for none: the NAC the latest
+  checked Phase 2 proof on this carrier named. `p25p2_note_seed_proven()` sets it to the seed a burst descrambled with,
+  and a network status that passed its CRC to the NAC it carries, whatever seed is configured (a hand-set seed stays
+  the descrambler's, unproven while the broadcast names another NAC) and whether or not its control channel update was
+  taken (a followed voice channel's broadcast): `p25p2_vpdu_apply_nsb_identity()` notes it, and the NSB blocks again
+  beside the unconditional `p25_search_note_network_nac()`. The latest proof
+  wins: a hand-set A proven by a broadcast naming A, then a co-channel broadcast naming B, reads B, and a later burst
+  descrambled with A reads A again. 0x000 and 0xFFF prove nothing and leave the record as it was. Both go through
+  `p25_search_note_proven_nac()` (`p25_search_site.h`), which calls the Signal search access note whenever the record
+  takes a new value, from none included, whether or not the broadcast's site text changed: a final 2V burst's ESS, or
+  the burst carrying MAC_END_PTT, can prove the seed after the transmission's last evidence published the hit, and a
+  final network status can change the NAC under an unchanged WACN and SYSID, whose site note then changes nothing. The
+  seed proof's slot render runs when the seed is newly verified or the proven NAC first sets or changes, before the
+  burst's MAC PDU; a change ends a call heard under the NAC before it (the receive identity's change, issue #637), its
+  row reading that NAC, and the burst's MAC PDU opens the next call under the new one. One helper,
+  `dsd_state_forget_p2_proof()` (`state.h`), clears it with `p2_cc_verified` at every site that drops the seed's proof
+  (the carrier boundary's code forget, the no-carrier cleanup after generic trunk activity, a trunk scan target's
+  restore, a Phase 1 NID or a network status that changes the seed, a WACN or SYSID change
+  (`p25_update_system_identity()`), a recovered scrambling code that changes the seed, Signal search's site release
+  after a visit, a CC selection's site forget, `-X`, the menu's hand-set seed, initState), so a previous transmission's or a Phase 1 NID's NAC is never read as a Phase 2 proof; a
+  stream gap keeps it, as it keeps the seed's proof. `rx_id` is not read for it: it outlives the carrier for display
+  and a Phase 1 NID writes the same P25 record. The trunk scan snapshot saves and restores it with the seed's proof.
+  Every reader of `dsd_access_code_current()` takes it: Signal search, call history and events, the API feed and the
+  receive policy, which for a hand-set seed a checked broadcast contradicts matches on the broadcast's NAC
+  (`CORE_ACCESS_CODE`, `P25_SEARCH_SITE_NOTES`, `P25_P2_ESS_CARRIER`, `P25_P1_SYNC_DISPATCH`, `ENGINE_NO_CARRIER_RESET`,
+  `ENGINE_SIGNAL_SEARCH`).
 - Trunk scan skips both resets (`preserve_scan_state`): the per-target snapshot saves and restores the DMR colour code
-  with its confidence lock, the RAN with its stand-in mark, `p2_cc` with its proof, and the conventional grant pair.
+  with its confidence lock, the RAN with its stand-in mark, `p2_cc` with its proof and the proven NAC, and the
+  conventional grant pair.
   What the decoders gathered on the carrier is in no snapshot: a target switch (`trunk_scan_switch_to()`) forgets it
   between saving the outgoing target and restoring the incoming one (`dsd_engine_forget_carrier_decoding()`, the
   evidence and assemblies of the boundary's step 3). The decoder-wide values stay global: `carrier_seq` only counts
@@ -8841,8 +8934,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      Core, "Recording journal", carrier departures).
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
      its stand-in mark, the dPMR colour code, the Phase 1 NAC with the last Phase 1 frame's, and the seed's proof (never
-     `p2_cc`). The NAC goes because a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves `state->nac` as it
-     was (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
+     `p2_cc`). The NAC goes because a NID whose BCH-decoded NAC is 000 or FFF, which dsd-neo refuses as its own
+     acceptance rule (a dead or stuck input decodes as either), leaves `state->nac` as it was
+     (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
      evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
      its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict, the Phase 1 NID's
      evidence and the two-slot TDMA verdict (`tdma_carrier`, see UI, Qt, "Second-slot strip") go, as the no-carrier pass
@@ -9004,9 +9098,9 @@ the message passed its own check, with that message's values, an unchanged repea
   carries as the search binds it, and the location registration area; a Phase 2 network status also notes the NAC it
   carries (`p25_search_note_network_nac()`), so an unscrambled SACCH's records its own NAC whatever seed is set. Phase 2
   MACs note only with `ctx->crc_ok` (`p25p2_vpdu_system_tables_writable()`). The Phase 1 NID's NAC at the BCH accept
-  (`p25p1_apply_nac_update()`, reserved $000/$FFF excluded, never a NAC the observed-NAC retry put in); the Phase 2
-  seed's WACN, SYSID and NAC once a burst descrambled with the whole seed passed RS with its parity kept
-  (`p25p2_note_seed_proven()`). The control channel at
+  (`p25p1_apply_nac_update()`, $000/$FFF excluded by dsd-neo's own acceptance rule, never a NAC the observed-NAC retry
+  put in); the Phase 2 seed's WACN, SYSID and NAC once a burst descrambled with the whole seed passed RS with its
+  parity kept (`p25p2_note_seed_proven()`). The control channel at
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
 - DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
   dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III
@@ -9483,8 +9577,9 @@ Private per-protocol modules worth knowing about:
   the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control channel fill-in
   (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan snapshot restores
   (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). A recovered Phase 2 scrambling code (issue #804) adds a network
-  note with its WACN and SYSID alone at its commit (`p25_search_note_recovered_network()`, `P25_P2_SEED_RECOVER`): the
-  carrier's own checked scrambling names that system. The same checked network statuses feed the session's code list
+  note with its WACN and SYSID alone once the committed code's first burst proves it
+  (`p25_search_note_recovered_network()`, `P25_P2_SEED_RECOVER`): the carrier's own checked scrambling names that
+  system, judged by the NAC that proof recorded. The same checked network statuses feed the session's code list
   (`dsd_signal_search_note_p25p2_code()`, `p25_search_note_p25p2_code()`, issue #804): a Phase 2 one with its own
   WACN, SYSID and NAC (`DSD_P25P2_CODE_P2_NETWORK`), a TSBK or MBT one with its WACN and SYSID and the NAC of the NID
   of the frame that carried it (`p25_search_note_p1_network_code()`, `DSD_P25P2_CODE_P1_NETWORK`), only while
@@ -10371,10 +10466,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   and scale) and shortens only the range name, so the pass and channel count always show
   whole. Its sixth cell, More, opens the
   detection menu (`tst_signal_search.qml`). `hitMap()` passes the hit's checked `site`,
-  `slot` and `crypt` through; the panel's two-line detail (`detailText()`) reads site,
-  access, tone, `Slot N`, target, source, then crypt, eliding within the two lines with
-  the whole text as its accessible name and description, and a history row shows site and
-  crypt under its verdict. `hitMap()` also gives `recordingKey` (issue #809), `"<session>:<hit>"`
+  `slot` and `crypt`, its `access` code and its received `tone` through; the panel's
+  two-line detail (`detailText()`) reads site, access, tone, `Slot N`, target, source,
+  then crypt, eliding within the two lines with the whole text as its accessible name and
+  description, and a history row shows site, access, tone and crypt under its verdict
+  (`detailText()`'s order without the call, empty values left out; issue #802). The tone
+  is what the analog monitor heard, not checked signalling. Text that can hold over-the-air,
+  imported or typed words (the Now detail, saved names, the phase and status lines, the
+  message, history rows, `PlexCheckBox` labels) is `Text.PlainText`, so a `<b>` in a
+  callsign or name is drawn and measured as written (issue #802 B4). `hitMap()` also
+  gives `recordingKey` (issue #809), `"<session>:<hit>"`
   formatted in C++ from the two `uint64_t`s, never through a JS number, and empty while either
   is 0 (the live hit with no detection current): the recording store's
   key for the detection's recordings (`recordingCountForDetection()`, `recordingsForDetection()`);
@@ -13785,6 +13886,12 @@ Preserve each file's existing QML formatting and use focused manual edits. Do no
 run whole-file `qmlformat` during a functional change; no automatic QML formatting
 settings are prescribed. MonitorScreen's existing expanded style is retained.
 Text sizes use `Theme.fontSize(pixels)`, with the platform scale bounded to 1–1.6.
+Text that can show a typed, imported (CSV, RadioReference, backup) or received string, or an error quoting one, is
+`Text.PlainText`, because Qt's default AutoText draws a first line holding a tag (`<b>`) or `&lt;` as markup (issue
+#802): `ReadableText` (so `LiveText`), `MicroLabel` and the pieces that draw a caller's label (`OutlineButton`,
+`FilterPill`, `PlexCheckBox`, `PlexComboBox`, `PlexTextField`, `DisclosureRow`, `ToggleRow`, `ChoiceSheet`'s title) are
+plain already, and a bare `Text` showing one sets it. Only app-authored markup is styled (`RadioReferenceAccountEditor`'s
+link, `Util.summaryMarkup()`, which escapes its tokens).
 A binding that mixes an item's own state (`visible`, `enabled`) with `Navigation.allows()` reads the gate first
 (`Accessible.ignored: !navigationAllowed || !visible`): the gate's walk up the parents can settle an ancestor's pending
 `parent:` binding (MonitorScreen's tier groups), and state read before it would change under the running binding, a
@@ -14165,8 +14272,12 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
 - `core/receive_types.h` owns bounded filter bitsets, naming rules and received identities. Runtime's
   `receive_policy.h` parses/validates CLI, INI, CSV and command edits; the frame path only matches pre-parsed data.
   `core/receive.h` supplies explicit protocol/slot admission from validated DCC/RAN/NAC/tone evidence. A P25 Phase 2
-  seed without proof and NXDN stand-in values stay unknown. Shared-vocoder invocations carry their owning protocol
-  through `dsd_state::receive_context_*`, since YSF/dPMR temporarily borrow another protocol's decoder.
+  seed without proof and NXDN stand-in values stay unknown. `dsd_receive_current_status()` is the verdict
+  `dsd_receive_current_allows()` reduces to yes or no, for the same current protocol, so a caller can tell REJECTED
+  from CHECKING (Signal search, issue #802 B9). `dsd_receive_code_rejects()` judges a protocol's verified code alone,
+  without the slot filter, for carrier-level facts such as a site broadcast (Signal search, issue #802 B11).
+  Shared-vocoder invocations carry their owning protocol through `dsd_state::receive_context_*`, since YSF/dPMR
+  temporarily borrow another protocol's decoder.
 - Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
   acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into
   a hold. Restoring a scan target preserves acquisition hints but clears its current received-code proof. The P25 and

@@ -2091,6 +2091,79 @@ test_carrier_hangover(void) {
     assert(after.generation != before.generation);
 }
 
+/* The lock a publication shows, as one number: 0 for none, a CTCSS tone's tenths, or -1 for a DCS lock. */
+static int
+published_lock(const dsd_analog_rx_publication* pub) {
+    if (pub->tone_state != DSD_ANALOG_TONE_STATE_LOCKED) {
+        return 0;
+    }
+    return pub->tone_kind == DSD_ANALOG_TONE_KIND_DCS ? -1 : pub->ctcss_tenths_hz;
+}
+
+/* Feed @p ms of 960-sample blocks at 48 kHz: @p tone's tone when @p tone_on, over a low noise floor that keeps the
+   carrier open either way. After every block the lock epoch must have moved exactly when the published lock changed to
+   a lock the block before did not show; *@p epoch tracks that expectation and *@p shown the lock last shown. Returns
+   the lock showing at the end. */
+static int
+feed_and_count_locks(synth_tone* tone, int tone_on, double ms, synth_rng* rng, uint32_t* epoch, int* shown) {
+    float block[960];
+    const int64_t blocks = ms_to_samples(48000, ms) / 960;
+    for (int64_t b = 0; b < blocks; b++) {
+        for (int i = 0; i < 960; i++) {
+            const float t = synth_tone_next(tone);
+            block[i] = (tone_on ? t : 0.0f) + (float)(0.01 * synth_gauss(rng));
+        }
+        assert(dsd_analog_rx_core_process(&g_core, block, 960, 48000, 1) == 1);
+        dsd_analog_rx_publication pub;
+        dsd_analog_rx_core_publish(&g_core, &pub);
+        const int lock = published_lock(&pub);
+        if (lock != 0 && lock != *shown) {
+            ++*epoch;
+        }
+        *shown = lock;
+        assert(pub.carrier_open == 1 && pub.lock_epoch == *epoch);
+    }
+    return *shown;
+}
+
+/* Issue #802: the lock epoch counts locks, not blocks or receptions. A first lock, another tone, and the same tone lost
+   and found again under one unbroken carrier (one generation) each start an epoch; one tone held for seconds does not;
+   a reset starts a new generation and the next lock a new epoch, the counter going on. */
+static void
+test_lock_epoch_counts_each_lock(void) {
+    dsd_analog_rx_core_init(&g_core);
+    synth_rng rng;
+    synth_rng_seed(&rng, 802ULL);
+    synth_tone tone = {48000, 100.0, 0.1, 0.0};
+    uint32_t epoch = 0;
+    int shown = 0;
+    assert(feed_and_count_locks(&tone, 1, 1000.0, &rng, &epoch, &shown) == 1000);
+    assert(epoch == 1U);
+    dsd_analog_rx_publication pub;
+    dsd_analog_rx_core_publish(&g_core, &pub);
+    const uint32_t generation = pub.generation;
+
+    /* Held for three seconds: the same epoch throughout. */
+    assert(feed_and_count_locks(&tone, 1, 3000.0, &rng, &epoch, &shown) == 1000 && epoch == 1U);
+
+    /* Another tone on the same carrier, phase-continuous: a new epoch. */
+    tone.hz = 136.5;
+    assert(feed_and_count_locks(&tone, 1, 2000.0, &rng, &epoch, &shown) == 1365 && epoch == 2U);
+
+    /* The tone stops under the carrier and comes back: lost, then a new epoch for the same tone. */
+    assert(feed_and_count_locks(&tone, 0, 2000.0, &rng, &epoch, &shown) == 0 && epoch == 2U);
+    assert(feed_and_count_locks(&tone, 1, 2000.0, &rng, &epoch, &shown) == 1365 && epoch == 3U);
+    dsd_analog_rx_core_publish(&g_core, &pub);
+    assert(pub.generation == generation && pub.lock_epoch == 3U);
+
+    /* A reset is a new reception: a new generation, and the same tone locking again is a new epoch, counted on. */
+    dsd_analog_rx_core_reset(&g_core);
+    dsd_analog_rx_core_publish(&g_core, &pub);
+    assert(pub.generation != generation && pub.lock_epoch == 3U);
+    shown = 0;
+    assert(feed_and_count_locks(&tone, 1, 1000.0, &rng, &epoch, &shown) == 1365 && epoch == 4U);
+}
+
 /* Below 2.4 kHz there is no sub-audible band to keep: detection says so and stays out. A core
    that has seen no block yet is INACTIVE; one designed for an unusable rate is UNAVAILABLE. The
    carrier is kept at every rate all the same (issue #526: the scanners hold an analog row on it),
@@ -2165,6 +2238,7 @@ main(void) {
     test_silent_window_is_defined_and_rejected();
     test_unusable_rate();
     test_carrier_hangover();
+    test_lock_epoch_counts_each_lock();
     test_block_size_does_not_move_the_verdict();
     test_scale_invariance();
     test_adjacent_low_tones_are_distinguished();

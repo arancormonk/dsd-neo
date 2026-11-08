@@ -115,6 +115,8 @@ Rectangle {
     Text {
         id: placeholder
         Accessible.ignored: true
+        // Plain, as the field and its label and helper lines are.
+        textFormat: Text.PlainText
 
         anchors.fill: input
         verticalAlignment: Text.AlignVCenter

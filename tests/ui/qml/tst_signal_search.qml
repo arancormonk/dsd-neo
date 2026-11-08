@@ -85,6 +85,9 @@ Item {
             loader.item.sessionSource = {};
             loader.item.sourceType = "usb";
             loader.item.resetView();
+            // A test that renames the range restores it even when it fails.
+            if (model.ranges.length > 0 && model.ranges[0].name !== "Local UHF")
+                model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
         }
         function init() {
             verify(loader.item !== null);
@@ -922,6 +925,160 @@ Item {
             verify(!/[^·\n] /.test(rows[0].text), "a value never splits across lines");
             compare(rows[0].Accessible.name, "DMR · confirmed · ended · TIII Small · Net 12 · Site 3 · SYS 1183 · ALG 21 · KID 0001 · Warehouse · 462.5750 MHz");
             model.history = [];
+        }
+        // Issue #802: under its verdict a row reads the site, access code, tone
+        // and encryption the detection last had, in the Now panel's order
+        // without the call; a value it never had is left out, with no
+        // placeholder. The saved names and the recordings stay on their own
+        // lines after it.
+        function test_history_row_shows_access_and_tone() {
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            model.history = [historyHit({confirmed: true, protocol: "DMR", site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100,
+                    source: 2001, crypt: "ALG 21 · KID 0001", knownLabel: "Warehouse / Dock security"}),
+                historyHit({id: "61", recordingKey: "17:61", tone: "CTCSS 127.3 Hz"}),
+                historyHit({id: "62", recordingKey: "17:62", tone: "DCS D023N / D047I"}),
+                historyHit({id: "63", recordingKey: "17:63", confirmed: true, protocol: "P25", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", crypt: "Encrypted"}),
+                historyHit({id: "64", recordingKey: "17:64", confirmed: true, protocol: "DMR", access: "CC 1"}),
+                historyHit({id: "65", recordingKey: "17:65", confirmed: true, protocol: "NXDN48", site: "Site 12 · Sys 3", access: "RAN 5"}),
+                historyHit({id: "66", recordingKey: "17:66"}),
+                historyHit({id: "67", recordingKey: "17:67", ended: false, tone: "CTCSS 127.3 Hz"})];
+            loader.item.historyLimit = 8;
+            var rows = findChildren(loader.item, "searchHistoryDetail");
+            compare(rows.length, 8);
+            var expected = ["DMR · confirmed · ended\nTIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · ALG 21 · KID 0001\nWarehouse / Dock security\n3 recordings",
+                "RF only · ended\nCTCSS 127.3 Hz",
+                "RF only · ended\nDCS D023N / D047I",
+                "P25 · confirmed · ended\nWACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Encrypted",
+                "DMR · confirmed · ended\nCC 1",
+                "NXDN48 · confirmed · ended\nSite 12 · Sys 3 · RAN 5",
+                "RF only · ended",
+                "RF only\nCTCSS 127.3 Hz"];
+            for (var i = 0; i < expected.length; ++i) {
+                compare(rows[i].fullText, expected[i], "row " + i);
+                compare(rows[i].Accessible.name, expected[i].replace(/\n/g, " · "), "row " + i + " reads its whole text");
+                compare(rows[i].text.replace(/\u00a0/g, " "), expected[i], "row " + i + " draws its whole text");
+                verify(!/[^·\n] /.test(rows[i].text), "a value never splits across lines in row " + i);
+            }
+            model.history = [];
+        }
+        // The narrowest row (360 dp, the largest text), in both appearances:
+        // the longest site with its NAC and encryption, and a DCS pair, wrap
+        // only between values and stay inside their row.
+        function test_history_access_and_tone_large_text_360_data() {
+            return [{tag: "dark", appearance: 2}, {tag: "light", appearance: 1}];
+        }
+        function test_history_access_and_tone_large_text_360(data) {
+            testContext.setPrefs("appearance", data.appearance);
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            model.history = [historyHit({confirmed: true, protocol: "P25", site: longestSite, access: "NAC 293", crypt: "ALG 132 · KID 0001"}),
+                historyHit({id: "61", recordingKey: "17:61", tone: "DCS D023N / D047I"}),
+                historyHit({id: "62", recordingKey: "17:62", tone: "CTCSS 127.3 Hz"})];
+            wait(0);
+            var rows = findChildren(loader.item, "searchHistoryRow");
+            var details = findChildren(loader.item, "searchHistoryDetail");
+            compare(details.length, 3);
+            for (var i = 0; i < details.length; ++i) {
+                var detail = details[i];
+                var drawn = renderedLineStarts(detail, detail.text, detail.width);
+                compare(drawn.lines, detail.lineCount, "the mirror wraps as row " + i + " does");
+                for (var start of drawn.starts)
+                    verify(start.trim().charAt(0) !== "·", "a drawn line of row " + i + " starts with a separator: " + JSON.stringify(drawn.starts));
+                verify(detail.mapToItem(rows[i], 0, 0).x + detail.width <= rows[i].width + 0.5, "row " + i + "'s detail stays inside its row");
+                verify(detail.mapToItem(rows[i], 0, 0).y + detail.height <= rows[i].height + 0.5, "row " + i + "'s detail stays inside its row");
+            }
+            verify(details[0].lineCount > 2, "the longest site wraps at this size");
+            verify(details[0].text.indexOf("NAC\u00a0293") >= 0 && details[0].text.indexOf("ALG\u00a0132") >= 0, "the code and encryption stay whole");
+            verify(details[1].text.indexOf("DCS\u00a0D023N\u00a0/\u00a0D047I") >= 0, "a DCS pair stays whole");
+            verify(details[2].text.indexOf("CTCSS\u00a0127.3\u00a0Hz") >= 0, "a CTCSS tone stays whole");
+            model.history = [];
+        }
+        // A larger text after the rows exist re-decides which values stay
+        // whole: the row reads its metrics' font, so a value that fit at the
+        // old size but no longer does wraps at its words instead of breaking
+        // before its separator.
+        function test_history_row_rewraps_on_font_scale() {
+            root.width = 360;
+            model.history = [historyHit({confirmed: true, protocol: "DMR", access: "CC 1", knownLabel: "Northern District Fire / Engine 42"})];
+            wait(0);
+            var detail = findChild(loader.item, "searchHistoryDetail");
+            var before = detail.text;
+            Ui.Theme.fontScale = 1.6;
+            wait(0);
+            var metrics = Qt.createQmlObject("import QtQuick; FontMetrics {}", root);
+            metrics.font = detail.font;
+            var expected = loader.item.keepValues(detail.fullText, detail.width, metrics);
+            metrics.destroy();
+            verify(expected !== before, "the larger text changes which values stay whole");
+            compare(detail.text, expected);
+            model.history = [];
+        }
+        // Issue #802 B4: text from the air (a D-STAR callsign), a saved name
+        // and a range name are drawn as written, never as markup, so what is
+        // drawn and measured is what a screen reader reads.
+        function plainWidth(text) {
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            mirror.font = text.font;
+            mirror.leftPadding = text.leftPadding;
+            mirror.rightPadding = text.rightPadding;
+            mirror.text = text.text;
+            var width = mirror.implicitWidth;
+            mirror.destroy();
+            return width;
+        }
+        function verifyPlain(text, tag) {
+            compare(text.textFormat, Text.PlainText, tag + " is plain text");
+            verify(text.text.indexOf("<b>") >= 0, tag + " holds the tag as written");
+            verify(Math.abs(text.implicitWidth - plainWidth(text)) <= 0.5, tag + " measures as plain text: " + text.implicitWidth + " vs " + plainWidth(text));
+        }
+        function test_air_and_typed_text_is_plain() {
+            var screen = loader.item;
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {confirmed: true, protocol: "D-STAR", unresolved: false,
+                targetText: "<b>CQCQCQ", sourceText: "N0CALL", knownNames: ["<b>Warehouse</b>", "Dock"]})});
+            var detail = findChild(screen, "searchDetail");
+            tryCompare(detail.Accessible, "description", "<b>CQCQCQ · N0CALL");
+            verifyPlain(detail, "the Now detail");
+            var saved = findChild(screen, "searchSaved");
+            verifyPlain(saved, "the saved names");
+            compare(saved.Accessible.name, "Saved frequency: <b>Warehouse</b>, Dock");
+            // A range name between detections: the phase and the status line.
+            model.status = Object.assign({}, model.status, {phase: 1, rangeName: "<b>North</b>", hit: {}});
+            var identification = findChild(screen, "searchIdentification");
+            compare(identification.text, "Searching <b>North</b>…");
+            verifyPlain(identification, "the phase line");
+            compare(identification.Accessible.name, "Searching <b>North</b>…");
+            verifyPlain(findChild(screen, "searchStatusLine"), "the status line");
+            // A failure can carry a device or path name.
+            root.hostFailure = "Cannot open <b>/dev/rtl0</b>";
+            var message = findChild(screen, "searchMessage");
+            verifyPlain(message, "the message");
+            compare(message.Accessible.name, "Cannot open <b>/dev/rtl0</b>");
+            root.hostFailure = "";
+            // A saved name on a history row. Its first line is the fixed
+            // verdict, which AutoText alone would read, so the row drew the
+            // name as written before too: plain text keeps it so should a
+            // value ever lead the row.
+            model.history = [historyHit({knownLabel: "<b>Dock</b>"})];
+            var row = findChild(screen, "searchHistoryDetail");
+            compare(row.textFormat, Text.PlainText);
+            verify(row.text.indexOf("<b>Dock</b>") >= 0, "the row holds the tag as written");
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            mirror.font = row.font;
+            mirror.width = row.width;
+            mirror.wrapMode = row.wrapMode;
+            mirror.text = row.text;
+            compare(row.lineCount, mirror.lineCount, "the row wraps as plain text does");
+            verify(Math.abs(row.contentWidth - mirror.contentWidth) <= 0.5, "the row draws as plain text: " + row.contentWidth + " vs " + mirror.contentWidth);
+            mirror.destroy();
+            compare(row.Accessible.name, "RF only · ended · <b>Dock</b>");
+            model.history = [];
+            // The range list (cleanup() restores its name).
+            model.ranges = [Object.assign({}, model.ranges[0], {name: "<b>North</b>"})];
+            screen.rangesExpanded = true;
+            var range = findChild(screen, "searchRangeEnabled");
+            verify(range !== null && range.visible);
+            compare(range.contentItem.text, "<b>North</b> · 450.000000–460.000000 MHz");
+            verifyPlain(range.contentItem, "the range list");
         }
         // Wider, every cell fits the widest label: three equal columns.
         function test_now_actions_use_three_columns_when_they_fit() {
@@ -1817,8 +1974,9 @@ Item {
             wait(100);
             grabImage(root).save("/tmp/dsd-signal-search-menu.png");
             findChild(loader.item, "searchDetectionMenu").cancel();
-            model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz", confirmed: true, protocol: "P25 Phase 1", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2"}),
-                historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false, site: "TIII Small · Net 12 · Site 3 · SYS 1183", slot: 2, crypt: "Encrypted"})];
+            model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz", confirmed: true, protocol: "P25 Phase 1", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293"}),
+                historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false, site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, crypt: "Encrypted"}),
+                historyHit({id: "38", recordingKey: "17:38", tone: "DCS D023N / D047I"})];
             var scroll = findChild(loader.item, "searchScroll");
             for (var scale of [1.0, 1.6]) {
                 Ui.Theme.fontScale = scale;

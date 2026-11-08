@@ -21,7 +21,8 @@ typedef struct {
 /* The format for @p kind, or NULL for a kind this build does not know (DSD_ACCESS_CODE_NONE included). */
 static const access_code_format*
 access_code_format_for(uint8_t kind) {
-    /* dPMR's and TETRA's colour codes run to 63, DMR's to 15. The P25 NID reserves NAC 0x000 and 0xFFF. */
+    /* dPMR's and TETRA's colour codes run to 63, DMR's to 15. dsd-neo takes no P25 NAC 0x000 or 0xFFF: a dead or stuck
+       input decodes as either. */
     static const access_code_format color_code = {"CC", "Color code", 0U, 63U, 0};
     static const access_code_format nac = {"NAC", "Network access code", 0x001U, 0xFFEU, 1};
     static const access_code_format ran = {"RAN", "Radio access number", 0U, 63U, 0};

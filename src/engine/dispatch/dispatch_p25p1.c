@@ -180,7 +180,7 @@ p25p1_apply_nac_update(dsd_state* state, int new_nac) {
     if (state->p2_hardset == 0 && valid_nac && state->p2_cc != (unsigned long long)new_nac
         && (state->p2_cc == 0ULL || new_nac != state->nac)) {
         state->p2_cc = (unsigned long long)new_nac;
-        state->p2_cc_verified = 0U; // a Phase 1 NID proves no Phase 2 seed (issue #575)
+        dsd_state_forget_p2_proof(state); // a Phase 1 NID proves no Phase 2 seed or NAC (issue #575, #802)
     }
     if (new_nac != state->nac) {
         if (valid_nac) {

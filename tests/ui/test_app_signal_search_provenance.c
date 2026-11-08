@@ -10,11 +10,13 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/signal_search.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -138,13 +140,237 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
     return 1;
 }
 
+/* The received tone the view reports: hidden (the view's 0) until a case sets it. */
+static dsd_app_rx_tone rx_tone;
+static int rx_tone_rc;
+
 int
 dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now, dsd_app_rx_tone* out) {
     (void)opts;
     (void)state;
     (void)now;
-    (void)out;
-    return 0;
+    *out = rx_tone;
+    return rx_tone_rc;
+}
+
+/* The view reports a lock: @p text, of reception @p generation and lock @p epoch. */
+static void
+rx_tone_locked(const char* text, uint32_t generation, uint32_t epoch) {
+    DSD_MEMSET(&rx_tone, 0, sizeof(rx_tone));
+    rx_tone_rc = 1;
+    rx_tone.visible = 1U;
+    rx_tone.status = DSD_APP_RX_TONE_LOCKED;
+    rx_tone.carrier_open = 1U;
+    rx_tone.generation = generation;
+    rx_tone.lock_epoch = epoch;
+    DSD_SNPRINTF(rx_tone.text, sizeof(rx_tone.text), "%s", text);
+}
+
+/* The view reports no lock: @p status with its text, or hidden for DSD_APP_RX_TONE_HIDDEN. */
+static void
+rx_tone_unlocked(int status, const char* text) {
+    DSD_MEMSET(&rx_tone, 0, sizeof(rx_tone));
+    rx_tone_rc = status == DSD_APP_RX_TONE_HIDDEN ? 0 : 1;
+    rx_tone.visible = rx_tone_rc ? 1U : 0U;
+    rx_tone.status = (uint8_t)status;
+    DSD_SNPRINTF(rx_tone.text, sizeof(rx_tone.text), "%s", text);
+}
+
+/* A live publication of @p status's hit at decode time @p ms, a periodic refresh unless @p changed; returns the tone
+   the published hit carries. */
+static const char*
+publish_at(dsd_signal_search_status* status, uint64_t ms, int changed) {
+    dsd_decode_clock_test_set_ns(ms * 1000000ULL);
+    observer(status, changed ? &status->hit : NULL, observer_user);
+    return published.hit.tone;
+}
+
+/* A new analog detection, nothing locked on it yet. */
+static void
+new_tone_hit(dsd_signal_search_status* status, uint64_t hit_id) {
+    status->hit.hit_id = hit_id;
+    status->hit.ended = 0;
+    status->hit.confirmed = 0;
+    status->hit.protocol[0] = '\0';
+    rx_tone_unlocked(DSD_APP_RX_TONE_DETECTING, "detecting");
+    assert(publish_at(status, 0, 1)[0] == '\0');
+}
+
+#define A_TONE   "CTCSS 100.0 Hz"
+#define B_TONE   "CTCSS 136.5 Hz"
+#define DCS_CODE "DCS D023N / D047I"
+
+/* Issue #802 B3: a detection's tone is the latest lock until one lock has been seen held 1 s (decode time), then the
+   last lock so held; a brief lock after that never replaces it. */
+static void
+test_detection_tone(void) {
+    dsd_decode_clock_use_test(0);
+    dsd_signal_search_status status = {0};
+    status.session_id = status.hit.session_id = 7;
+    status.phase = DSD_SEARCH_LISTENING;
+
+    // The first lock shows at once, before it has been held for any time (no minimum for a first tone).
+    new_tone_hit(&status, 100);
+    rx_tone_locked(A_TONE, 1, 1);
+    assert(strcmp(publish_at(&status, 0, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 1000, 0), A_TONE) == 0); // held 1 s: established
+    // A 0.3 s lock of another tone after it (a talk-off) never replaces the established tone, live or ended.
+    rx_tone_locked(B_TONE, 1, 2);
+    assert(strcmp(publish_at(&status, 1100, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 1400, 1), A_TONE) == 0);
+    // Neither no tone nor the carrier's end clears it.
+    rx_tone_unlocked(DSD_APP_RX_TONE_NONE, "none");
+    assert(strcmp(publish_at(&status, 1500, 0), A_TONE) == 0);
+    rx_tone_unlocked(DSD_APP_RX_TONE_DETECTING, "detecting");
+    assert(strcmp(publish_at(&status, 1600, 0), A_TONE) == 0);
+    rx_tone_unlocked(DSD_APP_RX_TONE_NO_CARRIER, "\xE2\x80\x94");
+    assert(strcmp(publish_at(&status, 1700, 0), A_TONE) == 0);
+    rx_tone_unlocked(DSD_APP_RX_TONE_HIDDEN, "");
+    assert(strcmp(publish_at(&status, 1800, 0), A_TONE) == 0);
+    // Another tone held 1.2 s does replace it, once it has been seen held 1 s.
+    rx_tone_locked(B_TONE, 2, 3);
+    assert(strcmp(publish_at(&status, 2000, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 2600, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 3000, 0), B_TONE) == 0);
+    assert(strcmp(publish_at(&status, 3200, 0), B_TONE) == 0);
+    status.hit.ended = 1;
+    assert(strcmp(publish_at(&status, 3300, 1), B_TONE) == 0);
+
+    // Before any lock is held 1 s the latest lock shows, so the detector's quick corrections reach a short reception:
+    // 150.0 Hz read first, then 151.4 Hz, then a code that outranks the tone; the ended hit keeps the code.
+    new_tone_hit(&status, 101);
+    rx_tone_locked("CTCSS 150.0 Hz", 1, 1);
+    assert(strcmp(publish_at(&status, 100, 0), "CTCSS 150.0 Hz") == 0);
+    rx_tone_locked("CTCSS 151.4 Hz", 1, 2);
+    assert(strcmp(publish_at(&status, 200, 0), "CTCSS 151.4 Hz") == 0);
+    rx_tone_locked(DCS_CODE, 1, 3);
+    assert(strcmp(publish_at(&status, 300, 0), DCS_CODE) == 0);
+    rx_tone_unlocked(DSD_APP_RX_TONE_NONE, "none");
+    assert(strcmp(publish_at(&status, 600, 0), DCS_CODE) == 0);
+    status.hit.ended = 1;
+    assert(strcmp(publish_at(&status, 900, 1), DCS_CODE) == 0);
+
+    // The same text under a new lock epoch is a new lock (the tone was lost and found again between two publications):
+    // its held time starts over.
+    new_tone_hit(&status, 102);
+    rx_tone_locked(A_TONE, 1, 1);
+    assert(strcmp(publish_at(&status, 0, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 1000, 0), A_TONE) == 0);
+    rx_tone_locked(B_TONE, 1, 2);
+    assert(strcmp(publish_at(&status, 1100, 0), A_TONE) == 0);
+    rx_tone_locked(B_TONE, 1, 3);
+    assert(strcmp(publish_at(&status, 1800, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 2700, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 2800, 0), B_TONE) == 0);
+
+    // Publications can be seconds apart: a lock seen 2 s after another epoch of the same text was seen has not been
+    // seen held, so it does not replace the established tone.
+    new_tone_hit(&status, 103);
+    rx_tone_locked(A_TONE, 1, 1);
+    assert(strcmp(publish_at(&status, 0, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 1000, 0), A_TONE) == 0);
+    rx_tone_locked(B_TONE, 1, 2);
+    assert(strcmp(publish_at(&status, 1100, 0), A_TONE) == 0);
+    rx_tone_locked(B_TONE, 1, 3);
+    assert(strcmp(publish_at(&status, 3100, 0), A_TONE) == 0);
+    // ... nor does one under a new generation (a reset between them), even at the same epoch.
+    rx_tone_locked(B_TONE, 2, 3);
+    assert(strcmp(publish_at(&status, 5100, 0), A_TONE) == 0);
+    // ... nor the same lock after a publication that saw no lock: the candidate ended there.
+    rx_tone_unlocked(DSD_APP_RX_TONE_NONE, "none");
+    assert(strcmp(publish_at(&status, 5200, 0), A_TONE) == 0);
+    rx_tone_locked(B_TONE, 2, 3);
+    assert(strcmp(publish_at(&status, 5300, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 6200, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 6300, 0), B_TONE) == 0);
+
+    // Issue #802 limit (no tone detector change): a false lock on a carrier Signal search could not confirm, held 1 s,
+    // is the established tone; a real tone held under 1 s after it does not replace it, and the ended hit keeps it.
+    new_tone_hit(&status, 104);
+    rx_tone_locked("CTCSS 233.6 Hz", 1, 1);
+    assert(strcmp(publish_at(&status, 500, 0), "CTCSS 233.6 Hz") == 0);
+    assert(strcmp(publish_at(&status, 1500, 0), "CTCSS 233.6 Hz") == 0);
+    rx_tone_locked(A_TONE, 1, 2);
+    assert(strcmp(publish_at(&status, 1600, 0), "CTCSS 233.6 Hz") == 0);
+    assert(strcmp(publish_at(&status, 2500, 0), "CTCSS 233.6 Hz") == 0);
+    rx_tone_unlocked(DSD_APP_RX_TONE_NO_CARRIER, "\xE2\x80\x94");
+    status.hit.ended = 1;
+    assert(strcmp(publish_at(&status, 2700, 1), "CTCSS 233.6 Hz") == 0);
+
+    // A protocol change resets the tone: an established tone does not survive into the confirmed protocol's hit, and
+    // nothing of it holds there (a new lock shows as the first lock of a new hit).
+    new_tone_hit(&status, 105);
+    rx_tone_locked(A_TONE, 1, 1);
+    assert(strcmp(publish_at(&status, 0, 0), A_TONE) == 0);
+    assert(strcmp(publish_at(&status, 1000, 0), A_TONE) == 0);
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "DMR");
+    status.hit.confirmed = 1;
+    rx_tone_unlocked(DSD_APP_RX_TONE_HIDDEN, "");
+    assert(publish_at(&status, 1100, 1)[0] == '\0');
+    rx_tone_locked(B_TONE, 1, 2);
+    assert(strcmp(publish_at(&status, 1200, 0), B_TONE) == 0);
+    rx_tone_locked(A_TONE, 1, 1);
+    assert(strcmp(publish_at(&status, 1300, 0), A_TONE) == 0); // latest lock: nothing was held on this protocol yet
+
+    // A new session resets it too, even for a hit with the same id.
+    status.session_id = status.hit.session_id = 8;
+    status.hit.protocol[0] = '\0';
+    status.hit.confirmed = 0;
+    rx_tone_unlocked(DSD_APP_RX_TONE_NONE, "none");
+    assert(publish_at(&status, 1400, 1)[0] == '\0');
+
+    rx_tone_unlocked(DSD_APP_RX_TONE_HIDDEN, "");
+    dsd_decode_clock_use_system();
+}
+
+/* Issue #802 B11: the access code is the carrier's, judged by the code alone. A changed publication while co-channel
+   traffic on a code the receive policy rejects holds the decoder reads nothing for the hit, which keeps the code it
+   had; a slot filter blocking the slot the decoder is on keeps nothing from it. */
+static void
+test_rejected_code_access(dsd_opts* opts, dsd_state* state) {
+    dsd_signal_search_status status = {0};
+    status.session_id = status.hit.session_id = 9;
+    status.hit.hit_id = 1;
+    status.hit.confirmed = 1;
+    status.phase = DSD_SEARCH_LISTENING;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "DMR");
+    DSD_MEMSET(&call, 0, sizeof(call));
+    opts->receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_DCC].block.bits[0] = UINT64_C(1) << 3;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->dmr_color_code = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 1") == 0);
+    state->dmr_color_code = 3;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 1") == 0);
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 1") == 0);
+
+    // P25 Phase 2, slot 1 blocked and NAC 293 allowed, the decoder on slot 1: the proven NAC is the carrier's.
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    opts->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_SLOT].block.bits[0] = UINT64_C(1) << 1;
+    opts->receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    opts->receive.filters[DSD_RECEIVE_NAC].allow.bits[0x293 / 64] = UINT64_C(1) << (0x293 % 64);
+    status.hit.hit_id = 2;
+    status.hit.ended = 0;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "P25");
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->currentslot = 0;
+    state->p2_proven_nac = 0x293;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    // A NAC the filter does not allow, proven on the carrier the decoder holds now, is not the hit's.
+    state->p2_proven_nac = 0x2A4;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    // With the filters off, the code is read as before.
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 2A4") == 0);
+    state->p2_proven_nac = -1;
 }
 
 int
@@ -217,7 +443,7 @@ main(void) {
     assert(strcmp(published.hit.access, "CC 7") == 0);
 
     // A newly confirmed protocol on the same RF frequency cannot inherit old identities: the coordinator cleared the
-    // tuple, and the observer restores none of it.
+    // tuple, and the observer restores none of it. NXDN's code is read for an NXDN48 hit: the family is a prefix.
     status.hit.target = status.hit.source = 0;
     status.hit.slot = 0;
     status.hit.crypt[0] = '\0';
@@ -264,7 +490,46 @@ main(void) {
     call.has_service_metadata = 1U;
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "CAN 7") == 0);
+
+    // Issue #802 B1: a changed publication while the decoder is on another protocol (that protocol's site note) reads
+    // nothing for the hit; the code it last had stays. A publication of the hit's own family reads again.
+    status.hit.hit_id = 4;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "P25");
+    DSD_MEMSET(&call, 0, sizeof(call));
+    call.phase = DSD_CALL_PHASE_IDLE; // no call record: the NAC is the carrier's
+    state->synctype = DSD_SYNC_P25P1_POS;
+    state->nac = 0x293;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    state->dmr_color_code = 3;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 293") == 0);
+    state->synctype = DSD_SYNC_P25P1_NEG;
+    state->nac = 0x2A4;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "NAC 2A4") == 0);
+
+    // M17's CAN is read at the link setup frame's own sync type; the stream frames after it publish under another
+    // M17 sync type, where the LSF's call record does not answer, so the CAN read at the LSF is carried.
+    status.hit.hit_id = 5;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "M17");
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    call.protocol = state->synctype;
+    call.phase = DSD_CALL_PHASE_ACTIVE;
+    call.epoch = 1;
+    call.service_options = 5U;
+    call.has_service_metadata = 1U;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 5") == 0);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    observer(&status, &status.hit, observer_user);
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 5") == 0);
     status.hit.hit_id = 2;
+
+    test_rejected_code_access(opts, state);
+    test_detection_tone();
 
     // Controls mirror the session's own avoid list for the frontends; a permanent avoid goes to the store as well.
     struct dsd_app_command* control = calloc(1, sizeof(*control));

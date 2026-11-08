@@ -57,6 +57,9 @@ Item {
             width: parent.width
             Accessible.ignored: true
             text: row.title
+            // A scan list's name, or a reason that quotes one: drawn as
+            // written, never as markup (all three lines).
+            textFormat: Text.PlainText
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(15)
             font.weight: Font.DemiBold
@@ -69,6 +72,7 @@ Item {
             visible: text.length > 0
             Accessible.ignored: true
             text: row.subtitle
+            textFormat: Text.PlainText
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
@@ -84,6 +88,7 @@ Item {
             visible: text.length > 0
             Accessible.ignored: true
             text: row.note
+            textFormat: Text.PlainText
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(12)
             color: Theme.alert

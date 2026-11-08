@@ -260,6 +260,7 @@ test_unverified_seed_is_no_received_nac(void) {
     reset_test_state(1);
     tune_grant(0x00);
     g_state.p2_cc_verified = 1U;
+    g_state.p2_proven_nac = (int)g_state.p2_cc;
     event_ticks();
     run_clear_ptt_call(0x56U);
     row = committed_row();

@@ -415,6 +415,8 @@ ModalSheet {
         width: parent.width
         visible: text.length > 0
         text: sheet.errorText
+        // A refused save can quote a key's typed label.
+        textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Theme.alert
         font.pixelSize: Theme.fontSize(14)

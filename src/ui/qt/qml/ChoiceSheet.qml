@@ -16,6 +16,8 @@ ModalSheet {
     Text {
         width: parent.width
         text: sheet.accessibleName
+        // A title can quote a name ("Export <folder>"): drawn as written.
+        textFormat: Text.PlainText
         wrapMode: Text.Wrap
         color: Theme.textPrimary
         font.family: Theme.sans

@@ -11,6 +11,7 @@ static dsd_signal_search_evidence_fn evidence_fn = NULL;
 static dsd_signal_search_active_fn active_fn = NULL;
 static dsd_signal_search_site_fn site_fn = NULL;
 static dsd_signal_search_call_fn call_fn = NULL;
+static dsd_signal_search_access_fn access_fn = NULL;
 static dsd_signal_search_p25p2_codes_fn p25p2_codes_fn = NULL;
 static dsd_signal_search_p25p2_code_fn p25p2_code_fn = NULL;
 
@@ -64,6 +65,18 @@ void
 dsd_signal_search_note_call(const dsd_state* state, uint8_t slot) {
     if (call_fn) {
         call_fn(state, slot);
+    }
+}
+
+void
+dsd_signal_search_access_set(dsd_signal_search_access_fn fn) {
+    access_fn = fn;
+}
+
+void
+dsd_signal_search_note_access(const dsd_state* state) {
+    if (access_fn) {
+        access_fn(state);
     }
 }
 

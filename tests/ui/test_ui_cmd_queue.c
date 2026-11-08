@@ -6805,6 +6805,7 @@ seed_carrier_codes(dsd_state* state) {
     state->dpmr_color_code = 12;
     state->p2_cc = 0x293ULL;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
 }
 
 /* Forgotten, as the carrier boundary forgets them, or kept; the Phase 2 seed, the descrambling key, stays either way. */
@@ -6822,6 +6823,8 @@ expect_carrier_codes(const char* what, const dsd_state* state, int forgotten) {
     rc |= expect_int(tag, state->dpmr_color_code, forgotten ? -1 : 12);
     DSD_SNPRINTF(tag, sizeof tag, "%s: Phase 2 seed proof", what);
     rc |= expect_int(tag, (int)state->p2_cc_verified, forgotten ? 0 : 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: Phase 2 proven NAC", what);
+    rc |= expect_int(tag, state->p2_proven_nac, forgotten ? -1 : 0x293);
     DSD_SNPRINTF(tag, sizeof tag, "%s: Phase 2 seed", what);
     rc |= expect_true(tag, state->p2_cc == 0x293ULL);
     return rc;
@@ -6877,8 +6880,8 @@ test_accepted_retunes_forget_the_carrier_codes(void) {
                       row->access_code_kind == (uint8_t)DSD_ACCESS_CODE_NONE);
     freeState(&state);
 
-    /* The Phase 1 NAC goes with them: a NID whose BCH-decoded NAC is the reserved 000 or FFF leaves state->nac as it
-       was, so a Phase 1 call on the new carrier would record the old carrier's NAC. */
+    /* The Phase 1 NAC goes with them: a NID whose BCH-decoded NAC is 000 or FFF, which dsd-neo refuses, leaves
+       state->nac as it was, so a Phase 1 call on the new carrier would record the old carrier's NAC. */
     init_radio_context(&opts, &state, "rtl:0");
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     state.nac = 0x293;

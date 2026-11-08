@@ -69,8 +69,10 @@ test_protocol_context(dsd_opts* opts, dsd_state* state) {
     assert(dsd_receive_allows(opts, state, DSD_SYNC_P25P1_POS, 1)); /* FDMA has no slot. */
     state->p2_cc = 0x293;
     state->p2_cc_verified = 0;
+    state->p2_proven_nac = -1;
     assert(dsd_receive_status(opts, state, DSD_SYNC_P25P2_POS, 0) == DSD_RECEIVE_CHECKING);
     state->p2_cc_verified = 1;
+    state->p2_proven_nac = 0x293;
     assert(dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, 0));
     assert(!dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, 1));
     assert(dsd_receive_grant_allows(opts, DSD_SYNC_P25P1_POS, 1));
@@ -112,8 +114,19 @@ test_protocol_context(dsd_opts* opts, dsd_state* state) {
     state->receive_context_active = 1;
     state->receive_context_protocol = DSD_SYNC_YSF_POS;
     assert(dsd_receive_current_allows(opts, state, 1)); /* Borrowed vocoder keeps its owner's protocol. */
+    assert(dsd_receive_current_status(opts, state, 1) == DSD_RECEIVE_OFF);
     state->receive_context_active = 0;
     assert(!dsd_receive_current_allows(opts, state, 1));
+    /* The verdict behind it tells a rejection from a check still running (Signal search, issue #802 B9). */
+    assert(dsd_receive_current_status(opts, state, 1) == DSD_RECEIVE_REJECTED);
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->nxdn_last_ran = 64;
+    assert(dsd_receive_current_status(opts, state, 0) == DSD_RECEIVE_CHECKING);
+    state->nxdn_last_ran = 3;
+    assert(dsd_receive_current_status(opts, state, 0) == DSD_RECEIVE_ALLOWED);
+    state->lastsynctype = DSD_SYNC_NONE;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     /* YSF and scrambled dPMR play through NXDN's decoder under its synctype: playback is judged as the owner's, and
        the owner's context ends where its playback does. */
     state->synctype = DSD_SYNC_NXDN_POS;
@@ -349,6 +362,42 @@ test_carrier_admission_judges_both_slots(dsd_opts* opts) {
     assert(dsd_receive_carrier_allows(opts, &state)); /* FDMA: the protocol's own code. */
     state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
     assert(!dsd_receive_carrier_allows(opts, &state));
+    opts->receive = saved;
+}
+
+/* Issue #802 B11: a carrier-level fact is judged by the carrier's code alone. The slot filter is never asked, a code
+   not proven yet is no rejection, and a protocol with no code is never rejected. */
+static void
+test_code_rejects_judges_the_code_alone(dsd_opts* opts) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof state);
+    const dsd_receive_policy saved = opts->receive;
+    DSD_MEMSET(&opts->receive, 0, sizeof opts->receive);
+    state.dmr_color_code = 7;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS)); /* No filter. */
+    set_filter(opts, DSD_RECEIVE_SLOT, "", "1");
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_TS1;
+    assert(!dsd_receive_allows(opts, &state, DSD_SYNC_DMR_BS_DATA_POS, 0));
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    set_filter(opts, DSD_RECEIVE_DCC, "", "7");
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_mono_rx_slot = DSD_DMR_MONO_RX_PENDING;
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_color_code = 16; /* Not locked: still checking. */
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_color_code = 5;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DMR_BS_DATA_POS));
+    state.dmr_color_code = 7;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_DPMR_FS1_POS));
+    set_filter(opts, DSD_RECEIVE_NAC, "293", "");
+    state.p2_proven_nac = -1;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P2_POS));
+    state.p2_proven_nac = 0x2A4;
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P2_POS));
+    state.p2_proven_nac = 0x293;
+    assert(!dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P2_POS));
+    state.nac = 0x2A4; /* Phase 1 reads its own NAC. */
+    assert(dsd_receive_code_rejects(opts, &state, DSD_SYNC_P25P1_POS));
     opts->receive = saved;
 }
 
@@ -4516,6 +4565,7 @@ main(void) {
     test_mono_slot_change_is_a_boundary(opts, state);
     test_reacquired_call_keeps_its_service(opts, state);
     test_carrier_admission_judges_both_slots(opts);
+    test_code_rejects_judges_the_code_alone(opts);
     test_events(opts, state);
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));

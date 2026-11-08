@@ -493,6 +493,26 @@ Item {
                 loader.anchors.fill = loader.parent;
             }
         }
+        // Issue #802 B12: a refused save names the key by its typed label
+        // (Key "<label>" (ID n): ...), drawn and measured as written.
+        function test_error_draws_a_key_label_as_written() {
+            var uid = profile({label: "Direct only", protocol: "p25", mode: "direct", directType: "hex", directValue: hexDigits(64)});
+            try {
+                sheet.openMatching(uid, "p25", 0x12, "aes256");
+                sheet.showError("Key \"<b>Ops</b>\" (ID 12): AES-256 needs 64 hex digits; 3 entered.");
+                var label = findChild(sheet, "profileError");
+                verify(label.visible);
+                var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", sheet);
+                mirror.font = label.font;
+                mirror.text = label.text;
+                var plainWidth = mirror.implicitWidth;
+                mirror.destroy();
+                verify(Math.abs(label.implicitWidth - plainWidth) <= 0.5, "the error draws as written: " + label.implicitWidth + " vs " + plainWidth);
+                compare(label.textFormat, Text.PlainText, "the error is plain text");
+            } finally {
+                sheet.visible = false;
+            }
+        }
         // "Use this key" is gated on the key ID's committed text. A key ID still
         // composing on the keyboard passes when it is valid and is refused when
         // it is not; either way the word is kept.

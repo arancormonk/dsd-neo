@@ -16,6 +16,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -120,6 +121,9 @@ apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
 
 static int g_notes;
 static dsd_signal_search_site_note g_note;
+/* Access notes (issue #802), and the Phase 2 NAC a call read when the latest one came. */
+static int g_access_notes;
+static int g_access_read;
 /* The record the notes build, as a search visit would. */
 static dsd_signal_search_site g_record;
 
@@ -129,6 +133,20 @@ capture_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
     ++g_notes;
     g_note = *note;
     (void)dsd_signal_search_site_apply(&g_record, note);
+}
+
+static void
+capture_access(const dsd_state* state) {
+    ++g_access_notes;
+    uint16_t value = 0U;
+    g_access_read = dsd_access_code_current(state, DSD_SYNC_P25P2_POS, 0U, 0U, NULL, &value) ? (int)value : -1;
+}
+
+/* The NAC a Phase 2 call on this carrier reads now, -1 for none. */
+static long
+p2_nac_read(const dsd_state* state) {
+    uint16_t value = 0U;
+    return dsd_access_code_current(state, DSD_SYNC_P25P2_POS, 0U, 0U, NULL, &value) ? (long)value : -1L;
 }
 
 static int
@@ -185,6 +203,9 @@ reset(void) {
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     g_notes = 0;
     DSD_MEMSET(&g_note, 0, sizeof(g_note));
+    g_access_notes = 0;
+    g_access_read = -1;
+    dsd_state_forget_p2_proof(&g_state);
     dsd_signal_search_site_clear(&g_record);
     g_code_notes = 0;
     g_code = 0;
@@ -536,6 +557,101 @@ test_received_identity(void) {
     return rc;
 }
 
+/* Issue #802 B7: a network status that passed its CRC proves the NAC it carries on this carrier, and each new proven
+   NAC tells the search at once, from none included, even when the broadcast's WACN and SYSID (its site note) are
+   unchanged: a final broadcast that changes the NAC under the same system is not lost. A repeat, or a broadcast that
+   failed its CRC, tells it nothing. */
+static int
+test_network_status_proves_the_nac(void) {
+    int rc = 0;
+    unsigned long long mac[24];
+    static const unsigned long long opcodes[2] = {0x7B, 0xFB};
+    for (int i = 0; i < 2; ++i) {
+        reset();
+        network_mac_nac(mac, opcodes[i], 0xBEE00, 0x1A3, 0x293);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("nsb: the first proof notes", g_access_notes, 1);
+        rc |= expect_int("nsb: the note reads the proven NAC", g_access_read, 0x293);
+        rc |= expect_int("nsb: a call reads it", p2_nac_read(&g_state), 0x293);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("nsb: a repeat notes nothing", g_access_notes, 1);
+
+        network_mac_nac(mac, opcodes[i], 0xBEE00, 0x1A3, 0x2A1);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("nsb: another NAC under the same system notes", g_access_notes, 2);
+        rc |= expect_int("nsb: the note reads the new NAC", g_access_read, 0x2A1);
+        rc |= expect_int("nsb: a call reads the new NAC", p2_nac_read(&g_state), 0x2A1);
+
+        // -F: a broadcast that failed its CRC proves nothing.
+        network_mac_nac(mac, opcodes[i], 0xBEE00, 0x1A3, 0x3B5);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 0);
+        rc |= expect_int("nsb: a failed CRC notes nothing", g_access_notes, 2);
+        rc |= expect_int("nsb: a failed CRC keeps the proven NAC", p2_nac_read(&g_state), 0x2A1);
+    }
+    return rc;
+}
+
+/* Issue #802 B8: a hand-set seed (-X) stays the descrambler's, and a checked network status naming another NAC proves
+   that NAC on this carrier: a call reads the broadcast's NAC, never nothing, also on a followed voice channel whose
+   control channel update the broadcast cannot take. The latest proof wins. */
+static int
+test_network_status_proves_the_nac_over_a_hand_set_seed(void) {
+    int rc = 0;
+    unsigned long long mac[24];
+    static const unsigned long long opcodes[2] = {0x7B, 0xFB};
+    for (int i = 0; i < 2; ++i) {
+        reset();
+        g_state.p2_hardset = 1;
+        g_state.p2_wacn = 0xBEE00;
+        g_state.p2_sysid = 0x1A3;
+        g_state.p2_cc = 0x123;
+        network_mac_nac(mac, opcodes[i], 0xBEE00, 0x1A3, 0x293);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("hand-set 123, broadcast 293: the seed stays", (long)g_state.p2_cc, 0x123);
+        rc |= expect_int("hand-set 123, broadcast 293: the seed is unproven", g_state.p2_cc_verified, 0);
+        rc |= expect_int("hand-set 123, broadcast 293: a call reads 293", p2_nac_read(&g_state), 0x293);
+        rc |= expect_int("hand-set 123, broadcast 293: one note", g_access_notes, 1);
+
+        // A hand-set seed the broadcast confirms, then a co-channel broadcast naming another NAC under the same system.
+        reset();
+        g_state.p2_hardset = 1;
+        g_state.p2_wacn = 0xBEE00;
+        g_state.p2_sysid = 0x1A3;
+        g_state.p2_cc = 0x293;
+        network_mac_nac(mac, opcodes[i], 0xBEE00, 0x1A3, 0x293);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("hand-set A proven: the seed is proven", g_state.p2_cc_verified, 1);
+        rc |= expect_int("hand-set A proven: a call reads A", p2_nac_read(&g_state), 0x293);
+        rc |= expect_int("hand-set A proven: one note", g_access_notes, 1);
+        network_mac_nac(mac, opcodes[i], 0xBEE00, 0x1A3, 0x2A1);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("then B: the seed stays A", (long)g_state.p2_cc, 0x293);
+        rc |= expect_int("then B: a call reads B", p2_nac_read(&g_state), 0x2A1);
+        rc |= expect_int("then B: one more note", g_access_notes, 2);
+
+        // The carrier goes: nothing is proven until the next carrier proves its own.
+        dsd_state_forget_p2_proof(&g_state);
+        rc |= expect_int("after the carrier: a call reads nothing", p2_nac_read(&g_state), -1);
+
+        // A followed voice channel (trunk_is_tuned) whose control channel update the broadcast cannot take: the seed
+        // and the system stay as they were, and the NAC the checked broadcast carries is still this carrier's.
+        reset();
+        g_opts.trunk_is_tuned = 1;
+        g_state.p2_hardset = 1;
+        g_state.p2_wacn = 0xBEE00;
+        g_state.p2_sysid = 0x1A3;
+        g_state.p2_cc = 0x123;
+        network_mac_nac(mac, opcodes[i], 0xABCDE, 0x2B4, 0x293);
+        process_MAC_VPDU_crc(&g_opts, &g_state, 1, P25_MAC_PDU_SIGNAL, mac, 1);
+        rc |= expect_int("followed vc, update not taken: the system stays", (long)g_state.p2_wacn, 0xBEE00);
+        rc |= expect_int("followed vc, update not taken: the seed stays", (long)g_state.p2_cc, 0x123);
+        rc |= expect_int("followed vc, update not taken: the seed is unproven", g_state.p2_cc_verified, 0);
+        rc |= expect_int("followed vc, update not taken: a call reads 293", p2_nac_read(&g_state), 0x293);
+        rc |= expect_int("followed vc, update not taken: one note", g_access_notes, 1);
+    }
+    return rc;
+}
+
 /* A Phase 2 network status that passed its CRC gives the session one complete scrambling code, all three parts the
    broadcast's own, under a hand-set seed of another system too. One that failed its CRC (-F), or whose WACN, SYSID or
    NAC is zero or all ones (no site's code), gives none. */
@@ -699,6 +815,7 @@ test_recovered_network_validity(void) {
 int
 main(void) {
     dsd_signal_search_site_set(capture_site);
+    dsd_signal_search_access_set(capture_access);
     dsd_signal_search_p25p2_code_set(capture_code);
     int rc = 0;
     rc |= test_vpdu_rfss();
@@ -706,11 +823,14 @@ main(void) {
     rc |= test_mbt();
     rc |= test_lcw_and_fill_in();
     rc |= test_received_identity();
+    rc |= test_network_status_proves_the_nac();
+    rc |= test_network_status_proves_the_nac_over_a_hand_set_seed();
     rc |= test_p2_nsb_notes_code();
     rc |= test_p1_net_sts_pairs_frame_nac();
     rc |= test_frame_nac_cleared_at_boundary();
     rc |= test_lcw_never_notes_code();
     rc |= test_recovered_network_validity();
+    dsd_signal_search_access_set(NULL);
     dsd_signal_search_site_set(NULL);
     dsd_signal_search_p25p2_code_set(NULL);
     return rc;

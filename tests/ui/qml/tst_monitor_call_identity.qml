@@ -128,6 +128,49 @@ Item {
             }
         }
 
+        // Issue #802 B12: a call's target and source text come off the air or
+        // from an imported alias, and the scan channel is a typed or imported
+        // row name, so a "<b>" in them is drawn and measured as written.
+        function verifyDrawnAsWritten(text, tag) {
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            mirror.font = text.font;
+            mirror.text = text.text;
+            var plainWidth = mirror.implicitWidth;
+            mirror.destroy();
+            verify(Math.abs(text.implicitWidth - plainWidth) <= 0.5, tag + " draws as written: " + text.implicitWidth + " vs " + plainWidth);
+            compare(text.textFormat, Text.PlainText, tag + " is plain text");
+        }
+        function test_received_and_typed_names_draw_as_written() {
+            setCall(1, {kind: kindGroup, name: "<b>Yard</b>", tg: "<b>KC1ABC", id: 0, src: "<b>N0CALL</b> (7)", protocol: "M17"});
+            testContext.setMetric("slot1Channel", "<b>Yard</b>");
+            testContext.setMetric("leadSlot", 1);
+            var ids = item("heroIds");
+            compare(ids.text, "TG <b>KC1ABC · SRC <b>N0CALL</b> (7)");
+            verifyDrawnAsWritten(ids, "the hero's ids");
+            setCall(1, {kind: kindGroup, name: "Fire Dispatch", tg: "100601", id: 100601, tgLabel: "Fire Dispatch", src: "100702", protocol: "DMR"});
+            var channel = item("heroChannel");
+            verify(channel.visible, "the channel is shown beside a named call");
+            compare(channel.text, "· <b>Yard</b>");
+            verifyDrawnAsWritten(channel, "the hero's channel");
+        }
+        // The saved names on the tuned channel are typed or imported; the live
+        // pill, off a session, shows the host's status, which can be a start
+        // failure naming a device or file.
+        function test_tuned_names_and_status_draw_as_written() {
+            var row = savedSystems.count;
+            try {
+                savedSystems.add({name: "<b>Dock</b>", sourceType: "usb", freqMhz: "851.5"});
+                testContext.setMetric("centerFreqHz", 851500000);
+                var names = item("monitorTunedNames");
+                tryCompare(names, "text", "<b>Dock</b>");
+                verifyDrawnAsWritten(names, "the tuned channel's names");
+            } finally {
+                savedSystems.remove(row);
+                testContext.setMetric("centerFreqHz", 0);
+            }
+            compare(item("monitorLiveLabel").textFormat, Text.PlainText, "the live pill is plain text");
+        }
+
         // The painted headline names the call to a screen reader.
         function test_headline_has_an_accessible_name() {
             setCall(1, {kind: kindPrivate, name: "Dispatcher 7", tg: "2001234", id: 2001234, tgLabel: "Dispatcher 7", src: "100702", protocol: "TETRA"});

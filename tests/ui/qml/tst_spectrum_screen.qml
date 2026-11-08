@@ -1143,6 +1143,38 @@ Item {
             tc.clearIdentity()
         }
 
+        // Issue #802 B12: a textual target and a carrier's identity come off
+        // the air, so a "<b>" in them is drawn and measured as written, never
+        // as markup (the identity line fits whole tokens by their raw width).
+        function verifyDrawnAsWritten(text, tag) {
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root)
+            mirror.font = text.font
+            mirror.text = text.text
+            var plainWidth = mirror.implicitWidth
+            mirror.destroy()
+            verify(Math.abs(text.implicitWidth - plainWidth) <= 0.5, tag + " draws as written: " + text.implicitWidth + " vs " + plainWidth)
+            compare(text.textFormat, Text.PlainText, tag + " is plain text")
+        }
+        function test_17e_received_text_draws_as_written() {
+            var screen = screenLoader.item
+            var call = findChild(screen, "spectrumCallLabel")
+            var identity = findChild(screen, "spectrumIdentityLabel")
+            tc.clearIdentity()
+            try {
+                testContext.setMetric("slot1TgText", "<b>KC1ABC</b>")
+                testContext.setMetric("slot1CallState", 2)
+                tryCompare(call, "text", "<b>KC1ABC</b>")
+                verifyDrawnAsWritten(call, "the call label")
+                testContext.setMetric("syncLabel", "M17")
+                testContext.setMetric("syncedHere", true)
+                tc.setIdentity("M17", ["<b>CAN</b> 7"], "M17 · <b>CAN</b> 7", true)
+                tryCompare(identity, "text", "<b>CAN</b> 7")
+                verifyDrawnAsWritten(identity, "the identity line")
+            } finally {
+                tc.clearIdentity()
+            }
+        }
+
         // The ellipsis needs room too: a first token that fits only without it
         // is shown alone rather than handed to the Text to cut.
         function test_17d2_the_ellipsis_never_cuts_a_token_that_fits() {

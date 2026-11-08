@@ -105,6 +105,9 @@ Rectangle {
         wrapMode: Text.Wrap
         elide: Text.ElideRight
         text: control.text
+        // Labels can carry a typed or imported name (a profile, a site, a
+        // file): drawn as written, never as markup.
+        textFormat: Text.PlainText
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(15)
         font.weight: Font.DemiBold

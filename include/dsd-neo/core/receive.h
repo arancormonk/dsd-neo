@@ -26,11 +26,17 @@ int dsd_receive_grant_allows(const dsd_opts* opts, int protocol, int slot);
 /** Whether the policy in force admits a call by the identity it was received with (a call snapshot's), whatever the
  * decoder holds now: a sync loss forgets the live code before the carrier proves it again. */
 int dsd_receive_identity_admitted(const dsd_opts* opts, const dsd_receive_identity* identity);
+/** Whether the policy rejects the access code @p state has verified for @p protocol, judged by the code alone: the
+ * slot filter is not asked, so a carrier-level fact (a site broadcast, the carrier's access code) is judged by the
+ * carrier's code whichever slot carried it. A code not verified yet, and a protocol with none, are not rejected. */
+int dsd_receive_code_rejects(const dsd_opts* opts, const dsd_state* state, int protocol);
 /** Whether the policy admits everything on the carrier the decoder is on: both over-the-air slots of a two-slot one,
  * each judged as that slot whatever the single-slot DMR decoder has proven for its one lane. */
 int dsd_receive_carrier_allows(const dsd_opts* opts, const dsd_state* state);
 /** For generic output paths only. Protocol paths should supply their protocol explicitly. */
 int dsd_receive_current_allows(const dsd_opts* opts, const dsd_state* state, int slot);
+/** dsd_receive_status() for the protocol dsd_receive_current_allows() judges by; generic paths only, as it is. */
+dsd_receive_verdict dsd_receive_current_status(const dsd_opts* opts, const dsd_state* state, int slot);
 
 /** What generic output paths judge by while a protocol decodes or plays through another's decoder under that
  * decoder's synctype (YSF and scrambled dPMR through NXDN's): begin names the owner (a DSD_SYNC_* value) and returns

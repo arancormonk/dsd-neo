@@ -818,7 +818,9 @@ test_steady_component_keeps_the_lock(void) {
  * A code outranks a tone: a CTCSS tone that locks under a held code (a voice's talk-off on a
  * coded channel) never replaces the code, and a code that locks under a held tone replaces the
  * tone at once; once the code is lost, a tone still locked shows. Both detectors are really
- * locked here, so the rule, not a missed detection, decides the display.
+ * locked here, so the rule, not a missed detection, decides the display. The lock epoch (issue
+ * #802) follows the display, not the detectors: it moves with each lock shown, and a tone locking
+ * or stopping under the code moves nothing.
  */
 static void
 test_a_code_outranks_a_tone(void) {
@@ -845,6 +847,8 @@ test_a_code_outranks_a_tone(void) {
         int64_t code_published = -1;
         int both_locked = 0;
         int tone_after_code = 0;
+        int shown = 0; /* the lock last shown: 0 for none, 1 for the tone, 2 for the code */
+        uint32_t epoch = 0;
         float buf[480];
         for (int64_t n = 0; n < ms_to_samples(48000.0, 7000.0); n += 480) {
             for (int i = 0; i < 480; i++) {
@@ -874,8 +878,16 @@ test_a_code_outranks_a_tone(void) {
             if (tone_shown && code_published >= 0) {
                 tone_after_code = 1;
             }
+            const int lock = dcs_shown ? 2 : (tone_shown ? 1 : 0);
+            if (lock != 0 && lock != shown) {
+                ++epoch;
+            }
+            shown = lock;
+            assert(pub.lock_epoch == epoch);
         }
         assert(both_locked);
+        /* One epoch for each of the two locks shown, the code's and the tone's, whichever came first. */
+        assert(epoch == 2U);
         if (dcs_first) {
             /* The code from its lock until it stops, then the tone. */
             assert(code_published >= 0 && code_published < second_starts);

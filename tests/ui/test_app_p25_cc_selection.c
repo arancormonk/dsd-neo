@@ -234,6 +234,7 @@ seed_carrier_codes(dsd_state* state) {
     state->nxdn_last_ran_stand_in = 1U;
     state->dpmr_color_code = 33;
     state->p2_cc_verified = 1U;
+    state->p2_proven_nac = 0x293;
 }
 
 static void
@@ -241,6 +242,7 @@ expect_carrier_codes_kept(const dsd_state* state) {
     assert(state->dmr_color_code == 5U && state->nxdn_last_ran == 9U && state->nxdn_last_ran_stand_in == 1U);
     assert(state->dpmr_color_code == 33);
     assert(state->p2_cc_verified == (state->p2_cc != 0U ? 1U : 0U));
+    assert(state->p2_proven_nac == (state->p2_cc != 0U ? 0x293 : -1));
 }
 
 /* A CTCSS tone the analog tap published before the selection. */

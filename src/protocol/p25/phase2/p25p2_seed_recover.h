@@ -36,6 +36,12 @@ void p25p2_seed_recover_window(const dsd_opts* opts, dsd_state* state, int isch_
    dsd_state itself. */
 void p25p2_seed_recover_forget(const dsd_state* state);
 
+/* A burst on this carrier proved @p code (WACN(20) << 24 | SYSID(12) << 12 | NAC(12)), after the carrier's proven NAC
+   was recorded (p25p2_note_seed_proven()). When it is the code recovery committed on this carrier, the Signal search
+   now hears of the system its WACN and SYSID name, judged by that NAC (issue #802 B11). The owed note goes with the
+   first proof either way, and with p25p2_seed_recover_forget(). */
+void p25p2_seed_recover_note_proven(const dsd_state* state, uint64_t code);
+
 /* Whether a candidate waits for confirmation, and which (tests). */
 int p25p2_seed_recover_pending(const dsd_state* state, uint64_t* code);
 

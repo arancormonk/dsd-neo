@@ -7,6 +7,9 @@ import QtQuick
 // tracking, uppercase, subdued.
 Text {
     id: label
+    // A section can be named for a typed or imported name (a RadioReference
+    // county, a list section): drawn as written, never as markup.
+    textFormat: Text.PlainText
     Accessible.role: Accessible.Heading
     Accessible.name: text
     // Issue #782: Qt reports a Heading node focusable only when told to (its

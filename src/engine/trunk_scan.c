@@ -172,6 +172,7 @@ typedef struct {
     uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
     uint8_t p2_cc_verified; /* p2_cc proven on the target's carrier (issue #575) */
+    int p2_proven_nac;      /* the NAC the latest Phase 2 proof there named (issue #802) */
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_sys_time_valid;
@@ -1675,6 +1676,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
                  (unsigned int)state->trunk_chan_map_used_count);
     }
     snapshot->p2_cc_verified = state->p2_cc_verified;
+    snapshot->p2_proven_nac = state->p2_proven_nac;
     snapshot->trunk_recovery_protocol = state->trunk_recovery_protocol;
     DSD_MEMCPY(snapshot->p25_vc_freq, state->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
     DSD_MEMCPY(snapshot->p25_conventional_grant_freq, state->p25_conventional_grant_freq,
@@ -1720,6 +1722,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     dsd_p25_site_snapshot_restore(state, &snapshot->site);
     state->p2_hardset = hardset;
     state->p2_cc_verified = snapshot->p2_cc_verified;
+    state->p2_proven_nac = snapshot->p2_proven_nac;
     state->trunk_recovery_protocol = snapshot->trunk_recovery_protocol;
     DSD_MEMCPY(state->p25_vc_freq, snapshot->p25_vc_freq, sizeof(state->p25_vc_freq));
     DSD_MEMCPY(state->p25_conventional_grant_freq, snapshot->p25_conventional_grant_freq,
@@ -2085,7 +2088,7 @@ trunk_scan_restore_target_snapshot(dsd_trunk_scan_coord* coord, dsd_state* state
     trunk_scan_restore_snapshot(state, &rt->snapshot);
     state->nac = 0;
     state->p25_frame_nac_valid = 0U; // the last Phase 1 frame's NAC is the target left's (issue #804)
-    state->p2_cc_verified = 0;
+    dsd_state_forget_p2_proof(state);
     state->dmr_color_code = 16;
     state->dmr_mono_rx_slot = DSD_DMR_MONO_RX_NONE;
     state->dmr_mono_rx_candidate = DSD_DMR_MONO_RX_NONE;

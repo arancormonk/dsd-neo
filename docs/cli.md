@@ -1507,6 +1507,22 @@ tone setting, and it runs with `-o null` too. Muting by tone is the separate
   0.5 % of a table tone is another matter, being exactly what a transmitter off its value sends: of 250,000 offline
   receptions of a tone beside a stronger steady line near another table tone, those that named the line's tone rose
   from 62 % to 74 %, while the real tone was confirmed exactly when it was before.
+- Digital carriers: the analog monitor decodes no digital, so it cannot tell that a carrier is digital. This is true of
+  `-fA` and of every other analog monitor: the `nfm` rows of a `-Y` scan, `nfm-conventional` `--trunk-scan` targets
+  and Signal search's NFM visits. A digital carrier repeats its frames at a steady rate, which puts steady lines in the
+  sub-audible band, and these can read as a CTCSS tone or a DCS code. Digital modes send their access code (colour
+  code, NAC, RAN and the like) as bits in their frames, not as a sub-audible tone, so such a tone is the receiver's
+  mistake, never something the transmitter sent (for P25, X2-TDMA and ProVoice, whose full specifications are sold or
+  not public, this rests on secondary sources). Seen on real-air captures under `-fA`: a Capacity Plus rest channel
+  read `CTCSS 233.6 Hz` from about 0.5 s (that capture repeated 15 times, 30 s, read it 15 times, for 21 s in all),
+  and a TETRA control channel read `CTCSS 141.3 Hz` from about 1.9 s (not checked at Signal search's 16 kHz width).
+  One of 300 synthetic signals made of TETRA frames read a DCS code for 320 ms. When a carrier switched from DMR to
+  analog FM, the false 233.6 Hz still showed for about 200 ms after the switch, before the real tone or code took
+  over, in the runs measured. These are observations from those runs, not bounds: other carriers and signals may read
+  other tones, or for longer. While a false tone or code shows, everything that uses the received tone takes it as
+  real: the tone filter allows or rejects the carrier by it, the `Rx tone:` line and the `RECEIVED TONE` row show it,
+  analog call history names it (the `-J` event log line and the History rows), and a Signal search detection can keep
+  it as its tone (`docs/signal-search.md`).
 
 ### Received code (DCS) on the analog monitor
 
@@ -1613,7 +1629,8 @@ code is the [tone filter](#tone-filter-ctcssdcs-receive-policy).
   tolerate a bit error; one two bits from every code's word does not. Noise reads as a code twice in a row about once
   in 6 x 10^8 bits for each of the detector's four droop slicers, some 50 days of continuous noise each, and about 2.3
   times as often for its balance slicer, which reads noise in windows balanced the way a code's words are; any of the
-  five can lock, so the detector as a whole does so at most once in 10^8 bits, some 8 days.
+  five can lock, so the detector as a whole does so at most once in 10^8 bits, some 8 days. A digital carrier is
+  another matter: see Digital carriers under [Received tone](#received-tone-ctcss-on-the-analog-monitor).
 - The received code is forgotten at the same boundaries as the tone (retune, row or target change, decode-mode change,
   input switch, stop, 200 ms without carrier, a paused input stream), and detection runs where tone detection runs.
 - Externally demodulated audio (PCM inputs): keep everything below 300 Hz, as for CTCSS. The timing above is for the RTL

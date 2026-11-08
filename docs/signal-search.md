@@ -133,9 +133,16 @@ While a search runs, the screen is laid out for what is on the air now:
   the **Now** panel, so it never moves the panel as it appears or clears; with
   no search running it shows above the setup instead.
 - **Recent detections** shows the five newest; **Show more** adds 25. Under its
-  verdict a row shows the checked site and encryption the detection last had
-  (**TIII Small · Net 13 · Site 4 · SYS 1183 · Encrypted**). Each row's
-  actions button (**Actions for 463.5521 MHz**) opens what can be done with that
+  verdict a row shows the site, access code, tone and encryption the detection
+  last had, in the Now panel's order without the call
+  (**TIII Small · Net 13 · Site 4 · SYS 1183 · CC 1 · Encrypted**;
+  **CTCSS 127.3 Hz** or **DCS D023N / D047I** on an analog channel). A value
+  the detection never had is left out. The site, access code and encryption are
+  checked signalling; the tone is what the analog monitor heard (the tone
+  paragraph under [Ranges and reception](#ranges-and-reception) says which tone
+  a detection keeps). These are the detection's last values, not a lasting list
+  of each frequency's codes. Each row's actions button
+  (**Actions for 463.5521 MHz**) opens what can be done with that
   detection: **Explore here**, **Start “<saved system>”** for each saved system
   it matched, **Save as system**, **Avoid this session** (while a search runs),
   and **Avoid permanently**, or **Remove permanent avoid** when it already is.
@@ -187,6 +194,36 @@ of terminators, or voice whose link control never decodes, is not confirmed: the
 list-decoded NID accepts several percent of random words and the voice link
 control's soft Reed-Solomon decode about a fifth, so neither tells such a carrier
 from noise. That carrier is monitored as NFM with the display above.
+
+A detection's tone (the CTCSS tone or DCS code on its detail line) is what the analog
+monitor heard, so only an NFM detection has one: a confirmed digital detection is
+monitored digitally and shows no tone. The analog monitor decodes no digital, and a
+digital carrier's repeated frames can read there as a false tone or code (measured cases
+under Digital carriers in [Received tone](cli.md#received-tone-ctcss-on-the-analog-monitor)).
+So a tone on an NFM detection can be false when the carrier is digital and Signal search
+could not confirm it: on an analog-only range, under a profile without that protocol, a
+signal too weak to confirm, or TETRA, which Signal search does not identify. The
+detection shows the latest tone until one has been held for 1 s, and from then on the
+last tone held that long; the ended detection keeps it. Holding 1 s does not make a tone
+real: a false tone held that long becomes the detection's tone, and a real tone heard
+after it for less than 1 s does not replace it.
+
+With a receive filter on (the slot, DCC, RAN and NAC filters in
+[Receive filters and service names](cli.md#receive-filters-and-service-names)), traffic the
+filter rejects, or whose code or slot it is still checking, neither confirms a detection nor
+keeps the search listening. A probe that heard traffic the filter rejects, and none it
+admits, leaves the detection when its window ends, unless it is held: monitored as NFM, the
+rejected transmission's own audio would keep the search on that channel until the maximum
+visit, or for good with no maximum. The detection ends unconfirmed, like an RF-only one, and
+the search goes on. A probe that heard only traffic still being checked, a probe that heard
+nothing, and a held probe fall back to NFM as above. One limit: with a receive filter on, a
+short transmission whose access code is proven only after its last checked frame ends
+unconfirmed at the probe deadline; a continuous carrier sends more checked frames and
+confirms normally. A detection's site and access code never come from traffic whose access
+code the filter rejects: when a transmitter on a blocked colour code takes over the channel
+after the detection was confirmed, the detection keeps the site and code it showed, and that
+transmitter's broadcasts heard before the confirmation never join it. A slot filter alone
+does not keep them off, since the site and the code belong to the whole channel.
 
 P25 Phase 2 is confirmed by any Phase 2 MAC message whose CRC passes: on a voice
 channel's FACCH or SACCH (a call's push-to-talk or active message, its hangtime, idle
@@ -297,7 +334,8 @@ showed.
 ## Controls, history and saved systems
 
 - **Hold** overrides quiet release and the maximum visit. A held probe still falls
-  back when its identification window expires.
+  back when its identification window expires, even one that heard only traffic a
+  receive filter rejects.
 - **Skip** suppresses this frequency for the current pass.
 - **Avoid this session** lasts until the session ends. Session avoids are listed
   under **Avoided this session**, and **Stop avoiding** lifts one for the following
@@ -376,9 +414,10 @@ available records remain in memory. Each record keeps the detection's checked
 site, slot and encryption, in a version 2 journal (`signal-search-history.v2`)
 beside the earlier releases' `signal-search-history.v1`. The first time no
 version 2 journal exists, the earlier journal's detections load without those
-details and the next save writes them to the version 2 journal; from then on
-only the version 2 journal is read. The earlier journal is never changed, so an
-earlier release still shows its own history, and detections it records later
+details and the next save writes them to the version 2 journal (both versions
+keep the access code and tone, so those detections still show theirs); from then
+on only the version 2 journal is read. The earlier journal is never changed, so
+an earlier release still shows its own history, and detections it records later
 do not reach this one. A detection republished with nothing new is not written
 again. Detection history is not part of a backup. History and permanent avoids
 are saved separately, and a failed one stays reported and is retried by later
