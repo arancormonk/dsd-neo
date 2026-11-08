@@ -13363,6 +13363,8 @@ whether the new Qt lifts them. A change in what they show is a reason to revisit
   times of 6; the key sheet case was not rechecked, so the limit stands.
 - **Window node.** Swipe forward past a screen's last item and back past its first. Record whether a silent stop
   comes at the wrap. On 6.11.2 Android's host view is one, unnamed.
+- **Long list scroll.** On Listen's Scan lists tab with 10 lists, swipe forward past the last card on screen. Record
+  whether the list scrolls and the next card is reached. On 6.11.3 it moves on to the bottom bar (issue #646).
 
 ### Android screen modes
 
@@ -13678,6 +13680,16 @@ disclosure is skipped by the first forward swipe after it, as its gate lifting r
 which the bridge does not pass on, and its visibility changed while it was still out of the tree, so no show; and
 Android's host view, which the bridge builds without Qt's name for the window (`getNodeForView`), is a silent stop at
 the wrap of a swipe.
+
+TalkBack's swipe does not scroll a long list either (issue #646, Qt 6.11.3; `android/README.md` "Known limits"), on
+Listen's tabs or on any screen or sheet built on `PlexFlickable`: past the last card on screen it moves on to the
+bottom bar. The bridge marks a node scrollable, and gives it scroll forward and back, only when it offers the increase
+or decrease action (`populateNode`), which `PlexFlickable` does not. Given them (tried on the emulator), it scrolled
+the body but reported the scroll as failed once the list's first item was off screen: `scrollForward`/`scrollBackward`
+in `androidjniaccessibility.cpp` compare the first child's screen rect before and after, and an off-screen child's is
+empty both times. TalkBack then moved on to the bottom bar anyway, and the scrollable node added "in list" / "out of
+list" announcements and a new stop at the wrap, so the handlers were left out. A two-finger swipe scrolls the list,
+and a touch then puts TalkBack on a card it shows.
 
 A sheet out of sight or under another leaves the tree through its parts' gates, and every part of a sheet that a
 screen reader reaches has its own navigation gate (`Accessible.ignored: !Navigation.allows(…) || …`): Qt lifts an

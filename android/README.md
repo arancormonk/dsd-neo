@@ -1635,6 +1635,11 @@ module behind it, so androiddeployqt has nothing extra to package.
 - **TalkBack makes a silent stop at the start and end of a screen** (#782). Swiping
   past the last item or back past the first lands once on the window itself, which
   Qt's bridge gives no name.
+- **TalkBack's swipe does not scroll a long list** (#646). On Listen's tabs, and on
+  the app's other screens and sheets that scroll, swiping past the last item on the
+  screen moves on to the bottom bar instead of scrolling to the next one. This is a
+  limit of Qt 6.11.3's Android bridge. To reach the rest, scroll the list with a
+  two-finger swipe, then touch an item: TalkBack goes on from there.
 - **TalkBack reads the Network sheet in a fixed order** (#782). With TalkBack on,
   each section lists its entries by frequency, SGID or radio ID rather than most
   recent first: Qt tells TalkBack nothing when rows change places, and a list that
