@@ -436,10 +436,21 @@ DecoderHost::requestSaveDocument(const QString& suggestedName, const QString& mi
 qint64
 DecoderHost::refuseDocumentRequest() {
     const qint64 id = nextDocumentRequestId();
+    m_refusedDocumentRequests.insert(id);
     QMetaObject::invokeMethod(
-        this, [this, id]() { Q_EMIT documentPickUnavailable(id, QStringLiteral("unsupported")); },
+        this,
+        [this, id] {
+            if (m_refusedDocumentRequests.remove(id)) {
+                Q_EMIT documentPickUnavailable(id, QStringLiteral("unsupported"));
+            }
+        },
         Qt::QueuedConnection);
     return id;
+}
+
+void
+DecoderHost::cancelDocumentRequest(qint64 requestId) {
+    m_refusedDocumentRequests.remove(requestId);
 }
 
 bool

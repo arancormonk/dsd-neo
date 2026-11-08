@@ -3585,10 +3585,18 @@ class Setup : public QObject {
         return m_host_readings->calls;
     }
 
-    /** @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). */
+    /**
+     * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
+     * document picker's records go too, on every host: no lastDocumentRequest() from before the reset.
+     */
     Q_INVOKABLE void
     resetHostPlayback() {
         m_host_readings->calls.clear();
+        m_host_readings->lastDocumentRequest.clear();
+        for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
+            host->lastDocumentRequest.clear();
+            host->documentCalls.clear();
+        }
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;
         m_host_readings->publishPlayback(QString(), 0, 0, 0, QString());

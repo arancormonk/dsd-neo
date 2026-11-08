@@ -1724,6 +1724,14 @@ test_document_picker_defaults() {
     expect("ids keep rising after a cancel", nextId > saveId);
     QCoreApplication::processEvents();
     expect("the later request is answered too", unavailableIds.size() == 3 && unavailableIds.last() == nextId);
+
+    /* Cancelled before its answer ran: no answer follows, and the request after it still gets its own. */
+    const qint64 cancelledId = host.requestSaveDocument(QStringLiteral("a.zip"), QStringLiteral("application/zip"));
+    host.cancelDocumentRequest(cancelledId);
+    const qint64 keptId = host.requestOpenDocument();
+    QCoreApplication::processEvents();
+    expect("a request cancelled before its answer gets none",
+           unavailableIds.size() == 4 && !unavailableIds.contains(cancelledId) && unavailableIds.last() == keptId);
     expect("the property publishes the capability",
            host.property("documentPickerSupported").isValid() && !host.property("documentPickerSupported").toBool());
 }

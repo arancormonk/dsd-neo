@@ -19,6 +19,7 @@
 
 #include <QMap>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -421,11 +422,12 @@ class DecoderHost : public QObject {
      */
     Q_INVOKABLE virtual qint64 requestSaveDocument(const QString& suggestedName, const QString& mimeType);
 
-    /** @brief Forget request @p requestId: no answer for it follows. Unknown and answered ids are ignored. */
-    Q_INVOKABLE virtual void
-    cancelDocumentRequest(qint64 requestId) {
-        (void)requestId;
-    }
+    /**
+     * @brief Forget request @p requestId: no answer for it follows. Unknown and answered ids are ignored.
+     *
+     * The base host drops the "unsupported" answer it has queued for the id.
+     */
+    Q_INVOKABLE virtual void cancelDocumentRequest(qint64 requestId);
 
     /**
      * @brief The name a finished write into @p reference got in the Download folder, empty when the host has none.
@@ -922,6 +924,8 @@ class DecoderHost : public QObject {
     qint64 m_transferBytes = 0;
     qint64 m_transferTotalBytes = 0;
     qint64 m_documentRequestId = 0;
+    /* The base host's requests whose queued "unsupported" answer has not run yet and was not cancelled. */
+    QSet<qint64> m_refusedDocumentRequests;
     std::function<bool(const QString&)> m_recordingIndexed;
     std::function<int(const QString&)> m_recordingHold;
     std::function<void(int)> m_recordingRelease;
