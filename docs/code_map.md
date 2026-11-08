@@ -1214,8 +1214,22 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     fallback, `dsd_rename_noreplace_by_link()` in `src/platform/file_compat_internal.h`, tests reach directly), and on
     a filesystem with neither an exclusive create that claims the name, then a rename onto that empty claim
     (`dsd_rename_noreplace_by_reservation()`, also tested directly), which only a process deleting the claim can
-    race (never a check then a rename); Windows keeps the CRT's `rename()`, which refuses an existing name, and reports
-    that refusal (`_doserrno` exists) as EEXIST (issue #661: per-call WAV publication)
+    race (never a check then a rename); Windows uses `MoveFileExW()` without `MOVEFILE_REPLACE_EXISTING`, mapping
+    `ERROR_ALREADY_EXISTS`/`ERROR_FILE_EXISTS` to EEXIST; a name the wide call cannot take goes through the CRT's
+    `rename()`, whose refusal `_doserrno` tells apart (issue #661: per-call WAV publication; issue #828: a store file
+    kept aside)
+  - No-follow existence probe (issue #828): `dsd_path_exists_nofollow()` answers for the name itself (`lstat()`,
+    `GetFileAttributes()`): 1 for any type, a dangling link included; 0 only for a confirmed absence (ENOENT,
+    ENOTDIR); -1 with errno when it cannot tell (EACCES on an unsearchable parent), which a caller that must not lose
+    a file reads as "may exist"
+  - Windows UTF-8 paths (issue #828): the app's own files sit under the user's profile, named in any script. A path
+    that is well-formed UTF-8 goes through the wide calls whatever the ANSI code page and CRT locale
+    (`dsd_win32_utf8_path_to_wide()`; `dsd_stat_path()`, `dsd_fopen_private()`'s write modes,
+    `dsd_fopen_existing_regular_file()`, `dsd_rename_noreplace()`, `dsd_dir_list()`, which then reports UTF-8 names,
+    `dsd_path_exists_nofollow()`, `dsd_remove_file()`, `dsd_replace_file_with_temp()` and the temp-file opens); a path
+    that is not UTF-8, or one the wide call does not find, goes through the ANSI call, so a command line's path in the
+    ANSI code page still works. `PLATFORM_FILE_COMPAT` runs UTF-8 names under the default C locale, and on Windows
+    code page 1252 (the CI runner's) ANSI names too
   - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
     thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
     has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files

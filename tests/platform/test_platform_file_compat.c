@@ -20,7 +20,10 @@
 #include "file_compat_internal.h"
 #include "test_support.h"
 #if DSD_PLATFORM_WIN_NATIVE
-#include <locale.h>
+#include <direct.h>
+#include <stdlib.h>
+#include <wchar.h>
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -738,8 +741,8 @@ expect_rejects_symlink(void) {
 #endif
 
 static int
-write_text_file(const char* path, const char* text) {
-    FILE* fp = dsd_fopen_private(path, "wb");
+write_text_file_mode(const char* path, const char* mode, const char* text) {
+    FILE* fp = dsd_fopen_private(path, mode);
     if (!fp) {
         return 1;
     }
@@ -749,8 +752,74 @@ write_text_file(const char* path, const char* text) {
 }
 
 static int
+write_text_file(const char* path, const char* text) {
+    return write_text_file_mode(path, "wb", text);
+}
+
+/* The test's own reads and folder calls reach a UTF-8 name by its real characters on Windows (the wide CRT calls), so a
+   helper that took the bytes in the ANSI code page instead lands on another name and the check sees it. While this is
+   set they take the bytes in the ANSI code page, as a command line's path is. */
+#if DSD_PLATFORM_WIN_NATIVE
+static int g_test_ansi_names;
+#endif
+
+static FILE*
+test_fopen_read(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    if (g_test_ansi_names) {
+        return fopen(path, "rb");
+    }
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    if (!wide) {
+        return NULL;
+    }
+    FILE* fp = _wfopen(wide, L"rb");
+    free(wide);
+    return fp;
+#else
+    return fopen(path, "rb");
+#endif
+}
+
+static int
+test_mkdir(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    if (g_test_ansi_names) {
+        return _mkdir(path);
+    }
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    if (!wide) {
+        return -1;
+    }
+    const int rc = _wmkdir(wide);
+    free(wide);
+    return rc;
+#else
+    return dsd_mkdir(path, 0700);
+#endif
+}
+
+static int
+test_rmdir(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    if (g_test_ansi_names) {
+        return _rmdir(path);
+    }
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    if (!wide) {
+        return -1;
+    }
+    const int rc = _wrmdir(wide);
+    free(wide);
+    return rc;
+#else
+    return dsd_test_rmdir(path);
+#endif
+}
+
+static int
 file_text_is(const char* path, const char* text) {
-    FILE* fp = fopen(path, "rb");
+    FILE* fp = test_fopen_read(path);
     if (!fp) {
         return 0;
     }
@@ -763,7 +832,7 @@ file_text_is(const char* path, const char* text) {
 
 static int
 file_exists(const char* path) {
-    FILE* fp = fopen(path, "rb");
+    FILE* fp = test_fopen_read(path);
     if (!fp) {
         return 0;
     }
@@ -835,12 +904,12 @@ expect_rename_noreplace_in(const char* dir) {
     DSD_SNPRINTF(from, sizeof from, "%s%sdsd_neo_noreplace_from.tmp", dir, dir[0] ? "/" : "");
     DSD_SNPRINTF(taken, sizeof taken, "%s%sdsd_neo_noreplace_taken.tmp", dir, dir[0] ? "/" : "");
     DSD_SNPRINTF(to, sizeof to, "%s%sdsd_neo_noreplace_to.tmp", dir, dir[0] ? "/" : "");
-    (void)remove(from);
-    (void)remove(taken);
-    (void)remove(to);
+    (void)dsd_remove_file(from);
+    (void)dsd_remove_file(taken);
+    (void)dsd_remove_file(to);
     if (write_text_file(from, "from") != 0 || write_text_file(taken, "taken") != 0) {
-        (void)remove(from);
-        (void)remove(taken);
+        (void)dsd_remove_file(from);
+        (void)dsd_remove_file(taken);
         return 1;
     }
     int ok = 1;
@@ -851,9 +920,9 @@ expect_rename_noreplace_in(const char* dir) {
     left = -1;
     ok = ok && dsd_rename_noreplace(from, to, &left) == 0 && left == 0;
     ok = ok && !file_exists(from) && file_text_is(to, "from");
-    (void)remove(from);
-    (void)remove(taken);
-    (void)remove(to);
+    (void)dsd_remove_file(from);
+    (void)dsd_remove_file(taken);
+    (void)dsd_remove_file(to);
     return ok ? 0 : 1;
 }
 
@@ -868,23 +937,174 @@ expect_rename_noreplace(void) {
     return rc;
 }
 
-/* The same in a directory whose name is not ASCII, under the UTF-8 locale the runtime selects (a CRT that cannot take
-   one, such as MinGW's msvcrt, skips the case). */
+/* Spec B-14, r1#3: the app's own files live under the user's profile folder, which can be named in any script. Every
+   path helper reaches a UTF-8 name by its real characters under the default C locale: on Windows through the wide
+   calls, where the narrow ones read the bytes in the ANSI code page and land on another name. */
+typedef struct {
+    const char* want;
+    int seen_want;
+    int seen_other;
+} dir_list_probe;
+
 static int
-expect_rename_noreplace_non_ascii_dir(void) {
+dir_list_probe_entry(const char* name, void* user) {
+    dir_list_probe* probe = (dir_list_probe*)user;
+    if (strcmp(name, probe->want) == 0) {
+        probe->seen_want++;
+    } else {
+        probe->seen_other++;
+    }
+    return 0;
+}
+
+static int
+expect_non_ascii_private_opens(const char* file, const char* excl) {
+    int rc = 0;
+    if (write_text_file_mode(file, "wb", "one") != 0 || write_text_file_mode(file, "ab", "two") != 0
+        || !file_text_is(file, "onetwo")) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_fopen_private wb/ab did not write the named file\n");
+        rc = 1;
+    }
+    int opened = -1;
+    errno = 0;
+    FILE* fp = dsd_fopen_private_ex(file, "wbx", &opened);
+    if (fp || errno != EEXIST || opened != 0 || !file_text_is(file, "onetwo")) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_fopen_private wbx did not refuse the existing file\n");
+        rc = 1;
+    }
+    if (fp) {
+        (void)fclose(fp);
+    }
+    if (write_text_file_mode(excl, "wbx", "new") != 0 || !file_text_is(excl, "new")) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_fopen_private wbx did not create the named file\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+expect_non_ascii_stat_and_open(const char* file) {
+    int rc = 0;
+    dsd_stat_t st;
+    if (dsd_stat_path(file, &st) != 0 || !dsd_stat_is_regular(&st) || st.st_size != 6) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_stat_path did not find the file\n");
+        rc = 1;
+    }
+    FILE* fp = dsd_fopen_existing_regular_file(file, "rb");
+    char buf[16] = {0};
+    if (!fp || fread(buf, 1, sizeof buf - 1U, fp) != 6U || strcmp(buf, "onetwo") != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_fopen_existing_regular_file did not read the file\n");
+        rc = 1;
+    }
+    if (fp) {
+        (void)fclose(fp);
+    }
+    return rc;
+}
+
+static int
+expect_non_ascii_dir_list(const char* dir, const char* leaf) {
+    dir_list_probe probe = {leaf, 0, 0};
+    if (dsd_dir_list(dir, dir_list_probe_entry, &probe) != 0 || probe.seen_want != 1 || probe.seen_other != 1) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_dir_list did not list the folder by UTF-8 names (%d, %d)\n",
+                    probe.seen_want, probe.seen_other);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_non_ascii_exists(const char* dir, const char* file, const char* missing) {
+    if (dsd_path_exists_nofollow(dir) != 1 || dsd_path_exists_nofollow(file) != 1
+        || dsd_path_exists_nofollow(missing) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_path_exists_nofollow did not tell the names apart\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_named_dir_helpers(const char* dir, const char* leaf, const char* excl_leaf) {
+    char file[DSD_TEST_PATH_MAX];
+    char excl[DSD_TEST_PATH_MAX];
+    char missing[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(file, sizeof file, dir, leaf) != 0
+        || dsd_test_path_join(excl, sizeof excl, dir, excl_leaf) != 0
+        || dsd_test_path_join(missing, sizeof missing, dir, "missing.tmp") != 0) {
+        return 1;
+    }
+    (void)dsd_remove_file(file);
+    (void)dsd_remove_file(excl);
+    (void)test_rmdir(dir);
+    if (test_mkdir(dir) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: the test could not make its folder\n");
+        return 1;
+    }
+    int rc = expect_non_ascii_private_opens(file, excl);
+    rc |= expect_non_ascii_stat_and_open(file);
+    rc |= expect_non_ascii_dir_list(dir, leaf);
+    rc |= expect_non_ascii_exists(dir, file, missing);
+    if (expect_rename_noreplace_in(dir) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_rename_noreplace failed in the folder\n");
+        rc = 1;
+    }
+    (void)dsd_remove_file(file);
+    (void)dsd_remove_file(excl);
+    rc |= test_rmdir(dir) == 0 ? 0 : 1;
+    return rc;
+}
+
+static int
+expect_non_ascii_dir_helpers(void) {
+    return expect_named_dir_helpers("dsd_neo_wide_\xC3\xBC\xE6\x97\xA5", "f_\xC3\xA9.tmp", "x_\xC3\xA9.tmp");
+}
+
 #if DSD_PLATFORM_WIN_NATIVE
-    if (setlocale(LC_CTYPE, ".UTF8") == NULL) {
+/* A path in the ANSI code page (a command line's) still reaches its file through the ANSI calls: one that is not UTF-8,
+   and one that is UTF-8 by chance but names nothing in the wide calls. Code page 1252 (the CI runner's) names both. */
+static int
+expect_ansi_dir_helpers(void) {
+    if (GetACP() != 1252U) {
         return 0;
     }
-#endif
-    const char* dir = "dsd_neo_noreplace_\xC3\xBC";
-    (void)dsd_mkdir(dir, 0700);
-    int rc = expect_rename_noreplace_in(dir);
-    rc |= dsd_test_rmdir(dir) == 0 ? 0 : 1;
-#if DSD_PLATFORM_WIN_NATIVE
-    (void)setlocale(LC_CTYPE, "C");
-#endif
+    g_test_ansi_names = 1;
+    int rc = expect_named_dir_helpers("dsd_neo_ansi_\xE9", "f_\xE9.tmp", "x_\xE9.tmp");
+    rc |= expect_named_dir_helpers("dsd_neo_ansi_\xC3\xBC", "f_\xC3\xA9.tmp", "x_\xC3\xA9.tmp");
+    g_test_ansi_names = 0;
     return rc;
+}
+#endif
+
+/* Spec 2a.5: the existence probe answers for the name itself, never a link's target: 1 for a file, a folder or a
+   dangling link, 0 only for a confirmed absence (ENOENT, ENOTDIR), -1 with errno when it cannot tell. */
+static int
+expect_path_exists_nofollow(void) {
+    const char* file = "dsd_neo_exists_file.tmp";
+    const char* dir = "dsd_neo_exists_dir.tmp";
+    const char* missing = "dsd_neo_exists_missing.tmp";
+    char under_file[DSD_TEST_PATH_MAX];
+    (void)dsd_test_path_join(under_file, sizeof under_file, file, "x");
+    (void)remove(file);
+    (void)remove(missing);
+    (void)dsd_test_rmdir(dir);
+    int ok = write_text_file(file, "x") == 0 && dsd_mkdir(dir, 0700) == 0;
+    errno = 0;
+    ok = ok && dsd_path_exists_nofollow(NULL) == -1 && errno == EINVAL;
+    errno = 0;
+    ok = ok && dsd_path_exists_nofollow("") == -1 && errno == EINVAL;
+    ok = ok && dsd_path_exists_nofollow(file) == 1 && dsd_path_exists_nofollow(dir) == 1;
+    errno = 0;
+    ok = ok && dsd_path_exists_nofollow(missing) == 0 && errno == ENOENT;
+    errno = 0;
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Windows names a file used as a folder as a missing path. */
+    ok = ok && dsd_path_exists_nofollow(under_file) == 0 && (errno == ENOENT || errno == ENOTDIR);
+#else
+    ok = ok && dsd_path_exists_nofollow(under_file) == 0 && errno == ENOTDIR;
+#endif
+    (void)remove(file);
+    ok = dsd_test_rmdir(dir) == 0 && ok;
+    return ok ? 0 : 1;
 }
 
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -969,6 +1189,28 @@ expect_rename_noreplace_reservation_fallback(void) {
     ok = dsd_test_rmdir(dir) == 0 && ok;
     return ok ? 0 : 1;
 }
+
+/* A dangling link exists as a name (lstat, never its target), and a folder that cannot be searched leaves the answer
+   unknown (-1, EACCES), never absent. */
+static int
+expect_path_exists_nofollow_links_and_unknown(void) {
+    const char* link_name = "dsd_neo_exists_dangling.tmp";
+    const char* locked = "dsd_neo_exists_locked";
+    const char* inside = "dsd_neo_exists_locked/x";
+    (void)remove(link_name);
+    int ok = symlink("dsd_neo_exists_no_target.tmp", link_name) == 0;
+    ok = ok && dsd_path_exists_nofollow(link_name) == 1;
+    (void)remove(link_name);
+    if (geteuid() != 0) {
+        (void)dsd_test_rmdir(locked);
+        ok = ok && dsd_mkdir(locked, 0700) == 0 && chmod(locked, 0600) == 0;
+        errno = 0;
+        ok = ok && dsd_path_exists_nofollow(inside) == -1 && errno == EACCES;
+        (void)chmod(locked, 0700);
+        ok = dsd_test_rmdir(locked) == 0 && ok;
+    }
+    return ok ? 0 : 1;
+}
 #endif
 
 int
@@ -999,8 +1241,12 @@ main(void) {
     rc |= expect_null_device_is_readable();
     rc |= expect_private_exclusive_create();
     rc |= expect_rename_noreplace();
-    rc |= expect_rename_noreplace_non_ascii_dir();
-#if !DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_non_ascii_dir_helpers();
+    rc |= expect_path_exists_nofollow();
+#if DSD_PLATFORM_WIN_NATIVE
+    rc |= expect_ansi_dir_helpers();
+#else
+    rc |= expect_path_exists_nofollow_links_and_unknown();
     rc |= expect_rejects_symlink();
     rc |= expect_rename_noreplace_link_fallback();
     rc |= expect_rename_noreplace_reservation_fallback();

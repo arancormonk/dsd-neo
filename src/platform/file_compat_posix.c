@@ -480,6 +480,19 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     return dsd_rename_noreplace_by_link(from, to, out_source_left);
 }
 
+int
+dsd_path_exists_nofollow(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    struct stat st;
+    if (lstat(path, &st) == 0) {
+        return 1;
+    }
+    return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
+}
+
 static int
 dsd_local_file_name_is_unsafe(const char* requested) {
     return requested == NULL || requested[0] == '\0' || requested[0] == '/' || strchr(requested, '/') != NULL

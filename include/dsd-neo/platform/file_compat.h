@@ -108,6 +108,12 @@ int dsd_fstat(int fd, dsd_stat_t* st);
 /**
  * @brief Get file status for a path.
  *
+ * On Windows a path in UTF-8 (the app's own files, named in any script) goes through the wide call, whatever the ANSI
+ * code page and the CRT locale; a path that is not UTF-8, or one the wide call does not find, goes through the ANSI
+ * call, so a command line's path in the ANSI code page still works. dsd_fopen_private()'s write modes,
+ * dsd_fopen_existing_regular_file(), dsd_rename_noreplace(), dsd_dir_list() and dsd_path_exists_nofollow() choose the
+ * same way.
+ *
  * @param path  File path.
  * @param st    Output stat struct.
  * @return 0 on success, -1 on error.
@@ -224,10 +230,11 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
  *
  * Never replaces an existing @p to: the call fails with EEXIST and leaves both files as they were. The rename is
  * atomic where the platform and filesystem offer a no-replace rename (Linux renameat2(RENAME_NOREPLACE), macOS
- * renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' rename() refuses an existing
- * name). On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to with an
- * exclusive create and renames onto that claim: @p to briefly exists as an empty file, and only a process that deletes
- * the claim in between can still be replaced.
+ * renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' MoveFileExW() without
+ * MOVEFILE_REPLACE_EXISTING refuses an existing name, with UTF-8 names chosen as dsd_stat_path() describes). On a
+ * POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to with an exclusive create
+ * and renames onto that claim: @p to briefly exists as an empty file, and only a process that deletes the claim in
+ * between can still be replaced.
  *
  * @param from              Existing file.
  * @param to                New name, in the same directory as @p from.
@@ -237,6 +244,20 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
  * @return 0 on success, -1 on error with errno set (EEXIST when @p to exists).
  */
 int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left);
+
+/**
+ * @brief Whether a name exists, without following a symbolic link at it.
+ *
+ * Answers for the name itself: lstat() on POSIX, GetFileAttributes() on Windows (UTF-8 chosen as dsd_stat_path()
+ * describes), both of which describe a link or reparse point rather than its target, so a dangling link exists. Only a
+ * confirmed absence answers 0; a caller that must not lose a file treats -1 as "may exist".
+ *
+ * @param path  Path to probe.
+ * @return 1 when the name exists (any type); 0 when it is confirmed absent, with errno ENOENT (or ENOTDIR: a parent is
+ *         not a folder); -1 when it cannot tell, with errno set (EINVAL for NULL or an empty path, EACCES for a parent
+ *         that cannot be searched).
+ */
+int dsd_path_exists_nofollow(const char* path);
 
 /**
  * @brief The absolute, canonical path of an existing file or folder.
@@ -338,7 +359,9 @@ typedef int (*dsd_dir_list_cb)(const char* name, void* user);
  * Entries are reported by bare name with no path prefix; "." and ".." and every
  * subdirectory are skipped. The order is whatever the platform returns, so a
  * caller that needs a stable order must sort. Stopping the walk by returning
- * non-zero from @p cb is not an error.
+ * non-zero from @p cb is not an error. On Windows a UTF-8 folder (chosen as
+ * dsd_stat_path() describes) reports UTF-8 names, skipping a name that has no
+ * UTF-8 form; a folder walked through the ANSI call reports ANSI names.
  *
  * @param dir   Directory to walk.
  * @param cb    Per-entry callback.
