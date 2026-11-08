@@ -457,6 +457,9 @@ p25p2_note_seed_proven(dsd_opts* opts, dsd_state* state) {
                                  (uint16_t)s_descramble_seed.nac);
         }
         dsd_rxid_note_p25_network(state, (uint32_t)s_descramble_seed.wacn, (uint16_t)s_descramble_seed.sysid);
+        p25p2_seed_recover_note_proven(state, ((uint64_t)s_descramble_seed.wacn << 24)
+                                                  | ((uint64_t)s_descramble_seed.sysid << 12)
+                                                  | (uint64_t)s_descramble_seed.nac);
         if (newly_proven) {
             dsd_event_sync_slot(opts, state, 0U);
             dsd_event_sync_slot(opts, state, 1U);

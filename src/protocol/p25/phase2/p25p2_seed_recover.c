@@ -75,6 +75,10 @@ typedef struct {
 
 typedef struct {
     p25p2_seed_pending pending;
+    /* A committed code whose system the Signal search hears of once a burst proves it (p25p2_seed_recover_note_proven()),
+       0 for none, and the dsd_state::carrier_seq it was committed on. */
+    uint64_t owed_network;
+    uint32_t owed_carrier_seq;
     uint32_t window_serial; /* windows recovery saw since the context was made */
     uint32_t alignment;     /* windows whose I-ISCH contradicted continuity */
 } p25p2_seed_recover_ctx;
@@ -417,8 +421,9 @@ sr_process_burst(const dsd_state* state, p25p2_seed_recover_ctx* ctx, sr_learned
 
 /* The confirmed code becomes the seed in force, as a network status broadcast that passed its CRC applies one
    (p25p2_vpdu_apply_nsb_identity()): WACN and SYSID through p25_update_system_identity(), which resets what belonged
-   to another system, and the NAC. The Signal search hears of the code and of the system its WACN and SYSID name. The
-   burst that confirmed it then proves it as this window decodes. */
+   to another system, and the NAC. The Signal search hears of the code now. The burst that confirmed it then proves it
+   as this window decodes, and only then does the search hear of the system its WACN and SYSID name: the proof records
+   the carrier's proven NAC first, which the search judges a site note by (issue #802 B11). */
 static void
 sr_commit(dsd_state* state, p25p2_seed_recover_ctx* ctx) {
     const uint64_t code = ctx->pending.code;
@@ -433,7 +438,8 @@ sr_commit(dsd_state* state, p25p2_seed_recover_ctx* ctx) {
     state->p2_cc = nac;
     DSD_FPRINTF(stderr, " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX", wacn, sysid, nac);
     dsd_signal_search_note_p25p2_code(state, code, DSD_P25P2_CODE_RECOVERED);
-    p25_search_note_recovered_network(state, (uint32_t)wacn, (uint16_t)sysid);
+    ctx->owed_network = code;
+    ctx->owed_carrier_seq = state->carrier_seq;
 }
 
 /* A new window for the context, if there is one: a contradicted position, or another carrier, drops the candidate. */
@@ -493,6 +499,21 @@ p25p2_seed_recover_forget(const dsd_state* state) {
     p25p2_seed_recover_ctx* ctx = state ? sr_ctx_peek(state) : NULL;
     if (ctx) {
         DSD_MEMSET(&ctx->pending, 0, sizeof(ctx->pending));
+        ctx->owed_network = 0U;
+    }
+}
+
+void
+p25p2_seed_recover_note_proven(const dsd_state* state, uint64_t code) {
+    p25p2_seed_recover_ctx* ctx = state ? sr_ctx_peek(state) : NULL;
+    if (!ctx || ctx->owed_network == 0U) {
+        return;
+    }
+    const uint64_t owed = ctx->owed_network;
+    const int same_carrier = ctx->owed_carrier_seq == state->carrier_seq;
+    ctx->owed_network = 0U;
+    if (owed == code && same_carrier) {
+        p25_search_note_recovered_network(state, (uint32_t)(code >> 24), (uint16_t)((code >> 12) & 0xFFFU));
     }
 }
 

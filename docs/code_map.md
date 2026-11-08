@@ -8601,10 +8601,13 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   boundary, `p25p2_frame_forget_carrier()`, a contradicted window and any window on a proven carrier drop it; a
   contradicted window, or one only continuity places, neither solves nor confirms. The confirmed code is committed
   like a checked network status: WACN/SYSID through `p25_update_system_identity()`, the NAC into `p2_cc` (both clear
-  `p2_cc_verified` on a change), the line " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX" and
-  `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)` and a Signal search network site note with the
-  code's WACN and SYSID alone (`p25_search_note_recovered_network()`; no LRA, RFSS or site); the window then
-  descrambles with it and its confirming burst proves it through the verdict. Nothing else changes before the commit:
+  the seed's proof on a change, `dsd_state_forget_p2_proof()`), the line " P25p2 scrambling code recovered: WACN
+  %05llX SYSID %03llX NAC %03llX" and `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)`; the window
+  then descrambles with it and its confirming burst proves it through the verdict. The Signal search network site note
+  with the code's WACN and SYSID alone (`p25_search_note_recovered_network()`; no LRA, RFSS or site) waits for that
+  proof (`p25p2_seed_recover_note_proven()`, from `p25p2_note_seed_proven()` after the proven NAC is recorded), so the
+  search judges it by the code's NAC (issue #802 B11): a carrier whose NAC a receive filter blocks names no site. The
+  owed note goes with the first proof and with the carrier (`p25p2_seed_recover_forget()`). Nothing else changes before the commit:
   no counter, MAC, proof, identity, event or evidence. Allocation: the tables once per process and the context once
   per decoder state (at its first located window on an unproven carrier, freed with the state's extensions); nothing
   per window or burst. Cost: a `p2_cc_verified` read and a slot lookup per window on a proven carrier; on an unproven
@@ -9574,8 +9577,9 @@ Private per-protocol modules worth knowing about:
   the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control channel fill-in
   (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan snapshot restores
   (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). A recovered Phase 2 scrambling code (issue #804) adds a network
-  note with its WACN and SYSID alone at its commit (`p25_search_note_recovered_network()`, `P25_P2_SEED_RECOVER`): the
-  carrier's own checked scrambling names that system. The same checked network statuses feed the session's code list
+  note with its WACN and SYSID alone once the committed code's first burst proves it
+  (`p25_search_note_recovered_network()`, `P25_P2_SEED_RECOVER`): the carrier's own checked scrambling names that
+  system, judged by the NAC that proof recorded. The same checked network statuses feed the session's code list
   (`dsd_signal_search_note_p25p2_code()`, `p25_search_note_p25p2_code()`, issue #804): a Phase 2 one with its own
   WACN, SYSID and NAC (`DSD_P25P2_CODE_P2_NETWORK`), a TSBK or MBT one with its WACN and SYSID and the NAC of the NID
   of the frame that carried it (`p25_search_note_p1_network_code()`, `DSD_P25P2_CODE_P1_NETWORK`), only while
