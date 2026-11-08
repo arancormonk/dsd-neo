@@ -560,6 +560,8 @@ test_foreign_cac_frame_on_followed_channel(dsd_opts* opts, dsd_state* state) {
     send_cac_frame(opts, state, 0x22U, site, 144U);
     rc |= expect_long("foreign CAC frame: carrier sync not stamped", (long)state->last_cc_sync_time, 0L);
     rc |= expect_long("foreign CAC frame: control sync not stamped", state->last_cc_sync_time_m > 0.0, 0L);
+    rc |= expect_long("foreign CAC frame: heard as another channel's control",
+                      dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
     rc |= expect_followed_call_untouched("foreign CAC frame", state, opts);
 
     /* Control: the same frame on site A's control channel, untuned, is the site's own and keeps the carrier active. */
