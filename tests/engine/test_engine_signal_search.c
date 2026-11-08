@@ -3176,6 +3176,46 @@ test_session_avoid_of_permanent(dsd_opts* o, dsd_state* s, const dsd_signal_sear
     dsd_signal_search_avoids_permanent_set(NULL, 0);
 }
 
+/* Avoid this session on a visited hit (AVOID) or by frequency (AVOID_FREQUENCY), when the store has just made that
+   frequency permanent: the action succeeds, adds nothing, the session copy of another frequency made permanent with it
+   goes, and the visit is left (issue #828). */
+static void
+test_hit_avoids_of_permanent(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 46, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    uint64_t session = 0;
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 1 && session == 46 && avoided[0] == 100012500);
+    // AVOID on the hit, both frequencies now permanent.
+    set_permanent(100025000, 100012500);
+    const dsd_signal_search_control avoid_hit = {46, status.hit.hit_id, DSD_SEARCH_ACTION_AVOID, 0};
+    assert(dsd_engine_signal_search_control(o, s, &avoid_hit) == 0);
+    assert(session_avoids(&session) == 0 && session == 46 && status.message[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    // The next detection is the one frequency in neither list.
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100000000);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    // AVOID_FREQUENCY naming the visited frequency, made permanent with a session avoid of another one.
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    assert(session_avoids(&session) == 1 && avoided[0] == 200000000);
+    const uint32_t all[] = {100025000, 100012500, 100000000, 200000000};
+    dsd_signal_search_avoids_permanent_set(all, 4);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100000000) == 0);
+    assert(session_avoids(&session) == 0 && session == 46 && status.message[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
 /* A permanent avoid made for the hit being visited leaves it at once (issue #828), held and decoded without a break
    too: the in-frame yield check finds the store's change with no command queued and no main-loop tick, and the tick it
    returns to leaves the visit. A change that does not name the visit cuts no frame. */
@@ -3316,6 +3356,7 @@ static void
 test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     test_avoid_lists_room(o, s, config);
     test_session_avoid_of_permanent(o, s, config);
+    test_hit_avoids_of_permanent(o, s, config);
     test_permanent_leaves_held_visit(o, s, config);
     test_paused_search_keeps_both_lists(o, s, config);
     test_session_list_ends_with_session(o, s, config);

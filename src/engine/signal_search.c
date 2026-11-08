@@ -188,6 +188,21 @@ search_leave_visit_to(search_coord* c, uint32_t frequency) {
     }
 }
 
+/* A frequency now permanent leaves the session list, the others keeping their order; published when it changed. */
+static void
+search_drop_permanent_session_avoids(search_coord* c) {
+    size_t kept = 0;
+    for (size_t i = 0; i < c->session_avoid_count; ++i) {
+        if (!search_contains(c->permanent, c->permanent_count, c->session_avoids[i])) {
+            c->session_avoids[kept++] = c->session_avoids[i];
+        }
+    }
+    if (kept != c->session_avoid_count) {
+        c->session_avoid_count = kept;
+        search_publish_session_avoids(c);
+    }
+}
+
 /* Take the store's permanent avoids when they changed (one atomic load when they did not): a frequency now permanent
    leaves the session list, so it is in one list only, and a visit to one is left at the next tick, which retires the
    hit. Runs on the decoder thread at each tick, action and in-frame yield check, in every phase the coordinator is
@@ -199,15 +214,10 @@ search_refresh_permanent(search_coord* c) {
     }
     c->permanent_count =
         dsd_signal_search_avoids_permanent_snapshot(c->permanent, DSD_SEARCH_MAX_AVOIDS, &c->permanent_revision);
-    size_t kept = 0;
-    for (size_t i = 0; i < c->session_avoid_count; ++i) {
-        if (!search_contains(c->permanent, c->permanent_count, c->session_avoids[i])) {
-            c->session_avoids[kept++] = c->session_avoids[i];
-        }
-    }
-    if (kept != c->session_avoid_count) {
-        c->session_avoid_count = kept;
-        search_publish_session_avoids(c);
+    /* The prune compares every pair of the two lists, inside a decode frame on the yield path: an empty list on either
+       side (no session avoids is the usual case) skips it. */
+    if (c->session_avoid_count && c->permanent_count) {
+        search_drop_permanent_session_avoids(c);
     }
     if (search_contains(c->permanent, c->permanent_count, c->status.hit.frequency_hz)) {
         search_leave_visit_to(c, c->status.hit.frequency_hz);

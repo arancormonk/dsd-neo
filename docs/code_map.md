@@ -130,7 +130,8 @@ Generated (do not edit/commit):
     every session avoid action and keeps its error, so nothing is published for a failed or stopped session. Pause,
     Resume and a paused restart with edited ranges keep both lists. A full session list refuses an avoid and publishes
     "The avoid list is full" in `status.message`; any action that takes effect, or the next visit's tune
-    (`search_queue_tune()`), clears an earlier refusal, and an ERROR phase keeps its message (`ENGINE_SIGNAL_SEARCH`). `dsd_engine_signal_search_target()` validates an action
+    (`search_queue_tune()`), clears an earlier refusal, and an ERROR phase keeps its message (`ENGINE_SIGNAL_SEARCH`).
+    `dsd_engine_signal_search_target()` validates an action
     against the live coordinator without acting and gives the frequency it acts on;
     `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
     the running session's status. The coordinator keeps the visit's checked site record
