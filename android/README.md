@@ -2283,6 +2283,12 @@ A failure, a finished replay, a backup's result and the receiver's details show 
 name is the group's heading. Listen opens on the tab last chosen on this phone; that choice is not in backups, and a
 restore keeps it. While a Listen menu or sheet is open the tabs are greyed out and do nothing.
 
+Saving a system (adding one, editing one, or saving a Signal search detection or a RadioReference import as one)
+switches Listen to **Systems**; saving a scan list, or saving it as a draft, switches it to **Scan lists**. A screen
+still open on top stays open (Signal search after **Save detection**, or a session's monitor), and Listen shows that
+tab when you get back to it. Nothing else switches the tab: a save that fails, leaving an editor without saving,
+removing something, pinning or unpinning, and a start that is refused or fails all leave Listen on the tab it was on.
+
 Each tab keeps its own place in the list while the app runs: going back to a tab shows it where it was left, and a tab
 not shown yet starts at its top. When Listen scrolls to its top to show a failure (or, with a USB receiver, a session
 that ended), that is the tab's place, and nothing scrolls the message away until you scroll or move on with the

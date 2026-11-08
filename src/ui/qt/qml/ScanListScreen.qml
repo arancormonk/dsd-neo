@@ -109,6 +109,10 @@ Rectangle {
     }
 
     signal closed
+    // Issue #646 D6: a list (or draft) persisted by save() or saveDraft(),
+    // said just before closed. A cancel and a removal only close; a failed
+    // save says neither.
+    signal saved
     property string initialDraft: ""
     function fingerprint() {
         return JSON.stringify({
@@ -369,16 +373,20 @@ Rectangle {
         if (!validate())
             return;
         draft.isDraft = false;
-        if (persist())
+        if (persist()) {
+            saved();
             closed();
+        }
     }
     function saveDraft() {
         Navigation.clearInput(screen.Window.window);
         if (!validateTunerSettings() || !validateEntrySettings())
             return;
         draft.isDraft = true;
-        if (persist())
+        if (persist()) {
+            saved();
             closed();
+        }
     }
 
     function entryLabel(entry) {

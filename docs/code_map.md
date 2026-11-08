@@ -10715,7 +10715,13 @@ Qt Quick frontend (`src/ui/qt`):
   `scanLists`, `explore`) is read once, in `Component.onCompleted`, from `prefsStore.listenSection` (`prefsStore` is
   `prefs`; anything unknown reads `systems`) and is Home's own from then on: `showSection(id)` sets it and writes the
   preference whether or not the store keeps it (the QML fixture's plain map keeps nothing), and ignores unknown ids.
-  Home follows every `selected(id)` through `showSection()`. Each tab keeps its place (`sectionScroll`, its
+  Home follows every `selected(id)` through `showSection()`. Main selects a tab after two flows (D6), selection only, so
+  a screen still on top stays there and the restore waits for Home to show: the wizard's `saved` (every successful
+  wizard save: add, edit, Save detection, a RadioReference import, the site chooser's Edit, a session's Edit saved
+  system) calls `showSection("systems")` before Main closes the wizard (after pushing a running session's changed CSV
+  files, as before), and `ScanListScreen.saved`, emitted only once `save()` or `saveDraft()` has persisted and just
+  before `closed` (which also fires for a cancel and a removal), calls `showSection("scanLists")`. A failed save, a
+  cancel, a removal, a pin, a refusal or a failure selects nothing. Each tab keeps its place (`sectionScroll`, its
   `contentY` when it was left): `showSection()` cancels any flick, records the outgoing tab's place clamped to its
   range unless a restore is still owed (`restorePending`: until then the body's range is the previous section's, a
   transient clamp), cancels a pending focus reveal, and arms the owned `restoreTimer` (interval 0, never a bare
@@ -10761,8 +10767,14 @@ Qt Quick frontend (`src/ui/qt`):
   body keeping the tabs in view, `revealTop()` cancelling an owed restore and holding off focus reveals; the migrated
   Home suites select the tab a case needs; `tst_home_dongle_status.qml` `test_reveal_top` and
   `tst_home_pinned.qml` `test_refusal_revealed_when_scrolled` run `revealTop()` against an owed restore, a
-  pending focus reveal and a focus handed back later), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on
-  each tab; `tst_a11y_scan_churn.qml`: the Explore face on a hidden tab raises nothing).
+  pending focus reveal and a focus handed back later; `tst_listen_tabs_flows.qml`, through Main: wizard add and edit
+  from either other tab and from History, Save detection under Signal search and Edit saved system under the monitor
+  selecting Systems for when Home shows, editor save and draft save saying `saved` then `closed` and selecting Scan
+  lists, failed saves, cancels, removals and pins keeping the tab, a refusal and a host failure keeping the tab with the
+  failure card above every tab's section, "Scan with other lists…" from the keyboard on a deep card with a failed start
+  keeping the failure card in view after the sheet hands the focus back, Signal search opening from Explore by tap,
+  Return and Space), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` walks Home on each tab;
+  `tst_a11y_scan_churn.qml`: the Explore face on a hidden tab raises nothing).
 - Pinned strip and sheet (issue #801; the pins themselves are `listen_pins.{h,cpp}`, below). `qml/HomeScreen.qml` places
   `pinnedStrip` between `listenHeader` and the scroll body, on the content column, 8 px under the header. The order is
   title, strip, Listen tabs, body on both hosts: `fixedTitle` (`pinnedHeader`, the strip shown or the fixed Listen

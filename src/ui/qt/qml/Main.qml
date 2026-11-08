@@ -1898,6 +1898,8 @@ Window {
         visible: mainRoot.scanListOpen
         z: 20
         onClosed: mainRoot.scanListOpen = false
+        // Issue #646 D6: the saved list is on Scan lists when Listen shows.
+        onSaved: homeScreen.showSection("scanLists")
     }
 
     // ---- Live monitor (owns the screen while a session is active) ----
@@ -2192,6 +2194,10 @@ Window {
                 // naming and metering the system as it was before the edit.
                 mainRoot.sessionSystem = sys;
             }
+            // Issue #646 D6: the saved system is on Systems when Listen shows,
+            // now or once a screen still on top (Signal search after Save
+            // detection, the monitor during a session) closes.
+            homeScreen.showSection("systems");
             mainRoot.wizardOpen = false;
             mainRoot.currentTab = 0;
             Qt.inputMethod.hide();
