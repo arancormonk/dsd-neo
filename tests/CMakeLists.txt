@@ -17968,6 +17968,11 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_search_schedule_replay
         PRIVATE dsd-neo_engine dsd-neo_io_radio ${LIBS}
     )
+    # The run replays only the fixtures its own list names, from this directory.
+    target_compile_definitions(
+        dsd-neo_test_search_schedule_replay
+        PRIVATE DSD_SEARCH_SCHEDULE_FIXTURE_DIR="${_DSD_NEO_IQ_FIXTURE_DIR}"
+    )
     function(
         dsd_neo_add_search_schedule_test
         name
@@ -17980,8 +17985,7 @@ if(DSD_HAS_RADIO)
             add_test(
                 NAME DECODE_IQ_SEARCH_SCHEDULE_${name}_${_offset}
                 COMMAND
-                    dsd-neo_test_search_schedule_replay
-                    "${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json" ${_offset}
+                    dsd-neo_test_search_schedule_replay ${fixture} ${_offset}
                     ${deadline_ms} --expect ${protocol} --expect-profile
                     ${profile} -- ${ARGN}
             )
@@ -18004,13 +18008,12 @@ if(DSD_HAS_RADIO)
     # A -mq lock (Settings > Extra decoder arguments) keeps CQPSK on 4800/4; the unlocked hunt reads this capture too.
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC_LOCKED p25p1_cqpsk_cc P25 0 3000 -fa -mq)
     dsd_neo_add_search_schedule_test(P25P1_CQPSK_CC p25p1_cqpsk_cc P25 0 3000 -fa)
-    # A fixture the replay refuses names no scratch file, and the run ends on the refusal with nothing removed that it
-    # did not name.
+    # A fixture the list does not hold names no scratch file, and the run ends on the refusal with nothing removed that
+    # it did not name.
     add_test(
         NAME DECODE_IQ_SEARCH_SCHEDULE_MISSING_FIXTURE
         COMMAND
-            dsd-neo_test_search_schedule_replay
-            "${CMAKE_CURRENT_BINARY_DIR}/search_schedule_missing.iq.json" 0 3000
+            dsd-neo_test_search_schedule_replay search_schedule_missing 0 3000
     )
     set_tests_properties(
         DECODE_IQ_SEARCH_SCHEDULE_MISSING_FIXTURE
@@ -18018,7 +18021,7 @@ if(DSD_HAS_RADIO)
             LABELS "iq-decode"
             TIMEOUT 120
             PASS_REGULAR_EXPRESSION
-                "SEARCH SCHEDULE: [^\n]*search_schedule_missing\\.iq\\.json"
+                "SEARCH SCHEDULE: search_schedule_missing is not a schedule fixture"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     # Auto is the default: with no -f at all both NXDN rates decode, as under -fa.

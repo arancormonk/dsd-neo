@@ -12,10 +12,12 @@
  * when it next asks (when the probe's dwell is spent). Every other frame-sync hook is the engine's own. The decoder
  * starts on 4800/4 (C4FM unless a -m lock says otherwise), as every Auto visit does.
  *
- * Usage: search_schedule_replay FIXTURE.iq.json OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N]
+ * Usage: search_schedule_replay FIXTURE OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N]
  *        [--hold-ms MS] [--ordinary] [-- DECODER ARGS...]
  *
- * The landing comes OFFSET_MS into the capture: the run replays a scratch copy of the cu8 fixture that starts there
+ * FIXTURE names one of the in-tree I/Q fixtures in k_schedule_fixtures (tests/fixtures/iq/FIXTURE.iq.json, under the
+ * fixture directory the build passes in); the path is built from that list, never from the argument, so the run opens
+ * no file a caller named. The landing comes OFFSET_MS into the capture: the run replays a scratch copy of the cu8 fixture that starts there
  * and goes on cyclically (back to the capture's start at its end) for as long as the run needs. The decoder arguments
  * default to -fa. The run stops DEADLINE_MS after the landing when nothing identified the carrier, and HOLD_MS after it
  * otherwise (DEADLINE_MS by default), so a longer hold shows what the visit decodes once it listens. --ordinary
@@ -49,6 +51,15 @@
 #include <string.h>
 
 #include "test_support.h"
+
+#ifndef DSD_SEARCH_SCHEDULE_FIXTURE_DIR
+#error "DSD_SEARCH_SCHEDULE_FIXTURE_DIR must name the in-tree I/Q fixture directory"
+#endif
+
+/* The fixtures a schedule run may replay. */
+static const char* const k_schedule_fixtures[] = {
+    "p25p1_c4fm_cc", "p25p1_cqpsk_cc", "p25p2_cc", "dmr_voice", "nxdn96", "nxdn48", "dpmr_synth", "ysf", "m17",
+};
 
 /* Scratch fixtures run on past the deadline by this much, so the run stops on its own clock, not the capture's end. */
 #define SCHEDULE_TAIL_MS  500U
@@ -266,20 +277,38 @@ write_cyclic_data(const char* source, uint64_t source_bytes, uint64_t offset_byt
     return rc;
 }
 
+/* The sidecar of the listed fixture @p name, in @p out: 0, or -1 for a name the list does not hold. */
+static int
+schedule_fixture_path(const char* name, char* out, size_t out_size) {
+    for (size_t i = 0; i < sizeof(k_schedule_fixtures) / sizeof(k_schedule_fixtures[0]); i++) {
+        if (strcmp(name, k_schedule_fixtures[i]) == 0) {
+            const int n =
+                DSD_SNPRINTF(out, out_size, "%s/%s.iq.json", DSD_SEARCH_SCHEDULE_FIXTURE_DIR, k_schedule_fixtures[i]);
+            return n > 0 && (size_t)n < out_size ? 0 : -1;
+        }
+    }
+    return -1;
+}
+
 /* The scratch fixture the landing replays: @p dir/landing.iq(.json). */
 static int
 write_landing_fixture(const schedule_args* args, const char* dir, char* json_path, size_t json_path_size,
                       char* data_path, size_t data_path_size) {
+    char fixture_path[1024];
+    if (schedule_fixture_path(args->fixture, fixture_path, sizeof(fixture_path)) != 0) {
+        DSD_FPRINTF(stderr, "SEARCH SCHEDULE: %s is not a schedule fixture\n", args->fixture);
+        return -1;
+    }
     dsd_iq_replay_config cfg;
     char error[256];
-    if (dsd_iq_replay_read_metadata(args->fixture, &cfg, error, sizeof(error)) != 0) {
-        DSD_FPRINTF(stderr, "SEARCH SCHEDULE: %s: %s\n", args->fixture, error);
+    if (dsd_iq_replay_read_metadata(fixture_path, &cfg, error, sizeof(error)) != 0) {
+        DSD_FPRINTF(stderr, "SEARCH SCHEDULE: %s: %s\n", fixture_path, error);
         return -1;
     }
     const uint64_t frame_bytes = 2U; // cu8 I/Q
     const uint64_t rate = cfg.sample_rate_hz;
     if (cfg.format != DSD_IQ_FORMAT_CU8 || rate == 0U || cfg.data_bytes < frame_bytes) {
-        DSD_FPRINTF(stderr, "SEARCH SCHEDULE: %s is not a cu8 capture\n", args->fixture);
+        DSD_FPRINTF(stderr, "SEARCH SCHEDULE: %s is not a cu8 capture\n", fixture_path);
         return -1;
     }
     const uint64_t source_bytes = cfg.data_bytes - cfg.data_bytes % frame_bytes;
@@ -291,7 +320,7 @@ write_landing_fixture(const schedule_args* args, const char* dir, char* json_pat
     if (dsd_test_path_join(json_path, json_path_size, dir, "landing.iq.json") != 0
         || dsd_test_path_join(data_path, data_path_size, dir, "landing.iq") != 0
         || write_cyclic_data(cfg.data_path, source_bytes, offset_bytes, out_bytes, data_path) != 0
-        || write_sidecar(args->fixture, json_path, "landing.iq", out_bytes) != 0) {
+        || write_sidecar(fixture_path, json_path, "landing.iq", out_bytes) != 0) {
         DSD_FPRINTF(stderr, "SEARCH SCHEDULE: cannot write the landing fixture in %s\n", dir);
         return -1;
     }
@@ -340,7 +369,7 @@ main(int argc, char** argv) {
     schedule_args args;
     if (parse_args(argc, argv, &args) != 0) {
         DSD_FPRINTF(stderr,
-                    "usage: %s FIXTURE.iq.json OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N] "
+                    "usage: %s FIXTURE OFFSET_MS DEADLINE_MS [--expect PROTOCOL] [--expect-profile N] "
                     "[--hold-ms MS] [--ordinary] [-- DECODER ARGS...]\n",
                     argv[0]);
         return 2;
