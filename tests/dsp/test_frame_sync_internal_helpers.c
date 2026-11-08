@@ -304,8 +304,8 @@ test_tetra_sb_training_leaves_the_carrier_polarity(void) {
         DSD_MEMCPY(stream + 60, home ? TETRA_SB_SSB_SYNC : INV_TETRA_SB_SSB_SYNC, 19);
         assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 79)
                == (home ? DSD_SYNC_TETRA_SB_POS : DSD_SYNC_TETRA_SB_NEG));
-        assert(state->tetra_sync.sb_polarity == (uint8_t)!home && state->tetra_sync.sb1_valid == 1);
         assert(state->tetra_sync.polarity == (uint8_t)home);
+        assert(state->tetra_sync.sb_polarity == (uint8_t)!home && state->tetra_sync.sb1_valid == 1);
 
         /* The carrier's normal bursts: NTS1, and NTS2, which is NTS1 inverted, as an inverted carrier turns them. */
         for (int nts2 = 0; nts2 <= 1; nts2++) {

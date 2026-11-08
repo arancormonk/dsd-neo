@@ -419,6 +419,9 @@ test_colour_zero_cell_scrambles_predefined(void) {
     uint8_t block2[BLOCK_DIBITS];
     uint8_t mac[TTB_SCH_HD_BITS] = {0};
     encode_bsch(0U, bsch);
+    /* Block 2 is scrambled by the test's own transmit chain (tetra_test_burst.h, whose scrambler is written out from
+       clause 8.2.5.2 and not taken from the decoder) with seed 3, the predefined all-zero e(1)..e(30): it decodes only
+       when the decoder's colour-0 seed is 3 too, which the lfsr_seed assertions below also check directly. */
     ttb_encode_sch_hd(mac, 3u, block2);
 
     session s = session_open();
@@ -439,8 +442,11 @@ test_colour_zero_cell_scrambles_predefined(void) {
         s.opts->tetra_net_mcc = k_mcc[i];
         s.opts->tetra_net_mnc = k_mnc[i];
         s.opts->tetra_net_colour = 0U;
-        (void)nts2_burst(&s, zeros, zeros);
+        /* The first burst creates the TETRA state, which takes the preset (tetra_frame_enter()); its all-zero blocks
+           fail their CRC, so the seed is checked before any block could have passed and named the cell. */
+        assert(nts2_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
         assert(tetra_st_existing(s.state)->lfsr_seed == 3u);
+        assert(s.state->rx_id.valid == 0U);
         assert(nts2_burst(&s, zeros, block2) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
         assert(s.state->rx_id.valid == 0U);
         session_close(&s);
