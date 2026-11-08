@@ -1228,6 +1228,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_rotation_count = 0U;
     state->trunk_scan_lists_seq = 0U;
     DSD_MEMSET(state->trunk_scan_lists, 0, sizeof(state->trunk_scan_lists));
+    DSD_MEMSET(state->trunk_scan_membership_counts, 0, sizeof(state->trunk_scan_membership_counts));
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;

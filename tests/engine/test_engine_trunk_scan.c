@@ -1754,10 +1754,19 @@ test_init_reads_the_list_spec(void) {
     }
     opts.trunk_scan_lists[1].start_off = 1U;
     opts.trunk_scan_list_count = 2;
-    /* One file twice repeats every id: refused naming the file twice (the CLI's own same-path refusal comes first). */
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0
-        || strstr(err, "ids are unique across lists") == NULL) {
-        DSD_FPRINTF(stderr, "one file as two lists: err=\"%s\", want the id refusal\n", err);
+    /* One file twice (the CLI's own same-path refusal comes first, but a config can name it twice) is two lists that
+       share every target: nothing is doubled, the session holds the file's one target, in both lists. */
+    unsigned int owner = 9U;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_target_count(&state) != 1U || state.trunk_scan_target_count != 1U
+        || state.trunk_scan_list_count != 2U || state.trunk_scan_lists[0].targets != 1U
+        || state.trunk_scan_lists[1].targets != 1U || trunk_scan_test_target_lists(&state, 0U, &owner) != 3
+        || owner != 0U || state.trunk_scan_membership_counts[2] != 1U || state.trunk_scan_membership_counts[0] != 0U
+        || state.trunk_scan_membership_counts[1] != 0U) {
+        DSD_FPRINTF(stderr,
+                    "one file as two lists: err=\"%s\", %zu targets (%u, %u in the lists, %u in both); want 1 shared\n",
+                    err, dsd_engine_trunk_scan_target_count(&state), (unsigned)state.trunk_scan_lists[0].targets,
+                    (unsigned)state.trunk_scan_lists[1].targets, (unsigned)state.trunk_scan_membership_counts[2]);
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
@@ -17859,17 +17868,21 @@ test_lists_load_in_order_and_rotate_over_the_lists_on(void) {
 }
 
 /* Every load error says which file it is about: a row, an over-long header, a target id another list holds already
- * (both files and rows), a file that does not open (named once). A list that starts the same channel as another, under
- * its own id, is two targets. */
+ * with another setting (both files and rows, and the column), a file that does not open (named once). A list that
+ * starts the same channel as another, under its own id, is two targets. */
 static int
 test_lists_load_errors_name_the_file(void) {
+    /* The error: list 2's file, then @p head (the parser's error starts so), or then @p head, list 1's file and
+       @p tail (the whole error). */
     static const struct {
         const char* second;
-        const char* want;
-        int names_both;
+        const char* head;
+        const char* tail;
     } cases[] = {
-        {"b,bogus-type,852000000,,250,,\n", ": row 2 has invalid target type", 0},
-        {"x,p25-trunk,852000000,,250,,\n", " row 2: target id 'x' is also ", 1},
+        {"b,bogus-type,852000000,,250,,\n", ": row 2 has invalid target type", NULL},
+        /* The same id as list 1's row 2 on another frequency: one target cannot be both. */
+        {"x,p25-trunk,852000000,,250,,\n", " row 2: target id 'x' is also ",
+         " row 2, with another frequency_hz; a target in two lists must have the same settings in both"},
     };
 
     int test_rc = 0;
@@ -17887,11 +17900,12 @@ test_lists_load_errors_name_the_file(void) {
         scan_list_files_to_opts(&files, NULL, &opts);
         char err[2048] = {0};
         char want[2048];
-        DSD_SNPRINTF(want, sizeof want, "%s%s", files.paths[1], cases[i].want);
-        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 || strncmp(err, want, strlen(want)) != 0
-            || (cases[i].names_both && strstr(err, files.paths[0]) == NULL)
+        DSD_SNPRINTF(want, sizeof want, "%s%s%s%s", files.paths[1], cases[i].head,
+                     cases[i].tail != NULL ? files.paths[0] : "", cases[i].tail != NULL ? cases[i].tail : "");
+        const size_t compared = cases[i].tail != NULL ? sizeof want : strlen(want);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0 || strncmp(err, want, compared) != 0
             || dsd_engine_trunk_scan_active_index(&state) != (size_t)-1 || state.trunk_scan_list_count != 0U) {
-            DSD_FPRINTF(stderr, "list load error case %zu: \"%s\", want it to start \"%s\"\n", i, err, want);
+            DSD_FPRINTF(stderr, "list load error case %zu: \"%s\", want \"%s\"\n", i, err, want);
             test_rc = 1;
         }
         dsd_engine_trunk_scan_shutdown(&opts, &state);
@@ -17991,6 +18005,585 @@ test_lists_union_target_cap(void) {
     scan_list_files_remove(&files);
     free(bodies[0]);
     free(bodies[1]);
+    return test_rc;
+}
+
+/* --- Issue #697: one target id in several lists is one shared target. --- */
+
+/* Whether list @p l (0-based) has own run [@p first, + @p count), the members @p members (row order) and the shared
+   targets @p shared. */
+static int
+expect_list_layout(const dsd_state* state, int l, size_t first, size_t count, const size_t* members,
+                   size_t member_count, const size_t* shared, size_t shared_count) {
+    trunk_scan_test_layout got;
+    DSD_MEMSET(&got, 0, sizeof got);
+    int bad = trunk_scan_test_list_layout(state, l, &got) != 0 || got.first != first || got.count != count
+              || got.member_count != member_count || got.shared_count != shared_count;
+    for (size_t i = 0; !bad && i < member_count; i++) {
+        bad = got.members[i] != members[i];
+    }
+    for (size_t i = 0; !bad && i < shared_count; i++) {
+        bad = got.shared[i] != shared[i];
+    }
+    if (bad) {
+        DSD_FPRINTF(stderr, "list %d layout: run %zu+%zu, %zu members, %zu shared; want run %zu+%zu, %zu, %zu\n", l + 1,
+                    got.first, got.count, got.member_count, got.shared_count, first, count, member_count, shared_count);
+        return 1;
+    }
+    return 0;
+}
+
+/* Whether target @p index is in the lists of @p mask, owned by list @p owner (0-based). */
+static int
+expect_target_lists(const dsd_state* state, size_t index, int mask, unsigned int owner) {
+    unsigned int got_owner = 99U;
+    const int got = trunk_scan_test_target_lists(state, index, &got_owner);
+    if (got != mask || got_owner != owner) {
+        DSD_FPRINTF(stderr, "target %zu: lists 0x%x owner %u, want 0x%x owner %u\n", index, (unsigned)got, got_owner,
+                    (unsigned)mask, owner);
+        return 1;
+    }
+    return 0;
+}
+
+/* Whether the published distinct counts per membership mask are @p counts (every other mask 0). */
+static int
+expect_membership_counts(const dsd_state* state, const char* stage, const uint16_t* counts) {
+    for (int m = 0; m < DSD_TRUNK_SCAN_MEMBERSHIP_MASKS; m++) {
+        const unsigned want = counts != NULL && m < 8 ? counts[m] : 0U;
+        if (state->trunk_scan_membership_counts[m] != want) {
+            DSD_FPRINTF(stderr, "%s: %u targets in exactly the lists of mask 0x%x, want %u\n", stage,
+                        (unsigned)state->trunk_scan_membership_counts[m], (unsigned)(m + 1), want);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A row whose id an earlier list loaded, with the same settings, is that target, now in both lists: the session holds
+   each id once (list order, then row order of the rows that are new), each list counts every target its file holds,
+   the distinct targets per set of lists are published, and the start log says what each list shares. The list
+   order is kept: ROK sits in list 1's run, b1 in list 2's, though list 3 holds both. */
+static int
+test_lists_share_a_target_id(void) {
+    static const char* const names[] = {"conv", "low", "fav"};
+    static const char* const bodies[] = {
+        "a1,p25-trunk,851000000,,250,,\nROK,p25-trunk,853000000,,250,,\na2,p25-trunk,852000000,,250,,\n",
+        ("b1,p25-trunk,854000000,,250,,\nROK,p25-trunk,853000000,,250,,\nb2,p25-trunk,855000000,,250,,\n"
+         "b3,p25-trunk,856000000,,250,,\n"),
+        "ROK,p25-trunk,853000000,,250,,\nb1,p25-trunk,854000000,,250,,\nc1,p25-trunk,857000000,,250,,\n",
+    };
+    static const int off[] = {0, 0, 1};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscanshared") != 0) {
+        return 1;
+    }
+    const int init_rc = scan_lists_init(&files, NULL, names, bodies, off, 3, &opts, &state);
+    (void)dsd_test_capture_stderr_end(&cap);
+    static char log[16384];
+    log[0] = '\0';
+    (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    if (init_rc != 0) {
+        DSD_FPRINTF(stderr, "shared lists did not start:\n%s\n", log);
+        return 1;
+    }
+    int test_rc = 0;
+    /* Targets: a1 ROK a2 | b1 b2 b3 | c1. */
+    if (dsd_engine_trunk_scan_target_count(&state) != 7U || state.trunk_scan_target_count != 7U) {
+        DSD_FPRINTF(stderr, "shared lists: %zu targets, want 7\n", dsd_engine_trunk_scan_target_count(&state));
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "start", "a1", 1U, 7U);
+    test_rc |= expect_list_published(&state, "start", 1, "conv", 1U, 3U);
+    test_rc |= expect_list_published(&state, "start", 2, "low", 1U, 4U);
+    test_rc |= expect_list_published(&state, "start", 3, "fav", 0U, 3U);
+    static const size_t conv_members[] = {0U, 1U, 2U};
+    static const size_t conv_shared[] = {1U};
+    static const size_t low_members[] = {3U, 1U, 4U, 5U};
+    static const size_t low_shared[] = {3U};
+    static const size_t fav_members[] = {1U, 3U, 6U};
+    test_rc |= expect_list_layout(&state, 0, 0U, 3U, conv_members, 3U, conv_shared, 1U);
+    test_rc |= expect_list_layout(&state, 1, 3U, 3U, low_members, 4U, low_shared, 1U);
+    test_rc |= expect_list_layout(&state, 2, 6U, 1U, fav_members, 3U, NULL, 0U);
+    test_rc |= expect_target_lists(&state, 0U, 0x1, 0U);
+    test_rc |= expect_target_lists(&state, 1U, 0x7, 0U);
+    test_rc |= expect_target_lists(&state, 3U, 0x6, 1U);
+    test_rc |= expect_target_lists(&state, 4U, 0x2, 1U);
+    test_rc |= expect_target_lists(&state, 6U, 0x4, 2U);
+    /* Masks 1 (a1 a2), 2 (b2 b3), 4 (c1), 6 (b1), 7 (ROK): seven distinct targets. */
+    static const uint16_t counts[8] = {2U, 2U, 0U, 1U, 0U, 1U, 1U, 0U};
+    test_rc |= expect_membership_counts(&state, "start", counts);
+    static const char* const k_lines[] = {
+        "NOTICE: Trunk scan enabled with 7 targets in 3 lists\n",
+        "NOTICE: Trunk scan list 1 (conv): 3 targets, on\n",
+        "NOTICE: Trunk scan list 2 (low): 4 targets (1 also in list 1), on\n",
+        "NOTICE: Trunk scan list 3 (fav): 3 targets (2 also in lists 1, 2), off\n",
+    };
+    for (size_t i = 0; i < sizeof k_lines / sizeof k_lines[0]; i++) {
+        if (count_text(log, k_lines[i]) != 1) {
+            DSD_FPRINTF(stderr, "shared lists start log lacks \"%s\":\n%s\n", k_lines[i], log);
+            test_rc = 1;
+        }
+    }
+    scan_lists_finish(&files, &opts, &state);
+    test_rc |= expect_membership_counts(&state, "shutdown", NULL);
+    return test_rc;
+}
+
+/* Two rows of one id, every parsed setting filled: identical, they are one target; differing in any one, the lists are
+   refused naming that setting's column (or switches), and direct keys only as "the key columns differ". */
+typedef struct {
+    char chan[DSD_TEST_PATH_MAX];
+    char plan[DSD_TEST_PATH_MAX];
+    char hex[DSD_TEST_PATH_MAX];
+    char dec[DSD_TEST_PATH_MAX];
+    char group[DSD_TEST_PATH_MAX];
+    char map[DSD_TEST_PATH_MAX];
+    char other[DSD_TEST_PATH_MAX];
+    char chan_dotted[DSD_TEST_PATH_MAX];
+} shared_row_files;
+
+static void
+fill_shared_row(dsd_trunk_scan_target* t, const shared_row_files* f, unsigned int csv_row) {
+    DSD_MEMSET(t, 0, sizeof *t);
+    DSD_SNPRINTF(t->id, sizeof t->id, "%s", "ROK");
+    DSD_SNPRINTF(t->label, sizeof t->label, "%s", "Tower A");
+    t->type = DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL;
+    t->frequency_hz = 461000000U;
+    DSD_SNPRINTF(t->chan_csv, sizeof t->chan_csv, "%s", f->chan);
+    DSD_SNPRINTF(t->keys_hex_csv, sizeof t->keys_hex_csv, "%s", f->hex);
+    DSD_SNPRINTF(t->keys_dec_csv, sizeof t->keys_dec_csv, "%s", f->dec);
+    DSD_SNPRINTF(t->p25_bandplan_csv, sizeof t->p25_bandplan_csv, "%s", f->plan);
+    t->single_keys_present = 1U;
+    t->single_key_scalars.K = 0x1122334455ULL;
+    t->single_key_scalars.H = 0x99887766ULL;
+    t->single_key_scalars.hytera_key_segments = 2U;
+    t->single_key_scalars.aes_key[31] = 0x5AU;
+    t->single_key_scalars.tetra_air_keys[3].loaded = 1U;
+    t->single_key_scalars.tetra_air_keys[3].key[9] = 0x77U;
+    t->dwell_ms = 1500;
+    t->dwell_is_set = 1;
+    t->activity_hold_ms = 1200;
+    t->activity_hold_is_set = 1;
+    t->csv_row = csv_row;
+    t->modulation = DSD_TRUNK_SCAN_MODULATION_GFSK;
+    t->rtl_gain_is_set = 1;
+    t->rtl_gain_db = 20;
+    dsd_scan_option_values* o = &t->row_options;
+    o->present = (1U << 29) - 1U; /* every DSD_SCAN_OPT_* switch */
+    o->force = 1;
+    o->strict_crc = 1;
+    o->voice_only = 1;
+    o->qualify_ms = 500;
+    o->hold_ms = 600;
+    o->max_visit_ms = 5000;
+    o->squelch_db = -50;
+    o->squelch_mode = 1;
+    o->squelch_margin_db = 6;
+    o->channel_bw_hz = 12500;
+    o->channel_bw_kind = 1;
+    o->tone_filter = 1;
+    o->tone_set.ctcss = 0x5U;
+    o->tone_set.dcs[3] = 0x9U;
+    for (int k = 0; k < DSD_RECEIVE_FILTER_COUNT; k++) {
+        o->receive.filters[k].enabled = 1;
+        o->receive.filters[k].allow.bits[0] = 0x3U;
+        o->receive.filters[k].block.bits[1] = 0x4U;
+    }
+    o->receive.names.count = 1U;
+    o->receive.names.rules[0].kind = 1U;
+    o->receive.names.rules[0].value = 7U;
+    DSD_SNPRINTF(o->receive.names.rules[0].name, sizeof o->receive.names.rules[0].name, "%s", "St Mary");
+    o->mute_dmr = 1;
+    o->tune_data_calls = 1;
+    o->tune_enc_calls = 1;
+    DSD_SNPRINTF(o->group_file, sizeof o->group_file, "%s", f->group);
+    DSD_SNPRINTF(o->dmr_map_file, sizeof o->dmr_map_file, "%s", f->map);
+    DSD_SNPRINTF(o->key_profile_ref, sizeof o->key_profile_ref, "%s", "profile-1");
+}
+
+/* One setting of @p t changed (case @p which), and the column a refusal names for it ("" past the last case; NULL for
+   the key columns). */
+static const char*
+flip_shared_row(dsd_trunk_scan_target* t, const shared_row_files* f, int which) {
+    dsd_scan_option_values* o = &t->row_options;
+    dsd_key_scalars* k = &t->single_key_scalars;
+    switch (which) {
+        case 0: t->type = DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL; return "type";
+        case 1: t->frequency_hz++; return "frequency_hz";
+        case 2: t->label[0] = 'X'; return "label";
+        case 3: t->modulation = DSD_TRUNK_SCAN_MODULATION_AUTO; return "modulation";
+        case 4: t->dwell_ms = 1600; return "dwell_ms";
+        case 5: t->dwell_is_set = 0; return "dwell_ms";
+        case 6: t->activity_hold_ms = 1300; return "activity_hold_ms";
+        case 7: t->activity_hold_is_set = 0; return "activity_hold_ms";
+        case 8: t->rtl_gain_db = 21; return "rtl_gain";
+        case 9: t->rtl_gain_is_set = 0; return "rtl_gain";
+        case 10: DSD_SNPRINTF(t->chan_csv, sizeof t->chan_csv, "%s", f->other); return "chan_csv";
+        case 11:
+            DSD_SNPRINTF(t->p25_bandplan_csv, sizeof t->p25_bandplan_csv, "%s", f->other);
+            return "p25_bandplan_csv";
+        case 12: DSD_SNPRINTF(t->keys_hex_csv, sizeof t->keys_hex_csv, "%s", f->other); return "keys_hex_csv";
+        case 13: t->keys_dec_csv[0] = '\0'; return "keys_dec_csv";
+        case 14: t->single_keys_present = 0U; return NULL;
+        case 15: k->K ^= 1U; return NULL;
+        case 16: k->H ^= 1U; return NULL;
+        case 17: k->hytera_key_segments = 1U; return NULL;
+        case 18: k->aes_key[31] ^= 1U; return NULL;
+        case 19: k->tetra_air_keys[3].key[9] ^= 1U; return NULL;
+        case 20: k->aes_key_loaded[1] = 1; return NULL;
+        case 21: o->force = 0; return "-4/-0/--dmr-force-algid/--no-force-key";
+        case 22: o->strict_crc = 0; return "-F/--strict-crc";
+        case 23: o->voice_only = 0; return "--scan-voice-only/--no-scan-voice-only";
+        case 24: o->qualify_ms = 400; return "--scan-voice-qualify-ms";
+        case 25: o->hold_ms = 700; return "--scan-voice-hold-ms";
+        case 26: o->max_visit_ms = 0; return "--scan-max-visit-ms";
+        case 27: o->squelch_db = -51; return "--squelch/--squelch-db";
+        case 28: o->squelch_mode = 2; return "--squelch/--squelch-db";
+        case 29: o->squelch_margin_db = 7; return "--squelch/--squelch-db";
+        case 30: o->channel_bw_hz = 25000; return "--nfm-bandwidth-hz/--am-bandwidth-hz";
+        case 31: o->channel_bw_kind = 2; return "--nfm-bandwidth-hz/--am-bandwidth-hz";
+        case 32: o->tone_filter = 2; return "--tone-allow/--tone-block/--no-tone-filter";
+        case 33: o->tone_set.ctcss = 0x6U; return "--tone-allow/--tone-block/--no-tone-filter";
+        case 34: o->tone_set.dcs[3] = 0x8U; return "--tone-allow/--tone-block/--no-tone-filter";
+        case 35: o->receive.filters[0].allow.bits[0] = 0x1U; return "--slot-allow/--slot-block/--no-slot-filter";
+        case 36: o->receive.filters[1].block.bits[1] = 0x0U; return "--dcc-allow/--dcc-block/--no-dcc-filter";
+        case 37: o->receive.filters[2].enabled = 0; return "--ran-allow/--ran-block/--no-ran-filter";
+        case 38: o->receive.filters[3].allow.bits[63] = 0x1U; return "--nac-allow/--nac-block/--no-nac-filter";
+        case 39: o->receive.names.rules[0].name[0] = 'X'; return "--*-name/--no-service-names";
+        case 40: o->receive.names.count = 0U; return "--*-name/--no-service-names";
+        case 41: o->mute_dmr = 0; return "options";
+        case 42: o->tune_data_calls = 0; return "-e/--no-data-calls";
+        case 43: o->tune_enc_calls = 0; return "--enc-follow/--enc-lockout";
+        case 44: DSD_SNPRINTF(o->group_file, sizeof o->group_file, "%s", f->other); return "-G";
+        case 45: o->dmr_map_file[0] = '\0'; return "--dmr-tg-key-csv/--dmr-tg-key-clear";
+        case 46: o->key_profile_ref[0] = 'X'; return "--key-profile-ref";
+        /* A switch the comparison does not know yet still tells two rows apart. */
+        case 47: o->present |= 1U << 29; return "options";
+        default: return "";
+    }
+}
+
+/* The column a row that lacks only switch @p bit (one DSD_SCAN_OPT_* bit) is refused for; NULL for a key switch. */
+static const char*
+shared_row_presence_column(uint32_t bit) {
+    static const struct {
+        uint32_t bit;
+        const char* column;
+    } k_columns[] = {
+        {DSD_SCAN_OPT_FORCE, "-4/-0/--dmr-force-algid/--no-force-key"},
+        {DSD_SCAN_OPT_CRC, "-F/--strict-crc"},
+        {DSD_SCAN_OPT_VOICE, "--scan-voice-only/--no-scan-voice-only"},
+        {DSD_SCAN_OPT_QUALIFY, "--scan-voice-qualify-ms"},
+        {DSD_SCAN_OPT_HOLD, "--scan-voice-hold-ms"},
+        {DSD_SCAN_OPT_HEX_FILE, "-K"},
+        {DSD_SCAN_OPT_DEC_FILE, "-k"},
+        {DSD_SCAN_OPT_GROUP, "-G"},
+        {DSD_SCAN_OPT_MUTE_DMR, "options"},
+        {DSD_SCAN_OPT_DATA, "-e/--no-data-calls"},
+        {DSD_SCAN_OPT_ENC, "--enc-follow/--enc-lockout"},
+        {DSD_SCAN_OPT_P25_CANDIDATES, "-^"},
+        {DSD_SCAN_OPT_DMR_MAP, "--dmr-tg-key-csv/--dmr-tg-key-clear"},
+        {DSD_SCAN_OPT_CLEAR_KEYS, "--no-decryption-keys"},
+        {DSD_SCAN_OPT_KEY_PROFILE_REF, "--key-profile-ref"},
+        {DSD_SCAN_OPT_MAX_VISIT, "--scan-max-visit-ms"},
+        {DSD_SCAN_OPT_SQUELCH, "--squelch/--squelch-db"},
+        {DSD_SCAN_OPT_BANDWIDTH, "--nfm-bandwidth-hz/--am-bandwidth-hz"},
+        {DSD_SCAN_OPT_TONE, "--tone-allow/--tone-block/--no-tone-filter"},
+        {DSD_SCAN_OPT_SLOT, "--slot-allow/--slot-block/--no-slot-filter"},
+        {DSD_SCAN_OPT_DCC, "--dcc-allow/--dcc-block/--no-dcc-filter"},
+        {DSD_SCAN_OPT_RAN, "--ran-allow/--ran-block/--no-ran-filter"},
+        {DSD_SCAN_OPT_NAC, "--nac-allow/--nac-block/--no-nac-filter"},
+        {DSD_SCAN_OPT_NAMES, "--*-name/--no-service-names"},
+    };
+
+    for (size_t i = 0; i < sizeof k_columns / sizeof k_columns[0]; i++) {
+        if (k_columns[i].bit == bit) {
+            return k_columns[i].column;
+        }
+    }
+    /* -b, -H, -1, -R and the P25 mute they arm. */
+    return NULL;
+}
+
+/* Check list one = {@p a}, list two = {@p b}: 0 and the distinct count when they merge, -1 with @p err otherwise. */
+static int
+check_shared_pair(dsd_trunk_scan_target* a, dsd_trunk_scan_target* b, size_t* distinct, char* err, size_t err_sz) {
+    static const char* const names[] = {"one.csv", "two.csv"};
+    dsd_trunk_scan_target_list lists[2];
+    DSD_MEMSET(lists, 0, sizeof lists);
+    lists[0].targets = a;
+    lists[0].count = 1U;
+    lists[1].targets = b;
+    lists[1].count = 1U;
+    size_t row_targets[2] = {9U, 9U};
+    err[0] = '\0';
+    const int rc = dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, distinct, err, err_sz);
+    if (rc == 0 && (row_targets[0] != 0U || row_targets[1] != 0U)) {
+        return -2;
+    }
+    return rc;
+}
+
+/* Whether the pair is refused for @p column (NULL: the key columns), with nothing else in the error. */
+static int
+expect_shared_refusal(const char* stage, dsd_trunk_scan_target* a, dsd_trunk_scan_target* b, const char* column) {
+    char err[512];
+    size_t distinct = 9U;
+    const int rc = check_shared_pair(a, b, &distinct, err, sizeof err);
+    char want[512];
+    if (column == NULL) {
+        DSD_SNPRINTF(want, sizeof want, "%s",
+                     "two.csv row 4: target id 'ROK' is also one.csv row 3, but the key columns differ; a target in "
+                     "two lists must have the same settings in both");
+    } else {
+        DSD_SNPRINTF(want, sizeof want,
+                     "two.csv row 4: target id 'ROK' is also one.csv row 3, with another %s; a target in two lists "
+                     "must have the same settings in both",
+                     column);
+    }
+    if (rc != -1 || distinct != 0U || strcmp(err, want) != 0) {
+        DSD_FPRINTF(stderr, "shared row %s: rc %d distinct %zu err \"%s\", want \"%s\"\n", stage, rc, distinct, err,
+                    want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+shared_row_files_make(shared_row_files* f, char* dir, size_t dir_sz) {
+    DSD_MEMSET(f, 0, sizeof *f);
+    if (make_temp_dir(dir, dir_sz) != 0) {
+        return -1;
+    }
+
+    struct {
+        char* path;
+        const char* name;
+    } files[] = {{f->chan, "chan.csv"},   {f->plan, "plan.csv"}, {f->hex, "hex.csv"},    {f->dec, "dec.csv"},
+                 {f->group, "group.csv"}, {f->map, "map.csv"},   {f->other, "other.csv"}};
+
+    for (size_t i = 0; i < sizeof files / sizeof files[0]; i++) {
+        if (dsd_test_path_join(files[i].path, DSD_TEST_PATH_MAX, dir, files[i].name) != 0
+            || write_text_file(files[i].path, "x\n") != 0) {
+            return -1;
+        }
+    }
+    return dsd_test_path_join(f->chan_dotted, sizeof f->chan_dotted, dir, "./chan.csv");
+}
+
+static int
+test_lists_shared_row_first_difference(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    static shared_row_files f;
+    if (shared_row_files_make(&f, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_trunk_scan_target a;
+    static dsd_trunk_scan_target b;
+    fill_shared_row(&a, &f, 3U);
+    int test_rc = 0;
+    /* The same settings on another row of another file, a companion spelled another way: one target. */
+    fill_shared_row(&b, &f, 4U);
+    DSD_SNPRINTF(b.chan_csv, sizeof b.chan_csv, "%s", f.chan_dotted);
+    char err[512];
+    size_t distinct = 0U;
+    if (check_shared_pair(&a, &b, &distinct, err, sizeof err) != 0 || distinct != 1U) {
+        DSD_FPRINTF(stderr, "identical rows did not share: distinct %zu err \"%s\"\n", distinct, err);
+        test_rc = 1;
+    }
+    for (int which = 0;; which++) {
+        fill_shared_row(&b, &f, 4U);
+        const char* column = flip_shared_row(&b, &f, which);
+        if (column != NULL && column[0] == '\0') {
+            break;
+        }
+        char stage[32];
+        DSD_SNPRINTF(stage, sizeof stage, "case %d", which);
+        test_rc |= expect_shared_refusal(stage, &a, &b, column);
+    }
+    /* Each switch one row sets and the other does not. */
+    for (int bit = 0; bit < 29; bit++) {
+        fill_shared_row(&b, &f, 4U);
+        b.row_options.present &= ~(1U << bit);
+        char stage[32];
+        DSD_SNPRINTF(stage, sizeof stage, "without switch bit %d", bit);
+        test_rc |= expect_shared_refusal(stage, &a, &b, shared_row_presence_column(1U << bit));
+    }
+    /* A value no switch set means nothing: two rows without the slot filter or direct keys share whatever those
+       fields hold. */
+    fill_shared_row(&b, &f, 4U);
+    a.row_options.present &= ~(uint32_t)DSD_SCAN_OPT_SLOT;
+    b.row_options.present &= ~(uint32_t)DSD_SCAN_OPT_SLOT;
+    b.row_options.receive.filters[0].allow.bits[0] = 0x8U;
+    a.single_keys_present = 0U;
+    b.single_keys_present = 0U;
+    b.single_key_scalars.K = 0x42U;
+    if (check_shared_pair(&a, &b, &distinct, err, sizeof err) != 0 || distinct != 1U) {
+        DSD_FPRINTF(stderr, "unset fields kept rows apart: distinct %zu err \"%s\"\n", distinct, err);
+        test_rc = 1;
+    }
+    DSD_SECURE_ZERO(&a, sizeof a);
+    DSD_SECURE_ZERO(&b, sizeof b);
+    const char* const names[] = {"chan.csv",  "plan.csv", "hex.csv",   "dec.csv",
+                                 "group.csv", "map.csv",  "other.csv", NULL};
+    (void)dsd_test_remove_temp_dir(dir, names);
+    return test_rc;
+}
+
+/* The same row in files of other layouts (columns in another order, the options alias, other notes, a switch order,
+   a key file spelled ./keys.csv beside the other's keys.csv) is one target; another key file is refused by name. */
+static int
+test_lists_shared_row_layouts_share(void) {
+    static const char* const names[] = {"one", "two"};
+    const char* bodies[] = {
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label,keys_hex_csv,options\n"
+        "ROK,dmr-conventional,461000000,,1500,1200,first file,Tower,keys.csv,--squelch-db -50 --enc-lockout\n",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,relevant_CLI_switches,keys_hex_csv,label\n"
+        "b2,dmr-conventional,462000000,,1500,1200,,,,\n"
+        "ROK,dmr-conventional,461000000,,1500,1200,second file,--enc-lockout --squelch-db -50,./keys.csv,Tower\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char keys[DSD_TEST_PATH_MAX];
+    char keys2[DSD_TEST_PATH_MAX];
+    if (scan_list_files_write(&files, "", names, bodies, 2) != 0
+        || dsd_test_path_join(keys, sizeof keys, files.dir, "keys.csv") != 0
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0
+        || dsd_test_path_join(keys2, sizeof keys2, files.dir, "keys2.csv") != 0
+        || write_text_file(keys2, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, NULL, &opts);
+    char err[2048] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_target_count(&state) != 2U || state.trunk_scan_lists[1].targets != 2U) {
+        DSD_FPRINTF(stderr, "the same row in two layouts did not share: %zu targets, err \"%s\"\n",
+                    dsd_engine_trunk_scan_target_count(&state), err);
+        test_rc = 1;
+    }
+    test_rc |= expect_target_lists(&state, 0U, 0x3, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    /* Another key file, though it holds the same keys, is another file. */
+    char two[1024];
+    DSD_SNPRINTF(two, sizeof two, "%s",
+                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,relevant_CLI_switches,keys_hex_csv,"
+                 "label\nROK,dmr-conventional,461000000,,1500,1200,,--enc-lockout --squelch-db -50,keys2.csv,Tower\n");
+    char want[2048];
+    DSD_SNPRINTF(want, sizeof want,
+                 "%s row 2: target id 'ROK' is also %s row 2, with another keys_hex_csv; a target in two lists must "
+                 "have the same settings in both",
+                 files.paths[1], files.paths[0]);
+    if (write_text_file(files.paths[1], two) != 0 || dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0
+        || strcmp(err, want) != 0) {
+        DSD_FPRINTF(stderr, "another key file: \"%s\", want \"%s\"\n", err, want);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)remove(keys);
+    (void)remove(keys2);
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
+/* The target budget counts distinct targets: two lists over half the budget each fit when they hold the same targets
+   (test_lists_union_target_cap() refuses them under ids of their own). */
+static int
+test_lists_budget_counts_distinct_targets(void) {
+    const size_t half = (dsd_trunk_scan_max_targets() / 2U) + 1U;
+    dsd_trunk_scan_target* rows = (dsd_trunk_scan_target*)calloc(half, sizeof *rows);
+    size_t* row_targets = (size_t*)calloc(half * 2U, sizeof *row_targets);
+    if (rows == NULL || row_targets == NULL) {
+        free(rows);
+        free(row_targets);
+        return 1;
+    }
+    for (size_t i = 0; i < half; i++) {
+        DSD_SNPRINTF(rows[i].id, sizeof rows[i].id, "t%zu", i);
+        rows[i].type = DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
+        rows[i].frequency_hz = (uint32_t)(800000000U + i);
+        rows[i].csv_row = (unsigned int)(i + 2U);
+    }
+    /* One file as both lists. */
+    dsd_trunk_scan_target_list lists[2] = {{rows, half, half}, {rows, half, half}};
+    static const char* const names[] = {"first", "second"};
+    char err[512] = {0};
+    size_t distinct = 0U;
+    int test_rc = 0;
+    if (dsd_trunk_scan_check_target_lists(lists, names, 2U, row_targets, &distinct, err, sizeof err) != 0
+        || distinct != half) {
+        DSD_FPRINTF(stderr, "two shared lists over half the budget: distinct %zu (want %zu), err \"%s\"\n", distinct,
+                    half, err);
+        test_rc = 1;
+    }
+    for (size_t i = 0; test_rc == 0 && i < half; i++) {
+        if (row_targets[i] != i || row_targets[half + i] != i) {
+            DSD_FPRINTF(stderr, "row %zu: targets %zu and %zu, want %zu in both lists\n", i, row_targets[i],
+                        row_targets[half + i], i);
+            test_rc = 1;
+        }
+    }
+    free(rows);
+    free(row_targets);
+    return test_rc;
+}
+
+/* A target in two lists that both start off: --trunk-scan-hold names every list that holds it. A target whose owner
+   list starts off while another of its lists starts on loads as one target in both. */
+static int
+test_hold_on_shared_target_lists_off(void) {
+    static const char* const names[] = {"state", "conv", "low"};
+    static const char* const bodies[] = {
+        "x,p25-trunk,851000000,,250,,\n",
+        "ROK,p25-trunk,853000000,,250,,\n",
+        "y,p25-trunk,854000000,,250,,\nROK,p25-trunk,853000000,,250,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_list_files_write(&files, k_header, names, bodies, 3) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    int test_rc = 0;
+    reset_scan_opts_state(&opts, &state);
+    const int both_off[] = {0, 1, 1};
+    scan_list_files_to_opts(&files, both_off, &opts);
+    DSD_SNPRINTF(opts.trunk_scan_hold_id, sizeof opts.trunk_scan_hold_id, "%s", "ROK");
+    char err[512] = {0};
+    trunk_scan_test_set_now(0.0);
+    static const char want[] =
+        "--trunk-scan-hold: target \"ROK\" is in lists that are off (list 2, conv; list 3, low); start one of them on";
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != -1 || strcmp(err, want) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != (size_t)-1 || opts.trunk_scan_hold_id[0] != '\0') {
+        DSD_FPRINTF(stderr, "hold on a shared target with its lists off: \"%s\", want \"%s\"\n", err, want);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    reset_scan_opts_state(&opts, &state);
+    const int owner_off[] = {0, 1, 0};
+    scan_list_files_to_opts(&files, owner_off, &opts);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_target_count(&state) != 3U) {
+        DSD_FPRINTF(stderr, "a shared target whose owner list starts off: %zu targets, err \"%s\"\n",
+                    dsd_engine_trunk_scan_target_count(&state), err);
+        test_rc = 1;
+    }
+    test_rc |= expect_target_lists(&state, 1U, 0x6, 1U);
+    test_rc |= expect_list_published(&state, "owner off", 2, "conv", 0U, 1U);
+    test_rc |= expect_list_published(&state, "owner off", 3, "low", 1U, 2U);
+    scan_lists_finish(&files, &opts, &state);
     return test_rc;
 }
 
@@ -20732,6 +21325,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_init_reads_the_list_spec);
     rc |= run_with_default_tune_hook(test_lists_load_in_order_and_rotate_over_the_lists_on);
     rc |= run_with_default_tune_hook(test_lists_load_errors_name_the_file);
+    rc |= run_with_default_tune_hook(test_lists_share_a_target_id);
+    rc |= run_with_default_tune_hook(test_lists_shared_row_first_difference);
+    rc |= run_with_default_tune_hook(test_lists_shared_row_layouts_share);
+    rc |= run_with_default_tune_hook(test_lists_budget_counts_distinct_targets);
+    rc |= run_with_default_tune_hook(test_hold_on_shared_target_lists_off);
     rc |= run_with_default_tune_hook(test_lists_union_target_cap);
     rc |= run_with_default_tune_hook(test_lists_build_failure_in_list_two_cleans_up);
     rc |= run_with_default_tune_hook(test_lists_start_on_the_first_reachable_target_and_all_on);

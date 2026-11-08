@@ -464,9 +464,19 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`,
   `dsd_trunk_scan_load_targets_csv()`, `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the
   target count is bounded by a memory budget divided by the per-target snapshot size, so the cap tracks the struct
-  instead of being a constant that goes stale. `dsd_trunk_scan_check_target_lists()` holds lists loaded one by one to
-  the rules across them (issue #697): a target id is unique across lists (the error names both files and rows) and the
-  union fits the budget.
+  instead of being a constant that goes stale. `dsd_trunk_scan_check_target_lists()` is the one merge rule across
+  lists loaded one by one (issue #697), for the engine start and the app pre-check alike: it walks the lists in order
+  and finds each row's id among earlier lists' rows through an id index sorted once (never a walk of every earlier
+  list). A row whose id an earlier list holds is that target, shared, when every parsed field of
+  `dsd_trunk_scan_target` but `csv_row` is the same (`scan_target_first_difference()`: companion paths compared as the
+  file they name through `dsd_path_canonical()`, the strings when either cannot be; direct keys in constant time; a row
+  option only where its `DSD_SCAN_OPT_*` bit is set, from the `k_scan_option_columns` table, tone set and receive
+  filters/names included, an unknown bit still telling rows apart). Any difference refuses the lists, naming both files
+  and rows and the first differing column by its target-CSV name or its switches (`the key columns differ` for direct
+  keys, never their material). Within one file the parser's rules stay (no id or `(type, frequency)` twice); different
+  ids on one channel stay two targets. The distinct targets fit the budget. Its optional `row_targets` out array gives
+  each row its target index (a row is new exactly when that index is the count of targets before it); the app
+  pre-check reads only the distinct total.
 - Configured lists (issue #697): `<dsd-neo/core/trunk_scan_lists.h>` defines `dsd_trunk_scan_list_spec {path,
   start_off}` and `DSD_TRUNK_SCAN_MAX_LISTS` (8). `dsd_opts::trunk_scan_lists`/`trunk_scan_list_count`, its
   `next_start` copy and `dsdneoUserConfig` hold the same array by list number; `dsd_trunk_scan_lists_check()` and
@@ -481,10 +491,22 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   (apply, queue overlay, next-start defer), an empty key removing the base's later lists with their off states.
 - Lists in the coordinator (issue #697): init loads every configured list in order (`trunk_scan_load_lists()`: each
   through the one parser, every parser error prefixed with its file unless it names it, then
-  `dsd_trunk_scan_check_target_lists()`) into one target vector (list order, then row order) that never moves, so
-  snapshots, avoids and session edits survive any toggle and nothing is built at runtime. Each target carries its
-  `list`; `coord->lists[]` holds each list's name (file name without folder and extension,
-  `DSD_TRUNK_SCAN_LIST_NAME_SIZE` 32), `enabled`, `first` and `count`. One predicate, `trunk_scan_target_in_rotation()`
+  `dsd_trunk_scan_check_target_lists()`) into one target vector that never moves, so snapshots, avoids and session
+  edits survive any toggle and nothing is built at runtime. One runtime target per id: `trunk_scan_merge_lists()`
+  appends only the rows that are new (list order, then row order) and a shared row joins its earlier target, so a
+  target's avoid, edits, keys and snapshot are one whichever list it is reached from. Each target carries `list`, its
+  owner (the first list holding it, whose run holds it), and `lists`, the mask of every list holding it.
+  `coord->lists[]` holds each list's name (file name without folder and extension, `DSD_TRUNK_SCAN_LIST_NAME_SIZE`
+  32), `enabled`, its owned run `first`/`count` (contiguous, possibly empty for a list wholly shared), `members[]`/
+  `member_count` (every row of its file as a target index, row order, shared ones included: what the list holds and
+  counts) and `shared[]`/`shared_count` (the targets of its own run another list holds too); both arrays live in
+  `coord->list_index`, freed with the coordinator. Walks must not assume a list's targets are only its own run.
+  `coord->membership_counts[mask - 1]` (distinct targets in exactly the lists of each mask) is counted at the attach
+  and published as `dsd_state::trunk_scan_membership_counts` with the lists, cleared at detach and `initState()`, so
+  a frontend can total any set of lists without summing per-list counts; each list's published `targets` is its
+  `member_count`. The start log names each list's count and what it shares with earlier lists (`Trunk scan list 2
+  (low): 9 targets (3 also in list 1), on`), and a `--trunk-scan-hold` refused for its lists names every list holding
+  the target that is off. One predicate, `trunk_scan_target_in_rotation()`
   (list on and not avoided), feeds every candidate walk and count: `trunk_scan_alternate_is_candidate()` (the advance,
   RETREAT, the visit cap's somewhere-else-to-go question `trunk_scan_visit_alternate_is_eligible()`, the rejection
   alternates, the resume walk), `trunk_scan_enabled_count()` (the "n of m" readout's m, avoided targets included),
@@ -14190,7 +14212,8 @@ Several lists in one session (issue #697):
 - Start: `ScanListStarter::startLists()` takes at most `maxLists()` (`DSD_TRUNK_SCAN_MAX_LISTS`), runs each list's own
   checks (`prepare(list, false)`, a refusal naming the list) and the join rule against the first
   (`“Louder” can't scan with “Security”: different gain.`), writes every list's CSV, then checks them together with
-  `dsd_app_trunk_scan_validate_target_lists()` (ids unique across lists, the union cap, errors by display name). One
+  `dsd_app_trunk_scan_validate_target_lists()` (the engine's merge rule across lists, the distinct-target cap, errors
+  by display name). One
   recording session (the first list's) and one argv (`session_args_scan_build_lists()`: the first list's receiver and
   session options, one `--trunk-scan` per list in order) go to one `host->start()`; nothing starts unless all of it
   passes. A single list is `start()`, unchanged. Every list starts on: the app has no start-off state.

@@ -4,6 +4,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
@@ -27,6 +28,7 @@
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -52,6 +54,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -61,6 +64,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -250,7 +254,11 @@ typedef struct {
     double retry_recheck_m;
     int retry_released_park; /* failed forced eviction: recover the park before idle dwell */
     int avoided;             /* operator avoid for the session: skipped by the rotation (#380) */
-    uint8_t list;            /* The target list (0-based, dsd_trunk_scan_coord::lists) its row came from (#697) */
+    /* The lists that hold it (issue #697): its owner, the first list whose file holds its id (0-based,
+       dsd_trunk_scan_coord::lists), where its row loaded it, and every list whose file holds it, bit l for list l. A
+       target in two lists is one target: one avoid, one session edit, one key set, one snapshot. */
+    uint8_t list;
+    uint8_t lists;
     /* Identity the peer IDEN share last ran against (#402): the tick re-runs it only when the
      * live WACN/SYS differs, so a target that resolves its identity while parked gets its
      * peers' plan without waiting for the next rotation. */
@@ -274,13 +282,24 @@ dsd_trunk_scan_max_targets(void) {
     return max > 0 ? max : 1U;
 }
 
-/* One loaded target list (issue #697): its targets are coord->targets[first .. first + count - 1], in its file's row
-   order. A list switched off keeps its targets, snapshots, avoids and edits; only the rotation passes them over. */
+/* One loaded target list (issue #697). A list switched off keeps its targets, snapshots, avoids and edits; only the
+   rotation passes them over.
+   - first, count: the run of targets the list owns, coord->targets[first .. first + count - 1], the rows of its file
+     no earlier list holds, in row order. Empty for a list whose every row an earlier list holds.
+   - members, member_count: every row of its file as its target's index in coord->targets, in row order, the targets
+     it shares with an earlier list included: what the list holds, which is what it counts.
+   - shared, shared_count: the targets of its own run another (later) list holds too, ascending, so a walk in target
+     order that passes the run of a list that is off can still stop at those.
+   members and shared point into dsd_trunk_scan_coord::list_index, which owns them. */
 typedef struct {
     char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE];
     int enabled;
     size_t first;
     size_t count;
+    const size_t* members;
+    size_t member_count;
+    const size_t* shared;
+    size_t shared_count;
 } dsd_trunk_scan_list_entry;
 
 typedef struct {
@@ -340,6 +359,11 @@ typedef struct {
     dsd_trunk_scan_list_entry lists[DSD_TRUNK_SCAN_MAX_LISTS];
     int list_count;
     uint32_t lists_seq;
+    /* The storage every lists[l].members and lists[l].shared point into, and how many distinct targets each set of
+       lists holds together (index: the membership mask - 1, dsd_state::trunk_scan_membership_counts), counted once
+       at the start: the lists' files never change while the scan runs. */
+    size_t* list_index;
+    uint16_t membership_counts[DSD_TRUNK_SCAN_MEMBERSHIP_MASKS];
     /* The departure owed while the target on air is out of the rotation (its list is off, or it is avoided: the
        fallback after every alternate failed), trunk_scan_service_departure(): not tried before depart_due_m, and the
        frame loop yields for it at that instant only while depart_yield is set (dsd_engine_trunk_scan_departure_due()),
@@ -1440,30 +1464,379 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
     return 0;
 }
 
-/* The target of @p list with @p id, or NULL. */
-static const dsd_trunk_scan_target*
-scan_find_target_id(const dsd_trunk_scan_target_list* list, const char* id) {
-    for (size_t i = 0; i < list->count; i++) {
-        if (strcmp(list->targets[i].id, id) == 0) {
-            return &list->targets[i];
-        }
+/* --- One target in several lists (issue #697 D1, D2): a row of a later list whose id an earlier list holds is that
+   earlier target when every parsed setting is the same, and any difference refuses the lists naming the first column
+   that differs. --- */
+
+/* What a refusal names for the direct keys: never their material, only that they differ. */
+static const char k_scan_key_columns[] = "the key columns";
+
+/* Whether two resolved companion paths name one file: the same text, or the same canonical path, so `keys.csv` and
+   `./keys.csv` beside one list file are one file. A path that cannot be canonicalised (a file that is missing) compares
+   as its text. */
+static int
+scan_paths_same(const char* a, const char* b) {
+    if (strcmp(a, b) == 0) {
+        return 1;
     }
-    return NULL;
+    if (a[0] == '\0' || b[0] == '\0') {
+        return 0;
+    }
+    char canonical_a[4096];
+    char canonical_b[4096];
+    return dsd_path_canonical(a, canonical_a, sizeof canonical_a) == 0
+           && dsd_path_canonical(b, canonical_b, sizeof canonical_b) == 0 && strcmp(canonical_a, canonical_b) == 0;
 }
 
-/* A target of list @p l whose id an earlier list holds, named with both files and rows. */
+/* Every bit two TETRA air keys differ by, field by field (the struct has padding bytes), with no early exit. */
+static unsigned int
+scan_tetra_key_diff(const dsd_tetra_air_key* x, const dsd_tetra_air_key* y) {
+    unsigned int diff = (unsigned int)(x->loaded ^ y->loaded) | (unsigned int)(x->kind ^ y->kind)
+                        | (unsigned int)(x->alg ^ y->alg) | (unsigned int)(x->cc ^ y->cc)
+                        | (unsigned int)(x->mcc ^ y->mcc) | (unsigned int)(x->mnc ^ y->mnc)
+                        | (unsigned int)(x->la ^ y->la) | (unsigned int)(x->carrier ^ y->carrier);
+    for (size_t k = 0; k < sizeof x->key; k++) {
+        diff |= (unsigned int)(x->key[k] ^ y->key[k]);
+    }
+    return diff;
+}
+
+static unsigned long long
+scan_key_slot_diff(const dsd_key_scalars* x, const dsd_key_scalars* y, size_t slot) {
+    return (x->A1[slot] ^ y->A1[slot]) | (x->A2[slot] ^ y->A2[slot]) | (x->A3[slot] ^ y->A3[slot])
+           | (x->A4[slot] ^ y->A4[slot]) | (unsigned int)(x->aes_key_loaded[slot] ^ y->aes_key_loaded[slot])
+           | (unsigned int)(x->aes_key_segments[slot] ^ y->aes_key_segments[slot])
+           | (unsigned int)(x->scalar_key_present[slot] ^ y->scalar_key_present[slot]);
+}
+
+/* Whether two rows' direct keys differ. Their presence first; the scalars of two rows that both carry keys in constant
+   time: every field of both is read whatever any of them holds, and only the verdict leaves. */
 static int
-scan_check_list_ids(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t l, char* err,
-                    size_t err_sz) {
-    for (size_t i = 0; i < lists[l].count; i++) {
-        const dsd_trunk_scan_target* target = &lists[l].targets[i];
-        for (size_t k = 0; k < l; k++) {
-            const dsd_trunk_scan_target* first = scan_find_target_id(&lists[k], target->id);
-            if (first != NULL) {
-                scan_set_error(err, err_sz, "%s row %u: target id '%s' is also %s row %u; ids are unique across lists",
-                               names[l], target->csv_row, target->id, names[k], first->csv_row);
-                return -1;
-            }
+scan_direct_keys_differ(const dsd_trunk_scan_target* a, const dsd_trunk_scan_target* b) {
+    if (a->single_keys_present != b->single_keys_present) {
+        return 1;
+    }
+    const dsd_key_scalars* x = &a->single_key_scalars;
+    const dsd_key_scalars* y = &b->single_key_scalars;
+    unsigned long long diff = (x->K ^ y->K) | (x->K1 ^ y->K1) | (x->K2 ^ y->K2) | (x->K3 ^ y->K3) | (x->K4 ^ y->K4)
+                              | (x->R ^ y->R) | (x->RR ^ y->RR) | (x->H ^ y->H)
+                              | (unsigned int)(x->basic_key_present ^ y->basic_key_present)
+                              | (unsigned int)(x->hytera_key_segments ^ y->hytera_key_segments);
+    for (size_t slot = 0; slot < 2U; slot++) {
+        diff |= scan_key_slot_diff(x, y, slot);
+    }
+    for (size_t i = 0; i < sizeof x->aes_key; i++) {
+        diff |= (unsigned int)(x->aes_key[i] ^ y->aes_key[i]);
+    }
+    for (size_t i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
+        diff |= scan_tetra_key_diff(&x->tetra_air_keys[i], &y->tetra_air_keys[i]);
+    }
+    return a->single_keys_present != 0U && diff != 0U;
+}
+
+/* How a row option's value compares (scan_option_column). */
+typedef enum {
+    SCAN_OPTION_PRESENCE = 0, /* no value of its own here: a switch, or one whose value the target holds elsewhere */
+    SCAN_OPTION_INTS,
+    SCAN_OPTION_TONE,
+    SCAN_OPTION_FILTER,
+    SCAN_OPTION_NAMES,
+    SCAN_OPTION_PATH,
+    SCAN_OPTION_TEXT,
+} scan_option_compare;
+
+/* One row option of dsd_scan_option_values, meaningful only while its DSD_SCAN_OPT_* bit is set: the name a refusal
+   gives it (its switches; NULL for a direct key, said as k_scan_key_columns), its bit and how its value compares.
+   field: for INTS up to three int members' offsets (0, which is `present`'s, ends the list), for FILTER the receive
+   filter kind, for PATH and TEXT the member's offset. */
+typedef struct {
+    const char* name;
+    size_t field[3];
+    uint32_t bit;
+    scan_option_compare compare;
+} scan_option_column;
+
+#define SCAN_OPTION_AT(member) offsetof(dsd_scan_option_values, member)
+
+static const scan_option_column k_scan_option_columns[] = {
+    {"-4/-0/--dmr-force-algid/--no-force-key", {SCAN_OPTION_AT(force)}, DSD_SCAN_OPT_FORCE, SCAN_OPTION_INTS},
+    {"-F/--strict-crc", {SCAN_OPTION_AT(strict_crc)}, DSD_SCAN_OPT_CRC, SCAN_OPTION_INTS},
+    {"--scan-voice-only/--no-scan-voice-only", {SCAN_OPTION_AT(voice_only)}, DSD_SCAN_OPT_VOICE, SCAN_OPTION_INTS},
+    {"--scan-voice-qualify-ms", {SCAN_OPTION_AT(qualify_ms)}, DSD_SCAN_OPT_QUALIFY, SCAN_OPTION_INTS},
+    {"--scan-voice-hold-ms", {SCAN_OPTION_AT(hold_ms)}, DSD_SCAN_OPT_HOLD, SCAN_OPTION_INTS},
+    {NULL, {0}, DSD_SCAN_OPT_BP, SCAN_OPTION_PRESENCE},
+    {NULL, {0}, DSD_SCAN_OPT_HYTERA, SCAN_OPTION_PRESENCE},
+    {NULL, {0}, DSD_SCAN_OPT_SCALAR, SCAN_OPTION_PRESENCE},
+    {NULL, {0}, DSD_SCAN_OPT_SCRAMBLER, SCAN_OPTION_PRESENCE},
+    {"-K", {0}, DSD_SCAN_OPT_HEX_FILE, SCAN_OPTION_PRESENCE},
+    {"-k", {0}, DSD_SCAN_OPT_DEC_FILE, SCAN_OPTION_PRESENCE},
+    {"-G", {SCAN_OPTION_AT(group_file)}, DSD_SCAN_OPT_GROUP, SCAN_OPTION_PATH},
+    {"options", {SCAN_OPTION_AT(mute_dmr)}, DSD_SCAN_OPT_MUTE_DMR, SCAN_OPTION_INTS},
+    {"-e/--no-data-calls", {SCAN_OPTION_AT(tune_data_calls)}, DSD_SCAN_OPT_DATA, SCAN_OPTION_INTS},
+    {"--enc-follow/--enc-lockout", {SCAN_OPTION_AT(tune_enc_calls)}, DSD_SCAN_OPT_ENC, SCAN_OPTION_INTS},
+    {NULL, {0}, DSD_SCAN_OPT_MUTE_P25, SCAN_OPTION_PRESENCE},
+    {"-^", {0}, DSD_SCAN_OPT_P25_CANDIDATES, SCAN_OPTION_PRESENCE},
+    {"--dmr-tg-key-csv/--dmr-tg-key-clear", {SCAN_OPTION_AT(dmr_map_file)}, DSD_SCAN_OPT_DMR_MAP, SCAN_OPTION_PATH},
+    {"--no-decryption-keys", {0}, DSD_SCAN_OPT_CLEAR_KEYS, SCAN_OPTION_PRESENCE},
+    {"--key-profile-ref", {SCAN_OPTION_AT(key_profile_ref)}, DSD_SCAN_OPT_KEY_PROFILE_REF, SCAN_OPTION_TEXT},
+    {"--scan-max-visit-ms", {SCAN_OPTION_AT(max_visit_ms)}, DSD_SCAN_OPT_MAX_VISIT, SCAN_OPTION_INTS},
+    {"--squelch/--squelch-db",
+     {SCAN_OPTION_AT(squelch_db), SCAN_OPTION_AT(squelch_mode), SCAN_OPTION_AT(squelch_margin_db)},
+     DSD_SCAN_OPT_SQUELCH,
+     SCAN_OPTION_INTS},
+    {"--nfm-bandwidth-hz/--am-bandwidth-hz",
+     {SCAN_OPTION_AT(channel_bw_hz), SCAN_OPTION_AT(channel_bw_kind)},
+     DSD_SCAN_OPT_BANDWIDTH,
+     SCAN_OPTION_INTS},
+    {"--tone-allow/--tone-block/--no-tone-filter", {0}, DSD_SCAN_OPT_TONE, SCAN_OPTION_TONE},
+    {"--slot-allow/--slot-block/--no-slot-filter", {0}, DSD_SCAN_OPT_SLOT, SCAN_OPTION_FILTER},
+    {"--dcc-allow/--dcc-block/--no-dcc-filter", {1}, DSD_SCAN_OPT_DCC, SCAN_OPTION_FILTER},
+    {"--ran-allow/--ran-block/--no-ran-filter", {2}, DSD_SCAN_OPT_RAN, SCAN_OPTION_FILTER},
+    {"--nac-allow/--nac-block/--no-nac-filter", {3}, DSD_SCAN_OPT_NAC, SCAN_OPTION_FILTER},
+    {"--*-name/--no-service-names", {0}, DSD_SCAN_OPT_NAMES, SCAN_OPTION_NAMES},
+};
+
+#undef SCAN_OPTION_AT
+
+static int
+scan_option_ints_differ(const scan_option_column* column, const dsd_scan_option_values* a,
+                        const dsd_scan_option_values* b) {
+    for (size_t i = 0; i < sizeof column->field / sizeof column->field[0] && column->field[i] != 0U; i++) {
+        int x = 0;
+        int y = 0;
+        DSD_MEMCPY(&x, (const unsigned char*)a + column->field[i], sizeof x);
+        DSD_MEMCPY(&y, (const unsigned char*)b + column->field[i], sizeof y);
+        if (x != y) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+scan_tone_sets_equal(const dsd_tone_set* a, const dsd_tone_set* b) {
+    int equal = a->ctcss == b->ctcss;
+    for (size_t i = 0; i < sizeof a->dcs / sizeof a->dcs[0]; i++) {
+        equal = equal && a->dcs[i] == b->dcs[i];
+    }
+    return equal;
+}
+
+/* Whether row option @p column, set on both rows, holds another value on one. */
+static int
+scan_option_value_differs(const scan_option_column* column, const dsd_scan_option_values* a,
+                          const dsd_scan_option_values* b) {
+    const char* text_a = (const char*)a + column->field[0];
+    const char* text_b = (const char*)b + column->field[0];
+    switch (column->compare) {
+        case SCAN_OPTION_INTS: return scan_option_ints_differ(column, a, b);
+        case SCAN_OPTION_TONE:
+            return a->tone_filter != b->tone_filter || !scan_tone_sets_equal(&a->tone_set, &b->tone_set);
+        case SCAN_OPTION_FILTER:
+            return !dsd_receive_filter_equal(&a->receive.filters[column->field[0]],
+                                             &b->receive.filters[column->field[0]]);
+        case SCAN_OPTION_NAMES: return !dsd_receive_names_equal(&a->receive.names, &b->receive.names);
+        case SCAN_OPTION_PATH: return !scan_paths_same(text_a, text_b);
+        case SCAN_OPTION_TEXT: return strcmp(text_a, text_b) != 0;
+        case SCAN_OPTION_PRESENCE:
+        default: return 0;
+    }
+}
+
+/* The first row option two rows set differently: one sets it and the other does not, or both do with other values. */
+static const char*
+scan_options_first_difference(const dsd_scan_option_values* a, const dsd_scan_option_values* b) {
+    for (size_t i = 0; i < sizeof k_scan_option_columns / sizeof k_scan_option_columns[0]; i++) {
+        const scan_option_column* column = &k_scan_option_columns[i];
+        const uint32_t set_a = a->present & column->bit;
+        const uint32_t set_b = b->present & column->bit;
+        if (set_a != set_b || (set_a != 0U && scan_option_value_differs(column, a, b))) {
+            return column->name != NULL ? column->name : k_scan_key_columns;
+        }
+    }
+    /* A switch the table does not know yet still keeps two rows apart. */
+    return a->present != b->present ? "options" : NULL;
+}
+
+/* The first companion file, direct key or row option two rows set differently. */
+static const char*
+scan_target_first_file_difference(const dsd_trunk_scan_target* a, const dsd_trunk_scan_target* b) {
+    if (!scan_paths_same(a->chan_csv, b->chan_csv)) {
+        return "chan_csv";
+    }
+    if (!scan_paths_same(a->p25_bandplan_csv, b->p25_bandplan_csv)) {
+        return "p25_bandplan_csv";
+    }
+    if (!scan_paths_same(a->keys_hex_csv, b->keys_hex_csv)) {
+        return "keys_hex_csv";
+    }
+    if (!scan_paths_same(a->keys_dec_csv, b->keys_dec_csv)) {
+        return "keys_dec_csv";
+    }
+    if (scan_direct_keys_differ(a, b)) {
+        return k_scan_key_columns;
+    }
+    return scan_options_first_difference(&a->row_options, &b->row_options);
+}
+
+/* The first setting two rows of one target id set differently (issue #697 D2), by its column's name in the target CSV
+   or its row option's switches, k_scan_key_columns for a direct key, or NULL when every parsed setting is the same:
+   every field of dsd_trunk_scan_target but the id, which matches already, and csv_row, which is where the row sits. */
+static const char*
+scan_target_first_difference(const dsd_trunk_scan_target* a, const dsd_trunk_scan_target* b) {
+    if (a->type != b->type) {
+        return "type";
+    }
+    if (a->frequency_hz != b->frequency_hz) {
+        return "frequency_hz";
+    }
+    if (strcmp(a->label, b->label) != 0) {
+        return "label";
+    }
+    if (a->modulation != b->modulation) {
+        return "modulation";
+    }
+    if (a->dwell_is_set != b->dwell_is_set || a->dwell_ms != b->dwell_ms) {
+        return "dwell_ms";
+    }
+    if (a->activity_hold_is_set != b->activity_hold_is_set || a->activity_hold_ms != b->activity_hold_ms) {
+        return "activity_hold_ms";
+    }
+    if (a->rtl_gain_is_set != b->rtl_gain_is_set || (a->rtl_gain_is_set && a->rtl_gain_db != b->rtl_gain_db)) {
+        return "rtl_gain";
+    }
+    return scan_target_first_file_difference(a, b);
+}
+
+/* One row of the id index: sorted by id, then list, then row, so an id's first entry is its earliest row. */
+typedef struct {
+    const char* id;
+    size_t list;
+    size_t row;
+} scan_row_ref;
+
+static int
+scan_row_ref_compare(const void* left, const void* right) {
+    const scan_row_ref* x = (const scan_row_ref*)left;
+    const scan_row_ref* y = (const scan_row_ref*)right;
+    const int by_id = strcmp(x->id, y->id);
+    if (by_id != 0) {
+        return by_id;
+    }
+    if (x->list != y->list) {
+        return x->list < y->list ? -1 : 1;
+    }
+    return (x->row > y->row) - (x->row < y->row);
+}
+
+/* The earliest row with @p id among the @p count sorted entries of @p index, which hold it. */
+static const scan_row_ref*
+scan_row_ref_first(const scan_row_ref* index, size_t count, const char* id) {
+    size_t lo = 0U;
+    size_t hi = count;
+    while (lo < hi) {
+        const size_t mid = lo + ((hi - lo) / 2U);
+        if (strcmp(index[mid].id, id) < 0) {
+            lo = mid + 1U;
+        } else {
+            hi = mid;
+        }
+    }
+    return &index[lo];
+}
+
+/* The lists dsd_trunk_scan_check_target_lists() merges, as it walks them. */
+typedef struct {
+    const dsd_trunk_scan_target_list* lists;
+    const char* const* names;
+    size_t offsets[DSD_TRUNK_SCAN_MAX_LISTS]; /* each list's first row in row_targets */
+    size_t rows;                              /* the rows of every list */
+    scan_row_ref* index;                      /* every row, built once and sorted (scan_row_ref_compare()) */
+    size_t* row_targets;                      /* each row's target, list after list */
+    size_t distinct;                          /* targets so far */
+} scan_list_merge;
+
+static void
+scan_set_shared_row_error(char* err, size_t err_sz, const scan_list_merge* m, size_t l,
+                          const dsd_trunk_scan_target* row, const scan_row_ref* first, const char* column) {
+    const unsigned int first_row = m->lists[first->list].targets[first->row].csv_row;
+    if (column == k_scan_key_columns) {
+        scan_set_error(err, err_sz,
+                       "%s row %u: target id '%s' is also %s row %u, but the key columns differ; a target in two lists "
+                       "must have the same settings in both",
+                       m->names[l], row->csv_row, row->id, m->names[first->list], first_row);
+        return;
+    }
+    scan_set_error(err, err_sz,
+                   "%s row %u: target id '%s' is also %s row %u, with another %s; a target in two lists must have the "
+                   "same settings in both",
+                   m->names[l], row->csv_row, row->id, m->names[first->list], first_row, column);
+}
+
+/* Where list @p l's rows land: a row whose id no earlier list holds is a new target; one whose id an earlier list holds
+   is that target, when every setting is the same (else the lists are refused). Ids are unique within a file, so the
+   earliest row with a row's id is either the row itself or an earlier list's. */
+static int
+scan_merge_list_rows(scan_list_merge* m, size_t l, char* err, size_t err_sz) {
+    const dsd_trunk_scan_target_list* list = &m->lists[l];
+    for (size_t r = 0; r < list->count; r++) {
+        const dsd_trunk_scan_target* row = &list->targets[r];
+        const scan_row_ref* first = scan_row_ref_first(m->index, m->rows, row->id);
+        const size_t at = m->offsets[l] + r;
+        const size_t first_at = m->offsets[first->list] + first->row;
+        /* Both rows are in the index the rows were counted for. */
+        if (at >= m->rows || first_at > at) {
+            scan_set_error(err, err_sz, "failed to merge the trunk scan target lists");
+            return -1;
+        }
+        if (first_at == at) {
+            m->row_targets[at] = m->distinct++;
+            continue;
+        }
+        const char* column = scan_target_first_difference(&m->lists[first->list].targets[first->row], row);
+        if (column != NULL) {
+            scan_set_shared_row_error(err, err_sz, m, l, row, first, column);
+            return -1;
+        }
+        m->row_targets[at] = m->row_targets[first_at];
+    }
+    return 0;
+}
+
+/* Index every row by id, once: a row finds its id's earliest row by a binary search, not by a walk of every earlier
+   list, so large lists merge in n log n. */
+static int
+scan_list_merge_index(scan_list_merge* m, size_t count) {
+    m->index = (scan_row_ref*)calloc(m->rows > 0U ? m->rows : 1U, sizeof *m->index);
+    if (m->index == NULL) {
+        return -1;
+    }
+    size_t at = 0U;
+    for (size_t l = 0; l < count; l++) {
+        for (size_t r = 0; r < m->lists[l].count && at < m->rows; r++) {
+            m->index[at].id = m->lists[l].targets[r].id;
+            m->index[at].list = l;
+            m->index[at].row = r;
+            at++;
+        }
+    }
+    qsort(m->index, m->rows, sizeof *m->index, scan_row_ref_compare);
+    return 0;
+}
+
+static int
+scan_merge_lists_in_order(scan_list_merge* m, size_t count, char* err, size_t err_sz) {
+    for (size_t l = 0; l < count; l++) {
+        if (scan_merge_list_rows(m, l, err, err_sz) != 0) {
+            return -1;
+        }
+        if (m->distinct > dsd_trunk_scan_max_targets()) {
+            scan_set_error(err, err_sz,
+                           "%s: the lists hold %zu targets together, more than the %zu that fit in the %d MB target "
+                           "budget",
+                           m->names[l], m->distinct, dsd_trunk_scan_max_targets(),
+                           DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES / (1024 * 1024));
+            return -1;
         }
     }
     return 0;
@@ -1471,27 +1844,39 @@ scan_check_list_ids(const dsd_trunk_scan_target_list* lists, const char* const* 
 
 int
 dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const char* const* names, size_t count,
-                                  char* err, size_t err_sz) {
-    if (lists == NULL || names == NULL) {
+                                  size_t* row_targets, size_t* distinct, char* err, size_t err_sz) {
+    if (distinct != NULL) {
+        *distinct = 0U;
+    }
+    if (lists == NULL || names == NULL || count > DSD_TRUNK_SCAN_MAX_LISTS) {
         scan_set_error(err, err_sz, "no trunk scan target lists");
         return -1;
     }
-    size_t total = 0U;
+    scan_list_merge m;
+    DSD_MEMSET(&m, 0, sizeof m);
+    m.lists = lists;
+    m.names = names;
     for (size_t l = 0; l < count; l++) {
-        total += lists[l].count;
-        if (total > dsd_trunk_scan_max_targets()) {
-            scan_set_error(err, err_sz,
-                           "%s: the lists hold %zu targets together, more than the %zu that fit in the %d MB target "
-                           "budget",
-                           names[l], total, dsd_trunk_scan_max_targets(),
-                           DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES / (1024 * 1024));
-            return -1;
-        }
-        if (scan_check_list_ids(lists, names, l, err, err_sz) != 0) {
-            return -1;
-        }
+        m.offsets[l] = m.rows;
+        m.rows += lists[l].count;
     }
-    return 0;
+    size_t* own_targets = NULL;
+    if (row_targets == NULL) {
+        own_targets = (size_t*)calloc(m.rows > 0U ? m.rows : 1U, sizeof *own_targets);
+    }
+    m.row_targets = row_targets != NULL ? row_targets : own_targets;
+    int rc = m.row_targets != NULL ? scan_list_merge_index(&m, count) : -1;
+    if (rc != 0) {
+        scan_set_error(err, err_sz, "failed to allocate the trunk scan target lists");
+    } else {
+        rc = scan_merge_lists_in_order(&m, count, err, err_sz);
+    }
+    free(m.index);
+    free(own_targets);
+    if (rc == 0 && distinct != NULL) {
+        *distinct = m.distinct;
+    }
+    return rc;
 }
 
 void
@@ -2193,6 +2578,7 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_rotation_count = 0U;
     state->trunk_scan_lists_seq = 0U;
     DSD_MEMSET(state->trunk_scan_lists, 0, sizeof state->trunk_scan_lists);
+    DSD_MEMSET(state->trunk_scan_membership_counts, 0, sizeof state->trunk_scan_membership_counts);
     state->scan_row_session = 0U;
     state->scan_row_index = -1;
     state->scan_row_scanner = (uint8_t)DSD_SCAN_ROW_SCANNER_NONE;
@@ -2280,8 +2666,10 @@ trunk_scan_publish_lists(dsd_state* state, const dsd_trunk_scan_coord* coord) {
         dsd_trunk_scan_list_publication* pub = &state->trunk_scan_lists[l];
         DSD_SNPRINTF(pub->name, sizeof pub->name, "%s", coord->lists[l].name);
         pub->enabled = coord->lists[l].enabled ? 1U : 0U;
-        pub->targets = trunk_scan_clamp_u16(coord->lists[l].count);
+        pub->targets = trunk_scan_clamp_u16(coord->lists[l].member_count);
     }
+    DSD_MEMCPY(state->trunk_scan_membership_counts, coord->membership_counts,
+               sizeof state->trunk_scan_membership_counts);
     state->trunk_scan_list_count = (uint8_t)coord->list_count;
     state->trunk_scan_rotation_count = trunk_scan_clamp_u16(trunk_scan_enabled_count(coord));
     state->trunk_scan_lists_seq = coord->lists_seq;
@@ -5247,6 +5635,7 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
     dsd_p25_site_snapshot_clear(&coord->scratch_snapshot.site);
     free(coord->empty_snapshot.trunk_lcn_freq_ext);
     dsd_p25_site_snapshot_clear(&coord->empty_snapshot.site);
+    free(coord->list_index);
     free(coord->targets);
     free(coord);
 }
@@ -5444,41 +5833,109 @@ trunk_scan_load_list_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_
     return -1;
 }
 
-/* Put @p count loaded lists one after another into @p out (list order, then row order) and record where each one's
-   targets start in @p table, with its name and start state. */
+/* The lists merged into the session's targets (issue #697), as trunk_scan_merge_lists() hands them to
+   trunk_scan_attach_lists(): each list's entry, each target's lists (bit l for list l) and the storage every entry's
+   members and shared indices point into. trunk_scan_merged_lists_release() frees what the attach did not take. */
+typedef struct {
+    dsd_trunk_scan_list_entry lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    uint8_t* masks;
+    size_t* index;
+} trunk_scan_merged_lists;
+
+static void
+trunk_scan_merged_lists_release(trunk_scan_merged_lists* merged) {
+    free(merged->masks);
+    free(merged->index);
+    DSD_MEMSET(merged, 0, sizeof *merged);
+}
+
+/* List @p l's rows into @p entry and @p out: each row's target into @p members (its index, @p row_targets), the list's
+   bit into that target's mask, and a row that loads a new target appended to @p out, so the list's own run is the
+   targets it appended. */
 static int
-trunk_scan_merge_lists(const dsd_opts* opts, const dsd_trunk_scan_target_list* lists, int count,
-                       dsd_trunk_scan_target_list* out, dsd_trunk_scan_list_entry* table, char* err, size_t err_sz) {
-    size_t total = 0U;
-    for (int l = 0; l < count; l++) {
-        total += lists[l].count;
+trunk_scan_merge_list_rows(const dsd_trunk_scan_target_list* list, int l, const size_t* row_targets, size_t* members,
+                           dsd_trunk_scan_target_list* out, trunk_scan_merged_lists* merged) {
+    dsd_trunk_scan_list_entry* entry = &merged->lists[l];
+    entry->first = out->count;
+    entry->members = members;
+    entry->member_count = list->count;
+    for (size_t r = 0; r < list->count; r++) {
+        const size_t target = row_targets[r];
+        /* A row is a target merged already or the next new one (dsd_trunk_scan_check_target_lists()). */
+        if (target > out->count || target >= out->capacity) {
+            return -1;
+        }
+        members[r] = target;
+        merged->masks[target] |= (uint8_t)(1U << l);
+        if (target == out->count) {
+            out->targets[out->count++] = list->targets[r];
+        }
     }
-    out->targets = (dsd_trunk_scan_target*)calloc(total, sizeof *out->targets);
-    if (out->targets == NULL) {
-        scan_set_error(err, err_sz, "failed to allocate trunk scan targets");
-        return -1;
-    }
-    out->capacity = total;
-    for (int l = 0; l < count; l++) {
-        table[l].first = out->count;
-        table[l].count = lists[l].count;
-        table[l].enabled = opts->trunk_scan_lists[l].start_off ? 0 : 1;
-        trunk_scan_list_name(opts->trunk_scan_lists[l].path, table[l].name, sizeof table[l].name);
-        DSD_MEMCPY(out->targets + out->count, lists[l].targets, lists[l].count * sizeof *out->targets);
-        out->count += lists[l].count;
-    }
+    entry->count = out->count - entry->first;
     return 0;
 }
 
+/* The targets of @p entry's own run that another list holds too (dsd_trunk_scan_list_entry::shared), into @p out;
+   returns how many. */
+static size_t
+trunk_scan_list_shared(const dsd_trunk_scan_list_entry* entry, const uint8_t* masks, int l, size_t* out) {
+    size_t shared = 0U;
+    for (size_t i = entry->first; i < entry->first + entry->count; i++) {
+        if ((masks[i] & (uint8_t)~(1U << l)) != 0U) {
+            out[shared++] = i;
+        }
+    }
+    return shared;
+}
+
+/* Put @p count loaded lists into @p out: the @p distinct rows that load a new target (@p row_targets, every row of
+   every list in order, from dsd_trunk_scan_check_target_lists()), in list order, then row order; and into @p merged
+   each list's name, start state, own run, members and shared targets, and each target's lists. On a failure nothing
+   is kept. */
+static int
+trunk_scan_merge_lists(const dsd_opts* opts, const dsd_trunk_scan_target_list* lists, int count,
+                       const size_t* row_targets, size_t distinct, dsd_trunk_scan_target_list* out,
+                       trunk_scan_merged_lists* merged, char* err, size_t err_sz) {
+    size_t rows = 0U;
+    for (int l = 0; l < count; l++) {
+        rows += lists[l].count;
+    }
+    out->targets = (dsd_trunk_scan_target*)calloc(distinct > 0U ? distinct : 1U, sizeof *out->targets);
+    merged->masks = (uint8_t*)calloc(distinct > 0U ? distinct : 1U, sizeof *merged->masks);
+    merged->index = (size_t*)calloc(rows + distinct > 0U ? rows + distinct : 1U, sizeof *merged->index);
+    int rc = out->targets != NULL && merged->masks != NULL && merged->index != NULL ? 0 : -1;
+    out->capacity = rc == 0 ? distinct : 0U;
+    /* Each list's members sit where its rows sit in row_targets, and the shared indices follow every list's members. */
+    size_t at = 0U;
+    for (int l = 0; l < count && rc == 0; l++) {
+        merged->lists[l].enabled = opts->trunk_scan_lists[l].start_off ? 0 : 1;
+        trunk_scan_list_name(opts->trunk_scan_lists[l].path, merged->lists[l].name, sizeof merged->lists[l].name);
+        rc = trunk_scan_merge_list_rows(&lists[l], l, row_targets + at, merged->index + at, out, merged);
+        at += lists[l].count;
+    }
+    for (int l = 0; l < count && rc == 0; l++) {
+        merged->lists[l].shared = merged->index + at;
+        merged->lists[l].shared_count = trunk_scan_list_shared(&merged->lists[l], merged->masks, l, merged->index + at);
+        at += merged->lists[l].shared_count;
+    }
+    if (rc != 0) {
+        scan_set_error(err, err_sz, "failed to allocate trunk scan targets");
+        trunk_scan_merged_lists_release(merged);
+        dsd_trunk_scan_target_list_reset(out);
+    }
+    return rc;
+}
+
 /*
- * Load every configured list (issue #697), in order, into @p out: each through the one parser, its errors naming its
- * file, then held to the rules across lists (dsd_trunk_scan_check_target_lists(): no target id twice, the union within
- * the target budget, both naming the file). Each list loaded is reset (its keys erased) whatever happens; on a failure
- * nothing is left to undo, since nothing is attached yet.
+ * Load every configured list (issue #697), in order, into @p out and @p merged: each through the one parser, its
+ * errors naming its file, then merged by the rule across lists (dsd_trunk_scan_check_target_lists(): a row whose id an
+ * earlier list holds is that target when its settings are the same, else refused naming both files and rows; the
+ * distinct targets within the target budget). Each list loaded is reset (its keys erased) whatever happens; on a
+ * failure nothing is left to undo, since nothing is attached yet.
  */
 static int
-trunk_scan_load_lists(const dsd_opts* opts, dsd_trunk_scan_target_list* out, dsd_trunk_scan_list_entry* table,
-                      char* err, size_t err_sz) {
+trunk_scan_load_lists(const dsd_opts* opts, dsd_trunk_scan_target_list* out, trunk_scan_merged_lists* merged, char* err,
+                      size_t err_sz) {
     dsd_trunk_scan_target_list lists[DSD_TRUNK_SCAN_MAX_LISTS];
     DSD_MEMSET(lists, 0, sizeof lists);
     const char* names[DSD_TRUNK_SCAN_MAX_LISTS] = {0};
@@ -5489,31 +5946,52 @@ trunk_scan_load_lists(const dsd_opts* opts, dsd_trunk_scan_target_list* out, dsd
     }
     int rc = 0;
     int loaded = 0;
+    size_t rows = 0U;
     for (; loaded < count && rc == 0; loaded++) {
         names[loaded] = opts->trunk_scan_lists[loaded].path;
         rc = trunk_scan_load_list_csv(names[loaded], opts, &lists[loaded], err, err_sz);
+        rows += lists[loaded].count;
+    }
+    size_t* row_targets = rc == 0 ? (size_t*)calloc(rows > 0U ? rows : 1U, sizeof *row_targets) : NULL;
+    if (rc == 0 && row_targets == NULL) {
+        scan_set_error(err, err_sz, "failed to allocate trunk scan targets");
+        rc = -1;
+    }
+    size_t distinct = 0U;
+    if (rc == 0) {
+        rc = dsd_trunk_scan_check_target_lists(lists, names, (size_t)count, row_targets, &distinct, err, err_sz);
     }
     if (rc == 0) {
-        rc = dsd_trunk_scan_check_target_lists(lists, names, (size_t)count, err, err_sz);
+        rc = trunk_scan_merge_lists(opts, lists, count, row_targets, distinct, out, merged, err, err_sz);
     }
-    if (rc == 0) {
-        rc = trunk_scan_merge_lists(opts, lists, count, out, table, err, err_sz);
-    }
+    free(row_targets);
     for (int l = 0; l < loaded; l++) {
         dsd_trunk_scan_target_list_reset(&lists[l]);
     }
     return rc;
 }
 
-/* Give the coordinator the lists (issue #697): each target learns the list its row came from. */
+/* Give the coordinator the lists (issue #697): each target learns its owner and every list that holds it, the
+   coordinator takes the lists' member and shared indices, and counts the distinct targets of each set of lists. */
 static void
-trunk_scan_attach_lists(dsd_trunk_scan_coord* coord, const dsd_trunk_scan_list_entry* table, int count) {
+trunk_scan_attach_lists(dsd_trunk_scan_coord* coord, trunk_scan_merged_lists* merged, int count) {
     for (int l = 0; l < count; l++) {
-        coord->lists[l] = table[l];
-        for (size_t i = table[l].first; i < table[l].first + table[l].count && i < coord->count; i++) {
+        coord->lists[l] = merged->lists[l];
+        for (size_t i = merged->lists[l].first; i < merged->lists[l].first + merged->lists[l].count && i < coord->count;
+             i++) {
             coord->targets[i].list = (uint8_t)l;
         }
     }
+    DSD_MEMSET(coord->membership_counts, 0, sizeof coord->membership_counts);
+    for (size_t i = 0; i < coord->count; i++) {
+        const uint8_t mask = merged->masks[i];
+        coord->targets[i].lists = mask;
+        if (mask != 0U && coord->membership_counts[mask - 1U] < UINT16_MAX) {
+            coord->membership_counts[mask - 1U]++;
+        }
+    }
+    coord->list_index = merged->index;
+    merged->index = NULL;
     coord->list_count = count;
     coord->lists_seq = trunk_scan_next_lists_seq();
 }
@@ -5537,6 +6015,39 @@ trunk_scan_start_target(const dsd_opts* opts, const dsd_state* state, const dsd_
     return first_on < coord->count ? first_on : 0U;
 }
 
+/* What list @p l shares with the lists before it, for its start log line (issue #697): " (3 also in list 1)", or
+   " (5 also in lists 1, 2)" when its shared rows were loaded by more than one earlier list; "" when it shares none.
+   A row an earlier list loaded is that list's target, so the lines' targets less their "also" add up to the total. */
+static void
+trunk_scan_list_also(const dsd_trunk_scan_coord* coord, int l, char* out, size_t out_size) {
+    const dsd_trunk_scan_list_entry* entry = &coord->lists[l];
+    size_t also = 0U;
+    unsigned int owners = 0U;
+    for (size_t r = 0; r < entry->member_count; r++) {
+        const dsd_trunk_scan_target_runtime* rt = &coord->targets[entry->members[r]];
+        if (rt->list != (uint8_t)l) {
+            also++;
+            owners |= 1U << rt->list;
+        }
+    }
+    out[0] = '\0';
+    if (also == 0U) {
+        return;
+    }
+    char named[DSD_TRUNK_SCAN_MAX_LISTS * 4];
+    named[0] = '\0';
+    size_t used = 0U;
+    int lists = 0;
+    for (int k = 0; k < l && used < sizeof named; k++) {
+        if ((owners & (1U << k)) != 0U) {
+            const int n = DSD_SNPRINTF(named + used, sizeof named - used, "%s%d", lists > 0 ? ", " : "", k + 1);
+            used += n > 0 ? (size_t)n : 0U;
+            lists++;
+        }
+    }
+    DSD_SNPRINTF(out, out_size, " (%zu also in list%s %s)", also, lists > 1 ? "s" : "", named);
+}
+
 static void
 trunk_scan_log_lists(const dsd_trunk_scan_coord* coord) {
     if (coord->list_count < 2) {
@@ -5545,8 +6056,10 @@ trunk_scan_log_lists(const dsd_trunk_scan_coord* coord) {
     }
     LOG_INFO("NOTICE: Trunk scan enabled with %zu targets in %d lists\n", coord->count, coord->list_count);
     for (int l = 0; l < coord->list_count; l++) {
-        LOG_INFO("NOTICE: Trunk scan list %d (%s): %zu targets, %s\n", l + 1, coord->lists[l].name,
-                 coord->lists[l].count, coord->lists[l].enabled ? "on" : "off");
+        char also[64];
+        trunk_scan_list_also(coord, l, also, sizeof also);
+        LOG_INFO("NOTICE: Trunk scan list %d (%s): %zu targets%s, %s\n", l + 1, coord->lists[l].name,
+                 coord->lists[l].member_count, also, coord->lists[l].enabled ? "on" : "off");
     }
 }
 
@@ -5554,6 +6067,33 @@ static dsd_scan_entry_reason trunk_scan_entry_reason(const dsd_opts* opts, const
                                                      const dsd_trunk_scan_coord* coord,
                                                      const dsd_trunk_scan_target_runtime* rt, int rate_hz);
 static dsd_scan_goto_result trunk_scan_goto_outcome(dsd_state* state, dsd_trunk_scan_coord* coord, size_t index);
+
+/* --trunk-scan-hold's refusal of target @p rt for its lists (issue #644): each list that holds it and is off, by
+   number and name ("list 1, conv; list 2, low"), and how to start it. A target in one list names that list. */
+static void
+trunk_scan_hold_lists_off(const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target_runtime* rt, char* err,
+                          size_t err_sz) {
+    char named[DSD_TRUNK_SCAN_MAX_LISTS * (DSD_TRUNK_SCAN_LIST_NAME_SIZE + 12)];
+    size_t used = 0U;
+    int off = 0;
+    named[0] = '\0';
+    for (int l = 0; l < coord->list_count && used < sizeof named; l++) {
+        if ((rt->lists & (1U << l)) != 0U && !coord->lists[l].enabled) {
+            const int n = DSD_SNPRINTF(named + used, sizeof named - used, "%slist %d, %s", off > 0 ? "; " : "", l + 1,
+                                       coord->lists[l].name);
+            used += n > 0 ? (size_t)n : 0U;
+            off++;
+        }
+    }
+    if (off > 1) {
+        scan_set_error(err, err_sz,
+                       "--trunk-scan-hold: target \"%s\" is in lists that are off (%s); start one of them on",
+                       rt->target.id, named);
+        return;
+    }
+    scan_set_error(err, err_sz, "--trunk-scan-hold: target \"%s\" is in a list that is off (%s); start that list on",
+                   rt->target.id, named);
+}
 
 /* Why --trunk-scan-hold cannot start on target @p rt (issue #644), in @p err: the reason a typed frequency's toast
    gives, with what it is about, the list off or the width the DSP rate cannot filter. */
@@ -5567,10 +6107,7 @@ trunk_scan_hold_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_
         return;
     }
     if (reason == DSD_SCAN_ENTRY_LIST_OFF) {
-        scan_set_error(err, err_sz,
-                       "--trunk-scan-hold: target \"%s\" is in a list that is off (list %d, %s); start "
-                       "that list on",
-                       id, (int)rt->list + 1, coord->lists[rt->list].name);
+        trunk_scan_hold_lists_off(coord, rt, err, err_sz);
         return;
     }
     char brief[DSD_ANALOG_ERROR_TEXT_MAX];
@@ -5582,8 +6119,8 @@ trunk_scan_hold_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_
 }
 
 /* The target --trunk-scan-hold starts the scan on (issue #644), into @p out: the one whose id it names, which the
-   rotation takes (trunk_scan_entry_reason(), the rule a typed frequency's pick follows). Ids are unique across the
-   lists, so the id names one target. Refused, the error naming the id and why, for an id no target has, a target in a
+   rotation takes (trunk_scan_entry_reason(), the rule a typed frequency's pick follows). An id is one target, however
+   many lists hold it (issue #697), so the id names one target. Refused, the error naming the id and why, for an id no target has, a target in a
    list that starts off, one avoided, and one whose width does not fit. */
 static int
 trunk_scan_hold_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, size_t* out,
@@ -5674,9 +6211,9 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
 
     dsd_trunk_scan_target_list list;
     DSD_MEMSET(&list, 0, sizeof list);
-    dsd_trunk_scan_list_entry table[DSD_TRUNK_SCAN_MAX_LISTS];
-    DSD_MEMSET(table, 0, sizeof table);
-    if (trunk_scan_load_lists(opts, &list, table, err, err_sz) != 0) {
+    trunk_scan_merged_lists merged;
+    DSD_MEMSET(&merged, 0, sizeof merged);
+    if (trunk_scan_load_lists(opts, &list, &merged, err, err_sz) != 0) {
         dsd_trunk_scan_target_list_reset(&list);
         return -1;
     }
@@ -5685,10 +6222,12 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {
+        trunk_scan_merged_lists_release(&merged);
         dsd_trunk_scan_target_list_reset(&list);
         return -1;
     }
-    trunk_scan_attach_lists(coord, table, opts->trunk_scan_list_count);
+    trunk_scan_attach_lists(coord, &merged, opts->trunk_scan_list_count);
+    trunk_scan_merged_lists_release(&merged);
     coord->analog_checked_rate_hz = analog_checked_rate_hz;
     coord->analog_checked_nfm_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_FM);
     coord->analog_checked_am_hz = dsd_scan_mode_configured_analog_width(opts, state, DSD_ANALOG_DEMOD_AM);
@@ -6276,6 +6815,32 @@ size_t
 dsd_engine_trunk_scan_active_index(const dsd_state* state) {
     const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
     return coord ? coord->active : (size_t)-1;
+}
+
+int
+trunk_scan_test_list_layout(const dsd_state* state, int l, trunk_scan_test_layout* out) {
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (coord == NULL || l < 0 || l >= coord->list_count) {
+        return -1;
+    }
+    const dsd_trunk_scan_list_entry* entry = &coord->lists[l];
+    out->first = entry->first;
+    out->count = entry->count;
+    out->members = entry->members;
+    out->member_count = entry->member_count;
+    out->shared = entry->shared;
+    out->shared_count = entry->shared_count;
+    return 0;
+}
+
+int
+trunk_scan_test_target_lists(const dsd_state* state, size_t index, unsigned int* owner) {
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (coord == NULL || index >= coord->count) {
+        return -1;
+    }
+    *owner = coord->targets[index].list;
+    return coord->targets[index].lists;
 }
 #endif
 
