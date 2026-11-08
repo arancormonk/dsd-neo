@@ -12401,6 +12401,16 @@ Qt Quick frontend (`src/ui/qt`):
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most 247
   UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also skips
   reserved paths).
+  `document_import_transport.{h,cpp}` is the import copies' transport (#832): `DecoderHost::importTransport()` hands
+  out a new `DocumentImportTransport` each call, which never calls the host, so the import worker may keep it past the
+  host. `copy(request, reference, destPath, maxBytes)` blocks and returns a `DocumentCopy` code; `cancel(request)`
+  stops that request's running copy at its next chunk and answers `DocumentCancelled` for every later copy until
+  `forget(request)`, which callers make only after the request's last `copy()` returned; `progress(request)` gives the
+  latest copy's name, bytes, total and whether it ran out of space. The base transport copies a local file (file URL
+  or absolute path; any other reference is `DocumentFailed`) through `QSaveFile` and `copy_stream_capped()`, whose
+  per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
+  (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
+  handed out (the host keeps weak references), and one handed out after it starts aborted.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`
@@ -13501,10 +13511,18 @@ thread, which the rest of the interface never is.
   (a CSV's companions) answers `DocumentCancelled` (`CANCELLED`) until `forgetImport(id)`. A local write failure with
   `ENOSPC` is `DocumentLocalFailed` and sets `importNoSpace()`. Only import copies answer `DocumentCancelled`;
   `abort()` cancels and refuses them too, as `DocumentFailed`.
+- The C++ side of the import copies is `DecoderHostAndroid::ImportTransport` (`decoder_host_android_imports.cpp`,
+  handed out by `importTransport()`), whose JNI calls (`platformCopyImportDocument()` and the five request-table
+  calls) sit beside `platformCopyDocumentToFile()` in `decoder_host_android.cpp`. A `content://` reference is read as
+  the backup's copy is: the destination is cleared first, no held `ContentResolver` is `DocumentLocalFailed`,
+  `DocumentCopied` counts only with its file in place (a failed JNI call reads as 0), codes 1-4 pass through and any
+  other answer is `DocumentFailed`. Any other reference takes the base transport's local copy. `cancel()` and
+  `forget()` reach both sides; `progress()` reads the side the request's latest copy took.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
-- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document dispatch), `ANDROID_DOCUMENT_TRANSFER_JVM`
+- Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document and import dispatch), `UI_QT_IMPORT_TRANSPORT` (the
+  base transport's cap, cancel, abort and progress, and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM`
   (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs). Real providers, JNI and
   `finishAndRemoveTask()` need a device or emulator.
 

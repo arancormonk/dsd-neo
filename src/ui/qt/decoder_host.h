@@ -26,9 +26,14 @@
 #include <QtGlobal>
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 namespace dsd_qt {
+
+class DocumentImportTransport;
 
 class DecoderHost : public QObject {
     Q_OBJECT
@@ -193,6 +198,16 @@ class DecoderHost : public QObject {
      * transfers of its own stops them too and calls this base.
      */
     virtual void abortDocumentTransfers();
+
+    /**
+     * @brief A new transport for the import copies (#832), which may outlive this host.
+     *
+     * The base host's copies local files (file:// URLs and absolute paths). The transport never calls back into the
+     * host, so the import worker may keep it, and finish a copy, after the host is gone. abortDocumentTransfers()
+     * aborts every transport handed out, and one handed out after it starts aborted. A host with a transport of its
+     * own returns it through keepImportTransport().
+     */
+    virtual std::shared_ptr<DocumentImportTransport> importTransport() const;
 
     virtual bool
     usesPlatformFontScaling() const {
@@ -827,6 +842,10 @@ class DecoderHost : public QObject {
     static bool copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
                                         const std::atomic<bool>* aborted);
 
+    /** @brief Hand out @p transport: abortDocumentTransfers() aborts it, and it starts aborted after one. */
+    std::shared_ptr<DocumentImportTransport>
+    keepImportTransport(std::shared_ptr<DocumentImportTransport> transport) const;
+
     /** Whether abortDocumentTransfers() was called; document copies check it before every chunk. */
     bool
     documentTransfersAborted() const {
@@ -839,6 +858,9 @@ class DecoderHost : public QObject {
     void announceTransferEnd(int selection, int result, int missing);
 
     std::atomic<bool> m_documentTransfersAborted{false};
+    /* The import transports handed out, for abortDocumentTransfers(); handed out from a const host. */
+    mutable std::mutex m_importTransportsLock;
+    mutable std::vector<std::weak_ptr<DocumentImportTransport>> m_importTransports; // guarded by the lock
     QString m_playbackPath;
     int m_playbackState = PlaybackStopped;
     qint64 m_playbackPositionMs = 0;

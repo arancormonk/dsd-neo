@@ -14,6 +14,7 @@ qt_add_executable(
     main.cpp
     decoder_host_android.cpp
     decoder_host_android_documents.cpp
+    decoder_host_android_imports.cpp
     decoder_host_android_lifecycle.cpp
     decoder_host_android_recordings.cpp
     dsdneo_jni.cpp
