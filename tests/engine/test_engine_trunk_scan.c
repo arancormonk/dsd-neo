@@ -18559,6 +18559,59 @@ test_lists_shared_row_set_options_any_order(void) {
     return test_rc;
 }
 
+/* A tone list that names one DCS signal another way is the same setting (issue #697): D023I is D047N and D023N is
+   D047I, one waveform each, so the rows detect the same tones and are one target. A list with another signal is
+   refused by its switches. */
+static int
+test_lists_shared_row_tone_spellings(void) {
+    static const char* const names[] = {"one", "two"};
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    const char* bodies[] = {
+        "fire,nfm-conventional,154430000,,1500,1200,,--tone-allow 100.0/D023I/D023N --tone-name D023I=Local\n",
+        "fire,nfm-conventional,154430000,,1500,1200,,--tone-allow D047N/100.0/D047I --tone-name D047N=Local\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_list_files_write(&files, header, names, bodies, 2) != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, NULL, &opts);
+    char err[2048] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_target_count(&state) != 1U) {
+        DSD_FPRINTF(stderr, "one DCS signal spelled two ways did not share: %zu targets, err \"%s\"\n",
+                    dsd_engine_trunk_scan_target_count(&state), err);
+        test_rc = 1;
+    }
+    test_rc |= expect_target_lists(&state, 0U, 0x3, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    char two[1024];
+    DSD_SNPRINTF(
+        two, sizeof two, "%s%s", header,
+        "fire,nfm-conventional,154430000,,1500,1200,,--tone-allow D047N/100.0/D025N --tone-name D047N=Local\n");
+    char want[2048];
+    DSD_SNPRINTF(
+        want, sizeof want,
+        "%s row 2: target id 'fire' is also %s row 2, with another --tone-allow/--tone-block/--no-tone-filter; "
+        "a target in two lists must have the same settings in both",
+        files.paths[1], files.paths[0]);
+    if (write_text_file(files.paths[1], two) != 0 || dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) == 0
+        || strcmp(err, want) != 0) {
+        DSD_FPRINTF(stderr, "another DCS signal: \"%s\", want \"%s\"\n", err, want);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
 /* A key file one row names with -K in its options and the other in its keys_hex_csv column is the same setting: both
    rows load that one file, so they are one target. */
 static int
@@ -21810,6 +21863,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_shared_row_first_difference);
     rc |= run_with_default_tune_hook(test_lists_shared_row_layouts_share);
     rc |= run_with_default_tune_hook(test_lists_shared_row_set_options_any_order);
+    rc |= run_with_default_tune_hook(test_lists_shared_row_tone_spellings);
     rc |= run_with_default_tune_hook(test_lists_shared_row_key_file_named_two_ways);
 #if !DSD_PLATFORM_WIN_NATIVE
     rc |= run_with_default_tune_hook(test_lists_shared_row_key_file_hard_link);

@@ -618,8 +618,9 @@ written to its file.
   compared as the file it opens, so `keys.csv` and `./keys.csv` next to one list are one file, and so are a link to it
   and, on Windows, `KEYS.csv` or its short name; `keys.csv` next to two lists in different folders are two. Column
   order, `notes`, the order of the switches in `options` and the order of the entries in a list such as `--dcc-allow` or
-  `--tone-allow`, or of the service names, do not matter. Any difference refuses the start, naming both files and rows
-  and the first setting that differs, as its column name or its switches (`-G`, `--squelch/--squelch-db`):
+  `--tone-allow`, or of the service names, do not matter, nor does a DCS code written as the other spelling of its
+  signal (`D023I` for `D047N`). Any difference refuses the start, naming both files and rows and the first setting that
+  differs, as its column name or its switches (`-G`, `--squelch/--squelch-db`):
 
   ```text
   Trunk scan: hospital.csv row 4: target id 'gate-b' is also security.csv row 2, with another frequency_hz; a target in two lists must have the same settings in both

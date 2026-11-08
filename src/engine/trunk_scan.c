@@ -32,6 +32,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
@@ -1638,15 +1639,6 @@ scan_option_ints_differ(const scan_option_column* column, const dsd_scan_option_
     return 0;
 }
 
-static int
-scan_tone_sets_equal(const dsd_tone_set* a, const dsd_tone_set* b) {
-    int equal = a->ctcss == b->ctcss;
-    for (size_t i = 0; i < sizeof a->dcs / sizeof a->dcs[0]; i++) {
-        equal = equal && a->dcs[i] == b->dcs[i];
-    }
-    return equal;
-}
-
 /* Whether row option @p column, set on both rows, holds another value on one. */
 static int
 scan_option_value_differs(const scan_option_column* column, const dsd_scan_option_values* a,
@@ -1655,8 +1647,9 @@ scan_option_value_differs(const scan_option_column* column, const dsd_scan_optio
     const char* text_b = (const char*)b + column->field[0];
     switch (column->compare) {
         case SCAN_OPTION_INTS: return scan_option_ints_differ(column, a, b);
+        /* By the signals the list detects: D023I and D047N are one DCS signal (dsd_tone_set_same_signals()). */
         case SCAN_OPTION_TONE:
-            return a->tone_filter != b->tone_filter || !scan_tone_sets_equal(&a->tone_set, &b->tone_set);
+            return a->tone_filter != b->tone_filter || !dsd_tone_set_same_signals(&a->tone_set, &b->tone_set);
         case SCAN_OPTION_FILTER:
             return !dsd_receive_filter_equal(&a->receive.filters[column->field[0]],
                                              &b->receive.filters[column->field[0]]);

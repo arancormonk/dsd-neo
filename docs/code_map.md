@@ -472,14 +472,15 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `dsd_path_same_file()`, so a link or, on Windows, another case or short name of one file is that file; through
   `dsd_path_canonical()` when either identity cannot be read, and the strings when either cannot be canonicalised;
   direct keys in constant time; a row option only where its `DSD_SCAN_OPT_*` bit is set, from the
-  `k_scan_option_columns` table, tone set and receive filters/names included, all order independent (sets of bits, and
-  service names by `dsd_receive_names_equal()`, which compares tables as `dsd_receive_service_name()` reads them), an
-  unknown bit still telling rows apart). Any difference refuses the lists, naming both files and rows and the first
-  differing column by its target-CSV name or its switches (`the key columns differ` for direct keys, never their
-  material). Within one file the parser's rules stay (no id or `(type, frequency)` twice); different ids on one channel
-  stay two targets. The distinct targets fit the budget. Its optional `row_targets` out array, with the count of entries
-  it holds (fewer than the rows is a refusal, and that count bounds every write), gives each row its target index (a row
-  is new exactly when that index is the count of targets before it); the app pre-check reads only the distinct total.
+  `k_scan_option_columns` table, tone set and receive filters/names included, all order independent (sets of bits, the
+  tone list by the signals it detects through `dsd_tone_set_same_signals()`, so `D023I` is `D047N`, and service names by
+  `dsd_receive_names_equal()`, which compares tables as `dsd_receive_service_name()` reads them), an unknown bit still
+  telling rows apart). Any difference refuses the lists, naming both files and rows and the first differing column by
+  its target-CSV name or its switches (`the key columns differ` for direct keys, never their material). Within one file
+  the parser's rules stay (no id or `(type, frequency)` twice); different ids on one channel stay two targets. The
+  distinct targets fit the budget. Its optional `row_targets` out array, with the count of entries it holds (fewer than
+  the rows is a refusal, and that count bounds every write), gives each row its target index (a row is new exactly when
+  that index is the count of targets before it); the app pre-check reads only the distinct total.
 - Configured lists (issue #697): `<dsd-neo/core/trunk_scan_lists.h>` defines `dsd_trunk_scan_list_spec {path,
   start_off}` and `DSD_TRUNK_SCAN_MAX_LISTS` (8). `dsd_opts::trunk_scan_lists`/`trunk_scan_list_count`, its
   `next_start` copy and `dsdneoUserConfig` hold the same array by list number; `dsd_trunk_scan_lists_check()` and
