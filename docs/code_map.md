@@ -499,13 +499,13 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   `coord->lists[]` holds each list's name (file name without folder and extension, `DSD_TRUNK_SCAN_LIST_NAME_SIZE`
   32), `enabled`, its owned run `first`/`count` (contiguous, possibly empty for a list wholly shared), `members[]`/
   `member_count` (every row of its file as a target index, row order, shared ones included: what the list holds and
-  counts), which lives in `coord->list_index`, freed with the coordinator. Walks must not assume a list's targets are only its own run.
-  `coord->membership_counts[mask - 1]` (distinct targets in exactly the lists of each mask) is counted at the attach
-  and published as `dsd_state::trunk_scan_membership_counts` with the lists, cleared at detach and `initState()`, so
-  a frontend can total any set of lists without summing per-list counts; each list's published `targets` is its
-  `member_count`. The start log names each list's count and what it shares with earlier lists (`Trunk scan list 2
-  (low): 9 targets (3 also in list 1), on`), and a `--trunk-scan-hold` refused for its lists names every list holding
-  the target that is off. `coord->lists_on` is the lists switched on as one mask. One predicate,
+  counts), which lives in `coord->list_index`, freed with the coordinator. Walks must not assume a list's targets are
+  only its own run. `coord->membership_counts[mask - 1]` (distinct targets in exactly the lists of each mask) is counted
+  at the attach and published as `dsd_state::trunk_scan_membership_counts` with the lists, cleared at detach and
+  `initState()`, so a frontend can total any set of lists without summing per-list counts; each list's published
+  `targets` is its `member_count`. The start log names each list's count and what it shares with earlier lists (`Trunk
+  scan list 2 (low): 9 targets (3 also in list 1), on`), and a `--trunk-scan-hold` refused for its lists names every
+  list holding the target that is off. `coord->lists_on` is the lists switched on as one mask. One predicate,
   `trunk_scan_target_in_rotation()` (`!avoided && (rt->lists & lists_on)`: any list holding it on, so a shared target
   stays in while another of its lists is on), feeds every candidate walk and count:
   `trunk_scan_alternate_is_candidate()` (the advance, RETREAT, the visit cap's somewhere-else-to-go question
@@ -5039,14 +5039,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `include/dsd-neo/app_control/scan_list_view.h` and `src/app_control/scan_list_view.c` (issue #697) give the
   trunk-scan target lists every frontend and the API show and switch. `dsd_app_scan_list_view_get()` reads only the
   coordinator's published fields (`trunk_scan_lists[]`, `trunk_scan_list_count` clamped to 8, `trunk_scan_active_list`,
-  `trunk_scan_active_list_off`, `trunk_scan_lists_seq`, `trunk_scan_session`) and the scan state view, from a snapshot
-  pair or the decoder's structs, with no lock and no walk of the targets, and only while `--trunk-scan` is configured:
-  per list `{number, name, enabled, targets, has_active}`, `list_count`, `lists_on`, `targets_on` (the `n of m` m),
-  `active_list`, `running`/`paused` and `toggleable` (running, not paused, 2+ lists). A frontend acts when `lists_seq`
-  or `session` moves. `dsd_app_scan_lists_targets_on(state, on_mask)` is the one total of a set of lists (issue #697):
-  the distinct targets the lists of `on_mask` hold together, the sum of `trunk_scan_membership_counts` over every
-  membership mask that meets it, so a target several lists hold counts once and a pending switch's on-set totals
-  exactly; no frontend sums the lists' own counts (the switch toast reads it). Tests: `APP_CONTROL_SCAN_LIST_VIEW`,
+  `trunk_scan_active_lists`, `trunk_scan_active_list_off`, `trunk_scan_membership_counts`, `trunk_scan_lists_seq`,
+  `trunk_scan_session`) and the scan state view, from a snapshot pair or the decoder's structs, with no lock and no
+  walk of the targets, and only while `--trunk-scan` is configured: per list `{number, name, enabled, targets,
+  has_active}` (`targets` what its file holds, shared ones included; `has_active` its bit in `trunk_scan_active_lists`,
+  so every list holding the target on air is marked, on or off, and none while nothing is on air), `list_count`,
+  `lists_on`, `targets_on` (the `n of m` m, distinct), `active_list` (the representative list that names the target on
+  air), `running`/`paused`, `toggleable` (running, not paused, 2+ lists) and a copy of the membership counts. A
+  frontend acts when `lists_seq` or `session` moves. `dsd_app_scan_lists_targets_on(state, on_mask)` is the one total
+  of a set of lists (issue #697): the distinct targets the lists of `on_mask` hold together, the sum of
+  `trunk_scan_membership_counts` over every membership mask that meets it, so a target several lists hold counts once
+  and a pending switch's on-set totals exactly; `dsd_app_scan_list_view_targets_on(view, on_mask)` is the same sum over
+  the view's copy, for a frontend holding only a view (the terminal modal's title and Qt's `ScanListToggleModel`, over
+  the on-set their rows show). No frontend sums the lists' own counts (the switch toast reads the state helper, the
+  view's `targets_on` the view's). Tests: `APP_CONTROL_SCAN_LIST_VIEW`,
   `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`, `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/scan_list_rows.h` and `src/app_control/scan_list_rows.c` (issue #697) are the one rule
   for what a switcher row shows between a switch and the snapshot that shows it, shared by the terminal's Scan lists
@@ -10858,7 +10864,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     it carries the last drain's lists, which can be older; a submit not sent keys on the view's), and a paused refusal
     goes on a resume the modal saw follow the pause (the frame an answer lands in can predate the pause): neither is
     true any more. A "try again" note has no timeout and survives Enter on another row. A waiting row ignores Enter;
-    rows wait independently. Rows and title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
+    rows wait independently. Each row counts what its list's file holds and says `on air` when it holds the target on
+    air (a shared target marks every list holding it); the title's target count is
+    `dsd_app_scan_list_view_targets_on()` over the lists the rows show on, so a shared target counts once. Rows and
+    title are drawn through `ui_text_draw_fit()`, as the chooser's are. The modal
     closes on Esc/Left and in its tick when the pair's session changes or the scan goes, dropping its requests. The
     Trunk Scan row (`ui_render_trunk_scan_status()`) reads the "n of m" position from
     `trunk_scan_rotation_ordinal/_count` (`(-/m)` while the list on air is off) and, with 2+ lists, shows `[list off]`
@@ -10868,9 +10877,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     The rigctl rows moved to Input after the width rows (`input.rigctl`, `input.setmod`), and `trunk.sep2` went. Tests:
     `UI_SCAN_LIST_MODAL` (pending, answers, refusals and when their notes go, the paused footer, repeat Enter,
     out-of-order answers, All lists on, full queue, Esc, session change, results from before it opened, a snapshot
-    already past the answer), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION` (routing and the modal-only
-    overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its key, the rigctl rows in Input),
-    `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
+    already past the answer, shared targets counted once), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
+    (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
+    key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -12105,7 +12114,9 @@ Qt Quick frontend (`src/ui/qt`):
     lists and saved systems, which would restart the session, are not offered. Its targets are the session's own, as it
     started them (`sessionTargets`, taken once by `captureSessionTargets()` when the start is accepted:
     `KnownFrequencyIndex::sessionTargets()` reads the target CSV each list's start wrote,
-    `ScanListStarter::sessionCsvPath()`, the one file in the list's folder, else the imported file it ran from; kept
+    `ScanListStarter::sessionCsvPath()`, the one file in the list's folder, else the imported file it ran from, in the
+    engine's target order: a row whose id an earlier list of the session gave is that list's target (issue #697) and is
+    left out, so the list holds one entry per engine target at the index the published answers use; kept
     with the accepted start, `AppPrefs::acceptedStartTargets` (device-local JSON), which a recreated Activity that
     adopts the session reads back instead of the files; a list saved or deleted since, which removes its file, changes
     nothing, the saved index being for Explore). A target on a list switched off, avoided, or whose width the input
@@ -14265,7 +14276,8 @@ Several lists in one session (issue #697):
   `ListenPins` prunes them only on a saved removal, never at load, so pins survive a list file that fails to load.
 - In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
   (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
-  every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the
+  every list's channel names (a target id names one target, however many lists hold it).
+  `MetricsModel::refreshScanLists()` reads the
   scan list view over the held pair: `scanListCount`, `scanActiveList`, `scanActiveListOff`,
   `scanRotationOrdinal`/`scanRotationCount` (the "n/m" position) and `scanListModel`, a `ScanListToggleModel` (rows from
   the view, a switch sent with `dsd_app_command_scan_list_set()` and a request from `dsd_app_scan_list_request_next()`,
@@ -14277,13 +14289,15 @@ Several lists in one session (issue #697):
   rotation's place (`-` while the list on air is off) and the title `<list> + N lists` (the count kept whole when the
   name is elided).
 
-Tests: `UI_QT_SESSION_ARGS` (join rule, argv), `UI_QT_CONTROLLER` (starter, refused start on an id clash, auto-start,
-uid repair), `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkImportedListsNamedApart`: two imported bundles started together through
-the real coordinator), `UI_QT_METRICS_MODEL` (readings and the toggle model), `UI_QT_BACKUP_APPLY` (the companions
-forgotten, the `<uid>/<name>.csv` layout), `UI_QT_PERSISTENCE` (the companions' keys), and the QML suites
-`tst_scan_lists.qml`, `tst_home_scan_lists.qml`, `tst_monitor_scan_target.qml` (`UI_QT_QML_CALL_LISTS`) and
-`tst_main_session_tools.qml` (`UI_QT_QML_SESSION_TOOLS`: the bundle through accepted and initialized start, permission
-waits, retry, reattachment and removals).
+Tests: `UI_QT_SESSION_ARGS` (join rule, argv), `UI_QT_CONTROLLER` (starter, refused start on an id clash, two imported
+lists sharing a target through their copies' companion paths, a differing shared row refused, auto-start, uid repair),
+`UI_QT_SIGNAL_SEARCH` (`sessionTargets` in the engine's order with a shared id), `UI_QT_SCAN_LIST_ROUNDTRIP`
+(`checkImportedListsNamedApart`: two imported bundles started together through the real coordinator),
+`UI_QT_METRICS_MODEL` (readings and the toggle model), `UI_QT_BACKUP_APPLY` (the companions forgotten, the
+`<uid>/<name>.csv` layout), `UI_QT_PERSISTENCE` (the companions' keys), and the QML suites `tst_scan_lists.qml`,
+`tst_home_scan_lists.qml`, `tst_monitor_scan_target.qml` (`UI_QT_QML_CALL_LISTS`) and `tst_main_session_tools.qml`
+(`UI_QT_QML_SESSION_TOOLS`: the bundle through accepted and initialized start, permission waits, retry, reattachment and
+removals, a target two imported lists share).
 
 Frequency entries take the protocols `p25`, `dmr`, `nxdn48`, `nxdn`, and the analog `nfm` and `am` (issue #526), which
 map to `-fA`/`-fM` and on to `nfm-conventional`/`am-conventional`; saved analog systems map the same way (exactly `-fA`

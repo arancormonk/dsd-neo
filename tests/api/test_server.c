@@ -1646,13 +1646,14 @@ set_scan_list(dsd_state* state, int number, const char* name, uint8_t enabled, u
     l->targets = targets;
 }
 
-/* The trunk scan on air as the coordinator publishes it: the list of the target on air (0: none) and whether that
-   list is off, the target's position among the targets of the lists that are on (0: outside them) and their count,
-   and the operator's hold. */
+/* The trunk scan on air as the coordinator publishes it: the list of the target on air (0: none), a target that list
+   alone holds, and whether that list is off, the target's position among the targets of the lists that are on (0:
+   outside them) and their count, and the operator's hold. */
 static void
 set_scan_position(dsd_state* state, uint8_t active_list, uint8_t list_off, uint16_t ordinal, uint16_t count,
                   uint8_t hold) {
     state->trunk_scan_active_list = active_list;
+    state->trunk_scan_active_lists = active_list != 0U ? (uint8_t)(1U << (active_list - 1U)) : 0U;
     state->trunk_scan_active_list_off = list_off;
     state->trunk_scan_rotation_ordinal = ordinal;
     state->trunk_scan_rotation_count = count;
@@ -1809,6 +1810,93 @@ expect_list_result(const dsd_json_node* r, uint64_t request, uint64_t session, c
                     json_u64(r, "sequence"), json_u64(r, "request"), json_u64(r, "session"), got_list,
                     json_u64(r, "enabled"), json_str(r, "code"), json_u64(r, "lists_seq"), request, session, list,
                     enabled, code, lists_seq);
+        assert(0);
+    }
+}
+
+/* The coordinator stand-in for a session whose lists share s (security {a, s, b}, hospital {s, c}, municipality {d}),
+   s on air: switching security off keeps s on air, now named by hospital, the lowest list holding it that is on; the
+   rotation counts s, c and d. Nothing about the avoid list moves. */
+static int
+shared_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled, uint32_t request) {
+    (void)opts;
+    (void)request;
+    if (session != 41U || list != 1 || enabled != 0) {
+        return DSD_TRUNK_SCAN_LIST_SET_STALE;
+    }
+    state->trunk_scan_lists[0].enabled = 0U;
+    state->trunk_scan_active_list = 2U;
+    state->trunk_scan_rotation_ordinal = 1U;
+    state->trunk_scan_rotation_count = 3U;
+    state->trunk_scan_lists_seq++;
+    return DSD_TRUNK_SCAN_LIST_SET_OK;
+}
+
+/* status.scan_avoids.revision on the status line just read. */
+static void
+status_avoid_revision(char* out, size_t out_size) {
+    dsd_json_node* root = parse_line();
+    DSD_SNPRINTF(out, out_size, "%s", json_str(json_at(root, "scan_avoids"), "revision"));
+    dsd_json_free(root);
+}
+
+/* Issue #697: a session whose lists share a target. Each list's targets are what its file holds, shared ones included;
+   scan.targets counts every loaded target once, scan.count the targets of the lists that are on, once each; every list
+   holding the target on air has has_active, and scan.list names the lowest of them that is on. Switching that list off
+   keeps the target on air: scan.list moves to the next list holding it and lists_seq advances, while the avoid list's
+   revision stays. */
+static void
+scan_lists_shared_status(avoid_rig* rig) {
+    dsd_state* state = rig->state;
+    rig->opts->trunk_scan_enabled = 1;
+    state->trunk_scan_session = 41U;
+    state->trunk_scan_lists_seq = 30U;
+    state->trunk_scan_list_count = 3U;
+    state->trunk_scan_target_count = 5U;
+    set_scan_list(state, 1, "security", 1U, 3U);
+    set_scan_list(state, 2, "hospital", 1U, 2U);
+    set_scan_list(state, 3, "municipality", 1U, 1U);
+    set_scan_position(state, 1U, 0U, 2U, 5U, 0U);
+    state->trunk_scan_active_lists = 0x3U;
+    static const char k_lists[] = "\"lists\":[{\"number\":1,\"name\":\"security\",\"enabled\":%d,\"targets\":3,"
+                                  "\"has_active\":true},{\"number\":2,\"name\":\"hospital\",\"enabled\":1,"
+                                  "\"targets\":2,\"has_active\":true},{\"number\":3,\"name\":\"municipality\","
+                                  "\"enabled\":1,\"targets\":1,\"has_active\":false}]}";
+    char lists[512];
+    char want[768];
+    DSD_SNPRINTF(lists, sizeof lists, k_lists, 1);
+    DSD_SNPRINTF(want, sizeof want,
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":5,\"hold\":false,"
+                 "\"entry_hold\":false,\"ordinal\":2,\"count\":5,\"session\":41,\"lists_seq\":31,\"list\":1,%s",
+                 lists);
+    await_status(rig, want);
+    char revision[64];
+    status_avoid_revision(revision, sizeof revision);
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.list_set = shared_list_set;
+    dsd_trunk_scan_hooks_set(&hooks);
+    dsd_app_scan_list_result before = {0};
+    (void)dsd_app_scan_list_result_get(&before);
+    const uint64_t request = send_list_set(rig, "{\"list\":1,\"enabled\":0,\"session\":41}");
+    assert(dsd_app_drain_cmds(rig->opts, rig->state) == 1);
+    const dsd_json_node* results = NULL;
+    dsd_json_node* root = get_list_results(rig, before.sequence, 0, &results);
+    assert(results->count == 1U);
+    expect_list_result(results->items[0], request, 41U, "1", 0, "ok", 32U);
+    dsd_json_free(root);
+    dsd_trunk_scan_hooks_set(NULL);
+
+    DSD_SNPRINTF(lists, sizeof lists, k_lists, 0);
+    DSD_SNPRINTF(want, sizeof want,
+                 "\"scan\":{\"kind\":\"trunk\",\"state\":\"running\",\"targets\":5,\"hold\":false,"
+                 "\"entry_hold\":false,\"ordinal\":1,\"count\":3,\"session\":41,\"lists_seq\":32,\"list\":2,%s",
+                 lists);
+    await_status(rig, want);
+    char after[64];
+    status_avoid_revision(after, sizeof after);
+    if (strcmp(after, revision) != 0) {
+        DSD_FPRINTF(stderr, "scan_avoids.revision moved with a list switch: %s, then %s\n", revision, after);
         assert(0);
     }
 }
@@ -2038,6 +2126,7 @@ test_scan_lists(void) {
 
     scan_lists_status(&rig);
     scan_list_results_codes(&rig);
+    scan_lists_shared_status(&rig);
     scan_list_results_paging(&rig);
     scan_list_set_queue_full(&rig);
     scan_list_results_previous_run(&rig);

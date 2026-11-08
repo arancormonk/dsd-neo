@@ -7,12 +7,16 @@
  * @file
  * @brief The --trunk-scan target lists of this session, as every frontend shows and switches them (issue #697).
  *
- * The coordinator publishes its lists on dsd_state (trunk_scan_lists[], trunk_scan_list_count, the list of the target
- * on air, trunk_scan_lists_seq). This view reads those fields, and the scan state view's running predicate, from a
- * published snapshot pair or the decoder's own structs, for the terminal's Scan lists modal and status rows, the
- * Qt/Android Scan lists sheet and the control API: one entry per list, the counts, and whether a toggle can be
- * offered now. It reads only the fields it names (no lock, no walk of the targets), so a
- * frontend reads it every frame and acts only when @c lists_seq or @c session moves.
+ * The coordinator publishes its lists on dsd_state (trunk_scan_lists[], trunk_scan_list_count, the lists of the target
+ * on air, the membership counts, trunk_scan_lists_seq). This view reads those fields, and the scan state view's running
+ * predicate, from a published snapshot pair or the decoder's own structs, for the terminal's Scan lists modal and
+ * status rows, the Qt/Android Scan lists sheet and the control API: one entry per list, the counts, and whether a
+ * toggle can be offered now. It reads only the fields it names (no lock, no walk of the targets), so a frontend reads
+ * it every frame and acts only when @c lists_seq or @c session moves.
+ *
+ * A target id several lists' files hold is one target in each of them: a list counts what its file holds, shared
+ * targets included, and every total of a set of lists counts each target once (dsd_app_scan_list_view_targets_on()),
+ * never a sum of the lists' own counts.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_SCAN_LIST_VIEW_H_
@@ -32,9 +36,9 @@ extern "C" {
 typedef struct {
     uint8_t number;     /**< 1-based, CLI/INI order: what DSD_APP_CMD_SCAN_LIST_SET names. */
     uint8_t enabled;    /**< 1 = switched on: its targets are in the rotation. */
-    uint8_t has_active; /**< 1 = the target on air is one of this list's. */
+    uint8_t has_active; /**< 1 = this list holds the target on air, on or off (a shared target marks every list). */
     uint8_t pad;
-    uint16_t targets;                         /**< Targets the list holds. */
+    uint16_t targets;                         /**< Targets the list's file holds, shared ones included. */
     char name[DSD_TRUNK_SCAN_LIST_NAME_SIZE]; /**< File name without folder and extension. */
 } dsd_app_scan_list_entry;
 
@@ -44,13 +48,20 @@ typedef struct {
     uint32_t lists_seq;      /**< dsd_state::trunk_scan_lists_seq: moves whenever a list changes. */
     uint8_t list_count;      /**< Lists loaded (at most DSD_TRUNK_SCAN_MAX_LISTS). */
     uint8_t lists_on;        /**< Lists switched on. */
-    uint16_t targets_on;     /**< Targets of the lists that are on, avoided ones included (the "n of m" m). */
-    uint8_t active_list;     /**< The list (1-based) of the target on air; 0 when none is on air (paused included). */
-    uint8_t active_list_off; /**< 1 = that list is off: the receiver leaves as soon as another target can take it. */
+    uint16_t targets_on;     /**< Distinct targets of the lists that are on, avoided ones included (the "n of m" m). */
+    uint8_t active_list;     /**< The list (1-based) that names the target on air: the lowest-numbered list holding it
+                                  that is on, else the lowest-numbered list holding it; 0 when none is on air (paused
+                                  included). */
+    uint8_t active_list_off; /**< 1 = every list holding it is off: the receiver leaves as soon as another target can
+                                  take it. */
     uint8_t running;         /**< 1 = the trunk scan runs (not paused). */
     uint8_t paused;          /**< 1 = the operator paused it. */
     uint8_t toggleable;      /**< 1 = lists can be switched now: running, not paused, 2+ lists. */
     dsd_app_scan_list_entry lists[DSD_TRUNK_SCAN_MAX_LISTS]; /**< lists[0 .. list_count - 1]. */
+    /** dsd_state::trunk_scan_membership_counts: [m - 1] is how many distinct targets are in exactly the lists of
+        membership mask m (bit N-1: list N), so a frontend totals any set of lists it shows on, a pending switch's
+        included, through dsd_app_scan_list_view_targets_on(). */
+    uint16_t membership_counts[DSD_TRUNK_SCAN_MEMBERSHIP_MASKS];
 } dsd_app_scan_list_view;
 
 /**
@@ -75,6 +86,15 @@ int dsd_app_scan_list_view_get(const dsd_opts* opts, const dsd_state* state, dsd
  * @return The total; 0 for a NULL @p state, an empty mask, or no trunk scan.
  */
 unsigned int dsd_app_scan_lists_targets_on(const dsd_state* state, unsigned int on_mask);
+
+/**
+ * @brief dsd_app_scan_lists_targets_on() over a view's copy of the membership counts: the total for the lists a
+ * frontend shows on (bit N-1 of @p on_mask is list N), its own pending or answered switches included, between two
+ * snapshots.
+ *
+ * @return The total; 0 for a NULL @p view, an empty mask, or no trunk scan.
+ */
+unsigned int dsd_app_scan_list_view_targets_on(const dsd_app_scan_list_view* view, unsigned int on_mask);
 
 /** @brief Which --trunk-scan targets a frequency typed by hand could pick now (issue #644), as the engine's entry match
  * decides it and the coordinator publishes it: one answer per target in the coordinator's target order (the lists in

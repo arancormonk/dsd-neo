@@ -559,6 +559,64 @@ testKnownFrequencyEngineIds(const QString& dir) {
     assert(session.at(1).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / pump"));
 }
 
+/* Issue #697: a target id a later list of the session also holds is one engine target, at its first list's place, so
+   a session's own targets hold it once, in the engine's order (every new row in list order, then row order): [ROK, A]
+   then [B, ROK] is ROK, A, B, each where the engine published its eligibility. One file run as two lists is its
+   targets once. */
+static void
+testKnownFrequencySessionTargetsShared(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString conv = QDir(dir).filePath(QStringLiteral("shared-conv.csv"));
+    writeFile(conv, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                    "ROK,dmr-conventional,460100000,,,,,Rock\n"
+                    "A,dmr-conventional,460200000,,,,,Alpha\n");
+    const QString low = QDir(dir).filePath(QStringLiteral("shared-low.csv"));
+    writeFile(low, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                   "B,dmr-conventional,460300000,,,,,Bravo\n"
+                   "ROK,dmr-conventional,460100000,,,,,Rock\n");
+    const dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    const QVariantMap first{{"uid", QStringLiteral("conv-uid")}, {"name", QStringLiteral("Conv")}, {"path", conv}};
+    const QVariantMap second{{"uid", QStringLiteral("low-uid")}, {"name", QStringLiteral("Low")}, {"path", low}};
+    const QVariantList session = index.sessionTargets({first, second});
+
+    struct Want {
+        const char* id;
+        qint64 hz;
+        int list;
+        const char* name;
+    };
+
+    const Want want[] = {
+        {"ROK", 460100000, 1, "Conv / Rock"},
+        {"A", 460200000, 1, "Conv / Alpha"},
+        {"B", 460300000, 2, "Low / Bravo"},
+    };
+    if (session.size() != 3) {
+        DSD_FPRINTF(stderr, "a shared target: %lld session targets, want 3\n", static_cast<long long>(session.size()));
+        assert(0);
+    }
+    for (int i = 0; i < 3; ++i) {
+        const QVariantMap target = session.at(i).toMap();
+        assert(target.value(QStringLiteral("targetId")).toString() == QLatin1String(want[i].id));
+        assert(target.value(QStringLiteral("frequencyHz")).toLongLong() == want[i].hz);
+        assert(target.value(QStringLiteral("listNumber")).toInt() == want[i].list);
+        assert(target.value(QStringLiteral("name")).toString() == QLatin1String(want[i].name));
+    }
+    // The other order: the low list's rows first, then the conv list's new one.
+    const QVariantList reversed = index.sessionTargets({second, first});
+    assert(reversed.size() == 3);
+    assert(reversed.at(0).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("B"));
+    assert(reversed.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("ROK"));
+    assert(reversed.at(1).toMap().value(QStringLiteral("listNumber")).toInt() == 1);
+    assert(reversed.at(2).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("A"));
+    assert(reversed.at(2).toMap().value(QStringLiteral("listNumber")).toInt() == 2);
+    // One file as two lists: every target is the first list's.
+    const QVariantList twice = index.sessionTargets(
+        {first, QVariantMap{{"uid", QStringLiteral("again")}, {"name", QStringLiteral("Again")}, {"path", conv}}});
+    assert(twice.size() == 2 && twice.at(1).toMap().value(QStringLiteral("listNumber")).toInt() == 1);
+}
+
 /* Issue #644: Qt reads a target CSV and a channel map as the engine's loaders do, so a session's own targets and the
    saved index hold what the session runs. A target CSV: its header is row 1, a blank row is skipped, and nothing is a
    comment, so a `#desk` row is a target (the in-place Listen reaches it); a header off row 1, or a row longer than the
@@ -1498,6 +1556,7 @@ main(int argc, char** argv) {
     testKnownFrequencyListsApart();
     testKnownFrequencyEngineIds(temp.path());
     testKnownFrequencyEngineGrammar(temp.path());
+    testKnownFrequencySessionTargetsShared(temp.path());
     testKnownFrequencyQuotedCells(temp.path());
     testKnownFrequencyRowCap(temp.path());
     testKnownFrequencyWatchesUnparsedFiles(temp.path());

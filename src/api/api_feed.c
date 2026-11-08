@@ -951,8 +951,10 @@ encode_scan_avoids(dsd_json_writer* w) {
 }
 
 /* The --trunk-scan target lists (issue #697), from the scan list view: the session and the list sequence a
-   scan_list_set and its result quote, the list of the target on air (null when none is), and each list in list order.
-   With no trunk scan: session 0, list null, no lists. */
+   scan_list_set and its result quote, the list that names the target on air (the lowest-numbered list holding it that
+   is on, else the lowest holding it; null when none is on air), and each list in list order: the targets its file
+   holds, shared ones included, and whether it holds the target on air. With no trunk scan: session 0, list null, no
+   lists. */
 static void
 encode_scan_lists(dsd_json_writer* w, const dsd_app_scan_list_view* view) {
     (void)dsd_json_kv_u64(w, "session", view->session);
@@ -977,7 +979,8 @@ encode_scan_lists(dsd_json_writer* w, const dsd_app_scan_list_view* view) {
 /* The operator's hold on the row or target on air (scan_hold_toggle), and whether it is an entry hold, the hold a
    frequency typed by hand set, which scanner_toggle and scan_resume continue (issue #644); then the trunk scan's
    position as every frontend shows it (issue #697): the target on air's place among the targets of the lists switched
-   on (null while its list is off, or none is on air) and their count, avoided targets included. */
+   on (null while every list holding it is off, or none is on air) and their count, avoided targets included and a
+   target several lists hold counted once. */
 static void
 encode_scan_position(dsd_json_writer* w, const dsd_app_scan_state_view* scan, const dsd_state* state) {
     const int trunk = scan->kind == (uint8_t)DSD_APP_SCAN_KIND_TRUNK;

@@ -23,7 +23,8 @@ reset(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state, 0, sizeof *state);
 }
 
-/* A running trunk scan with @p count lists named "list1" ..., list i holding i * 10 targets, all on. */
+/* A running trunk scan with @p count lists named "list1" ..., list i holding i * 10 targets no other list holds (its
+   membership count says so, as the coordinator publishes it), all on. */
 static void
 seed_lists(dsd_opts* opts, dsd_state* state, int count) {
     reset(opts, state);
@@ -35,7 +36,18 @@ seed_lists(dsd_opts* opts, dsd_state* state, int count) {
         DSD_SNPRINTF(state->trunk_scan_lists[i].name, sizeof state->trunk_scan_lists[i].name, "list%d", i + 1);
         state->trunk_scan_lists[i].enabled = 1U;
         state->trunk_scan_lists[i].targets = (uint16_t)((i + 1) * 10);
+        if (i < DSD_TRUNK_SCAN_MAX_LISTS) {
+            state->trunk_scan_membership_counts[(1U << i) - 1U] = (uint16_t)((i + 1) * 10);
+        }
     }
+}
+
+/* The target on air, as the coordinator publishes it: the list that names it (0: none on air) and every list holding
+   it. */
+static void
+set_on_air(dsd_state* state, uint8_t list, uint8_t lists) {
+    state->trunk_scan_active_list = list;
+    state->trunk_scan_active_lists = lists;
 }
 
 static dsd_app_scan_list_view
@@ -107,7 +119,7 @@ test_no_lists(dsd_opts* opts, dsd_state* state) {
 static void
 test_one_list(dsd_opts* opts, dsd_state* state) {
     seed_lists(opts, state, 1);
-    state->trunk_scan_active_list = 1U;
+    set_on_air(state, 1U, 0x1U);
     dsd_app_scan_list_view v = view_of(opts, state);
     assert(v.list_count == 1U && v.lists_on == 1U && v.targets_on == 10U && v.active_list == 1U);
     assert(v.lists[0].number == 1U && v.lists[0].enabled == 1U && v.lists[0].has_active == 1U);
@@ -121,7 +133,7 @@ static void
 test_three_lists(dsd_opts* opts, dsd_state* state) {
     seed_lists(opts, state, 3);
     state->trunk_scan_lists[2].enabled = 0U;
-    state->trunk_scan_active_list = 2U;
+    set_on_air(state, 2U, 0x2U);
     dsd_app_scan_list_view v = view_of(opts, state);
     assert(v.session == 41U && v.lists_seq == 9U);
     assert(v.list_count == 3U && v.lists_on == 2U && v.targets_on == 30U);
@@ -146,14 +158,14 @@ test_three_lists(dsd_opts* opts, dsd_state* state) {
     expect_entries("on air on a list that is off", &v, "1 [*2] 3");
 
     /* Nothing on air: no list marked. */
-    state->trunk_scan_active_list = 0U;
+    set_on_air(state, 0U, 0U);
     state->trunk_scan_active_list_off = 0U;
     v = view_of(opts, state);
     assert(v.active_list == 0U && v.active_list_off == 0U);
     expect_entries("none on air", &v, "1 *2 3");
 
-    /* An active list past the count is no list. */
-    state->trunk_scan_active_list = 5U;
+    /* An active list past the count is no list, and nothing is marked on air. */
+    set_on_air(state, 5U, 0x12U);
     state->trunk_scan_active_list_off = 1U;
     v = view_of(opts, state);
     assert(v.active_list == 0U && v.active_list_off == 0U);
@@ -164,13 +176,13 @@ test_three_lists(dsd_opts* opts, dsd_state* state) {
 static void
 test_toggleable(dsd_opts* opts, dsd_state* state) {
     seed_lists(opts, state, 2);
-    state->trunk_scan_active_list = 1U;
+    set_on_air(state, 1U, 0x1U);
     dsd_app_scan_list_view v = view_of(opts, state);
     expect_toggleable("two lists running", &v, 1, 1, 0);
 
     /* Paused: the lists stay readable, the on-air fields are zeroed by the coordinator. */
     state->trunk_scan_paused = 1U;
-    state->trunk_scan_active_list = 0U;
+    set_on_air(state, 0U, 0U);
     v = view_of(opts, state);
     expect_toggleable("paused", &v, 0, 0, 1);
     assert(v.list_count == 2U && v.lists_on == 2U && v.session == 41U);
@@ -191,7 +203,7 @@ test_eight_lists(dsd_opts* opts, dsd_state* state) {
         state->trunk_scan_lists[i].enabled = 0U;
     }
     state->trunk_scan_lists[0].enabled = 1U;
-    state->trunk_scan_active_list = 8U;
+    set_on_air(state, 8U, 0x80U);
     state->trunk_scan_active_list_off = 1U;
     dsd_app_scan_list_view v = view_of(opts, state);
     assert(v.list_count == 8U && v.lists_on == 1U && v.targets_on == 10U);
@@ -203,6 +215,76 @@ test_eight_lists(dsd_opts* opts, dsd_state* state) {
     v = view_of(opts, state);
     assert(v.list_count == 8U);
     expect_entries("count past the cap", &v, "1 *2 *3 *4 *5 *6 *7 [*8]");
+}
+
+/* Lists that share targets (issue #697), 1 {a, b, s}, 2 {s, t, c}, 3 {t, d}: each list counts what its file holds,
+   shared ones included, while the total of the lists on counts each target once, from the published membership counts,
+   and every list holding the target on air is marked, on or off, with the list that names it apart. */
+static void
+test_shared_targets(dsd_opts* opts, dsd_state* state) {
+    seed_lists(opts, state, 3);
+    DSD_MEMSET(state->trunk_scan_membership_counts, 0, sizeof state->trunk_scan_membership_counts);
+    state->trunk_scan_membership_counts[0x1 - 1] = 2U; /* a, b */
+    state->trunk_scan_membership_counts[0x2 - 1] = 1U; /* c */
+    state->trunk_scan_membership_counts[0x3 - 1] = 1U; /* s */
+    state->trunk_scan_membership_counts[0x4 - 1] = 1U; /* d */
+    state->trunk_scan_membership_counts[0x6 - 1] = 1U; /* t */
+    state->trunk_scan_lists[0].targets = 3U;
+    state->trunk_scan_lists[1].targets = 3U;
+    state->trunk_scan_lists[2].targets = 2U;
+    set_on_air(state, 1U, 0x3U); /* s */
+    dsd_app_scan_list_view v = view_of(opts, state);
+    assert(v.lists[0].targets == 3U && v.lists[1].targets == 3U && v.lists[2].targets == 2U);
+    if (v.lists_on != 3U || v.targets_on != 6U) {
+        DSD_FPRINTF(stderr, "all on: %u lists, %u targets, want 3 lists, 6 targets\n", (unsigned)v.lists_on,
+                    (unsigned)v.targets_on);
+        assert(0);
+    }
+    assert(v.active_list == 1U && v.active_list_off == 0U);
+    expect_entries("s on air, every list on", &v, "[1] [2] 3");
+
+    /* List 1 off: s stays on air through list 2, which names it now; b and a leave the total, s does not. */
+    state->trunk_scan_lists[0].enabled = 0U;
+    set_on_air(state, 2U, 0x3U);
+    v = view_of(opts, state);
+    if (v.lists_on != 2U || v.targets_on != 4U) {
+        DSD_FPRINTF(stderr, "list 1 off: %u lists, %u targets, want 2 lists, 4 targets\n", (unsigned)v.lists_on,
+                    (unsigned)v.targets_on);
+        assert(0);
+    }
+    assert(v.active_list == 2U && v.active_list_off == 0U);
+    expect_entries("s on air, list 1 off", &v, "[*1] [2] 3");
+
+    /* Lists 1 and 2 off: s waits to leave, named by the lowest list holding it; t is still counted through list 3. */
+    state->trunk_scan_lists[1].enabled = 0U;
+    set_on_air(state, 1U, 0x3U);
+    state->trunk_scan_active_list_off = 1U;
+    v = view_of(opts, state);
+    assert(v.lists_on == 1U && v.targets_on == 2U);
+    assert(v.active_list == 1U && v.active_list_off == 1U);
+    expect_entries("s waiting to leave", &v, "[*1] [*2] 3");
+
+    /* On t, every list on: lists 2 and 3 hold it. Mask bits past the lists loaded mark nothing. */
+    state->trunk_scan_lists[0].enabled = 1U;
+    state->trunk_scan_lists[1].enabled = 1U;
+    state->trunk_scan_active_list_off = 0U;
+    set_on_air(state, 2U, 0x6U | 0xF0U);
+    v = view_of(opts, state);
+    assert(v.targets_on == 6U);
+    expect_entries("t on air", &v, "1 [2] [3]");
+    assert(v.lists[3].has_active == 0U);
+
+    /* The view carries the membership counts, so a frontend totals the lists it shows on between two snapshots (a
+       switch it sent and the answer it has) exactly as the decoder would. */
+    for (unsigned int on = 0U; on <= 0xFFU; on++) {
+        assert(dsd_app_scan_list_view_targets_on(&v, on) == dsd_app_scan_lists_targets_on(state, on));
+    }
+    assert(dsd_app_scan_list_view_targets_on(&v, 0x5U) == 5U && dsd_app_scan_list_view_targets_on(&v, 0x6U) == 4U);
+    assert(dsd_app_scan_list_view_targets_on(NULL, 0xFFU) == 0U);
+    /* With no trunk scan the view holds no counts. */
+    opts->trunk_scan_enabled = 0;
+    v = view_of(opts, state);
+    assert(v.targets_on == 0U && dsd_app_scan_list_view_targets_on(&v, 0xFFU) == 0U);
 }
 
 /* Issue #644: which targets a frequency typed by hand could pick, as the coordinator published it: read while the scan
@@ -280,6 +362,7 @@ main(void) {
     test_three_lists(opts, state);
     test_toggleable(opts, state);
     test_eight_lists(opts, state);
+    test_shared_targets(opts, state);
     test_entry_eligibility(opts, state);
     test_targets_on(state);
     free(state);

@@ -1527,6 +1527,92 @@ Item {
             }
         }
 
+        // Issue #697: two imported lists that both hold ROK, Conv [ROK, A] and Low [B, ROK], are one session of three
+        // targets, ROK once at Conv's place: the engine's order, which its published answers index (ROK, A, B). The
+        // in-place Listen names the row the engine says it would take there, with Conv off (ROK still held by Low),
+        // with ROK avoided, and on air; and a recreated Activity reads the same three from the accepted start after a
+        // list it started with was deleted.
+        function test_a_scan_list_session_holds_a_shared_target_once() {
+            var header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n";
+            var rok = "ROK,dmr-conventional,851012500,,,,,Rock\n";
+            var convSource = testContext.writeFixtureCsv("shared-conv.csv",
+                header + rok + "A,dmr-conventional,851512500,,,,,Alpha\n");
+            var lowSource = testContext.writeFixtureCsv("shared-low.csv",
+                header + "B,p25-conventional,851012500,,,,,Bravo\n" + rok);
+            var convFile = importedFiles.importFile(convSource, "Conv.csv", "trunkTargets");
+            var lowFile = importedFiles.importFile(lowSource, "Low.csv", "trunkTargets");
+            verify(convFile.ok && lowFile.ok);
+            var list = function (name, path) {
+                scanLists.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, targetSource: "csv",
+                               targetsCsvPath: path});
+                return scanLists.get(scanLists.count - 1);
+            };
+            var conv = list("Conv", convFile.path);
+            var low = list("Low", lowFile.path);
+            var kind = prefs.acceptedStartKind;
+            var uid = prefs.acceptedStartUid;
+            var names = function () { return app.listenActions.map(function (action) { return action.name; }).join(); };
+            try {
+                pauseBundleOn(conv, low, 851012500);
+                var targets = app.sessionTargets;
+                compare(targets.map(function (t) { return t.targetId; }).join(), "ROK,A,B");
+                compare(targets.map(function (t) { return t.frequencyHz; }).join(), "851012500,851512500,851012500");
+                compare(targets.map(function (t) { return t.listNumber; }).join(), "1,1,2");
+                compare(prefs.acceptedStartTargets.map(function (t) { return t.targetId; }).join(), "ROK,A,B");
+                compare(names(), "Conv / Rock", "every row eligible: the first on the channel");
+                // Conv off: ROK stays, through Low; A does not.
+                testContext.setMetric("scanTargetEligible", [true, false, true]);
+                compare(names(), "Conv / Rock", "Conv off, ROK still Low's");
+                testContext.setMetric("centerFreqHz", 851512500);
+                compare(app.listenActions.length, 0, "A, Conv's alone, is off");
+                // ROK avoided: B is the row the scan takes on its channel.
+                testContext.setMetric("centerFreqHz", 851012500);
+                testContext.setMetric("scanTargetEligible", [false, false, true]);
+                compare(names(), "Low / Bravo", "ROK avoided");
+                // Resumed: the engine names the target on air by the same order.
+                testContext.setMetrics({operatorTuned: false, scanPaused: false, scanResumable: false,
+                                        scanRotationActive: true, scanTargetEligible: [true, true, true],
+                                        scanTargetOnAir: 2});
+                app.exploring = true;
+                compare(names(), "Low / Bravo", "B on air");
+                testContext.setMetric("scanTargetOnAir", 0);
+                compare(names(), "Conv / Rock", "ROK on air");
+                // Paused again on A's channel.
+                testContext.setMetrics({operatorTuned: true, scanPaused: true, scanResumable: true,
+                                        scanRotationActive: false, scanTargetOnAir: -1, centerFreqHz: 851512500});
+                compare(names(), "Conv / Alpha", "paused on A");
+
+                // Low is deleted while the session runs, its generated target file with it: a recreated Activity
+                // still reads the three targets the session started with, in the order the engine's answers index.
+                removeScanLists([low.uid]);
+                compare(knownFrequencies.sessionTargets([{uid: conv.uid, name: "Conv",
+                    path: scanListStarter.sessionCsvPath(conv)}]).length, 2, "Conv's file alone holds two");
+                prefs.acceptedStartKind = "scan";
+                reattach();
+                compare(app.sessionTargets.map(function (t) { return t.targetId; }).join(), "ROK,A,B");
+                compare(app.sessionTargets.map(function (t) { return t.listNumber; }).join(), "1,1,2");
+                testContext.setMetrics({operatorTuned: true, scanKind: 2, scanPaused: true, scanResumable: true,
+                                        scanRotationActive: false, tunerControlled: false, centerFreqHz: 851012500,
+                                        channelBandwidthHz: 12500, scanTargetEligible: [false, true, true]});
+                tryVerify(function () { return app.operatorHolds && app.exploring; });
+                compare(names(), "Low / Bravo", "reattached, ROK avoided");
+            } finally {
+                endPausedBundle([conv.uid, low.uid]);
+                testContext.setMetrics({scanRotationActive: false, scanTargetOnAir: -1});
+                prefs.acceptedStartKind = kind;
+                prefs.acceptedStartUid = uid;
+                prefs.acceptedStartCompanions = [];
+                // An imported target file is removed only while no session runs.
+                testContext.setLifecyclePhase(0);
+                for (var path of [convFile.path, lowFile.path]) {
+                    var row = importedFiles.rowForPath(path);
+                    if (row >= 0)
+                        verify(importedFiles.remove(row), "the imported file stays: " + path);
+                }
+                testContext.setLifecyclePhase(2);
+            }
+        }
+
         // "Explore from here" on a scan list marks the session exploring before the decoder reports the operator's
         // tune: in that moment its own rows are still reached in place, and nothing that restarts it is offered.
         function test_a_released_scan_list_offers_no_restart_before_the_tune_reads_back() {

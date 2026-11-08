@@ -4025,8 +4025,12 @@ class Setup : public QObject {
 
     /**
      * @brief Issue #697: hand the Scan lists sheet's model (the real ScanListToggleModel `metrics.scanListModel` is) a
-     * frame: @p view is {session, seq, paused, lists: [{name, on, targets, onAir}]}. The readings beside it
-     * (scanListCount and the rest) are the case's to set. Results answered with answerScanList() are read here.
+     * frame: @p view is {session, seq, paused, activeList, memberships, lists: [{name, on, targets, onAir}]}, as the
+     * coordinator publishes it. `activeList` is the list that names the target on air (0 or absent: none); `onAir` marks
+     * each list holding it. `memberships` maps a membership mask (bit N-1: list N, as a number) to the distinct targets
+     * in exactly those lists, from which the sheet totals the lists on; without it, no list shares a target and each
+     * list's `targets` are its own mask's. The readings beside it (scanListCount and the rest) are the case's to set.
+     * Results answered with answerScanList() are read here.
      */
     Q_INVOKABLE void
     setScanLists(const QVariantMap& view) {
@@ -4039,6 +4043,8 @@ class Setup : public QObject {
         next.running = paused ? 0U : 1U;
         next.paused = paused ? 1U : 0U;
         next.toggleable = !paused && next.list_count >= 2 ? 1U : 0U;
+        next.active_list = static_cast<uint8_t>(view.value("activeList", 0).toUInt());
+        const bool memberships = view.contains("memberships");
         for (int i = 0; i < next.list_count; ++i) {
             const QVariantMap list = lists.at(i).toMap();
             dsd_app_scan_list_entry& entry = next.lists[i];
@@ -4048,8 +4054,15 @@ class Setup : public QObject {
             entry.has_active = list.value("onAir").toBool() ? 1U : 0U;
             const QByteArray name = list.value("name").toString().toUtf8();
             DSD_SNPRINTF(entry.name, sizeof entry.name, "%s", name.constData());
-            if (entry.has_active) {
-                next.active_list = entry.number;
+            if (!memberships) {
+                next.membership_counts[(1U << i) - 1U] = entry.targets;
+            }
+        }
+        const QVariantMap counts = view.value("memberships").toMap();
+        for (auto it = counts.cbegin(); it != counts.cend(); ++it) {
+            const unsigned int mask = it.key().toUInt();
+            if (mask >= 1U && mask <= DSD_TRUNK_SCAN_MEMBERSHIP_MASKS) {
+                next.membership_counts[mask - 1U] = static_cast<uint16_t>(it.value().toUInt());
             }
         }
         m_scan_list_view = next;

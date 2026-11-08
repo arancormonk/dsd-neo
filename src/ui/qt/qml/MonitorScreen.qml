@@ -212,8 +212,9 @@ Item {
     }
     // The running scan's line: "SCANNING · 3/14 · HOLD · Dispatch". With more
     // than one list (issue #697) the place counts only the targets of the lists
-    // that are on, "-" while the target on air's own list is off and the scan
-    // is about to leave it, and the list it comes from closes the line.
+    // that are on, "-" while every list holding the target on air is off and
+    // the scan is about to leave it, and the list that names it closes the
+    // line.
     function scanningText() {
         var lists = metrics.scanListCount > 1;
         var count = lists ? metrics.scanRotationCount : metrics.scanTargetCount;

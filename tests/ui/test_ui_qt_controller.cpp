@@ -3,9 +3,12 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -963,6 +966,90 @@ test_scan_lists_start_together() {
     }
 }
 
+namespace {
+/* @p body written to @p path, its folder made. */
+void
+write_csv(const QString& path, const QByteArray& body) {
+    check(QDir().mkpath(QFileInfo(path).absolutePath()));
+    QFile file(path);
+    check(file.open(QIODevice::WriteOnly) && file.write(body) == body.size());
+}
+
+QVariantMap
+csv_list(dsd_qt::ScanListsModel& lists, const QString& name, const QString& path) {
+    check(lists.add({{"name", name},
+                     {"sourceType", "rtltcp"},
+                     {"host", "127.0.0.1"},
+                     {"port", 1234},
+                     {"targetSource", "csv"},
+                     {"targetsCsvPath", path}}));
+    return lists.get(lists.count() - 1);
+}
+} // namespace
+
+// Issue #697: two imported lists whose files both hold ROK start as one session that runs ROK once, when the rows are
+// the same: each list runs from its own copy, so a talkgroup file both rows name is reached by two spellings (one per
+// copy's folder), and is still the one file. A ROK row that differs refuses the start, naming the column, and nothing
+// starts.
+static void
+test_scan_lists_share_a_csv_target() {
+    const QTemporaryDir dir;
+    check(dir.isValid());
+    const QString imports = dir.filePath("imports");
+    write_csv(imports + "/groups.csv", "id,mode,name\n123,B,Rock TG\n");
+    const QByteArray header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    const QByteArray rok = "ROK,dmr-conventional,851012500,,,,,-G groups.csv\n";
+    const QString conv = imports + "/conv.csv";
+    const QString low = imports + "/low.csv";
+    const QString other = imports + "/other.csv";
+    write_csv(conv, header + rok + "A,dmr-conventional,851512500,,,,,\n");
+    write_csv(low, header + "B,p25-conventional,852012500,,,,,\n" + rok);
+    write_csv(other, header + "ROK,dmr-conventional,851025000,,,,,-G groups.csv\n");
+    const dsd_qt::AppPrefs prefs;
+    const dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    while (lists.count() > 0) {
+        lists.remove(0);
+    }
+    dsd_qt::ScanListStarter starter(&prefs, &systems);
+    starter.setTargetFileLookup([&](const QString& path) { return path == conv || path == low || path == other; });
+    StartHost host;
+    host.phase = Host::Idle;
+    const QVariantMap convList = csv_list(lists, "Conv", conv);
+    const QVariantMap lowList = csv_list(lists, "Low", low);
+    const QVariantMap otherList = csv_list(lists, "Other", other);
+
+    const QVariantMap started = starter.startLists({convList, lowList}, &host);
+    if (!started.value("started").toBool()) {
+        std::fprintf(stderr, "a shared CSV target: %s\n", qPrintable(started.value("error").toString()));
+    }
+    check(started.value("ok").toBool() && started.value("started").toBool());
+    check(started.value("targetCount").toInt() == 3 && host.starts.size() == 1);
+    const QStringList args = host.starts.value(0);
+    const QString convCopy = dsd_qt::scan_list_csv_path(convList.value("uid").toString(), "Conv", 1);
+    const QString lowCopy = dsd_qt::scan_list_csv_path(lowList.value("uid").toString(), "Low", 2);
+    const qsizetype first = args.indexOf(QStringLiteral("--trunk-scan"));
+    check(first > 0 && args.mid(first, 4) == QStringList({"--trunk-scan", convCopy, "--trunk-scan", lowCopy}));
+    // Each copy names the talkgroup file from its own folder: two spellings of one file.
+    QFile copy(lowCopy);
+    check(copy.open(QIODevice::ReadOnly)
+          && copy.readAll().contains(
+              QDir(QFileInfo(lowCopy).absolutePath()).relativeFilePath(imports + "/groups.csv").toUtf8()));
+    check(QFileInfo(convCopy).absolutePath() != QFileInfo(lowCopy).absolutePath());
+
+    const QVariantMap refused = starter.startLists({convList, otherList}, &host);
+    check(!refused.value("ok").toBool() && !refused.value("started").toBool() && host.starts.size() == 1);
+    const QString error = refused.value("error").toString();
+    if (!error.startsWith(QStringLiteral("Scan lists rejected: ")) || !error.contains(QStringLiteral("'ROK'"))
+        || !error.contains(QStringLiteral("frequency_hz"))) {
+        std::fprintf(stderr, "a ROK row that differs: %s\n", qPrintable(error));
+        check(false);
+    }
+    while (lists.count() > 0) {
+        lists.remove(0);
+    }
+}
+
 // #647 D3a: an Airspy target resumes like an RTL-SDR one, but only when the receiver that just attached is of the
 // target's kind. What else is on the bus does not count, so the second receiver plugged in, in either order, resumes
 // only a target on its own kind.
@@ -1655,6 +1742,7 @@ main(int argc, char** argv) {
     test_scan_bundle_prefs_and_uid_repair();
     test_scan_list_uid_repair_persists();
     test_scan_lists_start_together();
+    test_scan_lists_share_a_csv_target();
     test_attachment_kind();
     test_initial_usb_record();
     test_usb_request_record();
