@@ -63,6 +63,19 @@ typedef struct {
  */
 int dsd_app_scan_list_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_scan_list_view* out);
 
+/**
+ * @brief The distinct --trunk-scan targets the lists of @p on_mask hold together (issue #697), avoided ones included:
+ * the total every frontend shows for a set of lists on, a pending switch's included.
+ *
+ * Bit N-1 of @p on_mask is list N; bits past DSD_TRUNK_SCAN_MAX_LISTS mean nothing. A target several lists hold
+ * counts once: the sum of dsd_state::trunk_scan_membership_counts over every membership mask that meets @p on_mask,
+ * never a sum of the lists' own counts. Reads only those published counts (no lock, no walk of the targets), from
+ * decoder state or a frontend snapshot.
+ *
+ * @return The total; 0 for a NULL @p state, an empty mask, or no trunk scan.
+ */
+unsigned int dsd_app_scan_lists_targets_on(const dsd_state* state, unsigned int on_mask);
+
 /** @brief Which --trunk-scan targets a frequency typed by hand could pick now (issue #644), as the engine's entry match
  * decides it and the coordinator publishes it: one answer per target in the coordinator's target order (the lists in
  * order, each in its file's order), so a frontend names the row the scan will take without deciding it again. */

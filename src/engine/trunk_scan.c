@@ -359,12 +359,23 @@ typedef struct {
     dsd_trunk_scan_list_entry lists[DSD_TRUNK_SCAN_MAX_LISTS];
     int list_count;
     uint32_t lists_seq;
+    /* The distinct targets the lists switched on hold, avoided ones included (the "n of m" readout's m), counted at
+       the attach and at each switch; and the target on air's place among them, counted again only when the target on
+       air or the lists on (lists_on below) moved since it was last counted (ordinal_active, ordinal_lists_on). Neither
+       is counted per frame. */
+    size_t rotation_count;
+    size_t ordinal;
+    size_t ordinal_active;
     /* The storage every lists[l].members and lists[l].shared point into, and how many distinct targets each set of
        lists holds together (index: the membership mask - 1, dsd_state::trunk_scan_membership_counts), counted once
        at the start: the lists' files never change while the scan runs. */
     size_t* list_index;
     uint16_t membership_counts[DSD_TRUNK_SCAN_MEMBERSHIP_MASKS];
-    /* The departure owed while the target on air is out of the rotation (its list is off, or it is avoided: the
+    /* The lists switched on as one mask, bit l for list l (each lists[l].enabled), which the rotation's predicate
+       reads against a target's lists, and the mask the ordinal was last counted for. */
+    uint8_t lists_on;
+    uint8_t ordinal_lists_on;
+    /* The departure owed while the target on air is out of the rotation (every list holding it off, or it avoided: the
        fallback after every alternate failed), trunk_scan_service_departure(): not tried before depart_due_m, and the
        frame loop yields for it at that instant only while depart_yield is set (dsd_engine_trunk_scan_departure_due()),
        so a continuous carrier is not unwound for a departure with nowhere to go. */
@@ -1470,6 +1481,9 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
 
 /* What a refusal names for the direct keys: never their material, only that they differ. */
 static const char k_scan_key_columns[] = "the key columns";
+/* What it names for a row option no switch of the table names: one no CSV switch sets, or one the table does not know
+   yet. */
+static const char k_scan_options_column[] = "options column";
 
 /* Whether two resolved companion paths name one file: the same text, or the same canonical path, so `keys.csv` and
    `./keys.csv` beside one list file are one file. A path that cannot be canonicalised (a file that is missing) compares
@@ -1537,6 +1551,10 @@ scan_direct_keys_differ(const dsd_trunk_scan_target* a, const dsd_trunk_scan_tar
 /* How a row option's value compares (scan_option_column). */
 typedef enum {
     SCAN_OPTION_PRESENCE = 0, /* no value of its own here: a switch, or one whose value the target holds elsewhere */
+    /* Neither its presence nor a value: the target's keys_hex_csv/keys_dec_csv hold the key file whether the row
+       named it with -K/-k in its options or in that column, and the file is compared there, so the same file named
+       both ways is the same setting (scan_target_first_file_difference()). */
+    SCAN_OPTION_TARGET_FILE,
     SCAN_OPTION_INTS,
     SCAN_OPTION_TONE,
     SCAN_OPTION_FILTER,
@@ -1568,10 +1586,10 @@ static const scan_option_column k_scan_option_columns[] = {
     {NULL, {0}, DSD_SCAN_OPT_HYTERA, SCAN_OPTION_PRESENCE},
     {NULL, {0}, DSD_SCAN_OPT_SCALAR, SCAN_OPTION_PRESENCE},
     {NULL, {0}, DSD_SCAN_OPT_SCRAMBLER, SCAN_OPTION_PRESENCE},
-    {"-K", {0}, DSD_SCAN_OPT_HEX_FILE, SCAN_OPTION_PRESENCE},
-    {"-k", {0}, DSD_SCAN_OPT_DEC_FILE, SCAN_OPTION_PRESENCE},
+    {"-K", {0}, DSD_SCAN_OPT_HEX_FILE, SCAN_OPTION_TARGET_FILE},
+    {"-k", {0}, DSD_SCAN_OPT_DEC_FILE, SCAN_OPTION_TARGET_FILE},
     {"-G", {SCAN_OPTION_AT(group_file)}, DSD_SCAN_OPT_GROUP, SCAN_OPTION_PATH},
-    {"options", {SCAN_OPTION_AT(mute_dmr)}, DSD_SCAN_OPT_MUTE_DMR, SCAN_OPTION_INTS},
+    {k_scan_options_column, {SCAN_OPTION_AT(mute_dmr)}, DSD_SCAN_OPT_MUTE_DMR, SCAN_OPTION_INTS},
     {"-e/--no-data-calls", {SCAN_OPTION_AT(tune_data_calls)}, DSD_SCAN_OPT_DATA, SCAN_OPTION_INTS},
     {"--enc-follow/--enc-lockout", {SCAN_OPTION_AT(tune_enc_calls)}, DSD_SCAN_OPT_ENC, SCAN_OPTION_INTS},
     {NULL, {0}, DSD_SCAN_OPT_MUTE_P25, SCAN_OPTION_PRESENCE},
@@ -1593,10 +1611,16 @@ static const scan_option_column k_scan_option_columns[] = {
     {"--dcc-allow/--dcc-block/--no-dcc-filter", {1}, DSD_SCAN_OPT_DCC, SCAN_OPTION_FILTER},
     {"--ran-allow/--ran-block/--no-ran-filter", {2}, DSD_SCAN_OPT_RAN, SCAN_OPTION_FILTER},
     {"--nac-allow/--nac-block/--no-nac-filter", {3}, DSD_SCAN_OPT_NAC, SCAN_OPTION_FILTER},
-    {"--*-name/--no-service-names", {0}, DSD_SCAN_OPT_NAMES, SCAN_OPTION_NAMES},
+    {"--slot-name/--dcc-name/--ran-name/--nac-name/--tone-name/--no-service-names",
+     {0},
+     DSD_SCAN_OPT_NAMES,
+     SCAN_OPTION_NAMES},
 };
 
 #undef SCAN_OPTION_AT
+
+/* An INTS column's offsets end at the first 0, which only `present` can have. */
+_Static_assert(offsetof(dsd_scan_option_values, present) == 0, "an INTS row option ends its offsets at present's");
 
 static int
 scan_option_ints_differ(const scan_option_column* column, const dsd_scan_option_values* a,
@@ -1639,6 +1663,7 @@ scan_option_value_differs(const scan_option_column* column, const dsd_scan_optio
         case SCAN_OPTION_PATH: return !scan_paths_same(text_a, text_b);
         case SCAN_OPTION_TEXT: return strcmp(text_a, text_b) != 0;
         case SCAN_OPTION_PRESENCE:
+        case SCAN_OPTION_TARGET_FILE:
         default: return 0;
     }
 }
@@ -1646,8 +1671,13 @@ scan_option_value_differs(const scan_option_column* column, const dsd_scan_optio
 /* The first row option two rows set differently: one sets it and the other does not, or both do with other values. */
 static const char*
 scan_options_first_difference(const dsd_scan_option_values* a, const dsd_scan_option_values* b) {
+    uint32_t not_compared = 0U;
     for (size_t i = 0; i < sizeof k_scan_option_columns / sizeof k_scan_option_columns[0]; i++) {
         const scan_option_column* column = &k_scan_option_columns[i];
+        if (column->compare == SCAN_OPTION_TARGET_FILE) {
+            not_compared |= column->bit;
+            continue;
+        }
         const uint32_t set_a = a->present & column->bit;
         const uint32_t set_b = b->present & column->bit;
         if (set_a != set_b || (set_a != 0U && scan_option_value_differs(column, a, b))) {
@@ -1655,7 +1685,7 @@ scan_options_first_difference(const dsd_scan_option_values* a, const dsd_scan_op
         }
     }
     /* A switch the table does not know yet still keeps two rows apart. */
-    return a->present != b->present ? "options" : NULL;
+    return ((a->present ^ b->present) & ~not_compared) != 0U ? k_scan_options_column : NULL;
 }
 
 /* The first companion file, direct key or row option two rows set differently. */
@@ -1848,8 +1878,12 @@ dsd_trunk_scan_check_target_lists(const dsd_trunk_scan_target_list* lists, const
     if (distinct != NULL) {
         *distinct = 0U;
     }
-    if (lists == NULL || names == NULL || count > DSD_TRUNK_SCAN_MAX_LISTS) {
+    if (lists == NULL || names == NULL) {
         scan_set_error(err, err_sz, "no trunk scan target lists");
+        return -1;
+    }
+    if (count > DSD_TRUNK_SCAN_MAX_LISTS) {
+        scan_set_error(err, err_sz, "a trunk scan takes 1 to %d target lists", DSD_TRUNK_SCAN_MAX_LISTS);
         return -1;
     }
     scan_list_merge m;
@@ -2574,6 +2608,7 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_list_count = 0U;
     state->trunk_scan_active_list = 0U;
     state->trunk_scan_active_list_off = 0U;
+    state->trunk_scan_active_lists = 0U;
     state->trunk_scan_rotation_ordinal = 0U;
     state->trunk_scan_rotation_count = 0U;
     state->trunk_scan_lists_seq = 0U;
@@ -2642,14 +2677,39 @@ trunk_scan_publish_avoids(dsd_state* state, dsd_trunk_scan_coord* coord) {
     state->trunk_scan_avoid_rev = dsd_state_rev_next();
 }
 
-/* The targets of the lists switched on, avoided ones included: the "n of m" readout's m (issue #697). */
-static size_t
-trunk_scan_enabled_count(const dsd_trunk_scan_coord* coord) {
-    size_t count = 0U;
-    for (int l = 0; l < coord->list_count; l++) {
-        count += coord->lists[l].enabled ? coord->lists[l].count : 0U;
+/* The end of the lists a walk goes over: coord->list_count, held to the lists[] it indexes. */
+static int
+trunk_scan_list_end(const dsd_trunk_scan_coord* coord) {
+    return coord->list_count < DSD_TRUNK_SCAN_MAX_LISTS ? coord->list_count : DSD_TRUNK_SCAN_MAX_LISTS;
+}
+
+/* The lists switched on changed (issue #697), or were set at the attach: coord->lists_on again from each list's state,
+   and the distinct targets they hold, avoided ones included (the "n of m" readout's m), a target several of them
+   hold counted once. A walk of the targets, at a switch only, never per frame. */
+static void
+trunk_scan_lists_changed(dsd_trunk_scan_coord* coord) {
+    unsigned int on = 0U;
+    for (int l = 0; l < trunk_scan_list_end(coord); l++) {
+        on |= coord->lists[l].enabled ? 1U << l : 0U;
     }
-    return count;
+    coord->lists_on = (uint8_t)on;
+    size_t count = 0U;
+    for (size_t i = 0; i < coord->count; i++) {
+        count += (coord->targets[i].lists & on) != 0U ? 1U : 0U;
+    }
+    coord->rotation_count = count;
+}
+
+/* The list (0-based) that names target @p rt on air (issue #697 D5): the lowest-numbered list holding it that is on,
+   else the lowest-numbered list holding it, its owner. */
+static int
+trunk_scan_representative_list(const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target_runtime* rt) {
+    const unsigned int on = (unsigned int)(rt->lists & coord->lists_on);
+    int l = 0;
+    while (on != 0U && (on & (1U << l)) == 0U) {
+        l++;
+    }
+    return on != 0U ? l : (int)rt->list;
 }
 
 static uint16_t
@@ -2671,22 +2731,30 @@ trunk_scan_publish_lists(dsd_state* state, const dsd_trunk_scan_coord* coord) {
     DSD_MEMCPY(state->trunk_scan_membership_counts, coord->membership_counts,
                sizeof state->trunk_scan_membership_counts);
     state->trunk_scan_list_count = (uint8_t)coord->list_count;
-    state->trunk_scan_rotation_count = trunk_scan_clamp_u16(trunk_scan_enabled_count(coord));
+    state->trunk_scan_rotation_count = trunk_scan_clamp_u16(coord->rotation_count);
     state->trunk_scan_lists_seq = coord->lists_seq;
 }
 
-/* The target on air's position among the targets of the lists switched on ("n of m"), 0 while its own list is off. */
+/* The target on air's position among the targets of the lists switched on ("n of m", issue #697): the targets a list
+   that is on holds, in target order up to it, it included, so a target several lists hold is counted once, at its
+   owner's place; 0 while none of its lists is on. Counted again only when the target on air or the lists on moved
+   since it was last counted, not at each publication. */
 static size_t
-trunk_scan_rotation_ordinal(const dsd_trunk_scan_coord* coord) {
-    const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (!coord->lists[rt->list].enabled) {
-        return 0U;
+trunk_scan_rotation_ordinal(dsd_trunk_scan_coord* coord) {
+    if (coord->ordinal_active == coord->active && coord->ordinal_lists_on == coord->lists_on) {
+        return coord->ordinal;
     }
-    size_t before = 0U;
-    for (int l = 0; l < (int)rt->list; l++) {
-        before += coord->lists[l].enabled ? coord->lists[l].count : 0U;
+    const unsigned int on = coord->lists_on;
+    size_t ordinal = 0U;
+    if ((coord->targets[coord->active].lists & on) != 0U) {
+        for (size_t i = 0; i <= coord->active; i++) {
+            ordinal += (coord->targets[i].lists & on) != 0U ? 1U : 0U;
+        }
     }
-    return before + (coord->active - coord->lists[rt->list].first) + 1U;
+    coord->ordinal = ordinal;
+    coord->ordinal_active = coord->active;
+    coord->ordinal_lists_on = coord->lists_on;
+    return ordinal;
 }
 
 /* What the coordinator publishes whether or not a target is on air: the list's size and avoids, the operator hold, the
@@ -2719,6 +2787,7 @@ trunk_scan_publish_paused(dsd_state* state, const dsd_trunk_scan_coord* coord) {
     state->trunk_scan_active_avoided = 0U;
     state->trunk_scan_active_list = 0U;
     state->trunk_scan_active_list_off = 0U;
+    state->trunk_scan_active_lists = 0U;
     state->trunk_scan_rotation_ordinal = 0U;
     state->trunk_scan_gain_override = 0U;
     state->scan_row_session = 0U;
@@ -2736,7 +2805,7 @@ trunk_scan_publish_paused(dsd_state* state, const dsd_trunk_scan_coord* coord) {
  * publishes its paused form instead, so every caller that edits the coordinator republishes
  * it as it stands. */
 static void
-trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* coord) {
+trunk_scan_publish_active_target(dsd_state* state, dsd_trunk_scan_coord* coord) {
     if (!state || !coord || coord->active >= coord->count) {
         trunk_scan_clear_published_target(state);
         return;
@@ -2754,8 +2823,10 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
     trunk_scan_publish_configured(state, coord);
     state->trunk_scan_paused = 0U;
     state->trunk_scan_active_avoided = coord->targets[coord->active].avoided ? 1U : 0U;
-    state->trunk_scan_active_list = (uint8_t)(coord->targets[coord->active].list + 1U);
-    state->trunk_scan_active_list_off = coord->lists[coord->targets[coord->active].list].enabled ? 0U : 1U;
+    const dsd_trunk_scan_target_runtime* on_air = &coord->targets[coord->active];
+    state->trunk_scan_active_list = (uint8_t)(trunk_scan_representative_list(coord, on_air) + 1);
+    state->trunk_scan_active_list_off = (on_air->lists & coord->lists_on) != 0U ? 0U : 1U;
+    state->trunk_scan_active_lists = on_air->lists;
     state->trunk_scan_rotation_ordinal = trunk_scan_clamp_u16(trunk_scan_rotation_ordinal(coord));
     state->trunk_scan_gain_override = trunk_scan_active_target_sets_gain(coord) ? 1U : 0U;
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -3564,12 +3635,13 @@ trunk_scan_target_width_skipped(const dsd_opts* opts, const dsd_state* state, co
                                                 NULL, 0U);
 }
 
-/* Whether @p rt is in the rotation (issue #697): its list is switched on and the operator has not avoided it. The one
- * predicate every candidate walk and count below starts from; a target out of the rotation keeps everything it learned
- * and is passed over until both hold again. */
+/* Whether @p rt is in the rotation (issue #697): a list that holds it is switched on and the operator has not avoided
+ * it. The one predicate every candidate walk and count below starts from; a target out of the rotation keeps
+ * everything it learned and is passed over until both hold again. A target several lists hold stays in while any of
+ * them is on. */
 static int
 trunk_scan_target_in_rotation(const dsd_trunk_scan_coord* coord, const dsd_trunk_scan_target_runtime* rt) {
-    return !rt->avoided && coord->lists[rt->list].enabled;
+    return !rt->avoided && (rt->lists & coord->lists_on) != 0U;
 }
 
 /* Whether the target on air is out of the rotation, and so owes a departure (trunk_scan_service_departure()). */
@@ -3588,36 +3660,43 @@ trunk_scan_alternate_is_candidate(const dsd_opts* opts, const dsd_state* state, 
            && !trunk_scan_target_width_skipped(opts, state, alt, rate_hz);
 }
 
-/* The end of the lists a walk goes over: coord->list_count, held to the lists[] it indexes. */
+/* The first list at or after @p l (0-based) of mask @p lists (bit l for list l), or trunk_scan_list_end(). The
+ * existence walks below go list by list over the members of the lists of a mask, never over a list outside it, so a
+ * target only lists that are off hold is never looked at. A target several lists of the mask hold is looked at in the
+ * first of them only (trunk_scan_member_seen()). */
 static int
-trunk_scan_list_end(const dsd_trunk_scan_coord* coord) {
-    return coord->list_count < DSD_TRUNK_SCAN_MAX_LISTS ? coord->list_count : DSD_TRUNK_SCAN_MAX_LISTS;
-}
-
-/* The first list at or after @p l (0-based) that is switched on, other than @p skip (0-based, -1 for none), or
- * trunk_scan_list_end(). A list's targets sit together (trunk_scan_merge_lists()), so a walk over the rotation passes a
- * list that is off in one step, however many targets it holds. */
-static int
-trunk_scan_next_list_on(const dsd_trunk_scan_coord* coord, int l, int skip) {
+trunk_scan_next_list_in(const dsd_trunk_scan_coord* coord, int l, unsigned int lists) {
     const int end = trunk_scan_list_end(coord);
-    while (l < end && (!coord->lists[l].enabled || l == skip)) {
+    while (l < end && (lists & (1U << l)) == 0U) {
         l++;
     }
     return l;
 }
 
-/* Whether a target of list @p l (0-based) other than the one on air would be tried in its place
+/* Whether a walk of the members of the lists of mask @p lists has looked at @p rt already, in a list before list
+ * @p l (0-based): one of those holds it. */
+static int
+trunk_scan_member_seen(const dsd_trunk_scan_target_runtime* rt, int l, unsigned int lists) {
+    return (rt->lists & lists & ((1U << l) - 1U)) != 0U;
+}
+
+/* Whether a target list @p l (0-based) holds, other than the one on air, would be tried in its place
    (trunk_scan_alternate_is_candidate()). */
 static int
 trunk_scan_list_has_alternate(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, int l,
                               int rate_hz, double now_m) {
-    const size_t end = coord->lists[l].first + coord->lists[l].count;
-    for (size_t i = coord->lists[l].first; i < end && i < coord->count; i++) {
+    const dsd_trunk_scan_list_entry* entry = &coord->lists[l];
+    for (size_t r = 0; r < entry->member_count; r++) {
+        const size_t i = entry->members[r];
+        if (i >= coord->count) {
+            continue;
+        }
+        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
 #if defined(DSD_TRUNK_SCAN_TEST_CLOCK)
-        g_trunk_scan_alternate_walk_off_list_steps += coord->lists[coord->targets[i].list].enabled ? 0U : 1U;
+        g_trunk_scan_alternate_walk_off_list_steps += (rt->lists & coord->lists_on) == 0U ? 1U : 0U;
 #endif
-        if (i != coord->active
-            && trunk_scan_alternate_is_candidate(opts, state, coord, &coord->targets[i], rate_hz, now_m)) {
+        if (i != coord->active && !trunk_scan_member_seen(rt, l, coord->lists_on)
+            && trunk_scan_alternate_is_candidate(opts, state, coord, rt, rate_hz, now_m)) {
             return 1;
         }
     }
@@ -3626,9 +3705,11 @@ trunk_scan_list_has_alternate(const dsd_opts* opts, const dsd_state* state, cons
 
 /* Somewhere else to go: the same candidate filter trunk_scan_advance_candidate() applies
  * (trunk_scan_alternate_is_candidate()), so the cap can never fire on a rotation the advance would refuse. An alternate
- * out of the rotation (its list off, or avoided for the session), still cooling down from a failed retune, or skipped
- * at every visit for a width the DSP rate cannot filter is not an alternate. The visit cap and the receive expiry ask
- * at every burst boundary of a held carrier, so the walk covers only the lists that are on. */
+ * out of the rotation (every list holding it off, or avoided for the session), still cooling down from a failed
+ * retune, or skipped at every visit for a width the DSP rate cannot filter is not an alternate. The visit cap and the
+ * receive expiry ask at every burst boundary of a held carrier, so the walk covers only the members of the lists that
+ * are on: a target another list on holds is found though its owner is off, and one only lists that are off hold is
+ * never looked at. */
 static int
 trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                                        double now_m) {
@@ -3636,8 +3717,8 @@ trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* st
         return 0;
     }
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    for (int l = trunk_scan_next_list_on(coord, 0, -1); l < trunk_scan_list_end(coord);
-         l = trunk_scan_next_list_on(coord, l + 1, -1)) {
+    for (int l = trunk_scan_next_list_in(coord, 0, coord->lists_on); l < trunk_scan_list_end(coord);
+         l = trunk_scan_next_list_in(coord, l + 1, coord->lists_on)) {
         if (trunk_scan_list_has_alternate(opts, state, coord, l, rate_hz, now_m)) {
             return 1;
         }
@@ -3645,21 +3726,23 @@ trunk_scan_visit_alternate_is_eligible(const dsd_opts* opts, const dsd_state* st
     return 0;
 }
 
-/* The targets the rotation can reach besides @p except (coord->count for none), with list @p skip (0-based, -1 for
- * none) taken as off: in the rotation and not skipped at every visit for a width the published DSP rate cannot filter,
- * cooling down or not. What avoid's and a list toggle's last-usable refusals count, so neither leaves the operator on a
- * target the scan can only pass over. */
+/* The distinct targets the rotation could reach besides @p except (coord->count for none) were the lists of mask
+ * @p lists the ones on (bit l for list l: coord->lists_on as it stands, or a toggle's proposed mask): not avoided and
+ * not skipped at every visit for a width the published DSP rate cannot filter, cooling down or not, each counted once
+ * however many of those lists hold it. What avoid's and a list toggle's last-usable refusals count, so neither leaves
+ * the operator on a target the scan can only pass over. Walks only the members of the lists of the mask. */
 static size_t
 trunk_scan_usable_count(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, size_t except,
-                        int skip) {
+                        unsigned int lists) {
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     size_t usable = 0U;
-    for (int l = trunk_scan_next_list_on(coord, 0, skip); l < trunk_scan_list_end(coord);
-         l = trunk_scan_next_list_on(coord, l + 1, skip)) {
-        const size_t end = coord->lists[l].first + coord->lists[l].count;
-        for (size_t i = coord->lists[l].first; i < end && i < coord->count; i++) {
-            const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
-            usable += i != except && trunk_scan_target_in_rotation(coord, rt)
+    for (int l = trunk_scan_next_list_in(coord, 0, lists); l < trunk_scan_list_end(coord);
+         l = trunk_scan_next_list_in(coord, l + 1, lists)) {
+        const dsd_trunk_scan_list_entry* entry = &coord->lists[l];
+        for (size_t r = 0; r < entry->member_count; r++) {
+            const size_t i = entry->members[r];
+            const dsd_trunk_scan_target_runtime* rt = i < coord->count ? &coord->targets[i] : NULL;
+            usable += rt != NULL && i != except && !rt->avoided && !trunk_scan_member_seen(rt, l, lists)
                       && !trunk_scan_target_width_skipped(opts, state, rt, rate_hz);
         }
     }
@@ -4895,15 +4978,15 @@ trunk_scan_departure_retry_later(const dsd_opts* opts, const dsd_state* state, d
 }
 
 /*
- * The departure obligation (issue #697): the target on air is out of the rotation -- its list was switched off
- * and the departure could not tune anywhere, or every alternate failed when it was avoided and the receiver fell back
- * onto it -- so it leaves as soon as another target can take the receiver, ahead of its hold, dwell and activity. It
- * leaves as an operator's `L` does (trunk_scan_control_advance_locked(): a parked visit hands its carrier back and its
- * call commits under its own name; a park in flight takes the plain advance; the hold carries over). Nothing is stored:
- * the reasons are read again at every tick, so the obligation ends the moment its list is on and it is not avoided,
- * and stays while either holds. One that did not move waits for the soonest cooldown of what it tried
- * (trunk_scan_departure_retry_later()), and with no alternate yet it waits (trunk_scan_departure_wait()). Returns 1
- * when the tick is spent.
+ * The departure obligation (issue #697): the target on air is out of the rotation -- every list holding it was
+ * switched off and the departure could not tune anywhere, or every alternate failed when it was avoided and the
+ * receiver fell back onto it -- so it leaves as soon as another target can take the receiver, ahead of its hold, dwell
+ * and activity. It leaves as an operator's `L` does (trunk_scan_control_advance_locked(): a parked visit hands its
+ * carrier back and its call commits under its own name; a park in flight takes the plain advance; the hold carries
+ * over). Nothing is stored: the reasons are read again at every tick, so the obligation ends the moment a list holding
+ * it is on and it is not avoided, and stays while either holds. One that did not move waits for the soonest cooldown
+ * of what it tried (trunk_scan_departure_retry_later()), and with no alternate yet it waits
+ * (trunk_scan_departure_wait()). Returns 1 when the tick is spent.
  */
 static int
 trunk_scan_service_departure(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
@@ -5166,7 +5249,7 @@ trunk_scan_control_avoid_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan
     }
     /* Somewhere to go: a target the rotation can reach, cooling down or not, other than this one. One that is skipped
        at every visit for its width is none, or the avoid would only leave the operator on the target avoided. */
-    if (trunk_scan_usable_count(opts, state, coord, coord->active, -1) == 0U) {
+    if (trunk_scan_usable_count(opts, state, coord, coord->active, coord->lists_on) == 0U) {
         return DSD_TRUNK_SCAN_CONTROL_REFUSED;
     }
     if (!p25_sm_tick_guard_try_enter()) {
@@ -5276,16 +5359,18 @@ trunk_scan_list_set_changes(const dsd_trunk_scan_coord* coord, int list, int ena
     return 0;
 }
 
-/* Whether switching @p list off leaves the rotation a target it can reach: not when the other lists that are on hold
-   only avoided targets, or targets skipped at every visit for their width, or none. Every list off leaves none. A
-   read: the lists stay as they are until the switch. */
+/* Whether switching @p list off leaves the rotation a target it can reach, counted over the lists that would be on
+   then: not when they hold only avoided targets, or targets skipped at every visit for their width, or none. A target
+   @p list shares with a list that stays on counts; one only @p list holds does not. Every list off leaves none. A read:
+   the lists stay as they are until the switch. */
 static int
 trunk_scan_list_off_leaves_a_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                                     int list) {
-    if (list == DSD_TRUNK_SCAN_LIST_ALL) {
+    if (list < 1 || list > trunk_scan_list_end(coord)) {
         return 0;
     }
-    return trunk_scan_usable_count(opts, state, coord, coord->count, list - 1) > 0U;
+    const unsigned int proposed = coord->lists_on & ~(1U << (list - 1));
+    return trunk_scan_usable_count(opts, state, coord, coord->count, proposed) > 0U;
 }
 
 /* dsd_state::trunk_scan_lists_seq's next value: process-wide, never 0 and never repeated, so a frontend that keyed a
@@ -5303,7 +5388,7 @@ trunk_scan_log_list_switch(const dsd_trunk_scan_coord* coord, int list, int enab
     for (int l = 0; l < coord->list_count; l++) {
         lists_on += coord->lists[l].enabled ? 1 : 0;
     }
-    const size_t targets = trunk_scan_enabled_count(coord);
+    const size_t targets = coord->rotation_count;
     if (list == DSD_TRUNK_SCAN_LIST_ALL) {
         LOG_INFO("NOTICE: Trunk scan lists all on; %d lists, %zu targets\n", lists_on, targets);
     } else {
@@ -5313,8 +5398,9 @@ trunk_scan_log_list_switch(const dsd_trunk_scan_coord* coord, int list, int enab
 }
 
 /* Switch the lists (the caller holds the P25 SM tick guard). The target on air that leaves the rotation leaves it at
-   once (trunk_scan_service_departure()); one that stays gets a fresh visit cap when the change gave it its first
-   eligible alternate, as clearing the avoids does. */
+   once (trunk_scan_service_departure()): switched off with the last of its lists that was on. One that stays, another
+   list holding it still on included, gets a fresh visit cap when the change gave it its first eligible alternate, as
+   clearing the avoids does. */
 static void
 trunk_scan_list_switch(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int list, int enabled) {
     const double now_m = trunk_scan_now_m();
@@ -5325,6 +5411,7 @@ trunk_scan_list_switch(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     for (int l = first; l < end; l++) {
         coord->lists[l].enabled = enabled;
     }
+    trunk_scan_lists_changed(coord);
     coord->lists_seq = trunk_scan_next_lists_seq();
     trunk_scan_log_list_switch(coord, list, enabled);
     trunk_scan_arm_departure(coord);
@@ -5888,6 +5975,21 @@ trunk_scan_list_shared(const dsd_trunk_scan_list_entry* entry, const uint8_t* ma
     return shared;
 }
 
+/* The storage a merge of @p rows rows into @p distinct targets fills: @p out's targets (its capacity set) and
+   @p merged's masks and indices (every row's member index, then the shared indices, at most one per target). Returns
+   whether all of it allocated. */
+static int
+trunk_scan_merged_lists_alloc(size_t rows, size_t distinct, dsd_trunk_scan_target_list* out,
+                              trunk_scan_merged_lists* merged) {
+    const size_t slots = distinct > 0U ? distinct : 1U;
+    out->targets = (dsd_trunk_scan_target*)calloc(slots, sizeof *out->targets);
+    merged->masks = (uint8_t*)calloc(slots, sizeof *merged->masks);
+    merged->index = (size_t*)calloc(rows + slots, sizeof *merged->index);
+    const int allocated = out->targets != NULL && merged->masks != NULL && merged->index != NULL;
+    out->capacity = allocated ? distinct : 0U;
+    return allocated;
+}
+
 /* Put @p count loaded lists into @p out: the @p distinct rows that load a new target (@p row_targets, every row of
    every list in order, from dsd_trunk_scan_check_target_lists()), in list order, then row order; and into @p merged
    each list's name, start state, own run, members and shared targets, and each target's lists. On a failure nothing
@@ -5900,11 +6002,8 @@ trunk_scan_merge_lists(const dsd_opts* opts, const dsd_trunk_scan_target_list* l
     for (int l = 0; l < count; l++) {
         rows += lists[l].count;
     }
-    out->targets = (dsd_trunk_scan_target*)calloc(distinct > 0U ? distinct : 1U, sizeof *out->targets);
-    merged->masks = (uint8_t*)calloc(distinct > 0U ? distinct : 1U, sizeof *merged->masks);
-    merged->index = (size_t*)calloc(rows + distinct > 0U ? rows + distinct : 1U, sizeof *merged->index);
-    int rc = out->targets != NULL && merged->masks != NULL && merged->index != NULL ? 0 : -1;
-    out->capacity = rc == 0 ? distinct : 0U;
+    const int allocated = trunk_scan_merged_lists_alloc(rows, distinct, out, merged);
+    int rc = allocated ? 0 : -1;
     /* Each list's members sit where its rows sit in row_targets, and the shared indices follow every list's members. */
     size_t at = 0U;
     for (int l = 0; l < count && rc == 0; l++) {
@@ -5919,7 +6018,10 @@ trunk_scan_merge_lists(const dsd_opts* opts, const dsd_trunk_scan_target_list* l
         at += merged->lists[l].shared_count;
     }
     if (rc != 0) {
-        scan_set_error(err, err_sz, "failed to allocate trunk scan targets");
+        /* Past the allocation, only a row index the merge rule did not hand out fails. */
+        scan_set_error(err, err_sz, "%s",
+                       allocated ? "failed to merge the trunk scan target lists"
+                                 : "failed to allocate trunk scan targets");
         trunk_scan_merged_lists_release(merged);
         dsd_trunk_scan_target_list_reset(out);
     }
@@ -5994,10 +6096,13 @@ trunk_scan_attach_lists(dsd_trunk_scan_coord* coord, trunk_scan_merged_lists* me
     merged->index = NULL;
     coord->list_count = count;
     coord->lists_seq = trunk_scan_next_lists_seq();
+    trunk_scan_lists_changed(coord);
+    coord->ordinal_active = SIZE_MAX; /* counted at the first publication */
 }
 
-/* The target the scan starts on: the first in the rotation (a list that starts off is passed over) that the DSP rate
-   can filter, else the first in the rotation, whose park then fails over to the advance as any failed park does. */
+/* The target the scan starts on: the first in the rotation (one whose every list starts off is passed over) that the
+   DSP rate can filter, else the first in the rotation, whose park then fails over to the advance as any failed park
+   does. */
 static size_t
 trunk_scan_start_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord) {
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
@@ -6120,8 +6225,8 @@ trunk_scan_hold_refusal(const dsd_opts* opts, const dsd_state* state, const dsd_
 
 /* The target --trunk-scan-hold starts the scan on (issue #644), into @p out: the one whose id it names, which the
    rotation takes (trunk_scan_entry_reason(), the rule a typed frequency's pick follows). An id is one target, however
-   many lists hold it (issue #697), so the id names one target. Refused, the error naming the id and why, for an id no target has, a target in a
-   list that starts off, one avoided, and one whose width does not fit. */
+   many lists hold it (issue #697). Refused, the error naming the id and why, for an id no target has, a target every
+   list of which starts off, one avoided, and one whose width does not fit. */
 static int
 trunk_scan_hold_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord, size_t* out,
                        char* err, size_t err_sz) {
@@ -6569,7 +6674,7 @@ trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_
     if (rt->avoided) {
         return DSD_SCAN_ENTRY_AVOIDED;
     }
-    if (!coord->lists[rt->list].enabled) {
+    if ((rt->lists & coord->lists_on) == 0U) {
         return DSD_SCAN_ENTRY_LIST_OFF;
     }
     return trunk_scan_target_width_skipped(opts, state, rt, rate_hz) ? DSD_SCAN_ENTRY_WIDTH : DSD_SCAN_ENTRY_OK;

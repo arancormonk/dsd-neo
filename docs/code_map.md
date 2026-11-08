@@ -506,14 +506,23 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   a frontend can total any set of lists without summing per-list counts; each list's published `targets` is its
   `member_count`. The start log names each list's count and what it shares with earlier lists (`Trunk scan list 2
   (low): 9 targets (3 also in list 1), on`), and a `--trunk-scan-hold` refused for its lists names every list holding
-  the target that is off. One predicate, `trunk_scan_target_in_rotation()`
-  (list on and not avoided), feeds every candidate walk and count: `trunk_scan_alternate_is_candidate()` (the advance,
-  RETREAT, the visit cap's somewhere-else-to-go question `trunk_scan_visit_alternate_is_eligible()`, the rejection
-  alternates, the resume walk), `trunk_scan_enabled_count()` (the "n of m" readout's m, avoided targets included),
-  and `trunk_scan_usable_count()` (in the rotation and not width-skipped, cooling or not: avoid's and a toggle's
-  last-usable refusals, the toggle's naming the list it would switch off rather than switching it). The visit cap's
-  question, which the frame loop asks at every burst boundary of a held carrier, and the usable count walk list by list
-  (`trunk_scan_next_list_on()`): a list's targets sit together, so a list that is off is passed in one step. The
+  the target that is off. `coord->lists_on` is the lists switched on as one mask. One predicate,
+  `trunk_scan_target_in_rotation()` (`!avoided && (rt->lists & lists_on)`: any list holding it on, so a shared target
+  stays in while another of its lists is on), feeds every candidate walk and count:
+  `trunk_scan_alternate_is_candidate()` (the advance, RETREAT, the visit cap's somewhere-else-to-go question
+  `trunk_scan_visit_alternate_is_eligible()`, the rejection alternates, the resume walk, the start park), the entry
+  reason `LIST_OFF`, the departure (`trunk_scan_active_out_of_rotation()`), and `trunk_scan_usable_count()` (in the
+  rotation and not width-skipped, cooling or not, each target once: avoid's and a toggle's last-usable refusals).
+  Ordered walks (advance, RETREAT, start park, resume, the next cooldown) go over the union in target order with that
+  predicate, so a shared target is visited once a rotation at its owner's place, even while its owner is off; they run
+  at a dwell, a control or a start, not per frame. Existence walks never touch a target only lists that are off hold:
+  the visit cap's question, which the frame loop asks at every burst boundary of a held carrier, and the usable count
+  go over the `members[]` of the lists of a mask (`trunk_scan_next_list_in()`; `lists_on`, or a toggle's proposed
+  `lists_on & ~bit(l)`), each target looked at in the first of those lists that holds it (`trunk_scan_member_seen()`).
+  The "n of m" readout's m (`coord->rotation_count`, distinct targets with `lists & lists_on`, avoided ones included)
+  is counted at the attach and at each switch (`trunk_scan_lists_changed()`), and its n
+  (`trunk_scan_rotation_ordinal()`, the target on air's place among those in target order) only when the target on
+  air or `lists_on` moved since it was last counted; neither is a per-frame walk. The
   `count < 2`/`count != 1` guards stay structural (a list of one target). The advance's fallback onto the original
   ignores the predicate, as it ignored an avoid. A walk reads the DSP rate once (`trunk_scan_walk`), and a due retry
   with an alternate eligible asks again a cooldown later (`retry_recheck_m`), not each tick. The startup park takes the
@@ -524,16 +533,19 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
 - List toggle (issue #697): `dsd_engine_trunk_scan_list_set()` behind the runtime `list_set` hook slot. It refuses a
   paused scan (PAUSED), another session or a list number it does not have (STALE, `session` compared with
   `coord->session`, which frontends read as the published `trunk_scan_session`, the session a put back names too, kept
-  while paused), a no-op (UNCHANGED), a switch that would leave no usable target (REFUSED_LAST, every list off
-  included), then takes a try of the P25 SM tick guard (BUSY). `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list
+  while paused; checked before the list is ever a bit), a no-op (UNCHANGED), a switch that would leave no usable
+  target (REFUSED_LAST, every list off included; counted over the proposed `lists_on & ~bit(l)`, so a target the list
+  shares with one that stays on counts and one only it holds does not), then takes a try of the P25 SM tick guard
+  (BUSY). Switching a list off owes the target on air a departure only when no other list holding it is on: a shared
+  target stays on air, its call going on. `DSD_TRUNK_SCAN_LIST_ALL` switches every list on. A list
   that comes on and gives the visit on air its first eligible alternate restarts its cap
   (`trunk_scan_restart_visit_for_new_alternate()`, shared with clearing the avoids). The switch publishes the scan
   timing before it leaves the guard, as the controls do: the timing reads the parked target's P25 machine, which the
   watchdog changes under that guard (`ENGINE_TRUNK_SCAN_LIST_RACE` runs a switch beside such writes, for tsan-debug).
   Toggles are session-only; the configured start states in `dsd_opts::trunk_scan_lists` never change.
-- Departure obligation (issue #697): while the target on air is out of the rotation (its list off and the
-  departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()` ahead
-  of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
+- Departure obligation (issue #697): while the target on air is out of the rotation (every list holding it off and
+  the departure could not tune anywhere, or the avoided fallback), each tick services `trunk_scan_service_departure()`
+  ahead of the retune resolution, hold, dwell and activity: with an eligible alternate it runs the control advance
   (`trunk_scan_control_advance_locked()`: releasing only when `!tune_pending && visit_since_m >= 0`, so the call commits
   under its own target and the hold carries over), and an attempt that did not move waits for the soonest cooldown of
   what it tried (a switch that cannot be prepared cools its target down as a failed retune does, in every advance and
@@ -549,14 +561,17 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   total failure stays paused with the manual-session rollback; with none eligible it resumes in place and the obligation
   runs later.
 - List publication (issue #697): `trunk_scan_list_count`, `trunk_scan_lists[8]` (`dsd_trunk_scan_list_publication`:
-  name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused), `trunk_scan_active_list_off` (beside
-  `trunk_scan_active_avoided`, each its own reason), `trunk_scan_rotation_ordinal`/`_count` (the position among the
-  lists on, 0 while the target's list is off) and `trunk_scan_lists_seq` (process-unique, moves at start and at each
-  toggle), all inside the UI snapshot range (`ui_snapshot.c` static assert), written at start, hops, commands and
-  pause, kept while paused, cleared at detach and by `initState()`. The identity ordinal `trunk_scan_active_ordinal`
-  stays the union position. Tests: `ENGINE_TRUNK_SCAN` (`test_lists_*`), `ENGINE_TRUNK_SCAN_PAUSE`
-  (`list_toggle_takes_the_guard`), `ENGINE_DMR_CC_RECOVERY` (`list_departure_yields_a_continuous_dmr_carrier`),
-  `RUNTIME_TRUNK_SCAN_HOOKS`.
+  name, enabled, targets), `trunk_scan_active_list` (1-based, 0 while paused: the list that names the target on air,
+  the lowest-numbered one holding it that is on, else the lowest-numbered one holding it,
+  `trunk_scan_representative_list()`), `trunk_scan_active_lists` (every list holding the target on air, on or off; 0
+  while paused), `trunk_scan_active_list_off` (every list holding it off; beside `trunk_scan_active_avoided`, each its
+  own reason), `trunk_scan_rotation_ordinal`/`_count` (the position among the distinct targets of the lists on, 0
+  while the target's lists are off) and `trunk_scan_lists_seq` (process-unique, moves at start and at each toggle),
+  all inside the UI snapshot range (`ui_snapshot.c` static assert), written at start, hops, commands and pause, kept
+  while paused (but the list on air and its lists), cleared at detach and by `initState()`. The identity ordinal
+  `trunk_scan_active_ordinal` stays the union position. Tests: `ENGINE_TRUNK_SCAN` (`test_lists_*`),
+  `ENGINE_TRUNK_SCAN_PAUSE` (`list_toggle_takes_the_guard`), `ENGINE_DMR_CC_RECOVERY`
+  (`list_departure_yields_a_continuous_dmr_carrier`), `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Lifecycle: `dsd_engine_trunk_scan_init()`, `dsd_engine_trunk_scan_tick()`, `dsd_engine_trunk_scan_shutdown()`, all
   driven from `src/engine/engine.c`. The coordinator hangs off `dsd_state` as the `DSD_STATE_EXT_ENGINE_TRUNK_SCAN`
   state extension; init installs the runtime hook table below and shutdown clears it, so a build that never starts a
@@ -3579,9 +3594,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
 - `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
   context, or NULL when trunk scan is not installed or is paused (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
 - `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
-  - One candidate filter, `trunk_scan_alternate_is_candidate()` (in the rotation, i.e. its list on and not avoided, not
-    cooling down from a failed retune, not an analog target `trunk_scan_target_width_skipped()` refuses at the published
-    DSP rate), serves the advance walk, the per-visit cap's somewhere-to-go test
+  - One candidate filter, `trunk_scan_alternate_is_candidate()` (in the rotation, i.e. a list holding it on and it not
+    avoided, not cooling down from a failed retune, not an analog target `trunk_scan_target_width_skipped()` refuses at
+    the published DSP rate), serves the advance walk, the per-visit cap's somewhere-to-go test
     (`trunk_scan_visit_alternate_is_eligible()`) and the tone-rejection alternate, so neither the cap nor a rejection
     releases the target on air toward a target the walk passes over. With no such alternate, a failed park is retried in
     place after its cooldown (`trunk_scan_retry_active_if_due()`), as a single or held target's is; the walk names the
@@ -4323,9 +4338,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     a stopped `-Y` list, `-T` and an I/Q replay take it; Signal search refuses it with every receiver command. Put
     back and `SCAN_AVOID_CLEAR` are flag edits that wait for a DMR repeater loop (`dmrBS()`) to end, so neither ends
     its call (`command_scan_flag_edit_needs_frame_loop()`), unless this scan's target on air owes a departure the edit
-    can start or cancel (issue #697, `scan_departure_owed()`: its list is off or it is the avoided fallback); then a
-    trunk-scan put back of this session and a clear take the frame loop. `SCAN_AVOID` always takes it, since it steps
-    off the channel on air.
+    can start or cancel (issue #697, `scan_departure_owed()`: every list holding it is off or it is the avoided
+    fallback); then a trunk-scan put back of this session and a clear take the frame loop. `SCAN_AVOID` always takes it,
+    since it steps off the channel on air.
     `SCAN_AVOID_CLEAR` takes the `-Y` avoids whenever no trunk scan is configured (paused, stopped, `-T`: B1, D2/D3;
     the control-channel hunts skip avoided rows there) and a paused trunk scan's; hold and avoid still need a running
     rotation. Avoid on a row or target already avoided does nothing and says `Already avoided: ...` (B4: the trunk
@@ -4362,17 +4377,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     is not in `command_updates_scan_mode()`, not apply-guarded (`dsd_trunk_scan_hook_list_set()` takes its own try of
     the P25 SM tick guard and answers `BUSY` while a watchdog tick holds it), and refused under Signal search. It is
     judged by its payload for `dmrBS()`'s frame-loop question (`command_scan_list_set_deferred()`, beside `DSP_OP` and
-    `AIRSPY_SET`): switching off the list that holds the target on air moves the tuner (it leaves at once), and
-    so does any switch of this scan while its target on air owes a departure (`scan_departure_owed()`: its list is
-    off or it is the avoided fallback), since the switch starts or cancels it; only those return a held repeater
-    carrier to the frame loop at a burst boundary. Waiting would lose the race: the synced-frames loop ticks the
+    `AIRSPY_SET`): switching off the last list on that holds the target on air moves the tuner (it leaves at once;
+    `scan_list_set_leaves_on_air()`: the list, range-checked before it is a bit, is on, its bit is in
+    `trunk_scan_active_lists`, and no other bit of that mask is on), and so does any switch of this scan while its
+    target on air owes a departure (`scan_departure_owed()`: every list holding it is off or it is the avoided
+    fallback), since the switch starts or cancels it; only those return a held repeater carrier to the frame loop at a
+    burst boundary. Waiting would lose the race: the synced-frames loop ticks the
     coordinator before it drains, so a cooldown ending under the carrier would depart before a list switched back on
     could keep the target, and a list switched on that gives the departure its alternate would wait for the call. Any
     other switch, "all lists on" included, is a flag edit that waits for the carrier to end, like put back and clear,
-    so it never ends a DMR repeater call on a target that stays. The answer reads the asking decoder's own
-    `trunk_scan_session`, `trunk_scan_active_list`, `trunk_scan_active_list_off` and `trunk_scan_active_avoided`,
-    which the coordinator writes on the decoder thread at every hop, switch and pause (a paused scan names no list on
-    air and owes no departure), so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
+    so it never ends a DMR repeater call on a target that stays; so is switching off one of a shared target's lists
+    while another of them is on, which keeps it on air and its call going on (issue #697). The answer reads the asking
+    decoder's own `trunk_scan_session`, `trunk_scan_lists[].enabled`, `trunk_scan_active_lists`,
+    `trunk_scan_active_list_off` and `trunk_scan_active_avoided`, which the coordinator writes on the decoder thread at
+    every hop, switch and pause (a paused scan publishes no target on air, so no lists of it, and owes no departure),
+    so it is O(1) and never a frontend's stale snapshot. A switch of the list on air
     that the coordinator then refuses as the last one to scan (`REFUSED_LAST`) still takes the frame loop, since telling
     that apart walks the targets; so does a payload of the wrong size, or any toggle with no state to judge by. A
     payload of the right size that the drain refuses (session 0, a list the scan does not have) is judged by its fields
@@ -4380,10 +4399,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     it still gets its one result: when the drain after the carrier applies it, or `DROPPED` when it is evicted or
     discarded first. `apply_cmd_scan_list_set()` checks what a raw submission can carry (`session != 0`, list 1..8 or
     all, enabled 0/1; else an invalid payload), calls the hook, and composes the frontend-neutral toast from its code
-    alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`,
-    `... is off already`, `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the
-    other scan controls use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue
-    took gets a retained result `{sequence, request, session, list, enabled, code, lists_seq}`
+    alone (`Scan list 2 (hospital) off: 2 of 3 lists on, 14 targets`, `All scan lists on: 40 targets`, the targets
+    the distinct total of the lists on, `dsd_app_scan_lists_targets_on()`; `... is off already`,
+    `Nothing else to scan: switch on another list first`, the pause, busy and stale wording the other scan controls
+    use). A switch or a list already as asked completes; every refusal fails. Every toggle the queue took gets a
+    retained result `{sequence, request, session, list, enabled, code, lists_seq}`
     (`src/app_control/scan_list_results.c`): `lists_seq` is the decoder's `trunk_scan_lists_seq` once the drain handled
     the request, and for one dropped before a drain reached it the value the last drain left
     (`dsd_app_scan_list_note_lists_seq()`); the coordinator's `dsd_trunk_scan_list_set_result` passes through as
@@ -5024,8 +5044,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   pair or the decoder's structs, with no lock and no walk of the targets, and only while `--trunk-scan` is configured:
   per list `{number, name, enabled, targets, has_active}`, `list_count`, `lists_on`, `targets_on` (the `n of m` m),
   `active_list`, `running`/`paused` and `toggleable` (running, not paused, 2+ lists). A frontend acts when `lists_seq`
-  or `session` moves. Tests: `APP_CONTROL_SCAN_LIST_VIEW`, `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`,
-  `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
+  or `session` moves. `dsd_app_scan_lists_targets_on(state, on_mask)` is the one total of a set of lists (issue #697):
+  the distinct targets the lists of `on_mask` hold together, the sum of `trunk_scan_membership_counts` over every
+  membership mask that meets it, so a target several lists hold counts once and a pending switch's on-set totals
+  exactly; no frontend sums the lists' own counts (the switch toast reads it). Tests: `APP_CONTROL_SCAN_LIST_VIEW`,
+  `HEADERS_PUBLIC_APP_CONTROL_SCAN_LIST_VIEW[_CXX]`, `APP_CONTROL_FRONTEND_PUBLIC_BOUNDARY`.
   `include/dsd-neo/app_control/scan_list_rows.h` and `src/app_control/scan_list_rows.c` (issue #697) are the one rule
   for what a switcher row shows between a switch and the snapshot that shows it, shared by the terminal's Scan lists
   modal and Qt's `ScanListToggleModel`; each keeps its own wording, drawing and requests. A row

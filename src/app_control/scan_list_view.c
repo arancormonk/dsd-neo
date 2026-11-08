@@ -62,6 +62,18 @@ dsd_app_scan_list_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app
     return 0;
 }
 
+unsigned int
+dsd_app_scan_lists_targets_on(const dsd_state* state, unsigned int on_mask) {
+    if (state == NULL) {
+        return 0U;
+    }
+    unsigned int total = 0U;
+    for (unsigned int mask = 1U; mask <= (unsigned int)DSD_TRUNK_SCAN_MEMBERSHIP_MASKS; mask++) {
+        total += (mask & on_mask) != 0U ? state->trunk_scan_membership_counts[mask - 1U] : 0U;
+    }
+    return total;
+}
+
 /* The published entry reasons while the scan in force is a trunk scan, else none. */
 static size_t
 scan_entry_published_count(const dsd_opts* opts, const dsd_state* state) {

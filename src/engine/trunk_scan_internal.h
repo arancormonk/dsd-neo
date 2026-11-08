@@ -14,8 +14,8 @@
 void trunk_scan_test_set_now(double now_m);
 void trunk_scan_test_clear_now(void);
 int trunk_scan_test_target_embedded_keys_cleared(const dsd_state* state, size_t index);
-/* The targets of lists switched off that the visit cap's and the receive expiry's alternate walk has looked at, all
-   walks counted. */
+/* The targets only lists switched off hold that the visit cap's and the receive expiry's alternate walk has looked at,
+   all walks counted: a target another list that is on holds is the walk's to look at, its owner off or not. */
 size_t trunk_scan_test_alternate_walk_off_list_steps(void);
 
 /* A loaded list's layout (issue #697), as the coordinator keeps it: its own run of targets, every target its file holds

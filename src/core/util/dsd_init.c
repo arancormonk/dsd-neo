@@ -1224,6 +1224,7 @@ init_state_trunk_scan_publication(dsd_state* state) {
     state->trunk_scan_list_count = 0U;
     state->trunk_scan_active_list = 0U;
     state->trunk_scan_active_list_off = 0U;
+    state->trunk_scan_active_lists = 0U;
     state->trunk_scan_rotation_ordinal = 0U;
     state->trunk_scan_rotation_count = 0U;
     state->trunk_scan_lists_seq = 0U;

@@ -74,6 +74,10 @@ typedef enum {
     DSD_TRUNK_SCAN_MODULATION_GFSK = DSD_SCAN_MODULATION_GFSK,
 } dsd_trunk_scan_modulation;
 
+/* One parsed target row. Two rows of one id in two lists are one target only when every field but csv_row is the same
+ * (issue #697, dsd_trunk_scan_check_target_lists()): a field added here must be added to that comparison
+ * (scan_target_first_difference() in src/engine/trunk_scan.c) and to its flip test
+ * (test_lists_shared_row_first_difference()), or two rows differing in it would merge silently. */
 typedef struct {
     char id[64];
     /** The optional `label` column, sanitized (dsd_channel_label_sanitize()): names the channel while parked here. */
@@ -368,8 +372,9 @@ int dsd_engine_trunk_scan_unavoid_target(const dsd_opts* opts, dsd_state* state,
  * `list_set` hook (dsd_trunk_scan_hook_list_set(), whose rules and results it implements).
  *
  * A list switched off keeps its targets, snapshots, avoids and edits; the rotation passes them over until it is on
- * again. Every candidate walk and count reads one predicate, in the rotation = list on and not avoided. Decoder
- * thread; takes the P25 SM tick guard (try-enter) itself.
+ * again. Every candidate walk and count reads one predicate, in the rotation = a list holding the target on and the
+ * target not avoided, so a target another list on holds stays (issue #697: one target id, one target, however many
+ * lists hold it). Decoder thread; takes the P25 SM tick guard (try-enter) itself.
  */
 int dsd_engine_trunk_scan_list_set(dsd_opts* opts, dsd_state* state, uint32_t session, int list, int enabled,
                                    uint32_t request);

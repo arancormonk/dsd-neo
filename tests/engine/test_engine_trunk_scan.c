@@ -18205,6 +18205,9 @@ fill_shared_row(dsd_trunk_scan_target* t, const shared_row_files* f, unsigned in
     DSD_SNPRINTF(o->key_profile_ref, sizeof o->key_profile_ref, "%s", "profile-1");
 }
 
+/* What a refusal names for the service-name switches. */
+static const char k_names_switches[] = "--slot-name/--dcc-name/--ran-name/--nac-name/--tone-name/--no-service-names";
+
 /* One setting of @p t changed (case @p which), and the column a refusal names for it ("" past the last case; NULL for
    the key columns). */
 static const char*
@@ -18253,21 +18256,22 @@ flip_shared_row(dsd_trunk_scan_target* t, const shared_row_files* f, int which) 
         case 36: o->receive.filters[1].block.bits[1] = 0x0U; return "--dcc-allow/--dcc-block/--no-dcc-filter";
         case 37: o->receive.filters[2].enabled = 0; return "--ran-allow/--ran-block/--no-ran-filter";
         case 38: o->receive.filters[3].allow.bits[63] = 0x1U; return "--nac-allow/--nac-block/--no-nac-filter";
-        case 39: o->receive.names.rules[0].name[0] = 'X'; return "--*-name/--no-service-names";
-        case 40: o->receive.names.count = 0U; return "--*-name/--no-service-names";
-        case 41: o->mute_dmr = 0; return "options";
+        case 39: o->receive.names.rules[0].name[0] = 'X'; return k_names_switches;
+        case 40: o->receive.names.count = 0U; return k_names_switches;
+        case 41: o->mute_dmr = 0; return "options column";
         case 42: o->tune_data_calls = 0; return "-e/--no-data-calls";
         case 43: o->tune_enc_calls = 0; return "--enc-follow/--enc-lockout";
         case 44: DSD_SNPRINTF(o->group_file, sizeof o->group_file, "%s", f->other); return "-G";
         case 45: o->dmr_map_file[0] = '\0'; return "--dmr-tg-key-csv/--dmr-tg-key-clear";
         case 46: o->key_profile_ref[0] = 'X'; return "--key-profile-ref";
         /* A switch the comparison does not know yet still tells two rows apart. */
-        case 47: o->present |= 1U << 29; return "options";
+        case 47: o->present |= 1U << 29; return "options column";
         default: return "";
     }
 }
 
-/* The column a row that lacks only switch @p bit (one DSD_SCAN_OPT_* bit) is refused for; NULL for a key switch. */
+/* The column a row that lacks only switch @p bit (one DSD_SCAN_OPT_* bit) is refused for; NULL for a key switch. -K
+   and -k are not here: the key file either names is the target's keys_hex_csv/keys_dec_csv, compared there. */
 static const char*
 shared_row_presence_column(uint32_t bit) {
     static const struct {
@@ -18279,10 +18283,8 @@ shared_row_presence_column(uint32_t bit) {
         {DSD_SCAN_OPT_VOICE, "--scan-voice-only/--no-scan-voice-only"},
         {DSD_SCAN_OPT_QUALIFY, "--scan-voice-qualify-ms"},
         {DSD_SCAN_OPT_HOLD, "--scan-voice-hold-ms"},
-        {DSD_SCAN_OPT_HEX_FILE, "-K"},
-        {DSD_SCAN_OPT_DEC_FILE, "-k"},
         {DSD_SCAN_OPT_GROUP, "-G"},
-        {DSD_SCAN_OPT_MUTE_DMR, "options"},
+        {DSD_SCAN_OPT_MUTE_DMR, "options column"},
         {DSD_SCAN_OPT_DATA, "-e/--no-data-calls"},
         {DSD_SCAN_OPT_ENC, "--enc-follow/--enc-lockout"},
         {DSD_SCAN_OPT_P25_CANDIDATES, "-^"},
@@ -18297,7 +18299,7 @@ shared_row_presence_column(uint32_t bit) {
         {DSD_SCAN_OPT_DCC, "--dcc-allow/--dcc-block/--no-dcc-filter"},
         {DSD_SCAN_OPT_RAN, "--ran-allow/--ran-block/--no-ran-filter"},
         {DSD_SCAN_OPT_NAC, "--nac-allow/--nac-block/--no-nac-filter"},
-        {DSD_SCAN_OPT_NAMES, "--*-name/--no-service-names"},
+        {DSD_SCAN_OPT_NAMES, k_names_switches},
     };
 
     for (size_t i = 0; i < sizeof k_columns / sizeof k_columns[0]; i++) {
@@ -18405,13 +18407,19 @@ test_lists_shared_row_first_difference(void) {
         DSD_SNPRINTF(stage, sizeof stage, "case %d", which);
         test_rc |= expect_shared_refusal(stage, &a, &b, column);
     }
-    /* Each switch one row sets and the other does not. */
+    /* Each switch one row sets and the other does not; but -K or -k alone, whose key file both rows hold in the key
+       columns (cases 12 and 13 compare it), is the same file named another way: one target. */
     for (int bit = 0; bit < 29; bit++) {
         fill_shared_row(&b, &f, 4U);
         b.row_options.present &= ~(1U << bit);
         char stage[32];
         DSD_SNPRINTF(stage, sizeof stage, "without switch bit %d", bit);
-        test_rc |= expect_shared_refusal(stage, &a, &b, shared_row_presence_column(1U << bit));
+        if (((1U << bit) & (uint32_t)DSD_SCAN_OPT_FILES) == 0U) {
+            test_rc |= expect_shared_refusal(stage, &a, &b, shared_row_presence_column(1U << bit));
+        } else if (check_shared_pair(&a, &b, &distinct, err, sizeof err) != 0 || distinct != 1U) {
+            DSD_FPRINTF(stderr, "shared row %s: distinct %zu err \"%s\", want one target\n", stage, distinct, err);
+            test_rc = 1;
+        }
     }
     /* A value no switch set means nothing: two rows without the slot filter or direct keys share whatever those
        fields hold. */
@@ -18496,6 +18504,47 @@ test_lists_shared_row_layouts_share(void) {
     return test_rc;
 }
 
+/* A key file one row names with -K in its options and the other in its keys_hex_csv column is the same setting: both
+   rows load that one file, so they are one target. */
+static int
+test_lists_shared_row_key_file_named_two_ways(void) {
+    static const char* const names[] = {"one", "two"};
+    const char* bodies[] = {
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,options\n"
+        "ROK,dmr-conventional,461000000,,1500,1200,,,-K keys.csv\n",
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,options\n"
+        "b2,dmr-conventional,462000000,,1500,1200,,,\n"
+        "ROK,dmr-conventional,461000000,,1500,1200,,./keys.csv,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    char keys[DSD_TEST_PATH_MAX];
+    if (scan_list_files_write(&files, "", names, bodies, 2) != 0
+        || dsd_test_path_join(keys, sizeof keys, files.dir, "keys.csv") != 0
+        || write_text_file(keys, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        scan_list_files_remove(&files);
+        return 1;
+    }
+    reset_scan_opts_state(&opts, &state);
+    scan_list_files_to_opts(&files, NULL, &opts);
+    char err[2048] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_target_count(&state) != 2U || state.trunk_scan_lists[1].targets != 2U) {
+        DSD_FPRINTF(stderr, "a key file named by -K and by keys_hex_csv did not share: %zu targets, err \"%s\"\n",
+                    dsd_engine_trunk_scan_target_count(&state), err);
+        test_rc = 1;
+    }
+    test_rc |= expect_target_lists(&state, 0U, 0x3, 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)remove(keys);
+    scan_list_files_remove(&files);
+    return test_rc;
+}
+
 /* The target budget counts distinct targets: two lists over half the budget each fit when they hold the same targets
    (test_lists_union_target_cap() refuses them under ids of their own). */
 static int
@@ -18539,7 +18588,8 @@ test_lists_budget_counts_distinct_targets(void) {
 }
 
 /* A target in two lists that both start off: --trunk-scan-hold names every list that holds it. A target whose owner
-   list starts off while another of its lists starts on loads as one target in both. */
+   list starts off while another of its lists starts on loads as one target in both, and --trunk-scan-hold holds it,
+   the list on that holds it named on air. */
 static int
 test_hold_on_shared_target_lists_off(void) {
     static const char* const names[] = {"state", "conv", "low"};
@@ -18574,6 +18624,7 @@ test_hold_on_shared_target_lists_off(void) {
     reset_scan_opts_state(&opts, &state);
     const int owner_off[] = {0, 1, 0};
     scan_list_files_to_opts(&files, owner_off, &opts);
+    DSD_SNPRINTF(opts.trunk_scan_hold_id, sizeof opts.trunk_scan_hold_id, "%s", "ROK");
     if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
         || dsd_engine_trunk_scan_target_count(&state) != 3U) {
         DSD_FPRINTF(stderr, "a shared target whose owner list starts off: %zu targets, err \"%s\"\n",
@@ -18583,6 +18634,14 @@ test_hold_on_shared_target_lists_off(void) {
     test_rc |= expect_target_lists(&state, 1U, 0x6, 1U);
     test_rc |= expect_list_published(&state, "owner off", 2, "conv", 0U, 1U);
     test_rc |= expect_list_published(&state, "owner off", 3, "low", 1U, 2U);
+    /* Targets x ROK y, x and ROK and y in the rotation: ROK held, named by low. */
+    test_rc |= expect_published_target(&state, "hold, owner off", "ROK", 2U, 3U);
+    test_rc |= expect_list_on_air(&state, "hold, owner off", 3U, 0U, 2U, 3U);
+    if (state.trunk_scan_hold != 1U || state.trunk_scan_active_lists != 0x6U) {
+        DSD_FPRINTF(stderr, "hold, owner off: hold %u lists 0x%x, want 1 0x6\n", (unsigned)state.trunk_scan_hold,
+                    (unsigned)state.trunk_scan_active_lists);
+        test_rc = 1;
+    }
     scan_lists_finish(&files, &opts, &state);
     return test_rc;
 }
@@ -19741,9 +19800,10 @@ test_lists_switch_publishes_timing_under_the_guard(void) {
     return test_rc;
 }
 
-/* The alternate walk the visit cap and the receive expiry run at every burst boundary passes a list switched off in one
- * step: with the receiver on the second list, the first list's forty targets are never looked at while it is off, and
- * the cap still finds the alternate on the second. */
+/* The alternate walk the visit cap and the receive expiry run at every burst boundary looks only at the targets of the
+ * lists that are on: the far list's forty targets are never looked at while it is off, though one of them, f20, is
+ * also the near list's, so it stays in the rotation at its own place (the start parks on it) and is the alternate the
+ * cap finds from n1 (issue #697). */
 static int
 test_lists_alternate_walk_skips_a_list_off(void) {
     static char far_body[40 * 40];
@@ -19753,7 +19813,7 @@ test_lists_alternate_walk_skips_a_list_off(void) {
                                      851000000 + (i * 12500));
     }
     static const char* const names[] = {"far", "near"};
-    const char* bodies[] = {far_body, "n1,p25-trunk,860000000,,250,,\nn2,p25-trunk,861000000,,250,,\n"};
+    const char* bodies[] = {far_body, "n1,p25-trunk,860000000,,250,,\nf20,p25-trunk,851250000,,250,,\n"};
     static const int off[] = {1, 0};
     static dsd_opts opts;
     static dsd_state state;
@@ -19772,8 +19832,10 @@ test_lists_alternate_walk_skips_a_list_off(void) {
         scan_list_files_remove(&files);
         return 1;
     }
-    int test_rc = expect_published_target(&state, "start", "n1", 41U, 42U);
-    /* n1 on air and n2 its alternate: the walk looks at the near list alone. */
+    /* f20 is the far list's (its owner, off) and the near list's: in the rotation, first of it in target order. */
+    int test_rc = expect_published_target(&state, "start", "f20", 21U, 41U);
+    test_rc |= expect_list_on_air(&state, "start", 2U, 0U, 1U, 2U);
+    /* f20 on air and n1 its alternate: the walk looks at the near list alone. */
     trunk_scan_test_set_now(0.10);
     size_t steps = trunk_scan_test_alternate_walk_off_list_steps();
     (void)dsd_engine_trunk_scan_visit_expired(&opts, &state);
@@ -19783,16 +19845,34 @@ test_lists_alternate_walk_skips_a_list_off(void) {
         DSD_FPRINTF(stderr, "the alternate walk looked at %zu targets of the far list while it was off\n", steps);
         test_rc = 1;
     }
-    /* The cap still runs out against n2. */
+    /* The cap runs out against n1. */
     trunk_scan_test_set_now(1.20);
     if (!dsd_engine_trunk_scan_visit_expired(&opts, &state)) {
-        DSD_FPRINTF(stderr, "the visit cap did not run out with n2 to go to\n");
+        DSD_FPRINTF(stderr, "the visit cap did not run out with n1 to go to\n");
+        test_rc = 1;
+    }
+    /* On n1, the one alternate is f20, whose owner list is off: the walk finds it, and still looks at nothing only the
+       far list holds. */
+    test_rc |=
+        expect_control_rc("advance to n1", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                          DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_published_target(&state, "advance to n1", "n1", 41U, 41U);
+    test_rc |= expect_list_on_air(&state, "advance to n1", 2U, 0U, 2U, 2U);
+    trunk_scan_test_set_now(2.40);
+    steps = trunk_scan_test_alternate_walk_off_list_steps();
+    if (!dsd_engine_trunk_scan_visit_expired(&opts, &state)) {
+        DSD_FPRINTF(stderr, "the visit cap did not run out with f20, held by the near list, to go to\n");
+        test_rc = 1;
+    }
+    steps = trunk_scan_test_alternate_walk_off_list_steps() - steps;
+    if (steps != 0U) {
+        DSD_FPRINTF(stderr, "the alternate walk from n1 looked at %zu targets only the far list holds\n", steps);
         test_rc = 1;
     }
     /* Back on, the far list's targets are alternates again; off again, they are passed over again. */
     test_rc |= expect_list_rc("far on", list_set(&opts, &state, 1, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
     test_rc |= expect_list_rc("far off again", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
-    trunk_scan_test_set_now(1.30);
+    trunk_scan_test_set_now(2.50);
     steps = trunk_scan_test_alternate_walk_off_list_steps();
     (void)dsd_engine_trunk_scan_visit_expired(&opts, &state);
     steps = trunk_scan_test_alternate_walk_off_list_steps() - steps;
@@ -19800,6 +19880,212 @@ test_lists_alternate_walk_skips_a_list_off(void) {
         DSD_FPRINTF(stderr, "the alternate walk looked at %zu targets of the far list off again\n", steps);
         test_rc = 1;
     }
+    scan_lists_finish(&files, &opts, &state);
+    return test_rc;
+}
+
+/* Every list holding the target on air, as published (bit N-1: list N). */
+static int
+expect_active_lists(const dsd_state* state, const char* stage, unsigned mask) {
+    if (state->trunk_scan_active_lists != mask) {
+        DSD_FPRINTF(stderr, "lists of the target on air after %s: 0x%x, want 0x%x\n", stage,
+                    (unsigned)state->trunk_scan_active_lists, mask);
+        return 1;
+    }
+    return 0;
+}
+
+/* The target on air stayed through a switch of one of its lists: no call ended, no carrier handed back, none owed. */
+static int
+expect_stayed_on_air(const dsd_opts* opts, const dsd_state* state, const char* stage, int ends_before, double now_m) {
+    int rc = 0;
+    if (g_explicit_call_ends != ends_before || g_release_seen_target[0] != '\0' || opts->trunk_is_tuned != 1) {
+        DSD_FPRINTF(stderr, "%s: %d calls ended, carrier released under '%s', tuned %d; want none, tuned 1\n", stage,
+                    g_explicit_call_ends - ends_before, g_release_seen_target, opts->trunk_is_tuned);
+        rc = 1;
+    }
+    rc |= expect_departure_due(opts, state, stage, now_m, 0);
+    return rc;
+}
+
+/* A target two lists hold (issue #697): with both on it is visited once a rotation, at its owner's place; with its
+ * owner off and the other on it stays in the rotation at that place; the readout counts distinct targets. Switching
+ * off one of its lists while it is on air keeps it there, its call going on; switching off the last of its lists that
+ * is on leaves it at once, as for any target. The list named on air is the lowest-numbered one on that holds it. */
+static int
+test_lists_shared_target_rotation_and_switches(void) {
+    static const char* const names[] = {"conv", "low", "fav"};
+    static const char* const bodies[] = {
+        "a1,p25-trunk,851000000,,250,,\nROK,p25-trunk,853000000,,250,,\na2,p25-trunk,852000000,,250,,\n",
+        "b1,p25-trunk,854000000,,250,,\nROK,p25-trunk,853000000,,250,,\n",
+        "c1,p25-trunk,857000000,,250,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 3, &opts, &state) != 0) {
+        return 1;
+    }
+    /* Targets a1 ROK a2 | b1 | c1. */
+    int test_rc = expect_published_target(&state, "start", "a1", 1U, 5U);
+    test_rc |= expect_list_on_air(&state, "start", 1U, 0U, 1U, 5U);
+    test_rc |= expect_list_published(&state, "start", 2, "low", 1U, 2U);
+
+    static const struct {
+        double at;
+        const char* id;
+        unsigned identity;
+        unsigned list;
+        unsigned ordinal;
+    } k_all_on[] = {
+        {0.30, "ROK", 2U, 1U, 2U}, {0.56, "a2", 3U, 1U, 3U}, {0.82, "b1", 4U, 2U, 4U},
+        {1.08, "c1", 5U, 3U, 5U},  {1.34, "a1", 1U, 1U, 1U},
+    };
+
+    for (size_t i = 0; i < sizeof k_all_on / sizeof k_all_on[0]; i++) {
+        tick_at(&opts, &state, k_all_on[i].at);
+        test_rc |= expect_published_target(&state, "every list on", k_all_on[i].id, k_all_on[i].identity, 5U);
+        test_rc |= expect_list_on_air(&state, "every list on", k_all_on[i].list, 0U, k_all_on[i].ordinal, 5U);
+    }
+
+    /* conv off on a1: a1 leaves; ROK, conv's but low's too, is next, and the rotation keeps it at conv's place. */
+    trunk_scan_test_set_now(1.40);
+    test_rc |= expect_list_rc("conv off", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "conv off", "ROK", 2U, 5U);
+    test_rc |= expect_list_on_air(&state, "conv off", 2U, 0U, 1U, 3U);
+    test_rc |= expect_active_lists(&state, "conv off", 0x3U);
+
+    static const struct {
+        double at;
+        const char* id;
+        unsigned identity;
+        unsigned list;
+        unsigned ordinal;
+    } k_conv_off[] = {{1.70, "b1", 4U, 2U, 2U}, {1.96, "c1", 5U, 3U, 3U}, {2.22, "ROK", 2U, 2U, 1U}};
+
+    for (size_t i = 0; i < sizeof k_conv_off / sizeof k_conv_off[0]; i++) {
+        tick_at(&opts, &state, k_conv_off[i].at);
+        test_rc |= expect_published_target(&state, "conv off", k_conv_off[i].id, k_conv_off[i].identity, 5U);
+        test_rc |= expect_list_on_air(&state, "conv off", k_conv_off[i].list, 0U, k_conv_off[i].ordinal, 3U);
+    }
+
+    /* On ROK with every list on, a call in progress: switching off either of its lists keeps it, and the call. */
+    trunk_scan_test_set_now(2.25);
+    test_rc |= expect_list_rc("conv on", list_set(&opts, &state, 1, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_list_on_air(&state, "conv on", 1U, 0U, 2U, 5U);
+    opts.trunk_is_tuned = 1;
+    test_rc |= seed_active_call_row(&state, 1001U, 2002U, 2.25);
+    const int ends_before = g_explicit_call_ends;
+    g_release_seen_target[0] = '\0';
+    trunk_scan_test_set_now(2.30);
+    test_rc |= expect_list_rc("low off on ROK", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "low off on ROK", "ROK", 2U, 5U);
+    test_rc |= expect_list_on_air(&state, "low off on ROK", 1U, 0U, 2U, 4U);
+    test_rc |= expect_stayed_on_air(&opts, &state, "low off on ROK", ends_before, 2.30);
+    test_rc |= expect_list_rc("low on again", list_set(&opts, &state, 2, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_list_rc("conv off on ROK", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "conv off on ROK", "ROK", 2U, 5U);
+    test_rc |= expect_list_on_air(&state, "conv off on ROK", 2U, 0U, 1U, 3U);
+    test_rc |= expect_stayed_on_air(&opts, &state, "conv off on ROK", ends_before, 2.30);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        DSD_FPRINTF(stderr, "ROK's call did not go on through the switches of its lists\n");
+        test_rc = 1;
+    }
+
+    /* low, the last of ROK's lists on, off: ROK leaves at once, its call ending under its name. */
+    trunk_scan_test_set_now(2.35);
+    test_rc |= expect_list_rc("low off, ROK's last", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "low off, ROK's last", "c1", 5U, 5U);
+    test_rc |= expect_list_on_air(&state, "low off, ROK's last", 3U, 0U, 1U, 1U);
+    test_rc |= expect_active_lists(&state, "low off, ROK's last", 0x4U);
+    if (g_explicit_call_ends != ends_before + 1 || strcmp(g_release_seen_target, "ROK") != 0) {
+        DSD_FPRINTF(stderr, "ROK's last list off: %d calls ended under '%s', want 1 under 'ROK'\n",
+                    g_explicit_call_ends - ends_before, g_release_seen_target);
+        test_rc = 1;
+    }
+
+    /* A pause publishes no list on air, nor its lists. */
+    test_rc |= expect_list_rc("every list on", list_set(&opts, &state, DSD_TRUNK_SCAN_LIST_ALL, 1),
+                              DSD_TRUNK_SCAN_LIST_SET_OK);
+    if (dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0) {
+        DSD_FPRINTF(stderr, "shared lists: pause failed\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_list_on_air(&state, "paused", 0U, 0U, 0U, 5U);
+    test_rc |= expect_active_lists(&state, "paused", 0x0U);
+    scan_lists_finish(&files, &opts, &state);
+    test_rc |= expect_active_lists(&state, "shutdown", 0x0U);
+    return test_rc;
+}
+
+/* A list whose every target an earlier list holds owns none (issue #697): with that earlier list off, its targets are
+ * all the rotation has and the rotation goes over them alone. A toggle's last-usable refusal counts the lists that
+ * would be on: a target the list switched off shares with one that stays on counts, one only it holds does not, and
+ * one avoided (in every list at once) does not. Put back by its id, it counts again. */
+static int
+test_lists_wholly_shared_list_and_last_usable(void) {
+    static const char* const names[] = {"conv", "low"};
+    static const char* const bodies[] = {
+        "a1,p25-trunk,851000000,,250,,\nROK,p25-trunk,853000000,,250,,\na2,p25-trunk,852000000,,250,,\n",
+        "ROK,p25-trunk,853000000,,250,,\na1,p25-trunk,851000000,,250,,\n",
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    if (scan_lists_init(&files, NULL, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    static const size_t low_members[] = {1U, 0U};
+    int test_rc = expect_list_layout(&state, 1, 3U, 0U, low_members, 2U, NULL, 0U);
+    test_rc |= expect_published_target(&state, "start", "a1", 1U, 3U);
+    test_rc |= expect_list_on_air(&state, "start", 1U, 0U, 1U, 3U);
+    test_rc |= expect_active_lists(&state, "start", 0x3U);
+
+    /* conv off on a1: low holds a1 and ROK, so the switch is taken and a1 stays on air. */
+    const int ends_before = g_explicit_call_ends;
+    g_release_seen_target[0] = '\0';
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(0.10);
+    test_rc |= expect_list_rc("conv off", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "conv off", "a1", 1U, 3U);
+    test_rc |= expect_list_on_air(&state, "conv off", 2U, 0U, 1U, 2U);
+    test_rc |= expect_stayed_on_air(&opts, &state, "conv off", ends_before, 0.10);
+    opts.trunk_is_tuned = 0;
+    /* The rotation goes over low's targets, both conv's own: a2 is passed over. */
+    tick_at(&opts, &state, 0.40);
+    test_rc |= expect_published_target(&state, "low alone", "ROK", 2U, 3U);
+    test_rc |= expect_list_on_air(&state, "low alone", 2U, 0U, 2U, 2U);
+    tick_at(&opts, &state, 0.70);
+    test_rc |= expect_published_target(&state, "low alone again", "a1", 1U, 3U);
+    test_rc |=
+        expect_list_rc("low off, the last list", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+
+    /* Both on, a1 and ROK avoided: they are avoided in both lists, so switching conv off would leave only targets the
+       rotation passes over, though conv holds a2. */
+    test_rc |= expect_list_rc("conv on", list_set(&opts, &state, 1, 1), DSD_TRUNK_SCAN_LIST_SET_OK);
+    trunk_scan_test_set_now(0.80);
+    test_rc |=
+        expect_control_rc("avoid a1", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                          DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_published_target(&state, "avoid a1", "ROK", 2U, 3U);
+    test_rc |= expect_control_rc("avoid ROK",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                                 DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_published_target(&state, "avoid ROK", "a2", 3U, 3U);
+    if (state.trunk_scan_avoided_count != 2U) {
+        DSD_FPRINTF(stderr, "a1 and ROK avoided: %u avoided, want 2\n", (unsigned)state.trunk_scan_avoided_count);
+        test_rc = 1;
+    }
+    test_rc |= expect_list_rc("conv off, low's targets avoided", list_set(&opts, &state, 1, 0),
+                              DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+    /* ROK put back by its id: back in both lists, so conv off is taken and a2 leaves for it. */
+    test_rc |= expect_control_rc(
+        "put back ROK", dsd_engine_trunk_scan_unavoid_target(&opts, &state, state.trunk_scan_session, "ROK", NULL),
+        DSD_TRUNK_SCAN_CONTROL_OK);
+    test_rc |= expect_list_rc("conv off, ROK put back", list_set(&opts, &state, 1, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    test_rc |= expect_published_target(&state, "conv off, ROK put back", "ROK", 2U, 3U);
+    test_rc |= expect_list_on_air(&state, "conv off, ROK put back", 2U, 0U, 2U, 2U);
     scan_lists_finish(&files, &opts, &state);
     return test_rc;
 }
@@ -21328,6 +21614,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_share_a_target_id);
     rc |= run_with_default_tune_hook(test_lists_shared_row_first_difference);
     rc |= run_with_default_tune_hook(test_lists_shared_row_layouts_share);
+    rc |= run_with_default_tune_hook(test_lists_shared_row_key_file_named_two_ways);
     rc |= run_with_default_tune_hook(test_lists_budget_counts_distinct_targets);
     rc |= run_with_default_tune_hook(test_hold_on_shared_target_lists_off);
     rc |= run_with_default_tune_hook(test_lists_union_target_cap);
@@ -21356,6 +21643,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_lists_long_file_names_keep_their_stem);
     rc |= run_with_default_tune_hook(test_lists_switch_publishes_timing_under_the_guard);
     rc |= run_with_default_tune_hook(test_lists_alternate_walk_skips_a_list_off);
+    rc |= run_with_default_tune_hook(test_lists_shared_target_rotation_and_switches);
+    rc |= run_with_default_tune_hook(test_lists_wholly_shared_list_and_last_usable);
     rc |= run_with_default_tune_hook(test_failed_park_beside_an_unprepared_alternate_is_retried);
     rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
     rc |= run_with_default_tune_hook(test_target_label_names_the_channel);

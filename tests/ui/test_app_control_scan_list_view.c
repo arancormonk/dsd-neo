@@ -233,6 +233,42 @@ test_entry_eligibility(dsd_opts* opts, dsd_state* state) {
     dsd_state_trunk_scan_entry_reasons_free(state);
 }
 
+/* The distinct targets of a set of lists (issue #697): the membership counts of every mask that meets it, never the
+   lists' own counts. Lists 1 {a, b, s}, 2 {s, t, c}, 3 {t, d}: s in lists 1 and 2, t in 2 and 3. */
+static void
+test_targets_on(dsd_state* state) {
+    DSD_MEMSET(state, 0, sizeof *state);
+    assert(dsd_app_scan_lists_targets_on(NULL, 0xFFU) == 0U);
+    assert(dsd_app_scan_lists_targets_on(state, 0xFFU) == 0U);
+    state->trunk_scan_membership_counts[0x1 - 1] = 2U; /* a, b */
+    state->trunk_scan_membership_counts[0x2 - 1] = 1U; /* c */
+    state->trunk_scan_membership_counts[0x3 - 1] = 1U; /* s */
+    state->trunk_scan_membership_counts[0x4 - 1] = 1U; /* d */
+    state->trunk_scan_membership_counts[0x6 - 1] = 1U; /* t */
+
+    static const struct {
+        unsigned int on;
+        unsigned int want;
+    } k_cases[] = {
+        {0x0U, 0U}, {0x1U, 3U}, {0x2U, 3U}, {0x4U, 2U},  {0x3U, 5U},
+        {0x5U, 5U}, {0x6U, 4U}, {0x7U, 6U}, {0xF8U, 0U}, {0xFFU, 6U},
+    };
+
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        const unsigned int got = dsd_app_scan_lists_targets_on(state, k_cases[i].on);
+        if (got != k_cases[i].want) {
+            DSD_FPRINTF(stderr, "targets on for lists 0x%x: %u, want %u\n", k_cases[i].on, got, k_cases[i].want);
+            assert(0);
+        }
+    }
+    /* The eighth list's own targets (mask 0x80) and those every list holds (0xFF) are counted too. */
+    state->trunk_scan_membership_counts[0x80 - 1] = 4U;
+    state->trunk_scan_membership_counts[0xFF - 1] = 1U;
+    assert(dsd_app_scan_lists_targets_on(state, 0x80U) == 5U);
+    assert(dsd_app_scan_lists_targets_on(state, 0x1U) == 4U);
+    assert(dsd_app_scan_lists_targets_on(state, 0xFFU) == 11U);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
@@ -245,6 +281,7 @@ main(void) {
     test_toggleable(opts, state);
     test_eight_lists(opts, state);
     test_entry_eligibility(opts, state);
+    test_targets_on(state);
     free(state);
     free(opts);
     printf("APP_CONTROL_SCAN_LIST_VIEW: OK\n");
