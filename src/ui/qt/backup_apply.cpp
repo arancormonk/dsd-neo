@@ -787,10 +787,10 @@ class Applier {
         if (busy()) {
             return result(ApplyOutcome::Deferred, busy_reason());
         }
-        // Settings on their scratch copy this run (issue #828) would take the restored ones and lose them at the next
-        // start, while every other store kept its restore. Nothing is touched, the stage stays committed, and the
-        // first start whose settings can be written applies it.
-        if (settings_recovery_scratch()) {
+        // AppPrefs' settings on their scratch copy this run (issue #828) would take the restored ones and lose them at
+        // the next start, while every other store kept its restore. Nothing is touched, the stage stays committed, and
+        // the first start whose settings can be written applies it. Call history's settings are not restored.
+        if (settings_recovery_scratch(settings_recovery_prefs_file_name())) {
             return result(ApplyOutcome::Deferred, settings_reason());
         }
         if (!entry_exists(m_journalDir + QStringLiteral("/COMPLETE"))) {

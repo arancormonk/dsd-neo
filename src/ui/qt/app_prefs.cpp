@@ -26,6 +26,7 @@
 #include <iterator>
 #include <utility>
 #include "realtime_clock.h"
+#include "settings_path.h"
 #include "stored_int.h"
 
 namespace dsd_qt {
@@ -362,9 +363,12 @@ AppPrefs::~AppPrefs() = default;
 
 // Explicit scope and names: the organization name is empty on some platforms,
 // and QSettings' fallback location would then depend on how the process was
-// launched rather than on the app. The one place the settings file is opened.
+// launched rather than on the app. The one place the settings file is opened. It is opened as that one file, so no
+// fallback file is read: the app never writes one, and a malformed one, read again whenever it changes, would set
+// FormatError on every instance, failing replacePortable() (issue #828).
 AppPrefs::Settings::Settings()
-    : QSettings(QSettings::IniFormat, QSettings::UserScope, settingsOrganization(), settingsApplication()) {}
+    : QSettings(settings_file_path(QSettings::IniFormat, settingsOrganization(), settingsApplication()),
+                QSettings::IniFormat) {}
 
 QString
 AppPrefs::settingsOrganization() {

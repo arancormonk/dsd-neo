@@ -16,9 +16,9 @@
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <atomic>
 #include <cerrno>
 #include <cstdio>
+#include <mutex>
 #include <utility>
 
 #include <dsd-neo/platform/file_compat.h>
@@ -26,6 +26,7 @@
 
 #include "app_prefs.h"
 #include "json_store.h"
+#include "settings_path.h"
 
 namespace dsd_qt {
 
@@ -34,8 +35,19 @@ namespace {
 /* A settings file that could not be read whole is kept as "<file>.unreadable-1" .. "-99", the first name that is free. */
 constexpr int kKeptLimit = 99;
 
-/* Set by the recovery at the start of ui_load(), read by the restore and the backup from any thread. */
-std::atomic<bool> g_scratch{false};
+/* The settings files (by name) running on their scratch copy: set by the recovery at the start of ui_load(), read by
+   the restore and the backup from any thread. */
+std::mutex g_lock;
+QStringList g_scratchFiles;
+
+void
+note_scratch(const QString& fileName, bool scratch) {
+    const std::lock_guard<std::mutex> locker(g_lock);
+    g_scratchFiles.removeAll(fileName);
+    if (scratch) {
+        g_scratchFiles.append(fileName);
+    }
+}
 
 /* The platform layer reads a path as UTF-8 on Windows (it calls the wide API) and in the local 8-bit encoding
    elsewhere, as QFile does. */
@@ -48,39 +60,23 @@ platform_path(const QString& path) {
 #endif
 }
 
-/* The file QSettings(format, UserScope, organization, application) opens, found without opening it: Qt names it
-   "<user path><organization>/<application><extension>" and the organization's own fallback file
-   "<user path><organization><extension>", which is the only one an organization-only QSettings opens. Opening the
-   settings file itself would read it unchecked (and wait forever on a FIFO), and Qt would keep that read for the next
-   QSettings of the file. Empty without both names. */
-QString
-settings_file_path(QSettings::Format format, const QString& organization, const QString& application) {
-    if (organization.isEmpty() || application.isEmpty()) {
-        return QString();
-    }
-    const QString orgFile = QSettings(format, QSettings::UserScope, organization).fileName();
-    const qsizetype at = orgFile.lastIndexOf(organization);
-    if (at < 0) {
-        return QString();
-    }
-    return orgFile.left(at) + organization + QDir::separator() + application + orgFile.mid(at + organization.size());
-}
-
 /* What reading a settings file found. */
 enum class FileRead { Missing, Ok, Unreadable };
 
 struct SettingsRead {
     FileRead status = FileRead::Missing;
-    QByteArray bytes; // all of it when Ok; what was read before the error when Unreadable
-    QString reason;   // why it was Unreadable, for the log
+    QByteArray bytes;     // all of it when Ok; what was read before the error when Unreadable
+    QString reason;       // why it was Unreadable, for the log
+    bool regular = false; // Unreadable, but a regular file: one that could not be opened or read through
 };
 
 SettingsRead
-unreadable(const QString& reason, const QByteArray& bytes = QByteArray()) {
+unreadable(const QString& reason, const QByteArray& bytes = QByteArray(), bool regular = false) {
     SettingsRead read;
     read.status = FileRead::Unreadable;
     read.bytes = bytes;
     read.reason = reason;
+    read.regular = regular;
     return read;
 }
 
@@ -103,16 +99,16 @@ read_settings_file(const QString& path, const SettingsRecoveryEnv& env) {
     }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
-        return unreadable(QStringLiteral("could not be opened: %1").arg(file.errorString()));
+        return unreadable(QStringLiteral("could not be opened: %1").arg(file.errorString()), QByteArray(), true);
     }
     QByteArray bytes = file.readAll();
     if (file.error() != QFileDevice::NoError) {
-        return unreadable(QStringLiteral("read error: %1").arg(file.errorString()), bytes);
+        return unreadable(QStringLiteral("read error: %1").arg(file.errorString()), bytes, true);
     }
     const qint64 failAfter = env.readFailsAfter ? env.readFailsAfter(path) : -1;
     if (failAfter >= 0) {
         bytes.truncate(failAfter);
-        return unreadable(QStringLiteral("read error"), bytes);
+        return unreadable(QStringLiteral("read error"), bytes, true);
     }
     SettingsRead read;
     read.status = FileRead::Ok;
@@ -261,24 +257,106 @@ keep_and_rewrite(const QString& path, const QByteArray& bytes, const QByteArray&
     return false;
 }
 
+/* Renames @p path, never following it (a link moves itself), to its first free kept name, which @p keptPath receives.
+   True also when the path is confirmed gone, with nothing kept. False, with nothing moved, when the path cannot be told,
+   is a folder, FIFO or other special file (never moved), or no name is free. */
+bool
+rename_aside(const QString& path, const SettingsRecoveryEnv& env, QString* keptPath) {
+    if (step_fails(env, "keep", path)) {
+        return false;
+    }
+    const QByteArray from = platform_path(path);
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    const int present = dsd_path_type_nofollow(from.constData(), &type);
+    if (present == 0) {
+        return true;
+    }
+    if (present < 0 || (type != DSD_PATH_TYPE_FILE && type != DSD_PATH_TYPE_LINK)) {
+        return false;
+    }
+    for (int n = 1; n <= kKeptLimit; ++n) {
+        QString candidate = path + QStringLiteral(".unreadable-%1").arg(n);
+        const QByteArray to = platform_path(candidate); // held, so errno is read before anything is freed
+        if (dsd_rename_noreplace(from.constData(), to.constData(), nullptr) == 0) {
+            *keptPath = std::move(candidate);
+            return true;
+        }
+        if (errno != EEXIST) {
+            return false;
+        }
+    }
+    return false;
+}
+
+/* What renaming a file aside and writing its clean replacement did. */
+enum class Renamed { Written, NothingMoved, KeptOnly };
+
+/* A file that could not be read through cannot be copied, so it is renamed aside unread, in the order the stores keep a
+   file (json_store): (1) write and sync the clean file's temp beside it, (2) rename the path aside, (3) put the temp in
+   its place. A failure at (1) or (2) moves nothing; one at (3) leaves the file kept and nothing at the path. */
+Renamed
+rename_aside_and_write(const QString& path, const QByteArray& rewritten, const SettingsRecoveryEnv& env,
+                       QString* keptPath) {
+    if (step_fails(env, "rewrite", path)) {
+        return Renamed::NothingMoved;
+    }
+    const QByteArray target = platform_path(path);
+    char temp[4096];
+    FILE* f = dsd_fopen_private_temp_for_replace(target.constData(), temp, sizeof(temp), "wb");
+    if (f == nullptr) {
+        return Renamed::NothingMoved;
+    }
+    if (!write_and_sync(f, rewritten) || !rename_aside(path, env, keptPath)) {
+        (void)dsd_remove_file(temp);
+        return Renamed::NothingMoved;
+    }
+    if (dsd_replace_file_with_temp(temp, target.constData()) != 0) {
+        (void)dsd_remove_file(temp);
+        return keptPath->isEmpty() ? Renamed::NothingMoved : Renamed::KeptOnly;
+    }
+    return Renamed::Written;
+}
+
+/* Keeps a file that is not clean and puts the clean file in its place, by the copy when it was read whole (the file
+   stays in place until the clean one replaces it) or by the rename when it could not be read through. Kept, or
+   Scratch when that could not be done; @p keptPath names what was kept either way. */
+SettingsRecovery
+keep_unclean(const QString& path, const SettingsRead& read, const SettingsParse& parsed, const SettingsRecoveryEnv& env,
+             QString* keptPath) {
+    if (!parsed.checked) {
+        return SettingsRecovery::Scratch;
+    }
+    if (read.status == FileRead::Ok) {
+        return keep_and_rewrite(path, read.bytes, parsed.rewritten, env, keptPath) ? SettingsRecovery::Kept
+                                                                                   : SettingsRecovery::Scratch;
+    }
+    if (read.regular && rename_aside_and_write(path, parsed.rewritten, env, keptPath) == Renamed::Written) {
+        return SettingsRecovery::Kept;
+    }
+    return SettingsRecovery::Scratch;
+}
+
 /* Every QSettings of @p format made from now on reads and writes a scratch folder in the app cache, so nothing this
    run writes the settings file: constructor writes, deferred flushes, static helpers and destruction alike. The
-   scratch copy starts as @p seed, the bytes that could be read, which QSettings parses as it would have the file. A
-   scratch copy an earlier start left is removed first. */
+   scratch copy starts as @p seed, the keys that parsed. A scratch copy an earlier start left is removed first. Without
+   an app cache it lives in a private temporary folder (0700, a random name) held for the process. */
 void
 use_scratch(QSettings::Format format, const QString& organization, const QString& application, const QByteArray& seed) {
     const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     const QString leaf = format == QSettings::IniFormat ? QStringLiteral("ini") : QStringLiteral("native");
-    const QString dir =
-        cache.isEmpty()
-            ? QDir::tempPath()
-                  + QStringLiteral("/dsd-neo-settings-scratch-%1-%2").arg(QCoreApplication::applicationPid()).arg(leaf)
-            : cache + QStringLiteral("/settings-scratch/") + leaf;
-    if (!cache.isEmpty()) {
+    QString dir;
+    if (cache.isEmpty()) {
+        static const QTemporaryDir fallback; // settings hold credentials: never a predictable name in a shared folder
+        dir = fallback.isValid() ? fallback.path() + QLatin1Char('/') + leaf : QString();
+    } else {
+        dir = cache + QStringLiteral("/settings-scratch/") + leaf;
         QDir(dir).removeRecursively();
     }
+    if (dir.isEmpty()) {
+        // Nowhere to write: every QSettings of the format fails its writes, and the file is still never touched.
+        dir = QStringLiteral("/nonexistent-dsd-neo-settings-scratch");
+    }
     QSettings::setPath(format, QSettings::UserScope, dir);
-    g_scratch.store(true);
     const QString scratch = settings_file_path(format, organization, application);
     if (scratch.isEmpty() || !QDir().mkpath(QFileInfo(scratch).absolutePath()) || !write_whole(scratch, seed)) {
         LOG_WARN("Settings run on defaults: their scratch copy could not be written.\n");
@@ -286,12 +364,14 @@ use_scratch(QSettings::Format format, const QString& organization, const QString
 }
 
 void
-report(const QString& path, const QString& reason, const QString& keptPath) {
+report(const QString& path, const QString& reason, const QString& keptPath, bool scratch) {
     const QString name = QFileInfo(path).fileName();
     const QString keptName = keptPath.isEmpty() ? QString() : QFileInfo(keptPath).fileName();
-    if (keptName.isEmpty()) {
-        LOG_WARN("%s could not be read (%s) or kept. Settings changed now are not saved; the next start tries again.\n",
-                 qUtf8Printable(name), qUtf8Printable(reason));
+    if (scratch) {
+        LOG_WARN("%s could not be read (%s) or replaced%s%s. Settings changed now are not saved; the next start tries "
+                 "again.\n",
+                 qUtf8Printable(name), qUtf8Printable(reason), keptName.isEmpty() ? "" : "; it was kept as ",
+                 qUtf8Printable(keptName));
     } else {
         LOG_WARN("%s could not be read (%s). It was kept as %s.\n", qUtf8Printable(name), qUtf8Printable(reason),
                  qUtf8Printable(keptName));
@@ -343,24 +423,27 @@ recover_ini_settings(QSettings::Format format, const QString& organization, cons
     }
     const SettingsParse parsed = parse_settings(read.bytes);
     if (read.status == FileRead::Ok && parsed.checked && parsed.clean) {
+        note_scratch(QFileInfo(path).fileName(), false);
         return SettingsRecovery::Clean;
     }
-    const QString reason = problem(read, parsed);
     QString keptPath;
-    // Only a file read whole can be kept: what a read error left unread is not in the copy.
-    if (read.status == FileRead::Ok && parsed.checked
-        && keep_and_rewrite(path, read.bytes, parsed.rewritten, env, &keptPath)) {
-        report(path, reason, keptPath);
-        return SettingsRecovery::Kept;
+    const SettingsRecovery outcome = keep_unclean(path, read, parsed, env, &keptPath);
+    const bool scratch = outcome == SettingsRecovery::Scratch;
+    if (scratch) {
+        // The keys that parsed, as the clean file would hold them; the bytes read only when nothing could be parsed.
+        use_scratch(format, organization, application, parsed.checked ? parsed.rewritten : read.bytes);
     }
-    use_scratch(format, organization, application, read.bytes);
-    report(path, reason, QString());
-    return SettingsRecovery::Scratch;
+    note_scratch(QFileInfo(path).fileName(), scratch);
+    report(path, problem(read, parsed), keptPath, scratch);
+    return outcome;
 }
 
 void
 recover_settings_files(const SettingsRecoveryEnv& env) {
-    g_scratch.store(false);
+    {
+        const std::lock_guard<std::mutex> locker(g_lock);
+        g_scratchFiles.clear();
+    }
     (void)recover_ini_settings(QSettings::IniFormat, AppPrefs::settingsOrganization(), AppPrefs::settingsApplication(),
                                env);
     recover_call_history_settings(env);
@@ -368,7 +451,19 @@ recover_settings_files(const SettingsRecoveryEnv& env) {
 
 bool
 settings_recovery_scratch() {
-    return g_scratch.load();
+    const std::lock_guard<std::mutex> locker(g_lock);
+    return !g_scratchFiles.isEmpty();
+}
+
+bool
+settings_recovery_scratch(const QString& fileName) {
+    const std::lock_guard<std::mutex> locker(g_lock);
+    return g_scratchFiles.contains(fileName);
+}
+
+QString
+settings_recovery_prefs_file_name() {
+    return AppPrefs::settingsApplication() + QStringLiteral(".ini");
 }
 
 } // namespace dsd_qt

@@ -13,16 +13,20 @@
  * registry and Apple plists are left alone). recover_settings_files() checks both before anything else opens them:
  *  - It reads the exact file, checking the read, and parses that copy apart from QSettings' fallback files.
  *  - A file read whole that parses cleanly is left alone, as is a missing one.
- *  - Otherwise the file's bytes are copied to "<file>.unreadable-N" (N = 1..99, the first free one; created, never
- *    replaced, and synced), and a clean file holding what Qt could parse takes its place, which is what Qt's next write
- *    would have produced.
- *  - When that cannot be done (a read error, no free name, a failed write), nothing may write the file: every QSettings
- *    of that format writes a scratch copy in the app cache for the rest of the run, seeded with the bytes that could be
- *    read.
- *    The file stays as it was, and the next start tries again.
+ *  - Otherwise, a file read whole is copied to "<file>.unreadable-N" (N = 1..99, the first free one; created, never
+ *    replacing anything, and synced) while it stays in place, and a clean file holding what Qt could parse replaces it,
+ *    which is what Qt's next write would have produced.
+ *  - A regular file that could not be opened or read through cannot be copied, so it is renamed aside unread to
+ *    "<file>.unreadable-N" (a link moves itself), after the clean file of what its readable prefix parsed is written
+ *    and synced beside it, and that file then takes its place. A crash between the rename and the replacement leaves
+ *    no settings file at the next start (defaults), with the original kept.
+ *  - When that cannot be done (an unknown or special path, no free name, a failed write), nothing may write the file:
+ *    every QSettings of that format writes a scratch copy in the app cache for the rest of the run, seeded with the
+ *    keys that parsed. The file stays as it was, and the next start tries again.
  * Each such file gets a JsonStoreNotice (json_store_post_notice()): its fileName is the settings file's own name
  * ("dsd-neo-app.ini" for AppPrefs, "<application>.conf" for call history, "DSD-neo.conf" in the app) and its keptName
- * the copy's name, which stays empty only for a file running on the scratch copy.
+ * the kept file's name, empty when nothing was kept. Whether a file runs on its scratch copy is
+ * settings_recovery_scratch(fileName), not the notice.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_SETTINGS_RECOVERY_H_
@@ -69,12 +73,21 @@ SettingsRecovery recover_ini_settings(QSettings::Format format, const QString& o
 void recover_settings_files(const SettingsRecoveryEnv& env = {});
 
 /**
- * @brief Whether a settings file runs on its scratch copy this run: what is changed now is lost at the next start.
- *
- * A pending restore waits while it is true, and a backup cannot include the settings. Independent of QSettings'
- * status, which reads NoError from the scratch copy. Safe from any thread.
+ * @brief Whether any settings file runs on its scratch copy this run: what is changed there now is lost at the next
+ *        start. Independent of QSettings' status, which reads NoError from the scratch copy. Safe from any thread.
  */
 bool settings_recovery_scratch();
+
+/**
+ * @brief Whether the settings file named @p fileName (its notice name, as "dsd-neo-app.ini") runs on its scratch copy.
+ *
+ * For AppPrefs' file (settings_recovery_prefs_file_name()) a pending restore waits while it is true, and a backup
+ * cannot include the settings. Safe from any thread.
+ */
+bool settings_recovery_scratch(const QString& fileName);
+
+/** @brief AppPrefs' settings file name, "dsd-neo-app.ini": the one a restore writes and a backup reads. */
+QString settings_recovery_prefs_file_name();
 
 } // namespace dsd_qt
 

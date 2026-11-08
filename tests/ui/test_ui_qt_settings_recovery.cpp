@@ -141,7 +141,7 @@ notice_for(const QList<dsd_qt::JsonStoreNotice>& notices, const QString& fileNam
 /* What a fresh explicit-file QSettings parses from @p path, no fallbacks: its keys, and whether it parsed cleanly. */
 QStringList
 parsed_keys(const QString& path, bool* clean) {
-    QSettings settings(path, QSettings::IniFormat);
+    const QSettings settings(path, QSettings::IniFormat);
     const QStringList keys = settings.allKeys();
     *clean = settings.status() == QSettings::NoError;
     return keys;
@@ -152,6 +152,31 @@ prefs_file_now() {
     return QSettings(QSettings::IniFormat, QSettings::UserScope, AppPrefs::settingsOrganization(),
                      AppPrefs::settingsApplication())
         .fileName();
+}
+
+SettingsRecovery
+recover_prefs(const SettingsRecoveryEnv& env = {}) {
+    return dsd_qt::recover_ini_settings(QSettings::IniFormat, AppPrefs::settingsOrganization(),
+                                        AppPrefs::settingsApplication(), env);
+}
+
+/* Takes every kept name of @p path, so nothing can be kept aside. */
+void
+take_every_kept_name(const QString& what, const QString& path) {
+    bool written = true;
+    for (int n = 1; n <= 99; ++n) {
+        written = write_file(kept(path, n), QByteArray::number(n)) && written;
+    }
+    expect(what + ": every kept name taken", written);
+}
+
+bool
+kept_names_untouched(const QString& path) {
+    bool untouched = true;
+    for (int n = 1; n <= 99; ++n) {
+        untouched = untouched && read_file(kept(path, n)) == QByteArray::number(n);
+    }
+    return untouched && !QFileInfo::exists(kept(path, 100));
 }
 
 /* A file whose first section reads cleanly and whose later one, which nothing has read yet, holds a line Qt drops. */
@@ -176,7 +201,7 @@ void
 test_unread_section_kept() {
     reset();
     expect("unread section: written", write_file(g_paths.prefs, kUnreadSection));
-    dsd_qt::recover_settings_files();
+    expect("unread section: Kept", recover_prefs() == SettingsRecovery::Kept);
     // r1#8: replacePortable() read the FormatError its own write found as a failed restore. First, so no QSettings
     // has parsed the file before it.
     expect("unread section: replacePortable() works after the recovery",
@@ -197,10 +222,7 @@ test_unread_section_kept() {
     expect("unread section: the copy is untouched", read_file(kept(g_paths.prefs, 1)) == kUnreadSection);
 
     relaunch();
-    expect("unread section: the next start finds it clean",
-           dsd_qt::recover_ini_settings(QSettings::IniFormat, AppPrefs::settingsOrganization(),
-                                        AppPrefs::settingsApplication())
-               == SettingsRecovery::Clean);
+    expect("unread section: the next start finds it clean", recover_prefs() == SettingsRecovery::Clean);
     expect("unread section: the next start keeps nothing more", !QFileInfo::exists(kept(g_paths.prefs, 2)));
 }
 
@@ -230,7 +252,8 @@ write_through_appprefs(const QString& what, const QByteArray& original) {
     expect(what + ": the scratch copy holds the writes", read_file(scratch).contains("-Y"));
 }
 
-/* r3#2: Qt's own load ignores a read error, and its write would replace the whole file with the prefix it read. */
+/* r3#2: Qt's own load ignores a read error, and its write would replace the whole file with the prefix it read. The
+   file is renamed aside unread, and the prefix that parsed takes its place. */
 void
 test_valid_prefix_read_error() {
     reset();
@@ -239,15 +262,37 @@ test_valid_prefix_read_error() {
     const qint64 prefix = original.indexOf("[zz]");
     SettingsRecoveryEnv env;
     env.readFailsAfter = [prefix](const QString& path) { return path == g_paths.prefs ? prefix : qint64(-1); };
-    dsd_qt::recover_settings_files(env);
-    expect("read error: scratch", dsd_qt::settings_recovery_scratch());
-    expect("read error: nothing kept", !QFileInfo::exists(kept(g_paths.prefs, 1)));
-    expect("read error: the scratch copy is seeded with the prefix",
-           AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
+    expect("read error: Kept", recover_prefs(env) == SettingsRecovery::Kept);
+    expect("read error: no scratch", !dsd_qt::settings_recovery_scratch());
+    expect("read error: the file is kept byte-identical, renamed unread",
+           read_file(kept(g_paths.prefs, 1)) == original);
+    bool clean = false;
+    const QStringList keys = parsed_keys(g_paths.prefs, &clean);
+    expect("read error: the prefix that parsed takes its place",
+           clean && keys.contains("decode/extraArgs") && !keys.contains("zz/later"));
     const dsd_qt::JsonStoreNotice* notice = notice_for(dsd_qt::json_store_notices(), "dsd-neo-app.ini");
-    expect("read error: a notice with no kept name", notice != nullptr && notice->keptName.isEmpty());
-    write_through_appprefs("read error", original);
-    expect("read error: still nothing kept", !QFileInfo::exists(kept(g_paths.prefs, 1)));
+    expect("read error: a notice names the kept file",
+           notice != nullptr && notice->keptName == "dsd-neo-app.ini.unreadable-1");
+    expect("read error: the settings read the prefix", AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
+
+    // Nothing can be renamed aside: the file is left as it is, and the run writes a scratch copy of the prefix.
+    reset();
+    expect("read error, no free name: written", write_file(g_paths.prefs, original));
+    take_every_kept_name("read error, no free name", g_paths.prefs);
+    expect("read error, no free name: Scratch", recover_prefs(env) == SettingsRecovery::Scratch);
+    expect("read error, no free name: the scratch copy is seeded with the prefix",
+           AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
+    write_through_appprefs("read error, no free name", original);
+    expect("read error, no free name: the taken names are untouched", kept_names_untouched(g_paths.prefs));
+
+    // The clean write fails before the rename: nothing moves.
+    reset();
+    expect("read error, failed write: written", write_file(g_paths.prefs, original));
+    SettingsRecoveryEnv failing = env;
+    failing.writeFails = [](const char* step, const QString&) { return std::strcmp(step, "rewrite") == 0; };
+    expect("read error, failed write: Scratch", recover_prefs(failing) == SettingsRecovery::Scratch);
+    expect("read error, failed write: nothing kept", !QFileInfo::exists(kept(g_paths.prefs, 1)));
+    write_through_appprefs("read error, failed write", original);
 
     relaunch();
     dsd_qt::recover_settings_files();
@@ -263,20 +308,30 @@ void
 test_fallback_ignored() {
     reset();
     const QByteArray healthy = "[decode]\nextraArgs=-Z\n";
-    const QByteArray brokenOrg = "[General]\nfromorg=1\n\n[x]\nbroken line\n";
+    // Both kinds of damage: a line a full parse drops, and a section name QSettings refuses as soon as it loads the
+    // file, which sets FormatError on every QSettings that reads this fallback.
+    const QByteArray brokenOrg = "[General]\nfromorg=1\n\n[x]\nbroken line\n\n[too/deep/section]\ny=1\n";
     expect("fallback: written", write_file(g_paths.prefs, healthy) && write_file(g_paths.orgPrefs, brokenOrg));
+    expect("fallback: clean", recover_prefs() == SettingsRecovery::Clean);
+    // AppPrefs reads no fallback file, so a broken one cannot fail a restore's settings write either. First, so nothing
+    // has parsed the fallback before it.
+    expect("fallback: replacePortable() works beside it", AppPrefs::replacePortable({{"decode/extraArgs", "-F"}}));
+    expect("fallback: and wrote the settings file", read_file(g_paths.prefs).contains("-F"));
     {
         // What a check through QSettings' own fallbacks would have seen.
-        QSettings withFallbacks(QSettings::IniFormat, QSettings::UserScope, AppPrefs::settingsOrganization(),
-                                AppPrefs::settingsApplication());
+        const QSettings withFallbacks(QSettings::IniFormat, QSettings::UserScope, AppPrefs::settingsOrganization(),
+                                      AppPrefs::settingsApplication());
         (void)withFallbacks.allKeys();
         expect("fallback: QSettings blames the settings file", withFallbacks.status() == QSettings::FormatError);
     }
-    expect("fallback: clean", dsd_qt::recover_ini_settings(QSettings::IniFormat, AppPrefs::settingsOrganization(),
-                                                           AppPrefs::settingsApplication())
-                                  == SettingsRecovery::Clean);
-    expect("fallback: the settings file is untouched", read_file(g_paths.prefs) == healthy);
     expect("fallback: the fallback is untouched", read_file(g_paths.orgPrefs) == brokenOrg);
+    // A fallback that changes during the run is read again by the next QSettings (Qt keeps a read only while the file
+    // is unchanged), and AppPrefs still does not see it.
+    const QByteArray changedOrg = brokenOrg + "\n[other/deep/one]\nz=1\n";
+    expect("fallback: changed", write_file(g_paths.orgPrefs, changedOrg));
+    expect("fallback: replacePortable() works beside a fallback read again",
+           AppPrefs::replacePortable({{"decode/extraArgs", "-G"}}) && read_file(g_paths.prefs).contains("-G"));
+    expect("fallback: the changed fallback is untouched", read_file(g_paths.orgPrefs) == changedOrg);
     expect("fallback: nothing kept",
            !QFileInfo::exists(kept(g_paths.prefs, 1)) && !QFileInfo::exists(kept(g_paths.orgPrefs, 1)));
     expect("fallback: no scratch", !dsd_qt::settings_recovery_scratch());
@@ -287,22 +342,24 @@ void
 test_preservation_failure() {
     reset();
     expect("no free name: written", write_file(g_paths.prefs, kUnreadSection));
-    for (int n = 1; n <= 99; ++n) {
-        write_file(kept(g_paths.prefs, n), QByteArray::number(n));
-    }
-    dsd_qt::recover_settings_files();
-    expect("no free name: scratch", dsd_qt::settings_recovery_scratch());
+    take_every_kept_name("no free name", g_paths.prefs);
+    expect("no free name: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+    expect("no free name: scratch",
+           dsd_qt::settings_recovery_scratch()
+               && dsd_qt::settings_recovery_scratch(dsd_qt::settings_recovery_prefs_file_name()));
+    // The seed is what parsed, not the malformed line: the first QSettings to parse all of it reads NoError.
+    const QString scratch = prefs_file_now();
+    expect("no free name: the seed leaves the malformed line out",
+           !read_file(scratch).contains("no equals") && read_file(scratch).contains("after=2"));
     expect("no free name: the seed holds what parsed", AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
+    expect("no free name: the first full parse of the seed is clean",
+           AppPrefs::replacePortable({{"decode/extraArgs", "-Z"}}));
     write_through_appprefs("no free name", kUnreadSection);
-    bool untouched = true;
-    for (int n = 1; n <= 99; ++n) {
-        untouched = untouched && read_file(kept(g_paths.prefs, n)) == QByteArray::number(n);
-    }
-    expect("no free name: the taken names are untouched", untouched && !QFileInfo::exists(kept(g_paths.prefs, 100)));
+    expect("no free name: the taken names are untouched", kept_names_untouched(g_paths.prefs));
 
     relaunch();
     QFile::remove(kept(g_paths.prefs, 50));
-    dsd_qt::recover_settings_files();
+    expect("no free name: a later start is Kept", recover_prefs() == SettingsRecovery::Kept);
     expect("no free name: a later start keeps it in the freed name",
            !dsd_qt::settings_recovery_scratch() && read_file(kept(g_paths.prefs, 50)) == kUnreadSection);
     bool clean = false;
@@ -317,7 +374,7 @@ test_preservation_failure() {
         expect(what + ": written", write_file(g_paths.prefs, kUnreadSection));
         SettingsRecoveryEnv env;
         env.writeFails = [step](const char* failing, const QString&) { return std::strcmp(failing, step) == 0; };
-        dsd_qt::recover_settings_files(env);
+        expect(what + ": Scratch", recover_prefs(env) == SettingsRecovery::Scratch);
         expect(what + ": scratch", dsd_qt::settings_recovery_scratch());
         expect(what + ": no copy left (the original is still in place)", !QFileInfo::exists(kept(g_paths.prefs, 1)));
         write_through_appprefs(what, kUnreadSection);
@@ -390,52 +447,140 @@ test_call_history_settings() {
     }
     expect("history settings, no copy: destruction left the original alone", read_file(g_paths.history) == original);
     expect("history settings, no copy: AppPrefs' file was not redirected", prefs_file_now() == g_paths.prefs);
+    expect("history settings, no copy: only that file runs on scratch",
+           dsd_qt::settings_recovery_scratch(name)
+               && !dsd_qt::settings_recovery_scratch(dsd_qt::settings_recovery_prefs_file_name()));
 }
 #endif
 
-/* r3#1: a restore that applied onto the scratch copy would lose its settings at the next start. */
+/* A committed restore whose settings hold decode/extraArgs = -R, the settings files removed after it. */
 void
-test_restore_waits_for_settings() {
+commit_restore(const QString& what) {
     reset();
-    expect("restore: backup settings", AppPrefs::replacePortable({{"decode/extraArgs", "-R"}}));
+    expect(what + ": backup settings", AppPrefs::replacePortable({{"decode/extraArgs", "-R"}}));
     const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
-    expect("restore: backup builds", built.error == dsd_qt::backup::BackupError::None);
+    expect(what + ": backup builds", built.error == dsd_qt::backup::BackupError::None);
     const QString root = dsd_qt::json_store_root();
     const dsd_qt::backup::ParseResult parsed = dsd_qt::backup::backup_parse_archive(built.archive, root);
     const QString staging = dsd_qt::backup::staging_dir_for_job("settings");
     QString error;
-    expect("restore: staged", dsd_qt::backup::stage_restore(root, parsed, built.archive, staging, &error));
-    expect("restore: committed", dsd_qt::backup::promote_staging(staging) && dsd_qt::backup::commit_pending());
+    expect(what + ": staged", dsd_qt::backup::stage_restore(root, parsed, built.archive, staging, &error));
+    expect(what + ": committed", dsd_qt::backup::promote_staging(staging) && dsd_qt::backup::commit_pending());
+    reset();
+}
 
-    const QByteArray old = "[decode]\nextraArgs=-OLD\n\n[zz]\nno equals here\n";
-    expect("restore: old settings written", write_file(g_paths.prefs, old));
-    for (int n = 1; n <= 99; ++n) {
-        write_file(kept(g_paths.prefs, n), QByteArray::number(n));
-    }
-    dsd_qt::recover_settings_files();
-    expect("restore: scratch", dsd_qt::settings_recovery_scratch());
+/* The restore waits: nothing it would write is touched, and it stays committed for a later start. */
+void
+expect_restore_waits(const QString& what, const QByteArray& settings) {
     const dsd_qt::backup::ApplyResult waited = dsd_qt::backup::apply_pending_restore({});
-    expect("restore: deferred while the settings run on the scratch copy",
+    expect(what + ": deferred while the settings run on the scratch copy",
            waited.outcome == dsd_qt::backup::ApplyOutcome::Deferred && !waited.reason.isEmpty());
-    expect("restore: still committed for the next start", dsd_qt::backup::pending_committed());
-    expect("restore: no apply started", !dsd_qt::backup::pending_apply_started());
-    expect("restore: the settings file is untouched", read_file(g_paths.prefs) == old);
-    expect("restore: the scratch copy did not take the restore",
-           AppPrefs::readPortable().value("decode/extraArgs") == "-OLD");
+    expect(what + ": still committed for the next start", dsd_qt::backup::pending_committed());
+    expect(what + ": no apply started", !dsd_qt::backup::pending_apply_started());
+    expect(what + ": the settings file is untouched", read_file(g_paths.prefs) == settings);
+    expect(what + ": the scratch copy did not take the restore",
+           AppPrefs::readPortable().value("decode/extraArgs") != "-R");
+}
 
+void
+expect_restore_applies(const QString& what) {
+    const dsd_qt::backup::ApplyResult applied = dsd_qt::backup::apply_pending_restore({});
+    expect(what + ": the restore applies", applied.outcome == dsd_qt::backup::ApplyOutcome::Applied);
+    expect(what + ": onto the settings file", prefs_file_now() == g_paths.prefs
+                                                  && AppPrefs::readPortable().value("decode/extraArgs") == "-R"
+                                                  && read_file(g_paths.prefs).contains("-R"));
+    expect(what + ": nothing pending", !dsd_qt::backup::pending_exists());
+    (void)dsd_qt::backup::clear_result_file();
+}
+
+/* r3#1: a restore that applied onto the scratch copy would lose its settings at the next start. */
+void
+test_restore_waits_for_settings() {
+    const QByteArray old = "[decode]\nextraArgs=-OLD\n\n[zz]\nno equals here\n";
+    commit_restore("restore");
+    expect("restore: old settings written", write_file(g_paths.prefs, old));
+    take_every_kept_name("restore", g_paths.prefs);
+    expect("restore: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+    expect_restore_waits("restore", old);
     relaunch();
     QFile::remove(kept(g_paths.prefs, 7));
     dsd_qt::recover_settings_files();
     expect("restore: a later start recovers the settings",
            !dsd_qt::settings_recovery_scratch() && read_file(kept(g_paths.prefs, 7)) == old);
-    const dsd_qt::backup::ApplyResult applied = dsd_qt::backup::apply_pending_restore({});
-    expect("restore: then applies", applied.outcome == dsd_qt::backup::ApplyOutcome::Applied);
-    expect("restore: onto the settings file", prefs_file_now() == g_paths.prefs
-                                                  && AppPrefs::readPortable().value("decode/extraArgs") == "-R"
-                                                  && read_file(g_paths.prefs).contains("-R"));
-    expect("restore: nothing pending", !dsd_qt::backup::pending_exists());
-    (void)dsd_qt::backup::clear_result_file();
+    expect_restore_applies("restore");
+
+    // R1: a read error is renamed aside, so it does not hold the restore back.
+    const QByteArray readable = "[decode]\nextraArgs=-OLD\n\n[zz]\nlater=1\n";
+    SettingsRecoveryEnv readError;
+    readError.readFailsAfter = [readable](const QString& path) {
+        return path == g_paths.prefs ? readable.indexOf("[zz]") : qint64(-1);
+    };
+    commit_restore("restore after a read error");
+    expect("restore after a read error: written", write_file(g_paths.prefs, readable));
+    relaunch();
+    dsd_qt::recover_settings_files(readError);
+    expect("restore after a read error: kept, not scratch",
+           !dsd_qt::settings_recovery_scratch() && read_file(kept(g_paths.prefs, 1)) == readable);
+    expect_restore_applies("restore after a read error");
+
+    commit_restore("restore, read error, no free name");
+    expect("restore, read error, no free name: written", write_file(g_paths.prefs, readable));
+    take_every_kept_name("restore, read error, no free name", g_paths.prefs);
+    relaunch();
+    dsd_qt::recover_settings_files(readError);
+    expect("restore, read error, no free name: scratch", dsd_qt::settings_recovery_scratch());
+    expect_restore_waits("restore, read error, no free name", readable);
+    expect("restore, read error, no free name: discarded", dsd_qt::backup::discard_pending());
+
+#ifdef HISTORY_SETTINGS_ARE_INI
+    // Only AppPrefs' file holds what a restore writes: call history's settings on scratch do not hold it back.
+    commit_restore("restore beside history scratch");
+    const QByteArray history = "[zz]\nno equals here\n";
+    expect("restore beside history scratch: written", write_file(g_paths.history, history));
+    take_every_kept_name("restore beside history scratch", g_paths.history);
+    relaunch();
+    dsd_qt::recover_settings_files();
+    expect("restore beside history scratch: history on scratch",
+           dsd_qt::settings_recovery_scratch()
+               && dsd_qt::settings_recovery_scratch(QFileInfo(g_paths.history).fileName()));
+    expect_restore_applies("restore beside history scratch");
+    expect("restore beside history scratch: history settings untouched", read_file(g_paths.history) == history);
+#endif
 }
+
+#ifndef _WIN32
+/* A link at the path: the copy holds what it points at, and the clean file replaces the link itself, never the target.
+   A read error renames the link itself aside. */
+void
+test_link_at_the_path() {
+    const QString targetDir = g_paths.configBase + QStringLiteral("/link-target");
+    const QString target = targetDir + QStringLiteral("/prefs-target.ini");
+    for (const bool readError : {false, true}) {
+        const QString what = readError ? QStringLiteral("link, read error") : QStringLiteral("link");
+        reset();
+        QDir(targetDir).removeRecursively();
+        expect(what + ": target written", write_file(target, kUnreadSection));
+        expect(what + ": linked", QFile::link(target, g_paths.prefs));
+        SettingsRecoveryEnv env;
+        if (readError) {
+            env.readFailsAfter = [](const QString& path) { return path == g_paths.prefs ? qint64(10) : qint64(-1); };
+        }
+        expect(what + ": Kept", recover_prefs(env) == SettingsRecovery::Kept);
+        expect(what + ": the target is untouched", read_file(target) == kUnreadSection);
+        struct stat st;
+        expect(what + ": the path is a regular file now",
+               lstat(QFile::encodeName(g_paths.prefs).constData(), &st) == 0 && S_ISREG(st.st_mode));
+        const QFileInfo keptInfo(kept(g_paths.prefs, 1));
+        if (readError) {
+            expect(what + ": the link itself is kept", keptInfo.isSymLink() && keptInfo.symLinkTarget() == target);
+        } else {
+            expect(what + ": the copy holds the target's bytes",
+                   !keptInfo.isSymLink() && read_file(kept(g_paths.prefs, 1)) == kUnreadSection);
+        }
+    }
+    QDir(targetDir).removeRecursively();
+}
+#endif
 
 } // namespace
 
@@ -467,6 +612,9 @@ main(int argc, char** argv) {
     test_fallback_ignored();
     test_preservation_failure();
     test_not_a_file();
+#ifndef _WIN32
+    test_link_at_the_path();
+#endif
 #ifdef HISTORY_SETTINGS_ARE_INI
     test_call_history_settings();
 #endif

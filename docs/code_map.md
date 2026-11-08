@@ -12564,31 +12564,42 @@ Qt Quick frontend (`src/ui/qt`):
   dropping malformed lines; its status sticks per instance, and an organization fallback file counts towards it.
   `recover_settings_files()` is the first statement of `ui_load()`, before the restore apply and before any model or
   `AppPrefs` opens a settings file, and runs `recover_ini_settings(format, org, app)` for each:
-  - The path is derived from an organization-only `QSettings`'s `fileName()` (`<user path><org><ext>` →
-    `<user path><org>/<app><ext>`), so Qt never reads the settings file before it is checked (and a FIFO there cannot
-    hang the start). The file is read through the json_store classifier (confirmed absence → Missing; any other stat
-    error, not a regular file, an open or read error → Unreadable), then that verified copy is parsed apart from every
-    fallback: an explicit-file `QSettings` on a copy in a `QTemporaryDir`, `allKeys()` forcing every section.
-  - Read whole and parsed cleanly, or missing: nothing happens. Otherwise, when the file was read whole: its bytes are
-    copied to the first free `<file>.unreadable-N` (N = 1..99, `dsd_fopen_private(..., "wbx")`, never replacing
-    anything; synced), then a clean file (the parsed keys written back by `QSettings`, byte for byte what Qt's own
-    next write would produce) replaces the file through a synced temp and `dsd_replace_file_with_temp()`. The
-    original stays in place until that replacement. A rewrite that fails removes the copy (the original is still
-    there).
-  - A read error, a path that is not a regular file, no free name, or a failed copy or rewrite: nothing may write the
-    file this run. `QSettings::setPath(format, UserScope, <CacheLocation>/settings-scratch/<ini|native>)` re-points
-    the format, so every later `QSettings` of it (constructor writes such as the location expiry, static helpers,
-    deferred flushes, destruction) writes a scratch copy seeded with the bytes that were read. The original stays
-    byte-identical and the next start tries again. `settings_recovery_scratch()` (an atomic, safe from any thread)
-    reports it, apart from QSettings' status, which reads `NoError` from the scratch copy: a pending restore is
-    Deferred while it is true (`backup_apply.cpp`), so a scratch sync never counts as a restore.
+  - The path comes from `settings_file_path()` (`settings_path.h`): an organization-only `QSettings`'s `fileName()`
+    (`<user path><org><ext>` → `<user path><org>/<app><ext>`, following `setPath()`), so Qt never reads the settings
+    file before it is checked (and a FIFO there cannot hang the start). `AppPrefs::Settings` opens that one file as an
+    explicit-file `QSettings`, so no fallback file is read: a malformed one, read again whenever it changes, would
+    otherwise set `FormatError` on every instance and fail `replacePortable()`. The file is read through the json_store
+    classifier (confirmed absence → Missing; any other stat error, not a regular file, an open or read error →
+    Unreadable), then what was read is parsed apart from every fallback: an explicit-file `QSettings` on a copy in a
+    `QTemporaryDir`, `allKeys()` forcing every section, and the parsed keys written back by a fresh `QSettings` (byte
+    for byte what Qt's own next write would produce; empty when nothing parsed).
+  - Read whole and parsed cleanly, or missing: nothing happens.
+  - Read whole but not clean: its bytes are copied to the first free `<file>.unreadable-N` (N = 1..99,
+    `dsd_fopen_private(..., "wbx")`, never replacing anything; synced), then the clean file replaces it through a
+    synced temp and `dsd_replace_file_with_temp()`. The original stays in place until that replacement. A rewrite that
+    fails removes the copy (the original is still there).
+  - A regular file that could not be opened or read through cannot be copied, so it follows the stores' rename order:
+    (1) the clean file of what its readable prefix parsed is written and synced as a temp, (2) the path, never
+    followed (a link moves itself), is renamed with `dsd_rename_noreplace()` to the first free `<file>.unreadable-N`,
+    (3) the temp replaces it. A path confirmed gone at (2) is just written.
+  - Anything else (an unknown stat answer, a folder, FIFO or socket, no free name, a failed copy, rename or write):
+    nothing may write the file this run. `QSettings::setPath(format, UserScope,
+    <CacheLocation>/settings-scratch/<ini|native>)` (without an app cache, a private `QTemporaryDir` held for the
+    process) re-points the format, so every later `QSettings` of it (constructor writes such as the location expiry,
+    static helpers, deferred flushes, destruction) writes a scratch copy seeded with the clean file of the keys that
+    parsed (the bytes read only when nothing could be parsed). The original stays byte-identical and the next start
+    tries again. `settings_recovery_scratch(fileName)` (per file) and `settings_recovery_scratch()` (any file) report
+    it, safe from any thread, apart from QSettings' status, which reads `NoError` from the scratch copy. A pending
+    restore is Deferred while AppPrefs' file (`settings_recovery_prefs_file_name()`) is on scratch (`backup_apply.cpp`),
+    so a scratch sync never counts as a restore; call history's settings alone do not hold a restore back.
   - Each kept or scratch file posts a `JsonStoreNotice` through `json_store_post_notice()`: `fileName` is the settings
     file's own name (`dsd-neo-app.ini`; call history's `<application>.conf`, `DSD-neo.conf` in the app), `reason` is
-    for the log, and `keptName` is the copy's name, empty only for a file on its scratch copy.
-  - `SettingsRecoveryEnv` injects a read error after N bytes and a failing copy or rewrite for tests.
-  Documented limits: a read error is never kept (the copy could not hold what was not read), so a file that fails every
-  read runs on its scratch copy at every start; a transient read error that hits only Qt's own later read, and not the
-  check, is not seen. Tests: `UI_QT_SETTINGS_RECOVERY`.
+    for the log, and `keptName` is the kept file's name, empty when nothing was kept. Whether the file runs on scratch
+    is `settings_recovery_scratch(fileName)`, not the notice (a rename can succeed and the write after it fail).
+  - `SettingsRecoveryEnv` injects a read error after N bytes and a failing copy, rename or write for tests.
+  Documented limits: a crash between the rename and the replacement leaves no settings file at the next start
+  (defaults), with the original kept; a transient read error that hits only Qt's own later read, and not the check, is
+  not seen. Tests: `UI_QT_SETTINGS_RECOVERY`.
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
   the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
@@ -12879,10 +12890,11 @@ Qt Quick frontend (`src/ui/qt`):
     refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is the only writer, deleter and
     renamer: it refuses a path outside the data root or one with a symlink or junction among its existing components,
     and removes trees without following links. Documented limits: a resumed apply (journal complete) that finds the
-    engine busy is Deferred, and that session runs on the half-applied configuration, whose edits the next roll forward
-    can overwrite; a corrupt complete journal is Stuck at every start and cannot be discarded; a store file that is a
-    symlink fails every restore (`QSaveFile` writes through a link, so the models' own saves replace it only when it
-    could not be read, by renaming the link aside: `json_store` above).
+    engine busy, or AppPrefs' settings on their scratch copy (`settings_recovery` above), is Deferred, and that
+    session runs on the half-applied configuration, whose edits the next roll forward can overwrite; a corrupt
+    complete journal is Stuck at every start and cannot be discarded; a store file that is a symlink fails every
+    restore (`QSaveFile` writes through a link, so the models' own saves replace it only when it could not be read, by
+    renaming the link aside: `json_store` above).
     `ApplyEnv` injects the engine check, free space and a fault per named step.
   - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
     one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
