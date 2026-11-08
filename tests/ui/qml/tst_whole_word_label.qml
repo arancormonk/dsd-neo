@@ -32,6 +32,7 @@ Item {
         when: windowShown
 
         function init() {
+            label.sharedPixelSize = 0;
             label.width = 200;
             label.text = "Automatic";
             label.basePixelSize = 13;
@@ -155,6 +156,23 @@ Item {
             compare(label.font.pixelSize, 13);
             label.basePixelSize = 11;
             compare(label.font.pixelSize, 11);
+        }
+
+        // A control with several labels draws them at the smallest of their
+        // fits: the label reports its own and takes the shared one.
+        function test_a_shared_size_overrides_the_own_fit() {
+            Ui.Theme.fontScale = 2.0;
+            label.width = 70;
+            var own = label.fitPixelSize;
+            compare(label.font.pixelSize, own, "unshared, the label draws at its own fit");
+            label.sharedPixelSize = 14;
+            compare(label.font.pixelSize, 14, "the control's size wins");
+            compare(label.fitPixelSize, own, "its own fit is still reported");
+            verify(!label.elided);
+            label.sharedPixelSize = 0;
+            compare(label.font.pixelSize, own);
+            label.text = "On";
+            compare(label.fitPixelSize, Ui.Theme.fontSize(13), "a label that fits reports the scaled size");
         }
 
         // Below normal text (a platform scale under 1) the label never grows

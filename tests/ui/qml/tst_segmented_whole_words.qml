@@ -11,9 +11,11 @@ import "../../../src/ui/qt/qml" as Ui
 // measured here in the screen or sheet that holds it, at its real width: each
 // word must fit on a line of its own at the size the label is drawn at, in the
 // heavier weight a selected segment uses as well as the normal one, and the
-// drawn label must stay inside its segment. A label with a word that cannot
-// fit even at normal size (a long token in a narrow control) is one elided
-// line instead, and the segment still reads the whole label.
+// drawn label must stay inside its segment. Every label of one control is
+// drawn at one size, so a shrunk label never sits beside larger ones. A label
+// with a word that cannot fit even at normal size (a long token in a narrow
+// control) is one elided line instead, and the segment still reads the whole
+// label.
 Item {
     id: root
 
@@ -143,10 +145,13 @@ Item {
                 control.currentIndex = selected;
                 wait(0);
                 var tallest = 0;
+                var size = labelOf(segments[0]).font.pixelSize;
                 for (var segment of segments) {
                     checkSegment(where + " (segment " + selected + " selected)", control, segment, mayElide);
                     tallest = Math.max(tallest, labelOf(segment).height);
+                    compare(labelOf(segment).font.pixelSize, size, where + ": \"" + segment.modelData + "\" is drawn at the control's one size");
                 }
+                verify(size >= 13, where + ": never below the normal-text size");
                 // The segment's height follows the label as drawn.
                 tryCompare(control, "implicitHeight", Math.max(54, tallest + 30), 1000, where + ": the control's height does not follow its labels");
             }

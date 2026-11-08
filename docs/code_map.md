@@ -13431,13 +13431,16 @@ tests pin these with `failOnWarning`.
 Short control labels keep whole words (issue #646). `Text.Wrap` breaks a word wider than its line anywhere, so at large
 text a segment split "Automatic" or "simulcast" over two lines. `qml/WholeWordLabel.qml` (the `SegmentedControl`
 segments' label) wraps between words only. When its widest word does not fit at `Theme.fontSize(basePixelSize)` it is
-drawn at the largest whole pixel size at which every word fits, never below its normal-text size; a word that still does
-not fit makes the whole label one elided line (Qt elides only the last line it lays out), and the control's accessible
-name keeps the whole text. Words are measured at `measureWeight`, the heaviest weight the label is shown in, so
-selecting a segment never changes its size, and a `FontMetrics` measures at the rounded size a `Text` draws (`Qt.font`
-truncates a fractional size). The fit runs when the text, width or text size changes, never per frame; a control sizes
-from the label's `height`. Tests: `tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every
-`SegmentedControl` label set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
+drawn at the largest whole pixel size at which every word fits, never below its normal-text size. A control draws all
+its labels at one size, the smallest of their fits: each label reports its `fitPixelSize`, and the control passes the
+smallest back as every label's `sharedPixelSize` (`SegmentedControl.labelPixelSize`, recomputed when a fit changes), so
+a shrunk label never sits beside larger ones. A word that still does not fit at the normal-text size makes that label
+one elided line (Qt elides only the last line it lays out), and the control's accessible name keeps the whole text.
+Words are measured at `measureWeight`, the heaviest weight the label is shown in, so selecting a segment never changes
+its size, and a `FontMetrics` measures at the rounded size a `Text` draws (`Qt.font` truncates a fractional size). The
+fit runs when the text, width or text size changes, never per frame; a control sizes from the label's `height`. Tests:
+`tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every `SegmentedControl` label set in
+the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
 
 A control a keyboard can press takes Return, keypad Enter (`Keys.onEnterPressed`) and Space, each through the control's
 one guarded activation function (`enabled`, `Navigation.allows()` and any gate of its own), as its accessibility press
