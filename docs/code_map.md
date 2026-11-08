@@ -730,10 +730,11 @@ target-list CSV (P25 trunk/conventional, DMR trunk/conventional, NXDN96/NXDN48 t
   bootstrap's gating records in `dsd_opts::trunk_scan_off_by_cli`; the config's lists are off; no lists). The id is a
   free value (`dsd_cli_option_takes_free_value()`), so every raw-argv pre-scan steps over it and an id spelled like an
   option ("--trunk-scan", "--print-config") is never read as one. Init takes the id once,
-  whatever comes of the start: after the targets are built, `trunk_scan_hold_target()` finds the target (ids are unique
-  across lists, so there is no several-rows choice) and refuses the start, naming the id, for an unknown id or a
-  target the rotation would not take (`trunk_scan_entry_reason()`, the typed frequency's rule: avoided, which a fresh
-  session never is, list off, width that does not fit, with the width brief); `trunk_scan_hold_refusal()` words it.
+  whatever comes of the start: after the targets are built, `trunk_scan_hold_target()` finds the target (a later list's
+  row with an id an earlier list loaded is that same target, so one id is one target and there is no several-rows
+  choice) and refuses the start, naming the id, for an unknown id or a target the rotation would not take
+  (`trunk_scan_entry_reason()`, the typed frequency's rule: avoided, which a fresh session never is, list off, width
+  that does not fit, with the width brief); `trunk_scan_hold_refusal()` words it.
   The start park then runs through `trunk_scan_park_noting()` and `trunk_scan_hold_started()` reads it as a go-to's
   (`trunk_scan_goto_outcome()`): on air, the entry hold at once; in flight, the intent waits on that park and its
   landing or failure goes as any go-to's; refused or deferred at once, the failure is kept

@@ -121,8 +121,9 @@ enum dsd_app_command_id {
     DSD_APP_CMD_SCAN_AVOID_REMOVE = 221,
     // Switch one --trunk-scan target list on or off for the session, or every list on (issue #697); payload
     // dsd_app_scan_list_set_payload, submitted with dsd_app_command_scan_list_set(). Set semantics: the list ends in
-    // the state asked for. Switching off the list of the target on air leaves it at once, as `b` does. A paused scan
-    // and Signal search refuse it. Every one gets a retained result (dsd_app_scan_list_results_since()).
+    // the state asked for. Switching off a list holding the target on air leaves it at once, as `b` does, unless
+    // another list that is on holds it too. A paused scan and Signal search refuse it. Every one gets a retained
+    // result (dsd_app_scan_list_results_since()).
     DSD_APP_CMD_SCAN_LIST_SET = 222,
 
     // Additional commands used by terminal hotkeys in async mode
