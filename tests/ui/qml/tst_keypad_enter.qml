@@ -97,6 +97,18 @@ Item {
 
             text: "All"
         }
+        Ui.BandRail {
+            id: bandRail
+
+            width: parent.width
+            tunedHz: 851.0125e6
+        }
+        Ui.PlexTextField {
+            id: textField
+
+            width: parent.width
+            label: "Name"
+        }
     }
 
     SignalSpy {
@@ -125,7 +137,7 @@ Item {
         }
         function cleanup() {
             Ui.Navigation.removeModal(blocker);
-            for (var control of [segmented, nav, dashed, play, callRow, disclosure, plexSwitch, toggleRow, iconButton, decodeChip, filterPill]) {
+            for (var control of [segmented, nav, dashed, play, callRow, disclosure, plexSwitch, toggleRow, iconButton, decodeChip, filterPill, bandRail, textField]) {
                 control.enabled = true;
                 control.visible = true;
             }
@@ -133,7 +145,10 @@ Item {
             segmented.currentIndex = 0;
             nav.currentIndex = 0;
             spy.clear();
+            // Name and target change together: a spy holding the last case's
+            // name looks it up on the next target and logs that it is missing.
             spy.target = null;
+            spy.signalName = "";
             screenLoader.active = false;
             screenLoader.source = "";
             root.width = 420;
@@ -241,8 +256,8 @@ Item {
         function test_shared_controls_take_keypad_enter(data) {
             var target = data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control;
             verify(target !== null, data.tag + " has its choice");
-            spy.target = data.control;
             spy.signalName = data.signalName;
+            spy.target = data.control;
             pressAndBlock(data.tag, target, data.control);
             if (data.choice !== undefined) {
                 for (var args of spy.signalArguments)
@@ -300,27 +315,117 @@ Item {
                 {
                     tag: "FilterPill",
                     control: filterPill
+                },
+                {
+                    tag: "BandRail",
+                    control: bandRail
+                },
+                {
+                    tag: "PlexTextField",
+                    control: textField.input
                 }
             ];
         }
-        function test_a_covered_control_is_no_tab_stop_once_focus_leaves(data) {
-            var target = data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control;
-            verify(target !== null);
-            verify(target.activeFocusOnTab, data.tag + " is a Tab stop");
+        function holdsTabStopOnlyWhileFocused(tag, target) {
+            verify(target !== null, tag + " exists");
+            verify(target.activeFocusOnTab, tag + " is a Tab stop");
             target.forceActiveFocus();
+            verify(target.activeFocus, tag + " takes focus");
             cover();
-            verify(target.activeFocusOnTab, data.tag + " holds its stop while it has the focus");
+            verify(target.activeFocusOnTab, tag + " holds its stop while it has the focus");
             sheetField.forceActiveFocus();
             verify(sheetField.activeFocus, "the sheet takes the focus");
-            verify(!target.activeFocusOnTab, data.tag + " is no Tab stop under the sheet");
+            verify(!target.activeFocusOnTab, tag + " is no Tab stop under the sheet");
             Ui.Navigation.removeModal(blocker);
-            verify(target.activeFocusOnTab, data.tag + " is a Tab stop again");
+            verify(target.activeFocusOnTab, tag + " is a Tab stop again");
+        }
+        function test_a_covered_control_is_no_tab_stop_once_focus_leaves(data) {
+            holdsTabStopOnlyWhileFocused(data.tag, data.choice !== undefined ? choiceOf(data.control, data.choice) : data.control);
+        }
+
+        // The same hold on the screens' own stops.
+        function test_a_covered_screen_stop_is_no_tab_stop_once_focus_leaves_data() {
+            return [
+                {
+                    tag: "Listen device status pill",
+                    file: "HomeScreen.qml",
+                    brokered: true,
+                    reach: function (screen) {
+                        return findChild(screen, "dongleStatusPill");
+                    }
+                },
+                {
+                    tag: "scan list Advanced header",
+                    file: "ScanListScreen.qml",
+                    reach: function (screen) {
+                        screen.openFor(-1);
+                        return findChild(screen, "scanAdvancedToggle");
+                    }
+                },
+                {
+                    tag: "wizard Advanced header",
+                    file: "WizardScreen.qml",
+                    reach: function (screen) {
+                        screen.openForAdd(false);
+                        // The Advanced panel is on the second step.
+                        screen.step = 1;
+                        return findChild(screen, "wizardAdvancedHeader");
+                    }
+                },
+                {
+                    tag: "call recording seek bar",
+                    file: "HistoryDetailSheet.qml",
+                    reach: function (sheet) {
+                        var path = "/rec/County (12345678)/Keypad.wav";
+                        var uid = callHistory.pushWithRecordings([{
+                                id: "k-1",
+                                path: path,
+                                fileName: "Keypad.wav",
+                                folderUid: "u1",
+                                start: 1700000000,
+                                durationMs: 10000,
+                                rate: 8000,
+                                bytes: 96000,
+                                failed: false,
+                                available: true
+                            }]);
+                        sheet.open({
+                            uid: uid,
+                            name: "Dispatch",
+                            tg: 1001,
+                            when: 1700000000,
+                            systemUid: "test-system"
+                        });
+                        findChild(sheet, "recordingPlayButton").activate();
+                        testContext.publishPlayback(path, 2, 1000, 10000, "");
+                        return findChild(sheet, "recordingSeekBar");
+                    }
+                }
+            ];
+        }
+        function test_a_covered_screen_stop_is_no_tab_stop_once_focus_leaves(data) {
+            // The Listen pill shows only where the host brokers USB; that is
+            // fixed before the host is published (see tst_home_dongle_status).
+            if (data.brokered) {
+                testContext.setDongleStatus(false, 0, "");
+                testContext.useLifecycleHost(true);
+            }
+            testContext.resetHostPlayback();
+            recordings.reset();
+            callHistory.clearAll();
+            var screen = load(data.file);
+            holdsTabStopOnlyWhileFocused(data.tag, data.reach(screen));
+            screenLoader.active = false;
+            testContext.resetHostPlayback();
+            recordings.reset();
+            callHistory.clearAll();
+            testContext.useLifecycleHost(false);
         }
 
         // DisclosureRow's own gate (a row that goes nowhere right now).
         function test_a_disclosure_that_goes_nowhere_ignores_keypad_enter() {
-            spy.target = disclosure;
             spy.signalName = "tapped";
+            spy.target = disclosure;
             disclosure.forceActiveFocus();
             disclosure.tapEnabled = false;
             keyClick(Qt.Key_Enter, Qt.KeypadModifier);
@@ -348,8 +453,8 @@ Item {
         }
         function test_a_hidden_add_or_play_ignores_every_press(data) {
             var control = data.control;
-            spy.target = control;
             spy.signalName = "clicked";
+            spy.target = control;
             control.forceActiveFocus();
             control.visible = false;
             verify(control.Accessible.ignored, data.tag + " leaves the tree while hidden");
@@ -429,11 +534,25 @@ Item {
             tryVerify(function () {
                 return spectrumButton.visible;
             }, 2000, "the Spectrum button shows on a wide screen");
-            spy.target = monitor;
             spy.signalName = "openSpectrum";
+            spy.target = monitor;
             enterActsOnce("Spectrum", spectrumButton, function () {
                 return spy.count;
             });
+            // Hidden while it has the focus (the input stops being a radio, or
+            // the header narrows): no key and no late press opens the Spectrum.
+            spectrumButton.forceActiveFocus();
+            testContext.setMetric("radioInput", false);
+            verify(!spectrumButton.visible, "the Spectrum button hides off a radio");
+            var shown = spy.count;
+            keyClick(Qt.Key_Enter, Qt.KeypadModifier);
+            keyClick(Qt.Key_Return);
+            keyClick(Qt.Key_Space);
+            compare(spy.count, shown, "a hidden Spectrum button ignores its keys");
+            spectrumButton.Accessible.pressAction();
+            compare(spy.count, shown, "a hidden Spectrum button ignores a late accessibility press");
+            verify(spectrumButton.Accessible.ignored, "a hidden Spectrum button leaves the tree");
+            testContext.setMetric("radioInput", true);
             var keySheet = item(monitor, "keySheet");
             var opens = 0;
             enterActsOnce("Decryption", item(monitor, "openKeySheetButton"), function () {
@@ -460,8 +579,8 @@ Item {
             ]);
             var browse = item(screen, "radioReferenceCountrySheet");
             browse.visible = true;
-            spy.target = browse;
             spy.signalName = "chosen";
+            spy.target = browse;
             enterActsOnce("Browse row", item(browse, "browseRow0"), function () {
                 return spy.count;
             });

@@ -13449,11 +13449,12 @@ Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionB
 `DisclosureRow`, `PlexSwitch` and `ToggleRow` and to the Spectrum, Monitor, RadioReference and wizard buttons and rows
 that took Return alone, and moved the Monitor's Spectrum button's keys behind its gate. A control a hidden section can
 hold also checks `visible` there and in its `Accessible.ignored` gate: `DashedActionButton` and `PlayCircle` (Listen's
-Add and Play) do nothing on a late press while hidden, from a node Android still holds or a key while they keep the
-focus. A Tab stop gated on `Navigation.allows()` is held while its item has the focus, `activeFocusOnTab: (gate && …) ||
-activeFocus` (OutlineButton, PinButton): Qt refuses to drop the stop of the item holding the focus and warns, and
-without `activeFocus` in the binding nothing re-ran it once the sheet took the focus, so the covered control stayed a
-Tab stop under the sheet (issue #646 put the hold on every control that lacked it). Tests: `tst_keypad_enter.qml`
+Add and Play) and the Monitor's Spectrum button (hidden off a radio or in a narrowed header) do nothing on a late press
+while hidden, from a node Android still holds or a key while they keep the focus. A Tab stop gated on
+`Navigation.allows()` is held while its item has the focus, `activeFocusOnTab: (gate && …) || activeFocus`
+(OutlineButton, PinButton): Qt refuses to drop the stop of the item holding the focus and warns, and without
+`activeFocus` in the binding nothing re-ran it once the sheet took the focus, so the covered control stayed a Tab stop
+under the sheet (issue #646 put the hold on every control that lacked it). Tests: `tst_keypad_enter.qml`
 (`failOnWarning(/activeFocusOnTab/)`, `test_a_covered_control_is_no_tab_stop_once_focus_leaves`).
 
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is

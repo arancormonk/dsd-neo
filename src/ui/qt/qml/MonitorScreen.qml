@@ -665,12 +665,15 @@ Item {
                     Accessible.role: Accessible.Button
                     Accessible.name: qsTr("Spectrum")
                     readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
-                    Accessible.ignored: !navigationAllowed
+                    // Gate first: see OutlineButton.
+                    Accessible.ignored: !navigationAllowed || !visible
                     Accessible.onPressAction: activate()
                     // One guarded press for keys and accessibility alike: a key
-                    // reaching it under an open sheet does nothing.
+                    // reaching it under an open sheet, or while it is hidden
+                    // with the focus (off a radio, a narrowed header), does
+                    // nothing.
                     function activate() {
-                        if (enabled && Navigation.allows(spectrumPill))
+                        if (enabled && Navigation.allows(spectrumPill) && visible)
                             screen.openSpectrum();
                     }
                     Keys.onReturnPressed: activate()

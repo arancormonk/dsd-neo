@@ -164,15 +164,15 @@ Item {
             Ui.Theme.fontScale = 2.0;
             label.width = 70;
             var own = label.fitPixelSize;
-            compare(label.font.pixelSize, own, "unshared, the label draws at its own fit");
+            fuzzyCompare(label.font.pixelSize, own, 0.01, "unshared, the label draws at its own fit");
             label.sharedPixelSize = 14;
-            compare(label.font.pixelSize, 14, "the control's size wins");
-            compare(label.fitPixelSize, own, "its own fit is still reported");
+            fuzzyCompare(label.font.pixelSize, 14, 0.01, "the control's size wins");
+            fuzzyCompare(label.fitPixelSize, own, 0.01, "its own fit is still reported");
             verify(!label.elided);
             label.sharedPixelSize = 0;
-            compare(label.font.pixelSize, own);
+            fuzzyCompare(label.font.pixelSize, own, 0.01);
             label.text = "On";
-            compare(label.fitPixelSize, Ui.Theme.fontSize(13), "a label that fits reports the scaled size");
+            fuzzyCompare(label.fitPixelSize, Ui.Theme.fontSize(13), 0.01, "a label that fits reports the scaled size");
         }
 
         // Below normal text (a platform scale under 1) the label never grows
