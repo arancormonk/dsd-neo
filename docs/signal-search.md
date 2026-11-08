@@ -39,7 +39,7 @@ suppressed until the next pass.
 | NFM bandwidth / listening squelch | 16,000 Hz / `noise+10`; existing Auto fallback on narrow channels |
 | AM bandwidth / listening squelch | 6,000 Hz / `auto+10` |
 | Digital identification | Explicit Auto for NFM, or a selected existing profile; analog-only is available |
-| Probe duration | 2 seconds after fresh tuned samples arrive; adjustable through 10 seconds |
+| Probe duration | 3 seconds after fresh tuned samples arrive; adjustable from 2 to 10 seconds |
 | Quiet time | Resume after 500 ms without relevant carrier or validated digital activity; an analog visit counts it from the monitor's first verdict on the landed channel (at most 3 seconds after landing) |
 | Maximum visit | 30 seconds; adjustable through 600 seconds, or 0 to disable |
 | Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls |
@@ -56,8 +56,25 @@ listening squelch takes a margin of 3 to 30 dB, the range the receiver applies;
 a range with a margin outside it is refused rather than saved, and a range saved
 earlier with 0 to 2 dB loads with the 3 dB the receiver applied. AM and analog-only
 NFM ranges open their monitor directly. Digitally enabled NFM ranges first run
-the selected profile. Auto normally takes about six seconds to rotate its symbol
-profiles, so the two-second default cannot identify every supported signal.
+the selected profile. An Auto probe tries the symbol profiles in the order that
+reaches the common systems first: 4800 symbols/s four-level (P25 Phase 1, DMR,
+NXDN96, YSF, M17) for about 1.1 seconds, 6000 symbols/s (P25 Phase 2) for 0.3
+seconds, held for as long as Phase 2 bursts keep arriving, then 2400 symbols/s
+(NXDN48, dPMR) for about 2.3 seconds, 9600 symbols/s (ProVoice) from about 3.7
+seconds and 4800 symbols/s binary (D-STAR) after that. A profile that decodes
+frames is held while they keep coming, and the first confirmed protocol ends the
+probe; the rest of the visit runs the ordinary rotation. The three-second default
+leaves time for P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and M17. In replays of the
+test captures landing at several points of a transmission, Phase 1 control
+channels, DMR, NXDN96, YSF and M17 confirmed within 0.6 seconds and Phase 1 voice
+usually within 1.6 (one capture whose first frames are not decodable confirmed
+only on a later landing); P25 Phase 2 (with its scrambling code recovered on the
+channel), NXDN48 joined mid-call and dPMR confirmed within 2.4 seconds, and real
+Phase 2 voice with added noise within 2.9. ProVoice needs about five seconds and
+D-STAR about seven, so a range that should identify them needs a longer probe.
+Ranges saved before this release keep their two-second probe, which leaves P25
+Phase 2 and NXDN48 joined mid-call often unresolved: raise them to three seconds or
+more in the range editor.
 
 A detection displays frequency and measured strength immediately, while its
 listening tune is still pending. While listening, the screen also shows the
@@ -208,6 +225,49 @@ after the detection was confirmed, the detection keeps the site and code it show
 transmitter's broadcasts heard before the confirmation never join it. A slot filter alone
 does not keep them off, since the site and the code belong to the whole channel.
 
+P25 Phase 2 is confirmed by any Phase 2 MAC message whose CRC passes: on a voice
+channel's FACCH or SACCH (a call's push-to-talk or active message, its hangtime, idle
+or end, among others) as on a control channel's LCCH. A message let through with a
+failed CRC by `-F` confirms nothing. A Phase 2 voice channel usually scrambles these
+messages with its system's code (WACN, SYSID and NAC), so a visit must have the right
+code before anything on the channel decodes.
+
+Each visit starts from the session's own P25 site: the code, the frequency tables
+(IDEN) and the channel map the decoder held when the search started, including a code
+set with `-X` and an imported channel map. Whatever a visit learned about its system is
+dropped when the search leaves the channel, so one system's code or frequency tables
+never reach the next channel, and a code proven on one channel is never taken as proof
+on another. The session instead keeps the last 16 Phase 2 codes it confirmed, from
+network status broadcasts whose CRC passed and from codes recovered from a channel's
+own signalling, and each digital visit tries them on its channel. A new search starts
+with none; Pause and Resume keep them. A code set with `-X` in the decoder's extra
+arguments wins: every visit uses it, and the search neither tries a learned code nor
+recovers another, so only that system's Phase 2 channels decode.
+
+**Explore here** and **Save as system** carry no Phase 2 scrambling code from the
+search: not the code a visit used, and not one the session learned. The new session
+learns the code from the air again, unless its decoder arguments set one with `-X`.
+On a weak voice channel, whose code comes from its own signalling, that can wait for
+a clean FACCH or SACCH burst, so a channel that decoded in the search may stay silent
+for a while after Explore here or in the saved system.
+
+A Phase 2 channel stays unresolved, and is monitored as NFM, when the probe hears no
+Phase 2 MAC message that decodes with the right code: a voice channel whose code the
+session has not learned and whose own signalling gives none to recover in time (code
+recovery needs clean FACCH or SACCH bursts, so a weak channel may not get there), a
+subscriber's inbound (uplink) frequency, whose H-CPM modulation dsd-neo does not
+decode, or a code set with `-X` that is not the channel's. Encrypted voice confirms like
+clear voice, from its signalling; its audio stays encrypted.
+
+Each Auto visit starts on the 4800 symbols/s C4FM profile, whatever profile or
+modulation the decoder held when the search started. A modulation lock (`-m`) in the
+decoder's extra arguments is kept as given, and it confines identification to the
+profiles that share its timing at the receiver's output rate: at the usual 48 kHz, a
+lock such as `-mq` or `-mc` held on 4800 symbols/s never reaches P25 Phase 2, NXDN48,
+dPMR or ProVoice, and `-m2` holds 6000 symbols/s, where only P25 Phase 2 can be
+identified. Under a lock the probe keeps the lock's own walk and dwell, not the order
+above.
+
 A digital detection also shows the site it identified, from checked broadcasts heard
 during that visit only: a P25 network status (WACN and SYSID) or RFSS status (SYSID,
 RFSS and site) from a TSBK, MBT or Phase 2 MAC whose CRC passed, read as
@@ -321,7 +381,8 @@ showed.
   another kind, only the settings that kind takes go with it: a detection heard
   on an RTL dongle starts on an Airspy without the dongle's PPM, bias tee and
   tuner gain, and an Airspy's own settings (its serial among them) never go to a
-  dongle. Explore here does not change where
+  dongle. A P25 Phase 2 channel's scrambling code does not go with it (see
+  [Ranges and reception](#ranges-and-reception)). Explore here does not change where
   Explore resumes from Home, even through a USB permission request. A saved
   system starts as saved (keys, decoder and trunking). A system whose site is
   avoided is refused with a message on the search screen, and nothing stops.
@@ -393,7 +454,9 @@ at manual 0 or 0.9 dB saves as manual 1 dB, not automatic, and the tuner then
 runs the nearest step it supports. An Airspy keeps its own gain settings.
 Confirmed NXDN48 and NXDN96 detections preserve their respective decoder rates.
 Unresolved identification stays explicit. The user must choose the normal Save
-action; later detections do not change the open draft.
+action; later detections do not change the open draft. A P25 Phase 2 detection's
+scrambling code is not saved; the saved system finds it on the air (see
+[Ranges and reception](#ranges-and-reception)).
 
 ## Scope and implementation
 
@@ -563,6 +626,14 @@ Run the focused native and QML regressions in a Qt-enabled build:
 ctest --preset dev-debug -R 'SIGNAL_(MEASURE|SEARCH|TAP)|UI_QT_QML_SESSION_TOOLS' --output-on-failure
 ctest --preset dev-debug -L iq-decode --output-on-failure
 ```
+
+The probe's order and dwell are measured by `tests/engine/search_schedule_replay.c`
+(`DECODE_IQ_SEARCH_SCHEDULE_*`): Signal search refuses an I/Q replay, so it replays a
+fixture through the whole decoder with the search's probe forced on from a 4800/4 C4FM
+start, landing 0, 350 and 700 ms into the capture, and requires the protocol (on its
+profile) within the three-second default. It also takes `--ordinary` (the rotation
+without the probe order, for comparison) and `--hold-ms` (keep decoding after the
+identification).
 
 The detector tests cover calibrated power, noise, carriers, modulated signals,
 bursts, off-grid signals, nearby transmitters, adjacent-channel leakage from a

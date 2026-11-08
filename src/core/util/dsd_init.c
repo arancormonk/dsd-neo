@@ -1173,6 +1173,8 @@ init_state_p25p1_nid_learning(dsd_state* state) {
     state->p25_p1_validated_symbolcnt = 0;
     state->p25_p1_nid_evidence = 0;
     state->p25_p1_nid_evidence_symbolcnt = 0;
+    state->p25_frame_nac = 0U;
+    state->p25_frame_nac_valid = 0U;
     DSD_MEMSET(&state->p25_p1_mod_compare, 0, sizeof(state->p25_p1_mod_compare));
 }
 
@@ -1271,6 +1273,10 @@ init_state_edacs_defaults(dsd_state* state) {
     state->edacs_lcn_count = 0;
     state->edacs_cc_lcn = 0;
     state->edacs_tuned_lcn = -1;
+    state->edacs_tune_request = 0U;
+    state->edacs_cc_return_request = 0U;
+    state->edacs_tune_carrier_seq = 0U;
+    state->edacs_cc_return_carrier_seq = 0U;
     state->edacs_a_bits = 4;   //  Agency Significant Bits
     state->edacs_f_bits = 4;   //   Fleet Significant Bits
     state->edacs_s_bits = 3;   //Subfleet Significant Bits

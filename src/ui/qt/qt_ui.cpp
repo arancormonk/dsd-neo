@@ -7,7 +7,10 @@
 #include <QVariantMap>
 #include "qt_ui.h"
 
+#include <QChar>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QLatin1String>
 #include <QObject>
@@ -19,6 +22,7 @@
 #include <QUrl>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/runtime/git_ver.h>
+#include <dsd-neo/runtime/log.h>
 #include <functional>
 #include <qqml.h>
 
@@ -35,6 +39,7 @@
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "known_frequency_index.h"
+#include "listen_pins.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "radio_reference_model.h"
@@ -244,16 +249,30 @@ apply_confirmed_restore(const DecoderHost* host) {
     return backup::apply_pending_restore(env);
 }
 
-static void
+void
 prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* systems, ScanListsModel* scanLists) {
     // The library drops rows whose stored copy vanished behind the app's back;
     // saved systems that still point at one would build a `-G <missing>` argv and
     // fail to start with a parse error naming the input settings, not the file.
     // Reconciled here because the library cannot: it loads in its constructor,
     // and it has no business knowing what references it.
-    for (const QString& gone : importedFiles->takePrunedPaths()) {
-        systems->clearCsvPath(gone);
-        scanLists->clearCsvPath(gone);
+    QStringList gone = importedFiles->takePrunedPaths();
+    // The library saves its prune before anything here runs, so a clear that fails is not in the next launch's
+    // pruned list. Every reference into the library to a file that is gone is cleared as well, which retries it at
+    // each launch until it saves (issue #801). Files outside the library are the user's own and stay named.
+    const QString root = QDir::cleanPath(ImportedFilesModel::libraryRoot()) + QLatin1Char('/');
+    for (const QString& path : systems->csvPaths() + scanLists->csvPaths()) {
+        if (!gone.contains(path) && QDir::cleanPath(path).startsWith(root) && !QFileInfo::exists(path)) {
+            gone.append(path);
+        }
+    }
+    bool saved = true;
+    for (const QString& path : gone) {
+        saved = systems->clearCsvPath(path) && saved;
+        saved = scanLists->clearCsvPath(path) && saved;
+    }
+    if (!saved) {
+        LOG_WARN("Could not clear references to removed library files; they are retried at the next launch.\n");
     }
 }
 
@@ -263,6 +282,14 @@ static void
 publish_input_context(QQmlContext* context, QObject* owner) {
     context->setContextProperty(QStringLiteral("inputCommit"), new InputCommit(owner));
     context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
+}
+
+ListenPins*
+load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
+                 ScanListsModel* scanLists, QObject* owner) {
+    auto* pins = new ListenPins(prefs, systems, scanLists, owner);
+    prune_missing_csv_paths(importedFiles, systems, scanLists);
+    return pins;
 }
 
 bool
@@ -314,7 +341,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* recordingStatus = wire_recording_status(engine, host, controller, commands);
     wire_attachment(host, controller, prefs, systems, scanLists);
 
-    prune_missing_csv_paths(importedFiles, systems, scanLists);
+    auto* listenPins = load_listen_pins(prefs, importedFiles, systems, scanLists, &engine);
 
     wire_screen_policy(host, prefs);
 
@@ -353,6 +380,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("talkgroupView"), talkgroupView);
     context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
+    context->setContextProperty(QStringLiteral("listenPins"), listenPins);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
     context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
     publish_input_context(context, &engine);

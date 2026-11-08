@@ -4,7 +4,8 @@
  */
 
 /*
- * P25p2 FACCH RS(63,35) decode vectors
+ * P25p2 FACCH RS(63,35) decode vectors: shortened by 9 (known-zero symbols 0..8) and punctured by 9 (54..62, the
+ * only fixed erasures), an RS(45,26,20) code that corrects t=9 symbol errors.
  */
 
 #include <stdio.h>
@@ -12,7 +13,7 @@
 
 int ez_rs28_facch(int payload[156], int parity[114], const int* erasures, int n_erasures);
 
-static const int FACCH_FIXED_ERASURES[18] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62};
+static const int FACCH_FIXED_ERASURES[9] = {54, 55, 56, 57, 58, 59, 60, 61, 62};
 
 static int
 expect_eq_bit(const char* tag, int got, int want) {
@@ -31,7 +32,7 @@ main(void) {
     DSD_MEMSET(parity, 0, sizeof(parity));
 
     // Vector 1: all-zero codeword (systematic all-zeros is valid)
-    int rc = ez_rs28_facch(payload, parity, FACCH_FIXED_ERASURES, 18);
+    int rc = ez_rs28_facch(payload, parity, FACCH_FIXED_ERASURES, 9);
     if (rc < 0) {
         DSD_FPRINTF(stderr, "FACCH RS decode failed on all-zero codeword (rc=%d)\n", rc);
         return 1;
@@ -47,9 +48,9 @@ main(void) {
     DSD_MEMSET(payload, 0, sizeof(payload));
     DSD_MEMSET(parity, 0, sizeof(parity));
     payload[5] ^= 1; // flip one bit in first symbol
-    rc = ez_rs28_facch(payload, parity, FACCH_FIXED_ERASURES, 18);
-    if (rc < 0) {
-        DSD_FPRINTF(stderr, "FACCH RS failed to correct single-bit error (rc=%d)\n", rc);
+    rc = ez_rs28_facch(payload, parity, FACCH_FIXED_ERASURES, 9);
+    if (rc != 1) {
+        DSD_FPRINTF(stderr, "FACCH RS failed to correct single-bit error as one symbol (rc=%d)\n", rc);
         return 3;
     }
     for (int i = 0; i < 156; i++) {
@@ -58,14 +59,14 @@ main(void) {
         }
     }
 
-    // Vector 3: exceed t=14 symbol errors (flip 16 distinct symbols) → expect failure
+    // Vector 3: exceed t=9 symbol errors (flip 10 distinct symbols) → expect failure
     DSD_MEMSET(payload, 0, sizeof(payload));
     DSD_MEMSET(parity, 0, sizeof(parity));
-    for (int s = 0; s < 16; s++) {
+    for (int s = 0; s < 10; s++) {
         int bit = s * 6; // first bit of each symbol
         payload[bit] ^= 1;
     }
-    rc = ez_rs28_facch(payload, parity, FACCH_FIXED_ERASURES, 18);
+    rc = ez_rs28_facch(payload, parity, FACCH_FIXED_ERASURES, 9);
     if (rc >= 0) {
         DSD_FPRINTF(stderr, "FACCH RS unexpectedly succeeded with >t symbol errors (rc=%d)\n", rc);
         return 5;

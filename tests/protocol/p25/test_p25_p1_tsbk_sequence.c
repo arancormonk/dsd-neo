@@ -158,6 +158,19 @@ capture_site(const dsd_state* state, const dsd_signal_search_site_note* note) {
     g_site_note = *note;
 }
 
+/* Signal search scrambling code notes, and the last one. */
+static int g_code_notes = 0;
+static uint64_t g_code = 0;
+static int g_code_source = 0;
+
+static void
+capture_code(const dsd_state* state, uint64_t code, int source) {
+    (void)state;
+    g_code_notes++;
+    g_code = code;
+    g_code_source = source;
+}
+
 static void
 reset_decode_counters(void) {
     g_mac_count = 0;
@@ -494,6 +507,62 @@ expect_eq_int(const char* tag, int got, int want) {
     return 0;
 }
 
+/* The CRC-valid standard network status, read in a frame whose NID named @p frame_nac (or no valid NAC), on a decoder
+   whose received NAC and seed are an earlier frame's or carrier's: @p corrupt breaks the block's CRC. */
+static void
+run_network_status_frame(dsd_opts* opts, dsd_state* state, int frame_nac, int corrupt) {
+    build_network_status_stream();
+    if (corrupt) {
+        for (int i = 20; i < 80; i++) {
+            g_stream[i] = (uint8_t)(3 - g_stream[i]);
+        }
+    }
+    reset_decode_counters();
+    g_channel_freq = 0;
+    g_site_notes = 0;
+    g_code_notes = 0;
+    g_code = 0;
+    g_code_source = 0;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->p25_frame_nac = (uint16_t)(frame_nac & 0xFFF);
+    state->p25_frame_nac_valid = frame_nac >= 0 ? 1U : 0U;
+    state->nac = 0x111;
+    state->p2_cc = 0x111ULL;
+    state->p2_wacn = 0xBEE00ULL;
+    state->p2_sysid = 0x1A3ULL;
+    state->p2_hardset = 1;
+    processTSBK(opts, state);
+}
+
+/* Issue #804: a CRC-valid network status gives the Signal search session the Phase 2 scrambling code its own WACN and
+   SYSID make with the NAC of this frame's NID, never the received NAC an earlier frame left or the WACN and SYSID the
+   seed holds (here a hand-set one, as a Phase 2 carrier visited before could leave). A frame whose NID gave no valid
+   NAC pairs nothing, and a block whose CRC failed gives nothing. */
+static int
+test_network_status_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_signal_search_p25p2_code_set(capture_code);
+    int rc = 0;
+    run_network_status_frame(&opts, &state, 0x2C1, 0);
+    rc |= expect_eq_int("net-sts notes one code", g_code_notes, 1);
+    rc |= expect_eq_int("net-sts code pairs the frame nac",
+                        g_code == ((0xABCDEULL << 24) | (0x123ULL << 12) | 0x2C1ULL), 1);
+    rc |= expect_eq_int("net-sts code source", g_code_source, DSD_P25P2_CODE_P1_NETWORK);
+
+    run_network_status_frame(&opts, &state, -1, 0);
+    rc |= expect_eq_int("net-sts without a frame nac still notes its site", g_site_notes, 1);
+    rc |= expect_eq_int("net-sts without a frame nac notes no code", g_code_notes, 0);
+
+    run_network_status_frame(&opts, &state, 0x2C1, 1);
+    rc |= expect_eq_int("corrupt net-sts fails its crc", state.p25_p1_fec_err > 0, 1);
+    rc |= expect_eq_int("corrupt net-sts notes no code", g_code_notes, 0);
+    g_site_notes = 0;
+    dsd_signal_search_p25p2_code_set(NULL);
+    return rc;
+}
+
 int
 main(void) {
     dsd_decode_clock_use_test(1000000000ULL);
@@ -664,6 +733,7 @@ main(void) {
         rc |= expect_eq_int("cut tsdu reports only the blocks before the cut", g_evidence, grants_before[c]);
     }
     g_interrupt_at = -1;
+    rc |= test_network_status_code();
     dsd_signal_search_site_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_decode_clock_use_system();

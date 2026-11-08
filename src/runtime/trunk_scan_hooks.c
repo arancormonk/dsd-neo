@@ -120,6 +120,11 @@ dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+int
+dsd_trunk_scan_hook_dwell_due(const dsd_opts* opts, const dsd_state* state) {
+    return g_trunk_scan_hooks.dwell_due ? g_trunk_scan_hooks.dwell_due(opts, state) : 0;
+}
+
 /* The confirmation reaches a signal search from every report; its IDs only from content whose own check verified (no
    -F RAS acceptance or relaxed failed CRC in the reporting slot's scope), which is stricter than the scan hold. */
 static void

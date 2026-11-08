@@ -264,13 +264,13 @@ group list, and the starting frequency. It is **not** written to your config fil
 | Simulcast QPSK demodulation | Yes | `[mode] demod` |
 | Conventional scanning (`-Y`) | Yes | `[trunking] scanner` |
 | P25 learned-candidate preference (`-^`) | Yes | `[trunking] p25_prefer_candidates` |
-| EDACS extended addressing and ESK | Yes | `[mode] edacs_ea` / `edacs_esk` |
+| EDACS extended addressing and ESK | Yes | `[mode] edacs_addressing` / `edacs_esk` |
 
 The last three had no INI key before this feature landed, which meant a saved config for a
 multi-repeater Conventional Networked system, or for an EDACS system with ESK, decoded differently on the
-next launch. They persist now. `edacs_ea` and `edacs_esk` refine the EDACS decode preset without changing
-it — they are applied after `[mode] decode`, which resets both — in the same way `dmr_mono` refines the DMR
-one.
+next launch. They persist now. `edacs_addressing` (older files: `edacs_ea`) and `edacs_esk` refine the EDACS
+decode preset without changing it — they are applied after `[mode] decode`, which resets both — in the same
+way `dmr_mono` refines the DMR one.
 
 Limits worth knowing:
 

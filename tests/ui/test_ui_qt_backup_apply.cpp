@@ -72,6 +72,9 @@ using dsd_qt::backup::Fault;
 
 constexpr char kResultFile[] = "backup-restore-result.json";
 constexpr char kAvoidsFile[] = "signal-search-history.v1.avoids.json";
+// Issue #801: the pinned Listen shortcuts the configuration a restore replaces holds (singletons, so no store names
+// them).
+constexpr char kOldPins[] = R"([{"kind":"search","uid":""},{"kind":"explore","uid":""}])";
 
 int g_failures = 0;
 
@@ -530,7 +533,7 @@ change_references(const Backup& b, Old& old, const QString& external) {
     dsd_qt::SavedSystemsModel systems;
     dsd_qt::ScanListsModel scans;
     for (const QString& path : {b.groups, b.src}) {
-        systems.clearCsvPath(path);
+        expect("the systems drop a removed file", systems.clearCsvPath(path));
     }
     expect("the target scan list drops its file", scans.clearCsvPath(b.targets));
     expect("an unreferenced directory where the target bundle was",
@@ -573,7 +576,7 @@ change_references(const Backup& b, Old& old, const QString& external) {
             && systems.add({{"name", "Both4Replay"}, {"sourceType", "file"}, {"filePath", at("IMPORTS/BOTH4.CSV")}}));
     expect("add a system to delete",
            systems.add({{"name", "Gone"}, {"sourceType", "file"}, {"filePath", at("recordings/gone.wav")}}));
-    systems.remove(systems.rowCount() - 1);
+    expect("delete that system", systems.remove(systems.rowCount() - 1));
 
     old.externalFile = external + "/outside.csv";
     old.linkTarget = external + "/linked.csv";
@@ -643,7 +646,9 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
         expect("avoid 400000000", dsd_app_signal_search_permanent_avoid(400000000U) >= DSD_APP_SEARCH_AVOID_ADDED);
     }
     dsd_app_signal_search_store_close();
-    expect("old settings", dsd_qt::AppPrefs::replacePortable({{"rr/username", "someone"}, {"tuner/gainDb", "12"}}));
+    // Issue #801: shortcuts pinned before the restore, which the backup (taken without any) does not carry.
+    expect("old settings", dsd_qt::AppPrefs::replacePortable(
+                               {{"rr/username", "someone"}, {"tuner/gainDb", "12"}, {"listen/pinned", kOldPins}}));
 
     old.groupsDest = free_name(b.groups);
     old.srcDest = free_name(b.src);
@@ -1276,6 +1281,7 @@ test_clean_apply(TestHost& host, const Backup& b, const Old& old) {
         const dsd_qt::AppPrefs prefs;
         expect("a restore forgets the scan session's other lists",
                prefs.acceptedStartCompanions().isEmpty() && prefs.lastStartedCompanions().isEmpty());
+        expect("a backup without pinned shortcuts restores none", prefs.pinned().isEmpty());
     }
     expect("the result carries the summary",
            result.summary.value("systems").toInt() == 2 && result.summary.value("libraryFiles").toInt() == 7);
@@ -1413,6 +1419,8 @@ test_io_failures_roll_back(const Backup& b, const Old& old) {
             dsd_qt::AppPrefs prefs;
             expect(what + ": the scan session's other lists are kept",
                    prefs.acceptedStartCompanions() == QStringList{"hospital-uid"});
+            expect(what + ": the pinned shortcuts are back",
+                   prefs.pinned().size() == 2 && prefs.pinned().first().toMap().value("kind") == "search");
             prefs.setAcceptedStartCompanions({});
         }
         check_failed_state(qUtf8Printable(what), old);

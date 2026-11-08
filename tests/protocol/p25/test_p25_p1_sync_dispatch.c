@@ -24,9 +24,11 @@
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_nid.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "p25_search_site.h"
 
 int dsd_dispatch_matches_p25p1(int synctype);
 dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
@@ -34,6 +36,8 @@ dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 static uint8_t g_test_duid = 0x3U;
 static int g_check_result = NID_OK;
 static int g_new_nac = 0x293;
+/* Whether the stand-in decoder reports a NID decoded only with the observed NAC put in its NAC field. */
+static int g_nac_borrowed;
 static int g_error_count;
 static int g_last_observed_nac;
 static int g_open_mbe_calls;
@@ -59,6 +63,7 @@ reset_stub_state(void) {
     g_test_duid = 0x3U;
     g_check_result = NID_OK;
     g_new_nac = 0x293;
+    g_nac_borrowed = 0;
     g_error_count = 0;
     g_last_observed_nac = -1;
     g_open_mbe_calls = 0;
@@ -94,7 +99,9 @@ p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observ
     (void)parity_reliab;
     g_nid_decode_calls++;
     g_last_observed_nac = observed_nac;
-    struct p25p1_nid_result result = {(enum NidResult)g_check_result, g_new_nac, g_test_duid, g_error_count};
+    struct p25p1_nid_result result = {
+        (enum NidResult)g_check_result, g_new_nac, g_test_duid, g_error_count, g_nac_borrowed,
+    };
     return result;
 }
 
@@ -210,10 +217,30 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     state->lastp25type = 0;
 }
 
+/* The frame NAC verdict the TSDU's TSBKs see, which a network status among them pairs its WACN and SYSID with (issue
+   #804); -1 before any TSDU. */
+static int g_tsbk_frame_nac_valid = -1;
+/* The scrambling codes the TSDU's network status (WACN BEE00, SYSID 1A3) gave the Signal search, and the last one. */
+static int g_code_notes;
+static uint64_t g_code;
+
+/* The Signal search side of the code hook (the runtime is not linked here). */
+void
+dsd_signal_search_note_p25p2_code(const dsd_state* state, uint64_t code, int source) {
+    (void)state;
+    assert(source == DSD_P25P2_CODE_P1_NETWORK);
+    g_code_notes++;
+    g_code = code;
+}
+
+/* A TSDU whose block is a network status that passed its CRC: it pairs its system with the frame's NAC as
+   tsbk_handle_network_status() does. */
 void
 processTSBK(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     state->lastp25type = 3;
+    g_tsbk_frame_nac_valid = state->p25_frame_nac_valid;
+    p25_search_note_p1_network_code(state, 0xBEE00U, 0x1A3U);
 }
 
 void
@@ -440,6 +467,203 @@ test_p25p1_nac_update_guards(void) {
     assert(state.nid_corrections_total == 1U);
     assert(state.debug_header_errors == 1U);
     assert(state.nid_failures_total == 0U);
+}
+
+/* Issue #804 (F10): a seed NAC cleared by hand (the menu's P2 parameters) on the carrier being decoded comes back from
+   the next valid NID, although state->nac already holds that NAC. A NID repeating the NAC of a proven seed leaves the
+   proof alone. */
+static void
+test_nid_restores_cleared_p2_cc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0x293;
+    state.p2_cc = 0ULL;
+    state.p2_hardset = 0;
+    g_new_nac = 0x293;
+    g_test_duid = 0x7U;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.nac == 0x293);
+    assert(state.p2_cc == 0x293ULL);
+    assert(state.p2_cc_verified == 0U);
+    /* The DUID read counts one header error; the NAC, the one state->nac holds, none. */
+    assert(state.debug_header_errors == 1U);
+
+    reset_stub_state();
+    g_new_nac = 0x293;
+    state.p2_cc_verified = 1U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p2_cc == 0x293ULL);
+    assert(state.p2_cc_verified == 1U);
+
+    /* A NID naming another NAC than state->nac holds (a new carrier, or the first NID after a boundary zeroed it)
+       replaces a seed NAC that differs, and its proof. */
+    reset_stub_state();
+    g_new_nac = 0x293;
+    state.nac = 0;
+    state.p2_cc = 0x111ULL;
+    state.p2_cc_verified = 1U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.nac == 0x293);
+    assert(state.p2_cc == 0x293ULL);
+    assert(state.p2_cc_verified == 0U);
+}
+
+/* Issue #804: on a system whose Phase 1 control channel NAC differs from its Phase 2 colour code, a network status that
+   passed its CRC sets the seed's NAC to the colour code. Repeated NIDs of the control channel, their NAC the one
+   state->nac already holds, leave that seed and its proof alone. */
+static void
+test_nid_keeps_nsb_colour_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    g_new_nac = 0x293;
+    g_test_duid = 0x7U;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.nac == 0x293 && state.p2_cc == 0x293ULL);
+
+    /* What p25p2_vpdu_apply_nsb_identity() leaves after a CRC-passed network status naming colour code 0x111. */
+    state.p2_wacn = 0xBEE00ULL;
+    state.p2_sysid = 0x164ULL;
+    state.p2_cc = 0x111ULL;
+    state.p2_cc_verified = 1U;
+
+    for (int i = 0; i < 3; i++) {
+        reset_stub_state();
+        g_new_nac = 0x293;
+        g_test_duid = 0x7U;
+        dsd_dispatch_handle_p25p1(&opts, &state);
+        assert(state.nac == 0x293);
+        assert(state.p2_cc == 0x111ULL);
+        assert(state.p2_cc_verified == 1U);
+        /* The NID still names the carrier's NAC and the frame's. */
+        assert(state.rx_id.access == 0x293U);
+        assert(state.p25_frame_nac_valid == 1U && state.p25_frame_nac == 0x293U);
+    }
+}
+
+static void
+expect_frame_nac(int decoded_nac, int expected_valid) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    /* The previous frame's NAC, which this frame's NID replaces or withdraws. */
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_new_nac = decoded_nac;
+    g_test_duid = 0x7U;
+    g_tsbk_frame_nac_valid = -1;
+
+    dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(state.p25_frame_nac_valid == (uint8_t)expected_valid);
+    /* The TSDU's TSBKs run after the NID: they see this frame's verdict, never the previous frame's NAC. */
+    assert(g_tsbk_frame_nac_valid == expected_valid);
+    if (expected_valid) {
+        assert(state.p25_frame_nac == (uint16_t)decoded_nac);
+    }
+}
+
+/* Issue #804: the NAC of the frame being decoded, which a network status in it is paired with. It is valid only from a
+   NID the BCH accepted naming no reserved NAC, and never outlives a NID that decoded nothing. */
+static void
+test_frame_nac_validity(void) {
+    expect_frame_nac(0x000, 0);
+    expect_frame_nac(0xFFF, 0);
+    expect_frame_nac(0x001, 1);
+    expect_frame_nac(0xFFE, 1);
+
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A NID the BCH rejected. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_check_result = NID_DECODE_FAIL;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_frame_nac_valid == 0U);
+
+    /* A NID an input interruption cut. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_interrupt_at_dibit = 15;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(state.p25_frame_nac_valid == 0U);
+
+    /* A NID a carrier boundary split: the BCH accepted it, but its NAC is no carrier's. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    g_boundary_at_dibit = 10;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.carrier_seq == 1U);
+    assert(state.p25_frame_nac_valid == 0U);
+}
+
+/* Issue #804: a NID that decoded only once the observed NAC stood in for its received NAC field (here the seed's NAC
+   0x293 a Phase 2 carrier left, after the carrier boundary zeroed the received NAC) names no NAC: neither the frame's,
+   so the TSDU's network status pairs nothing, nor the received NAC, the received identity or the seed's. Its DUID
+   stands. The same NID read off the air pairs its own NAC. */
+static void
+test_borrowed_nac_names_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.nac = 0;
+    state.p2_cc = 0x293ULL;
+    state.p25_frame_nac = 0x555U;
+    state.p25_frame_nac_valid = 1U;
+    g_test_duid = 0x7U;
+    g_new_nac = 0x293;
+    g_nac_borrowed = 1;
+    g_tsbk_frame_nac_valid = -1;
+    g_code_notes = 0;
+
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+
+    assert(g_last_observed_nac == 0x293);
+    assert(state.lastp25type == 3);
+    assert(g_tsbk_frame_nac_valid == 0);
+    assert(g_code_notes == 0);
+    assert(state.p25_frame_nac_valid == 0U);
+    assert(state.nac == 0);
+    assert(state.rx_id.valid == 0U);
+    assert(state.p2_cc == 0x293ULL);
+
+    /* The same NID decoded from what was on the air: NAC 0x2C1 pairs with the network status. */
+    reset_stub_state();
+    g_test_duid = 0x7U;
+    g_new_nac = 0x2C1;
+    (void)dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(g_tsbk_frame_nac_valid == 1);
+    assert(g_code_notes == 1);
+    assert(g_code == ((0xBEE00ULL << 24) | (0x1A3ULL << 12) | 0x2C1ULL));
+    assert(state.nac == 0x2C1);
 }
 
 static void
@@ -701,6 +925,8 @@ test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_stub_state();
     g_new_nac = 0x293;
+    state.nac = 0x111;
+    state.p2_cc = 0x111ULL;
     state.frame_dispatch_active = 1;
     state.frame_dispatch_carrier_seq = state.carrier_seq;
     g_boundary_at_dibit = 10;
@@ -709,6 +935,9 @@ test_p25p1_nid_split_by_a_carrier_boundary_notes_no_nac(void) {
 
     assert(state.carrier_seq == 1U);
     assert(state.rx_id.valid == 0U && state.rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE);
+    /* Nor does the received NAC or the seed's take it (issue #804). */
+    assert(state.nac == 0x111);
+    assert(state.p2_cc == 0x111ULL);
 }
 
 /* A trunked system's return from a Phase 2 voice channel to its Phase 1 control channel crosses no carrier boundary:
@@ -793,6 +1022,10 @@ main(void) {
     test_p25p1_nid_correction_and_failure_state();
     test_p25p1_nac_update_guards();
     test_p25p1_nid_is_no_phase2_proof();
+    test_nid_restores_cleared_p2_cc();
+    test_nid_keeps_nsb_colour_code();
+    test_frame_nac_validity();
+    test_borrowed_nac_names_nothing();
     test_p25p1_mbe_output_and_resume_side_effects();
     test_p25p1_valid_nid_learns_modulation();
     test_p25p1_verdict_follows_the_nid_evidence_window();

@@ -65,6 +65,27 @@ Generated (do not edit/commit):
     flags as the session had them; when a mono preset (`-f1`) has turned both off, the
     baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
     voice frame is read, and Stop restores the session's own flags (`ENGINE_SIGNAL_SEARCH`).
+    An Auto visit restores that baseline's timing, so without a `-m` lock (`mod_cli_lock`) Start sets it to the
+    4800/4 C4FM profile (`search_start_profile()`: `sps_hunt_idx`, `samplesPerSymbol` and `symbolCenter` for 4800
+    sym/s, `rf_mod` 0) whatever the session's hunt held or learned; a locked baseline keeps its profile index and
+    modulation (`-mq` its CQPSK, `-m2` its 6000/4 P25 Phase 2 pin) and is only retimed, and Stop restores the session's
+    own (issue #804, `ENGINE_SIGNAL_SEARCH`).
+    Every visit's retune carries the digital family with its CQPSK state as the search's own choice, so it lands at the
+    rate `rtl_stream_output_rate_for_family()` predicts (read through the runtime hook, `search_visit_landing_hz()`),
+    which need not be the rate the front end runs before it: a CQPSK session at the complex rate whose FSK stream
+    resamples, or the analog family. The baseline, locked or not, is timed at that landing rate for its profile's symbol
+    rate and CQPSK state (the scan mode's timing rate only with no prediction): a lock pins the profile, not a rate
+    taken on the analog monitor (`test_locked_tuple_timed_for_its_landing`). So is a typed range's row once
+    `dsd_scan_mode_enter()` has timed it at the live rate (`search_time_typed_visit()`). Timed at the earlier rate, a visit would start at the wrong samples per symbol, and
+    an Auto visit's 5 at 48 kHz reads as 9600/2 rather than 4800/4 (`test_auto_visit_timed_for_its_landing`,
+    `test_typed_visit_timed_for_its_landing`).
+    The frame sync's `signal_search_probe` hook answers 1 while a visit to an Auto range probes
+    (`dsd_engine_signal_search_probe()`: `visit`, `probing`, not stopping, the hit not ended, `digital == 1`), so a
+    visit's tune, whose acquisition reset samples the answer, starts the hunt in the search order; admitted evidence
+    clears `probing`, and the hunt asks again when the probe's dwell is spent, so the carrier that confirmed keeps its
+    profile for the ordinary dwell (`test_probe_hook_answer`). The engine writes nothing of the hunt's state. A new
+    range probes for 3 s (`dsd_signal_search_range_default()`), the measured time for Auto to reach P25 Phase 2 and
+    recover and confirm its code (`DECODE_IQ_SEARCH_SCHEDULE_*`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A live strength that no
@@ -105,8 +126,27 @@ Generated (do not edit/commit):
     text into `hit.site` while the record's protocol is the hit's ("NXDN" for NXDN48/NXDN96; a
     site noted before identification waits for it), publishing the hit when the text changes,
     so a final broadcast before silence reaches the live status and the ended hit. Decoder state
-    (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never cleared or written
-    for it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The hit's call tuple
+    (`p2_wacn`, `p2_sysid`, `p2_cc`, RFSS/site, `dmr_t3_syscode`) is never written from the site record
+    (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`). The session's own P25 site is restored at every
+    departure instead (issue #804): Start saves a `dsd_p25_site_snapshot` after the preset (the code and its hand-set
+    flag, RFSS/site, control channel and TDMA flags, IDEN tables, band plan, explicit TDMA flags, channel identifier,
+    channel map, and the site broadcasts a change of system drops with the IDEN tables: the neighbour and secondary
+    control channel announcements still waiting for an IDEN, the secondary control channels, and the control channel
+    protection, services, LRA and network-active broadcasts; `p25_site_snapshot.h`), and `search_restore_site()` puts
+    it back whole right after the carrier boundary in `search_queue_tune()` and `search_close_reception()`, whether or
+    not the code changed (an IDEN update a visit took before its network status is stamped with the code in force), so
+    a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
+    (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
+    here. A channel map that moved gets a new `trunk_chan_map_seq`. `dsd_engine_signal_search_shutdown()` restores it
+    once a boundary has closed the reception; a decoder session that ends during a visit keeps the visit's code and
+    proof for the final call snapshots that follow, and `dsd_engine_cleanup()` then puts the session's back, unproven,
+    through `dsd_engine_signal_search_release_site()`, before the `--p25-bandplan-export` write, so no visited system's IDEN
+    tables reach the exported band plan. A session site that cannot be saved whole (its channel map's storage) refuses
+    the start. The coordinator also keeps the session's P25 Phase 2 code list (`p2_codes`, 16, most
+    recently confirmed first, a repeat moving to the front; Pause and Resume keep it, a new start begins empty):
+    `dsd_engine_signal_search_p25p2_code()` (the runtime code hook) adds a code without a reserved field from any
+    `dsd_p25p2_code_source` while a visit is receiving, and `dsd_engine_signal_search_p25p2_codes()` (the runtime codes
+    hook) answers code recovery only while a digital visit is receiving (`ENGINE_SIGNAL_SEARCH`). The hit's call tuple
     (`target`, `source`, `target_text`, `source_text`, `slot`, `crypt`) is one canonical call
     record's, copied whole by `dsd_engine_signal_search_call()` (installed as the runtime call
     hook) from the slot a call note names, under the same receiving gate: the record must be
@@ -728,6 +768,14 @@ missing-channel ledger from `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>` — so a
 control-channel state from one system is never reused on another. That is also why trunk scan rejects a global `-C`
 channel map or `--p25-bandplan` and imports each target's `chan_csv` through throwaway options and its
 `p25_bandplan_csv` straight from the path, so neither touches the live options.
+The P25 site part of a snapshot (the Phase 2 code and its hand-set flag, RFSS and site, the control channel and its
+TDMA flags, the IDEN tables, the band plan, the explicit TDMA channel flags, the channel identifier, the sparse
+channel map, and what `p25_update_system_identity()` drops with the IDEN tables on a change of system: the pending
+announcements, which resolve against whatever IDEN tables the state holds, the secondary control channels and the
+site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
+`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). Trunk scan
+keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
+state in its own snapshot fields.
 The one deliberate crossing is by provenance: when the parked target's WACN/SYS is known and another target's
 snapshot holds a P25 IDEN entry learned on that same WACN/SYS, the coordinator fills empty slots or replaces an
 untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_idens()`, TDMA first), and `dsd_engine_p25_bandplan_export()` in
@@ -771,7 +819,7 @@ identified itself (`cc_freq_hz` and the shared `trunk_cc_freq` a target revisit 
 compares the receiver (`dmr_sm_receiver_on()`), not the shared alias.
 Probe frequency is separate from the saved anchor until control or grant evidence confirms it. Target entry and accepted CC return restart acquisition, preventing a previous call or probe from holding
 or retuning a newly parked target. Pending backend probes hold the target and disarm idle dwell; completion or timeout starts
-a fresh dwell. The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
+a fresh dwell (a coordinator park's dwell runs from its completion stamp). The subsequent decoded-acquisition wait counts toward dwell. DMR heartbeats use the completed
 tuning generation and frequency, avoiding blocking rigctl queries in the CSBK path.
 
 Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
@@ -2601,7 +2649,7 @@ suite runs under this compiler.
   ProVoice and M17 beside every other decoder. `dsd_edacs_session(opts, state)` (`<dsd-neo/core/edacs_session.h>`,
   header-only so the runtime squelch policy reads it without linking core) is a selected EDACS session:
   `frame_provoice` and either an EDACS addressing mode selected (`state->ea_mode >= 0`: `-fh/-fH/-fe/-fE`, `-fh -fa`,
-  an EDACS-to-Auto switch, a config's `edacs_ea`, the EA toggle) or ProVoice the one digital decoder (`-fp`, which
+  an EDACS-to-Auto switch, a config's `edacs_addressing` or `edacs_ea`, the EA toggle) or ProVoice the one digital decoder (`-fp`, which
   selects no mode). Plain Auto (`ea_mode == -1`, where EDACS only prints the mode-selection hint) is none. Every preset
   but EDACS/ProVoice and Auto sets `ea_mode = -1` and `esk_mask = 0` (`dsd_stage_decode_mode_preset()`), so EDACS, then
   another mode, then Auto is plain Auto; a scan row's preset keeps the configured addressing
@@ -2778,7 +2826,8 @@ suite runs under this compiler.
   the DMR trunking parts (keeping the colour code the reset keeps, and the user's `-D`) and the NXDN location, IDAS
   parts and RAN (`dsd_rxid_forget_system()`); a decode mode change, once the calls it ended froze their identity and
   once a switch onto the analog monitor the front end has queued is taken (`ui_commit_mode_identity()`: refused where it
-  lands, the session goes back with its identity), an `[edacs]` addressing mode a config apply sets without a `[mode]`,
+  lands, the session goes back with its identity), an EDACS addressing mode a config apply sets without a `decode` key
+  (`[mode] edacs_addressing`, `edacs_ea` or `edacs_esk`),
   a RadioReference import's EDACS variant and the EDACS addressing mode toggle (after its calls ended, which keep their
   site) run `dsd_rxid_note_decoder_settings()`, which drops a record of a protocol the settings no longer decode and an
   EDACS record read under the other addressing mode (`edacs_ea_mode`; an EDACS note under the other mode drops it as
@@ -2807,7 +2856,11 @@ suite runs under this compiler.
     canonical call record a protocol just published after its check; the engine reads the record),
     access notes (`dsd_signal_search_note_access()`: a checked proof gave the current protocol's
     access code a new value; the engine reads the code, issue #802) and the decoder-thread active
-    query, with no-op defaults. It also holds the visit tag (issue #809):
+    query, with no-op defaults. P25 Phase 2 scrambling codes (issue #804): code recovery
+    asks `dsd_signal_search_p25p2_codes()` once per window for the session's learned codes (at most what it asked for;
+    0 without a provider), and the protocol reports each complete code checked content gave it through
+    `dsd_signal_search_note_p25p2_code()` with its `dsd_p25p2_code_source` (`p25_search_site.h`, below). It also holds
+    the visit tag (issue #809):
     `dsd_signal_search_visit_set()`/`_clear()`/`_get()` keep one `(session_id, hit_id)` pair under a lazily
     initialised mutex, so a reader on any thread sees the tag clear or one whole pair; a pair with a zero half reads as
     clear, and the default is clear, so the CLI, headless runs and tests are unaffected (`RUNTIME_SIGNAL_SEARCH_VISIT`,
@@ -2816,9 +2869,12 @@ suite runs under this compiler.
     site record (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`, `dsd_signal_search_site_format()`) is
     runtime's: a P25 site note joins only a record with no SYSID or the same one, and a network note naming another
     WACN or SYSID, another protocol's note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a
-    control block whose CRC passes (`p25_sm_note_cc_activity()`) and from conventional calls whose identity resolves,
-    never from a NID or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share of
-    random input (`P25_P1_TSBK_SEQUENCE`; limit in docs/signal-search.md).
+    control block whose CRC passes (`p25_sm_note_cc_activity()`), from conventional calls whose identity resolves, and
+    from any Phase 2 FACCH or SACCH whose real MAC checksum passed, whatever MAC it carries
+    (`p25_sm_note_traffic_activity()` in `include/dsd-neo/protocol/p25/p25_traffic_activity.h`, issue #804: traffic,
+    not control channel activity, named by the current Phase 2 synctype and the MAC's slot), never from a NID, an
+    ISCH/DUID structure or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share
+    of random input (`P25_P1_TSBK_SEQUENCE`, `P25_P2_ACCH_VERDICT`; limit in docs/signal-search.md).
     It does not own radio I/O, persistence or Qt state.
   - Readout text (`include/dsd-neo/runtime/number_text.h`, issue #669): `dsd_number_text()` formats with the platform
     printf and drops the sign of a text whose digits are all zero (`-0.0` → `0.0`, any radix; `nan`/`inf` untouched),
@@ -3481,6 +3537,11 @@ depending directly on protocol headers. The runtime provides a small hook table 
 timers are due (issue #703); the engine's answer reads the state machines under the P25 SM tick guard.
 `p25_probe_in_flight` tells the SPS hunt that a P25-driven control-channel probe is in flight, so it steps only between
 the P25 profiles (see the startup control-channel hunt below); with nothing installed there is no probe.
+`signal_search_probe` (issue #804) tells it that a Signal search probe is identifying an Auto detection
+(`dsd_engine_signal_search_probe()`), so the unlocked hunt steps in the search order and spends the search dwell on
+6000/4 (the DSP section's SPS hunt entry); the hunt keeps the answer in `dsd_state::sps_hunt_search_order`.
+`dsd_frame_sync_hooks_get()` copies the installed table out, so a host that replaces one slot keeps the others
+(`tests/engine/search_schedule_replay.c`).
 `analog_call_block` hands the engine's NFM call every processed conventional monitor block as a `dsd_analog_call_block`
 descriptor (issues #756, #668; see `dsd_symbol.c` in the DSP section), borrowed for the synchronous call.
 
@@ -3503,6 +3564,17 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
     releases the target on air toward a target the walk passes over. With no such alternate, a failed park is retried in
     place after its cooldown (`trunk_scan_retry_active_if_due()`), as a single or held target's is; the walk names the
     widths a changed rate leaves unfit, since it no longer retunes them.
+- `dsd_trunk_scan_hook_dwell_due()` — whether the idle dwell of the target on air has run out
+  (`dsd_engine_trunk_scan_dwell_due()`, discussion #717). `getFrameSync()` asks it every 300 symbols, beside the Signal
+  search yield, and on a 1 returns a plain no-sync (history dropped, hunt return marked, no input interruption), so the
+  engine's next pass ticks the rotation under the coordinator's guard and runs its no-carrier pass as after any
+  no-sync return. Without it a silent target's dwell was seen only at the 1800-symbol pass end. It answers 1 once per
+  dwell start (`dwell_yield_from_m`), so a tick that keeps the target never makes the hunt hand back every 300
+  symbols, and counts a park still in flight from its landing. Every park's idle dwell runs from its landing
+  (`trunk_scan_arm_idle_at_landing()`): a synchronous one's completion (a blocking rigctl tune's latency is not
+  listening time) and a pending one's when `trunk_scan_resolve_pending_retune()` notices it, instead of the first tick
+  after it. A dwell disarmed in between (a hold toggled, activity) stays disarmed, so a release still gets a fresh dwell
+  from the next tick.
 - `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` /
   `dsd_trunk_scan_hook_p25_conventional_activity()` — report decoded conventional activity so the parked target keeps
   its park. Pass only identity that has already cleared the protocol's FEC/CRC gate (DMR's `dmr_flco()` reports only
@@ -4668,7 +4740,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   meaning `[mode]`, `[demod]` and both `[analog]` widths, restored over the row-scoped options in force by
   `ui_restore_receive_settings()`, which puts back `[analog]`'s tone policy from among those options as well; and what
   `[mode]` sets outside that snapshot that the decoder reads, `ui_cfg_mode_extras`: `ea_mode` and `esk_mask`, which
-  `edacs_ea`/`edacs_esk` and the EDACS/ProVoice preset set, the extra LRRP ports and the compressed-UDP port map; the
+  `edacs_addressing`/`edacs_ea`/`edacs_esk` and the EDACS/ProVoice preset set, the extra LRRP ports and the compressed-UDP port map; the
   audio layout a preset carries
   is the session's anyway), restarts that input, toasts `Config not applied: <why>` and fails the apply. What
   runs after it (the other hot restarts, the output reconfigure, `apply_cfg_receive_family_change()`) sees the receive
@@ -6201,6 +6273,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`mod_cli_lock`) and in the analog family (`dsd_opts_is_analog_family()`), which has no digital modulation to
   choose: a CQPSK vote there (a carrier near 0 Hz) took the front end off the monitor path. Tests:
   `FRAME_SYNC_INTERNAL_HELPERS`, `DECODE_IQ_ANALOG_NO_MOD_AUTO_SWITCH`.
+- X2-TDMA runs on the 4800/4 hunt profile (`frame_sync_try_x2tdma()`, `frame_sync_sps_profile_has_candidate()`,
+  `dsd_decode_mode_profile_for()`, discussion #717): Motorola's X2-TDMA reuses the P25 Phase 1 modulation (C4FM, or
+  CQPSK/LSM on simulcast) and its 9600 bit/s, so 4800 sym/s over four levels, and the RTL front end gives it the P25
+  channel filters (`opts_has_p25_mode()` in `rtl_demod_config.cpp`, `kFskModeP25` in `rtl_sdr_fm.cpp`). The 6000/4
+  profile is P25 Phase 2's alone. Its four sync-word compares now run on 4800/4 beside DMR's, where the matcher
+  returned at its profile check, and no longer on 6000/4; the difference is within run-to-run noise. Tests: `FRAME_SYNC_X2TDMA_RATE`
+  (synthetic bursts through the real WAV reader and frame sync), `FRAME_SYNC_DMR_WAV_RATE`, `IO_RTL_DEMOD_CONFIG`.
 - dPMR FS2 acceptance (`frame_sync_try_dpmr()` in `dsd_frame_sync.c`), a decided cost. FS2 (ETSI TS 102 658 6.1.2,
   5FF77D) is matched as one exact window of 12 sign-sliced symbols, which about one window in 4096 of any carrier's
   payload or of receiver noise passes: about 0.6-0.8 false FS2s a second on noise and on NXDN48 data alike (8 in the 10
@@ -6260,6 +6339,22 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `test_nxdn96_acquires_on_the_four_level_fsw`), `FRAME_SYNC_DMR_WAV_RATE`, `DECODE_IQ_NOISE_FLOOR_NXDN96_NO_SYNC`,
   `DECODE_IQ_NOISE_FLOOR_AUTO_NO_M17_NXDN96_SYNC`, `DECODE_IQ_NXDN96_MID_FRAME_JOIN` (`nxdn96_after_retune`) and its
   `_AUTO` twin, `DECODE_IQ_NXDN96_WEAK`, `DECODE_IQ_NXDN96_WEAK_0DB`, `DECODE_IQ_NXDN96`.
+- Signal search probe order (issue #804, `dsd_frame_sync.c`, `frame_sync_policy.c`). While
+  `dsd_state::sps_hunt_search_order` is set the unlocked hunt steps 4800/4 -> 6000/4 -> 2400/4 -> 9600/2 -> 4800/2
+  (-> 18000/4, which no search enables), skipping profiles without a candidate (`frame_sync_sps_hunt_search_next_index()`,
+  asked before the P25 probe order), and `dsd_frame_sync_sps_hunt_dwell_passes()` gives 6000/4
+  `DSD_FRAME_SYNC_SEARCH_6000_4_PASSES` (1: a P25 Phase 2 carrier holds the profile from its first sync), every other
+  profile its usual three. A `-m` lock keeps its equal-timing walk and dwell. The flag is sampled from
+  `dsd_frame_sync_hook_signal_search_probe()` only where the hunt adopts a new profile
+  (`frame_sync_apply_sps_hunt_profile()`), resets its acquisition (`dsd_frame_sync_reset_acquisition()`) or finds a
+  dwell spent while the flag is set (`frame_sync_no_sync_sps_hunt()`: evidence may have ended the probe since, and the
+  carrier that confirmed is then owed the ordinary dwell, the next step the ordinary order), never per symbol; the
+  step and dwell read the flag. The 2400/4 proven hold still covers the first 4800/4 dwell, since the search
+  order crosses fewer profiles on its way back. Tests: `FRAME_SYNC_INTERNAL_HELPERS`
+  (`test_search_order_each_flag_subset`, `test_search_order_off_is_todays_order`, `test_search_dwell_6000`,
+  `test_order_flag_cleared_on_evidence`, `test_proven_2400_4_hold_spans_the_search_order`), `FRAME_SYNC_POLICY`,
+  `DECODE_IQ_SEARCH_SCHEDULE_*` (the whole chain from a 4800/4 C4FM start, landing 0, 350 and 700 ms into each
+  capture, `tests/engine/search_schedule_replay.c`; dPMR within 1.9 s pins the one-pass dwell).
 - P25p1 chain choice on 4800/4 (`dsd_frame_sync.c`, unlocked RTL sessions with P25p1 on). The votes cannot move a P25p1
   signal onto CQPSK, so alternate 4800/4 dwells that expired with nothing decoded try the CQPSK chain
   (`frame_sync_maybe_probe_p25p1_cqpsk()`, `p25_p1_mod_probe_next_qpsk`; the trial's dwell is kept off the votes by
@@ -8154,6 +8249,38 @@ Build files: `src/io/CMakeLists.txt` (defines radio/audio/control subtargets)
   passes) and succeeds only on a valid product codeword, returning that codeword's payload, R bits and its distance to
   the received bits. The decode is iterative, not nearest-codeword (some four-error patterns reach a different
   codeword at distance 5), so callers gate on the distance.
+- `ez.cpp` / `<dsd-neo/fec/ez.h>`: the P25 Phase 2 Reed-Solomon codes, all RS(63,35) over GF(64) (ezpwd, the only
+  file that includes it). The ESS is RS(44,16,29). FACCH and SACCH are shortened at the front and punctured at the
+  back: FACCH RS(45,26,20) (symbols 0..8 shortened, payload 9..34, sent parity 35..53, punctured 54..62), SACCH
+  RS(52,30,23) (0..4 shortened, payload 5..34, sent parity 35..56, punctured 57..62). Shortened symbols are known
+  zeros, never erasures (issue #804): erasing them as well cut FACCH from 9 correctable errors to 5 and SACCH from 11
+  to 8, and let about 1.2e-3 of random FACCH words pass by "correcting" a symbol that is zero on air.
+  - Coordinates: callers pass erasures as full RS(63,35) indices. `ez_rs28_facch()` and `ez_rs28_sacch()` drop
+    shortened, out-of-range and repeated ones, translate the rest into ezpwd's shortened code (index minus the pad),
+    and fail a decode that would correct a shortened symbol. The punctured symbols must be in the list (the fixed
+    lists in `p25p2_frame.c`; the soft-erasure ranking in `p25p2_soft.c` adds sent symbols only).
+  - A decode is accepted only when the codeword its payload re-encodes to lies within 2 x errors + erasures <= 28 of
+    the received word (`acch_unerased_distance()`). ezpwd's Berlekamp-Massey occasionally decodes past that radius
+    (about 1.5% of FACCH words with 10 errors), where the codeword is no longer unique, and now and then reports a
+    decode that is no codeword at all (a few random words in 1e7 on the soft-erasure ladder), which its own error
+    count does not reveal.
+  - The return value counts the sent symbols the decode changed; punctured fills are not counted. A failed decode
+    writes nothing. `ez_rs28_ess()` counts in the same unit (an erasure that held the right value is no
+    correction), so the terminal's ESS, FACCH and SACCH average corrections compare.
+  - `ez_rs28_facch_fixed()` and `ez_rs28_sacch_fixed()` erase the punctured symbols only and allocate nothing, for
+    trial decodes. `ez_rs28_facch_encode()` and `ez_rs28_sacch_encode()` give the sent parity of a payload (all
+    zeros if the codec could not be allocated). Tests:
+    `P25_P2_RS_SHORTENED`, `P25_P2_RS28_LIMITS`, `P25_P2_FACCH_RS`, `FEC_BLOCK_CODES`.
+  - `ez_p25p2_seed_tables_get()` (issue #804): a scrambled FACCH or SACCH as GF(2) equations in its 44-bit scrambling
+    code, for P25 Phase 2 code recovery. Per kind: the burst bit of each sent codeword bit (the layouts
+    `p25p2_frame.c` gathers by), the 114 (FACCH) or 132 (SACCH) check rows over the codeword bits (built from
+    unit-payload encodes), and per superframe slot T each row's mask over the code (the scrambler, a Fibonacci LFSR
+    loaded with the code, tracked symbolically from bit `20 + 360 * T`): over the received bits r,
+    `parity(check & r) == parity(seed[T] & code)` for an error-free burst. It also keeps the superframe sequence as
+    masks over the code (`sequence[j]`), so a trial descrambles a burst without stepping the LFSR. Built once in a C++
+    function-local static (thread-safe, its one allocation per process), about 1.5 ms in a release build; NULL if the
+    allocation failed. `P25_P2_SEED_RECOVER` checks it against the burst builder (`p25p2_generate_scramble_bits()`
+    and the RS encoder) at every T.
 - Build files: `src/fec/CMakeLists.txt`
 
 ## Crypto
@@ -8256,7 +8383,30 @@ at the stream's output rate and Pulse at 48 kHz (`edacs_analog_input_rate_hz()`)
 WAVs see 48 kHz, and at 48 kHz the collection is unchanged. A triplet a retune cut through (the trunk-tuning, RTL
 stream or PCM stream generation moved while it was read), or read while the call's tune or any other retune is
 unresolved, is discarded: no audio, recording, release check, squelch count or media update. A tune that failed leaves
-the call, since the radio reads the previous channel again. The converter starts over at every retune, during a
+the call, since the radio reads the previous channel again, and returns the session to the control channel
+(`edacs_grant_tune_failed()`, discussion #717). A grant tune accepted in flight is recorded in
+`dsd_state::edacs_tune_request`; `edacs_trunk_tick()` (`<dsd-neo/protocol/edacs/edacs.h>`), which the engine runs
+between synced frames (withheld ones included) and on each outer-loop pass under the P25 SM tick guard, forgets it once
+it lands and rolls a digital (ProVoice) grant back the same way when it fails: the grant's call ends (EXPLICIT), the
+control channel is tuned again through the helper `eot_cc()` shares (`edacs_return_to_cc()`; a refused tune leaves the
+receiver where the failure left it, on the control channel, and only the tuned state goes), and the failed request is
+disowned, so it no longer withholds frames that `edacs()` must act on. A control-channel return accepted in flight (that
+rollback's or `eot_cc()`'s) is watched in `dsd_state::edacs_cc_return_request`: the session already reads as on the
+control channel, so a failure nothing settled would withhold every frame for good; the tick disowns it and asks for the
+control channel again while the tuner takes the request, and a refusal leaves the receiver decoding where it is. Who
+settles a failure is decided before anything lets it go (`edacs_tune_failure_owner()`). It is handed over, and EDACS
+only forgets its reference (`edacs_tune_request` and `edacs_tuned_lcn`, or `edacs_cc_return_request`), when the session
+is no longer a trunked EDACS one (trunking off, another mode) or the request is no longer the tuning ledger's newest,
+both asked and unresolved (an input or device switch resets the ledger; a trunk-scan park, a channel step or another
+protocol's grant is newer): the record stays for that owner, or for the engine, which reconciles the tuner frequency
+with the radio before it retires a failure no trunking owns (`dsd_engine_retire_inactive_tune_failures()`), and the
+call, the tuned flag, the frequencies and the crypto in force, which may be the new owner's, are left alone. When the
+carrier count has moved since the request (`edacs_tune_carrier_seq`, `edacs_cc_return_carrier_seq`; a typed tune or a
+stream restart, whose owner set the new carrier) EDACS still holds the record that nobody else will settle, so it
+disowns it and touches nothing else. Only otherwise does EDACS own the recovery: it ends the grant's call, clears its
+tuned state, disowns the failure and retunes, the rollback or the retry, when `dsd_trunk_tuning_hook_tuner_free()`
+answers free (no manual tune, trunk scan or `-Y` scan owns the tuner); its own control-channel tune makes the tuner
+frequency agree with the radio. The converter starts over at every retune, during a
 triplet or between two, and the PCM staging held from before the call is dropped when it ends. A triplet plays
 (`edacs_emit_analog_audio()`) only past the talkgroup gate, and only while the output is unmuted (`audio_out` 1) and
 slot 1 is on, on the local stream, UDP and the raw fd alike (`edacs_analog_output_enabled()`, the mixers' rule); it
@@ -8264,7 +8414,9 @@ notes the audible-audio stamp only when one of them receives it (the shared outp
 only, and the null output or a local stream that is not open receives nothing) and the squelch the call runs opened on
 it (see Core). Tests:
 `EDACS_GRANT_TUNE_MATRIX` (the `analog-633` cases, with golden hashes of a 48 kHz call's audio, WAVs and stdout; the
-emitter's outputs and stamp under each gate, squelch, output type and sample format).
+emitter's outputs and stamp under each gate, squelch, output type and sample format; the `analog-717` and `digital-717`
+failed-tune rollbacks), `ENGINE_EDACS_FAILED_GRANT_STALL` (a control channel that keeps syncing after a failed grant
+tune is decoded again).
 
 P25 manual control-channel selection lives in `src/protocol/p25/p25_cc_selection.c`. The Frequency command routes
 active single-system P25 sessions here; the module holds the watchdog guard through the runtime CC tuning hook,
@@ -8407,6 +8559,64 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   after such a segment. So nothing of the old channel's PDU acts on the new assignment, and `p25_p2_frame_reset()`
   zeroing the dispatch's `ts_counter` can no longer replay timeslots as phantom 4V bursts. The DUID-13 LCCH timeout
   re-evaluates its release verdict after the burst's MAC PDU (`p25p2_duid_lcch_release_due()`).
+- Signalling checks (issue #804). A FACCH (DUID 9/15), SACCH (3/12) or LCCH (4/13) gets a pure verdict
+  (`p25p2_acch_verdict`, `p25p2_frame_internal.h`) before anything acts on it: its kind, whether RS passed, how many
+  soft erasures the accepted decode used, and whether its real MAC checksum passed (`p25p2_acch_checksum_ok()`: CRC-12
+  over 144 bits for FACCH, 168 for SACCH; CRC-16 over 164 for LCCH), whatever `-F` says. The retry ladder
+  (`p25p2_acch_decode_ranked()`) erases the punctured symbols, then one more of the least reliable sent symbols at a
+  time, at most 4 for FACCH and 6 for SACCH: past those a random word passes RS somewhere on the ladder more often than
+  1e-6 per burst (the bound and its numbers are next to the constants). It keeps the first rung whose word passes RS
+  and its checksum, so a miscorrection the CRC rejects no longer hides a later rung that recovers the burst. When no
+  rung passes both, the first word that passed RS is dispatched, as before the checksum joined the ladder, so the
+  XCCH's own CRC check and `-F`'s fallback see what they always saw: a FACCH rejects every failed CRC, a SACCH's
+  PTT/END/ACTIVE need a CRC that passed, and only a MAC_SIGNAL whose second octet is zero (and under `-F` an LCCH
+  MAC_SIGNAL whose second octet is not) reaches `process_MAC_VPDU_crc()` with its failed verdict. The XCCH validators
+  (`p25p2_xcch_validate_{f,s}acch_crc()`) check the same CRC over the same bits again by design: they keep the `-F`
+  fallback as it was and always agree with the verdict. A received word that is already a codeword (rung 0 changed
+  nothing) with a failed checksum tries no soft rung, which could only decode it to itself. Only a verdict with
+  RS, no soft erasures and the checksum proves the seed (scrambled bursts, `p25p2_note_seed_proven()`, after the
+  checksum and before the MAC PDU) and marks the carrier two-slot (`p25p2_note_tdma_carrier()`). Any FACCH or SACCH
+  whose checksum passed, soft erasures or not, is then Signal search evidence (`p25p2_acch_note_evidence()` →
+  `p25_sm_note_traffic_activity()`, before the MAC PDU, which may retune): MAC_HANGTIME, MAC_IDLE and MAC_END_PTT
+  confirm a voice channel heard between calls as PTT and ACTIVE do. It names the MAC's slot (a SACCH's is the
+  opposite one, `p25_sacch_to_voice_slot()`), which the engine's receive policy judges, and moves no control channel
+  stamp. A verdict whose checksum failed reports nothing, under `-F` too, whatever its fallback dispatches. An LCCH
+  reports itself as control channel activity at its CRC-16 (`p25_sm_note_validated_cc()`), once.
+- Scrambling code recovery (`p25p2_seed_recover.c`, issue #804). On a carrier whose code is not proven
+  (`p2_cc_verified == 0`), not hand-set (`p2_hardset == 0`) and not trunked (`trunk_enable == 0`), `processP2()` hands
+  each window to `p25p2_seed_recover_window()` after `p25p2_window_position()` and before the descrambler, with
+  whether the window's own channel-1 I-ISCH located it and whether that I-ISCH contradicted continuity. Each scrambled
+  FACCH (DUID 9) or SACCH (DUID 3) of a located window is tried in turn under the code in force (a burst that passes it
+  ends the window and drops any candidate: the normal path proves the code; a burst the normal path decodes only with
+  soft erasures proves nothing, so recovery still tries it), the candidate waiting for confirmation, the Signal search
+  session's learned codes, then a code solved from the burst itself (`ez_p25p2_seed_tables_get()`: Gaussian
+  elimination over the code's 44 bits, then the least reliable RS symbols by their weakest bit's LLR erased one more at
+  a time while 16 checks stay spare, so at most 9 FACCH or 12 SACCH symbols; the first consistent solution is the
+  burst's only one). A try descrambles into local buffers and needs `ez_rs28_*_fixed()` and the real MAC CRC
+  (`p25p2_acch_checksum_ok()`, whatever `-F` says), and a code is a candidate only with no zero or all-ones WACN, SYSID
+  or NAC (as `p25p2_duid_has_valid_site()`). A candidate (state-ext slot 29, `DSD_STATE_EXT_PROTO_P25P2_SEED_RECOVER`)
+  keeps its superframe slot, window serial, `carrier_seq` and alignment generation; it is confirmed only by a burst of
+  another located window at another slot, since a code solved under a mislabelled slot is a shifted code that decodes
+  every burst mislabelled alike and a wrong code's verdict is the same at one slot (`P25_P2_SEED_RECOVER`). A carrier
+  boundary, `p25p2_frame_forget_carrier()`, a contradicted window and any window on a proven carrier drop it; a
+  contradicted window, or one only continuity places, neither solves nor confirms. The confirmed code is committed
+  like a checked network status: WACN/SYSID through `p25_update_system_identity()`, the NAC into `p2_cc` (both clear
+  `p2_cc_verified` on a change), the line " P25p2 scrambling code recovered: WACN %05llX SYSID %03llX NAC %03llX" and
+  `dsd_signal_search_note_p25p2_code(..., DSD_P25P2_CODE_RECOVERED)` and a Signal search network site note with the
+  code's WACN and SYSID alone (`p25_search_note_recovered_network()`; no LRA, RFSS or site); the window then
+  descrambles with it and its confirming burst proves it through the verdict. Nothing else changes before the commit:
+  no counter, MAC, proof, identity, event or evidence. Allocation: the tables once per process and the context once
+  per decoder state (at its first located window on an unproven carrier, freed with the state's extensions); nothing
+  per window or burst. Cost: a `p2_cc_verified` read and a slot lookup per window on a proven carrier; on an unproven
+  one a few microseconds per code tried and 30-45 us per worst-case solve in a release build. Documented limits:
+  voice (4V C0 Golay, ESS) is not solved from, a channel whose probe sees no clean scrambled FACCH/SACCH stays
+  unresolved, and an I-ISCH-to-offset mapping that is wrong systematically would also break decoding with a known
+  code (the real-air fixture pins it).
+- Burst kind. `dsd_state::p2_is_lcch` is set for an LCCH's MAC PDU only and cleared when it returns, so an LCCH whose
+  decode failed cannot make the next FACCH or SACCH of the window an LCCH (its CRC-16 path rejected valid bursts).
+  The MAC opcode is no service option: no burst writes it into `dmr_so`/`dmr_soR`, which carry the service options
+  voice classification reads. DUID 10 (a scrambled data channel burst, DATCH) is a known burst the decoder does not
+  read, not a DUID error, so two of them no longer abort a window before its SACCHs.
 - MAC_IDLE carrying a grant. The SACCH and FACCH MAC_IDLE handlers observe the IDLE, then dispatch its payload, then
   emit it. A grant the payload carries for the IDLE's slot is newer than the IDLE and keeps its policy route, service
   options and crypto state. The SM numbers each slot grant stamp from one counter (`p25_sm_slot_ctx_t.grant_seq`), and
@@ -8428,8 +8638,14 @@ SACCH, and the slot is the timeslot's parity. A FACCH MAC belongs to its burst's
   discards the playout before `p25_p2_frame_reset()`.
 
 Tests: `P25_P2_VOICE_OUTPUT` (end to end through the DUID dispatch, against a tagging stand-in vocoder),
-`P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_VPDU_GRANTS`,
-`P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`.
+`P25_P2_RELIABILITY` (window position, retirement, unproven windows, the retune token), `P25_P2_ACCH_VERDICT` (windows
+built as a site sends them, `tests/protocol/p25/p25p2_burst_builder.h`, through the real RS, CRC and XCCH: the verdict,
+the ladder and its ceilings, `-F`, the burst kind, `dmr_so`, DUID 10, Signal search evidence from any checked MAC and
+its slot), `P25_P2_VPDU_GRANTS`, `P25_P2_XCCH_HELPERS`, `APP_P25_CC_SELECTION`, `P25_P2_SEED_RECOVER` (code recovery
+through `processP2()`: tables, every slot and kind, symbol errors, noise, shifted codes, the confirmation rules, learned
+codes, `-F`, hand-set and trunked skips, boundaries, the recovered code's site note), `DECODE_IQ_P25P2_CC` (no DUID 10
+error on the real-air capture; the code BEE00/164/161 recovered from its SACCHs and the SACCH MACs after it decoded;
+also its Airspy and determinism variants).
 
 Call frequency and access-code provenance (issue #575). A call's canonical `frequency_hz` and the live access codes
 (`dmr_color_code`, `dpmr_color_code`, `nxdn_last_ran`) are read as describing the carrier the call is decoded on, so:
@@ -8610,16 +8826,19 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     SM tick guard the dispatch holds. Tests: `NXDN_GRANT_TUNE_MATRIX` (also built on the real canonical call state as
     `NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE`, which adds the cases that need its own start and end times),
     `NXDN_ELEMENT_BOUNDS`, `NXDN_FRAME_ROUTING`, `ENGINE_TRUNK_SCAN`, `ENGINE_NO_CARRIER_RESET`.
-- `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID or another carrier may have left. It is a call's
-  received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its Reed-Solomon check (a
-  scrambled FACCH or SACCH, `process_FACCHs()`/`process_SACCHs()`, or an ESS, `p25p2_process_ess()`, all through
+- `p2_cc` is the Phase 2 descrambler's seed, which `-X`, a Phase 1 NID, code recovery (`p25p2_seed_recover.c`) or
+  another carrier may have left. It is a call's
+  received NAC only while `p2_cc_verified` is set: a burst descrambled with it passed its checks (a scrambled FACCH,
+  SACCH or LCCH whose Reed-Solomon decode and MAC checksum passed, `p25p2_process_facch()`/`p25p2_process_sacch()`
+  through the signalling verdict, since the FACCH code alone let about one wrong seed's burst in a thousand through
+  (issue #804); or an ESS whose Reed-Solomon check passed, `p25p2_process_ess()`; all through
   `p25p2_note_seed_proven()`; it proves the seed `p25p2_process_frame_scramble()` descrambled the buffered superframe
   with, so the seed in force is proven only while it is still that one: a broadcast decoded from an earlier burst of the
   same buffer may have replaced it; when the proof is first set it renders both slots before the burst's MAC PDU is
   dispatched, since that burst may carry the MAC_END_PTT that ends its call and an ended call no longer reads the live
-  NAC), or a network status broadcast that passed its CRC named it
-  (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU decoder,
-  which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
+  NAC; the checksum is checked first and `-F` relaxes none of it), or a network status broadcast that passed its CRC
+  named it (`p25p2_vpdu_apply_nsb_identity()`). Under `-F` an XCCH MAC_SIGNAL that failed its CRC still reaches the VPDU
+  decoder, which `p25p2_xcch_validate_sacch_crc()` allows, so the signal handler passes the verdict through
   (`process_MAC_VPDU_crc()`): its grants and voice still act, but its system broadcasts change no system state
   (`p25p2_vpdu_system_tables_writable()`): the network status's WACN/SYSID/NAC and control channel anchor, the RFSS
   status's site, LRA and IDEN trust promotion, the IDEN updates (0x73/0x74/0x7D/0xF3) with their trust and the
@@ -8632,15 +8851,31 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   (`p25_sm_forget_selected_site()`) nor the no-carrier cleanup after generic trunk activity
   (`no_carrier_clear_stale_p25_return_hints_after_generic_activity()`) clears it; both still drop its proof. Every other
   proof needs a Reed-Solomon decode that succeeded with its parity check intact, which no option relaxes: a FACCH or
-  SACCH that needed the soft-erasure retry, or an ESS that needed `p25p2_ess_decode_with_soft_erasures()`'s erasures,
-  still decodes for its content but proves nothing, since erasures spend the code's check (the shortened RS(63,35)
+  SACCH that needed the soft-erasure retry (at most 4 or 6 extra erasures, see the P25 Phase 2 voice dispatch), or an
+  ESS that needed `p25p2_ess_decode_with_soft_erasures()`'s erasures, still decodes for its content but proves nothing,
+  since erasures spend the code's check (the shortened RS(63,35)
   ESS with all 28 parity symbols erased decodes any payload). And a slot's ESS_B that the carrier left
   (`p25_p2_ess_b_stale`, set when the carrier's decoding is forgotten, cleared by the next 4V burst's fragment) is not
   decoded at all: a 2V burst ahead of any 4V burst would read the old carrier's ALG, KID and MI from it, and
   prove the new seed with it. An unscrambled FACCH/SACCH (DUID 15, 12, 13) never tests the seed, so a call carried only
-  by those records no NAC. The mark goes at the carrier boundary with
-  the codes above, and whenever a Phase 1 NID, a hand-set seed or a site reset changes `p2_cc`; `p2_cc` itself is the
-  descrambling key and is never reset for it.
+  by those records no NAC. The mark goes at the carrier boundary with the codes above, and whenever a Phase 1 NID, a
+  hand-set seed or a site reset changes `p2_cc`, or `p25_update_system_identity()` changes WACN or SYSID (a Phase 1
+  TSBK, MBT or LCW network status; issue #804); a Phase 2 network status that passed its CRC then proves the NAC it
+  names (with a hand-set seed, only when that NAC is the seed's). `p2_cc` itself is the descrambling key and is never
+  reset for it. A valid Phase 1 NID (BCH-accepted, not 0x000 or 0xFFF) rewrites a `p2_cc` that is not hand-set and
+  differs when `p2_cc` is 0, so a seed NAC cleared by hand on the carrier comes back, or when its NAC differs from
+  `state->nac` (a new carrier or NAC); a repeat of the NAC `state->nac` holds leaves another `p2_cc` alone, so on a
+  system whose Phase 2 colour code differs from its Phase 1 control channel's NAC repeats of the control channel's NAC
+  keep the colour code a CRC-passed network status set, while a carrier boundary (a trunked voice channel tune included)
+  zeroes `state->nac`, so the first NID after one still rewrites a `p2_cc` that differs (`p25p1_apply_nac_update()`); a
+  NID split by a carrier boundary writes no NAC at all, and neither does a NID that decoded only once the observed NAC
+  (a hand-set seed's, `state->nac`, then the seed's) stood in for its received NAC field
+  (`p25p1_nid_result::nac_borrowed`, set by the hard and the soft retry unless the soft search on the received word
+  alone reaches the same NAC and DUID, which is then the decode): its NAC is the decoder's own, which a carrier boundary
+  may have kept from another carrier, so only its DUID counts. The same NID records the NAC of the frame being decoded
+  (`p25_frame_nac` with `p25_frame_nac_valid`), which a network status in that frame is paired with: invalid from every
+  P25p1 sync until its NID decodes, after a NID that failed, was cut or was split by a carrier boundary, at every
+  carrier boundary (`dsd_engine_forget_carrier_code_values()`) and at a trunk scan target switch.
 - A Phase 2 call's NAC is the carrier's proven NAC (`p2_proven_nac`, issue #802 B7/B8), -1 for none: the NAC the latest
   checked Phase 2 proof on this carrier named. `p25p2_note_seed_proven()` sets it to the seed a burst descrambled with,
   and a network status that passed its CRC to the NAC it carries, whatever seed is configured (a hand-set seed stays
@@ -8658,8 +8893,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   row reading that NAC, and the burst's MAC PDU opens the next call under the new one. One helper,
   `dsd_state_forget_p2_proof()` (`state.h`), clears it with `p2_cc_verified` at every site that drops the seed's proof
   (the carrier boundary's code forget, the no-carrier cleanup after generic trunk activity, a trunk scan target's
-  restore, a Phase 1 NID or a network status that changes the seed, a CC selection's site forget, `-X`, the menu's
-  hand-set seed, initState), so a previous transmission's or a Phase 1 NID's NAC is never read as a Phase 2 proof; a
+  restore, a Phase 1 NID or a network status that changes the seed, a WACN or SYSID change
+  (`p25_update_system_identity()`), a recovered scrambling code that changes the seed, Signal search's site release
+  after a visit, a CC selection's site forget, `-X`, the menu's hand-set seed, initState), so a previous transmission's or a Phase 1 NID's NAC is never read as a Phase 2 proof; a
   stream gap keeps it, as it keeps the seed's proof. `rx_id` is not read for it: it outlives the carrier for display
   and a Phase 1 NID writes the same P25 record. The trunk scan snapshot saves and restores it with the seed's proof.
   Every reader of `dsd_access_code_current()` takes it: Signal search, call history and events, the API feed and the
@@ -8694,9 +8930,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      still that carrier's; then the per-call recordings no call owns close (`dsd_event_flush_orphan_recordings()`, see
      Core, "Recording journal", carrier departures).
   3. `dsd_engine_forget_carrier_codes()` forgets the codes: the DMR colour code with its confidence lock, the RAN with
-     its stand-in mark, the dPMR colour code, the Phase 1 NAC, and the seed's proof (never `p2_cc`). The NAC goes
-     because a NID whose BCH-decoded NAC is 000 or FFF, which dsd-neo refuses as its own acceptance rule (a dead or
-     stuck input decodes as either), leaves `state->nac` as it was
+     its stand-in mark, the dPMR colour code, the Phase 1 NAC with the last Phase 1 frame's, and the seed's proof (never
+     `p2_cc`). The NAC goes because a NID whose BCH-decoded NAC is 000 or FFF, which dsd-neo refuses as its own
+     acceptance rule (a dead or stuck input decodes as either), leaves `state->nac` as it was
      (`p25p1_apply_nac_update()`) while the frame still dispatches; `noCarrier()` resets it too. With them goes the
      evidence that vouched for the carrier's transmissions (`carrier_boundary_forget_evidence()`): the NXDN, dPMR (with
      its CCH evidence), D-STAR, M17 and ProVoice confirmation gates restart, the YSF FICH verdict, the Phase 1 NID's
@@ -8859,9 +9095,9 @@ the message passed its own check, with that message's values, an unchanged repea
   carries as the search binds it, and the location registration area; a Phase 2 network status also notes the NAC it
   carries (`p25_search_note_network_nac()`), so an unscrambled SACCH's records its own NAC whatever seed is set. Phase 2
   MACs note only with `ctx->crc_ok` (`p25p2_vpdu_system_tables_writable()`). The Phase 1 NID's NAC at the BCH accept
-  (`p25p1_apply_nac_update()`, $000/$FFF excluded by dsd-neo's own acceptance rule); the Phase 2 seed's WACN, SYSID and
-  NAC once a burst descrambled with the whole seed passed RS with its parity kept (`p25p2_note_seed_proven()`). The
-  control channel at
+  (`p25p1_apply_nac_update()`, $000/$FFF excluded by dsd-neo's own acceptance rule, never a NAC the observed-NAC retry
+  put in); the Phase 2 seed's WACN, SYSID and NAC once a burst descrambled with the whole seed passed RS with its
+  parity kept (`p25p2_note_seed_proven()`). The control channel at
   `p25_sm_note_validated_cc()` (a CRC-passed TSBK, outbound MBT or LCCH MAC), once the record names a SYSID.
 - DMR: the colour code at the BS confidence lock and relock (`dmr_confidence_note_evidence()`, before the burst is
   dispatched) and the MS slot type's Golay(20,8) / embedded QR(16,7,6) accepts (`dmr_data.c`, `dmr_ms.c`); the Tier III
@@ -9337,7 +9573,15 @@ Private per-protocol modules worth knowing about:
   either). An RFSS status notes the SYSID it advertises, even one the decoder's `p2_sysid` check ignores. Not notes:
   the voice LCW network/RFSS formats (Reed-Solomon only), the secondary control channel fill-in
   (`p25_note_sccb_site()`), adjacent-status broadcasts, CLI/menu hard-set values and trunk-scan snapshot restores
-  (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). DMR
+  (`P25_SEARCH_SITE_NOTES`, `P25_P1_TSBK_SEQUENCE`). A recovered Phase 2 scrambling code (issue #804) adds a network
+  note with its WACN and SYSID alone at its commit (`p25_search_note_recovered_network()`, `P25_P2_SEED_RECOVER`): the
+  carrier's own checked scrambling names that system. The same checked network statuses feed the session's code list
+  (`dsd_signal_search_note_p25p2_code()`, `p25_search_note_p25p2_code()`, issue #804): a Phase 2 one with its own
+  WACN, SYSID and NAC (`DSD_P25P2_CODE_P2_NETWORK`), a TSBK or MBT one with its WACN and SYSID and the NAC of the NID
+  of the frame that carried it (`p25_search_note_p1_network_code()`, `DSD_P25P2_CODE_P1_NETWORK`), only while
+  `p25_frame_nac_valid` says that NID decoded in this frame, so a NAC never pairs with another frame's or carrier's
+  WACN/SYSID. A code with a zero or all-ones part is not noted; neither is anything from a voice LCW, a failed CRC,
+  `state->nac` or the `p2_*` seed. DMR
   (`dmr_tiii_note_search_site()` in `src/protocol/dmr/dmr_tiii_site.h`, which notes the search only while one runs and
   the received identity record always):
   C_ALOHA inside `dmr_cspdu()`'s CRC gate when the slot's `event_crc_invalid` is clear, since that gate also passes a
@@ -10289,16 +10533,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   so Escape/Back reach Main). Back cancels the handoff (`requestBack()` clears it and
   returns), so a stop that hangs past the engine's restore timeouts cannot lock the
   screen; the site chooser's any-input cancel is ignored while it runs, and
-  `startSystem()`/`restartSite()` refuse by state before cancelling, so a USB
+  `startSavedByUid()`/`restartSite()` refuse by state before cancelling, so a USB
   attachment's start cannot drop it. `leaveSearchFor()` pins `signalSearchOpen`
   true, as Stop does, so a screen reopened after Activity recreation (bound to `status.owned`, which
   the search clears before the decoder is idle) stays through the stop and after a Back cancel.
   `finishPendingRestart()` closes the screen just
   before starting the request, and a stop ending in Failed closes it and clears the flag.
   A saved request is checked (`savedStartRefusal()`) before the stop, the refusal shown in
-  the screen's `localFailure`, and again in `finishPendingRestart()`, which shows the
-  refusal (an avoided site no longer declines silently) and records the system as
-  `attemptedSource` so Home's Retry asks again and Edit opens it. Explore here
+  the screen's `localFailure`, and again when `finishPendingRestart()` starts it through
+  `startSavedByUid()`, which shows the refusal (an avoided site no longer declines
+  silently) and records the system as `attemptedSource` so Home's Retry asks again and
+  Edit opens it. Explore here
   (`exploreHereSystem()`) is `systemForHit()` renamed Exploring, untrunked, on the
   `effectiveSource()` kind through `onAttachedReceiver()`/`onReceiver()` (an Airspy map only
   stays on an Airspy; a switch to an Airspy drops the RTL `ppm`, `biasTee` and gain); `startWithMap(sys,
@@ -10786,6 +11031,77 @@ Qt Quick frontend (`src/ui/qt`):
   they stack in focus order, keeping the source hint beneath Add a system. The available content width, including
   the supporting pane, and the current font determine reflow. Empty collection headings are hidden. Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_home_add_actions.qml`, plus the existing Home and Back/modal cases).
+- Pinned strip and sheet (issue #801; the pins themselves are `listen_pins.{h,cpp}`, below). `qml/HomeScreen.qml` places
+  `pinnedStrip` between `listenHeader` and the scroll body, on the content column, 8 px under the header. The order is
+  title, strip, body on both hosts: `fixedTitle` (`pinnedHeader` or the strip shown) fixes `listenHeader` above the
+  body, so on the desktop with pins the header holds the title alone (no receiver pill, height `max(44, title)`), and
+  the body's own title row is hidden, so the title is read once. The strip is shown while `heldPins` is non-empty and is
+  then one line tall, `max(48, pin label height + 24)` at any text size; the body's top margin adds it plus the 6 px
+  clearance, and the scroll divider shows under it. Header and strip heights follow `heldPins`, not `visible`, so a tab
+  switch moves nothing. With nothing pinned the layout is as before on both hosts. `heldPins` takes `listenPins.entries`
+  only while Home is visible and holds the last list while hidden ([r1-7]), with the line it is laid out on
+  (`heldStripWidth`, `heldPinFont`), so a rename, removal or unpin, a rotation or a text-size change behind the wizard,
+  Monitor or another tab adds, removes or renames no pin there and keeps the strip's height and the body's scroll; shown
+  again, it takes the list and the line as they are. `placed` lays out the found pins in stored order before any is made
+  (a `FontMetrics` in the held `Theme.pinLabelFont`, the font `PinButton` draws its label in): each pin is its label's
+  width (the wider of advance and ink, plus a pixel, as `PinButton` sizes it, so a whole name never elides) plus 30 px,
+  at most the room (the column less More and an 8 px gap), so the first always shows (elided if it must). The first pin
+  that does not fit whole ends the line: it is shown elided in the room left when that is at least `elidedMinimum`
+  (padding and about five average characters, never under two touch targets), so a long name does not leave most of the
+  line blank, else it is left out; its accessible name stays whole. Pins past it, and pins not found, are not made. The
+  buttons come from a `StableRows` over `placed`, keyed by pin key, so a rename renames its button and a pin arriving or
+  leaving adds or removes only its own; a departing button is not drawn (`shown`) and reads as nothing, leaves the tree
+  and takes no focus or press (`live`, `PinButton.live`) for the rest of its turn. A pin starts the entry `placed` holds
+  for its key. More (`pinnedStripMore`, "All pinned shortcuts") always ends the strip. No Flickable, so the strip adds
+  no container node (R-2). Tab and TalkBack order: title, receiver pill, pins, More, body. A pin or a sheet row emits
+  Home's `startPin(kind, uid)`, which Main connects to `startPin()` (the start gate below); pins are disabled while
+  `decoderHost.transitioning`, and the strip while `managementSheetOpen`. `qml/PinButton.qml` is FilterPill's rounded
+  chip with `OutlineButton`'s gate (focused-control `activeFocusOnTab` retention, `Navigation.allows()` read first,
+  Return/Enter/Space, `onPressAction`, `FocusFrame`, half opacity when disabled) and a one-line plain-text label elided
+  at its width; FilterPill is unchanged. `qml/PinnedSheet.qml` (`pinnedSheet`, Home-hosted, in `managementSheetOpen`):
+  heading "Pinned", a hint naming the cap and where to pin, then a row per stored pin from a `StableRows` fed only while
+  open: a start `OutlineButton` (its accessible name from `entries`) and an **Unpin** (`unpinKey()`, "Unpin <label>"),
+  both gated on `live` as the strip's pins are. An Unpin pressed from the keyboard first hands its focus to the next
+  row's Unpin, else the one before, else Done. A pin not found shows "<last label> (not found)", else "Saved system not
+  found", "Site not found" or "Scan list not found", and its start is disabled; its Unpin reads "Unpin the missing ..."
+  without a label. A start closes the sheet before it asks, so a site chooser it opens is on top. "Nothing is pinned."
+  replaces the rows when the last is unpinned. Tests: `UI_QT_QML_CALL_LISTS` (`tst_home_pinned_strip.qml` on Home alone:
+  hidden without pins, one line at 320/360/411 px x 1.0/1.3/1.6 portrait and landscape and the 900 px desktop, order and
+  activation, keyboard order on both hosts, the sheet, focus after a keyboard Unpin, departing rows, modal blocking,
+  hidden hold of the list and of the layout, scroll across tabs, renames, the desktop title above the strip;
+  `tst_home_pinned.qml` through Main), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_text_reach.qml` reaches every pin, More, the
+  title once and each sheet row; `tst_a11y_scan_churn.qml` changes pinned targets behind the wizard with no event from
+  the strip or the closed sheet).
+- Pin to Listen (issue #801 D4/D5, B3). Every source offers the same action from `ListenPins::action(kind, uid)`
+  (`{pinned, text, accessibleName, enabled, description}`: "Pin to Listen"/"Unpin from Listen", "Pin <label> to Listen";
+  not pinned while full, disabled with `Text::FullRefusal` as its description). In `qml/HomeScreen.qml` `pinAction(kind,
+  uid, objectName)` builds the menu row (key `pin`) and `togglePin(kind, uid, offeredPinned)` does what the row said
+  when it was offered (`unpin()` for an offered Unpin, else `pin()`), never the opposite. `pin()`'s refusal is not
+  shown: every source is modal, so nothing fills the row while one is open, and a full row's Pin is already disabled
+  with the reason (D3: a full row is not an error dialog). The saved-system menu (Edit, Sites, Pin, Remove…) pins
+  `system` with the card's row UID, so a grouped card pins its group and a standalone card also unpins a site pin of its
+  own row; the scan-list menu (Edit, Scan with other lists…, Pin, Remove…) pins `scan`. Both handlers route `remove`
+  explicitly and do nothing for any other key (before #801 an unknown key fell through to Remove). Signal search is a
+  row: the button fills it up to a 48 px More (`signalSearchManageButton`), placed from the Explore card's More just
+  below so it shares the cards' More column, opening `searchMenu` [Pin]. Explore's card: a card-wide `TapHandler` (tap
+  starts, long press opens `exploreMenu` [Edit connection, Pin]) and pressed tint, the face `exploreStart`, and More
+  (`exploreManageButton`, "More options for Explore"). The face is a sibling of More, stopping at More's column (`width:
+  exploreMore.x`), so its focus ring and accessible bounds leave More out and no key pressed on More reaches it; the
+  caret, in More's column, is drawn outside the face and stays in the card's tap target. The face is the button that
+  starts Explore, or opens its setup with no radio chosen: Button role, name "Explore the band, start on <radio> from
+  <MHz> MHz" or "Explore the band, set up a radio to tune around and find what is on the air", empty while
+  `Accessible.ignored` (so a frequency changed in Explore's setup, Home hidden, renames nothing), its two lines plain
+  `Text` with `Accessible.ignored`, `OutlineButton`'s Tab gate, Return/Enter/Space, `onPressAction`, `FocusFrame`. The
+  subtitle wraps to two lines before it elides, so the frequency stays whole at large text, and the card grows with the
+  labels. More never starts Explore. The two new menus join `managementSheetOpen`. `qml/SiteChooserSheet.qml` gives each
+  site row a Pin `OutlineButton` (`sitePin<row>`, kind `site`) after Edit site, shown whatever the session state, whose
+  action re-reads `listenPins.revision` so it flips in place with the chooser open; under it `sitePinReason<row>` shows
+  the full reason. Tests: `UI_QT_PERSISTENCE` (`test_pin_action`), `UI_QT_QML_CALL_LISTS` (`tst_home_pinned.qml`: each
+  menu, the standalone site card, full, a row doing what it offered, unknown keys, modal blocking;
+  `tst_home_dongle_status.qml`: More and long press open the menu, the face clear of More, the caret tappable, keys and
+  the accessibility press on the face and on More; `tst_site_chooser_sheet.qml`; the key lists in
+  `tst_home_scan_lists.qml` and `tst_back_modals.qml`, whose auto-start case covers the new menus),
+  `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`: the hidden face raises nothing on a frequency change).
 - Receiver status, receiver notice and Reconnect (issue #647). Every rule here holds only where the host brokers USB
   access (`DecoderHost::localDeviceBrokered`, Android); the desktop opens its receiver itself and keeps its Listen
   layout, Onboarding wording and Monitor geometry. An RTL-SDR eligible for stall recovery is reset and reopened once per
@@ -10853,6 +11169,33 @@ Qt Quick frontend (`src/ui/qt`):
     the bus; a suppressed attachment is still consumed. An unanswered permission request
     (`localDeviceRequestPending`) joins `autoStartBlocked`; its expiry lifts the block without retrying the old
     attachment.
+  - Saved-system start gate (Main.qml, issue #801): every saved start (card play, the site chooser, auto-start,
+    Retry and Listen with through `finishPendingRestart()`, a pin, a USB grant) goes through `startSavedByUid(uid)`,
+    resolved at that moment: the transition guard first (refused unless Idle or Failed, before anything is
+    cancelled), then `savedStartRefusal()` ("removed", or the avoided-site text), then `startWithMap()` on the row the
+    uid is at now. `startSystem(row)` only names the row's uid, so a missing row is refused as removed, not ignored.
+    Decided limit: auto-start stays silent for a target removed since it last started (an unattended plug-in, so a
+    "removed" banner would be noise; `onAutoStartRequested` returns before the gate), and refuses only an existing
+    avoided site.
+    A USB grant re-enters it by the waiting start's uid instead of running the map captured at the tap, so a system
+    removed, avoided, moved to another row or given another receiver during the permission dialog is refused or
+    starts as saved (B6); a scan list's grant goes through `startScanByUid()`, which has the same transition guard and
+    refuses a removed list and a draft (`scanListStarter.draftRefusal`, the starter's own text) before any start or
+    USB request. Every refusal is
+    `refuseStart(message, attempt)`: it drops any waiting start (`dropPendingStarts()`: the pending restart and all
+    `pendingStart*` state), sets `attemptedSource` to `attempt` (`{kind: "saved"|"scan", uid, system}`, null when
+    the target is gone) so Retry asks again and Edit source opens that system or list, clears `dismissedFailure`,
+    sets `startError`, and always reveals Home's failure card (`revealFailure()` then `homeScreen.revealTop()`, on
+    the desktop too and over a failure already showing). `startPin(kind, uid)` is a pin's tap, a no-op while
+    `decoderHost.transitioning`: a system plays its group's one playable (unavoided) site, else opens the site
+    chooser (`openSiteChooser()`, shared with the card's sites button), and a standalone row starts; a site starts; a
+    scan list starts alone (`startScanByUid(uid, [])`); Signal search opens (`openSignalSearch()`, shared with
+    Home's button); Explore starts when `explore/sourceType` is set, else opens its setup. Home shows
+    `systemRemovalError` ("System removal failed" / "Site removal failed") when `SavedSystemsModel::remove()` cannot
+    save, as `scanListRemovalError` does for a list (both join `managementSheetOpen`); the site chooser keeps the
+    site whose avoid change failed (`avoidFailedUid`) and says so under its row, the toggle showing what is saved.
+    Tests: `tst_home_pinned.qml` (the start contract), `tst_back_modals.qml` (`test_system_removal_failure_notice`),
+    `tst_site_chooser_sheet.qml` (`test_avoid_toggle_failure_shown`).
   - Tests: `UI_QT_QML_DEVICE_STATUS` (`tst_device_status.qml`, every state), `tst_home_dongle_status.qml` (pinned
     header, reflow at 320/360/411 px by 1.0/1.6/2.0 and the 900 px supporting pane, activation paths and the modal
     guard, focus kept when the prompt opens, scroll kept across tabs, desktop layout unchanged, Onboarding),
@@ -11151,6 +11494,8 @@ Qt Quick frontend (`src/ui/qt`):
     on a scratch copy was ruled out: the parse has side effects (Runtime, CLI). A target CSV's options cell refuses
     every recording switch already (`dsd_scan_options_parse()` has none). `qt_ui.cpp` hands the store
     `recordingLimitMb` before `start()` and on every change.
+    `AppPrefs::pinned` (`listen/pinned`, issue #801) is no session preference: it never reaches the argv, and pinning
+    a Listen shortcut never writes `lastStarted*` (see `listen_pins.{h,cpp}` below).
   - Live changes (D8): `CommandBridge::setRecordCalls(on, unknownOnly, analogMaxGapMs, analogPrerollMs)` sends the
     analog pause hold (`DSD_APP_CMD_ANALOG_RECORD_MAX_GAP_SET`, issue #756) and the NFM pre-roll
     (`DSD_APP_CMD_ANALOG_RECORD_PREROLL_SET`, issue #668), each none when negative, so the session keeps its own, then
@@ -11715,8 +12060,9 @@ Qt Quick frontend (`src/ui/qt`):
   own verdict, from each snapshot with no hold of its own. The decoder sets it on content that passed its check, never a
   bare sync: the DMR colour-code lock (`dmr_confidence.c`) or a DMR burst whose own 16- or 24-bit check passed with no
   RAS (`dmr_dburst_proves_tdma_carrier()`, which is how mobile and direct-mode carriers prove it), a P25 Phase 2 FACCH,
-  SACCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft erasures), or a whole
-  X2-TDMA voice superframe on one carrier with a further X2-TDMA sync word in its places, or one that follows another
+  SACCH, LCCH or ESS that decoded with its parity check kept (`p25p2_note_tdma_carrier()`, no soft erasures; a FACCH,
+  SACCH or LCCH also with its MAC checksum), or a whole X2-TDMA voice superframe on one carrier with a further X2-TDMA
+  sync word in its places, or one that follows another
   whole superframe on that carrier with no hunt gap (its sync word ends exactly 24 symbols after the last one ended,
   `dsd_state::x2tdma_superframe_*`, dropped by an acquisition reset), which is how direct mode, whose other timeslot
   carries no sync, proves it (X2-TDMA has no FEC to check). A sync loss (`noCarrier()`) keeps it.
@@ -11964,6 +12310,65 @@ Qt Quick frontend (`src/ui/qt`):
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
+- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
+  `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
+  the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
+  `void`: recency is advisory, and an unsaved stamp stays out of memory too). `clearCsvPath` returns true when nothing
+  names the path. So `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`,
+  `mostRecentRowChanged`) mean the removal is on disk, and whatever follows rows out of the model can prune on them.
+  A site is grouped while `rrSid > 0` and `rrSiteId > 0` (`site_groups.cpp`). An edit of its frequency, decode flag or
+  a CSV field, or the removal of a library file it names, zeroes both and also clears `avoidSite`, because only the
+  group's `SiteChooserSheet` can lift an avoid. Load clears `avoidSite` on any row outside a group and saves that with
+  the UID repair (one warning when that save fails; the clear repeats at the next load). A lone RadioReference site
+  keeps its avoid: its "1 site" chooser lifts it. Tests: `UI_QT_PERSISTENCE`.
+- `listen_pins.{h,cpp}` (`listenPins`, issue #801) resolves the shortcuts pinned to Listen. They are stored in
+  `AppPrefs::pinned` (`listen/pinned`, portable): a JSON array in one string, each `{kind, uid}` with kind `system` (a
+  saved row's UID, standing for its Home card), `site` (one saved row), `scan` (a scan list's UID), `search` or
+  `explore` (no UID). The getter is the only validation (unparsable text, an unquoted hand edit QSettings returns as a
+  list, unknown kinds, a malformed UUID, a scan UID empty or over 128 characters and repeats are dropped; at most
+  `AppPrefs::kPinnedCap`, 6, which the constant `cap` property gives the views), and the setter writes it sanitized and
+  compact. A scan list whose UID is longer than 128 characters (only a hand-edited or foreign store holds one) cannot be
+  pinned: its Pin to Listen does nothing (a documented limit). `qt_ui.cpp`'s `load_listen_pins()` builds `ListenPins`
+  over `AppPrefs`, `SavedSystemsModel` and `ScanListsModel` after both load and before `prune_missing_csv_paths()`, so a
+  `system` pin whose row that startup cleanup takes out of its group follows the group as below. `entries` holds every
+  stored pin in order as `{key, kind, uid, label, accessibleName, found}` (`key` = `kind:uid`); a system is named by its
+  group's lead and its accessible name says whether a tap starts it or chooses a site (no site, or several, it can
+  play), a site is "system · site". `revision` moves on every entries change and on every row, data, sites or reset
+  signal of either model, because `isPinned()` follows groups: a system pin matches its group's card through any of its
+  sites, and a row in no group also matches a site pin of itself (a site edited out of its group keeps its pin). `pin()`
+  refuses a full row ("Pinned is full (6). Unpin one first.") or a target not saved, and never writes `lastStarted*`;
+  `unpin()` removes what `isPinned()` matched and `unpinKey()` one entry. Pins are never pruned at load, at a model
+  reset or when pinning: a store that cannot be read loads as `[]`, and its pins stay, `found` false, still counting
+  toward the cap, until it loads again. Only `rowsAboutToBeRemoved`, which both models signal only for a removal they
+  saved, prunes: a `site` or `scan` pin goes with its row, and a `system` pin moves to a remaining site of its group
+  (`siblingRows()` before the removal), else goes. The kept list is worked out there and stored at `rowsRemoved`, so no
+  `listenPins` signal lands inside the model's removal. A `system` pin is the system, not its row: `refresh()` remembers
+  each row's group by UID, and when the pinned row leaves its group (an edit of its frequency, decode flag or a CSV
+  field, or a library file's removal) while the group still has sites, the next `dataChanged`/`sitesChanged` moves the
+  pin to the group's lead and stores it; a group's last site keeps its pin (also at startup, see `load_listen_pins()`
+  above; `UI_QT_BACKUP_ARCHIVE`). `action()` is every source's Pin to Listen (see "Pin to Listen" above). User text
+  lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears pins for each test file,
+  and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
+- Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
+  systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
+  `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
+  before it saves the index without the row. File first, so a failure never leaves a copy no row names: a file that will
+  not delete keeps its row, and an index save that fails after the delete leaves the row listed, naming a missing file,
+  until a retry or the next load prunes it (the startup cleanup below then clears what names it;
+  `RadioReferenceModel::unwindImport()` can leave such a row the same way). The bundle folder's delete is best effort: a
+  failure there is neither reported nor retried, and the row goes once the file has. A scan list names library files in
+  three fields: its target CSV (cleared, the list becomes a draft) and its fallback `groupCsvPath`/`srcCsvPath`
+  (emptied, the list runs without it; an empty fallback is "none" to the starter and session args).
+  `listsReferencingPath()` covers all three; the remove sheet names target lists (`listsTargetingPath()`) and fallback
+  lists (`listsFallingBackOnPath()`) on separate lines, since removal does different things to each. The first step that
+  returns false stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only
+  when all three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
+  (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
+  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. The
+  library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an earlier
+  launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
+  (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
+  `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   Every history change rescans the whole history (a merge can move a row to another session, so contributions are
@@ -12236,6 +12641,9 @@ Qt Quick frontend (`src/ui/qt`):
     every restored replay system arrives, is refused before it starts (`SessionArgsError::RecordingMissing`, start
     category `recording-missing`), checked after AM's source rule (AM needs a radio whatever the file) and before
     TETRA's, so it never runs `-i ""` and is never told to choose a radio.
+  - A list-valued portable preference is a JSON array held in a string (`listen/pinned`, issue #801), since a backup
+    carries only scalars; its getter is its only validation, because a parse hook would fail the whole backup as
+    damaged. A backup without the key restores no pins, and a rollback restores the old ones.
   - Whole numbers from stored or restored data (preferences, saved systems, scan lists, imported files, decryption
     profiles) are read through `stored_int.h` (`stored_int()`, `stored_int_or()`, `stored_uint32()`). A restore keeps a
     large JSON number as a 64-bit integer, and the settings file hands one back as text; `QVariant::toInt()` and
@@ -12248,6 +12656,8 @@ Qt Quick frontend (`src/ui/qt`):
     `tst_util_decryption_protocol.qml`), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_PERSISTENCE` (`test_prefs_key_table()`),
     `UI_QT_ANDROID_HOST`, `ANDROID_DOCUMENT_TRANSFER_JVM`, `BACKUP_SEAL`; a replay system without its recording in
     `UI_QT_SESSION_ARGS` and `tst_session_initialized.qml`.
+    `listen/pinned` (issue #801): its round trip in `UI_QT_BACKUP_ARCHIVE`; in `UI_QT_BACKUP_APPLY`, a backup without
+    it restores no pins and a rolled-back apply keeps them.
 - Decryption profile key material (`decryption_profiles_model.{h,cpp}`, `session_args.{h,cpp}`):
   - One hex contract: `session_args_key_hex_normalize()` drops every `QChar::isSpace()` character, `-` and `:` and a
     leading `0x`/`0X`, for the hex direct types (`session_args_key_type_hex()`: hex, rc4, m17Scrambler, m17Aes) and the
@@ -13606,9 +14016,13 @@ Several lists in one session (issue #697):
   (`UiController::autoStartRequested(kind, uid, companions)`, from `qt_ui.cpp`) and `pruneScanCompanions()` trims of
   removed lists. A start resolves the uids as the lists are saved then (`scanListsByUid()`): a removed companion is left
   out and the rest start. Both keys are device-local: an applied restore (`backup_apply.cpp`) and a load that repairs a
-  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. A start hold (issue #644) is
+  list uid (`ScanListsModel::uidsRepaired()`) call `AppPrefs::forgetScanCompanions()`. That load also saves the
+  repaired uids (issue #801), so the next load keeps them and a backup taken at once carries them; a failed save logs
+  one warning and the minted uids hold for that run (`UI_QT_CONTROLLER`, `UI_QT_BACKUP_ARCHIVE`). A start hold (issue #644) is
   no part of the identity: `startWithMap()` takes it in `options.holdTarget` for that start, across a USB permission
   wait in `pendingStartHold` (set by every wait, read once by the grant), and never in `attemptedSource` or prefs.
+  Pinned Listen shortcuts (issue #801) name lists by uid too, but portably, since a restore keeps every list's uid.
+  `ListenPins` prunes them only on a saved removal, never at load, so pins survive a list file that fails to load.
 - In session: `Main.qml` `sessionLists` (the session's list, then its companions) and `sessionListName(n)` name list n
   (the decoder's name, `ScanListToggleModel::listName()`, for a place left empty), and `channelNamesOfLists()` merges
   every list's channel names (ids are unique across a session's lists). `MetricsModel::refreshScanLists()` reads the

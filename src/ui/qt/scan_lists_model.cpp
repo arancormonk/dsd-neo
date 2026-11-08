@@ -12,7 +12,10 @@
 #include <QUuid>
 #include <QVariantList>
 #include <Qt>
+#include <algorithm>
+#include <dsd-neo/runtime/log.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
+#include <iterator>
 #include <utility>
 #include "app_prefs.h"
 #include "json_store.h"
@@ -99,8 +102,10 @@ ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
         auto row = normalize(value.toObject().toVariantMap());
         auto id = row.value("uid").toString();
         if (id.isEmpty() || ids.contains(id)) {
-            row["uid"] = id = uuid();
+            id = uuid();
         }
+        // Stored as text, so a UID that was not (a number) is saved as the one it reads as, and loads unrepaired.
+        row["uid"] = id;
         // Issue #697: a UID minted here is not the one anything stored before this load named.
         m_uidsRepaired = m_uidsRepaired || id != stored;
         ids.insert(id);
@@ -110,6 +115,11 @@ ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
     // or none, so they are forgotten, as a restore forgets them.
     if (m_uidsRepaired) {
         (void)AppPrefs::forgetScanCompanions();
+        // Saved now (issue #801), or the next launch mints others and whatever named these (a pinned shortcut, the
+        // last started list) loses them. Unsaved, they still hold for this run.
+        if (!save(m_rows)) {
+            LOG_WARN("Scan-list identity repair could not be persisted; list identities may change on restart.\n");
+        }
     }
 }
 
@@ -237,17 +247,73 @@ ScanListsModel::entryCount(const QVariantMap& list) const {
     return accepted > 0 ? accepted : 0;
 }
 
+namespace {
+/* A list's own fallback files: talkgroups and source (radio ID) names. Empty is "none", which a start accepts. */
+const char* const kFallbackCsvFields[] = {"groupCsvPath", "srcCsvPath"};
+
+/* Whether @p row runs from target CSV @p path. */
+bool
+targetsPath(const QVariantMap& row, const QString& path) {
+    return row.value("targetSource") == "csv" && row.value("targetsCsvPath") == path;
+}
+
+/* Whether @p row names @p path as one of its fallback files. */
+bool
+fallsBackOn(const QVariantMap& row, const QString& path) {
+    return std::any_of(std::begin(kFallbackCsvFields), std::end(kFallbackCsvFields),
+                       [&row, &path](const char* field) { return row.value(field) == path; });
+}
+
+/* The names of the lists @p matches picks for @p path; none for an empty path. */
+template <typename Match>
 QStringList
-ScanListsModel::listsReferencingPath(const QString& path) const {
+listNames(const QList<QVariantMap>& rows, const QString& path, Match matches) {
     QStringList names;
     if (!path.isEmpty()) {
-        for (const auto& row : m_rows) {
-            if (row.value("targetSource") == "csv" && row.value("targetsCsvPath") == path) {
+        for (const auto& row : rows) {
+            if (matches(row, path)) {
                 names << row.value("name").toString();
             }
         }
     }
     return names;
+}
+} // namespace
+
+QStringList
+ScanListsModel::listsReferencingPath(const QString& path) const {
+    return listNames(m_rows, path, [](const QVariantMap& row, const QString& p) {
+        return targetsPath(row, p) || fallsBackOn(row, p);
+    });
+}
+
+QStringList
+ScanListsModel::listsTargetingPath(const QString& path) const {
+    return listNames(m_rows, path, targetsPath);
+}
+
+QStringList
+ScanListsModel::listsFallingBackOnPath(const QString& path) const {
+    return listNames(m_rows, path, fallsBackOn);
+}
+
+QStringList
+ScanListsModel::csvPaths() const {
+    QStringList paths;
+    const auto note = [&paths](const QString& path) {
+        if (!path.isEmpty() && !paths.contains(path)) {
+            paths.append(path);
+        }
+    };
+    for (const auto& row : m_rows) {
+        if (row.value("targetSource") == "csv") {
+            note(row.value("targetsCsvPath").toString());
+        }
+        for (const char* field : kFallbackCsvFields) {
+            note(row.value(field).toString());
+        }
+    }
+    return paths;
 }
 
 bool
@@ -257,9 +323,15 @@ ScanListsModel::clearCsvPath(const QString& path) {
     }
     auto next = m_rows;
     for (auto& row : next) {
-        if (row.value("targetSource") == "csv" && row.value("targetsCsvPath") == path) {
+        // A list without its targets cannot run until another is chosen; one without a fallback file runs without it.
+        if (targetsPath(row, path)) {
             row["targetsCsvPath"] = "";
             row["isDraft"] = true;
+        }
+        for (const char* field : kFallbackCsvFields) {
+            if (row.value(field) == path) {
+                row[field] = "";
+            }
         }
     }
     if (!save(next)) {

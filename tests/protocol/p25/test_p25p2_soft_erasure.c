@@ -103,14 +103,11 @@ main(void) {
     fill_llr(p2llr, 1400, 200);
     int erasures[28] = {0};
     int n_fixed = 0;
-    /* Add fixed erasures for FACCH: 0-8, 54-62 */
-    for (int e = 0; e <= 8; e++) {
-        erasures[n_fixed++] = e;
-    }
+    /* Add the fixed FACCH erasures, the punctured parity 54-62 (0-8 are shortened, known zero) */
     for (int e = 54; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }
-    /* n_fixed should now be 18 */
+    /* n_fixed should now be 9 */
     int n_total = p25p2_facch_soft_erasures(0, 0, erasures, n_fixed, 10);
     if (n_total == n_fixed + 5 && erasures[n_fixed] == 9 && erasures[n_fixed + 4] == 13) {
         printf("PASS (ranked %d dynamic erasures, total=%d)\n", n_total - n_fixed, n_total);
@@ -129,9 +126,6 @@ main(void) {
     /* Reset erasure array */
     DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
-    for (int e = 0; e <= 8; e++) {
-        erasures[n_fixed++] = e;
-    }
     for (int e = 54; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }
@@ -148,9 +142,6 @@ main(void) {
     fill_llr(p2llr, 1400, 10); /* All low reliability */
     DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
-    for (int e = 0; e <= 8; e++) {
-        erasures[n_fixed++] = e;
-    }
     for (int e = 54; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }
@@ -167,14 +158,11 @@ main(void) {
     fill_llr(p2llr, 1400, 200);
     DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
-    /* Add fixed erasures for SACCH: 0-4, 57-62 */
-    for (int e = 0; e <= 4; e++) {
-        erasures[n_fixed++] = e;
-    }
+    /* Add the fixed SACCH erasures, the punctured parity 57-62 (0-4 are shortened, known zero) */
     for (int e = 57; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }
-    /* n_fixed should now be 11 */
+    /* n_fixed should now be 6 */
     n_total = p25p2_sacch_soft_erasures(0, 0, erasures, n_fixed, 16);
     if (n_total == n_fixed + 8 && erasures[n_fixed] == 5 && erasures[n_fixed + 7] == 12) {
         printf("PASS (ranked %d dynamic erasures, total=%d)\n", n_total - n_fixed, n_total);
@@ -206,9 +194,6 @@ main(void) {
     }
     DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
-    for (int e = 0; e <= 4; e++) {
-        erasures[n_fixed++] = e;
-    }
     for (int e = 57; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }
@@ -234,9 +219,6 @@ main(void) {
     }
     DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
-    for (int e = 0; e <= 8; e++) {
-        erasures[n_fixed++] = e;
-    }
     for (int e = 54; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }
@@ -277,9 +259,6 @@ main(void) {
     fill_llr(p2llr, 1400, 200);
     DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
-    for (int e = 0; e <= 8; e++) {
-        erasures[n_fixed++] = e;
-    }
     for (int e = 54; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }
@@ -297,9 +276,6 @@ main(void) {
     fill_llr(p2llr, 1400, 200);
     DSD_MEMSET(erasures, 0, sizeof(erasures));
     n_fixed = 0;
-    for (int e = 0; e <= 8; e++) {
-        erasures[n_fixed++] = e;
-    }
     for (int e = 54; e <= 62; e++) {
         erasures[n_fixed++] = e;
     }

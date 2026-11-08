@@ -170,6 +170,22 @@ expect_absent_quiet(const char* label, const char* haystack, const char* needle)
     return 0;
 }
 
+/*
+ * Discussion #717: [trunk_scan] activity_hold_ms is the hold of every conventional digital target (DMR, P25, NXDN) and
+ * an analog target's carrier tail (trunk_scan_conventional_stay_reason(), --help, docs/trunk-scan.md). The schema text,
+ * which --dump-config-template prints, said DMR/NXDN only.
+ */
+static int
+test_trunk_scan_activity_hold_description(void) {
+    const dsdcfg_schema_entry_t* e = dsdcfg_schema_find("trunk_scan", "activity_hold_ms");
+    if (!e || !e->description || !strstr(e->description, "DMR/P25/NXDN") || !strstr(e->description, "analog")) {
+        DSD_FPRINTF(stderr, "FAIL: [trunk_scan] activity_hold_ms description does not name P25 and analog: %s\n",
+                    (e && e->description) ? e->description : "(missing)");
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_radioreference_schema_rows(void) {
     int rc = 0;
@@ -3365,6 +3381,7 @@ test_persistence_gap_schema_rows(void) {
     } expected[] = {
         {"trunking", "scanner"},
         {"trunking", "p25_prefer_candidates"},
+        {"mode", "edacs_addressing"},
         {"mode", "edacs_ea"},
         {"mode", "edacs_esk"},
         {"mode", "dmr_lrrp_ports"},
@@ -4964,7 +4981,9 @@ test_edacs_variant_roundtrip(void) {
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         return 1;
     }
-    rc |= expect_contains_quiet("edacs ea", rendered, "edacs_ea = true\n");
+    /* Saved as the tri-state key only: an older file's edacs_ea is written back as its edacs_addressing. */
+    rc |= expect_contains_quiet("edacs addressing", rendered, "edacs_addressing = \"extended\"\n");
+    rc |= expect_absent_quiet("no edacs_ea written", rendered, "edacs_ea");
     rc |= expect_contains_quiet("edacs esk", rendered, "edacs_esk = true\n");
 
     /* The other half of the 2x2 the four CLI variants expose: EA on, ESK off. */
@@ -4989,6 +5008,73 @@ test_edacs_variant_roundtrip(void) {
         DSD_FPRINTF(stderr, "FAIL: ea-only variant wrong (ea_mode=%d esk_mask=0x%X)\n", state.ea_mode,
                     (unsigned)state.esk_mask);
         rc |= 1;
+    }
+    return rc;
+}
+
+/*
+ * Discussion #717: [mode] edacs_addressing is the tri-state form of edacs_ea, so a
+ * ProVoice-alone (-fp) session can say "no addressing mode" past the edacs_pv
+ * preset's standard addressing. It wins over edacs_ea wherever the two sit; a value
+ * it does not name is ignored, leaving edacs_ea to answer; a file with only
+ * edacs_ea loads as before.
+ */
+static int
+test_edacs_addressing_key_precedence(void) {
+    static const struct {
+        const char* label;
+        const char* mode_body;
+        int want_ea_mode;
+        unsigned want_esk;
+        const char* want_rendered;
+    } cases[] = {
+        {"old edacs_ea=false", "decode = \"edacs_pv\"\nedacs_ea = false\n", 0, 0U, "edacs_addressing = \"standard\"\n"},
+        {"old edacs_ea=true without decode", "edacs_ea = true\n", 1, 0U, "edacs_addressing = \"extended\"\n"},
+        {"none under edacs_pv", "decode = \"edacs_pv\"\nedacs_addressing = \"none\"\n", -1, 0U,
+         "edacs_addressing = \"none\"\n"},
+        {"none before edacs_ea=true", "edacs_addressing = \"none\"\nedacs_ea = true\n", -1, 0U,
+         "edacs_addressing = \"none\"\n"},
+        {"extended after edacs_ea=false", "edacs_ea = false\nedacs_addressing = \"Extended\"\nedacs_esk = true\n", 1,
+         0xA0U, "edacs_addressing = \"extended\"\n"},
+        {"standard over edacs_ea=true", "edacs_ea = true\nedacs_addressing = \"standard\"\n", 0, 0U,
+         "edacs_addressing = \"standard\"\n"},
+        {"unknown value leaves edacs_ea", "edacs_addressing = \"bogus\"\nedacs_ea = true\n", 1, 0U,
+         "edacs_addressing = \"extended\"\n"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char ini[256];
+        DSD_SNPRINTF(ini, sizeof ini, "version = 1\n\n[mode]\n%s", cases[i].mode_body);
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdneoUserConfig cfg;
+        const int load_rc = dsd_user_config_load(path, &cfg);
+        (void)remove(path);
+        if (load_rc != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: config failed to load\n", cases[i].label);
+            rc |= 1;
+            continue;
+        }
+        static dsd_opts opts;
+        static dsd_state state;
+        reset_opts_and_state(opts, state);
+        state.ea_mode = 7; /* a value no key produces, so the key is what decided */
+        state.esk_mask = 0x55;
+        dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+        if (state.ea_mode != cases[i].want_ea_mode || state.esk_mask != cases[i].want_esk) {
+            DSD_FPRINTF(stderr, "FAIL: %s: ea_mode=%d esk_mask=0x%X (want %d, 0x%X)\n", cases[i].label, state.ea_mode,
+                        (unsigned)state.esk_mask, cases[i].want_ea_mode, cases[i].want_esk);
+            rc |= 1;
+        }
+        char rendered[8192];
+        if (render_config_to_buffer(&cfg, rendered, sizeof rendered) != 0) {
+            return 1;
+        }
+        rc |= expect_contains_quiet(cases[i].label, rendered, cases[i].want_rendered);
+        rc |= expect_absent_quiet(cases[i].label, rendered, "edacs_ea");
     }
     return rc;
 }
@@ -5022,7 +5108,8 @@ test_edacs_variant_unanswered_is_not_persisted(void) {
     if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
         return 1;
     }
-    if (strstr(rendered, "edacs_ea") != NULL || strstr(rendered, "edacs_esk") != NULL) {
+    if (strstr(rendered, "edacs_ea") != NULL || strstr(rendered, "edacs_esk") != NULL
+        || strstr(rendered, "edacs_addressing") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: an unanswered EDACS mode reached the INI\n");
         rc |= 1;
     }
@@ -5717,6 +5804,7 @@ main(void) {
     rc |= test_snapshot_roundtrip_preserves_decoder_set();
     rc |= test_snapshot_roundtrip_dmr_mono_override();
     rc |= test_radioreference_schema_rows();
+    rc |= test_trunk_scan_activity_hold_description();
     rc |= test_radioreference_config_roundtrip();
     rc |= test_radioreference_save_atomic_roundtrip();
     rc |= test_input_warn_db_load_snapshot_render();
@@ -5748,6 +5836,7 @@ main(void) {
     rc |= test_src_csv_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();
+    rc |= test_edacs_addressing_key_precedence();
     rc |= test_edacs_variant_unanswered_is_not_persisted();
     rc |= test_scanner_and_trunking_are_mutually_exclusive();
     return rc;

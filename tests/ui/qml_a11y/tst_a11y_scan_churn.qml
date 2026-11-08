@@ -345,10 +345,18 @@ Item {
             verify(strip.visible, "the signal strip is on screen");
             verify(/FREQ/.test(testContext.accessibleNode(strip).name), "the strip is read: "
                    + JSON.stringify(testContext.accessibleNode(strip)));
+            // Each hop is let through once the strip reads its carrier: a fixed pause between hops can end before the
+            // 1 ms rename on a loaded machine, and the next hop then lands in the same step.
+            var freq = findChild(monitor, "monitorFreqValue");
+            var carrier = freq.text;
             testContext.startAccessibilityCount();
             for (var i = 1; i <= hops; ++i) {
                 testContext.publishTarget(reading(i));
-                wait(20);
+                verify(freq.text !== carrier, "hop " + i + " moved the carrier from " + carrier);
+                carrier = freq.text;
+                tryVerify(function () {
+                    return testContext.accessibleNode(strip).name.indexOf("FREQ " + carrier) >= 0;
+                }, 5000, "hop " + i + ": the strip reads " + carrier + ": " + testContext.accessibleNode(strip).name);
             }
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
@@ -514,6 +522,104 @@ Item {
             }
             compare(noisy.length, 0, "hidden or closed parts that raised events over time: " + JSON.stringify(noisy) + " "
                     + JSON.stringify(counts.chains));
+        }
+
+        // Issue #801 [r1-7]: with Home hidden behind the wizard, renaming, removing and unpinning pinned targets raises
+        // nothing from the Pinned strip or the closed Pinned sheet; back on Home, the strip shows them as they are.
+        // (Home's own saved-system cards follow their model while hidden, as before: a decided limit, not this case's.)
+        function test_k_hidden_home_pin_changes_stay_silent() {
+            testContext.setLifecyclePhase(0);
+            verify(!app.monitorMode);
+            testContext.resetPins();
+            var uids = [];
+            for (var name of ["Alpha", "Bravo", "Charlie"]) {
+                verify(savedSystems.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"}));
+                uids.push(savedSystems.get(savedSystems.count - 1).uid);
+                compare(listenPins.pin("system", uids[uids.length - 1]), "");
+            }
+            verify(scanLists.add({name: "Patrol", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            var list = scanLists.get(scanLists.count - 1).uid;
+            compare(listenPins.pin("scan", list), "");
+            var home = findChild(app, "homeScreen");
+            tryCompare(home, "visible", true);
+            waitForRendering(home);
+            var strip = findChild(home, "pinnedStrip");
+            var sheet = findChild(home, "pinnedSheet");
+            verify(strip.visible && !sheet.visible);
+            app.wizardOpen = true;
+            tryCompare(home, "visible", false);
+            testContext.startAccessibilityCount();
+            verify(savedSystems.update(savedSystems.rowForUid(uids[0]), {name: "Alpha Prime"}));
+            verify(scanLists.update(scanLists.rowForUid(list), {name: "Night patrol"}));
+            verify(savedSystems.remove(savedSystems.rowForUid(uids[1])));
+            listenPins.unpin("system", uids[2]);
+            wait(50);
+            var counts = testContext.accessibilityCount();
+            testContext.stopAccessibilityCount();
+            compare(listenPins.count, 2, "the pins moved on");
+            var noisy = [];
+            for (var scope of [strip, sheet]) {
+                var events = 0;
+                for (var type of Object.keys(counts.types))
+                    events += testContext.accessibilityCountWithin(scope, type);
+                if (events !== 0)
+                    noisy.push(scope.objectName + ": " + events);
+            }
+            app.wizardOpen = false;
+            tryCompare(home, "visible", true);
+            var shown = [];
+            tryVerify(function () {
+                shown = [];
+                for (var child of strip.children) {
+                    if (child.objectName === "pinnedStripPin" && child.opacity > 0)
+                        shown.push(child.text);
+                }
+                return shown.join("|") === "Alpha Prime|Night patrol";
+            }, 1000, "the strip shows the pins as they are now");
+            while (savedSystems.count)
+                savedSystems.remove(0);
+            while (scanLists.count)
+                scanLists.remove(0);
+            testContext.resetPins();
+            compare(noisy.length, 0, "the hidden strip or closed sheet raised events: " + JSON.stringify(noisy) + " "
+                    + JSON.stringify(counts.chains));
+        }
+
+        // Issue #801 B3: Explore's face carries its frequency in its name. Edited in Explore's setup, Home hidden under
+        // it, the face renames nothing; shown again, it reads the new frequency.
+        function test_l_hidden_explore_face_stays_silent() {
+            testContext.setLifecyclePhase(0);
+            verify(!app.monitorMode);
+            var saved = {source: prefs.exploreSourceType, freq: prefs.exploreFreqMhz};
+            try {
+                prefs.exploreSourceType = "rtltcp";
+                prefs.exploreFreqMhz = "851.5";
+                var home = findChild(app, "homeScreen");
+                tryCompare(home, "visible", true);
+                waitForRendering(home);
+                var face = findChild(home, "exploreStart");
+                compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 851.5 MHz");
+                app.exploreSetupOpen = true;
+                tryVerify(function () { return face.Accessible.ignored; }, 1000, "Home's face leaves the tree");
+                testContext.startAccessibilityCount();
+                prefs.exploreFreqMhz = "852.0125";
+                wait(50);
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                var events = 0;
+                for (var type of Object.keys(counts.types))
+                    events += testContext.accessibilityCountWithin(face, type);
+                compare(events, 0, "the hidden face raised events: " + JSON.stringify(counts.chains));
+                app.exploreSetupOpen = false;
+                tryVerify(function () { return !face.Accessible.ignored; }, 1000);
+                compare(face.Accessible.name, "Explore the band, start on RTL-TCP from 852.0125 MHz");
+            } finally {
+                testContext.stopAccessibilityCount();
+                app.exploreSetupOpen = false;
+                prefs.exploreSourceType = saved.source;
+                prefs.exploreFreqMhz = saved.freq;
+            }
         }
 
         // Issue #782: the Spectrum is built at once on its first open, screen reader or not. Building it raises a hide

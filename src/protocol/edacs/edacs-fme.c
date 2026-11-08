@@ -30,6 +30,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -1044,7 +1045,172 @@ edacs_tune_to_lcn(dsd_opts* opts, dsd_state* state, int lcn, uint64_t* request_i
         return 0;
     }
     state->edacs_tuned_lcn = lcn;
+    /* A tune accepted in flight can still fail: edacs_trunk_tick() watches it until it lands. */
+    state->edacs_tune_request = tune_result == DSD_TRUNK_TUNE_RESULT_PENDING ? *request_id : 0U;
+    state->edacs_tune_carrier_seq = state->carrier_seq;
     return 1;
+}
+
+/* The voice channel's state a return to the control channel drops. */
+static void
+edacs_clear_tuned_state(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_is_tuned = 0;
+    state->payload_algid = 0;
+    state->payload_keyid = 0;
+    state->payload_miP = 0;
+    state->edacs_tuned_lcn = -1;
+    state->edacs_tune_request = 0U;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+}
+
+enum { EDACS_CC_RETURN_NONE = 0, EDACS_CC_RETURN_DONE = 1, EDACS_CC_RETURN_REFUSED = -1 };
+
+static long int
+edacs_cc_freq(const dsd_state* state) {
+    return (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+}
+
+/* Ask the tuner for the control channel; a tune accepted in flight is watched (edacs_trunk_tick()) until it lands. */
+static dsd_trunk_tune_result
+edacs_tune_to_cc(dsd_opts* opts, dsd_state* state, long int cc) {
+    uint64_t request = 0U;
+    // Use centralized io/control tuning API
+    const dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0, &request);
+    state->edacs_cc_return_request = tune_result == DSD_TRUNK_TUNE_RESULT_PENDING ? request : 0U;
+    state->edacs_cc_return_carrier_seq = state->carrier_seq;
+    return tune_result;
+}
+
+/* Who settles the failure of EDACS's tune @p request, asked for on carrier @p carrier_seq (discussion #717). */
+enum {
+    /* Not EDACS: the session is no longer a trunked EDACS one (trunking off, another mode), a reset tuning ledger (an
+       input or device switch) no longer holds the request, or another owner has tuned since (a trunk-scan park, a
+       channel step, another protocol's grant). The record is left to that owner, or to the engine, which reconciles
+       the tuner frequency with the radio before it retires a failure no trunking owns. EDACS forgets its reference. */
+    EDACS_FAILURE_HANDED_OVER = 0,
+    /* EDACS holds the record, but a carrier boundary since (a typed tune, a stream restart) moved the receiver, whose
+       new carrier its owner set: no other owner will settle the record, so EDACS lets it go, and touches nothing of the
+       new carrier's. */
+    EDACS_FAILURE_RECORD_ONLY = 1,
+    /* EDACS owns the receiver's recovery: it rolls its own state back, and retunes when the tuner is free for it. */
+    EDACS_FAILURE_OWNED = 2,
+};
+
+/* Read while @p request still gates frames, before anything lets it go. */
+static int
+edacs_tune_failure_owner(const dsd_opts* opts, const dsd_state* state, uint64_t request, uint32_t carrier_seq) {
+    if (opts->trunk_enable != 1 || !dsd_edacs_session(opts, state) || dsd_trunk_tuning_last_request() != request
+        || dsd_trunk_tuning_pending_request() != request) {
+        return EDACS_FAILURE_HANDED_OVER;
+    }
+    return state->carrier_seq == carrier_seq ? EDACS_FAILURE_OWNED : EDACS_FAILURE_RECORD_ONLY;
+}
+
+/* Tune a trunked session that is on a voice channel back to the control channel and drop the voice channel's state.
+   NONE when there is nothing to return from or to (trunking off, not tuned, no control channel known); REFUSED, with
+   the session left as it was, when the tune was not accepted. */
+static int
+edacs_return_to_cc(dsd_opts* opts, dsd_state* state) {
+    const long int cc = edacs_cc_freq(state);
+    if ((opts->trunk_enable != 1) || cc == 0 || (opts->trunk_is_tuned != 1)) {
+        return EDACS_CC_RETURN_NONE;
+    }
+    if (!dsd_trunk_tune_result_is_ok(edacs_tune_to_cc(opts, state, cc))) {
+        return EDACS_CC_RETURN_REFUSED;
+    }
+    edacs_clear_tuned_state(opts, state);
+    return EDACS_CC_RETURN_DONE;
+}
+
+/* A grant's tune that was accepted in flight failed (issue #717): the radio reads the control channel again. Where
+   EDACS owns the recovery, the call the grant opened ends, as on any retune away from it, the failed request is let go,
+   since nothing is left staged for it (it no longer withholds the control channel's frames), and the session returns
+   to the control channel when the tuner is free for it; otherwise, or where no control-channel tune is accepted, the
+   receiver stays where it is, so only the voice channel's state goes. A failure EDACS no longer owns (see
+   edacs_tune_failure_owner()) touches nothing but EDACS's own tracking: the call, the tuned flag, the frequencies and
+   the crypto in force may be another owner's by now. */
+static void
+edacs_grant_tune_failed(dsd_opts* opts, dsd_state* state, uint64_t tune_request) {
+    const int owner = edacs_tune_failure_owner(opts, state, tune_request, state->edacs_tune_carrier_seq);
+    if (owner != EDACS_FAILURE_OWNED) {
+        if (owner == EDACS_FAILURE_RECORD_ONLY) {
+            dsd_trunk_tuning_request_disown(tune_request);
+        }
+        state->edacs_tune_request = 0U;
+        state->edacs_tuned_lcn = -1;
+        return;
+    }
+    LOG_WARN("EDACS: the tune to LCN %d failed; back to the control channel.\n", state->edacs_tuned_lcn);
+    const double nowm = dsd_decode_now_mono_s();
+    if (dsd_call_state_end_ex(state, 0U, nowm, DSD_CALL_END_EXPLICIT) != 0) {
+        dsd_event_sync_slot(opts, state, 0);
+    }
+    dsd_trunk_tuning_request_disown(tune_request);
+    if (!dsd_trunk_tuning_hook_tuner_free(opts, state) || edacs_return_to_cc(opts, state) != EDACS_CC_RETURN_DONE) {
+        edacs_clear_tuned_state(opts, state);
+    }
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = nowm;
+}
+
+/* A return to the control channel that was accepted in flight (discussion #717). One that fails left the radio where
+   it was and withholds every frame until an owner settles it, and the session already reads as on the control channel,
+   so nothing else would: it is let go and, while EDACS still owns the recovery and the tuner is free for it, asked for
+   again, as long as the tuner takes the request. Otherwise, or after a refusal, the receiver stays where it is,
+   decoding. A failure handed over to another owner (edacs_tune_failure_owner()) stays in the ledger for that owner or
+   the engine, which reconciles the tuner frequency before it retires it; EDACS only forgets it. */
+static void
+edacs_cc_return_tick(dsd_opts* opts, dsd_state* state) {
+    const uint64_t request = state->edacs_cc_return_request;
+    const dsd_trunk_tune_result status = dsd_trunk_tuning_request_status(request, NULL);
+    if (status == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        return;
+    }
+    state->edacs_cc_return_request = 0U;
+    if (status == DSD_TRUNK_TUNE_RESULT_OK) {
+        return;
+    }
+    const int owner = edacs_tune_failure_owner(opts, state, request, state->edacs_cc_return_carrier_seq);
+    if (owner == EDACS_FAILURE_HANDED_OVER) {
+        return;
+    }
+    dsd_trunk_tuning_request_disown(request);
+    const long int cc = edacs_cc_freq(state);
+    if (owner == EDACS_FAILURE_OWNED && cc != 0 && opts->trunk_is_tuned != 1
+        && dsd_trunk_tuning_hook_tuner_free(opts, state)) {
+        LOG_WARN("EDACS: the return to the control channel failed; asking for it again.\n");
+        (void)edacs_tune_to_cc(opts, state, cc);
+    }
+}
+
+void
+edacs_trunk_tick(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    if (state->edacs_cc_return_request != 0U) {
+        edacs_cc_return_tick(opts, state);
+    }
+    if (state->edacs_tune_request == 0U) {
+        return;
+    }
+    const uint64_t tune_request = state->edacs_tune_request;
+    if (opts->trunk_is_tuned != 1 || state->edacs_tuned_lcn <= 0) {
+        /* The session left the voice channel another way (eot_cc(), the hangtime return): nothing to watch. */
+        state->edacs_tune_request = 0U;
+        return;
+    }
+    const dsd_trunk_tune_result status = dsd_trunk_tuning_request_status(tune_request, NULL);
+    if (status == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        return;
+    }
+    if (status == DSD_TRUNK_TUNE_RESULT_OK) {
+        /* Landed: not asked again, so its record leaving the bounded history cannot read as a failure later. */
+        state->edacs_tune_request = 0U;
+        return;
+    }
+    edacs_grant_tune_failed(opts, state, tune_request);
 }
 
 static dsd_call_kind
@@ -1188,9 +1354,9 @@ enum { EDACS_TUNE_LEAVE = -1, EDACS_TUNE_WAIT = 0, EDACS_TUNE_PLAY = 1 };
 /* What the call's tune allows the triplet just read (issue #633). A tune that failed (the radio reads the previous
    channel again) leaves the call; one still in flight, or any other unresolved retune (the gate the monitor uses),
    discards the triplet. A tune seen landed is not asked again, so its record leaving the bounded history cannot read
-   as a failure later in the call. */
+   as a failure later in the call; nor is it watched any more (edacs_trunk_tick()). */
 static int
-edacs_analog_tune_gate(uint64_t tune_request, int* tune_landed) {
+edacs_analog_tune_gate(dsd_state* state, uint64_t tune_request, int* tune_landed) {
     if (tune_request != 0U && !*tune_landed) {
         const dsd_trunk_tune_result status = dsd_trunk_tuning_request_status(tune_request, NULL);
         if (status == DSD_TRUNK_TUNE_RESULT_FAILED || status == DSD_TRUNK_TUNE_RESULT_TIMEOUT) {
@@ -1198,6 +1364,9 @@ edacs_analog_tune_gate(uint64_t tune_request, int* tune_landed) {
         }
         if (status == DSD_TRUNK_TUNE_RESULT_OK) {
             *tune_landed = 1;
+            if (state->edacs_tune_request == tune_request) {
+                state->edacs_tune_request = 0U;
+            }
         }
     }
     return dsd_trunk_tuning_pending_request() != 0U ? EDACS_TUNE_WAIT : EDACS_TUNE_PLAY;
@@ -1425,9 +1594,10 @@ edacs_analog_call(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn, 
         }
         /* The tune gate before the reception: a tune that completes after the gate moves the generation, so the
            triplet it was collected under still reads as moved. */
-        const int tune = edacs_analog_tune_gate(call.tune_request, &call.tune_landed);
+        const int tune = edacs_analog_tune_gate(state, call.tune_request, &call.tune_landed);
         if (tune == EDACS_TUNE_LEAVE) {
-            LOG_WARN("edacs_analog: the tune to LCN %u failed; leaving the call.\n", (unsigned int)lcn);
+            /* The radio reads the previous channel again: the session goes back to the control channel. */
+            edacs_grant_tune_failed(opts, state, call.tune_request);
             break;
         }
         const int moved = edacs_analog_note_reception(opts, &call, &before);
@@ -2866,22 +3036,8 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 0);
 
     //jump back to CC here
-    long int cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-    if ((opts->trunk_enable == 1) && cc != 0 && (opts->trunk_is_tuned == 1)) {
-        // Use centralized io/control tuning API
-        dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, cc, 0, NULL);
-        if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-            return;
-        }
-        opts->trunk_is_tuned = 0;
-
-        // EDACS-specific state cleanup
-        state->payload_algid = 0;
-        state->payload_keyid = 0;
-        state->payload_miP = 0;
-        state->edacs_tuned_lcn = -1;
-        state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    if (edacs_return_to_cc(opts, state) == EDACS_CC_RETURN_REFUSED) {
+        return;
     }
 
     //set here so that when returning to the CC, it doesn't go into an immediate hunt if not immediately acquired

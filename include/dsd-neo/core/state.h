@@ -985,7 +985,8 @@ struct dsd_state {
      * ESS) passed its Reed-Solomon check, or a CRC-checked network status broadcast named it (issue #575): a call
      * carried by unscrambled FACCH/SACCH never tests the seed, which -X or another carrier may have left. Each such
      * proof also names the carrier's proven NAC (p2_proven_nac), which is what a Phase 2 call reads. 0 at every
-     * carrier boundary and whenever p2_cc changes; p2_cc itself, the descrambling key, is never reset for it. */
+     * carrier boundary and whenever p2_cc, p2_wacn or p2_sysid changes (issue #804); p2_cc itself, the descrambling
+     * key, is never reset for it. */
     uint8_t p2_cc_verified;
     /* The NAC the latest checked Phase 2 proof on the carrier being decoded named, -1 for none (issue #802): the seed a
      * burst descrambled with passed its Reed-Solomon check, or the NAC a CRC-checked network status broadcast carries,
@@ -1353,6 +1354,12 @@ struct dsd_state {
     int sps_hunt_last_frame_verdict;
     int sps_hunt_counter_at_entry;
     int sps_hunt_idx;
+    /* 1 while a Signal search probe identifies an Auto detection (issue #804): the unlocked hunt then steps in the
+     * search order and spends the search dwell (dsd_frame_sync_sps_hunt_dwell_passes()). The hunt samples
+     * dsd_frame_sync_hook_signal_search_probe() into it when it changes profile or resets its acquisition, and again
+     * when a dwell it shortened is spent, never per symbol: a probe that evidence ended since leaves the carrier that
+     * confirmed its ordinary dwell, and the next step the ordinary order. */
+    uint8_t sps_hunt_search_order;
     /* Parity toggle for the P25p1 modulation probe: which modulation the next hunt re-entry
      * into the 4800/4-level profile watches. Zero-init keeps the first re-entry on C4FM.
      * p25_p1_mod_probe_active marks the one dwell a probe is on trial for, so the modulation
@@ -1956,6 +1963,13 @@ struct dsd_state {
      * zero, for at most the window's length. */
     int p25_p1_nid_evidence;
     uint32_t p25_p1_nid_evidence_symbolcnt;
+    /* The NAC of the P25p1 frame being decoded (issue #804): set by its NID when the BCH accepted it and the NAC is no
+     * reserved value (not 0x000 or 0xFFF, as state->nac takes it), so a network status in the same frame can be paired
+     * with the NAC it was received under. p25_frame_nac_valid is 0 from every P25p1 sync until its NID decodes, after a
+     * NID that failed, was cut by an input interruption or was split by a carrier boundary, and at every carrier
+     * boundary; p25_frame_nac is meaningless then. */
+    uint16_t p25_frame_nac;
+    uint8_t p25_frame_nac_valid;
 
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;
@@ -2280,6 +2294,16 @@ struct dsd_state {
     int edacs_a_mask;    //Calculated Mask for A Bits
     int edacs_f_mask;    //Calculated Mask for F Bits
     int edacs_s_mask;    //Calculated Mask for S Bits
+    /* The trunk tune request of the grant tuned to edacs_tuned_lcn while it is still in flight (0 once landed, or for a
+       tune that completed when asked): edacs_trunk_tick() rolls the grant back when it fails. */
+    uint64_t edacs_tune_request;
+    /* The return to the control channel EDACS asked for (eot_cc(), a failed grant's rollback) while it is still in
+       flight: edacs_trunk_tick() asks for it again when it fails, so no failure is left withholding every frame. */
+    uint64_t edacs_cc_return_request;
+    /* dsd_state::carrier_seq when each was asked for: a carrier boundary since (a typed tune, an input or device
+       switch) hands the receiver to another owner, so EDACS no longer recovers from that tune's failure. */
+    uint32_t edacs_tune_carrier_seq;
+    uint32_t edacs_cc_return_carrier_seq;
 
     //trunking lcn freq list
     int lcn_freq_count;

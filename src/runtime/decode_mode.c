@@ -76,11 +76,8 @@ dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
             profile.levels = 2;
             profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
             break;
-        case DSDCFG_MODE_X2TDMA:
-            /* Carried at 6000_4 alongside P25p2, for the same reason. */
-            profile.symbol_rate_hz = 6000;
-            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
-            break;
+        /* X2-TDMA belongs here too (discussion #717): Motorola's two-slot TDMA reuses the P25 Phase 1 modulation and its
+           9600 bit/s, so 4800 sym/s over four levels, not P25 Phase 2's 6000. */
         /* NXDN96 belongs here and not with NXDN48: 9600 bps over four levels is
            4800 sym/s. The hunt agrees -- frame_sync_sps_profile_has_candidate()
            offers NXDN96 only at 4800_4, so a mode put on 2400_4 would search a

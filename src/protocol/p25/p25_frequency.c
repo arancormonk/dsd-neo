@@ -491,6 +491,9 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
     }
     state->p2_wacn = wacn;
     state->p2_sysid = sysid;
+    /* WACN and SYSID are two thirds of the Phase 2 seed, so a proof of the seed they replace does not carry over
+       (issue #804): a burst or a checked network status proves the new one, and the NAC it names (issue #802). */
+    dsd_state_forget_p2_proof(state);
     uint16_t mask = was_known ? 0 : p25_drop_foreign_idens(state);
     uint16_t seed_mask = 0;
     (void)dsd_state_p25_bandplan_seed_mask(state, &seed_mask);

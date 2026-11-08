@@ -114,4 +114,8 @@ QtObject {
     // One call row. Also the slack the call lists allow around the top before
     // they stop treating the reader as parked on the latest call.
     readonly property int rowHeight: 58
+
+    // The label of a pin on Listen's Pinned strip (issue #801): PinButton draws
+    // it, and Home measures it to lay the strip out before any pin is made.
+    readonly property font pinLabelFont: Qt.font({family: sans, pixelSize: fontSize(13), weight: Font.DemiBold})
 }

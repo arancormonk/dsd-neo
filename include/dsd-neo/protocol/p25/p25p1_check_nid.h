@@ -48,7 +48,14 @@ struct p25p1_nid_result {
     enum NidResult status;
     int nac;
     uint8_t duid;
+    /** Bits the decode corrected in the word it decoded (with a retry's NAC already put in): the BCH corrections, and
+        for a soft decode also the bits the search flipped (issue #804). 0 on failure. */
     int error_count;
+    /** 1 when the NID decoded only after its received NAC field was replaced by the caller's observed NAC (the hard or
+        the soft retry, issue #804) and no decode of the received word alone, hard or soft, reached the same NAC and
+        DUID: the NAC is the one the caller already held, not one read off the air, so it names nothing about the
+        carrier. 0 otherwise, the unhinted decode being returned when it agrees. */
+    int nac_borrowed;
 };
 
 /**
@@ -57,15 +64,21 @@ struct p25p1_nid_result {
  * Performs hard BCH decoding first. After a BCH failure, a valid known channel
  * NAC can replace the received NAC field for one hard retry. When reliability
  * is available and hard validation still fails, a bounded Chase retry flips
- * low-cost candidate bits, where 0 is uncertain and 255 is confident.
+ * low-cost candidate bits, where 0 is uncertain and 255 is confident, in the
+ * received word and, with a known NAC, in the word with that NAC put in. A
+ * decode that needed the known NAC is marked nac_borrowed, unless the soft
+ * search on the received word alone reaches the same NAC and DUID: that decode
+ * is returned instead, after a hard retry too (issue #804).
  *
  * @param bch_code      Input. An array of 63 bytes, each containing one bit of the NID.
  * @param reliab63      Per-bit reliability for @p bch_code, or NULL for hard-only decode.
  * @param observed_nac  Known 12-bit NAC to use for retry, or 0 when unavailable.
  * @param parity         The 64th parity bit read from the air interface.
  * @param parity_reliab  Reliability of the final parity bit.
- * @return Typed status, numeric NAC/DUID, and BCH correction count. NAC and
- *         DUID are valid when status is positive; error_count is zero on failure.
+ * @return Typed status, numeric NAC/DUID, the bits corrected (BCH corrections
+ *         plus soft flips), and whether the NAC was the observed one a retry
+ *         put in with no unhinted decode agreeing (nac_borrowed). NAC and DUID
+ *         are valid when status is positive; error_count is zero on failure.
  */
 struct p25p1_nid_result p25p1_nid_decode(const char bch_code[63], const uint8_t reliab63[63], int observed_nac,
                                          unsigned char parity, uint8_t parity_reliab);

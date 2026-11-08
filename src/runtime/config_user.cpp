@@ -1084,6 +1084,25 @@ render_output_section(FILE* out, const dsdneoUserConfig* cfg) {
 static_assert(sizeof(dsdneoUserConfig::dmr_udp_comp_ports) >= DSD_UDP_COMP_PORT_MAP_SIZE * sizeof("127=65535,"),
               "mode.dmr_udp_comp_ports must hold a fully linked map");
 
+/* The addressing mode a config with any EDACS variant key selects: edacs_addressing when it was given, else the older
+   edacs_ea boolean (standard or extended). */
+static dsdneoUserEdacsAddressing
+config_edacs_addressing(const dsdneoUserConfig* cfg) {
+    if (cfg->edacs_addressing != DSDCFG_EDACS_ADDRESSING_UNSET) {
+        return cfg->edacs_addressing;
+    }
+    return cfg->edacs_ea ? DSDCFG_EDACS_ADDRESSING_EXTENDED : DSDCFG_EDACS_ADDRESSING_STANDARD;
+}
+
+static const char*
+edacs_addressing_ini_name(dsdneoUserEdacsAddressing addressing) {
+    switch (addressing) {
+        case DSDCFG_EDACS_ADDRESSING_NONE: return "none";
+        case DSDCFG_EDACS_ADDRESSING_EXTENDED: return "extended";
+        default: return "standard";
+    }
+}
+
 static void
 render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "[mode]\n");
@@ -1100,8 +1119,10 @@ render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->dmr_udp_comp_ports[0]) {
         DSD_FPRINTF(out, "dmr_udp_comp_ports = \"%s\"\n", cfg->dmr_udp_comp_ports);
     }
+    /* Only the tri-state key is written, so a saved file holds one answer for the addressing mode; an edacs_ea read
+       from an older file is written back as its edacs_addressing. */
     if (cfg->has_edacs_variant) {
-        DSD_FPRINTF(out, "edacs_ea = %s\n", ini_bool(cfg->edacs_ea));
+        DSD_FPRINTF(out, "edacs_addressing = \"%s\"\n", edacs_addressing_ini_name(config_edacs_addressing(cfg)));
         DSD_FPRINTF(out, "edacs_esk = %s\n", ini_bool(cfg->edacs_esk));
     }
     if (cfg->has_demod) {
@@ -1684,9 +1705,13 @@ apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state,
     /* Must follow dsd_apply_decode_mode_preset() above: decode_mode_apply_edacs_pv()
        zeroes both fields unconditionally, so applying these first would silently
        lose them. Unlike dmr_mono there is no preset that carries the variant
-       itself - one edacs_pv preset covers all four CLI forms - so no guard. */
+       itself - one edacs_pv preset covers all five CLI forms - so no guard. "none" puts back the -1 that the
+       edacs_pv preset's standard addressing replaced: ProVoice alone (-fp). */
     if (cfg->has_edacs_variant) {
-        state->ea_mode = cfg->edacs_ea ? 1 : 0;
+        const dsdneoUserEdacsAddressing addressing = config_edacs_addressing(cfg);
+        state->ea_mode = (addressing == DSDCFG_EDACS_ADDRESSING_NONE)       ? -1
+                         : (addressing == DSDCFG_EDACS_ADDRESSING_EXTENDED) ? 1
+                                                                            : 0;
         state->esk_mask = cfg->edacs_esk ? (unsigned short)0xA0 : (unsigned short)0;
     }
 }
@@ -2184,10 +2209,16 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
        is no way back: the in-session toggle only ever produces 0 or 1. Omitting
        the keys until the answer exists is what keeps -1 reachable, and
        apply_mode_config() leaves ea_mode alone when they are absent.
+       The one exception is a session saved as decode = "edacs_pv" with no
+       addressing mode (ProVoice alone, -fp): that preset selects standard
+       addressing, so -1 is written as edacs_addressing = "none" to survive it.
        esk_mask can only be non-zero once one of -fh/-fH/-fe/-fE has run, so it is
        never stranded by the same gate. */
-    cfg->has_edacs_variant = (state->ea_mode >= 0) ? 1 : 0;
+    cfg->has_edacs_variant = (state->ea_mode >= 0 || cfg->decode_mode == DSDCFG_MODE_EDACS_PV) ? 1 : 0;
     cfg->edacs_ea = (state->ea_mode > 0) ? 1 : 0;
+    cfg->edacs_addressing = (state->ea_mode > 0)    ? DSDCFG_EDACS_ADDRESSING_EXTENDED
+                            : (state->ea_mode == 0) ? DSDCFG_EDACS_ADDRESSING_STANDARD
+                                                    : DSDCFG_EDACS_ADDRESSING_NONE;
     cfg->edacs_esk = (state->esk_mask != 0) ? 1 : 0;
 }
 

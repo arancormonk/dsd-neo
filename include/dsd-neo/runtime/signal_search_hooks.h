@@ -6,6 +6,7 @@
 #ifndef DSD_NEO_RUNTIME_SIGNAL_SEARCH_HOOKS_H
 #define DSD_NEO_RUNTIME_SIGNAL_SEARCH_HOOKS_H
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,29 @@ void dsd_signal_search_note_call(const dsd_state* state, uint8_t slot);
  * itself; the default is a no-op. */
 void dsd_signal_search_access_set(dsd_signal_search_access_fn fn);
 void dsd_signal_search_note_access(const dsd_state* state);
+
+/** Where a P25 Phase 2 scrambling code (WACN(20) << 24 | SYSID(12) << 12 | NAC(12)) a protocol reports came from
+ * (issue #804). */
+typedef enum {
+    /** Recovered from the carrier's own scrambled signalling and confirmed there (p25p2_seed_recover.c). */
+    DSD_P25P2_CODE_RECOVERED = 1,
+    /** A Phase 2 MAC network status broadcast that passed its CRC. */
+    DSD_P25P2_CODE_P2_NETWORK = 2,
+    /** A Phase 1 network status that passed its CRC, with the NAC of the same frame's NID. */
+    DSD_P25P2_CODE_P1_NETWORK = 3,
+} dsd_p25p2_code_source;
+
+typedef size_t (*dsd_signal_search_p25p2_codes_fn)(const dsd_state*, uint64_t*, size_t);
+typedef void (*dsd_signal_search_p25p2_code_fn)(const dsd_state*, uint64_t, int);
+/** Install at engine startup. Decoder-thread query: up to @p cap P25 Phase 2 scrambling codes the Signal search
+ * session learned, most recently confirmed first, which code recovery tries on a carrier before it solves for one.
+ * Returns how many it wrote to @p out (never more than @p cap); the default, and outside a receiving visit, is 0. */
+void dsd_signal_search_p25p2_codes_set(dsd_signal_search_p25p2_codes_fn fn);
+size_t dsd_signal_search_p25p2_codes(const dsd_state* state, uint64_t* out, size_t cap);
+/** Install at engine startup. Protocol code calls dsd_signal_search_note_p25p2_code() with a complete scrambling code
+ * that content which passed its CRC/FEC check gave it, and its dsd_p25p2_code_source; the default is a no-op. */
+void dsd_signal_search_p25p2_code_set(dsd_signal_search_p25p2_code_fn fn);
+void dsd_signal_search_note_p25p2_code(const dsd_state* state, uint64_t code, int source);
 /** The Signal search visit on the air (issue #809), which the recorder reads at a publish to name the detection a
  * recording was received on. The engine sets it when a visit's tune lands and clears it right after the closing step
  * that ends the visit's reception; when the decoder session itself ends, it lasts through the session's final

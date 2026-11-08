@@ -48,6 +48,7 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
 #include <math.h>
@@ -78,8 +79,8 @@ frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
     if (!opts) {
         return 0;
     }
-    return (opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
-            || opts->frame_m17 == 1);
+    return (opts->frame_p25p1 == 1 || opts->frame_x2tdma == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1
+            || opts->frame_ysf == 1 || opts->frame_m17 == 1);
 }
 
 static int frame_sync_current_demod_rate(const dsd_opts* opts, const dsd_state* state);
@@ -496,6 +497,7 @@ frame_sync_seed_p25_cqpsk_level_windows(const dsd_opts* opts, dsd_state* state) 
 }
 
 static int frame_sync_p25p1_chain_step_begin(const dsd_opts* opts, dsd_state* state, int* taken);
+static void frame_sync_sample_search_order(const dsd_opts* opts, dsd_state* state);
 static void frame_sync_p25p1_chain_step_end(int taken);
 static void frame_sync_p25p1_mod_compare_abort(const dsd_opts* opts, dsd_state* state, int restore_learned,
                                                int restore_chain);
@@ -550,6 +552,9 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int for
     /* Every caller is a boundary a received tone must not survive: a scan row or target
        change, a decode-mode change, a scope resume (issue #522). */
     dsd_analog_rx_reset(state);
+    /* A Signal search visit's tune is one of them: whether its probe identifies an Auto detection decides the order the
+       hunt tries the profiles in from here (issue #804). */
+    frame_sync_sample_search_order(opts, state);
 }
 
 #ifdef USE_RADIO
@@ -892,7 +897,7 @@ static int
 frame_sync_try_x2tdma(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
     /* The burst is decoded back from dibit_buf_p (frame_sync_accept_x2tdma()). */
-    if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_6000_4)
+    if (opts->frame_x2tdma != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
         || !frame_sync_match_window_own(ctx, 24)) {
         return DSD_SYNC_NONE;
     }
@@ -3835,7 +3840,7 @@ frame_sync_sps_profile_has_candidate(const dsd_opts* opts, int profile_index) {
         case DSD_FRAME_SYNC_SPS_PROFILE_4800_4: return frame_sync_opts_has_4800_four_level_mode(opts);
         case DSD_FRAME_SYNC_SPS_PROFILE_2400_4: return opts->frame_nxdn48 == 1 || opts->frame_dpmr == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_9600_2: return opts->frame_provoice == 1;
-        case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return opts->frame_p25p2 == 1 || opts->frame_x2tdma == 1;
+        case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return opts->frame_p25p2 == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_4800_2: return opts->frame_dstar == 1;
         case DSD_FRAME_SYNC_SPS_PROFILE_18000_4: return opts->frame_tetra == 1;
         default: return 0;
@@ -3861,6 +3866,64 @@ frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state) {
     return current;
 }
 
+int
+frame_sync_sps_hunt_search_next_index(const dsd_opts* opts, int current) {
+    static const int order[] = {
+        DSD_FRAME_SYNC_SPS_PROFILE_4800_4, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, DSD_FRAME_SYNC_SPS_PROFILE_2400_4,
+        DSD_FRAME_SYNC_SPS_PROFILE_9600_2, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, DSD_FRAME_SYNC_SPS_PROFILE_18000_4,
+    };
+    const int count = (int)(sizeof(order) / sizeof(order[0]));
+    int at = -1;
+    for (int i = 0; i < count; i++) {
+        if (order[i] == current) {
+            at = i;
+        }
+    }
+    for (int step = 1; step <= count; step++) {
+        const int idx = order[(at + step + count) % count];
+        if (frame_sync_sps_profile_has_candidate(opts, idx)) {
+            return idx;
+        }
+    }
+    return -1;
+}
+
+/* Whether a Signal search probe identifies an Auto detection, kept for the hunt's step and dwell to read
+   (dsd_state::sps_hunt_search_order): asked here, where the hunt changes profile or resets its acquisition, never per
+   symbol. */
+static void
+frame_sync_sample_search_order(const dsd_opts* opts, dsd_state* state) {
+    state->sps_hunt_search_order = dsd_frame_sync_hook_signal_search_probe(opts, state) ? 1U : 0U;
+}
+
+/*
+ * The samples per symbol that dsd_state::samplesPerSymbol stands for when the hunt compares it with each profile's
+ * rounded timing. On an RTL output whose rate is not a whole multiple of @p profile_index's symbol rate, the FSK
+ * discriminator slicer times each symbol at the floor or the ceiling of the ratio (symbol_rtl_fsk_next_sps(): 12 kHz at
+ * 4800/s reads 2,3,2,3,...), so samplesPerSymbol holds the last symbol's length, not the profile's timing. Either length
+ * is that profile's timing and reads as its rounded rate; a short symbol is not another profile's timing. Read once per
+ * getFrameSync() entry or hunt step, never per symbol.
+ */
+static int
+frame_sync_timing_sps(const dsd_opts* opts, const dsd_state* state, int profile_index, int demod_rate) {
+    const int sps = state->samplesPerSymbol;
+#ifdef USE_RADIO
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && demod_rate > 0) {
+        const int symbol_rate_hz = frame_sync_sps_profile_for_index(profile_index)->symbol_rate_hz;
+        const int whole = demod_rate / symbol_rate_hz;
+        /* The slicer's own clamp: outside 2..63 whole samples it times every symbol alike. */
+        if (whole >= 2 && whole < 64 && (demod_rate % symbol_rate_hz) != 0 && (sps == whole || sps == whole + 1)) {
+            return dsd_opts_compute_sps_rate(opts, symbol_rate_hz, demod_rate);
+        }
+    }
+#else
+    UNUSED(opts);
+    UNUSED(profile_index);
+    UNUSED(demod_rate);
+#endif
+    return sps;
+}
+
 static int
 frame_sync_sps_hunt_next_index_matching_timing(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
@@ -3876,11 +3939,12 @@ frame_sync_sps_hunt_next_index_matching_timing(const dsd_opts* opts, const dsd_s
     }
 
     const int demod_rate = frame_sync_current_demod_rate(opts, state);
+    const int timing_sps = frame_sync_timing_sps(opts, state, current, demod_rate);
     int next_idx = (current + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
     for (int tries = 0; tries < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; tries++) {
         const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
         const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
-        if (frame_sync_sps_profile_has_candidate(opts, next_idx) && expected_sps == state->samplesPerSymbol) {
+        if (frame_sync_sps_profile_has_candidate(opts, next_idx) && expected_sps == timing_sps) {
             return next_idx;
         }
         next_idx = (next_idx + 1) % DSD_FRAME_SYNC_SPS_PROFILE_COUNT;
@@ -4022,6 +4086,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 
     if (profile_changed) {
         frame_sync_apply_sps_profile_timing(opts, state, profile);
+        frame_sync_sample_search_order(opts, state);
     }
 
 #ifdef USE_RADIO
@@ -4039,13 +4104,14 @@ frame_sync_sps_profile_matching_timing(const dsd_opts* opts, const dsd_state* st
     int matching_profile = -1;
     int matching_level_profile = -1;
     const int current_levels = frame_sync_sps_profile_for_index(state->sps_hunt_idx)->levels;
+    const int timing_sps = frame_sync_timing_sps(opts, state, state->sps_hunt_idx, demod_rate);
     for (int profile_index = 0; profile_index < DSD_FRAME_SYNC_SPS_PROFILE_COUNT; profile_index++) {
         if (!frame_sync_sps_profile_has_candidate(opts, profile_index)) {
             continue;
         }
         const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(profile_index);
         const int expected_sps = dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, demod_rate);
-        if (expected_sps != state->samplesPerSymbol) {
+        if (expected_sps != timing_sps) {
             continue;
         }
         if (profile_index == state->sps_hunt_idx) {
@@ -4676,6 +4742,14 @@ frame_sync_p25p1_mod_compare_trial_pass_ended(const dsd_opts* opts, dsd_state* s
  * ends. */
 static int
 frame_sync_sps_hunt_unlocked_next_index(const dsd_opts* opts, const dsd_state* state) {
+    /* A Signal search probe identifying an Auto detection steps in the search order (issue #804); its answer was kept
+       when this profile was adopted and asked again when its dwell was spent. */
+    if (state->sps_hunt_search_order) {
+        const int search_idx = frame_sync_sps_hunt_search_next_index(opts, state->sps_hunt_idx);
+        if (search_idx >= 0) {
+            return search_idx;
+        }
+    }
     if (dsd_frame_sync_hook_p25_probe_in_flight(opts, state)) {
         const int p25_idx = frame_sync_sps_hunt_p25_probe_next_index(opts, state->sps_hunt_idx);
         if (p25_idx >= 0) {
@@ -4753,7 +4827,15 @@ frame_sync_no_sync_sps_hunt_expire(const dsd_opts* opts, dsd_state* state) {
 
 int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
-    const int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    int dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    if (state->sps_hunt_counter >= dwell && state->sps_hunt_search_order) {
+        /* A Signal search probe's dwell is spent: ask again whether the probe still runs (issue #804). Evidence may have
+           ended it since the profile was adopted; the carrier that confirmed is then owed the ordinary dwell, and the
+           step after it the ordinary order. One question per expiry, never per symbol: the answer clears the flag or
+           the step that follows samples it again. */
+        frame_sync_sample_search_order(opts, state);
+        dwell = frame_sync_sps_hunt_dwell_symbols(opts, state);
+    }
     if (state->sps_hunt_counter < dwell) {
         return frame_sync_p25p1_cqpsk_trial_half_dwell(opts, state, dwell);
     }
@@ -5013,6 +5095,15 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             frame_sync_publish_ui_throttled(opts, state);
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+                frame_sync_history_drop(state);
+                frame_sync_sps_hunt_mark_return(state);
+                return DSD_SYNC_NONE;
+            }
+            /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
+               back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
+               4800 sym/s, 750 ms at 2400). The hand-back is a no-sync return like the pass's own, only earlier: the
+               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. */
+            if (dsd_trunk_scan_hook_dwell_due(opts, state)) {
                 frame_sync_history_drop(state);
                 frame_sync_sps_hunt_mark_return(state);
                 return DSD_SYNC_NONE;

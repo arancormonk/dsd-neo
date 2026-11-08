@@ -1223,8 +1223,10 @@ app must have completed onboarding, be Idle (Failed does not qualify), and have
 no overlay or USB permission request open; a permission request that expires
 unanswered lifts the block. A suppressed attachment is consumed;
 closing a sheet or enabling the preference does not retry it. Existing start and
-permission failures use the normal banner. Last-started identity changes only
-on confirmed session initialization, never when the service queues a start.
+permission failures use the normal banner, and a site avoided in its site list
+is refused there with the reason instead of being started. Last-started
+identity changes only on confirmed session initialization, never when the
+service queues a start.
 
 Activity cold-start/new intents and receiver broadcasts share one dedupe tracker.
 It validates deviceName and VID/PID against the current USB device list, retains
@@ -2015,7 +2017,7 @@ imports' exclusion behavior). Supplying keys never silently unblocks a talkgroup
 **Signal search**, beside Explore on Home, searches configured frequency ranges
 using internal RF power measurements, then identifies and monitors detections.
 Ranges have independent detection sensitivity and listening squelch. The default
-digital probe is two seconds, followed by explicitly unresolved NFM monitoring;
+digital probe is three seconds, followed by explicitly unresolved NFM monitoring;
 Hold, Skip, session/permanent avoids, detection history and Save as system are
 available. Search owns the radio exclusively and follows the existing background
 listening preference. See [Signal search](../docs/signal-search.md) for controls,
@@ -2216,8 +2218,12 @@ The CSV remains authoritative; its rows are not converted into manual entries.
 Select another imported target CSV in the list editor or use **Update from file**
 in the imports library to change target contents. Replacement and removal require
 an idle decoder. Failed replacement keeps the previous file usable. Removing a
-referenced target asset marks its lists as drafts; deleting a list keeps shared
-assets. Validation reports the failing row/field without displaying key values.
+referenced target asset marks its lists as drafts; removing a list's fallback
+talkgroups or radio IDs file clears it from the list, which keeps running without
+it. Deleting a list keeps shared assets. A removal that cannot save those changes
+or finish removing the file says so and keeps the file's row in the library;
+remove it again to finish. Validation reports the failing row/field without
+displaying key values.
 
 Home → **Scan lists** combines saved systems and bare P25/DMR/NXDN frequencies
 into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
@@ -2257,12 +2263,39 @@ list's effective alias file must be readable.
 Generated CSVs may contain keys, are private app inputs, and must
 not be exported or logged. QString/QML key copies cannot guarantee memory erasure.
 
+### Pinned shortcuts
+
+Listen keeps up to 6 shortcuts in a **Pinned** row above its list: a saved system (the whole card), one site of a
+grouped system, a scan list, Signal search or Explore. A tap does what the shortcut's own control does: a system or
+site starts (a grouped system opens its site list when it has no playable site or more than one), a scan list starts
+on its own, Signal search opens, and Explore starts on its radio or asks for one. The row is one line at every text
+size and stays in place while the list scrolls. It shows the pins that fit whole, in the order they were pinned, then
+the next one cut short with "…" when there is room for a few letters of it (TalkBack still reads its whole name), then
+**More** (read as "All pinned shortcuts"), which opens the **Pinned** sheet: every pin, each with **Unpin**. A pin
+whose system, site or scan list is not found right now (its saved file could not be read, say) stays pinned and still
+counts toward the 6: the row leaves it out, and the sheet shows it greyed out, to unpin, until it is found again.
+Removing a saved system, site or scan list unpins it; a pinned system moves to another of its sites when one site is
+removed or edited out of the group. A pin never changes what auto-start resumes. The row is shown only while something
+is pinned, and pins are kept in backups.
+
+To pin something, choose **Pin to Listen**; once pinned, the same place offers **Unpin from Listen**:
+
+- a saved system or a scan list: its card's More menu (or a long press on the card);
+- one site of a grouped system: its row in the site list (**N sites** on the card), which stays open;
+- Signal search: the More button beside it;
+- Explore: the card's More menu (or a long press on the card), which also holds **Edit connection**. A tap on the
+  card, or Enter or Space on it from a keyboard, starts Explore; More never does.
+
+With 6 pinned, every **Pin to Listen** is greyed out and says why ("Pinned is full (6). Unpin one first."); unpin one
+here or in the Pinned sheet first. A site that leaves its group (its frequency edited, say) keeps its pin, and its
+own card's More menu unpins it.
+
 ### Saved RadioReference sites
 
 The Qt import screen can import each selected trunked site as a separate saved system. Each site uses its own
 recorded simulcast setting unless an explicit override is chosen. Home groups
-these rows behind **n sites ›**. **Use my location** orders sites by distance and names the nearest
-eligible saved site. Distances use miles or the metric preference; location accuracy and missing
+these rows behind one button on the card, **1 site** or **N sites**. **Use my location** orders sites by distance
+and names the nearest eligible saved site. Distances use miles or the metric preference; location accuracy and missing
 site coordinates are explained. Avoided sites and sites without coordinates are excluded from
 nearest selection. **Listen to nearest site** starts while Idle; while listening, **Stop and switch to nearest**
 and each site's **Stop and switch** wait for the

@@ -105,9 +105,47 @@ expect_eq_str(const char* tag, const char* got, const char* want) {
     return 0;
 }
 
+/* Issue #804 (F12): the Phase 2 seed is WACN, SYSID and NAC together, so a proof of it does not survive a change of
+   WACN or SYSID. A Phase 1 network status (TSBK, MBT or LCW) that names another system on the same NAC leaves the seed
+   unproven, and recovery eligible, until a burst or a checked Phase 2 network status proves the new one. */
+static int
+test_identity_change_clears_proof(void) {
+    int rc = 0;
+    static dsd_state st;
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.p2_wacn = 0xABCDE;
+    st.p2_sysid = 0x123;
+    st.p2_cc = 0x293;
+    st.p2_cc_verified = 1U;
+
+    rc |= expect_eq_int("unchanged identity applied", p25_update_system_identity(&st, 0xABCDE, 0x123), 1);
+    rc |= expect_eq_int("unchanged identity keeps the proof", st.p2_cc_verified, 1);
+    rc |= expect_eq_int("empty identity refused", p25_update_system_identity(&st, 0, 0), 0);
+    rc |= expect_eq_int("empty identity keeps the proof", st.p2_cc_verified, 1);
+
+    rc |= expect_eq_int("new wacn applied", p25_update_system_identity(&st, 0x55555, 0x123), 1);
+    rc |= expect_eq_long("new wacn written", (long)st.p2_wacn, 0x55555);
+    rc |= expect_eq_long("new wacn keeps the nac", (long)st.p2_cc, 0x293);
+    rc |= expect_eq_int("new wacn clears the proof", st.p2_cc_verified, 0);
+
+    st.p2_cc_verified = 1U;
+    rc |= expect_eq_int("new sysid applied", p25_update_system_identity(&st, 0x55555, 0x666), 1);
+    rc |= expect_eq_long("new sysid written", (long)st.p2_sysid, 0x666);
+    rc |= expect_eq_int("new sysid clears the proof", st.p2_cc_verified, 0);
+
+    /* A first identity, learned from none, changes the seed too. */
+    DSD_MEMSET(&st, 0, sizeof st);
+    st.p2_cc = 0x293;
+    st.p2_cc_verified = 1U;
+    rc |= expect_eq_int("first identity applied", p25_update_system_identity(&st, 0xABCDE, 0x123), 1);
+    rc |= expect_eq_int("first identity clears the proof", st.p2_cc_verified, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_identity_change_clears_proof();
     // Case 1: FDMA mapping
     {
         long f0 = 0, fA = 0;

@@ -7146,7 +7146,11 @@ test_received_identity_lifetime(void) {
     state->nxdn96_sync.lock_type = (uint8_t)DSD_SYNC_NXDN_POS;
     state->nxdn96_sync.hits.kind[0] = (uint8_t)DSD_SYNC_NXDN_POS;
     state->m17_join_hits.kind[0] = 1U;
+    state->p25_frame_nac = 0x293U;
+    state->p25_frame_nac_valid = 1U;
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    /* Issue #804: so is the last Phase 1 frame's NAC, which a network status is paired with. */
+    rc |= expect_true("rx-id: the boundary forgets the Phase 1 frame NAC", state->p25_frame_nac_valid == 0U);
     /* The sync join histories are the carrier left's evidence: no NXDN96 lock or hit, nor M17 word, pairs across it. */
     rc |= expect_true("rx-id: the boundary forgets the sync join histories",
                       state->nxdn96_sync.lock_type == 0U && state->nxdn96_sync.hits.kind[0] == 0U
@@ -7317,7 +7321,12 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->p2_cc = 0x293ULL;
     state->p2_cc_verified = 1U;
     state->p2_proven_nac = 0x293;
+    state->p25_frame_nac = 0x293U;
+    state->p25_frame_nac_valid = 1U;
     dsd_engine_forget_carrier_codes(state);
+    /* Issue #804: the NAC of the last Phase 1 frame is the carrier's too, so a network status on the next carrier is
+       never paired with it. */
+    rc |= expect_true("access-codes: the forget drops the Phase 1 frame NAC", state->p25_frame_nac_valid == 0U);
     rc |= expect_true("access-codes: the forget drops the Phase 1 NAC", state->nac == 0);
     rc |= expect_true("access-codes: the forget drops the DMR colour code with its lock",
                       state->dmr_color_code == 16U && state->dmr_confidence_locked == 0);
@@ -7341,7 +7350,10 @@ test_carrier_boundary_forgets_the_access_codes(void) {
     state->p2_cc = 0x293ULL;
     state->p2_cc_verified = 1U;
     state->p2_proven_nac = 0x293;
+    state->p25_frame_nac = 0x293U;
+    state->p25_frame_nac_valid = 1U;
     dsd_engine_forget_carrier_code_values(state);
+    rc |= expect_true("access-codes: the value forget drops the Phase 1 frame NAC", state->p25_frame_nac_valid == 0U);
     rc |= expect_true("access-codes: the value forget drops the colour code and keeps its lock",
                       state->dmr_color_code == 16U && state->dmr_confidence_locked == 1
                           && state->dmr_confidence_color_code == 4);

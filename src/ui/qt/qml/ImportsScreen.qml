@@ -559,9 +559,11 @@ Item {
     // so say which ones before it happens.
     ModalSheet {
         id: removeSheet
+        objectName: "importsRemoveSheet"
 
         readonly property var profilesUsingFile: visible && screen.actionRow >= 0 && typeof decryptionProfiles !== "undefined" ? decryptionProfiles.profilesReferencingPath(importedFiles.get(screen.actionRow).path) : []
-        readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsReferencingPath(importedFiles.get(screen.actionRow).path) : []
+        readonly property var listsUsingFile: visible && screen.actionRow >= 0 ? scanLists.listsTargetingPath(importedFiles.get(screen.actionRow).path) : []
+        readonly property var listsFallingBack: visible && screen.actionRow >= 0 ? scanLists.listsFallingBackOnPath(importedFiles.get(screen.actionRow).path) : []
         readonly property var usedBy: visible && screen.actionRow >= 0 ? savedSystems.systemsReferencingPath(importedFiles.get(screen.actionRow).path) : []
 
         ReadableText {
@@ -600,8 +602,18 @@ Item {
             wrapMode: Text.Wrap
             color: Theme.textSecondary
         }
+        ReadableText {
+            objectName: "importsRemoveFallbackLists"
+            width: parent.width
+            visible: removeSheet.listsFallingBack.length > 0
+            text: qsTr("Used by scan lists for talkgroups or radio IDs: %1. Removing clears it from those lists.").arg(removeSheet.listsFallingBack.join(", "))
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+        }
         OutlineButton {
             width: parent.width
+            objectName: "importsRemoveFileButton"
             enabled: removeSheet.profilesUsingFile.length === 0
             text: qsTr("Remove file")
             onClicked: {
@@ -612,17 +624,24 @@ Item {
                     screen.noticeIsProblem = true;
                     return;
                 }
+                // Issue #801: what names the file lets go of it before the file goes, so no system or list is left
+                // pointing at a deleted file. Each step stops the removal when it fails, and running it again
+                // finishes what is left: a step already done does nothing the second time.
+                if (!savedSystems.clearCsvPath(path)) {
+                    screen.notice = qsTr("Could not save the systems that use this file, so nothing was removed. Try again.");
+                    screen.noticeIsProblem = true;
+                    return;
+                }
                 if (!scanLists.clearCsvPath(path)) {
-                    screen.notice = qsTr("Could not save the affected scan lists. The imported file was kept.");
+                    screen.notice = qsTr("Could not save the scan lists that use this file, so the file was kept. Remove it again to finish.");
                     screen.noticeIsProblem = true;
                     return;
                 }
                 if (!importedFiles.remove(screen.actionRow)) {
-                    screen.notice = qsTr("Could not remove the file. Stop the decoder before removing target CSVs.");
+                    screen.notice = qsTr("The file was not fully removed. Remove it again to finish.");
                     screen.noticeIsProblem = true;
                     return;
                 }
-                savedSystems.clearCsvPath(path);
                 screen.actionRow = -1;
                 screen.notice = qsTr("Removed");
                 screen.noticeIsProblem = false;

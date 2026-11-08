@@ -71,6 +71,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/edacs/edacs.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
@@ -2787,6 +2788,9 @@ dsd_engine_forget_carrier_code_values(dsd_state* state) {
      * as either), leaves it as it was while the frame still dispatches, so a Phase 1 call on the next carrier would
      * read this one's. The no-carrier pass resets it as well (no_carrier_reset_voice_and_audio_metrics()). */
     state->nac = 0;
+    /* So is the NAC of the last Phase 1 frame (issue #804): a network status on the next carrier is never paired with
+     * it. */
+    state->p25_frame_nac_valid = 0U;
     /* The Phase 2 proofs are the carrier's too: the next carrier's bursts, or a network status broadcast, prove the seed
      * and a NAC again. p2_cc itself is the descrambling key and stays. */
     dsd_state_forget_p2_proof(state);
@@ -3955,6 +3959,10 @@ live_scanner_dispatch_synced_frame_locked(dsd_opts* opts, dsd_state* state, cons
     /* A TETRA carrier syncs on every burst, so the synced-frames loop may never hand back to the outer one: the TETRA
      * state machine settles its tune and runs its hangtime here too, withheld frames included. */
     dsd_engine_tetra_trunk_tick_locked(opts, state);
+    /* An EDACS grant or control-channel return whose in-flight tune failed is settled here, withheld frames included:
+       those frames are what the failure withholds, and edacs() acts on no control-channel message while the session
+       reads as tuned. */
+    edacs_trunk_tick(opts, state);
     /* A stream of syncs that never validate must not starve startup hunts (issue #703) or a known DMR owner's
        recovery. Data frames need not reach a DMR voice handler's tick, so loss grace, probe acquisition and pending
        tunes must keep progressing here after validated control ends the startup hunt. */
@@ -4217,6 +4225,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         if (!dsd_trunk_scan_owns_tuner(opts, state) && p25_sm_tick_guard_try_enter()) {
             dsd_engine_cold_start_tick_locked(opts, state);
             dsd_engine_tetra_trunk_tick_locked(opts, state);
+            edacs_trunk_tick(opts, state);
             p25_sm_tick_guard_leave();
         }
         dsd_trunk_scan_hook_tick(opts, state);
@@ -4476,6 +4485,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_close_output_files(opts, state);
     dsd_engine_cleanup_close_radio(opts, state);
     dsd_engine_cleanup_close_net(opts);
+    /* The final call snapshots are taken: a session that ended during a Signal search visit gets its own P25 site back
+       now, so the band plan export below never writes a visited system's IDEN tables (issue #804). */
+    dsd_engine_signal_search_release_site(state);
     // Before the scan coordinator goes: the parked targets' IDEN tables live in its snapshots.
     if (opts->p25_bandplan_export_file[0] != '\0') {
         const int rows = dsd_engine_p25_bandplan_export(opts, state, opts->p25_bandplan_export_file);

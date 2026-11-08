@@ -384,6 +384,10 @@ During scanning:
   once the target becomes idle again, a fresh full dwell starts. Time spent following the call or holding activity
   does not use up the next idle dwell. The tone filter's check is the exception: it holds the target while its carrier
   lasts but is not activity, so the dwell keeps running through it.
+  The dwell runs from the instant the target's retune lands. On a silent frequency the decoder checks it every 300
+  symbols of its sync search (62.5 ms at 4800 symbols/s, 125 ms at the 2400 symbols/s of NXDN48 and dPMR), so a
+  target rotates up to that much after its dwell ends, not at the end of the search's 1800-symbol pass (375 ms or
+  750 ms) as before. While frames keep arriving, the dwell is checked after every frame.
 - With `--scan-max-visit-ms` (or `[trunking] scan_max_visit_ms`) set, a visit also ends when it reaches the cap,
   whatever the target is doing: a trunked call being followed, a conventional hold, a control-channel hunt. The clock
   starts at the instant the target parks and starts again from zero on every re-park, so activity, grants and the

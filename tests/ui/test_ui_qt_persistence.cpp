@@ -8,21 +8,26 @@
  * trip and reload path, and AppPrefs defaults and persistence. Registered only
  * when the Qt frontend is enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
+#include <QAbstractListModel>
 #include <QAnyStringView>
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaProperty>
+#include <QMetaType>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
@@ -34,6 +39,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <functional>
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
@@ -47,13 +53,17 @@
 #include "app_prefs.h"
 #include "dsd-neo/core/safe_api.h"
 #include "json_store.h"
+#include "listen_pins.h"
 #include "saved_systems_model.h"
+#include "scan_lists_model.h"
 
 using dsd_qt::AppPrefs;
 using dsd_qt::json_store_load_array;
 using dsd_qt::json_store_path;
 using dsd_qt::json_store_save_array;
+using dsd_qt::ListenPins;
 using dsd_qt::SavedSystemsModel;
+using dsd_qt::ScanListsModel;
 
 namespace {
 
@@ -881,6 +891,21 @@ test_screen_policy_prefs() {
     stored.remove(legacyKey);
 }
 
+/* Saved-system migration warnings so far. The log tap is installed once and never replaced, so what it counts into
+ * must live as long as the process. */
+int g_migration_warnings = 0;
+
+void
+count_migration_warnings() {
+    dsd_neo_log_set_tap(
+        [](dsd_neo_log_level_t level, const char* text, void*) {
+            if (level == LOG_LEVEL_WARN && QString::fromUtf8(text).contains("migration could not be persisted")) {
+                ++g_migration_warnings;
+            }
+        },
+        nullptr);
+}
+
 void
 test_migration_write_failure() {
     const QString store = QStringLiteral("saved_systems.json");
@@ -888,17 +913,10 @@ test_migration_write_failure() {
     const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     const auto permissions = QFile::permissions(directory);
     expect("migration directory made read only", QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
-    int warnings = 0;
-    dsd_neo_log_set_tap(
-        [](dsd_neo_log_level_t level, const char* text, void* context) {
-            if (level == LOG_LEVEL_WARN && QString::fromUtf8(text).contains("migration could not be persisted")) {
-                ++*static_cast<int*>(context);
-            }
-        },
-        &warnings);
+    count_migration_warnings();
+    const int before = g_migration_warnings;
     SavedSystemsModel model;
-    dsd_neo_log_set_tap(nullptr, nullptr);
-    expect("migration warns once when write fails", warnings == 1);
+    expect("migration warns once when write fails", g_migration_warnings - before == 1);
     expect("failed migration keeps readable row", model.count() == 1);
     expect("migration permissions restored", QFile::setPermissions(directory, permissions));
 }
@@ -1073,6 +1091,231 @@ test_site_provenance_edits() {
     expect("malformed coordinates cannot become equator", !model.get(model.count() - 1).value("hasSitePos").toBool());
 }
 
+/* A directory where the systems file goes fails every save, whatever the permissions the test runs with. */
+QString
+systems_store_path() {
+    return json_store_path(QStringLiteral("saved_systems.json"));
+}
+
+bool
+block_systems_store() {
+    const QString path = systems_store_path();
+    if (!QFile::rename(path, path + ".saved")) {
+        return false;
+    }
+    if (!QDir().mkpath(path)) {
+        // Put the store back, so the tests after this one still read and write it.
+        QFile::rename(path + ".saved", path);
+        return false;
+    }
+    return true;
+}
+
+bool
+unblock_systems_store() {
+    const QString path = systems_store_path();
+    return QDir().rmdir(path) && QFile::rename(path + ".saved", path);
+}
+
+/* Every change signal @p model sends, by name, in order, into @p log (declared before the model, so it outlives it). */
+void
+record_signals(SavedSystemsModel& model, QStringList& log) {
+    const auto note = [&model, &log](auto signal, const char* name) {
+        QObject::connect(&model, signal, &model, [&log, name]() { log.append(QString::fromLatin1(name)); });
+    };
+    note(&SavedSystemsModel::rowsAboutToBeRemoved, "rowsAboutToBeRemoved");
+    note(&SavedSystemsModel::rowsRemoved, "rowsRemoved");
+    note(&SavedSystemsModel::dataChanged, "dataChanged");
+    note(&SavedSystemsModel::sitesChanged, "sitesChanged");
+    note(&SavedSystemsModel::countChanged, "countChanged");
+    note(&SavedSystemsModel::mostRecentRowChanged, "mostRecentRowChanged");
+}
+
+void
+empty_systems(SavedSystemsModel& model) {
+    // A removal can fail now (a store left blocked); stop there rather than retry forever.
+    while (model.count() && model.remove(0)) {}
+    expect("the systems empty", model.count() == 0);
+}
+
+/* A removal whose save fails changes nothing: the card stays, and anything that follows rows out (a pinned shortcut)
+ * keeps it, because the system is still there on the next launch. A saved removal signals rows, sites, count, then
+ * the most recent row. */
+void
+test_remove_failure_keeps_row() {
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("remove: first system", model.add({{"name", "First"}}));
+    expect("remove: second system", model.add({{"name", "Second"}}));
+    record_signals(model, log);
+    expect("remove: store blocked", block_systems_store());
+    expect("remove: a failed save reports failure", !model.remove(0));
+    expect("remove: a failed save keeps the row",
+           model.count() == 2 && model.get(0).value("name") == "First" && model.get(1).value("name") == "Second");
+    expect("remove: a failed save sends no signal", log.isEmpty());
+    expect("remove: store unblocked", unblock_systems_store());
+    {
+        SavedSystemsModel reloaded;
+        expect("remove: a failed removal is still on disk", reloaded.count() == 2);
+    }
+    expect("remove: a saved removal reports success", model.remove(0));
+    expect("remove: a saved removal drops the row", model.count() == 1 && model.get(0).value("name") == "Second");
+    expect("remove: a saved removal signals rows, sites, count and recency in order",
+           log
+               == QStringList{"rowsAboutToBeRemoved", "rowsRemoved", "sitesChanged", "countChanged",
+                              "mostRecentRowChanged"});
+    expect("remove: a row past the end is refused", !model.remove(1) && !model.remove(-1));
+    SavedSystemsModel reloaded;
+    expect("remove: a saved removal persists", reloaded.count() == 1);
+}
+
+/* Recency is advisory, so touch() reports nothing, but a stamp that did not save stays out of memory: the most recent
+ * row the app shows is the one the next launch shows. */
+void
+test_touch_failure_keeps_memory() {
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("touch: system", model.add({{"name", "Heard"}}));
+    record_signals(model, log);
+    expect("touch: store blocked", block_systems_store());
+    model.touch(0);
+    expect("touch: a failed save keeps lastHeard", model.get(0).value("lastHeard").toLongLong() == 0);
+    expect("touch: a failed save sends no signal", log.isEmpty());
+    expect("touch: store unblocked", unblock_systems_store());
+    model.touch(0);
+    expect("touch: a saved stamp lands", model.get(0).value("lastHeard").toLongLong() > 0);
+    SavedSystemsModel reloaded;
+    expect("touch: a saved stamp persists", reloaded.get(0).value("lastHeard").toLongLong() > 0);
+}
+
+/* Clearing a removed library file's references saves first: a failure reports false and leaves every reference (and
+ * the site's group) as it was, so a retry can finish it. A path nothing references needs no save. */
+void
+test_clear_csv_failure_keeps_memory() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("clear: grouped site",
+           model.add({{"name", "North"}, {"rrSid", 12}, {"rrSiteId", 1}, {"groupCsvPath", path}}));
+    expect("clear: second system", model.add({{"name", "Butler"}, {"chanCsvPath", path}}));
+    record_signals(model, log);
+    expect("clear: store blocked", block_systems_store());
+    expect("clear: a failed save reports failure", !model.clearCsvPath(path));
+    expect("clear: a failed save keeps every reference",
+           model.get(0).value("groupCsvPath") == path && model.get(1).value("chanCsvPath") == path);
+    expect("clear: a failed save keeps the site in its group",
+           model.get(0).value("rrSid").toInt() == 12 && model.get(0).value("rrSiteId").toInt() == 1);
+    expect("clear: a failed save sends no signal", log.isEmpty());
+    expect("clear: an unreferenced path needs no save", model.clearCsvPath(QStringLiteral("/data/imports/none.csv")));
+    expect("clear: store unblocked", unblock_systems_store());
+    expect("clear: a saved clear reports success", model.clearCsvPath(path));
+    expect("clear: a saved clear blanks every reference",
+           model.get(0).value("groupCsvPath").toString().isEmpty()
+               && model.get(1).value("chanCsvPath").toString().isEmpty());
+    SavedSystemsModel reloaded;
+    expect("clear: a saved clear persists", reloaded.get(0).value("groupCsvPath").toString().isEmpty()
+                                                && reloaded.get(1).value("chanCsvPath").toString().isEmpty());
+}
+
+/* The site chooser's Avoid reports a failed save, so the toggle can show the stored state. */
+void
+test_set_avoid_failure_reports() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("avoid: north site", model.add({{"name", "North"}, {"rrSid", 12}, {"rrSiteId", 1}}));
+    expect("avoid: south site", model.add({{"name", "South"}, {"rrSid", 12}, {"rrSiteId", 2}}));
+    expect("avoid: store blocked", block_systems_store());
+    expect("avoid: a failed save reports failure", !model.setAvoidSite(1, true));
+    expect("avoid: a failed save leaves the site unavoided", !model.get(1).value("avoidSite").toBool());
+    expect("avoid: store unblocked", unblock_systems_store());
+    expect("avoid: a saved avoid reports success", model.setAvoidSite(1, true));
+    SavedSystemsModel reloaded;
+    expect("avoid: a saved avoid persists", reloaded.get(1).value("avoidSite").toBool());
+    expect("avoid: a row past the end is refused", !model.setAvoidSite(2, true));
+}
+
+/* An avoid is lifted only in the group's site chooser, so a site that leaves its group (an edited frequency, decode
+ * flag or file, or a removed library file) drops its avoid with the group; an edit that keeps the group keeps it. */
+void
+test_avoid_cleared_when_site_leaves_group() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    for (int site = 1; site <= 4; ++site) {
+        expect("leave: site", model.add({{"name", QStringLiteral("Site %1").arg(site)},
+                                         {"freqMhz", "851"},
+                                         {"rrSid", 12},
+                                         {"rrSiteId", site},
+                                         {"groupCsvPath", path}}));
+    }
+    expect("leave: two sites avoided", model.setAvoidSite(1, true) && model.setAvoidSite(2, true));
+    expect("leave: a rename", model.update(1, {{"name", "Renamed"}}));
+    expect("leave: a rename keeps the group and the avoid",
+           model.get(1).value("rrSid").toInt() == 12 && model.get(1).value("avoidSite").toBool());
+    expect("leave: a frequency edit", model.update(1, {{"freqMhz", "852"}}));
+    expect("leave: a frequency edit takes the site out of its group and drops its avoid",
+           model.get(1).value("rrSid").toInt() == 0 && !model.get(1).value("avoidSite").toBool());
+    expect("leave: the other avoided site keeps its avoid", model.get(2).value("avoidSite").toBool());
+    // Listening for another protocol from the Radio controls saves the decode flag through the same edit.
+    expect("leave: a third site avoided", model.setAvoidSite(3, true));
+    expect("leave: a decoder change from the Radio controls",
+           model.updateRadioSettings(model.get(3).value("uid").toString(), {{"decodeFlag", "-fs"}}));
+    expect("leave: a decoder change takes the site out of its group and drops its avoid",
+           model.get(3).value("rrSid").toInt() == 0 && !model.get(3).value("avoidSite").toBool());
+    expect("leave: the library file goes", model.clearCsvPath(path));
+    expect("leave: a removed library file drops the avoid of the sites it ungroups",
+           model.get(2).value("rrSid").toInt() == 0 && !model.get(2).value("avoidSite").toBool());
+    SavedSystemsModel reloaded;
+    expect("leave: the dropped avoids persist", !reloaded.get(1).value("avoidSite").toBool()
+                                                    && !reloaded.get(2).value("avoidSite").toBool()
+                                                    && !reloaded.get(3).value("avoidSite").toBool());
+}
+
+/* Rows already stored with an avoid outside a group (saved before the rule above) lose it at load, and the load saves
+ * that as it saves a UID repair; a lone RadioReference site keeps its avoid, since its "1 site" chooser lifts it. */
+void
+test_load_migrates_orphaned_avoid() {
+    const QString store = QStringLiteral("saved_systems.json");
+    const auto row = [](const char* name, int sid, int site) {
+        return QJsonObject{{"uid", QUuid::createUuid().toString(QUuid::WithoutBraces)},
+                           {"name", name},
+                           {"rrSid", sid},
+                           {"rrSiteId", site},
+                           {"avoidSite", true}};
+    };
+    expect("orphan: fixture saved",
+           json_store_save_array(store, QJsonArray{row("Orphan", 0, 0), row("No site", 12, 0), row("Lone", 12, 5)}));
+    {
+        SavedSystemsModel model;
+        expect("orphan: an ungrouped row loads unavoided", !model.get(0).value("avoidSite").toBool());
+        expect("orphan: a row with no site id loads unavoided", !model.get(1).value("avoidSite").toBool());
+        expect("orphan: a lone RadioReference site keeps its avoid", model.get(2).value("avoidSite").toBool());
+    }
+    const QJsonArray stored = json_store_load_array(store);
+    expect("orphan: the cleared avoids are saved without an edit",
+           !stored.at(0).toObject().value("avoidSite").toBool() && !stored.at(1).toObject().value("avoidSite").toBool()
+               && stored.at(2).toObject().value("avoidSite").toBool());
+
+    expect("orphan: unsaved fixture", json_store_save_array(store, QJsonArray{row("Orphan", 0, 0)}));
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const auto permissions = QFile::permissions(directory);
+    expect("orphan: data directory made read only",
+           QFile::setPermissions(directory, QFile::ReadOwner | QFile::ExeOwner));
+    count_migration_warnings();
+    const int before = g_migration_warnings;
+    {
+        SavedSystemsModel model;
+        expect("orphan: an unsaved clear still clears in memory", !model.get(0).value("avoidSite").toBool());
+    }
+    expect("orphan: an unsaved clear warns once", g_migration_warnings - before == 1);
+    expect("orphan: data directory permissions restored", QFile::setPermissions(directory, permissions));
+    SavedSystemsModel model;
+    empty_systems(model);
+}
+
 void
 test_foundation_key_type_migration() {
     QJsonArray rows;
@@ -1148,6 +1391,8 @@ test_prefs_key_table(void) {
          QVariantList{QVariantMap{{QStringLiteral("targetId"), QStringLiteral("t1")},
                                   {QStringLiteral("frequencyHz"), 851012500}}},
          "listen/acceptedStartTargets"},
+        // Issue #801: the shortcuts pinned to Listen.
+        {"pinned", QVariantList{QVariantMap{{QStringLiteral("kind"), QStringLiteral("search")}}}, "listen/pinned"},
     };
     QStringList covered;
     int writable = 0;
@@ -1253,7 +1498,8 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("recording/recordUnknownOnly"))
                && portable.contains(QStringLiteral("recording/limitMb"))
                && portable.contains(QStringLiteral("recording/analogMaxGapMs"))
-               && portable.contains(QStringLiteral("recording/analogPrerollMs")));
+               && portable.contains(QStringLiteral("recording/analogPrerollMs"))
+               && portable.contains(QStringLiteral("listen/pinned")));
 
     const QVariantMap before = AppPrefs::readPortable();
     expect("readPortable returns only portable keys",
@@ -1315,6 +1561,616 @@ test_prefs_key_table(void) {
     }
     expect("empty replace clears portable keys",
            AppPrefs::replacePortable(QVariantMap()) && AppPrefs::readPortable().isEmpty());
+}
+
+/* Issue #801: what `listen/pinned` holds after a write that is not the app's own. */
+QVariantList
+pinned_as_stored(const QVariant& raw) {
+    clear_prefs_file();
+    {
+        QSettings f = prefs_file();
+        f.setValue(QStringLiteral("listen/pinned"), raw);
+        f.sync();
+    }
+    const AppPrefs prefs;
+    return prefs.pinned();
+}
+
+QVariantMap
+pin_of(const char* kind, const QString& uid = QString()) {
+    return {{QStringLiteral("kind"), QLatin1String(kind)}, {QStringLiteral("uid"), uid}};
+}
+
+QString
+pins_json(const QVariantList& pins) {
+    return QString::fromUtf8(QJsonDocument(QJsonArray::fromVariantList(pins)).toJson(QJsonDocument::Compact));
+}
+
+QString
+new_uid() {
+    return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+/* The getter is the only validation a restored or hand-edited value gets (a backup carries the text as it is): text
+ * that is no JSON array reads as no pins, and each pin keeps only a known kind with the UID it takes, once, at most
+ * six of them. */
+void
+test_pinned_pref_sanitizes() {
+    expect("pinned: nothing stored reads as none", pinned_as_stored(QVariant()).isEmpty());
+    expect("pinned: text that is no JSON reads as none", pinned_as_stored(QStringLiteral("[{\"kind\":")).isEmpty());
+    expect("pinned: a JSON object reads as none", pinned_as_stored(QStringLiteral("{\"kind\":\"search\"}")).isEmpty());
+    // An unquoted hand edit: the ini reader splits it at its commas and strips its quotes.
+    clear_prefs_file();
+    {
+        QFile ini(prefs_file().fileName());
+        expect("pinned: ini file opens", ini.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ini.write("[listen]\npinned=[{\"kind\":\"search\"}, {\"kind\":\"explore\"}]\n");
+    }
+    expect("pinned: the unquoted edit reads back as a list",
+           prefs_file().value(QStringLiteral("listen/pinned")).metaType().id() == QMetaType::QStringList);
+    {
+        const AppPrefs prefs;
+        expect("pinned: an unquoted hand edit reads as none", prefs.pinned().isEmpty());
+    }
+
+    const QString uid = new_uid();
+    const QString longScan(129, QLatin1Char('s'));
+    const QString boundScan(128, QLatin1Char('b'));
+    const QVariantList messy{
+        pin_of("favorite", uid),
+        pin_of("system", QStringLiteral("not-a-uuid")),
+        pin_of("site", QStringLiteral("12")),
+        pin_of("scan", QString()),
+        pin_of("scan", longScan),
+        QStringLiteral("search"),
+        pin_of("system", QLatin1Char('{') + uid.toUpper() + QLatin1Char('}')),
+        pin_of("system", uid),
+        pin_of("search", QStringLiteral("ignored")),
+        pin_of("scan", boundScan),
+        pin_of("site", uid),
+    };
+    const QVariantList want{pin_of("system", uid), pin_of("search"), pin_of("scan", boundScan), pin_of("site", uid)};
+    expect("pinned: unknown kinds, bad UIDs and repeats dropped, UUIDs in the stored form, no UID on singletons",
+           pinned_as_stored(pins_json(messy)) == want);
+
+    QVariantList seven{pin_of("search"), pin_of("explore")};
+    for (int i = 0; i < 5; ++i) {
+        seven.append(pin_of("scan", QStringLiteral("list-%1").arg(i)));
+    }
+    const QVariantList six = pinned_as_stored(pins_json(seven));
+    expect("pinned: seven read as the first six", six.size() == AppPrefs::kPinnedCap && six == seven.mid(0, 6));
+}
+
+/* The setter writes compact JSON the scalar-only backup carries; a reload, a backup's readPortable() and a restore's
+ * replacePortable() give the same pins back. Writing none removes the key. */
+void
+test_pinned_pref_round_trip() {
+    clear_prefs_file();
+    const QVariantList pins{pin_of("system", new_uid()), pin_of("scan", QStringLiteral("list-1")), pin_of("explore")};
+    {
+        AppPrefs prefs;
+        int notified = 0;
+        QObject::connect(&prefs, &AppPrefs::pinnedChanged, &prefs, [&notified]() { notified++; });
+        prefs.setPinned(pins);
+        prefs.setPinned(pins);
+        expect("pinned: a write notifies once, a repeat not at all", notified == 1);
+        prefs.setProperty("lastStartedKind", QStringLiteral("saved"));
+    }
+    {
+        QSettings f = prefs_file();
+        f.sync();
+        expect("pinned: stored as one compact JSON string",
+               f.value(QStringLiteral("listen/pinned")).metaType().id() == QMetaType::QString
+                   && f.value(QStringLiteral("listen/pinned")).toString() == pins_json(pins));
+    }
+    const QVariantMap portable = AppPrefs::readPortable();
+    expect("pinned: a backup reads the text",
+           portable.value(QStringLiteral("listen/pinned")).toString() == pins_json(pins));
+    clear_prefs_file();
+    expect("pinned: a restore writes it back", AppPrefs::replacePortable(portable));
+    {
+        AppPrefs prefs;
+        expect("pinned: a restore reads the same pins", prefs.pinned() == pins);
+        prefs.setPinned({});
+    }
+    expect("pinned: none removes the key", !prefs_file().contains(QStringLiteral("listen/pinned")));
+}
+
+/* A pins fixture: the live prefs and both models emptied, then a ListenPins over them. */
+struct PinsWorld {
+    AppPrefs prefs;
+    SavedSystemsModel systems;
+    ScanListsModel lists;
+
+    PinsWorld() {
+        clear_prefs_file();
+        empty_systems(systems);
+        while (lists.count() && lists.remove(0)) {}
+        expect("pins: the lists empty", lists.count() == 0);
+    }
+
+    QString
+    system(const QString& name, int sid = 0, int siteId = 0, const QString& siteName = QString(),
+           const QString& groupCsv = QString()) {
+        expect("pins: add system", systems.add({{"name", name},
+                                                {"freqMhz", QStringLiteral("851.%1").arg(systems.count())},
+                                                {"rrSid", sid},
+                                                {"rrSiteId", siteId},
+                                                {"siteName", siteName},
+                                                {"groupCsvPath", groupCsv}}));
+        return systems.get(systems.count() - 1).value("uid").toString();
+    }
+
+    QString
+    list(const QString& name) {
+        expect("pins: add list", lists.add({{"name", name}}));
+        return lists.get(lists.count() - 1).value("uid").toString();
+    }
+};
+
+QVariantMap
+entry_for(const ListenPins& pins, const QString& key) {
+    for (const QVariant& entry : pins.entries()) {
+        if (entry.toMap().value("key").toString() == key) {
+            return entry.toMap();
+        }
+    }
+    return {};
+}
+
+/* Notes whether @p pins changes its entries while @p saved() says the departing row is still in its model, or names
+ * @p gone: a removal's prune must land once the row is gone, outside the model's removal. */
+struct EntriesWatch {
+    bool early = false;
+    QMetaObject::Connection connection;
+
+    EntriesWatch(ListenPins& pins, const std::function<bool()>& saved, const QString& gone) {
+        connection = QObject::connect(&pins, &ListenPins::entriesChanged, &pins, [this, &pins, saved, gone]() {
+            for (const QVariant& entry : pins.entries()) {
+                early = early || entry.toMap().value("label").toString() == gone;
+            }
+            early = early || saved();
+        });
+    }
+
+    ~EntriesWatch() { QObject::disconnect(connection); }
+
+    EntriesWatch(const EntriesWatch&) = delete;
+    EntriesWatch& operator=(const EntriesWatch&) = delete;
+};
+
+QStringList
+pin_keys(const ListenPins& pins) {
+    QStringList keys;
+    for (const QVariant& entry : pins.entries()) {
+        keys.append(entry.toMap().value("key").toString());
+    }
+    return keys;
+}
+
+/* A system pin stands for its card: a group's card is pinned through any of its sites, and a site in no group is its
+ * own card, so a site pin of it pins that card too. Pinning is idempotent and never touches what Listen last
+ * started. */
+void
+test_pin_unpin_is_pinned() {
+    PinsWorld w;
+    const QString solo = w.system("Solo");
+    const QString lead = w.system("County", 7, 1, "North");
+    const QString second = w.system("County", 7, 2, "South");
+    const QString third = w.system("County", 7, 3, "East");
+    const QString list = w.list("Patrol");
+    w.prefs.setLastStartedKind(QStringLiteral("scan"));
+    w.prefs.setLastStartedUid(QStringLiteral("last-uid"));
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+
+    expect("pins: a system pins", pins.pin("system", solo).isEmpty() && pins.isPinned("system", solo));
+    expect("pins: a system pin is no site pin", !pins.isPinned("site", solo));
+    expect("pins: pinning again changes nothing", pins.pin("system", solo).isEmpty() && pins.count() == 1);
+
+    expect("pins: a group pins through one of its sites", pins.pin("system", second).isEmpty());
+    expect("pins: the group's card is pinned through its lead",
+           pins.isPinned("system", lead) && pins.isPinned("system", third));
+    expect("pins: pinning the card through another site is a repeat",
+           pins.pin("system", lead).isEmpty() && pins.count() == 2);
+    expect("pins: a group's system pin is no site pin", !pins.isPinned("site", second));
+    pins.unpin("system", lead);
+    expect("pins: unpinning the card through its lead removes the pin",
+           !pins.isPinned("system", second) && pins.count() == 1);
+
+    expect("pins: one site of a group pins", pins.pin("site", third).isEmpty() && pins.isPinned("site", third));
+    expect("pins: a grouped site's pin does not pin its card",
+           !pins.isPinned("system", lead) && !pins.isPinned("system", third));
+
+    pins.unpin("system", solo);
+    expect("pins: a standalone site pins", pins.pin("site", solo).isEmpty());
+    expect("pins: a standalone site's pin pins its card", pins.isPinned("system", solo));
+    pins.unpin("system", solo);
+    expect("pins: unpinning the card removes its site pin", !pins.isPinned("site", solo) && pins.count() == 1);
+
+    expect("pins: a scan list pins", pins.pin("scan", list).isEmpty() && pins.isPinned("scan", list));
+    expect("pins: Signal search pins without a UID",
+           pins.pin("search", QStringLiteral("any")).isEmpty() && pins.isPinned("search", QString()));
+    expect("pins: Explore pins", pins.pin("explore", QString()).isEmpty() && pins.isPinned("explore", QString()));
+    expect("pins: entries in pinned order, keyed kind:uid",
+           pin_keys(pins)
+               == QStringList{"site:" + third, "scan:" + list, QStringLiteral("search:"), QStringLiteral("explore:")});
+    pins.unpinKey(QStringLiteral("search:"));
+    pins.unpin("scan", list);
+    expect("pins: unpinKey and unpin remove one each",
+           pin_keys(pins) == QStringList{"site:" + third, QStringLiteral("explore:")});
+
+    expect("pins: an unsaved system is not found",
+           pins.pin("system", new_uid()) == ListenPins::text(ListenPins::Text::NotFoundRefusal));
+    expect("pins: an unsaved list is not found",
+           pins.pin("scan", QStringLiteral("gone")) == ListenPins::text(ListenPins::Text::NotFoundRefusal));
+    expect("pins: an unknown kind is not found",
+           pins.pin("tool", QString()) == ListenPins::text(ListenPins::Text::NotFoundRefusal));
+    expect("pins: a refusal stores nothing", pins.count() == 2);
+    expect("pins: pinning leaves what Listen last started",
+           w.prefs.lastStartedKind() == "scan" && w.prefs.lastStartedUid() == "last-uid");
+    AppPrefs reread;
+    expect("pins: pins persist", reread.pinned().size() == 2);
+}
+
+/* Six is the cap, and pins whose targets are missing count toward it: they are never dropped to make room. */
+void
+test_pin_full_refuses() {
+    PinsWorld w;
+    QStringList uids;
+    for (int i = 0; i < 4; ++i) {
+        uids.append(w.system(QStringLiteral("System %1").arg(i)));
+    }
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    int fullChanges = 0;
+    QObject::connect(&pins, &ListenPins::fullChanged, &pins, [&fullChanges]() { fullChanges++; });
+    for (const QString& uid : uids) {
+        expect("full: pin a system", pins.pin("system", uid).isEmpty());
+    }
+    expect("full: pin search", pins.pin("search", QString()).isEmpty());
+    expect("full: not full at five", !pins.full() && fullChanges == 0);
+    expect("full: pin explore", pins.pin("explore", QString()).isEmpty());
+    expect("full: full at six", pins.full() && pins.count() == ListenPins::kCap && fullChanges == 1);
+    const QString extra = w.list("Patrol");
+    expect("full: a seventh is refused",
+           pins.pin("scan", extra) == ListenPins::text(ListenPins::Text::FullRefusal) && pins.count() == 6);
+    expect("full: the refusal names the cap",
+           ListenPins::text(ListenPins::Text::FullRefusal) == QStringLiteral("Pinned is full (6). Unpin one first."));
+    expect("full: the views read the same cap", pins.property("cap").toInt() == 6 && ListenPins::cap() == 6);
+    expect("full: pinning what is pinned still succeeds", pins.pin("system", uids.first()).isEmpty());
+
+    QVariantList missing;
+    for (int i = 0; i < 5; ++i) {
+        missing.append(pin_of("system", new_uid()));
+    }
+    missing.append(pin_of("search"));
+    w.prefs.setPinned(missing);
+    expect("full: missing targets count", pins.full() && pins.count() == 6);
+    expect("full: missing targets are not made room from",
+           pins.pin("scan", extra) == ListenPins::text(ListenPins::Text::FullRefusal) && pins.count() == 6);
+    pins.unpinKey(QStringLiteral("system:") + missing.first().toMap().value("uid").toString());
+    expect("full: a missing pin unpins by key", !pins.full() && pins.count() == 5 && fullChanges == 2);
+    expect("full: then the list pins", pins.pin("scan", extra).isEmpty() && pins.full());
+}
+
+/* Every source offers the same Pin to Listen: named for what it pins, Unpin once pinned (a group's card through any of
+ * its sites), and disabled with the full reason while six are stored, except as Unpin. */
+void
+test_pin_action() {
+    PinsWorld w;
+    const QString lead = w.system("County", 7, 1, "North");
+    const QString second = w.system("County", 7, 2, "South");
+    const QString list = w.list("Patrol");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    using T = ListenPins::Text;
+    const auto offers = [&pins](const QString& kind, const QString& uid, const QString& text, const QString& name,
+                                bool pinned) {
+        const QVariantMap action = pins.action(kind, uid);
+        return action.value("text").toString() == text && action.value("accessibleName").toString() == name
+               && action.value("pinned").toBool() == pinned && action.value("enabled").toBool()
+               && action.value("description").toString().isEmpty();
+    };
+
+    expect("action: the copy",
+           ListenPins::actionText(false) == QStringLiteral("Pin to Listen")
+               && ListenPins::actionText(true) == QStringLiteral("Unpin from Listen")
+               && ListenPins::actionName(false, "Patrol") == QStringLiteral("Pin Patrol to Listen")
+               && ListenPins::actionName(true, "Patrol") == QStringLiteral("Unpin Patrol from Listen"));
+    expect("action: a system card names its system",
+           offers("system", lead, ListenPins::actionText(false), ListenPins::actionName(false, "County"), false));
+    expect("action: a site names its system and itself",
+           offers("site", second, ListenPins::actionText(false),
+                  ListenPins::actionName(false, ListenPins::text(T::SiteLabel, "County", "South")), false));
+    expect("action: Signal search and Explore",
+           offers("search", QString(), ListenPins::actionText(false), "Pin Signal search to Listen", false)
+               && offers("explore", QString(), ListenPins::actionText(false), "Pin Explore to Listen", false));
+
+    expect("action: pin the card through a site", pins.pin("system", second).isEmpty() && pins.count() == 1);
+    expect("action: the card is Unpin through its lead",
+           offers("system", lead, ListenPins::actionText(true), ListenPins::actionName(true, "County"), true));
+    expect(
+        "action: the card's sites are not pinned by it",
+        offers("site", second, ListenPins::actionText(false), ListenPins::actionName(false, "County · South"), false));
+    pins.unpin("system", lead);
+    expect(
+        "action: the card unpinned through its lead is Pin again",
+        pins.count() == 0
+            && offers("system", second, ListenPins::actionText(false), ListenPins::actionName(false, "County"), false));
+
+    QVariantList six;
+    for (int i = 0; i < 5; ++i) {
+        six.append(pin_of("system", new_uid()));
+    }
+    six.append(pin_of("scan", list));
+    w.prefs.setPinned(six);
+    expect("full: six stored", pins.full());
+    const QVariantMap refused = pins.action("explore", QString());
+    expect("action: full, Pin is disabled with the reason",
+           refused.value("text").toString() == ListenPins::actionText(false) && !refused.value("enabled").toBool()
+               && refused.value("description").toString() == ListenPins::text(T::FullRefusal));
+    expect("action: full, Unpin stays offered",
+           offers("scan", list, ListenPins::actionText(true), "Unpin Patrol from Listen", true));
+    pins.unpin("scan", list);
+    expect("action: an unpin makes room", pins.count() == 5);
+    expect("action: room again, Pin is offered",
+           offers("explore", QString(), ListenPins::actionText(false), "Pin Explore to Listen", false));
+}
+
+/* A store that cannot be read loads as empty: pins stay stored, marked not found, through pinning something else, and
+ * resolve again once the store loads. */
+void
+test_pins_survive_unreadable_store() {
+    QString system;
+    QString list;
+    {
+        PinsWorld w;
+        system = w.system("Metro");
+        list = w.list("Patrol");
+        ListenPins pins(&w.prefs, &w.systems, &w.lists);
+        expect("unreadable: pin system", pins.pin("system", system).isEmpty());
+        expect("unreadable: pin list", pins.pin("scan", list).isEmpty());
+    }
+    const QStringList stores{QStringLiteral("saved_systems.json"), QStringLiteral("scan_lists.json")};
+    for (const QString& store : stores) {
+        const QString path = json_store_path(store);
+        expect("unreadable: store set aside", QFile::copy(path, path + ".kept"));
+        QFile broken(path);
+        expect("unreadable: store broken", broken.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        broken.write("{not json");
+    }
+    {
+        AppPrefs prefs;
+        SavedSystemsModel systems;
+        ScanListsModel lists;
+        ListenPins pins(&prefs, &systems, &lists);
+        expect("unreadable: the stores load empty", systems.count() == 0 && lists.count() == 0);
+        expect("unreadable: both pins kept", pins.count() == 2);
+        expect("unreadable: neither is found", !entry_for(pins, "system:" + system).value("found").toBool()
+                                                   && !entry_for(pins, "scan:" + list).value("found").toBool());
+        expect("unreadable: Signal search still pins", pins.pin("search", QString()).isEmpty());
+        expect("unreadable: and the others stay",
+               pin_keys(pins) == QStringList{"system:" + system, "scan:" + list, QStringLiteral("search:")});
+    }
+    for (const QString& store : stores) {
+        const QString path = json_store_path(store);
+        expect("unreadable: store restored", QFile::remove(path) && QFile::rename(path + ".kept", path));
+    }
+    AppPrefs prefs;
+    SavedSystemsModel systems;
+    ScanListsModel lists;
+    ListenPins pins(&prefs, &systems, &lists);
+    expect("unreadable: found again once the stores load",
+           entry_for(pins, "system:" + system).value("found").toBool()
+               && entry_for(pins, "scan:" + list).value("found").toBool() && pins.count() == 3);
+}
+
+/* A removal the model saved drops the pins of what it removed, and nothing else. */
+void
+test_prune_on_remove() {
+    PinsWorld w;
+    const QString solo = w.system("Solo");
+    const QString lead = w.system("County", 7, 1, "North");
+    const QString site = w.system("County", 7, 2, "South");
+    const QString list = w.list("Patrol");
+    const QString other = w.list("Harbor");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    for (const auto& pin : {std::make_pair("system", solo), std::make_pair("site", site), std::make_pair("scan", list),
+                            std::make_pair("scan", other), std::make_pair("search", QString())}) {
+        expect("prune: pin", pins.pin(pin.first, pin.second).isEmpty());
+    }
+    {
+        EntriesWatch watch(pins, [&w, &solo]() { return w.systems.rowForUid(solo) >= 0; }, QStringLiteral("Solo"));
+        expect("prune: remove the system", w.systems.remove(w.systems.rowForUid(solo)));
+        expect("prune: the pins change only once the system is gone", !watch.early);
+    }
+    expect("prune: its pin goes", !pins.isPinned("system", solo) && pins.count() == 4);
+    expect("prune: remove the site", w.systems.remove(w.systems.rowForUid(site)));
+    expect("prune: its pin goes", !pins.isPinned("site", site) && pins.count() == 3);
+    {
+        EntriesWatch watch(pins, [&w, &list]() { return w.lists.rowForUid(list) >= 0; }, QStringLiteral("Patrol"));
+        expect("prune: remove a list", w.lists.remove(w.lists.rowForUid(list)));
+        expect("prune: the pins change only once the list is gone", !watch.early);
+    }
+    expect("prune: its pin goes, and only its",
+           pin_keys(pins) == QStringList{"scan:" + other, QStringLiteral("search:")});
+    AppPrefs reread;
+    expect("prune: the prune is stored", reread.pinned().size() == 2);
+    expect("prune: the rest of the group stays", w.systems.rowForUid(lead) >= 0);
+}
+
+/* A grouped system's pin names one of its sites; when that site goes the pin moves to one that stays, so the card is
+ * still pinned, and goes with the group's last site. */
+void
+test_system_pin_rehomes_to_sibling() {
+    PinsWorld w;
+    // Named apart from its group, so a label taken from the departing lead would show.
+    const QString lead = w.system("Old County", 7, 1, "North");
+    w.system("Elsewhere");
+    const QString second = w.system("County", 7, 2, "South");
+    const QString third = w.system("County", 7, 3, "East");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("rehome: pin the card", pins.pin("system", lead).isEmpty());
+    {
+        EntriesWatch watch(
+            pins, [&w, &lead]() { return w.systems.rowForUid(lead) >= 0; }, QStringLiteral("Old County"));
+        expect("rehome: remove the pinned site", w.systems.remove(w.systems.rowForUid(lead)));
+        expect("rehome: the pin moves only once the site is gone, never named after it", !watch.early);
+    }
+    expect("rehome: the pin moves to a remaining site",
+           pin_keys(pins) == QStringList{"system:" + second} && pins.isPinned("system", third));
+    expect("rehome: named by the new lead", entry_for(pins, "system:" + second).value("label") == "County");
+    expect("rehome: remove the next", w.systems.remove(w.systems.rowForUid(second)));
+    expect("rehome: the pin moves again", pin_keys(pins) == QStringList{"system:" + third});
+    expect("rehome: remove the last", w.systems.remove(w.systems.rowForUid(third)));
+    expect("rehome: the pin goes with the group", pins.count() == 0);
+}
+
+/* A system pin is the system, not the row it names: when that row is edited out of its group, or a library file it
+ * names is removed, the pin moves to the group's lead while the group has sites, and stays with the row once it is the
+ * group's last. */
+void
+test_system_pin_follows_group_when_row_leaves() {
+    const QString path = QStringLiteral("/data/imports/county.csv");
+    PinsWorld w;
+    const QString lead = w.system("County", 7, 1, "North");
+    const QString second = w.system("County", 7, 2, "South", path);
+    const QString third = w.system("County", 7, 3, "East");
+    const QString lone = w.system("Lone", 9, 1, "Only");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("follow: pin the card through its lead", pins.pin("system", lead).isEmpty());
+    expect("follow: pin a one-site group", pins.pin("system", lone).isEmpty());
+
+    expect("follow: edit the lead's frequency", w.systems.update(w.systems.rowForUid(lead), {{"freqMhz", "852.5"}}));
+    expect("follow: the lead left its group", w.systems.siblingRows(w.systems.rowForUid(lead)).isEmpty());
+    expect("follow: the pin names a remaining site",
+           pin_keys(pins) == QStringList{"system:" + second, "system:" + lone});
+    expect("follow: the group's card is pinned", pins.isPinned("system", second) && pins.isPinned("system", third));
+    expect("follow: named as the system", entry_for(pins, "system:" + second).value("label") == "County");
+    expect("follow: the edited row's own card is not pinned", !pins.isPinned("system", lead));
+    {
+        const AppPrefs reread;
+        expect("follow: the move is stored", reread.pinned().first().toMap().value("uid").toString() == second);
+    }
+
+    expect("follow: the library file goes", w.systems.clearCsvPath(path));
+    expect("follow: a removed file moves it again",
+           pin_keys(pins) == QStringList{"system:" + third, "system:" + lone} && !pins.isPinned("system", second));
+
+    expect("follow: edit the one-site group's frequency",
+           w.systems.update(w.systems.rowForUid(lone), {{"freqMhz", "853.5"}}));
+    expect("follow: a group's last site keeps its pin",
+           entry_for(pins, "system:" + lone).value("label") == "Lone" && pins.isPinned("system", lone));
+}
+
+/* A site edited out of its group keeps its pin, and its new standalone card shows it pinned: the revision moves so a
+ * binding that asks again sees it, though no entry changed. */
+void
+test_site_pin_after_leaving_group() {
+    PinsWorld w;
+    w.system("County", 7, 1, "North");
+    const QString site = w.system("County", 7, 2, "South");
+    const QString loose = w.system("Loose");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("leave: pin the site", pins.pin("site", site).isEmpty());
+    expect("leave: the grouped site's card is the group's", !pins.isPinned("system", site));
+    const QVariantList entries = pins.entries();
+    int revision = pins.revision();
+    expect("leave: a rename of an unpinned row", w.systems.update(w.systems.rowForUid(loose), {{"name", "Renamed"}}));
+    expect("leave: moves the revision, not the entries", pins.revision() > revision && pins.entries() == entries);
+    revision = pins.revision();
+    expect("leave: edit its frequency", w.systems.update(w.systems.rowForUid(site), {{"freqMhz", "852.5"}}));
+    expect("leave: the site left its group", w.systems.siblingRows(w.systems.rowForUid(site)).isEmpty());
+    expect("leave: the revision moved", pins.revision() > revision);
+    expect("leave: the pin is kept", pins.isPinned("site", site) && pins.count() == 1);
+    expect("leave: its standalone card shows it pinned", pins.isPinned("system", site));
+    pins.unpin("system", site);
+    expect("leave: the card unpins it", pins.count() == 0);
+}
+
+/* Names follow what is saved: a rename, a site's name, a list's rename, and how a grouped system starts. */
+void
+test_labels_follow_rename_and_site() {
+    PinsWorld w;
+    const QString lead = w.system("County", 7, 1, "North");
+    const QString second = w.system("County", 7, 2, "South");
+    w.system("County", 7, 3, QString());
+    const QString solo = w.system("Solo");
+    const QString list = w.list("Patrol");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    for (const auto& pin :
+         {std::make_pair("system", second), std::make_pair("site", second), std::make_pair("system", solo),
+          std::make_pair("scan", list), std::make_pair("search", QString())}) {
+        expect("labels: pin", pins.pin(pin.first, pin.second).isEmpty());
+    }
+    const auto label = [&pins](const QString& key) { return entry_for(pins, key).value("label").toString(); };
+    const auto name = [&pins](const QString& key) { return entry_for(pins, key).value("accessibleName").toString(); };
+    using T = ListenPins::Text;
+    expect("labels: a system by its lead", label("system:" + second) == "County");
+    expect("labels: a group with several sites chooses",
+           name("system:" + second) == ListenPins::text(T::ChooseSiteName, "County")
+               && name("system:" + second) == QStringLiteral("Choose a site of County"));
+    expect("labels: a site by system and site",
+           label("site:" + second) == QStringLiteral("County · South")
+               && name("site:" + second) == ListenPins::text(T::StartName, "County · South"));
+    expect("labels: a standalone system starts",
+           label("system:" + solo) == "Solo" && name("system:" + solo) == ListenPins::text(T::StartName, "Solo"));
+    expect("labels: a scan list", label("scan:" + list) == "Patrol"
+                                      && name("scan:" + list) == ListenPins::text(T::StartScanListName, "Patrol"));
+    expect("labels: Signal search", label("search:") == ListenPins::text(T::SearchLabel)
+                                        && name("search:") == ListenPins::text(T::OpenSearchName));
+    expect("labels: every pin found", entry_for(pins, "system:" + second).value("found").toBool()
+                                          && entry_for(pins, "scan:" + list).value("found").toBool());
+
+    int changes = 0;
+    QObject::connect(&pins, &ListenPins::entriesChanged, &pins, [&changes]() { changes++; });
+    expect("labels: rename the lead", w.systems.update(w.systems.rowForUid(lead), {{"name", "Metro"}}));
+    expect("labels: the system follows its lead", label("system:" + second) == "Metro" && changes == 1);
+    expect("labels: rename the site's system",
+           w.systems.update(w.systems.rowForUid(second), {{"name", "Metro"}, {"siteName", "Harbor"}}));
+    expect("labels: the site follows", label("site:" + second) == QStringLiteral("Metro · Harbor"));
+    expect("labels: rename the list", w.lists.update(w.lists.rowForUid(list), {{"name", "Night"}}));
+    expect("labels: the list follows", label("scan:" + list) == "Night");
+
+    expect("labels: avoid two of three sites", w.systems.setAvoidSite(0, true) && w.systems.setAvoidSite(2, true));
+    expect("labels: one site to play starts it", name("system:" + second) == ListenPins::text(T::StartName, "Metro"));
+    expect("labels: avoid the last", w.systems.setAvoidSite(w.systems.rowForUid(second), true));
+    expect("labels: no site to play chooses", name("system:" + second) == ListenPins::text(T::ChooseSiteName, "Metro"));
+    expect("labels: a site with no name of its own", w.systems.update(w.systems.rowForUid(second), {{"siteName", ""}}));
+    expect("labels: is named by its system", label("site:" + second) == "Metro");
+
+    expect("labels: remove the list", w.lists.remove(w.lists.rowForUid(list)));
+    expect("labels: refreshed after a removal", entry_for(pins, "scan:" + list).isEmpty());
+}
+
+/* A removal whose save fails keeps the system, so it keeps its pin. */
+void
+test_failed_remove_keeps_pin() {
+    PinsWorld w;
+    const QString solo = w.system("Solo");
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("failed remove: pin", pins.pin("system", solo).isEmpty());
+    expect("failed remove: store blocked", block_systems_store());
+    expect("failed remove: the removal fails", !w.systems.remove(0));
+    expect("failed remove: the pin stays, found",
+           pins.isPinned("system", solo) && entry_for(pins, "system:" + solo).value("found").toBool());
+    expect("failed remove: store unblocked", unblock_systems_store());
+    AppPrefs reread;
+    expect("failed remove: the pin is still stored", reread.pinned().size() == 1);
+}
+
+/* Explore's pin says what a tap does: start, once its radio is chosen, else open its setup. */
+void
+test_explore_label_follows_configuration() {
+    PinsWorld w;
+    ListenPins pins(&w.prefs, &w.systems, &w.lists);
+    expect("explore: pin", pins.pin("explore", QString()).isEmpty());
+    const auto name = [&pins]() { return entry_for(pins, QStringLiteral("explore:")).value("accessibleName"); };
+    expect("explore: labelled Explore", entry_for(pins, QStringLiteral("explore:")).value("label")
+                                            == ListenPins::text(ListenPins::Text::ExploreLabel));
+    expect("explore: unset asks for setup", name() == ListenPins::text(ListenPins::Text::SetUpExploreName));
+    w.prefs.setExploreSourceType(QStringLiteral("rtltcp"));
+    expect("explore: chosen starts", name() == ListenPins::text(ListenPins::Text::StartExploreName));
+    w.prefs.setExploreSourceType(QString());
+    expect("explore: cleared asks again", name() == ListenPins::text(ListenPins::Text::SetUpExploreName));
 }
 } // namespace
 
@@ -1419,8 +2275,27 @@ main(int argc, char** argv) {
     test_key_persistence();
     test_foundation_key_type_migration();
     test_site_provenance_edits();
+    test_remove_failure_keeps_row();
+    test_touch_failure_keeps_memory();
+    test_clear_csv_failure_keeps_memory();
+    test_set_avoid_failure_reports();
+    test_avoid_cleared_when_site_leaves_group();
+    test_load_migrates_orphaned_avoid();
     test_add_with_retained_key();
     test_radio_settings();
+    test_pinned_pref_sanitizes();
+    test_pinned_pref_round_trip();
+    test_pin_unpin_is_pinned();
+    test_pin_full_refuses();
+    test_pin_action();
+    test_pins_survive_unreadable_store();
+    test_prune_on_remove();
+    test_system_pin_rehomes_to_sibling();
+    test_system_pin_follows_group_when_row_leaves();
+    test_site_pin_after_leaving_group();
+    test_labels_follow_rename_and_site();
+    test_failed_remove_keeps_pin();
+    test_explore_label_follows_configuration();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

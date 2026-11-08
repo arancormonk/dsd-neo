@@ -2190,6 +2190,36 @@ main(void) {
         rc |= expect_eq_long("p2 nsb keeps the seed", (long)state.p2_cc, 0x055);
     }
 
+    // Issue #804: a checked network status naming another WACN/SYSID on the same NAC replaces the seed, which drops
+    // the old one's proof, and proves the new seed itself.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
+
+        state.p2_wacn = 0x11111;
+        state.p2_sysid = 0x222;
+        state.p2_cc = 0x055;
+        state.p2_cc_verified = 1U;
+        MAC[1] = 0x7B;
+        MAC[2] = 0x05; // LRA
+        MAC[3] = 0xAB;
+        MAC[4] = 0xCD;
+        MAC[5] = 0xE1;
+        MAC[6] = 0x23;
+        MAC[7] = 0x80;
+        MAC[8] = 0x0A;  // unknown IDEN 8
+        MAC[11] = 0x55; // NAC
+
+        process_MAC_VPDU_crc(&opts, &state, 1, P25_MAC_PDU_SIGNAL, MAC, 1);
+        rc |= expect_true("p2 checked nsb replaces the seed's system",
+                          state.p2_wacn == 0xABCDE && state.p2_sysid == 0x123 && state.p2_cc == 0x055);
+        rc |= expect_eq_long("p2 checked nsb proves the replaced seed", state.p2_cc_verified, 1);
+    }
+
     // Case L: P2 extended NSB with unknown IDEN keeps identity metadata but
     // does not promote the unresolved channel to current CC.
     {

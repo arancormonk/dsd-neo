@@ -138,15 +138,21 @@ Item {
             compare(typeof home.importScanList, "undefined");
             verify(typeof onboarding.networkSource === "function", "onboarding keeps its shortcut");
         }
-        function test_explore_more_only_edits_connection() {
+        // D5: Explore's More, and a long press on the card, open its menu; More never starts Explore. The menu's Edit
+        // connection opens the setup, and a tap on the card's face starts.
+        function test_explore_more_opens_menu() {
             var oldSource = prefs.exploreSourceType;
             prefs.exploreSourceType = "rtltcp";
             try {
                 var card = findChild(home, "exploreCard");
                 var more = findChild(home, "exploreManageButton");
-                compare(more.accessibleName, "Edit Explore connection");
+                var face = findChild(home, "exploreStart");
+                var menu = findChild(home, "exploreManageSheet");
+                compare(more.accessibleName, "More options for Explore");
                 compare(more.y, 0);
                 compare(card.width - (more.x + more.width / 2), Ui.Theme.cardPadding + 26);
+                compare(face.parent, more.parent, "the face is beside More, not around it");
+                verify(face.x + face.width <= more.x, "the face, and so its focus ring, stops short of More's column");
                 var scroll = findChild(home, "dongleScrollBody");
                 verify(waitForPolish(home));
                 scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height);
@@ -154,10 +160,120 @@ Item {
                 exploreEdited.clear();
                 waitForRendering(home);
                 mouseClick(more);
-                compare(exploreEdited.count, 1);
+                tryCompare(menu, "visible", true);
+                compare(exploreStarted.count, 0, "More never starts");
+                compare(exploreEdited.count, 0, "More opens the menu, not the setup");
+                var edit = findChild(menu, "editExploreConnectionButton");
+                waitForRendering(edit);
+                mouseClick(edit);
+                tryCompare(menu, "visible", false);
+                compare(exploreEdited.count, 1, "Edit connection opens the setup");
                 compare(exploreStarted.count, 0);
+
+                mousePress(face, face.width / 3, face.height / 2);
+                wait(Qt.styleHints.mousePressAndHoldInterval + 300);
+                mouseRelease(face, face.width / 3, face.height / 2);
+                tryCompare(menu, "visible", true);
+                compare(exploreStarted.count, 0, "a long press opens the menu");
+                menu.cancel();
+                tryCompare(menu, "visible", false);
+                waitForRendering(home);
                 mouseClick(card, card.width / 3, card.height / 2);
                 compare(exploreStarted.count, 1);
+                // The caret, in More's column under More, is still the card's to tap.
+                mouseClick(card, card.width - Ui.Theme.cardPadding - 12, card.height - Ui.Theme.cardPadding - 4);
+                compare(exploreStarted.count, 2, "a tap on the caret starts");
+                compare(exploreEdited.count, 1);
+            } finally {
+                prefs.exploreSourceType = oldSource;
+            }
+        }
+        // At large text the subtitle wraps rather than cutting the frequency a tap starts on, and the card grows
+        // to hold it.
+        function test_explore_subtitle_whole_at_large_text_data() {
+            return [{tag: "320", width: 320}, {tag: "360", width: 360}];
+        }
+        function test_explore_subtitle_whole_at_large_text(data) {
+            var saved = {source: prefs.exploreSourceType, freq: prefs.exploreFreqMhz};
+            try {
+                prefs.exploreSourceType = "rtltcp";
+                prefs.exploreFreqMhz = "851.0125";
+                root.width = data.width;
+                Ui.Theme.fontScale = 1.6;
+                var card = findChild(home, "exploreCard");
+                var subtitle = findChild(home, "homeExploreSubtitle");
+                verify(waitForPolish(home));
+                compare(subtitle.text, "RTL-TCP · from 851.0125 MHz");
+                verify(!subtitle.truncated, "the whole frequency shows");
+                verify(subtitle.lineCount <= 2);
+                tryVerify(function () {
+                    return subtitle.mapToItem(card, 0, subtitle.height).y <= card.height - Ui.Theme.cardPadding + 1;
+                }, 1000, "the card holds both lines");
+            } finally {
+                prefs.exploreSourceType = saved.source;
+                prefs.exploreFreqMhz = saved.freq;
+            }
+        }
+        // B3: the face is a button: Return, Enter, Space and a screen reader's press start Explore (or, with no radio
+        // chosen, open its setup). The same on More open the menu at most and never start.
+        function test_explore_keyboard_and_press_start_data() {
+            return [{tag: "configured", source: "rtltcp"}, {tag: "not set up", source: ""}];
+        }
+        function test_explore_keyboard_and_press_start(data) {
+            var oldSource = prefs.exploreSourceType;
+            prefs.exploreSourceType = data.source;
+            try {
+                var face = findChild(home, "exploreStart");
+                var more = findChild(home, "exploreManageButton");
+                var menu = findChild(home, "exploreManageSheet");
+                var search = findChild(home, "signalSearchManageButton");
+                compare(face.Accessible.role, Accessible.Button);
+                compare(face.Accessible.name, data.source
+                    ? "Explore the band, start on RTL-TCP from " + prefs.exploreFreqMhz + " MHz"
+                    : "Explore the band, set up a radio to tune around and find what is on the air");
+                var node = testContext.accessibleNode(face);
+                verify(node.inTree, "the face is a node a screen reader reaches");
+                for (var label of [findChild(face, "exploreTitle"), findChild(home, "homeExploreSubtitle")])
+                    verify(label.Accessible.ignored, "its texts are read in the face's name, once");
+                // Explore by touch: More's spot finds More, the rest of the card the face.
+                var scroll = findChild(home, "dongleScrollBody");
+                scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height);
+                waitForRendering(home);
+                compare(testContext.accessibleNodeAt(more, more.width / 2, more.height / 2).object, more);
+                compare(testContext.accessibleNodeAt(face, face.width / 3, face.height / 2).object, face);
+                search.forceActiveFocus();
+                keyClick(Qt.Key_Tab);
+                verify(face.activeFocus, "Tab from Signal search's More reaches the face");
+                keyClick(Qt.Key_Tab);
+                verify(more.activeFocus, "then More");
+
+                var spy = data.source ? exploreStarted : exploreEdited;
+                var other = data.source ? exploreEdited : exploreStarted;
+                spy.clear();
+                other.clear();
+                var count = 0;
+                for (var key of [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space]) {
+                    face.forceActiveFocus();
+                    keyClick(key);
+                    compare(spy.count, ++count, "key " + key + " on the face");
+                }
+                verify(testContext.pressAccessible(face), "the face offers a press");
+                compare(spy.count, ++count, "a screen reader's press on the face");
+                compare(other.count, 0);
+
+                exploreStarted.clear();
+                exploreEdited.clear();
+                for (key of [Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space]) {
+                    more.forceActiveFocus();
+                    keyClick(key);
+                    tryCompare(menu, "visible", true);
+                    menu.visible = false;
+                }
+                verify(testContext.pressAccessible(more), "More offers a press");
+                tryCompare(menu, "visible", true);
+                menu.visible = false;
+                compare(exploreStarted.count, 0, "keys and presses on More never start");
+                compare(exploreEdited.count, 0, "nor open the setup");
             } finally {
                 prefs.exploreSourceType = oldSource;
             }

@@ -630,7 +630,7 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
 - D‑STAR: `-fd`
-- X2‑TDMA: `-fx`
+- X2‑TDMA: `-fx` (4800 sps, P25 Phase 1 modulation: C4FM, or CQPSK/LSM with `-mq` on simulcast)
 - YSF: `-fy`
 - M17: `-fz` (radio); `-fU` (M17 UDP/IP frame)
 - NXDN48: `-fi` (6.25 kHz)
@@ -765,10 +765,10 @@ Notes
 
   | Hunt profile | Symbol rate | Levels | Enabled candidates |
   | --- | ---: | ---: | --- |
-  | 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
+  | 0 | 4800 | 4 | P25 Phase 1 (C4FM/CQPSK), X2-TDMA (C4FM/CQPSK), DMR, NXDN96, YSF, M17 |
   | 1 | 2400 | 4 | NXDN48, dPMR |
   | 2 | 9600 | 2 | ProVoice, EDACS |
-  | 3 | 6000 | 4 | P25 Phase 2 (CQPSK), X2-TDMA |
+  | 3 | 6000 | 4 | P25 Phase 2 (CQPSK) |
   | 4 | 4800 | 2 | D-STAR |
 
   A sync that a protocol turns into decoded frames locks the active rate, level count, timing, and RTL-family channel
@@ -922,19 +922,21 @@ Notes
   stays); on a narrowed set it widens it back out.
 - EDACS under Auto: Auto enables the EDACS/ProVoice decoder, but EDACS frames are processed only once an EDACS
   addressing mode is selected: `-fh -fa` (or `-fe -fa`), a switch to Auto from an EDACS/ProVoice preset, a config with
-  `edacs_ea`, or the EA toggle (terminal menu, `ProVoice EA mode`), whose first press under plain Auto selects
+  `edacs_addressing = "standard"` or `"extended"` (or the older `edacs_ea`), or the EA toggle (terminal menu, `ProVoice EA mode`), whose first press under plain Auto selects
   standard addressing. Until then the session is no EDACS session: no raw analog stream or UDP analog socket
   (port + 2) opens for it, `-T` keeps `-8` on, the dynamic squelch treats its channels as digital, and talkgroup
   lockout and Skip work on P25, DMR and NXDN calls. Once EDACS is selected, Auto behaves as the EDACS/ProVoice preset
   does for those (the analog sink opens then, and on a trunked `-o udp` run `-8` turns off, as under `-fh -T`; so does
   a switch to EDACS/ProVoice or a config apply that selects EDACS).
-  ProVoice alone (`-fp`) is an EDACS session without an addressing mode. Any other preset clears the addressing, so
+  ProVoice alone (`-fp`) is an EDACS session without an addressing mode, also after an earlier `-fh/-fH/-fe/-fE`, and
+  its config saves `edacs_addressing = "none"` to keep it so. Any other preset clears the addressing, so
   EDACS, then DMR, then Auto is plain Auto again; a scan row's own class keeps the configured addressing.
   Only `-fz` (M17 alone) waits for a TCP audio server that refuses or drops the connection; under Auto a refused
   connect is an error and a dropped one ends the input, as in any other mode.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`
   console diagnostics are suppressed.
-- P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
+- P25p2 on a single frequency without trunking recovers the scrambling code from the channel's own scrambled
+  FACCH/SACCH; `-X` (below) sets it by hand.
 
 ## Analog reception (`-fA`, `-fM`)
 
@@ -2029,7 +2031,10 @@ setting, shown apart from what is received, and it is off by default: then the o
   raw `X||Y` hex.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
   the menu's P25 P2 parameters set it: no NID or network status rewrites it, and neither a control channel change nor
-  another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it.
+  another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it. Unless `-X`
+  hand-sets it, a session without trunking finds the code itself: a scrambled FACCH or SACCH gives it, one at another
+  superframe position in a later window confirms it, and the line "P25p2 scrambling code recovered: WACN ... SYSID ...
+  NAC ..." reports it. A hand-set code is never replaced.
 - DMR Tier III location area (DMRLA): `-D <0–10>`. A radio is programmed with how many of the top Site ID bits form
   its location area (ETSI TS 102 361-4 §6.3.2.2.3); no message sends it, so `-D n` tells dsd-neo. With `-D n` the top
   n bits are the area and the rest the site in it, shown `Site area.site`; with no `-D` or `-D 0` the Site ID is
