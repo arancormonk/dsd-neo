@@ -63,9 +63,10 @@ enum {
 
 /* What the scenario under test puts on F once the call is followed. */
 typedef enum {
-    ON_F_SITE_B_CONTROL = 0,   /* site B's dedicated control channel: its CAC */
-    ON_F_SITE_B_COMPOSITE = 1, /* site B's composite control channel carrying B's call: RTCH_C */
-    ON_F_NOTHING = 2,          /* the carrier is gone: the no-carrier return, as a control */
+    ON_F_SITE_B_CONTROL = 0,         /* site B's dedicated control channel: its CAC */
+    ON_F_SITE_B_COMPOSITE = 1,       /* site B's composite control channel carrying B's call: RTCH_C */
+    ON_F_SITE_B_COMPOSITE_A_RAN = 2, /* the same, its frames carrying A's RAN (a RAN reused across sites) */
+    ON_F_NOTHING = 3,                /* the carrier is gone: the no-carrier return, as a control */
 } on_f_kind;
 
 static on_f_kind g_on_f = ON_F_SITE_B_CONTROL;
@@ -82,6 +83,13 @@ static int g_tuned_at_last_sync = -1;
 static long g_cc_at_last_sync = 0;
 static long g_last_set_freq = 0;      /* where the rigctl peer was last sent */
 static long g_set_freq_at_return = 0; /* ... as the receiver was first found off F */
+/* What the follow to F left, which nothing heard on F may change: this site's identity, its RAN, the received
+   identity's control channel and the call's voice clock. */
+static unsigned int g_ran_at_follow = 0U;
+static long g_site_code_at_follow = 0;
+static long g_rx_cc_at_follow = 0;
+static double g_voice_m_at_follow = 0.0;
+static int g_changed_on_f = 0; /* the first sync on F that found one of them changed, 0 none */
 
 static void
 put_bits(uint8_t* bits, size_t at, uint32_t value, size_t width) {
@@ -251,24 +259,24 @@ build_composite_frame(uint8_t lich, uint8_t ran, const uint8_t* facch) {
 }
 
 /* Site B's composite control channel carrying B's own call: its SRV_INFO (0x19) and the call's VCALL_ASSGN_DUP on
- * FACCH1 (TS 1-C §16.3.2.1), between the call's voice frames. */
+ * FACCH1 (TS 1-C §16.3.2.1), between the call's voice frames, under the SACCH RAN @p ran. */
 static void
-composite_frame(int n) {
+composite_frame(int n, uint8_t ran) {
     uint8_t elements[80];
     DSD_MEMSET(elements, 0, sizeof(elements));
     if (n % 3 == 0) {
         put_bits(elements, 2U, 0x19U, 6U);
         put_bits(elements, 8U, SITE_B, 24U);
-        build_composite_frame(0x71U, RAN_B, elements);
+        build_composite_frame(0x71U, ran, elements);
     } else if (n % 3 == 1) {
         put_bits(elements, 2U, 0x05U, 6U);
         put_bits(elements, 16U, 1U, 3U); // group call
         put_bits(elements, 24U, 2100U, 16U);
         put_bits(elements, 40U, 1100U, 16U);
         put_bits(elements, 62U, B_CALL_CHANNEL, 10U);
-        build_composite_frame(0x71U, RAN_B, elements);
+        build_composite_frame(0x71U, ran, elements);
     } else {
-        build_composite_frame(0x77U, RAN_B, NULL);
+        build_composite_frame(0x77U, ran, NULL);
     }
 }
 
@@ -306,8 +314,8 @@ script_frame(const dsd_opts* opts, int n) {
     if (g_on_f == ON_F_NOTHING) {
         return 0;
     }
-    if (g_on_f == ON_F_SITE_B_COMPOSITE) {
-        composite_frame(n);
+    if (g_on_f == ON_F_SITE_B_COMPOSITE || g_on_f == ON_F_SITE_B_COMPOSITE_A_RAN) {
+        composite_frame(n, g_on_f == ON_F_SITE_B_COMPOSITE_A_RAN ? (uint8_t)RAN_A : (uint8_t)RAN_B);
         return 1;
     }
     /* B's control channel past A's missed DISC: its broadcasts, and a call of B's own that A's receiver must not take
@@ -325,6 +333,15 @@ note_receiver(const dsd_opts* opts, const dsd_state* state, int n) {
     const int on_f = opts->trunk_is_tuned == 1 && state->trunk_vc_freq[0] == F_HZ;
     if (on_f && g_followed_at == 0) {
         g_followed_at = n;
+        g_ran_at_follow = state->nxdn_last_ran;
+        g_site_code_at_follow = state->nxdn_location_site_code;
+        g_rx_cc_at_follow = (long)state->rx_id.cc_freq_hz;
+        g_voice_m_at_follow = state->last_vc_sync_time_m;
+    } else if (on_f && g_changed_on_f == 0
+               && (state->nxdn_last_ran != g_ran_at_follow || state->nxdn_location_site_code != g_site_code_at_follow
+                   || (long)state->rx_id.cc_freq_hz != g_rx_cc_at_follow
+                   || state->last_vc_sync_time_m > g_voice_m_at_follow || !dsd_nxdn_site_is(state, SITE_A))) {
+        g_changed_on_f = n;
     }
     if (!on_f && g_followed_at != 0 && g_returned_at == 0) {
         g_returned_at = n;
@@ -405,6 +422,7 @@ run_scenario(on_f_kind kind) {
     g_cc_at_last_sync = 0;
     g_last_set_freq = 0;
     g_set_freq_at_return = 0;
+    g_changed_on_f = 0;
     dsd_exitflag_store(0);
     dsd_decode_clock_use_test(k_t0_ns);
     initOpts(opts);
@@ -417,6 +435,7 @@ run_scenario(on_f_kind kind) {
     static const char* const k_names[] = {
         "site B's control channel on F",
         "site B's composite control channel on F",
+        "site B's composite control channel on F with A's RAN",
         "carrier gone from F",
     };
     const char* const name = k_names[kind];
@@ -445,6 +464,13 @@ run_scenario(on_f_kind kind) {
         DSD_FPRINTF(stderr, "FAIL %s: this site is no longer site A\n", name);
         rc = 1;
     }
+    if (g_changed_on_f != 0) {
+        DSD_FPRINTF(stderr,
+                    "FAIL %s: at sync %d on F the site, its RAN, the received control channel or the call's voice "
+                    "clock changed (at the follow: RAN %u, site code %ld, received CC %ld)\n",
+                    name, g_changed_on_f, g_ran_at_follow, g_site_code_at_follow, g_rx_cc_at_follow);
+        rc = 1;
+    }
 
     freeState(state);
     free(state);
@@ -457,6 +483,7 @@ int
 main(void) {
     int rc = run_scenario(ON_F_SITE_B_CONTROL);
     rc |= run_scenario(ON_F_SITE_B_COMPOSITE);
+    rc |= run_scenario(ON_F_SITE_B_COMPOSITE_A_RAN);
     rc |= run_scenario(ON_F_NOTHING);
     if (rc == 0) {
         printf("ENGINE_NXDN_FOREIGN_CONTROL_RETURN: OK\n");
