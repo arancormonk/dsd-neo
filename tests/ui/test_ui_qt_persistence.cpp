@@ -39,6 +39,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <cmath>
 #include <functional>
 #include <stdio.h>
 #include <utility>
@@ -945,6 +946,34 @@ test_listen_section_pref() {
         expect("choosing Systems over the damage writes it",
                stored.value(key).toString() == QStringLiteral("systems") && changes == 1);
     }
+    stored.remove(key);
+}
+
+bool
+seconds_equal(double a, double b) {
+    return std::fabs(a - b) < 1e-9;
+}
+
+/* A voice hang time stored as text that is no number (a hand edit, or a backup, which passes a known key's scalar
+ * through) reads as the 2 s default, not as 0 s, and choosing 0 s over it is a change, so the write lands. */
+void
+test_hangtime_unreadable_value() {
+    QSettings stored = prefs_file();
+    const QString key = QStringLiteral("decode/hangtimeSec");
+    stored.setValue(key, QStringLiteral("2s"));
+    AppPrefs prefs;
+    int changes = 0;
+    QObject::connect(&prefs, &AppPrefs::hangtimeSecChanged, &prefs, [&changes]() { ++changes; });
+    expect("an unreadable stored hang time reads as the default", seconds_equal(prefs.hangtimeSec(), 2.0));
+    expect("reading it writes nothing and does not notify",
+           stored.value(key).toString() == QStringLiteral("2s") && changes == 0);
+    prefs.setHangtimeSec(0.0);
+    expect("choosing 0 s over it writes 0 s",
+           seconds_equal(stored.value(key).toDouble(), 0.0) && stored.value(key).toString() != QStringLiteral("2s"));
+    expect("and reads 0 s", seconds_equal(prefs.hangtimeSec(), 0.0));
+    expect("the corrective write notifies once", changes == 1);
+    prefs.setHangtimeSec(0.0);
+    expect("a repeated 0 s does not notify", changes == 1);
     stored.remove(key);
 }
 
@@ -2324,6 +2353,7 @@ main(int argc, char** argv) {
     test_receiver_prefs();
     test_screen_policy_prefs();
     test_listen_section_pref();
+    test_hangtime_unreadable_value();
     test_recording_prefs();
     test_analog_max_gap_pref();
     test_analog_preroll_pref();

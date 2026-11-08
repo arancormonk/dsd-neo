@@ -192,13 +192,31 @@ as_scalar(const QVariant& stored) {
  * dropped, leaving the file permanently disagreeing with the app.
  */
 
+constexpr double kDefaultHangtimeSec = 2.0;
+
 /** @brief Finite seconds in the UI range, rounded to the displayed precision. */
 double
 sane_hangtime(double seconds) {
     if (!std::isfinite(seconds)) {
-        return 2.0;
+        return kDefaultHangtimeSec;
     }
     return std::round(qBound(0.0, seconds, 30.0) * 10.0) / 10.0;
+}
+
+/** @brief The hang time @p raw holds, else the default: text that is no number would otherwise read as 0 s. */
+double
+stored_hangtime(const QVariant& raw) {
+    bool ok = false;
+    const double seconds = raw.toDouble(&ok);
+    return ok ? sane_hangtime(seconds) : kDefaultHangtimeSec;
+}
+
+/** @brief Whether writing @p next would change the hang time stored as @p stored; one that is no number differs. */
+bool
+stored_hangtime_differs(const QVariant& stored, double next) {
+    bool ok = false;
+    const double seconds = stored.toDouble(&ok);
+    return !ok || !qFuzzyCompare(seconds, next);
 }
 
 /** @brief @p mode if it names an appearance, else the default. */
@@ -578,13 +596,13 @@ AppPrefs::setSkipEncrypted(bool on) {
 
 double
 AppPrefs::hangtimeSec() const {
-    return sane_hangtime(m_settings.value(key_name(kHangtimeSec), 2.0).toDouble());
+    return stored_hangtime(m_settings.value(key_name(kHangtimeSec), kDefaultHangtimeSec));
 }
 
 void
 AppPrefs::setHangtimeSec(double seconds) {
     const double value = sane_hangtime(seconds);
-    if (qFuzzyCompare(value, m_settings.value(key_name(kHangtimeSec), 2.0).toDouble())) {
+    if (!stored_hangtime_differs(m_settings.value(key_name(kHangtimeSec), kDefaultHangtimeSec), value)) {
         return;
     }
     m_settings.setValue(key_name(kHangtimeSec), value);

@@ -12311,6 +12311,9 @@ Qt Quick frontend (`src/ui/qt`):
     stored value, so choosing `systems` over damage lands. Device-local: kept out of backups and kept on restore. The QML
     fixture's `prefs` map carries it as `systems`; the real key is set back to `systems` for each test file, and
     `testContext.resetListenSection()` does that between cases (a Home already built keeps its tab).
+  - The voice hang time (`decode/hangtimeSec`, a double) reads stored text that is no number as the 2 s default, and
+    its setter counts such text as different from every value, so choosing 0 s over it lands (`toDouble()` would read
+    it as 0 s and drop the write).
   - Whole numbers from stored or restored data (preferences, saved systems, scan lists, imported files, decryption
     profiles) are read through `stored_int.h` (`stored_int()`, `stored_int_or()`, `stored_uint32()`). A restore keeps a
     large JSON number as a 64-bit integer, and the settings file hands one back as text; `QVariant::toInt()` and
