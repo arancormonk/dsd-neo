@@ -930,17 +930,28 @@ test_listen_section_pref() {
         expect("the Listen tab persists across instances", reloaded.listenSection() == QStringLiteral("explore"));
         int changes = 0;
         QObject::connect(&reloaded, &AppPrefs::listenSectionChanged, &reloaded, [&changes]() { ++changes; });
+
         // A downgrade, a hand edit or a newer build's id reads as Systems, never as a tab this build lacks.
-        const QVariant damaged[] = {QStringLiteral("bogus"), QStringLiteral("Explore"), 2,
-                                    QStringList{QStringLiteral("explore"), QStringLiteral("systems")}};
-        for (const QVariant& value : damaged) {
-            stored.setValue(key, value);
-            expect(qPrintable(QStringLiteral("a stored %1 reads as Systems").arg(value.toString())),
+        struct Damage {
+            const char* tag;
+            QVariant value;
+        };
+
+        const Damage damaged[] = {
+            {"unknown id", QStringLiteral("bogus")},
+            {"miscased id", QStringLiteral("Explore")},
+            {"number", 2},
+            {"list", QStringList{QStringLiteral("explore"), QStringLiteral("systems")}},
+        };
+        for (const Damage& damage : damaged) {
+            stored.setValue(key, damage.value);
+            const QString tag = QLatin1String(damage.tag);
+            expect(qPrintable(QStringLiteral("a stored %1 reads as Systems").arg(tag)),
                    reloaded.listenSection() == QStringLiteral("systems"));
+            expect(qPrintable(QStringLiteral("reading a stored %1 writes nothing and does not notify").arg(tag)),
+                   changes == 0 && stored.value(key) == damage.value);
         }
         stored.setValue(key, QStringLiteral("bogus"));
-        expect("reading damage writes nothing and does not notify",
-               changes == 0 && stored.value(key).toString() == QStringLiteral("bogus"));
         // The setter compares with what is stored, so the corrective write lands.
         reloaded.setListenSection(QStringLiteral("systems"));
         expect("choosing Systems over the damage writes it",
