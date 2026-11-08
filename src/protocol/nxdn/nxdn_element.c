@@ -416,8 +416,8 @@ nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
  * SRV_INFO (0x19) has one layout per system type, chosen by the channel this frame's own LICH names
  * (dsd_state::nxdn_frame_channel), never by the "Type-D" category an earlier SCCH left behind: on a Type-D (IDAS)
  * RTCH2 it is NXDN TS 1-E §6.4.3.1's 80-element System ID / Site Code form, elsewhere the Type-C location ID form of
- * 72 elements. A Type-C SRV_INFO also reaches a traffic channel's SACCH; only a control channel's says the control
- * channel is here.
+ * 72 elements. A Type-C SRV_INFO also reaches a traffic channel's SACCH; only a control channel's, a composite one's
+ * included (TS 1-C §5.1.2: handled as RCCH), says the control channel is here.
  */
 static void
 nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
@@ -430,21 +430,30 @@ nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8
     if (!nxdn_element_has_bits("SRV_INFO", elements_bits, 72U)) {
         return;
     }
-    const int control_channel = state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_CONTROL;
+    const int control_channel = state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_CONTROL
+                                || state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
     NXDN_decode_srv_info(opts, state, elements, control_channel);
     if (control_channel) {
         nxdn_element_mark_control_sync(opts, state);
     }
 }
 
+/* CCH_INFO and SITE_INFO are Type-C messages a Type-D system does not send (NXDN TS 1-E; independently, SDRTrunk's
+ * NXDNMessageType lists no Type-D 0x18 or 0x1A): decoded, they say the session decodes Type-C trunking. A FACCH1 is
+ * laid out alike in both readings of a composite control channel's LICH, so a CCH_INFO says it whichever reading the
+ * frame took; a SITE_INFO, too long for a FACCH1, on a frame read as Type-D came through a layout of Type-D's own. */
 static void
 nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    dsd_nxdn_note_type_c(state);
     NXDN_decode_cch_info(opts, state, elements, elements_bits);
     nxdn_element_mark_control_sync(opts, state);
 }
 
 static void
 nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+        dsd_nxdn_note_type_c(state);
+    }
     NXDN_decode_site_info(opts, state, elements, elements_bits);
     nxdn_element_mark_control_sync(opts, state);
 }

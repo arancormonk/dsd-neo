@@ -25,6 +25,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
@@ -82,6 +83,9 @@ typedef struct {
 
     int sacch2;
     int pich_tch;
+
+    /* The LICH read as a composite control channel's (RTCH_C) rather than a Type-D RTCH2's (nxdn_apply_lich_profile()). */
+    int composite;
 
     uint8_t lich_rf;
     uint8_t direction;
@@ -169,6 +173,20 @@ static const nxdn_lich_profile k_nxdn_lich_profiles[] = {
     {0x60, 0, 3, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0}, {0x61, 0, 3, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0},
 };
 
+/*
+ * A Type-C composite control channel's outbound frames (RTCH_C, TS 1-A Table 5.2-2), laid out as the RTCH ones with the
+ * same low bits (TS 1-C §16.3.1): SACCH, FACCH1, FACCH2 and UDCH, never a Type-D SCCH. Every value but the idle one
+ * (0x79) is also a Type-D RTCH2 outbound value above, and the LICH cannot tell the two apart: only the system the
+ * session decodes can (independently, SDRTrunk's layer2/LICH.java keeps one table per system type). These are read
+ * once Type-C trunking decoded here (dsd_nxdn_type_c()); until then the Type-D reading stands, as before.
+ */
+static const nxdn_lich_profile k_nxdn_composite_lich_profiles[] = {
+    {0x77, 3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}, {0x75, 1, 2, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+    {0x73, 2, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}, {0x71, 0, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+    {0x61, 0, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}, {0x79, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0},
+    {0x6F, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}, {0x69, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+};
+
 static void
 nxdn_mark_bad_sync(dsd_state* state) {
     state->lastsynctype = DSD_SYNC_NONE;
@@ -243,14 +261,30 @@ nxdn_validate_lich_direction(const dsd_opts* opts, dsd_state* state, const nxdn_
     return 0;
 }
 
+static const nxdn_lich_profile*
+nxdn_find_lich_profile(const nxdn_lich_profile* profiles, size_t count, uint8_t lich) {
+    for (size_t i = 0; i < count; i++) {
+        if (profiles[i].lich == lich) {
+            return &profiles[i];
+        }
+    }
+    return NULL;
+}
+
 static int
 nxdn_apply_lich_profile(dsd_state* state, nxdn_frame_ctx* ctx) {
-    for (size_t i = 0; i < (sizeof(k_nxdn_lich_profiles) / sizeof(k_nxdn_lich_profiles[0])); i++) {
-        const nxdn_lich_profile* profile = &k_nxdn_lich_profiles[i];
-        if (profile->lich != ctx->lich) {
-            continue;
-        }
-
+    const nxdn_lich_profile* profile = NULL;
+    if (dsd_nxdn_type_c(state)) {
+        profile = nxdn_find_lich_profile(
+            k_nxdn_composite_lich_profiles,
+            sizeof(k_nxdn_composite_lich_profiles) / sizeof(k_nxdn_composite_lich_profiles[0]), ctx->lich);
+        ctx->composite = profile != NULL;
+    }
+    if (profile == NULL) {
+        profile = nxdn_find_lich_profile(k_nxdn_lich_profiles,
+                                         sizeof(k_nxdn_lich_profiles) / sizeof(k_nxdn_lich_profiles[0]), ctx->lich);
+    }
+    if (profile != NULL) {
         ctx->voice = profile->voice;
         ctx->facch = profile->facch;
         ctx->facch2 = profile->facch2;
@@ -384,7 +418,7 @@ nxdn_print_rf_channel_type(const nxdn_frame_ctx* ctx) {
         DSD_FPRINTF(stderr, "RTCH ");
     } else if (ctx->lich_rf == 2) {
         DSD_FPRINTF(stderr, "RDCH ");
-    } else if (ctx->lich < 0x60) {
+    } else if (ctx->composite) {
         DSD_FPRINTF(stderr, "RTCH_C ");
     } else {
         DSD_FPRINTF(stderr, "RTCH2 ");
@@ -517,12 +551,15 @@ nxdn_update_sacch_mode(dsd_state* state, uint8_t lich) {
 }
 
 /* The channel the frame's LICH names, which the element parsers read while its channels decode: a CAC is the Type-C
- * control channel, an RTCH2 profile (the IDAS column) a Type-D traffic channel, anything else a traffic or data
- * channel. */
+ * control channel, an RTCH_C profile a composite control channel, an RTCH2 profile (the IDAS column) a Type-D traffic
+ * channel, anything else a traffic or data channel. */
 static uint8_t
 nxdn_frame_channel_of(const nxdn_frame_ctx* ctx) {
     if (ctx->cac) {
         return (uint8_t)NXDN_FRAME_CHANNEL_CONTROL;
+    }
+    if (ctx->composite) {
+        return (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
     }
     if (ctx->idas) {
         return (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;

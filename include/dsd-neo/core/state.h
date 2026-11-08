@@ -768,6 +768,14 @@ typedef struct {
     uint8_t valid;
 } dsd_nxdn_ca_source;
 
+/* NXDN Type-C: what the session knows of the system it decodes (dsd_state::nxdn_site), forgotten with the channel
+   access parameters (dsd_nxdn_ca_reset()). <dsd-neo/core/nxdn_channel_access.h> owns every write. */
+typedef struct {
+    /** 1 once Type-C trunking decoded here (a CAC, a CCH_INFO or a SITE_INFO): the LICH values a composite control
+     * channel (RTCH_C) shares with a Type-D RTCH2 are read as RTCH_C (nxdn_frame.c). */
+    uint8_t type_c;
+} dsd_nxdn_site_latch;
+
 enum { DSD_NXDN_DFA_LEARNED_MAX = 128 };
 
 /* NXDN Type-C: the channel map rows DFA arithmetic wrote (dsd_state::nxdn_dfa_learned), all computed under the
@@ -2394,6 +2402,7 @@ struct dsd_state {
     uint8_t nxdn_bw;
     dsd_nxdn_ca_source nxdn_ca;
     dsd_nxdn_dfa_learned nxdn_dfa_learned;
+    dsd_nxdn_site_latch nxdn_site;
 
     // NXDN trunking: last observed call grant mapping (for UI/logging)
     uint16_t nxdn_grant_chan;

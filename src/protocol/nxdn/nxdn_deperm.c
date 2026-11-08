@@ -29,6 +29,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
@@ -649,6 +650,8 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
            this carrier. */
         nxdn_note_received_ran(state, nxdn_ran_from_trellis(trellis_buf));
         dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_NXDN, dsd_opts_tuned_freq_hz(opts));
+        // Only a Type-C system has a control channel: from now on a composite one's frames read as Type-C.
+        dsd_nxdn_note_type_c(state);
         nxdn_cc_hunt_note_control(opts, state);
         state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);

@@ -24,6 +24,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_NXDN_CHANNEL_ACCESS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_NXDN_CHANNEL_ACCESS_H_H
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -130,12 +131,14 @@ dsd_nxdn_ca_invalidate(dsd_state* state) {
     dsd_nxdn_ca_new_generation(state);
 }
 
-/** Forget the parameters, their site, the bandwidth and what DFA arithmetic learned from them. */
+/** Forget the parameters, their site, the bandwidth and what DFA arithmetic learned from them, and what the session
+ * knew of the system they belong to. */
 static inline void
 dsd_nxdn_ca_reset(dsd_state* state) {
     if (!state) {
         return;
     }
+    DSD_MEMSET(&state->nxdn_site, 0, sizeof(state->nxdn_site));
     const int had_any = state->nxdn_ca.valid != 0U || state->nxdn_ca.location_id != 0U || state->nxdn_rcn != 0U
                         || state->nxdn_base_freq != 0U || state->nxdn_step != 0U || state->nxdn_dfa_learned.count != 0U;
     state->nxdn_rcn = 0U;
@@ -147,6 +150,20 @@ dsd_nxdn_ca_reset(dsd_state* state) {
     if (had_any) {
         dsd_nxdn_ca_new_generation(state);
     }
+}
+
+/** Note that Type-C trunking decoded here: composite control channel frames are read as Type-C from now on. */
+static inline void
+dsd_nxdn_note_type_c(dsd_state* state) {
+    if (state) {
+        state->nxdn_site.type_c = 1U;
+    }
+}
+
+/** Whether Type-C trunking decoded here (dsd_nxdn_note_type_c()). */
+static inline int
+dsd_nxdn_type_c(const dsd_state* state) {
+    return state && state->nxdn_site.type_c != 0U;
 }
 
 #ifdef __cplusplus

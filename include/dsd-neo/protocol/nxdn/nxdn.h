@@ -52,6 +52,9 @@ typedef enum {
     NXDN_FRAME_CHANNEL_CONTROL = 1, /**< A Type-C control channel (RCCH, its CAC). */
     NXDN_FRAME_CHANNEL_TRAFFIC = 2, /**< A Type-C or conventional traffic or data channel (RTCH, RDCH), or DCR. */
     NXDN_FRAME_CHANNEL_TYPE_D = 3,  /**< A Type-D (IDAS) traffic channel (RTCH2). */
+    /** A Type-C composite control channel (RTCH_C, TS 1-A §5.2.1): a control channel carrying a call, laid out as a
+     * traffic channel, its broadcasts on FACCH1/FACCH2 (TS 1-C §16.3.2.1). */
+    NXDN_FRAME_CHANNEL_COMPOSITE = 4,
 } nxdn_frame_channel;
 
 /**
