@@ -11683,31 +11683,32 @@ Qt Quick frontend (`src/ui/qt`):
     message as a problem, and the screen `cancel()`s it when it stops being visible (Back clears `callRecordingsOpen`
     in `Main.qml`), so the hold goes too; an export already writing runs on. Export all is enabled only while
     `exportSelection === 0`, like a row's Export as zip, and "An export is running" is said only while a transfer runs
-    (B5). A Done export whose picker saved to the Download folder reads "Saved to Download/DSD-neo as <name>." with
-    `decoderHost.savedDocumentName()`, falling back to the exported count when it has no name, then the missing count.
-    `say()` reads every problem out once (`Accessible.announce`, a repeat again) while `Navigation.allows` the notice
-    (`announced`/`announcements` for tests). `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a
-    row whose `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
+    (B5). A Done export whose picker saved to the Download folder reads "Exported N recordings to Download/DSD-neo as
+    <name>." with `decoderHost.savedDocumentName()` (the name substituted last, so a `%` in it stays as written),
+    falling back to "Exported N recordings." when it has no name, then the missing count. `say()` reads every problem
+    out once, and the Download-folder result too (the only place that says where the file went), through
+    `Navigation.announce()`; other results are not read out. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC
+    tag for a row whose `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
     `HistoryDetailSheet.qml` follows its row by uid (`recordingsForUid()` again on every model change) and shows
     `CallRecordingPlayer.qml` above Hold: play/pause, position and seek with a status line ("Opening…", "Paused") whose
     line stays laid out, empty and unread, when there is none, so the block is as tall stopped, opening, playing and
     paused and a sheet centred on its content does not move at a tap (`test_height_steady_across_states`), the parts
-    (the one shown kept on its recording by path) with a Play all parts action
-    (the host keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a
-    stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. Save to
-    file's picker (`recordingSavePicker`) is a `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is
-    `unavailable` releases the selection and says why, and the block `cancel()`s a picker still asking when it stops
-    being visible (the sheet closed, the row emptied) or another recording becomes the shown part (issue #829), which
-    releases the hold. `saveFinished()` takes the Download-folder name (`savedDocumentName()` when the picker's
-    `savedToDownloads`) and ends the save before its shown-part return, so a save that finished on another row's sheet
-    leaves nothing behind; a Done one shown here reads "Saved to Download/DSD-neo as <name>." (else "Saved."). Problems
-    are read out once each, as on the screen. A part the host reports "missing" leaves the block at once, until the
-    store lists it as away (its storage went): from then on the store's availability speaks for it, so it shows away and
-    plays again once the storage is back, without reopening the sheet; closing the sheet stops what it played; a pause
-    the host made in the background (D10) reads as Paused. A single recording's delete confirmation says `deleteMessage`
-    ("Only the audio is deleted. History and detections are unchanged.", a host may set its own), and the Call
-    recordings screen's bulk deletes say the same of their count: a recording may have no History row (never linked, or
-    trimmed) and may belong to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
+    (the one shown kept on its recording by path) with a Play all parts action (the host keeps no queue: a part that
+    stopped at its end, path kept and position at its length, plays the next; a stop clears the path and ends it), Share
+    (`recordingShareFailed()` worded there), Save to file and Delete. Save to file's picker (`recordingSavePicker`) is a
+    `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is `unavailable` releases the selection and
+    says why, and the block `cancel()`s a picker still asking when it stops being visible (the sheet closed, the row
+    emptied) or another recording becomes the shown part (issue #829), which releases the hold. `saveFinished()` takes
+    the Download-folder name (`savedDocumentName()` when the picker's `savedToDownloads`) and ends the save before its
+    shown-part return, so a save that finished on another row's sheet leaves nothing behind; a Done one shown here reads
+    "Saved to Download/DSD-neo as <name>." (else "Saved."). Problems and that Download-folder result are read out once
+    each, as on the screen. A part the host reports "missing" leaves the block at once, until the store lists it as away
+    (its storage went): from then on the store's availability speaks for it, so it shows away and plays again once the
+    storage is back, without reopening the sheet; closing the sheet stops what it played; a pause the host made in the
+    background (D10) reads as Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is
+    deleted. History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk
+    deletes say the same of their count: a recording may have no History row (never linked, or trimmed) and may belong
+    to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
     `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
     editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
     with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added
@@ -14241,6 +14242,13 @@ counts none). Its opacity is 0, so it is reported invisible (an item with no siz
 the window), and it has no name. A covered panel is nameless, and headings and the controls that set
 `Accessible.focusable` are focusable only while in the tree, so a node TalkBack may still ask about offers nothing to
 stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
+
+A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
+issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while
+`Navigation.allows(line)` is false (`line` null: no gate, as for the backup card's notices, which live on Settings),
+records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
+use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
+`sourceNotice`), `CallRecordingsScreen` and `CallRecordingPlayer`.
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with

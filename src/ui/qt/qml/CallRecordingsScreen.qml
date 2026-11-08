@@ -108,16 +108,14 @@ Item {
             parts.push(spanText(folder));
         return parts.join(" · ");
     }
-    // A problem is read out once each time it is said, a repeat included.
-    function say(text, problem) {
+    // A problem is read out once each time it is said, a repeat included, and
+    // so is a result that is the only place a fact is given (@p readOut: where
+    // a Download-folder save went).
+    function say(text, problem, readOut) {
         notice = text;
         noticeProblem = problem;
-        if (!problem || !text.length || !Navigation.allows(noticeText))
-            return;
-        announced = text;
-        announcements++;
-        if (typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        if (problem || readOut === true)
+            Navigation.announce(screen, noticeText, text);
     }
 
     function openFolder(folder) {
@@ -201,12 +199,17 @@ Item {
         exportSelection = 0;
         exportReference = "";
         if (result === 0) {
-            var done = count === 1 ? qsTr("Exported 1 recording.") : qsTr("Exported %1 recordings.").arg(Util.countText(count));
-            if (saved.length > 0)
-                done = qsTr("Saved to Download/DSD-neo as %1.").arg(saved);
+            var done;
+            // The name goes in last, so a % in it is never read as a place marker.
+            if (saved.length > 0 && count === 1)
+                done = qsTr("Exported 1 recording to Download/DSD-neo as %1.").arg(saved);
+            else if (saved.length > 0)
+                done = qsTr("Exported %1 recordings to Download/DSD-neo as %2.").arg(Util.countText(count)).arg(saved);
+            else
+                done = count === 1 ? qsTr("Exported 1 recording.") : qsTr("Exported %1 recordings.").arg(Util.countText(count));
             if (missing > 0)
                 done += " " + (missing === 1 ? qsTr("1 was gone and left out.") : qsTr("%1 were gone and left out.").arg(Util.countText(missing)));
-            say(done, false);
+            say(done, false, saved.length > 0);
         } else if (result === 2) {
             say(qsTr("Export cancelled."), false);
         } else if (result === 3) {

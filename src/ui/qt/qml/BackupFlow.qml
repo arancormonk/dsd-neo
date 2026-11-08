@@ -137,12 +137,7 @@ Item {
     }
 
     function announce(text) {
-        if (!text.length)
-            return;
-        announced = text;
-        announcements++;
-        if (typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        Navigation.announce(flow, null, text);
     }
 
     function focusField(field) {

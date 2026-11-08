@@ -230,7 +230,7 @@ Item {
             compare(lastStoreCall().name, "releaseSelection");
             compare(lastStoreCall().selection, selection, "a dismissed picker lets the files go");
             compare(screen().exportSelection, 0);
-            compare(hostCallsNamed("exportRecordings").length, 0, "and nothing was written");
+            compare(testContext.hostCalls().map(function (call) { return call.name; }), ["requestSaveDocument"], "and nothing was written");
             compare(screen().notice, "", "backing out says nothing");
         }
 
@@ -287,17 +287,20 @@ Item {
         }
 
         // Issue #829: with no save picker the export went to Download/DSD-neo;
-        // the result names the file there, followed by what was left out.
+        // the result counts it and names the file there, followed by what was
+        // left out, and is read out, as it is the only place that says where.
         function test_export_saved_to_downloads_data() {
             return [
-                {tag: "named", name: "Call recordings County P25 2026-11-08 (1).zip", missing: 2, text: "Saved to Download/DSD-neo as Call recordings County P25 2026-11-08 (1).zip. 2 were gone and left out."},
-                {tag: "named-all-there", name: "Call recordings 2026-11-08.zip", missing: 0, text: "Saved to Download/DSD-neo as Call recordings 2026-11-08.zip."},
-                {tag: "no-name", name: "", missing: 1, text: "Exported 11 recordings. 1 was gone and left out."}
+                {tag: "named", count: 12, name: "Call recordings County P25 2026-11-08 (1).zip", missing: 2, readOut: true, text: "Exported 10 recordings to Download/DSD-neo as Call recordings County P25 2026-11-08 (1).zip. 2 were gone and left out."},
+                {tag: "named-all-there", count: 12, name: "Call recordings 2026-11-08.zip", missing: 0, readOut: true, text: "Exported 12 recordings to Download/DSD-neo as Call recordings 2026-11-08.zip."},
+                {tag: "named-one", count: 1, name: "Call recordings 2026-11-08 (2).zip", missing: 0, readOut: true, text: "Exported 1 recording to Download/DSD-neo as Call recordings 2026-11-08 (2).zip."},
+                {tag: "named-with-marker", count: 12, name: "Calls %1 100%.zip", missing: 0, readOut: true, text: "Exported 12 recordings to Download/DSD-neo as Calls %1 100%.zip."},
+                {tag: "no-name", count: 12, name: "", missing: 1, readOut: false, text: "Exported 11 recordings. 1 was gone and left out."}
             ];
         }
         function test_export_saved_to_downloads(data) {
             fill();
-            recordings.setSelection(12, 40000000, ["/r/a.wav"]);
+            recordings.setSelection(data.count, 40000000, ["/r/a.wav"]);
             screen().beginExport(county, "all");
             var selection = screen().exportSelection;
             var reference = "content://media/external/downloads/" + data.tag;
@@ -306,9 +309,14 @@ Item {
             pick(reference, true);
             compare(lastHostCall().name, "exportRecordings");
             compare(lastHostCall().reference, reference);
+            var said = screen().announcements;
             testContext.finishRecordingTransfer(selection, 0, data.missing);
             compare(item("callRecordingsNotice").text, data.text);
             verify(!screen().noticeProblem);
+            compare(item("callRecordingsNotice").Accessible.role, Accessible.StaticText);
+            compare(screen().announcements, said + (data.readOut ? 1 : 0), "read out once only when it names the file");
+            if (data.readOut)
+                compare(screen().announced, data.text);
 
             // A failed write never claims the Download folder; the next export
             // through a picker reads as before.
@@ -320,8 +328,10 @@ Item {
             screen().beginExport(county, "all");
             selection = screen().exportSelection;
             pick("content://picked/other.zip", false);
+            said = screen().announcements;
             testContext.finishRecordingTransfer(selection, 0, 0);
-            compare(item("callRecordingsNotice").text, "Exported 12 recordings.");
+            compare(item("callRecordingsNotice").text, data.count === 1 ? "Exported 1 recording." : "Exported 12 recordings.");
+            compare(screen().announcements, said, "an ordinary result is not read out");
         }
 
         // Issue #829: leaving the screen (Back clears callRecordingsOpen in

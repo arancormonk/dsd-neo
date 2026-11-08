@@ -44,6 +44,7 @@ Item {
         }
 
         function cleanup() {
+            root.width = 420
             wizardLoader.visible = true
             testContext.resetHostPlayback()
             if (tc.savedRow >= 0) {
@@ -132,17 +133,24 @@ Item {
             verify(line.width <= 320)
             verify(line.lineCount > 1, "the sentence wraps")
             verify(line.contentWidth <= line.width + 1, "and stays inside its line")
-            root.width = 420
         }
 
+        // A failed copy's notice stays while the next pick is out and goes
+        // once a copy lands.
         function test_successful_copy_clears_the_notice() {
+            tc.wizard.fileText = "/data/imports/old.wav"
+            testContext.setImportContentResult("")
+            testContext.answerDocumentPicked(browse(), tc.reference, "a b.wav", false)
+            compare(tc.wizard.sourceNotice, "Could not copy that file. The previous file is still selected.")
+            // The next Browse fails to open: its reason replaces the notice.
+            testContext.answerDocumentUnavailable(browse(), "noPicker")
+            compare(tc.wizard.sourceNotice, "No compatible file picker on this device. Install a file manager app, then try again.")
             var id = browse()
-            testContext.answerDocumentUnavailable(id, "noPicker")
-            verify(tc.wizard.sourceNotice.length > 0)
-            // A copy that works (another route back to the picker) clears it.
-            tc.wizard.replayFilePicked(tc.reference, "a b.wav")
-            compare(tc.wizard.sourceNotice, "")
-            compare(tc.wizard.fileText, tc.reference, "the map's copy answers the reference")
+            testContext.setImportContentResult("/data/imports/new.wav")
+            testContext.answerDocumentPicked(id, tc.reference, "new.wav", false)
+            compare(tc.wizard.fileText, "/data/imports/new.wav")
+            compare(tc.wizard.sourceNotice, "", "the copy that landed cleared it")
+            verify(!notice().visible)
         }
 
         function test_picker_unavailable_data() {

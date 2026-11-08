@@ -397,11 +397,12 @@ the save picker opens. The ZIP holds one folder per system with its WAV files, s
 gains little from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count
 limit. A progress line with **Cancel export** shows while it runs, one export at a time: **Export all** and a row's
 **Export as zip** wait from the moment the save picker opens. On a phone with no save picker, the export (and **Save to
-file**) goes to Download/DSD-neo ("Choosing files") and the result reads **Saved to Download/DSD-neo as** the file's
-name; Cancel still stops it until the file is finished, and a cancelled or failed export leaves nothing there. When
-the file can't be saved anywhere, the screen (or the call's sheet) says why and the recordings are free again, as they
-are when you back out of the picker or leave the screen while it is open. A recording deleted meanwhile is left out,
-and the result says how many. A recording that is playing, being exported or still waiting for an
+file**) goes to Download/DSD-neo ("Choosing files"), and the result names the file there: **Exported 12 recordings to
+Download/DSD-neo as** the file's name (for Save to file, **Saved to Download/DSD-neo as** its name); TalkBack reads
+that result out. Cancel still stops it until the file is finished, and a cancelled or failed export leaves nothing
+there. When the file can't be saved anywhere, the screen (or the call's sheet) says why and the recordings are free
+again, as they are when you back out of the picker or leave the screen while it is open. A recording deleted meanwhile
+is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
 rdio-scanner upload is deleted once it is free.
 
 ### Storage limit

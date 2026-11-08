@@ -236,12 +236,7 @@ Item {
     }
     // Read out once per failure, a repeat included, while @p line is reachable.
     function announceProblem(line, text) {
-        if (!Navigation.allows(line))
-            return;
-        announced = text;
-        announcements++;
-        if (typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        Navigation.announce(wizard, line, text);
     }
 
     // Browse for the replay file. The picked document is copied into the

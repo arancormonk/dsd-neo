@@ -582,16 +582,23 @@ Item {
             if (data.name.length > 0)
                 testContext.setSavedDocumentName(reference, data.name);
             testContext.answerDocumentPicked(id, reference, "A.wav", true);
+            var said = player.announcements;
             testContext.finishRecordingTransfer(selection, 0, 0);
             compare(item("recordingNotice").text, data.text);
             verify(!player.noticeProblem);
+            // Where it went is said only here, so a named save is read out, once.
+            compare(player.announcements, said + (data.name.length > 0 ? 1 : 0));
+            if (data.name.length > 0)
+                compare(player.announced, data.text);
 
-            // The next save through a picker reads as before.
+            // The next save through a picker reads as before, unannounced.
             id = startSave();
             selection = player.saveSelection;
             testContext.answerDocumentPicked(id, "content://picked/A.wav", "A.wav", false);
+            said = player.announcements;
             testContext.finishRecordingTransfer(selection, 0, 0);
             compare(item("recordingNotice").text, "Saved.");
+            compare(player.announcements, said);
         }
 
         // r1 #5: a save whose sheet moved to another row ends there, success or

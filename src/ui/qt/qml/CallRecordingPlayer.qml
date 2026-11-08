@@ -208,16 +208,14 @@ Column {
         notice = "";
         noticeProblem = false;
     }
-    // A problem is read out once each time it is said, a repeat included.
-    function say(text, problem) {
+    // A problem is read out once each time it is said, a repeat included, and
+    // so is a result that is the only place a fact is given (@p readOut: where
+    // a Download-folder save went).
+    function say(text, problem, readOut) {
         notice = text;
         noticeProblem = problem;
-        if (!problem || !text.length || !Navigation.allows(recordingNoticeText))
-            return;
-        announced = text;
-        announcements++;
-        if (typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        if (problem || readOut === true)
+            Navigation.announce(player, recordingNoticeText, text);
     }
 
     function share() {
@@ -278,8 +276,10 @@ Column {
         savePath = "";
         if (!shown)
             return;
-        if (result === 0)
-            say(saved.length > 0 ? qsTr("Saved to Download/DSD-neo as %1.").arg(saved) : qsTr("Saved."), false);
+        if (result === 0 && saved.length > 0)
+            say(qsTr("Saved to Download/DSD-neo as %1.").arg(saved), false, true);
+        else if (result === 0)
+            say(qsTr("Saved."), false);
         else if (result === 3)
             say(qsTr("This recording is gone."), true);
         else if (result === 4)

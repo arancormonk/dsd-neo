@@ -659,6 +659,7 @@ Item {
             pick(picker, data.reference, "dsd-neo-backup-2026-10-14.dsdbak", true);
             verify(picker.savedToDownloads);
             compare(calls("saveExport")[0].args[0], data.reference);
+            var said = flow.announcements;
             verify(testContext.emitBackup("exportFinished", {ok: true, error: "", summary: {}, notIncluded: ["Imported file old.csv"]}));
             tryCompare(part("backupSavingSheet"), "visible", false);
             compare(lastFlowActive(), false);
@@ -667,6 +668,9 @@ Item {
             compare(text.indexOf(data.head + " "), 0, text);
             verify(text.indexOf("Imported file old.csv") > data.head.length, text);
             compare(notice().color, Ui.Theme.textSecondary);
+            // Where the backup went is said only here, so it is read out, once.
+            compare(flow.announcements, said + 1);
+            compare(flow.announced, text);
         }
 
         // #829: no picker could ask where to save. The encrypted backup goes,
