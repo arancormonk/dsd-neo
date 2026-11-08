@@ -652,6 +652,8 @@ Column {
         width: parent.width
         visible: text.length > 0
         text: player.notice
+        // Names a saved file, which may hold markup characters.
+        textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)

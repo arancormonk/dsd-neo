@@ -295,6 +295,8 @@ Item {
                 {tag: "named-all-there", count: 12, name: "Call recordings 2026-11-08.zip", missing: 0, readOut: true, text: "Exported 12 recordings to Download/DSD-neo as Call recordings 2026-11-08.zip."},
                 {tag: "named-one", count: 1, name: "Call recordings 2026-11-08 (2).zip", missing: 0, readOut: true, text: "Exported 1 recording to Download/DSD-neo as Call recordings 2026-11-08 (2).zip."},
                 {tag: "named-with-marker", count: 12, name: "Calls %1 100%.zip", missing: 0, readOut: true, text: "Exported 12 recordings to Download/DSD-neo as Calls %1 100%.zip."},
+                // A system name holding markup is shown as saved, not drawn as markup.
+                {tag: "named-with-markup", count: 12, name: "Call recordings Fire &lt;East&gt; <b>2</b>.zip", missing: 0, readOut: true, text: "Exported 12 recordings to Download/DSD-neo as Call recordings Fire &lt;East&gt; <b>2</b>.zip."},
                 {tag: "no-name", count: 12, name: "", missing: 1, readOut: false, text: "Exported 11 recordings. 1 was gone and left out."}
             ];
         }
@@ -312,6 +314,7 @@ Item {
             var said = screen().announcements;
             testContext.finishRecordingTransfer(selection, 0, data.missing);
             compare(item("callRecordingsNotice").text, data.text);
+            compare(item("callRecordingsNotice").textFormat, Text.PlainText);
             verify(!screen().noticeProblem);
             compare(item("callRecordingsNotice").Accessible.role, Accessible.StaticText);
             compare(screen().announcements, said + (data.readOut ? 1 : 0), "read out once only when it names the file");

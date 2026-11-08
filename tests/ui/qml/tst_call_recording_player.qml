@@ -569,6 +569,8 @@ Item {
         function test_save_to_downloads_data() {
             return [
                 {tag: "named", name: "A (1).wav", text: "Saved to Download/DSD-neo as A (1).wav."},
+                // A name holding markup is shown as saved, not drawn as markup.
+                {tag: "named-with-markup", name: "Fire &lt;East&gt; <b>A</b>.wav", text: "Saved to Download/DSD-neo as Fire &lt;East&gt; <b>A</b>.wav."},
                 {tag: "no-name", name: "", text: "Saved."}
             ];
         }
@@ -585,6 +587,7 @@ Item {
             var said = player.announcements;
             testContext.finishRecordingTransfer(selection, 0, 0);
             compare(item("recordingNotice").text, data.text);
+            compare(item("recordingNotice").textFormat, Text.PlainText);
             verify(!player.noticeProblem);
             // Where it went is said only here, so a named save is read out, once.
             compare(player.announcements, said + (data.name.length > 0 ? 1 : 0));
