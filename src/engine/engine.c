@@ -424,7 +424,9 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
 static int
 import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
     const int trunk_enabled = (opts->trunk_enable == 1) || (opts->trunk_scan_enabled == 1);
-    if (trunk_enabled && opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state)) {
+    // A list marked incomplete was already read, and logged, from this file: reading it again would not complete it.
+    if (trunk_enabled && opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state)
+        && !dsd_tg_policy_incomplete(state)) {
         if (csvGroupImport(opts, state) != 0) {
             return -1;
         }

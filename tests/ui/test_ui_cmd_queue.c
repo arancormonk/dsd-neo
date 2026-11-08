@@ -23719,6 +23719,7 @@ expect_group_list_kept(const char* what, const dsd_opts* opts, const dsd_state* 
     int rc = expect_str(what, opts->group_in_file, mark->path);
     rc |= expect_true(what, context == mark->context && generation == mark->generation);
     rc |= expect_true(what, dsd_tg_policy_session_avoid_contains(state, 300));
+    rc |= expect_true(what, dsd_tg_policy_call_skip_active(state, 400, dsd_decode_now_mono_s()));
     rc |= expect_int(what, dsd_tg_policy_lookup_id(state, 100, &lookup), 0);
     rc |= expect_str(what, lookup.entry.name, "Dispatch");
     return rc;
@@ -23761,6 +23762,7 @@ test_group_import_refuses_unusable_files(void) {
                      "Applied: Group list imported -> 2 rows, 1 skipped");
     rc |= expect_str("R1 good import takes the path", opts.group_in_file, good);
     rc |= expect_int("R1 seed temporary avoid", dsd_tg_policy_session_avoid_add(&state, 300), 0);
+    rc |= expect_int("R1 seed call skip", dsd_tg_policy_call_skip_arm(&state, 400, 1, 0, dsd_decode_now_mono_s()), 0);
     group_list_mark mark;
     group_list_mark_take(&opts, &state, &mark);
 
@@ -23815,6 +23817,8 @@ test_group_import_refuses_a_partial_load(void) {
     post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, good);
     rc |= expect_int("R1 alloc seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("R1 alloc seed temporary avoid", dsd_tg_policy_session_avoid_add(&state, 300), 0);
+    rc |= expect_int("R1 alloc seed call skip", dsd_tg_policy_call_skip_arm(&state, 400, 1, 0, dsd_decode_now_mono_s()),
+                     0);
     group_list_mark mark;
     group_list_mark_take(&opts, &state, &mark);
 
@@ -23953,6 +23957,25 @@ test_group_startup_unusable_file_is_not_saved(void) {
     rc |= expect_int("startup ';' edit drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_file_bytes(excel, excel_csv);
     rc |= expect_contains("startup ';' edit toast", state.ui_msg, "group list incomplete");
+    // A selection is a list edit too: its own toast must not hide why it was not saved.
+    char selection_path[DSD_TEST_PATH_MAX];
+    rc |= make_group_file(selection_path, sizeof selection_path, "dsd_r1_startup_selection", "0,100,100\n");
+    dsd_app_tg_selection_payload selection = {.count = 1, .listening = 1};
+    DSD_SNPRINTF(selection.selection_path, sizeof selection.selection_path, "%s", selection_path);
+    {
+        unsigned int generation = 0;
+        dsd_tg_policy_table_version(&state, &selection.policy_context, &generation);
+        selection.policy_generation = generation;
+    }
+    dsd_app_command_submit(DSD_APP_CMD_TG_SELECTION_SET, &selection, sizeof selection);
+    rc |= expect_int("startup ';' selection drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("startup ';' selection applies", dsd_tg_policy_lookup_id(&state, 100, &lookup), 0);
+    rc |= expect_str("startup ';' selection is in the session", lookup.entry.mode, "A");
+    rc |= expect_str("startup ';' selection toast", state.ui_msg,
+                     "Talkgroup change kept for this session only; group list incomplete, reload it");
+    rc |= expect_file_bytes(excel, excel_csv);
+    (void)remove(selection_path);
     freeState(&state);
 
     init_test_context(&opts, &state);

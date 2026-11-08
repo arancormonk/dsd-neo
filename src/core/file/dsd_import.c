@@ -420,6 +420,8 @@ group_import_read(const char* group_file_path, group_import_pass* pass) {
         return -1;
     }
 
+    // Not every open failure sets errno (a path that does not expand), and only ENOENT means the file is missing.
+    errno = 0;
     fp = csv_open_user_read_file("group file", group_file_path, pass->filename, sizeof pass->filename);
     if (fp == NULL) {
         pass->report.not_found = errno == ENOENT;

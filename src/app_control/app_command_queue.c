@@ -7694,11 +7694,12 @@ apply_cmd_tg_selection(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
         ui_set_toast(state, 4, "The talkgroup selection changed or could not be applied. Review it again.");
         return UI_CMD_APPLY_FAILED;
     }
+    // Before the save, as every list edit does: a save that is refused replaces it with why.
+    ui_set_toast(state, 4, "%u selected talkgroups %s", p.count, p.listening ? "listening" : "not tuned");
     tg_listen_persist(opts, state);
     if (!p.listening) {
         tg_listen_release_blocked_calls(opts, state, 3U);
     }
-    ui_set_toast(state, 4, "%u selected talkgroups %s", p.count, p.listening ? "listening" : "not tuned");
     return UI_CMD_APPLY_COMPLETED;
 }
 

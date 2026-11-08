@@ -6,6 +6,7 @@
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
@@ -14,6 +15,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/engine/engine.h>
@@ -1141,6 +1143,58 @@ test_missing_source_labels_do_not_stop_decode(void) {
     return rc;
 }
 
+/* The rows the group list held when the run started. */
+static int
+count_group_rows_at_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    *(size_t*)context = dsd_tg_policy_entry_count(state);
+    return 0;
+}
+
+static int
+write_group_text(const char* path, const char* text) {
+    FILE* fp = dsd_fopen_private(path, "w");
+    if (!fp) {
+        return 1;
+    }
+    const int bad = fputs(text, fp) < 0;
+    return (fclose(fp) != 0) || bad;
+}
+
+/* A trunking run imports the group file when the list is still empty, but not one startup already read and marked
+   incomplete (an Excel CSV with ';' separators): reading it again would only log it, and each of its rows, twice. The
+   file is replaced by a usable one before the run, so a second read shows as a loaded row. A header-only startup list
+   is complete, and the run still imports into it. */
+static int
+test_incomplete_group_list_is_not_read_again(int incomplete) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof(path), "dsd-engine-group-list");
+    if (fd < 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    int rc = write_group_text(path, incomplete ? "id;mode;name\n100;A;ONE\n" : "id,mode,name\n");
+    DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
+    rc |= expect_true("startup group list loads", csvGroupImport(opts, state) == 0);
+    rc |= expect_true("startup group list incomplete as written", dsd_tg_policy_incomplete(state) == incomplete);
+    rc |= write_group_text(path, "id,mode,name\n100,A,ONE\n");
+    opts->trunk_enable = 1;
+    size_t rows_at_start = 0;
+    dsd_engine_lifecycle_hooks hooks = {.start = count_group_rows_at_start, .context = &rows_at_start};
+    rc |= expect_true("trunking run completes", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
+    rc |= expect_true(incomplete ? "incomplete startup list is not read again" : "empty startup list is read again",
+                      rows_at_start == (incomplete ? 0U : 1U));
+    (void)remove(path);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 #if DSD_PLATFORM_WIN_NATIVE
 /* The Windows CRT's narrow file calls read a path in the ANSI code page, so a UTF-8 folder name is not tried there. */
 #define PER_CALL_TEST_FOLDER "Call recordings"
@@ -1960,6 +2014,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_missing_source_labels_do_not_stop_decode();
+    rc |= test_incomplete_group_list_is_not_read_again(1);
+    rc |= test_incomplete_group_list_is_not_read_again(0);
     rc |= test_per_call_wav_opens_in_the_cli_folder_at_start();
     rc |= test_run_journals_its_recordings_from_start_to_end();
     rc |= test_conflicting_scan_modes_fail_before_live_setup();
