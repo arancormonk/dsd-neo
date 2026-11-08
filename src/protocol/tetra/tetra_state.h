@@ -105,7 +105,8 @@ typedef struct {
     uint8_t silent_noted;  /* the "no SYSINFO on the main carrier" line was printed for this move */
     uint8_t full_noted;    /* the "no room" line was printed since the history was last forgotten */
     uint8_t stay_noted;    /* the "moved there once already" line was printed since the last move */
-    uint8_t trunk_off;     /* trunking was seen off since: turning it on again forgets the history */
+    uint8_t trunk_off;     /* trunking was seen off since: turning it on again forgets the history and, while TUNED,
+                              returns home (tetra_sm_t::return_required) */
 } tetra_sm_acquire;
 
 /* The trunking state machine (tetra_trunk_sm.c). Times are decode-clock monotonic seconds. */

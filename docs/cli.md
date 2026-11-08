@@ -743,6 +743,27 @@ Android session whose saved extra arguments carry one refuses to start the same 
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
   type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
   one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.
+  After a call the decoder goes back to the control channel it left. TETRA cells reuse frequencies, so a traffic channel
+  can carry another cell's bursts too, and while the decoder follows a call it does not take them on there: another
+  cell's SYNC (another network or colour code), its SYSINFO (another main carrier or location area) and direct mode
+  bursts are ignored (`-v 1` logs `another cell on the followed carrier; not taken on`, `...; not applied` or
+  `direct mode on the followed carrier; not taken on`), the control channel stays the one the call left, and Return to
+  CC, skip and lockout go back to it. Turning trunking off and on during a call returns to it at once, since what was
+  heard meanwhile cannot be trusted. Known limits: a cell with the same network and colour code on the same frequency
+  cannot be told apart, by the decoder or by a radio, so its messages and speech count as the followed cell's and can
+  keep or move the call (only its SYSINFO is ignored, and the return still goes to the control channel the call left). A
+  call moved to another cell (a channel allocation with its cell change flag set, logged with
+  `cell change: for another cell; logged only`) is not followed, nor are umbrella channels shared by cells (EN 300 392-2
+  Annex S); such a message changes nothing, though its short data and status messages still reach the event history. If
+  the cell moves its control channel to another frequency during a call, the decoder still returns to the old one and
+  moves on when that carrier's SYSINFO names the new one; if the old frequency has gone silent it stays there until you
+  retune, since TETRA has no control channel hunt. When neither a SYNC nor `--tetra-net` gave the network before the
+  call was followed, another cell's SYNC cannot be told apart for that call; with colour code 0 and a `--tetra-net`
+  network that is not the cell's, the cell's own SYNC is ignored for that call. ACCESS-ASSIGN PDUs carry no checksum, so
+  they keep a silent call's channel, or give it receive permission, only while the followed cell's own checked blocks
+  were heard on the channel in the last 4 seconds (a live cell sends its SYNC about once a second); three saying the
+  channel is no longer the call's can still end a call early, as noise can, and the decoder then returns to the control
+  channel.
   `--tetra-uplink` decodes a trunked mode uplink carrier, the radios' transmissions, instead of a downlink: its control
   uplink bursts (random access) and its normal uplink bursts. The uplink does not run the downlink's receive chain,
   which lost bursts the generic CQPSK path decodes: it runs that path with the TETRA channel filter (at the same DSP

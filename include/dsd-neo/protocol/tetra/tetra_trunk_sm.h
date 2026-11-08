@@ -77,7 +77,9 @@ void tetra_sm_init(dsd_opts* opts, dsd_state* state);
  *   a move that reached it is over), and the move there is staged for the end of the burst (tetra_sm_after_burst()),
  *   but only on a carrier a CRC-passed downlink block proved before this SYSINFO's own block, so a SYSINFO never
  *   vouches for itself.
- * - While TUNED a traffic channel's SYSINFO only keeps the control channel a candidate.
+ * - While TUNED a traffic channel's SYSINFO only keeps the control channel a candidate. While the state machine guards
+ *   the follow (tetra_sm_guarding()) only the home cell's SYSINFO gets here: one naming another main carrier or
+ *   location area is another cell's on the followed carrier and is not applied (tetra_mac.c), so it adds no candidate.
  */
 void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
 
@@ -212,9 +214,8 @@ int tetra_sm_aach_corroborated(const dsd_opts* opts, const dsd_state* state);
  * leaves it), and asks for no return until trunking is on again, which returns at once (tetra_sm_on_trunking_on()).
  * ON_CC and ACQUIRING drop to IDLE once trunking is off or no control channel is known (a BSCH of another cell dropped
  * it); trunking on again forgets the history of moves to the main carrier (tetra_sm_after_burst()). ACQUIRING on the
- * main carrier without its
- * SYSINFO for TETRA_SM_MOVE_SILENT_S says so once, and moves nowhere. The session's call records age on the same tick
- * (tetra_calls_tick()), trunking or not.
+ * main carrier without its SYSINFO for TETRA_SM_MOVE_SILENT_S says so once, and moves nowhere. The session's call
+ * records age on the same tick (tetra_calls_tick()), trunking or not.
  */
 void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 
@@ -248,10 +249,13 @@ long tetra_sm_receiver_freq(const dsd_opts* opts, const dsd_state* state);
  * reallocation of the followed call keeps it. 0 when no follow is held, and for a session without TETRA state.
  *
  * After an assigned channel an MS returns to the control channel it was using before the assignment (EN 300 392-2
- * clause 23.3.1.2.1.2), and nothing on the traffic carrier names it: another cell decoded there rewrites
- * state->trunk_cc_freq. So every way back reads this first: the state machine's release (the hangtime, the grant
- * timeout, a release, trunking turned back on), which sets state->trunk_cc_freq to it for the shared return, and the
- * frontends' Return to CC, skip and lockout (dsd_app_cc_freq()).
+ * clause 23.3.1.2.1.2), and nothing on the traffic carrier names it: with trunking off another cell decoded there
+ * rewrites state->trunk_cc_freq (while the state machine guards the follow it is not taken on). So every way back reads
+ * this first: the state machine's release (the hangtime, the grant timeout, a release, trunking turned back on), which
+ * sets state->trunk_cc_freq to it for the shared return, and the manual Return to CC, skip and lockout
+ * (current_cc_freq() in app_command_queue.c), which set it too before handing the state machine over.
+ * dsd_app_cc_freq(), which the call view and the status readouts use, reads state->trunk_cc_freq and does not apply
+ * the home: a frontend snapshot carries no TETRA state.
  */
 long tetra_sm_return_cc_hz(const dsd_state* state);
 

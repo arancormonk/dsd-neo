@@ -4,6 +4,14 @@
  *
  * The clock is kept as TN, FN and MN of one slot plus the symbol count at which that slot started. Moving it to a later
  * burst counts the symbols in between, so a burst the frame sync missed does not slip it.
+ *
+ * A SYNC of another network or colour code than the session's is another cell: what the last cell left is forgotten
+ * (bsch_identity_change()) and the new one is taken on. While the trunking state machine guards a follow
+ * (tetra_sm_guarding()) it is not: once synchronised, an MS takes on only the SYNC of its own colour code (EN 300
+ * 392-2 clause 23.6.2), so another cell's SYNC on the followed carrier is logged and nothing of it taken
+ * (TETRA_BSCH_FOREIGN): the home cell's identity, scrambling seed, clock and control channel stay. A cell of the
+ * home's network and colour code cannot be told apart by its SYNC and is taken on as ever, as is any SYNC while the
+ * home's network was not known when the follow started; only a SYSINFO tells such cells apart (tetra_mac.c).
  */
 
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>

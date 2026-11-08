@@ -1177,9 +1177,10 @@ frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
 }
 
 /* Synchronisation burst: the 19-dibit training sequence, which is no other training sequence inverted, so it tells the
- * burst's polarity. That is the burst's only (tetra_sync.sb_polarity): the decoder reads the burst with it and makes it
- * the carrier's once the burst's BSCH, or a DSB's SCH/S, passed its CRC. A false match, or a burst of another polarity
- * that fails, leaves the carrier's polarity the normal bursts are classified with (frame_sync_try_tetra_ndb()). */
+ * burst's polarity. That polarity is the burst's alone (tetra_sync.sb_polarity): the decoder reads the burst with it
+ * and makes it the carrier's once the burst's BSCH, or a DSB's SCH/S, passed its CRC and the burst was taken on. A
+ * false match, or a burst of another polarity that fails or is not taken on, leaves the carrier's polarity the normal
+ * bursts are classified with (frame_sync_try_tetra_ndb()). */
 static int
 frame_sync_try_tetra_sb(frame_sync_match_ctx* ctx) {
     if (!frame_sync_match_window_ready(ctx, 79)) {

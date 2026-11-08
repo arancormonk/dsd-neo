@@ -18,8 +18,9 @@
  *
  * A follow returns to the control channel it started from, the home (tetra_sm_home): after an assigned channel the MS
  * returns to the MCCH it was using before the assignment (clause 23.3.1.2.1.2), and nothing on the traffic carrier
- * names it. Another cell can be decoded there and its SYNC and SYSINFO rewrite state->trunk_cc_freq, so every way back
- * reads the home instead (tetra_sm_return_cc_hz()).
+ * names it. While the machine guards the follow (tetra_sm_guarding()) another cell decoded there is not taken on
+ * (tetra_bsch_parse(), sysinfo_applies() in tetra_mac.c); with trunking off it is, and its SYNC and SYSINFO rewrite
+ * state->trunk_cc_freq. So every way back reads the home (tetra_sm_return_cc_hz()).
  */
 
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
@@ -1043,8 +1044,9 @@ tetra_sm_aach_corroborated(const dsd_opts* opts, const dsd_state* state) {
 /* Trunking off while TUNED: the receiver stays on the followed channel (sm_release()), and what it decodes there is
  * decoded as on any carrier with trunking off, not as the followed call's: the machine keeps the channel and its timers
  * but lets go of the call (no call record, as tetra_sm_retire_call() leaves it), so the record ages, its signalling
- * publishes it only as the heard call, and the proof the follow gate reads goes. With trunking on again the hangtime or
- * the grant timeout returns from the channel as before. */
+ * publishes it only as the heard call, and the proof the follow gate reads goes. With trunking on again the follow
+ * returns home at once (sm_trunking_back_on(), return_required): what the carrier delivered meanwhile cannot be
+ * trusted. */
 static void
 sm_hold_untrunked(dsd_state* state, tetra_state_t* ts) {
     if (ts->sm.followed_retired) {
