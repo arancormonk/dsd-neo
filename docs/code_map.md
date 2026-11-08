@@ -13446,6 +13446,13 @@ Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionB
 `DisclosureRow`, `PlexSwitch` and `ToggleRow` and to the Spectrum, Monitor, RadioReference and wizard buttons and rows
 that took Return alone, and moved the Monitor's Spectrum button's keys behind its gate. Tests: `tst_keypad_enter.qml`.
 
+A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
+`Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's
+Android bridge maps `PageTab` to a class name TalkBack does not recognise and never passes `selected` on, so the bottom
+tabs, page tabs marked selected, were heard by name alone; checkable and checked do reach TalkBack ("checked, Listen,
+radio button"). `BottomNav` keeps `selected` set for platforms that read it. Names carry no role or position words.
+Tests: `tst_bottom_nav_a11y.qml`.
+
 Accessibility churn (issue #782). On Android, Qt 6.11.3's accessibility bridge turns each ObjectShow or ObjectHide into
 a main-thread task that makes 8 blocking round trips to the Qt thread, so a screen that creates or toggles accessible
 items on every metrics tick stalls the app (the bridge runs only under TalkBack now, "Android foundation integration

@@ -2056,6 +2056,8 @@ construction is also covered by the host tests.
 
 Controls expose named accessibility actions, keyboard focus and 48 dp targets.
 From a keyboard, Return, keypad Enter and Space press the focused control.
+TalkBack reads the bottom tabs as radio buttons and says "checked" on the one
+shown.
 A screen reader reaches them through Qt's accessibility bridge, which the app turns
 on only when a screen reader's explore-by-touch (TalkBack's) is on at launch (#782).
 Unless the bridge is already on, no other accessibility service gets app content:
