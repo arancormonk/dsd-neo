@@ -5027,6 +5027,33 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_import_transport
     )
 
+    # The import worker (#832): staging folders and their sweep, one commit per request in order, cancel, teardown
+    # with a copy that will not stop, and the commit journal.
+    add_executable(
+        dsd-neo_test_ui_qt_import_service
+        ui/test_ui_qt_import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_import_service
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_import_service PRIVATE Qt6::Gui)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_import_service
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_import_service
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_IMPORT_SERVICE
+        COMMAND dsd-neo_test_ui_qt_import_service
+    )
+
     # The imported-files layer behind the CSV pickers: DecoderHost's desktop
     # importDocument() copy/unique-ify/replace semantics and the library model
     # the wizard and the imports screen share.

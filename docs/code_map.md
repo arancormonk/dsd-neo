@@ -12411,6 +12411,24 @@ Qt Quick frontend (`src/ui/qt`):
   per-chunk predicate checks the request's cancel and the transport's abort; a write or commit that hits `ENOSPC`
   (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
   handed out (the host keeps weak references), and one handed out after it starts aborted.
+  `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
+  one service (QML context `imports`) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
+  runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
+  followed). `submit(stage, commit)` returns a process-unique positive id that is also the transport's request id.
+  `stage` runs on a one-thread `QThreadPool`, requests in order, with its own owner-only folder
+  `import-staging/<uuid>/` (made by the worker; when it cannot be made the stage is skipped and the commit gets
+  `{ok: false, error: "local"}`). It touches no QObject. When a stage ends, the worker calls `transport->forget(id)`
+  and queues `commit(id, staged, cancelled)` to the Qt thread through a link the destructor clears. The commit runs
+  exactly once per id. A request cancelled before its stage started skips the stage and commits an empty map.
+  `cancel(id)` also cancels the transport's copy; once the commit has run, or for an unknown id, it does nothing. The
+  staging folder is removed on the worker after the commit returns; removals go ahead of waiting requests. The
+  destructor cancels every request, queues their folders' removal and waits `kStopWaitMs` (2 s). If a copy ignores
+  the cancel, the pool is left to finish it without the service (never deleted, as `closeRecordingWork()`), and no
+  commit runs. The service is created before the models that use it, so as the engine's child it is destroyed first.
+  The commit journal `<AppData>/import_journal.json` (`journalAdd`/`journalRemove`/`journalEntries`, Qt thread)
+  lists the clean absolute directories a commit creates until the index naming them is saved. A journal that cannot
+  be read, or holds anything but absolute paths, gives `ok = false` and takes no change, and callers then delete
+  nothing. Test: `UI_QT_IMPORT_SERVICE`.
   `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
   the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
   provenance, while the add-system wizard stays the single writer of a saved system. `systemDetails.protocolToken`

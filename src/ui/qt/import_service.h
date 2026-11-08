@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/**
+ * @file
+ * @brief The import worker (#832): picked documents copy and check off the Qt thread, then commit on it.
+ *
+ * Each request stages on one worker thread, in a private folder of its own under stagingRoot(), and commits on the Qt
+ * thread. The library and the replay store share one service. The commit journal records the directories a commit
+ * creates until the index that names them is saved, so the next start can remove the ones a crash left unnamed.
+ */
+
+#ifndef DSD_NEO_SRC_UI_QT_IMPORT_SERVICE_H_
+#define DSD_NEO_SRC_UI_QT_IMPORT_SERVICE_H_
+
+#include <QHash>
+#include <QMap> // IWYU pragma: keep -- QVariantMap is a QMap; the stage and commit signatures carry it by value.
+#include <QObject>
+#include <QString>
+#include <QStringList>
+#include <QVariantMap>
+#include <QtGlobal>
+#include <functional>
+#include <memory>
+
+#include "document_import_transport.h"
+
+class QThreadPool;
+
+namespace dsd_qt {
+
+/** @brief What a request's stage function gets, on the import worker. */
+struct ImportJob {
+    /** The request: the id submit() returned and the transport's request id. */
+    qint64 id = 0;
+    /** The request's own folder, empty and readable by the owner only; removed once the commit returns. */
+    QString stagingDir;
+    /** The service's transport: copy(id, …) for each document the request reads. */
+    std::shared_ptr<DocumentImportTransport> transport;
+    /** Whether the request was cancelled; a stage may stop early, as its commit is told it was cancelled. */
+    std::function<bool()> cancelled;
+};
+
+class ImportService : public QObject {
+    Q_OBJECT
+
+  public:
+    /**
+     * Runs on the import worker and touches no QObject; its captures are destroyed there too. Its map goes to the
+     * request's commit.
+     */
+    using Stage = std::function<QVariantMap(const ImportJob&)>;
+    /** Runs on the Qt thread, once per request; @p cancelled when the request was cancelled before it ran. */
+    using Commit = std::function<void(qint64 id, const QVariantMap& staged, bool cancelled)>;
+
+    /** How long the destructor waits for the request in progress before it leaves it behind. */
+    static constexpr int kStopWaitMs = 2000;
+
+    explicit ImportService(std::shared_ptr<DocumentImportTransport> transport, QObject* parent = nullptr);
+    /**
+     * Cancels every request and waits up to kStopWaitMs for the worker. A copy blocked past that (a provider that
+     * ignores the cancel) is left to finish on a worker that is never deleted; it keeps its transport, never calls
+     * this service again, and its staging folder goes when it ends (or at the next start). No commit runs.
+     */
+    ~ImportService() override;
+
+    ImportService(const ImportService&) = delete;
+    ImportService& operator=(const ImportService&) = delete;
+
+    /** @brief `<AppData>/import-staging`: every request's staging folder, and nothing else. */
+    static QString stagingRoot();
+    /**
+     * @brief Remove stagingRoot() wholly: what an earlier run left there is stale.
+     *
+     * Call it once at startup, before any service exists. A link is removed, never followed.
+     */
+    static void sweepStaging();
+    /** @brief `<AppData>/import_journal.json`. */
+    static QString journalPath();
+
+    /**
+     * @brief Queue a request: @p stage runs on the worker (requests run one at a time, in order), then @p commit on
+     * the Qt thread, queued.
+     *
+     * @p commit runs exactly once for the id, cancelled or not; a request cancelled before its stage started skips the
+     * stage and commits an empty map. When the request's staging folder cannot be made the stage does not run either,
+     * and the commit gets {ok: false, error: "local"}.
+     *
+     * @return The request id: positive and unique in this process.
+     */
+    qint64 submit(Stage stage, Commit commit);
+
+    /**
+     * @brief Cancel request @p id: a copy it runs stops, and its commit is told it was cancelled. Once the commit ran,
+     * or for an unknown id, it does nothing.
+     */
+    void cancel(qint64 id);
+
+    /** @brief The latest copy of request @p id; empty once its stage ended or for an unknown id. */
+    ImportCopyProgress progress(qint64 id) const;
+
+    /** @brief Whether a request is waiting for its commit. */
+    bool busy() const;
+
+    /*
+     * The commit journal (Qt thread): directories a commit creates, recorded before it creates them and dropped once
+     * the index that names them is saved. Paths are stored clean and absolute.
+     */
+
+    /** @brief Record @p directories; false when the journal cannot be read or saved (it is then left as it was). */
+    static bool journalAdd(const QStringList& directories);
+    /** @brief Drop @p directories; false when the journal cannot be read or saved (it is then left as it was). */
+    static bool journalRemove(const QStringList& directories);
+    /**
+     * @brief The recorded directories. @p ok is false when the journal cannot be read or holds anything but absolute
+     * paths: a caller then deletes nothing. A missing journal is empty and ok.
+     */
+    static QStringList journalEntries(bool* ok);
+
+  Q_SIGNALS:
+    void busyChanged();
+
+  private:
+    struct Shared;
+    class Request;
+    struct Work;
+
+    struct Pending {
+        std::shared_ptr<Request> request;
+        Commit commit;
+        QString stagingDir;
+    };
+
+    static void runNext(const std::shared_ptr<Shared>& shared);
+    static void runJob(const std::shared_ptr<Shared>& shared, const Work& work);
+    void finish(qint64 id, const QVariantMap& staged);
+    /** Queue the removal of @p dir on the worker, ahead of the requests waiting there. */
+    void removeOnWorker(const QString& dir);
+    void updateBusy();
+
+    std::shared_ptr<Shared> m_shared;
+    std::unique_ptr<QThreadPool> m_pool;
+    QHash<qint64, Pending> m_pending;
+    bool m_busy = false;
+};
+
+} // namespace dsd_qt
+
+#endif // DSD_NEO_SRC_UI_QT_IMPORT_SERVICE_H_

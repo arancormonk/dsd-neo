@@ -42,6 +42,7 @@ target_sources(
         document_import_transport.cpp
         imported_files_model.cpp
         import_names.cpp
+        import_service.cpp
         input_commit.cpp
         csv_bundle_import.cpp
         json_store.cpp

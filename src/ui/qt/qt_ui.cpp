@@ -36,6 +36,7 @@
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "import_service.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "known_frequency_index.h"
@@ -292,20 +293,36 @@ load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystem
     return pins;
 }
 
-bool
-ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
-    const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
-    load_fonts(engine.rootContext());
-
-    auto* metrics = new MetricsModel(&engine);
-    auto* network = new P25NetworkModel(&engine); // WP-F2
-    auto* commands = make_command_bridge(engine, metrics);
+static DiagnosticsLogModel*
+make_diagnostics(QQmlApplicationEngine& engine) {
     DiagnosticsLog::installTap();
     // The log is process-lifetime and never destroyed, so its last records are made durable here (or, on Android, by
     // main()'s final flush after the teardown, which this only asks to start).
     QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
                      [] { DiagnosticsLog::flushAtQuit(); });
-    auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
+    return new DiagnosticsLogModel(nullptr, &engine);
+}
+
+// Issue #832: the one import worker the library and the replay imports share. No import has started yet, so whatever
+// an earlier run staged is stale; the sweep runs after a restore has applied and before the service exists. The
+// service is the engine's child before the models that use it, so it goes before them: no commit reaches a model that
+// is being destroyed.
+static ImportService*
+start_imports(QQmlApplicationEngine& engine, const DecoderHost* host) {
+    ImportService::sweepStaging();
+    return new ImportService(host->importTransport(), &engine);
+}
+
+bool
+ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
+    const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
+    auto* imports = start_imports(engine, host);
+    load_fonts(engine.rootContext());
+
+    auto* metrics = new MetricsModel(&engine);
+    auto* network = new P25NetworkModel(&engine); // WP-F2
+    auto* commands = make_command_bridge(engine, metrics);
+    auto* diagnostics = make_diagnostics(engine);
     auto* prefs = new AppPrefs(&engine);
     auto* backupModel = new BackupModel(host, restoreOutcome, &engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
@@ -371,6 +388,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("scanLists"), scanLists);
     context->setContextProperty(QStringLiteral("scanListStarter"), scanListStarter);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
+    context->setContextProperty(QStringLiteral("imports"), imports);
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     publish_recording_context(context, recordings, recordingStatus);
