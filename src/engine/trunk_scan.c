@@ -4,7 +4,6 @@
  */
 
 #include <ctype.h>
-#include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/channel_mode.h>
