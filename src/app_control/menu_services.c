@@ -17,6 +17,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/source_alias.h>
@@ -781,7 +782,7 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     // So is the NXDN DFA record: the rows it named went with the old map, and a row the new file sets is the file's.
-    dst->nxdn_dfa_learned.count = 0U;
+    dsd_nxdn_dfa_disown_all(dst);
     dst->trunk_chan_map_seq++;
     return 0;
 }
@@ -943,7 +944,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     // "learned on the control channel" byte would authorize an off-CC tune to a
     // frequency no longer in the map.
     DSD_MEMSET(state->dmr_lcn_trust, 0, sizeof state->dmr_lcn_trust);
-    state->nxdn_dfa_learned.count = 0U;
+    dsd_nxdn_dfa_disown_all(state);
     state->trunk_chan_map_seq++;
     return 0;
 }

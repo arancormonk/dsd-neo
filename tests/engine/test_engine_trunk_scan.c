@@ -5157,13 +5157,16 @@ test_nxdn_channel_access_isolated_per_target(void) {
     }
 
     const uint32_t site_a = (2U << 12) | 0x21U;
+    dsd_nxdn_site_latch(&state, site_a);
+    dsd_nxdn_note_type_c(&state);
     dsd_nxdn_ca_apply(&state, site_a, 1U, 1U, 2U);
     dsd_nxdn_dfa_learn(&state, 10U, 100012500L);
     const uint32_t generation_a = dsd_nxdn_ca_generation(&state);
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || dsd_nxdn_ca_valid(&state) || state.nxdn_ca.location_id != 0U
-        || state.nxdn_dfa_learned.count != 0U || state.trunk_chan_map[10] != 0) {
+        || state.nxdn_dfa_learned.count != 0U || state.trunk_chan_map[10] != 0 || state.nxdn_site.known != 0U
+        || dsd_nxdn_type_c(&state)) {
         DSD_FPRINTF(stderr,
                     "fresh target took the first target's channel access: valid=%d site=%06X rows=%u ch10=%ld\n",
                     dsd_nxdn_ca_valid(&state), state.nxdn_ca.location_id, (unsigned)state.nxdn_dfa_learned.count,
@@ -5171,10 +5174,16 @@ test_nxdn_channel_access_isolated_per_target(void) {
         test_rc = 1;
     }
 
+    dsd_nxdn_site_latch(&state, (2U << 12) | 0x22U);
     dsd_nxdn_ca_apply(&state, (2U << 12) | 0x22U, 1U, 3U, 2U);
     dsd_nxdn_dfa_learn(&state, 10U, 400012500L);
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
+    if (!dsd_nxdn_site_is(&state, site_a) || !dsd_nxdn_type_c(&state)) {
+        DSD_FPRINTF(stderr, "restored target lost its site: known=%u site=%06X type_c=%u\n", state.nxdn_site.known,
+                    state.nxdn_site.location_id, state.nxdn_site.type_c);
+        test_rc = 1;
+    }
     if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dsd_nxdn_ca_valid(&state)
         || state.nxdn_ca.location_id != site_a || dsd_nxdn_ca_generation(&state) != generation_a
         || state.nxdn_base_freq != 1U || state.nxdn_dfa_learned.count != 1U || state.trunk_chan_map[10] != 100012500L) {

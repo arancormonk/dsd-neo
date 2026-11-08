@@ -271,6 +271,26 @@ test_startup_on_composite_control_channel(dsd_opts* opts, dsd_state* state) {
     rc |= expect_no_type_d_identity("composite startup SRV_INFO", state);
     rc |= expect_long("composite startup SRV_INFO site", state->nxdn_location_site_code, 0x21L);
     rc |= expect_long("composite startup SRV_INFO system", (long)state->nxdn_location_sys_code, 2L);
+    /* The SRV_INFO latched this site; it carries no channel access parameters, so nothing resolves by DFA yet. */
+    rc |= expect_long("composite startup latches this site", dsd_nxdn_site_is(state, SITE_A), 1L);
+    rc |= expect_long("composite startup has no parameters", dsd_nxdn_ca_valid(state), 0L);
+
+    /* The call ends and the channel turns back into a dedicated control channel: its CAC's SITE_INFO is this site's,
+       the latch stays and the parameters are taken. */
+    uint8_t trellis[400];
+    uint8_t m_data[32];
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    DSD_MEMSET(m_data, 0, sizeof(m_data));
+    put_bits(trellis, 2U, 0x21U, 6U);        // RAN
+    put_bits(trellis, 8U + 2U, 0x18U, 6U);   // SITE_INFO
+    put_bits(trellis, 8U + 8U, SITE_A, 24U); // Location ID
+    put_bits(trellis, 8U + 88U, 1U, 1U);     // RCN 1: DFA
+    put_bits(trellis, 8U + 89U, 2U, 2U);     // step 1.25 kHz
+    put_bits(trellis, 8U + 91U, 1U, 3U);     // base 100 MHz
+    nxdn_handle_cac(opts, state, trellis, m_data, 0U);
+    rc |= expect_long("control channel keeps the latch", dsd_nxdn_site_is(state, SITE_A), 1L);
+    rc |= expect_long("control channel SITE_INFO sets the parameters", dsd_nxdn_ca_valid(state), 1L);
+    rc |= expect_long("parameters are this site's", (long)state->nxdn_ca.location_id, (long)SITE_A);
     return rc;
 }
 

@@ -768,13 +768,18 @@ typedef struct {
     uint8_t valid;
 } dsd_nxdn_ca_source;
 
-/* NXDN Type-C: what the session knows of the system it decodes (dsd_state::nxdn_site), forgotten with the channel
-   access parameters (dsd_nxdn_ca_reset()). <dsd-neo/core/nxdn_channel_access.h> owns every write. */
+/* NXDN Type-C: the site the receiver chose ("this site", dsd_state::nxdn_site) and what the session knows of the system
+   it decodes, forgotten with the channel access parameters (dsd_nxdn_ca_reset()). Only a SITE_INFO or SRV_INFO decoded
+   while no traffic channel is followed names this site (TS 1-A §6.4.3.1-2 "for current site"): a CCH_INFO may name any
+   site, and a broadcast heard on a followed channel may be another site's. <dsd-neo/core/nxdn_channel_access.h> owns
+   every write. */
 typedef struct {
+    uint32_t location_id; /**< this site's 24-bit Location ID, while known is 1 */
+    uint8_t known;        /**< 1 once a SITE_INFO or SRV_INFO named this site */
     /** 1 once Type-C trunking decoded here (a CAC, a CCH_INFO or a SITE_INFO): the LICH values a composite control
      * channel (RTCH_C) shares with a Type-D RTCH2 are read as RTCH_C (nxdn_frame.c). */
     uint8_t type_c;
-} dsd_nxdn_site_latch;
+} dsd_nxdn_site_record;
 
 enum { DSD_NXDN_DFA_LEARNED_MAX = 128 };
 
@@ -2402,7 +2407,7 @@ struct dsd_state {
     uint8_t nxdn_bw;
     dsd_nxdn_ca_source nxdn_ca;
     dsd_nxdn_dfa_learned nxdn_dfa_learned;
-    dsd_nxdn_site_latch nxdn_site;
+    dsd_nxdn_site_record nxdn_site;
 
     // NXDN trunking: last observed call grant mapping (for UI/logging)
     uint16_t nxdn_grant_chan;

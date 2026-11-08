@@ -5,7 +5,12 @@
 
 /**
  * @file
- * @brief NXDN Type-C channel access parameters and the channel map rows DFA arithmetic learned from them.
+ * @brief NXDN Type-C: this site, its channel access parameters and the channel map rows DFA arithmetic learned.
+ *
+ * This site (`dsd_state::nxdn_site`) is the one the receiver chose: a SITE_INFO or SRV_INFO ("for current site", TS 1-A
+ * §6.4.3.1-2) decoded while no traffic channel is followed latches it (dsd_nxdn_site_latch()). Only its SITE_INFO sets
+ * the parameters below, and only its own CCH_INFO Curr or New moves the control channel; a CCH_INFO naming any site,
+ * and another site's broadcast heard on a followed traffic channel, are printed.
  *
  * A site's SITE_INFO carries its Channel Access Information (TS 1-A §6.5.36): the radio channel notation (RCN 0 a
  * channel number, RCN 1 Direct Frequency Assignment) and, for DFA, the base frequency and step an OFN/IFN is counted
@@ -49,6 +54,9 @@ dsd_nxdn_ca_generation(const dsd_state* state) {
 /** Clear the channel map rows DFA arithmetic wrote that still hold what it wrote, and empty the record. */
 static inline void
 dsd_nxdn_dfa_forget(dsd_state* state) {
+    if (!state) {
+        return;
+    }
     dsd_nxdn_dfa_learned* learned = &state->nxdn_dfa_learned;
     uint16_t count = learned->count;
     if (count > DSD_NXDN_DFA_LEARNED_MAX) {
@@ -91,6 +99,9 @@ dsd_nxdn_dfa_learn(dsd_state* state, uint16_t channel, long int freq) {
 /* A new generation: what the old one computed is dropped. */
 static inline void
 dsd_nxdn_ca_new_generation(dsd_state* state) {
+    if (!state) {
+        return;
+    }
     state->nxdn_ca.generation++;
     dsd_nxdn_dfa_forget(state);
 }
@@ -131,8 +142,8 @@ dsd_nxdn_ca_invalidate(dsd_state* state) {
     dsd_nxdn_ca_new_generation(state);
 }
 
-/** Forget the parameters, their site, the bandwidth and what DFA arithmetic learned from them, and what the session
- * knew of the system they belong to. */
+/** Forget this site, the parameters, their site, the bandwidth and what DFA arithmetic learned from them, and what the
+ * session knew of the system they belong to. */
 static inline void
 dsd_nxdn_ca_reset(dsd_state* state) {
     if (!state) {
@@ -149,6 +160,39 @@ dsd_nxdn_ca_reset(dsd_state* state) {
     state->nxdn_ca.valid = 0U;
     if (had_any) {
         dsd_nxdn_ca_new_generation(state);
+    }
+}
+
+/**
+ * Give up the record of the channel map rows DFA learned without clearing them: the map that held them was replaced or
+ * emptied, and a row the new map sets is the map's.
+ */
+static inline void
+dsd_nxdn_dfa_disown_all(dsd_state* state) {
+    if (state) {
+        state->nxdn_dfa_learned.count = 0U;
+    }
+}
+
+/** Whether this site is known and is the one @p location_id names. */
+static inline int
+dsd_nxdn_site_is(const dsd_state* state, uint32_t location_id) {
+    return state && state->nxdn_site.known != 0U && state->nxdn_site.location_id == location_id;
+}
+
+/**
+ * Latch @p location_id as this site. Parameters another site's SITE_INFO set stop being trusted until this site's own
+ * SITE_INFO sets them: no channel is resolved by DFA arithmetic meanwhile.
+ */
+static inline void
+dsd_nxdn_site_latch(dsd_state* state, uint32_t location_id) {
+    if (!state || dsd_nxdn_site_is(state, location_id)) {
+        return;
+    }
+    state->nxdn_site.location_id = location_id;
+    state->nxdn_site.known = 1U;
+    if (state->nxdn_ca.location_id != location_id) {
+        dsd_nxdn_ca_invalidate(state);
     }
 }
 

@@ -214,7 +214,7 @@ typedef struct {
     uint8_t nxdn_bw;
     dsd_nxdn_ca_source nxdn_ca;
     dsd_nxdn_dfa_learned nxdn_dfa_learned;
-    dsd_nxdn_site_latch nxdn_site;
+    dsd_nxdn_site_record nxdn_site;
     nxdn_trunk_diag_ledger nxdn_diag;
 } dsd_trunk_scan_snapshot;
 

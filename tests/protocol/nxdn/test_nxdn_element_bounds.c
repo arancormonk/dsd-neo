@@ -50,6 +50,8 @@ static int g_channel_to_frequency_quiet_calls;
 static uint16_t g_channel_to_frequency_channel;
 static uint16_t g_channel_to_frequency_quiet_channel;
 static uint16_t g_channel_to_frequency_channels[8];
+static int g_channel_to_frequency_display_calls;
+static uint16_t g_channel_to_frequency_display_channels[8];
 static uint16_t g_mapped_channel;
 static long int g_mapped_channel_freq;
 
@@ -111,6 +113,19 @@ nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
     (void)state;
     g_channel_to_frequency_quiet_calls++;
     g_channel_to_frequency_quiet_channel = channel;
+    return (channel == g_mapped_channel) ? g_mapped_channel_freq : 0;
+}
+
+/* The display resolver keeps nothing: its calls are counted apart from the resolver that learns channel map rows. */
+long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nxdn_channel_to_frequency_display(const dsd_state* state, uint16_t channel) {
+    (void)state;
+    g_channel_to_frequency_display_calls++;
+    if (g_channel_to_frequency_display_calls <= (int)(sizeof(g_channel_to_frequency_display_channels)
+                                                      / sizeof(g_channel_to_frequency_display_channels[0]))) {
+        g_channel_to_frequency_display_channels[g_channel_to_frequency_display_calls - 1] = channel;
+    }
     return (channel == g_mapped_channel) ? g_mapped_channel_freq : 0;
 }
 
@@ -223,6 +238,8 @@ reset_assignment_capture(void) {
     g_channel_to_frequency_channel = 0;
     g_channel_to_frequency_quiet_channel = 0;
     DSD_MEMSET(g_channel_to_frequency_channels, 0, sizeof(g_channel_to_frequency_channels));
+    g_channel_to_frequency_display_calls = 0;
+    DSD_MEMSET(g_channel_to_frequency_display_channels, 0, sizeof(g_channel_to_frequency_display_channels));
     g_mapped_channel = 0;
     g_mapped_channel_freq = 0;
 }
@@ -951,12 +968,51 @@ test_srv_info_anchors_control_channel_from_rigctl(void) {
     return rc;
 }
 
+/* Two sites of one Global system: system 2, sites 0x21 and 0x22. */
+enum {
+    CCH_SITE_A = (2U << 12U) | 0x021U,
+    CCH_SITE_B = (2U << 12U) | 0x022U,
+};
+
+/* A DFA SITE_INFO (0x18) naming @p location, decoded while no traffic channel is followed: it latches this site and
+ * sets its channel access parameters (the resolver is stubbed, so their values do not matter). */
+static void
+decode_dfa_site_info(dsd_opts* opts, dsd_state* state, uint32_t location) {
+    uint8_t bits[160];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x18U);
+    write_bits_u64(bits, 8U, location, 24U);
+    write_bits_u64(bits, 88U, 1U, 1U); // RCN 1: DFA
+    write_bits_u64(bits, 89U, 2U, 2U); // step
+    write_bits_u64(bits, 91U, 1U, 3U); // base
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+}
+
+/* A DFA CCH_INFO (0x1A) naming @p location with status @p sts and channel 1 at @p ofn1 / @p ifn1. */
+static void
+decode_dfa_cch_info(dsd_opts* opts, dsd_state* state, uint32_t location, uint32_t sts, uint16_t ofn1, uint16_t ifn1) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x1AU);
+    write_bits_u64(bits, 8U, location, 24U);
+    write_bits_u64(bits, 32U, sts, 6U);
+    write_bits_u64(bits, 38U, 1U, 2U);
+    write_bits_u64(bits, 40U, ofn1, 16U);
+    write_bits_u64(bits, 56U, ifn1, 16U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+}
+
+/*
+ * This site's CCH_INFO (New, both channels present) maps its secondary channels and seeds the control channel. It names
+ * a site but is not that site's identity (TS 1-A §6.4.3.3 "for certain site"): the identity stays what this site's own
+ * SITE_INFO left, here nothing, since that one came before the transmission was confirmed.
+ */
 static int
 test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     uint8_t bits[128];
-    const uint32_t location_id = (2U << 12U) | 0x021U;
+    const uint32_t location_id = CCH_SITE_A;
     const uint16_t ofn1 = 0x1221U;
     const uint16_t ifn1 = 0x2332U;
     const uint16_t ofn2 = 0x3443U;
@@ -971,8 +1027,8 @@ test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
     reset_assignment_capture();
 
-    state->nxdn_confirmed = 1; // a CAC's CRC-16 confirms the transmission it carries
-    state->nxdn_rcn = 1;
+    decode_dfa_site_info(opts, state, location_id); // this site, its parameters; unconfirmed, so no identity
+    state->nxdn_confirmed = 1;                      // a CAC's CRC-16 confirms the transmission it carries
     g_mapped_channel = ofn1;
     g_mapped_channel_freq = cc_freq;
 
@@ -989,10 +1045,11 @@ test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
 
     int rc = 0;
     rc |= expect_int("cch-dfa-message-type", state->NxdnElementsContent.MessageType, 0x1A);
-    rc |= expect_int("cch-dfa-ran", state->nxdn_last_ran, 0x21);
-    rc |= expect_int("cch-dfa-site-code", state->nxdn_location_site_code, 0x21);
-    rc |= expect_int("cch-dfa-sys-code", state->nxdn_location_sys_code, 2);
-    rc |= expect_string("cch-dfa-category", state->nxdn_location_category, "Global");
+    rc |= expect_int("cch-dfa-keeps-no-ran", state->nxdn_last_ran, 0);
+    rc |= expect_int("cch-dfa-keeps-no-site-code", state->nxdn_location_site_code, 0);
+    rc |= expect_int("cch-dfa-keeps-no-sys-code", state->nxdn_location_sys_code, 0);
+    rc |= expect_string("cch-dfa-keeps-no-category", state->nxdn_location_category, "");
+    rc |= expect_int("cch-dfa-keeps-no-rx-id", (int)state->rx_id.valid, 0);
     rc |= expect_int("cch-dfa-frequency-calls", g_channel_to_frequency_calls, 4);
     rc |= expect_int("cch-dfa-call-ofn2", g_channel_to_frequency_channels[0], ofn2);
     rc |= expect_int("cch-dfa-call-ifn2", g_channel_to_frequency_channels[1], ifn2);
@@ -1004,6 +1061,7 @@ test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
     rc |= expect_int("cch-dfa-trunk-cc", (int)state->trunk_cc_freq, (int)cc_freq);
     rc |= expect_int("cch-dfa-lcn-count", state->lcn_freq_count, 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1032,19 +1090,30 @@ set_parked_scan_target_ctx(int parked_ctx) {
 }
 
 /*
- * CCH_INFO DFA control-channel adoption. The site broadcast is the authority on the outbound
- * control channel: it must override a trunk-scan target's CSV park frequency (which is a guess),
- * but never an operator-supplied LCN list, and never a target the coordinator shaped for another
- * protocol.
+ * CCH_INFO DFA control-channel adoption. This site's own broadcast is the authority on its outbound control channel: it
+ * must override a trunk-scan target's CSV park frequency (which is a guess), but never an operator-supplied LCN list,
+ * and never a target the coordinator shaped for another protocol. Only this site's Curr or New names its control
+ * channel (TS 1-A §6.4.3.3): Add and Del edit a hunt list, and another site's control channel is never announced so.
  */
+typedef struct {
+    const char* tag;
+    int trunk_scan_enabled;
+    int trunk_enable;
+    int parked_ctx;
+    int seeded_lcn_count;
+    long int seeded_lcn0;
+    long int seeded_p25_cc;
+    long int seeded_trunk_cc;
+    uint32_t latched; /* the SITE_INFO decoded first (this site, its parameters); 0 for none */
+    uint32_t named;   /* the site the CCH_INFO names */
+    uint32_t sts;     /* its status: Curr 0x20, New 0x10, Add 0x08, Del 0x04, with the channel-present bits */
+    int expect_adopt;
+} cch_adoption_case;
+
 static int
-run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, int trunk_enable, int parked_ctx,
-                          long int seeded_lcn0, long int seeded_p25_cc, long int seeded_trunk_cc, int seeded_lcn_count,
-                          int expect_adopt) {
+run_cch_dfa_adoption_case(const cch_adoption_case* c) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    uint8_t bits[128];
-    const uint32_t location_id = (2U << 12U) | 0x021U;
     const uint16_t ofn1 = 0x1221U;
     const uint16_t ifn1 = 0x2332U;
     const long int cc_freq = 852262500L;
@@ -1054,45 +1123,47 @@ run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, int trunk_ena
         free(opts);
         return 1;
     }
-    DSD_MEMSET(bits, 0, sizeof(bits));
     reset_assignment_capture();
 
-    state->nxdn_rcn = 1;
+    opts->trunk_scan_enabled = c->trunk_scan_enabled;
+    opts->trunk_enable = c->trunk_enable;
+    set_parked_scan_target_ctx(c->parked_ctx);
+    if (c->latched != 0U) {
+        decode_dfa_site_info(opts, state, c->latched);
+    } else {
+        state->nxdn_rcn = 1; // the notation without a site or parameters
+    }
     g_mapped_channel = ofn1;
     g_mapped_channel_freq = cc_freq;
+    state->trunk_lcn_freq[0] = c->seeded_lcn0;
+    state->p25_cc_freq = c->seeded_p25_cc;
+    state->trunk_cc_freq = c->seeded_trunk_cc;
+    state->lcn_freq_count = c->seeded_lcn_count;
 
-    opts->trunk_scan_enabled = trunk_scan_enabled;
-    opts->trunk_enable = trunk_enable;
-    set_parked_scan_target_ctx(parked_ctx);
-    state->trunk_lcn_freq[0] = seeded_lcn0;
-    state->p25_cc_freq = seeded_p25_cc;
-    state->trunk_cc_freq = seeded_trunk_cc;
-    state->lcn_freq_count = seeded_lcn_count;
-
-    set_message_type(bits, 0x1AU);
-    write_bits_u64(bits, 8U, location_id, 24U);
-    write_bits_u64(bits, 32U, 0x13U, 6U);
-    write_bits_u64(bits, 38U, 1U, 2U);
-    write_bits_u64(bits, 40U, ofn1, 16U);
-    write_bits_u64(bits, 56U, ifn1, 16U);
-
-    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    decode_dfa_cch_info(opts, state, c->named, c->sts, ofn1, ifn1);
 
     char label[96];
     int rc = 0;
-    DSD_SNPRINTF(label, sizeof label, "%s-lcn0", tag);
-    rc |= expect_int(label, (int)state->trunk_lcn_freq[0], (int)(expect_adopt ? cc_freq : seeded_lcn0));
-    DSD_SNPRINTF(label, sizeof label, "%s-p25-cc", tag);
-    rc |= expect_int(label, (int)state->p25_cc_freq, (int)(expect_adopt ? cc_freq : seeded_p25_cc));
-    DSD_SNPRINTF(label, sizeof label, "%s-trunk-cc", tag);
-    rc |= expect_int(label, (int)state->trunk_cc_freq, (int)(expect_adopt ? cc_freq : seeded_trunk_cc));
+    const int adopt = c->expect_adopt;
+    DSD_SNPRINTF(label, sizeof label, "%s-lcn0", c->tag);
+    rc |= expect_int(label, (int)state->trunk_lcn_freq[0], (int)(adopt ? cc_freq : c->seeded_lcn0));
+    DSD_SNPRINTF(label, sizeof label, "%s-p25-cc", c->tag);
+    rc |= expect_int(label, (int)state->p25_cc_freq, (int)(adopt ? cc_freq : c->seeded_p25_cc));
+    DSD_SNPRINTF(label, sizeof label, "%s-trunk-cc", c->tag);
+    rc |= expect_int(label, (int)state->trunk_cc_freq, (int)(adopt ? cc_freq : c->seeded_trunk_cc));
     /* Adoption seeds slot 0, so it may only raise lcn_freq_count - never assign it down over an
      * operator-supplied list that is longer than the one slot this writer knows about. */
-    DSD_SNPRINTF(label, sizeof label, "%s-lcn-count", tag);
+    DSD_SNPRINTF(label, sizeof label, "%s-lcn-count", c->tag);
     rc |= expect_int(label, state->lcn_freq_count,
-                     seeded_lcn_count > 1 ? seeded_lcn_count : (expect_adopt ? 1 : seeded_lcn_count));
+                     c->seeded_lcn_count > 1 ? c->seeded_lcn_count : (adopt ? 1 : c->seeded_lcn_count));
+    /* A channel the CCH_INFO names that is not this site's control channel is resolved for the log only. */
+    DSD_SNPRINTF(label, sizeof label, "%s-learning-resolver", c->tag);
+    const int names_this_cc =
+        c->latched != 0U && c->latched == c->named && ((c->sts & 0x3CU) == 0x20U || (c->sts & 0x3CU) == 0x10U);
+    rc |= expect_int(label, g_channel_to_frequency_calls > 0, names_this_cc);
 
     set_parked_scan_target_ctx(0);
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1100,31 +1171,178 @@ run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, int trunk_ena
 
 static int
 test_cch_dfa_control_channel_adoption_pinning(void) {
+    enum { A = CCH_SITE_A, B = CCH_SITE_B };
+
     const long int park = 461000000L;
+    /* Status values: New 0x13 and Curr 0x23 with both channels present; Add 0x0B, Del 0x07; Curr and New at once 0x33. */
+    const cch_adoption_case cases[] = {
+        /* Fields: tag, trunk scan, trunking, parked context, seeded LCN count, seeded LCN 0, P25 CC and trunk CC, the
+           latched site, the site named, the status, whether it is adopted. */
+        /* Plain -T with nothing learned yet: this site's first broadcast seeds the control channel. */
+        {"cch-adopt-plain-unseeded", 0, 1, 0, 0, 0, 0, 0, A, A, 0x13U, 1},
+        /* Plain -T after adoption (or with an imported LCN list): the existing value is pinned. */
+        {"cch-adopt-plain-pinned", 0, 1, 0, 1, park, park, park, A, A, 0x13U, 0},
+        /* Trunk scan parks an nxdn-trunk target on its CSV frequency: this site's New (a TS 1-C §16.5 switch) and its
+           Curr both correct it. */
+        {"cch-adopt-scan-park", 1, 1, 0, 1, park, park, park, A, A, 0x13U, 1},
+        {"cch-adopt-scan-park-curr", 1, 1, 0, 1, park, park, park, A, A, 0x23U, 1},
+        /* A per-target chan_csv with LCN rows is operator intent: pinned even under scan. */
+        {"cch-adopt-scan-lcn-list", 1, 1, 0, 2, park, park, park, A, A, 0x13U, 0},
+        /* A dmr-trunk target keeps p25_cc_freq at 0: a stray NXDN broadcast must not retune it. */
+        {"cch-adopt-scan-dmr-target", 1, 1, 2, 1, park, 0, park, A, A, 0x13U, 0},
+        /* A p25-trunk target carries its own control channel in p25_cc_freq: a stray NXDN element decoded under -fa
+           must not move it to an NXDN frequency. */
+        {"cch-adopt-scan-p25-target", 1, 1, 1, 1, park, park, park, A, A, 0x13U, 0},
+        /* Conventional targets run with trunk_enable == 0 and have no control channel to adopt. */
+        {"cch-adopt-scan-conventional-target", 1, 0, 0, 0, 0, 0, 0, A, A, 0x13U, 0},
+        /* An imported map is positional: an unparseable row 1 stores 0 on purpose to keep LCN numbering, so slot 0
+           alone cannot be read as "nothing imported". The list is operator intent and must survive the broadcast. */
+        {"cch-adopt-plain-placeholder-row", 0, 1, 0, 40, 0, 0, 0, A, A, 0x13U, 0},
+        /* A long learned list must not be truncated to the single slot this writer seeds. */
+        {"cch-adopt-scan-long-list", 1, 1, 0, 40, park, park, park, A, A, 0x13U, 0},
+        /* A candidate added to or deleted from this site's hunt list is not its control channel. */
+        {"cch-adopt-scan-add", 1, 1, 0, 1, park, park, park, A, A, 0x0BU, 0},
+        {"cch-adopt-scan-del", 1, 1, 0, 1, park, park, park, A, A, 0x07U, 0},
+        {"cch-adopt-plain-del", 0, 1, 0, 0, 0, 0, 0, A, A, 0x07U, 0},
+        /* Another site's control channel, whatever the flag. */
+        {"cch-adopt-scan-other-site-curr", 1, 1, 0, 1, park, park, park, A, B, 0x23U, 0},
+        {"cch-adopt-plain-other-site-new", 0, 1, 0, 0, 0, 0, 0, A, B, 0x13U, 0},
+        /* No site latched (no SITE_INFO or SRV_INFO yet): nothing says the CCH_INFO is this site's. */
+        {"cch-adopt-plain-no-site", 0, 1, 0, 0, 0, 0, 0, 0U, A, 0x13U, 0},
+        /* The standard asserts one flag at a time: a message with two is not trusted. */
+        {"cch-adopt-scan-two-flags", 1, 1, 0, 1, park, park, park, A, A, 0x33U, 0},
+    };
     int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        rc |= run_cch_dfa_adoption_case(&cases[i]);
+    }
+    return rc;
+}
 
-    /* Plain -T with nothing learned yet: first broadcast seeds the control channel. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-unseeded", 0, 1, 0, 0, 0, 0, 0, 1);
-    /* Plain -T after adoption (or with an imported LCN list): the existing value is pinned. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-pinned", 0, 1, 0, park, park, park, 1, 0);
-    /* Trunk scan parks an nxdn-trunk target on its CSV frequency: the site broadcast wins. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-park", 1, 1, 0, park, park, park, 1, 1);
-    /* A per-target chan_csv with LCN rows is operator intent: pinned even under scan. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-lcn-list", 1, 1, 0, park, park, park, 2, 0);
-    /* A dmr-trunk target keeps p25_cc_freq at 0: a stray NXDN broadcast must not retune it. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-dmr-target", 1, 1, 2, park, 0, park, 1, 0);
-    /* A p25-trunk target carries its own control channel in p25_cc_freq: a stray NXDN element
-     * decoded under -fa must not move it to an NXDN frequency. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-p25-target", 1, 1, 1, park, park, park, 1, 0);
-    /* Conventional targets run with trunk_enable == 0 and have no control channel to adopt. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-conventional-target", 1, 0, 0, 0, 0, 0, 0, 0);
-    /* An imported map is positional: an unparseable row 1 stores 0 on purpose to keep LCN
-     * numbering, so slot 0 alone cannot be read as "nothing imported". The list is operator
-     * intent and must survive the broadcast intact. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-placeholder-row", 0, 1, 0, 0, 0, 0, 40, 0);
-    /* A long learned list must not be truncated to the single slot this writer seeds. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-long-list", 1, 1, 0, park, park, park, 40, 0);
+/*
+ * Plain -T, unseeded: the first CCH_INFO heard names another site, and is not adopted (nor pinned into the hunt map);
+ * this site's Curr that follows is, and pins the control channel.
+ */
+static int
+test_cch_dfa_first_cch_info_of_another_site(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    reset_assignment_capture();
+    opts->trunk_enable = 1;
+    decode_dfa_site_info(opts, state, CCH_SITE_A);
+    g_mapped_channel = 0x1221U;
+    g_mapped_channel_freq = 853000000L;
+    decode_dfa_cch_info(opts, state, CCH_SITE_B, 0x13U, 0x1221U, 0x2332U);
+    int rc = 0;
+    rc |= expect_int("cch-first-other-site-lcn0", (int)state->trunk_lcn_freq[0], 0);
+    rc |= expect_int("cch-first-other-site-cc", (int)state->trunk_cc_freq, 0);
+    rc |= expect_int("cch-first-other-site-count", state->lcn_freq_count, 0);
 
+    g_mapped_channel = 0x1001U;
+    g_mapped_channel_freq = 852000000L;
+    decode_dfa_cch_info(opts, state, CCH_SITE_A, 0x23U, 0x1001U, 0x2002U);
+    rc |= expect_int("cch-then-this-site-lcn0", (int)state->trunk_lcn_freq[0], (int)852000000L);
+    rc |= expect_int("cch-then-this-site-cc", (int)state->trunk_cc_freq, (int)852000000L);
+    rc |= expect_int("cch-then-this-site-count", state->lcn_freq_count, 1);
+
+    set_parked_scan_target_ctx(0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* Control: a channel-notation CCH_INFO, even this site's Curr, adopts nothing (as before): only the DFA layout does. */
+static int
+test_cch_channel_notation_adopts_nothing(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[160];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    reset_assignment_capture();
+    opts->trunk_enable = 1;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x18U);
+    write_bits_u64(bits, 8U, CCH_SITE_A, 24U); // channel notation (RCN 0)
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    g_mapped_channel = 0x123U;
+    g_mapped_channel_freq = 852000000L;
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x1AU);
+    write_bits_u64(bits, 8U, CCH_SITE_A, 24U);
+    write_bits_u64(bits, 32U, 0x20U, 6U); // Curr
+    write_bits_u64(bits, 38U, 0x123U, 10U);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    int rc = 0;
+    rc |= expect_int("cch-channel-notation-this-site", (int)state->nxdn_site.location_id, CCH_SITE_A);
+    rc |= expect_int("cch-channel-notation-no-adoption", (int)state->trunk_cc_freq, 0);
+    rc |= expect_int("cch-channel-notation-no-lcn", (int)state->trunk_lcn_freq[0], 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/*
+ * The #748 case on NXDN: the voice channel F the receiver follows is also site B's control channel. B's SITE_INFO
+ * heard there neither moves this site nor its parameters, B's CCH_INFO Curr naming F is not adopted, and the DISC that
+ * ends the call returns to this site's control channel, not to F.
+ */
+static int
+test_cch_dfa_foreign_cc_on_followed_channel(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t disc[96];
+    const long int cc_a = 851012500L;
+    const long int freq_f = 853000000L;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    reset_assignment_capture();
+    opts->trunk_enable = 1;
+    decode_dfa_site_info(opts, state, CCH_SITE_A); // on A's control channel
+    state->p25_cc_freq = cc_a;                     // anchored from the tuner; no LCN list (unseeded plain -T)
+    state->trunk_cc_freq = cc_a;
+    const uint32_t generation = state->nxdn_ca.generation;
+    opts->trunk_is_tuned = 1; // a grant followed to F
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq_f;
+
+    decode_dfa_site_info(opts, state, CCH_SITE_B);
+    int rc = 0;
+    rc |= expect_int("foreign-cc-site-kept", (int)state->nxdn_site.location_id, CCH_SITE_A);
+    rc |= expect_int("foreign-cc-parameters-kept", (int)state->nxdn_ca.generation, (int)generation);
+    rc |= expect_int("foreign-cc-parameters-site", (int)state->nxdn_ca.location_id, CCH_SITE_A);
+
+    g_mapped_channel = 0x1221U;
+    g_mapped_channel_freq = freq_f;
+    decode_dfa_cch_info(opts, state, CCH_SITE_B, 0x23U, 0x1221U, 0x2332U);
+    rc |= expect_int("foreign-cc-not-adopted-p25", (int)state->p25_cc_freq, (int)cc_a);
+    rc |= expect_int("foreign-cc-not-adopted-trunk", (int)state->trunk_cc_freq, (int)cc_a);
+    rc |= expect_int("foreign-cc-not-in-hunt-map", (int)state->trunk_lcn_freq[0], 0);
+
+    DSD_MEMSET(disc, 0, sizeof(disc));
+    set_message_type(disc, 0x11U);
+    NXDN_Elements_Content_decode(opts, state, disc, sizeof(disc));
+    rc |= expect_int("foreign-cc-disc-returns", g_tune_cc_calls, 1);
+    rc |= expect_int("foreign-cc-disc-returns-to-a", (int)g_tune_cc_freq, (int)cc_a);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -1274,10 +1492,11 @@ test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions(void) {
     NXDN_Elements_Content_decode(opts, state, ch_bits, sizeof(ch_bits));
 
     int rc = 0;
-    rc |= expect_int("adj-site-ch-calls", g_channel_to_frequency_calls, 2);
-    rc |= expect_int("adj-site-ch-first", g_channel_to_frequency_channels[0], 0x222);
-    rc |= expect_int("adj-site-ch-second", g_channel_to_frequency_channels[1], 0x333);
-    rc |= expect_int("adj-site-ch-last", g_channel_to_frequency_channel, 0x333);
+    /* An adjacent site's channels are resolved for the log only: none is learned as one of this site's. */
+    rc |= expect_int("adj-site-ch-calls", g_channel_to_frequency_display_calls, 2);
+    rc |= expect_int("adj-site-ch-first", g_channel_to_frequency_display_channels[0], 0x222);
+    rc |= expect_int("adj-site-ch-second", g_channel_to_frequency_display_channels[1], 0x333);
+    rc |= expect_int("adj-site-ch-learns-nothing", g_channel_to_frequency_calls, 0);
     rc |= expect_int("adj-site-current-site-preserved", state->nxdn_location_site_code, 0);
     rc |= expect_int("adj-site-current-sys-preserved", state->nxdn_location_sys_code, 0);
 
@@ -1295,9 +1514,9 @@ test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions(void) {
 
     NXDN_Elements_Content_decode(opts, state, dfa_bits, sizeof(dfa_bits));
 
-    rc |= expect_int("adj-site-dfa-calls", g_channel_to_frequency_calls, 1);
-    rc |= expect_int("adj-site-dfa-channel", g_channel_to_frequency_channel, 0x2882);
-    rc |= expect_int("adj-site-dfa-first", g_channel_to_frequency_channels[0], 0x2882);
+    rc |= expect_int("adj-site-dfa-calls", g_channel_to_frequency_display_calls, 1);
+    rc |= expect_int("adj-site-dfa-first", g_channel_to_frequency_display_channels[0], 0x2882);
+    rc |= expect_int("adj-site-dfa-learns-nothing", g_channel_to_frequency_calls, 0);
     rc |= expect_int("adj-site-dfa-current-site-preserved", state->nxdn_location_site_code, 0);
     rc |= expect_int("adj-site-dfa-current-sys-preserved", state->nxdn_location_sys_code, 0);
 
@@ -2972,6 +3191,9 @@ main(void) {
     rc |= test_srv_info_anchors_control_channel_from_rigctl();
     rc |= test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency();
     rc |= test_cch_dfa_control_channel_adoption_pinning();
+    rc |= test_cch_dfa_first_cch_info_of_another_site();
+    rc |= test_cch_dfa_foreign_cc_on_followed_channel();
+    rc |= test_cch_channel_notation_adopts_nothing();
     rc |= test_data_call_headers_report_conventional_scan_activity();
     rc |= test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions();
     rc |= test_sdcall_des_data_decrypts_and_resets();

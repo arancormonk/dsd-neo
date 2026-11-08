@@ -265,6 +265,71 @@ test_full_record_answers_without_keeping(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* An SRV_INFO (0x19) naming @p location. */
+static void
+srv_info(dsd_opts* opts, dsd_state* state, uint32_t location) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    put_bits(bits, 2, 0x19U, 6);
+    put_bits(bits, 8, location, 24);
+    NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+}
+
+/*
+ * The parameters belong to this site. Following a call, another site's SITE_INFO heard on the traffic channel (with
+ * other base and step) changes nothing, and its CCH_INFO's channels are resolved for the log only; back on this site's
+ * control channel, this site's CCH_INFO resolves its channel with this site's parameters before any new SITE_INFO.
+ */
+static int
+test_foreign_site_info_while_following_keeps_parameters(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    clear_state(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->trunk_enable = 1;
+    site_info(opts, state, SITE_A, 1U, BASE_100_MHZ, STEP_1250_HZ);
+    const uint32_t generation = dsd_nxdn_ca_generation(state);
+
+    opts->trunk_is_tuned = 1; // a call followed to a traffic channel
+    state->trunk_vc_freq[0] = 400012500L;
+    site_info(opts, state, SITE_B, 1U, BASE_400_MHZ, STEP_1250_HZ);
+    rc |= expect_long("foreign SITE_INFO keeps the generation", (long)dsd_nxdn_ca_generation(state), (long)generation);
+    rc |= expect_long("foreign SITE_INFO keeps the base", state->nxdn_base_freq, BASE_100_MHZ);
+    rc |= expect_long("foreign SITE_INFO keeps this site", (long)state->nxdn_site.location_id, (long)SITE_A);
+    cch_info_dfa(opts, state, SITE_B, 0x22U, 10U, 20U); // the other site's Curr
+    rc |= expect_long("foreign CCH_INFO learns no row", state->trunk_chan_map[10], 0L);
+    rc |= expect_long("foreign CCH_INFO learns no IFN row", state->trunk_chan_map[20], 0L);
+
+    opts->trunk_is_tuned = 0; // back on this site's control channel
+    state->trunk_vc_freq[0] = 0;
+    cch_info_dfa(opts, state, SITE_A, 0x22U, 10U, 20U);
+    rc |= expect_long("this site's channel 10 with its own parameters", state->trunk_chan_map[10], 100012500L);
+    rc |= expect_long("this site's control channel", state->trunk_cc_freq, 100012500L);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    return rc;
+}
+
+/*
+ * An SRV_INFO naming a new site, heard on the control channel the receiver chose, latches that site: the parameters
+ * the old site's SITE_INFO set no longer resolve a channel until the new site's SITE_INFO sets its own.
+ */
+static int
+test_srv_info_of_a_new_site_stops_old_parameters(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    clear_state(state);
+    site_info(opts, state, SITE_B, 1U, BASE_400_MHZ, STEP_1250_HZ);
+    rc |= expect_long("site B channel 10", nxdn_channel_to_frequency_quiet(state, 10U), 400012500L);
+
+    srv_info(opts, state, SITE_A);
+    rc |= expect_long("site A latched", dsd_nxdn_site_is(state, SITE_A), 1);
+    rc |= expect_long("site B parameters not trusted", dsd_nxdn_ca_valid(state), 0);
+    rc |= expect_long("site B row dropped", state->trunk_chan_map[10], 0L);
+    rc |= expect_long("no DFA resolution meanwhile", nxdn_channel_to_frequency_quiet(state, 10U), 0L);
+
+    site_info(opts, state, SITE_A, 1U, BASE_100_MHZ, STEP_1250_HZ);
+    rc |= expect_long("site A parameters", nxdn_channel_to_frequency_quiet(state, 10U), 100012500L);
+    return rc;
+}
+
 /* The DFA CCH_INFO status: Curr, New, Add and Del from the top four bits, as the channel notation prints them. */
 static int
 test_cch_info_dfa_status_text(dsd_opts* opts, dsd_state* state) {
@@ -317,6 +382,8 @@ main(void) {
     rc |= test_display_resolver_keeps_nothing(opts, state);
     rc |= test_full_record_answers_without_keeping(opts, state);
     rc |= test_cch_info_dfa_status_text(opts, state);
+    rc |= test_foreign_site_info_while_following_keeps_parameters(opts, state);
+    rc |= test_srv_info_of_a_new_site_stops_old_parameters(opts, state);
 
     dsd_state_ext_free_all(state);
     free(state);

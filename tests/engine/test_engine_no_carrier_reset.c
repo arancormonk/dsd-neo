@@ -7371,7 +7371,9 @@ test_carrier_boundary_forgets_the_access_codes(void) {
         opts->trunk_enable = trunked;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500L;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
-        /* An NXDN DFA site's channel access parameters, a row computed from them and one an import set. */
+        /* An NXDN DFA site latched as this site, its channel access parameters, a row computed from them and one an
+           import set. */
+        dsd_nxdn_site_latch(state, (2U << 12) | 0x21U);
         dsd_nxdn_ca_apply(state, (2U << 12) | 0x21U, 1U, 1U, 2U);
         dsd_nxdn_dfa_learn(state, 10U, 100012500L);
         dsd_state_set_trunk_chan_freq(state, 5U, 155500000L);
@@ -7382,6 +7384,9 @@ test_carrier_boundary_forgets_the_access_codes(void) {
                                     "the rows DFA computed from them",
                           dsd_nxdn_ca_valid(state) == trunked && state->nxdn_rcn == (trunked ? 1U : 0U)
                               && state->trunk_chan_map[10] == (trunked ? 100012500L : 0L));
+        rc |= expect_true(trunked ? "access-codes: trunking keeps this NXDN site"
+                                  : "access-codes: the untrunked forget drops this NXDN site",
+                          state->nxdn_site.known == (trunked ? 1U : 0U));
         rc |= expect_true("access-codes: an imported channel map row stays", state->trunk_chan_map[5] == 155500000L);
         rc |= expect_true(trunked ? "access-codes: trunking keeps the P25 voice frequencies"
                                   : "access-codes: the untrunked forget drops the P25 voice frequencies",
