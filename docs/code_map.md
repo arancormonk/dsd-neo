@@ -10621,7 +10621,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   each, in this order: the screen's own refusal (`localFailure`), the host's failure or else
   the search's status message, the model's own error (`SignalSearchModel::error()`, never the
   store's text), then the store's lines (`storeMessage()`, issue #828: per file of
-  `dsd_app_signal_search_store_file_state()`, the history and Permanent avoids read
+  `dsd_app_signal_search_store_file_state()`, the history and permanent avoids read
   incompletely, not yet overwritten or kept as their kept name, the version 1 journal left in
   place, and each write owed; `test_message_lines_in_order`, `testStoreFilesWorded`). The
   model forwards the same files (`storeFiles()`) to `StoreNotices` for Home's card. It is
@@ -12620,16 +12620,20 @@ Qt Quick frontend (`src/ui/qt`):
   `unsaved` (a settings file on its scratch copy, `settings_recovery_scratch(fileName)`; `kept` set when a rename
   succeeded before the write failed) or `leftInPlace` (the version 1 Signal search journal); `earlierKept` names a copy
   kept earlier this run of a file unreadable again after a clean save (json_store's notice then names none).
-  `call_history_seen.json` is never listed. `dismiss(file)` hides the notice as it stands (file, state, kept and
-  earlier kept names): the same notice posted again stays hidden, a changed one shows again. The card is one
-  `AlertMessage` named by all its text, navigation-gated, its lines plain `Text`; each notice is announced once (a
-  dismissal or a second file repeats nothing; a `Timer` it owns, not `Qt.callLater`); Dismiss dismisses every shown
-  file. Its copy never promises lost data: "Some entries may be missing" (a 0-byte store is unreadable too). Write
+  `call_history_seen.json` is never listed. Shown in two runs: json_store's notices in the order it posted them, then
+  the Signal search store's. `dismiss(file)` hides the notice as it stands (file, state, kept and earlier kept
+  names): the same notice posted again stays hidden, a changed one shows again. `takeUnheard()` hands over the shown
+  notices not yet read out and marks them, with the same key, so each is announced once for the process: a
+  dismissal, a second file or a rebuilt Home (a new QML engine) repeats nothing. The card is one `AlertMessage` named
+  by all its text, navigation-gated, its lines plain `Text`; it announces from a `Timer` it owns, not `Qt.callLater`;
+  Dismiss dismisses every shown file. Its `source` is `storeNotices` (a test may hand it another list). Labels come
+  from `Util.storeLabel()`, which the backup refusal uses too, so a file has one name: the avoid file is "Signal
+  search permanent avoids" on Home, in the backup message and on the Signal search screen. Its copy never promises lost data: "Some entries may be missing" (a 0-byte store is unreadable too). Write
   failures are not on it: they stay on their screens (the Signal search line below, each model's save error). Tests:
   `UI_QT_STORE_NOTICES` (queued delivery from workers under TSan, a real worker load and save, the seen store,
-  dismissals, earlier kept names, the Signal search files, a scratch settings file), `tst_home_store_notices.qml`
-  (labels per store, kept name after the move, dismissal across a rebuilt Home, gating and one announcement each,
-  360 px at the largest text).
+  dismissals, read out once, earlier kept names, the Signal search files, a scratch settings file),
+  `tst_home_store_notices.qml` (labels per store, kept name after the move, dismissal and announcements across a
+  rebuilt Home, gating, both scratch-settings sentences, 360 px at the largest text).
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
   the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays

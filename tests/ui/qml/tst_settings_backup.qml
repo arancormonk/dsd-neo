@@ -699,9 +699,9 @@ Item {
             return [
                 {tag: "one list", files: ["saved_systems.json"], text: "Saved systems can't be read, so no backup was made. Save a change to Saved systems, then back up again. " + later},
                 {tag: "settings", files: ["dsd-neo-app.ini"], text: "Settings can't be read, so no backup was made. Restart DSD-neo, then back up again. " + later},
-                {tag: "three lists", files: ["scan_lists.json", "signal-search-ranges.json", "signal-search-history.v1.avoids.json"], text: "Scan lists, Signal search ranges and Signal search avoids can't be read, so no backup was made. Save a change to each of Scan lists, Signal search ranges and Signal search avoids, then back up again. " + later},
+                {tag: "three lists", files: ["scan_lists.json", "signal-search-ranges.json", "signal-search-history.v1.avoids.json"], text: "Scan lists, Signal search ranges and Signal search permanent avoids can't be read, so no backup was made. Save a change to each of Scan lists, Signal search ranges and Signal search permanent avoids, then back up again. " + later},
                 {tag: "a list and settings", files: ["imported_files.json", "dsd-neo-app.ini"], text: "Imported files and Settings can't be read, so no backup was made. Save a change to Imported files, restart DSD-neo, then back up again. " + later},
-                {tag: "two lists and settings", files: ["decryption_profiles.json", "signal-search-history.v1.avoids.json", "dsd-neo-app.ini"], text: "Decryption profiles, Signal search avoids and Settings can't be read, so no backup was made. Save a change to each of Decryption profiles and Signal search avoids, restart DSD-neo, then back up again. " + later}
+                {tag: "two lists and settings", files: ["decryption_profiles.json", "signal-search-history.v1.avoids.json", "dsd-neo-app.ini"], text: "Decryption profiles, Signal search permanent avoids and Settings can't be read, so no backup was made. Save a change to each of Decryption profiles and Signal search permanent avoids, restart DSD-neo, then back up again. " + later}
             ];
         }
 

@@ -6,19 +6,20 @@ import "Util.js" as Util
 
 // Issue #828: the files the app couldn't read this run, and what became of
 // each, at the top of Home until dismissed. `storeNotices` is process-lifetime
-// (src/ui/qt/store_notices.h), so a dismissal holds across a rebuilt screen;
-// a notice that changes later (its file kept aside after all) shows again.
+// (src/ui/qt/store_notices.h) and keeps what was dismissed and what was read
+// out, so a rebuilt screen neither shows nor announces either again; a notice
+// that changes later (its file kept aside after all) shows again.
 // The card is one alert named by everything it says; its lines are plain
 // Text, which a screen reader reaches only through it.
 UiPanel {
     id: card
     objectName: "storeNoticeCard"
 
-    readonly property var notices: typeof storeNotices !== "undefined" && storeNotices ? storeNotices.notices : []
+    // The list the card shows: the app's `storeNotices`; a test may hand it
+    // another object with the same `notices`, dismiss() and takeUnheard().
+    property QtObject source: typeof storeNotices !== "undefined" ? storeNotices : null
+    readonly property var notices: source ? source.notices : []
     readonly property string speech: notices.map(spoken).join(" ")
-    // The notices already read out, by file, state and kept names, so each is
-    // heard once: a dismissal or a second file does not repeat the first.
-    property var heard: ({})
     property int announcements: 0
 
     visible: notices.length > 0
@@ -52,21 +53,14 @@ UiPanel {
     function spoken(notice) {
         return title(notice) + ". " + detail(notice);
     }
-    function key(notice) {
-        return [notice.file, notice.state, notice.kept, notice.earlierKept].join("\n");
-    }
+    // Each notice is read out once for the process: the list marks what it
+    // hands over, so a dismissal, a second file or a rebuilt Home repeats nothing.
     function announceNew() {
-        if (!visible)
+        if (!visible || !source)
             return;
-        var fresh = notices.filter(function (notice) {
-            return !heard[key(notice)];
-        });
+        var fresh = source.takeUnheard();
         if (!fresh.length)
             return;
-        var next = Object.assign({}, heard);
-        for (var notice of fresh)
-            next[key(notice)] = true;
-        heard = next;
         announcements++;
         if (typeof Accessible.announce === "function")
             Accessible.announce(fresh.map(spoken).join(" "));
@@ -77,7 +71,7 @@ UiPanel {
             return notice.file;
         });
         for (var file of files)
-            storeNotices.dismiss(file);
+            source.dismiss(file);
     }
     // Once every binding has the new list; a Timer, which dies with the card,
     // rather than Qt.callLater, whose call would outlive it.

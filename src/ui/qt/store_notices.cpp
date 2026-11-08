@@ -56,6 +56,17 @@ StoreNotices::notices() const {
     return m_shown;
 }
 
+QVariantMap
+StoreNotices::toMap(const Notice& notice) {
+    return QVariantMap{
+        {QStringLiteral("file"), notice.file},
+        {QStringLiteral("store"), notice.store},
+        {QStringLiteral("state"), notice.state},
+        {QStringLiteral("kept"), notice.kept},
+        {QStringLiteral("earlierKept"), notice.earlierKept},
+    };
+}
+
 QString
 StoreNotices::key(const Notice& notice) {
     return notice.file + QLatin1Char('\n') + notice.state + QLatin1Char('\n') + notice.kept + QLatin1Char('\n')
@@ -72,6 +83,22 @@ StoreNotices::dismiss(const QString& fileName) {
         }
     }
     publish();
+}
+
+QVariantList
+StoreNotices::takeUnheard() {
+    QVariantList fresh;
+    for (const QList<Notice>* list : {&m_stores, &m_signalSearch}) {
+        for (const Notice& notice : *list) {
+            const QString noticeKey = key(notice);
+            if (m_dismissed.contains(noticeKey) || m_heard.contains(noticeKey)) {
+                continue;
+            }
+            m_heard.insert(noticeKey);
+            fresh.append(toMap(notice));
+        }
+    }
+    return fresh;
 }
 
 void
@@ -126,13 +153,7 @@ StoreNotices::publish() {
             if (m_dismissed.contains(key(notice))) {
                 continue;
             }
-            shown.append(QVariantMap{
-                {QStringLiteral("file"), notice.file},
-                {QStringLiteral("store"), notice.store},
-                {QStringLiteral("state"), notice.state},
-                {QStringLiteral("kept"), notice.kept},
-                {QStringLiteral("earlierKept"), notice.earlierKept},
-            });
+            shown.append(toMap(notice));
         }
     }
     if (shown != m_shown) {

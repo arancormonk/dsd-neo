@@ -429,6 +429,8 @@ Item {
             Ui.Navigation.modals = [];
             Ui.Navigation.layers = [];
             testContext.resetPins();
+            // Issue #828: the store notice case's files would otherwise put a card on every later Home.
+            testContext.setSignalSearchStoreFiles([]);
         }
 
         // The walk sees what TalkBack sees: a plain or ignored Text is unreached, a named one or a button's own label

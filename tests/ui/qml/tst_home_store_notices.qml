@@ -25,6 +25,17 @@ Item {
             localDeviceRelevant: false
         }
     }
+    // A list for the copy no app path here can reach: settings on their
+    // scratch copy (settings_recovery_scratch()).
+    QtObject {
+        id: scratchList
+        property var notices: [
+            {file: "dsd-neo-app.ini", store: "dsd-neo-app.ini", state: "unsaved", kept: "", earlierKept: ""},
+            {file: "DSD-neo.conf", store: "call-history-settings", state: "unsaved", kept: "DSD-neo.conf.unreadable-2", earlierKept: ""}]
+        property var dismissed: []
+        function dismiss(file) { dismissed = dismissed.concat([file]); }
+        function takeUnheard() { return []; }
+    }
     // A sheet over Home, as any of Main's would be.
     Ui.ModalSheet {
         id: cover
@@ -58,6 +69,13 @@ Item {
             }
             return out;
         }
+        // A tap where the control is drawn, once Home has laid out.
+        function tap(control) {
+            waitForRendering(loader.item);
+            var at = control.mapToItem(root, control.width / 2, control.height / 2);
+            verify(at.y > 0 && at.y < root.height, control.objectName + " is on screen");
+            mouseClick(root, at.x, at.y);
+        }
         function waitForNotices(count) {
             tryCompare(storeNotices.notices, "length", count);
             tryCompare(card(), "visible", count > 0);
@@ -70,6 +88,7 @@ Item {
         }
         function cleanup() {
             cover.visible = false;
+            card().source = storeNotices;
             var files = storeNotices.notices.map(function (notice) {
                 return notice.file;
             });
@@ -129,7 +148,7 @@ Item {
                 {file: "signal-search-history.v1", state: "leftInPlace", kept: ""},
                 {file: "signal-search-ranges.json", state: "", kept: ""}]);
             waitForNotices(3);
-            compare(texts("storeNoticeTitle"), ["Signal search history couldn't be read completely", "Signal search avoids couldn't be read completely",
+            compare(texts("storeNoticeTitle"), ["Signal search history couldn't be read completely", "Signal search permanent avoids couldn't be read completely",
                                                "Signal search history from an older version couldn't be read"]);
             compare(texts("storeNoticeDetail"), ["Some entries may be missing. The file was kept as signal-search-history.v2.unreadable-1.",
                                                 "Some entries may be missing. The file won't be overwritten.", "It was left in place."]);
@@ -141,10 +160,7 @@ Item {
             waitForNotices(1);
             var dismiss = findChild(card(), "storeNoticeDismiss");
             verify(dismiss.height >= Ui.Theme.minimumTouchSize);
-            waitForRendering(loader.item);
-            var at = dismiss.mapToItem(root, dismiss.width / 2, dismiss.height / 2);
-            verify(at.y > 0 && at.y < root.height, "the button is on screen");
-            mouseClick(root, at.x, at.y);
+            tap(dismiss);
             waitForNotices(0);
             loader.active = false;
             loader.active = true;
@@ -177,6 +193,13 @@ Item {
             waitForNotices(1);
             wait(20);
             compare(c.announcements, before + 2, "a dismissal repeats nothing");
+            // A rebuilt Home, as after a new QML engine, shows the notice and says nothing it said before.
+            loader.active = false;
+            loader.active = true;
+            c = card();
+            tryCompare(c, "visible", true);
+            wait(20);
+            compare(c.announcements, 0, "a rebuilt Home announces nothing already heard");
             cover.visible = true;
             tryCompare(c, "navigationAllowed", false);
             verify(c.Accessible.ignored, "covered, the card leaves the tree");
@@ -184,6 +207,19 @@ Item {
             cover.visible = false;
             tryCompare(c, "navigationAllowed", true);
             verify(!c.Accessible.ignored);
+        }
+
+        // Settings that couldn't be kept run on a scratch copy: what is changed now isn't saved, whether or not the
+        // file was renamed aside before the write failed. Dismiss reaches the list the card shows.
+        function test_i_settings_on_scratch() {
+            var c = card();
+            c.source = scratchList;
+            tryCompare(c, "visible", true);
+            compare(texts("storeNoticeTitle"), ["Settings couldn't be read completely", "Call history settings couldn't be read completely"]);
+            compare(texts("storeNoticeDetail"), ["Some entries may be missing. The file couldn't be kept aside, so changes made now won't be saved.",
+                                                "Some entries may be missing. The file was kept as DSD-neo.conf.unreadable-2, but changes made now won't be saved."]);
+            tap(findChild(c, "storeNoticeDismiss"));
+            compare(scratchList.dismissed, ["dsd-neo-app.ini", "DSD-neo.conf"]);
         }
 
         // 360 px with the largest text: every line wraps inside the card, and the card holds them all.

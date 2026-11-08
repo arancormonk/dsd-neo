@@ -707,7 +707,7 @@ function storeLabel(fileName) {
     case "signal-search-ranges.json":
         return qsTr("Signal search ranges")
     case "signal-search-history.v1.avoids.json":
-        return qsTr("Signal search avoids")
+        return qsTr("Signal search permanent avoids")
     case "dsd-neo-app.ini":
         return qsTr("Settings")
     }

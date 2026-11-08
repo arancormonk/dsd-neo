@@ -86,6 +86,12 @@ Item {
             loader.item.sessionSource = {};
             loader.item.sourceType = "usb";
             loader.item.resetView();
+            // What a case left on the message line, even one that failed part way.
+            model.error = "";
+            model.storeMessage = "";
+            root.hostFailure = "";
+            model.armError = "";
+            loader.item.localFailure = "";
             // A test that renames the range restores it even when it fails.
             if (model.ranges.length > 0 && model.ranges[0].name !== "Local UHF")
                 model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
@@ -603,7 +609,7 @@ Item {
         function test_message_lines_in_order() {
             var message = findChild(loader.item, "searchMessage");
             var store = "Signal search history couldn't be read completely, so some entries may be missing. The file won't be overwritten.\n"
-                + "Permanent avoids couldn't be saved. Check available storage. DSD-neo tries again with the next change.";
+                + "Signal search permanent avoids couldn't be saved. Check available storage. DSD-neo tries again with the next change.";
             model.storeMessage = store;
             compare(message.text, store, "the store's lines alone");
             verify(message.visible);
@@ -620,11 +626,6 @@ Item {
             compare(message.text, "Enable at least one range.\nDevice detached: RTL-SDR\nThe decoder did not accept this action.\n" + store);
             compare(message.parent.objectName, "searchIdleMessageSlot");
             compare(message.text.split(store).length, 2, "the store's text once");
-            model.error = "";
-            model.storeMessage = "";
-            root.hostFailure = "";
-            model.armError = "";
-            loader.item.localFailure = "";
         }
         // A refused Resume is shown; it belongs to that attempt, so leaving the
         // screen discards it while the host's failure stays bound.

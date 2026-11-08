@@ -27,13 +27,14 @@
 #include <QString>
 #include <QVariant> // IWYU pragma: keep -- QVariantList's element; IWYU's answer differs by TU.
 #include <QVariantList>
+#include <QVariantMap>
 
 namespace dsd_qt {
 
 class StoreNotices : public QObject {
     Q_OBJECT
     /**
-     * Not dismissed, oldest first, one per file: maps of
+     * Not dismissed, one per file, json_store's in the order it posted them, then the Signal search store's: maps of
      *  - file: the file's own name ("saved_systems.json");
      *  - store: what Util.storeLabel() names it by: the file name, or "call-history-settings" for call history's
      *    settings file, whose name follows the application's;
@@ -56,6 +57,12 @@ class StoreNotices : public QObject {
      *        unreadable again after that) shows again.
      */
     Q_INVOKABLE void dismiss(const QString& fileName);
+
+    /**
+     * @brief The shown notices not yet read out, now marked as read out: each is announced once for the process, so a
+     *        rebuilt Home (a new QML engine) does not announce again what an earlier one did. Same key as dismiss().
+     */
+    Q_INVOKABLE QVariantList takeUnheard();
 
     /**
      * @brief Take the Signal search store's files as SignalSearchModel::storeFiles() lists them ({file, state, kept}),
@@ -82,11 +89,13 @@ class StoreNotices : public QObject {
     /** Rebuild the shown list; emits noticesChanged() when it differs. */
     void publish();
     static QString key(const Notice& notice);
+    static QVariantMap toMap(const Notice& notice);
 
     QList<Notice> m_stores;       // json_store's, in its order
     QList<Notice> m_signalSearch; // the Signal search store's
     QHash<QString, QString> m_lastKept;
     QSet<QString> m_dismissed; // key() of each dismissed notice
+    QSet<QString> m_heard;     // key() of each notice read out
     QVariantList m_shown;
 };
 

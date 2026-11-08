@@ -181,6 +181,32 @@ test_dismiss_and_change() {
            field(file, "earlierKept") == QLatin1String("scan_lists.json.unreadable-1"));
 }
 
+/* Each shown notice is handed over for reading out once for the process; a dismissed one never, a changed one again. */
+void
+test_heard_once() {
+    StoreNotices* notices = StoreNotices::instance();
+    const auto taken = [notices](const QString& file) {
+        for (const QVariant& value : notices->takeUnheard()) {
+            if (value.toMap().value(QStringLiteral("file")).toString() == file) {
+                return true;
+            }
+        }
+        return false;
+    };
+    (void)notices->takeUnheard(); // what earlier cases left
+    post_from_worker(QStringLiteral("imported_files.json"), QString());
+    QCoreApplication::processEvents();
+    expect("heard: a new notice is handed over", taken(QStringLiteral("imported_files.json")));
+    expect("heard: once", notices->takeUnheard().isEmpty());
+    post_from_worker(QStringLiteral("decryption_profiles.json"), QString());
+    QCoreApplication::processEvents();
+    notices->dismiss(QStringLiteral("decryption_profiles.json"));
+    expect("heard: a dismissed notice is never handed over", notices->takeUnheard().isEmpty());
+    post_from_worker(QStringLiteral("imported_files.json"), QStringLiteral("imported_files.json.unreadable-1"));
+    QCoreApplication::processEvents();
+    expect("heard: a changed notice is handed over again", taken(QStringLiteral("imported_files.json")));
+}
+
 void
 test_signal_search_files() {
     StoreNotices* notices = StoreNotices::instance();
@@ -246,6 +272,7 @@ main(int argc, char** argv) {
     test_real_store_on_a_worker();
     test_seen_store_hidden();
     test_dismiss_and_change();
+    test_heard_once();
     test_signal_search_files();
     test_settings_scratch();
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();

@@ -441,8 +441,8 @@ testStoreFilesWorded(dsd_qt::KnownFrequencyIndex* index) {
     writeBytes(avoids, "not a list");
     const QString historyLine = QStringLiteral("Signal search history couldn't be read completely, so some entries may "
                                                "be missing. The file won't be overwritten.");
-    const QString avoidsUnsaved = QStringLiteral("Permanent avoids couldn't be saved. Check available storage. DSD-neo "
-                                                 "tries again with the next change.");
+    const QString avoidsUnsaved = QStringLiteral("Signal search permanent avoids couldn't be saved. Check available "
+                                                 "storage. DSD-neo tries again with the next change.");
     {
         dsd_qt::SignalSearchModel model(nullptr, index);
         assert(model.storeFiles().size() == 3);
@@ -451,8 +451,9 @@ testStoreFilesWorded(dsd_qt::KnownFrequencyIndex* index) {
         assert(storeFile(model, 2).value(QStringLiteral("state")).toString().isEmpty());
         assert(model.storeMessage()
                == historyLine
-                      + QStringLiteral("\nPermanent avoids couldn't be read completely, so some entries may be "
-                                       "missing. The file won't be overwritten."));
+                      + QStringLiteral(
+                          "\nSignal search permanent avoids couldn't be read completely, so some entries may be "
+                          "missing. The file won't be overwritten."));
         assert(model.error().isEmpty());
         assert(noticeShown(QStringLiteral("signal-search-history.v2"), QStringLiteral("unreadable")));
         assert(noticeShown(QStringLiteral("signal-search-history.v1.avoids.json"), QStringLiteral("unreadable")));
@@ -464,8 +465,9 @@ testStoreFilesWorded(dsd_qt::KnownFrequencyIndex* index) {
         assert(storeFile(model, 1).value(QStringLiteral("kept")) == keptAvoids);
         assert(model.storeMessage()
                == historyLine
-                      + QStringLiteral("\nPermanent avoids couldn't be read completely, so some entries may be "
-                                       "missing. The file was kept as ")
+                      + QStringLiteral(
+                          "\nSignal search permanent avoids couldn't be read completely, so some entries may be "
+                          "missing. The file was kept as ")
                       + keptAvoids + QStringLiteral("."));
         assert(noticeShown(QStringLiteral("signal-search-history.v1.avoids.json"), QStringLiteral("kept")));
 

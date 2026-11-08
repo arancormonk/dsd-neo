@@ -636,23 +636,23 @@ storeLines(const QVariantMap& file) {
         lines.append(SignalSearchModel::tr(
             "Signal search history from an older version couldn't be read. It was left in place."));
     } else if (state == QLatin1String("unreadable")) {
-        lines.append(history
-                         ? SignalSearchModel::tr("Signal search history couldn't be read completely, so some "
-                                                 "entries may be missing. The file won't be overwritten.")
-                         : SignalSearchModel::tr("Permanent avoids couldn't be read completely, so some entries may "
-                                                 "be missing. The file won't be overwritten."));
+        lines.append(history ? SignalSearchModel::tr("Signal search history couldn't be read completely, so some "
+                                                     "entries may be missing. The file won't be overwritten.")
+                             : SignalSearchModel::tr("Signal search permanent avoids couldn't be read completely, so "
+                                                     "some entries may be missing. The file won't be overwritten."));
     } else if (state == QLatin1String("kept")) {
         lines.append((history ? SignalSearchModel::tr("Signal search history couldn't be read completely, so some "
                                                       "entries may be missing. The file was kept as %1.")
-                              : SignalSearchModel::tr("Permanent avoids couldn't be read completely, so some entries "
-                                                      "may be missing. The file was kept as %1."))
+                              : SignalSearchModel::tr("Signal search permanent avoids couldn't be read completely, so "
+                                                      "some entries may be missing. The file was kept as %1."))
                          .arg(kept));
     }
     if (file.value(QStringLiteral("writeFailed")).toBool()) {
-        lines.append(history ? SignalSearchModel::tr("Signal search history couldn't be saved. Check available "
-                                                     "storage. DSD-neo tries again with the next change.")
-                             : SignalSearchModel::tr("Permanent avoids couldn't be saved. Check available storage. "
-                                                     "DSD-neo tries again with the next change."));
+        lines.append(history
+                         ? SignalSearchModel::tr("Signal search history couldn't be saved. Check available "
+                                                 "storage. DSD-neo tries again with the next change.")
+                         : SignalSearchModel::tr("Signal search permanent avoids couldn't be saved. Check available "
+                                                 "storage. DSD-neo tries again with the next change."));
     }
     return lines;
 }
