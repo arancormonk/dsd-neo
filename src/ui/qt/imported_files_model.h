@@ -111,7 +111,10 @@ class ImportedFilesModel : public QAbstractListModel {
      * life of the process (the engine may still write it after the export flow gave up), so no import takes its name.
      */
     Q_INVOKABLE QString newTalkgroupListPath() const;
-    /** Register a successfully exported list in place; the engine keeps writing this path. */
+    /**
+     * Register a successfully exported list in place; the engine keeps writing this path. False, with no row added,
+     * when the library cannot be saved; the file stays where it is.
+     */
     Q_INVOKABLE bool registerTalkgroupList(const QString& path);
 
     /**

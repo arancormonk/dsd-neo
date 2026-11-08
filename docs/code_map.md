@@ -12414,7 +12414,8 @@ Qt Quick frontend (`src/ui/qt`):
   answer through the same signal. The synchronous `importFile`/`updateFile`/`importBundle` run the same stage and
   commit at once (`ImportService::runNow`); `importGeneratedFile`/`refreshGeneratedFile` (RadioReference) do too, so a
   refresh shares the replace order and its rollback. Every library change bumps the model's `revision` and emits
-  `entriesChanged`; `countChanged` stays for count changes.
+  `entriesChanged`; `countChanged` stays for count changes. `registerTalkgroupList()` saves the index before it adds
+  the row and answers false, adding nothing, when it cannot.
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most 247
   UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also skips
   reserved paths).

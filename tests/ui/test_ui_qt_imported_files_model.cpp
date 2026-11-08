@@ -1077,6 +1077,24 @@ test_replace_failures() {
     model.remove(row);
 }
 
+/* Issue #832 (B8): a list the export flow is told was added must still be listed after a restart. */
+void
+test_register_unsaved_export() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const int before = model.count();
+    const QString stored = model.newTalkgroupListPath();
+    expect("unsaved export fixture", write_file(stored, "id,mode,name,priority,preempt\n42,A,Dispatch,50,1\n"));
+    expect("block the index for registration", blockIndex());
+    const bool registered = model.registerTalkgroupList(stored);
+    expect("unblock the index after registration", unblockIndex());
+    expect("an export the index cannot record is not registered", !registered);
+    expect("an unrecorded export adds no row", model.count() == before && model.rowForPath(stored) < 0);
+    expect("an unrecorded export keeps the engine's file", QFile::exists(stored));
+    expect("a later registration records it", model.registerTalkgroupList(stored) && model.count() == before + 1);
+    model.remove(model.rowForPath(stored));
+}
+
 /* Issue #832 (B7): the screens list entriesForType() again on entriesChanged, so a replace or a refresh that keeps the
  * count still announces itself. */
 void
@@ -2060,6 +2078,7 @@ main(int argc, char** argv) {
     test_async_import_outcomes();
     test_async_replace_stale();
     test_replace_failures();
+    test_register_unsaved_export();
     test_entries_changed_on_replace();
     test_stored_names_kept();
     test_channel_bundle();

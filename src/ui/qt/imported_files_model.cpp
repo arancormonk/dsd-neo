@@ -328,14 +328,8 @@ ImportedFilesModel::registerTalkgroupList(const QString& path) {
     if (!validate(path, row.type, &row.accepted, &row.skipped)) {
         return false;
     }
-    row.revision = ++m_revision;
-    beginInsertRows({}, count(), count());
-    m_rows.append(row);
-    endInsertRows();
-    Q_EMIT countChanged();
-    Q_EMIT entriesChanged();
-    save();
-    return true;
+    // Saved first: a row reported as added must still be listed after a restart.
+    return appendRow(std::move(row));
 }
 
 bool
