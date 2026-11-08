@@ -4,8 +4,7 @@ import java.io.File
 
 // Shared storage's path, which the platform answers mounted or not, and the Download folder's name.
 object Environment {
-    @JvmField
-    var DIRECTORY_DOWNLOADS: String = "Download"
+    const val DIRECTORY_DOWNLOADS = "Download"
 
     @JvmStatic
     @Deprecated("the platform's is deprecated too")

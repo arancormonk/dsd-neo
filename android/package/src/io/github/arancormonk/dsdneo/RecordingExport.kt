@@ -80,7 +80,8 @@ object RecordingExport {
      * one file as it is.
      *
      * A Download-folder row ([DownloadsSave]) is published once written, and deleted at every other exit. Its
-     * publication still answers [cancel] until it begins; a row that could not be published fails the transfer.
+     * publication still answers [cancel] until it begins; a row that could not be published fails the transfer, and so
+     * does one a discard took before this transfer began (never written).
      *
      * @return the result code, then the paths found gone (a ZIP leaves them out; all gone is [MISSING]), as text.
      */
@@ -93,7 +94,9 @@ object RecordingExport {
         uriText: String,
         zip: Boolean,
     ): Array<String> {
-        DownloadsSave.take(uriText)
+        if (!DownloadsSave.take(uriText)) {
+            return arrayOf(FAILED.toString()) // a Download-folder row a discard already took
+        }
         val missing = ArrayList<String>()
         val transfer = synchronized(lock) {
             if (id <= cancelledThrough) null else Transfer(id, CancellationSignal()).also { current = it }

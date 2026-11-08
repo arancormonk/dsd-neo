@@ -13,6 +13,8 @@ import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
@@ -35,8 +37,8 @@ private class NameCursor(private val name: String?) : Cursor {
 }
 
 /**
- * Plays MediaStore's Download collection: each row is a real file. Every call is kept; the update's answer, the name read
- * back, an open or write that fails, and an update held until the test lets it go are the test's to set.
+ * Plays MediaStore's Download collection: each row is a real file. Every call is kept; the update's answer, the name
+ * read back, an open or write that fails, and an update held until the test lets it go are the test's to set.
  */
 private class MediaRows : ContentResolver() {
     private val serial = AtomicInteger()
@@ -70,7 +72,11 @@ private class MediaRows : ContentResolver() {
         return Uri.parse(uri)
     }
 
-    override fun openFileDescriptor(uri: Uri, mode: String, cancellationSignal: CancellationSignal?): ParcelFileDescriptor? {
+    override fun openFileDescriptor(
+        uri: Uri,
+        mode: String,
+        cancellationSignal: CancellationSignal?,
+    ): ParcelFileDescriptor? {
         calls += "open $mode $uri"
         cancellationSignal?.throwIfCanceled()
         if (opensFail) throw FileNotFoundException("the row went")
@@ -121,6 +127,19 @@ private val scratch: File = Files.createTempDirectory("dsd-downloads-save").toFi
 private val rows = MediaRows()
 private var nextId = 1_000L
 
+/** A FIFO in the scratch folder, or null where this host has no mkfifo (Windows). */
+private fun fifo(): File? {
+    if (File.separatorChar != '/') {
+        return null
+    }
+    val fifo = File(scratch, "feed${nextId}.wav")
+    return try {
+        if (ProcessBuilder("mkfifo", fifo.path).start().waitFor() == 0) fifo else null
+    } catch (_: IOException) {
+        null
+    }
+}
+
 private fun sourceFile(size: Int): File =
     File.createTempFile("source", ".bin", scratch).apply { writeBytes(ByteArray(size) { it.toByte() }) }
 
@@ -139,7 +158,8 @@ private fun deleted(uri: String) = "delete $uri" in rows.callsFor(uri)
 
 /** Published, and nothing else asked of MediaStore after the insert and the write's open. */
 private fun publishedOnly(uri: String) =
-    rows.callsFor(uri).filter { !it.startsWith("insert") && !it.startsWith("open") } == listOf("update $uri", "query $uri")
+    rows.callsFor(uri).filter { !it.startsWith("insert") && !it.startsWith("open") } ==
+        listOf("update $uri", "query $uri")
 
 /** The worker held on a task of the test's own until the returned latch is released. */
 private fun holdWorker(): CountDownLatch {
@@ -201,7 +221,9 @@ private fun backupSaveSettles() {
     // deletes the row through MediaStore, never deleteDocument(), which cannot.
     val missing = row()
     check(!DocumentCopies.copyFileToDocument(rows, File(scratch, "gone").path, missing))
-    check(rows.callsFor(missing) == listOf("insert $missing", "delete $missing")) { "missing source: ${rows.callsFor(missing)}" }
+    check(rows.callsFor(missing) == listOf("insert $missing", "delete $missing")) {
+        "missing source: ${rows.callsFor(missing)}"
+    }
     rows.opensFail = true
     val unopened = row()
     check(!DocumentCopies.copyFileToDocument(rows, sourceFile(10).path, unopened) && deleted(unopened))
@@ -217,11 +239,34 @@ private fun backupSaveSettles() {
         rows.updateAnswer = updated
         rows.name = name
         val unpublished = row()
-        check(!DocumentCopies.copyFileToDocument(rows, sourceFile(10).path, unpublished)) { "update $updated, name $name" }
+        check(!DocumentCopies.copyFileToDocument(rows, sourceFile(10).path, unpublished)) {
+            "update $updated, name $name"
+        }
         check(deleted(unpublished) && DownloadsSave.publishedName(unpublished).isEmpty())
     }
     rows.updateAnswer = 1
     rows.name = "published.bin"
+
+    // An interrupt once the publication began counts as a late cancel: the save stands, and the interrupt stays raised.
+    val interrupted = row()
+    rows.updating = CountDownLatch(1)
+    rows.releaseUpdate = CountDownLatch(1)
+    var stood = false
+    var stillInterrupted = false
+    val saving = Thread {
+        stood = DocumentCopies.copyFileToDocument(rows, sourceFile(10).path, interrupted)
+        stillInterrupted = Thread.currentThread().isInterrupted
+    }
+    saving.start()
+    check(rows.updating!!.await(5, TimeUnit.SECONDS)) { "the update began" }
+    saving.interrupt()
+    saving.join(3 * 100L)
+    check(saving.isAlive) { "an interrupt after the boundary waits for the publication" }
+    rows.releaseUpdate!!.countDown()
+    saving.join(5_000)
+    check(!saving.isAlive && stood && stillInterrupted && publishedOnly(interrupted)) { "published, interrupt kept" }
+    rows.updating = null
+    rows.releaseUpdate = null
 
     // A document that is no pending row is the provider's as before: no MediaStore call.
     val document = "content://com.example.documents/document/saf"
@@ -285,13 +330,37 @@ private fun recordingTransferSettles() {
     publishing.start()
     check(rows.updating!!.await(5, TimeUnit.SECONDS)) { "the update began" }
     RecordingExport.cancel(lateId)
-    Thread.sleep(3 * 100L)
+    // An end that must not come, so no condition to wait for: the bound outlasts two of settle()'s 100 ms checks.
+    publishing.join(3 * 100L)
     check(publishing.isAlive) { "a cancel after the boundary waits for the publication" }
     rows.releaseUpdate!!.countDown()
     publishing.join(5_000)
     check(!publishing.isAlive && answer == RecordingExport.DONE && publishedOnly(late)) { "published despite the cancel" }
     rows.updating = null
     rows.releaseUpdate = null
+
+    // Cancelled during the copy itself (a FIFO the test feeds holds the export mid-entry): deleted, Cancelled.
+    val fifo = fifo()
+    if (fifo == null) {
+        println("SKIP: no mkfifo here; the cancel during the copy did not run")
+    } else {
+        val midway = row()
+        val midwayId = ++nextId
+        val copying = Thread { answer = transfer(midway, arrayOf(fifo.path), midwayId) }
+        copying.start()
+        FileOutputStream(fifo).use { feed ->
+            feed.write(ByteArray(1000))
+            feed.flush()
+            var copied = 0
+            while (RecordingExport.progress(midwayId) < 1000 && ++copied < 2_500) Thread.sleep(2)
+            check(RecordingExport.progress(midwayId) == 1000L) { "the export is mid-copy" }
+            RecordingExport.cancel(midwayId)
+            feed.write(ByteArray(10))
+        }
+        copying.join(5_000)
+        check(!copying.isAlive && answer == RecordingExport.CANCELLED) { "a cancel during the copy cancels" }
+        check(deleted(midway) && rows.callsFor(midway).none { it.startsWith("update") }) { "${rows.callsFor(midway)}" }
+    }
     check(DownloadsSave.pendingCount() == 0 && DocumentCopies.transfersInFlight() == 0)
 }
 
@@ -300,7 +369,7 @@ private fun claimActsOnce() {
     val discarded = row()
     DownloadsSave.discard(discarded)
     drainWorker()
-    check(DownloadsSave.settle(rows, discarded, true, null)) { "a row no longer pending is not this settle's" }
+    check(!DownloadsSave.settle(rows, discarded, true, null)) { "a settle after a discard fails and publishes nothing" }
     check(rows.callsFor(discarded) == listOf("insert $discarded", "delete $discarded")) { "${rows.callsFor(discarded)}" }
 
     val settled = row()
@@ -316,6 +385,26 @@ private fun claimActsOnce() {
     drainWorker()
     check(DownloadsSave.isPending(taken) && !deleted(taken)) { "a discard never takes a row being written" }
     check(DownloadsSave.settle(rows, taken, true, null) && publishedOnly(taken)) { "the write still publishes it" }
+
+    // A discard that comes before the write took its row (a refused duplicate request, while the accepted one is still
+    // on its way) wins: the write fails rather than report a file the discard is deleting.
+    val raced = row()
+    val racedExport = row()
+    val racing = holdWorker()
+    DownloadsSave.discard(raced)
+    DownloadsSave.discard(racedExport)
+    check(!DocumentCopies.copyFileToDocument(rows, sourceFile(10).path, raced)) { "a save into a discarded row fails" }
+    check(transfer(racedExport) == RecordingExport.FAILED) { "an export into a discarded row fails" }
+    racing.countDown()
+    drainWorker()
+    for (uri in listOf(raced, racedExport)) {
+        check(rows.callsFor(uri) == listOf("insert $uri", "delete $uri")) { "never written: ${rows.callsFor(uri)}" }
+    }
+    // The last 16 discards are remembered: 15 more forget the first of the two, never the second.
+    repeat(15) { DownloadsSave.discard(row()) }
+    drainWorker()
+    check(DownloadsSave.settle(rows, raced, true, null)) { "the 17th discard forgets the first" }
+    check(!DownloadsSave.settle(rows, racedExport, true, null)) { "the 16 last discards are remembered" }
 
     // A discard never waits, even for a worker held in another call; the row goes once it is free.
     val held = row()
@@ -378,6 +467,9 @@ private fun abortLeavesAHeldUpdate() {
     check(rows.releaseUpdate!!.count == 1L) { "the update was still held" }
     rows.releaseUpdate!!.countDown()
     drainWorker()
+    // The accepted teardown limit: a publication that began finishes on the worker though the save reported failure;
+    // the process is ending, and the file is whole.
+    check(DownloadsSave.publishedName(held) == "published.bin") { "the held publication still completes" }
     rows.updating = null
     rows.releaseUpdate = null
 
@@ -386,6 +478,16 @@ private fun abortLeavesAHeldUpdate() {
     check(!DocumentCopies.copyFileToDocument(rows, sourceFile(10).path, refused))
     drainWorker()
     check(rows.callsFor(refused) == listOf("insert $refused", "delete $refused")) { "${rows.callsFor(refused)}" }
+}
+
+/** After everything else: with its worker gone, an insert still answers and a settle still deletes the row it claimed. */
+private fun aStoppedWorkerStillAnswers() {
+    DownloadsSave.worker.shutdownNow()
+    var answered: String? = null
+    DownloadsSave.insertLater("x.wav", "audio/x-wav") { answered = it }
+    check(answered == "") { "an insert with no worker answers empty at once" }
+    val stranded = row()
+    check(!DownloadsSave.settle(rows, stranded, true, null) && deleted(stranded)) { "a claimed row is deleted here" }
 }
 
 fun main() {
@@ -398,6 +500,7 @@ fun main() {
         publishedIsBounded()
         leftoverGrantsGo()
         abortLeavesAHeldUpdate()
+        aStoppedWorkerStillAnswers()
         check(DownloadsSave.pendingCount() == 0) { "no row stays pending" }
     } finally {
         DownloadsSave.worker.shutdownNow()

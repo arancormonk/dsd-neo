@@ -124,15 +124,16 @@ object DocumentCopies {
      *
      * The document is replaced and settled as [DocumentWrite] describes. A missing source never opens the document.
      * A Download-folder row ([DownloadsSave]) is published once written, and deleted at every other exit; a row that
-     * could not be published fails the save.
+     * could not be published fails the save, and so does one a discard took before this save began (never written).
      */
     @JvmStatic
     fun copyFileToDocument(resolver: ContentResolver, sourcePath: String, uriText: String): Boolean {
-        DownloadsSave.take(uriText)
+        // A Download-folder row a discard already took is never written.
+        val writable = DownloadsSave.take(uriText)
         val signal = CancellationSignal()
         var written = false
         try {
-            written = writeFile(resolver, sourcePath, uriText, signal)
+            written = writable && writeFile(resolver, sourcePath, uriText, signal)
         } finally {
             written = DownloadsSave.settle(resolver, uriText, written, signal) && written
         }

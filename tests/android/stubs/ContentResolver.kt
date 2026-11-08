@@ -6,8 +6,9 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 
-// The resolver surface the document copies and the Download folder save use, with the platform's signatures. A test's subclass plays the
-// provider; deleteDocument() stands in for the provider call DocumentsContract.deleteDocument() makes.
+// The resolver surface the document copies and the Download folder save use, with the platform's signatures. A
+// test's subclass plays the provider; deleteDocument() stands in for the provider call
+// DocumentsContract.deleteDocument() makes.
 open class ContentResolver {
     open fun query(
         uri: Uri,

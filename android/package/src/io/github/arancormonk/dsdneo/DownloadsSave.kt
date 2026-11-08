@@ -33,9 +33,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * RecordingExport.transfer()) call [settle] at every exit: a complete write publishes the row (IS_PENDING cleared,
  * its final name read back, since MediaStore renames a clash then), anything else deletes it. A write that never
  * reaches them (the C++ side refused it, or the picker's request went) [discard]s it. Settling or discarding a row
- * first claims it, so one row is published or deleted, never both; a write [take]s its row at its start, and a discard
- * never claims a row a write holds. A row left pending by a crash or a teardown abort stays hidden until MediaStore
- * deletes it at its expiry.
+ * first claims it, so one row is published or deleted, never both. A write [take]s its row at its start, and a discard
+ * never claims a row a write holds; a discard that comes before the write took its row wins, and that write then fails
+ * (the last rows discarded are remembered for it), so it never reports a file the discard deletes. A row left pending
+ * by a crash or a teardown abort stays hidden until MediaStore deletes it at its expiry.
  *
  * Every provider call runs on one worker thread of its own; the lock guards only the in-memory rows and names and is
  * never held across one.
@@ -43,6 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger
 object DownloadsSave {
     private const val TAG = "dsd-neo"
     private const val PUBLISHED_LIMIT = 16
+    private const val DISCARDED_LIMIT = 16
     private const val WAIT_SLICE_MS = 100L
     private const val EXPIRY_SECONDS = 7L * 24 * 60 * 60
 
@@ -55,6 +57,8 @@ object DownloadsSave {
     // The rows inserted and not settled: those no write has taken yet, and those a write holds.
     private val pending = HashSet<String>()
     private val writing = HashSet<String>()
+    // The last rows a discard claimed, oldest first: a write that comes for one of them later fails.
+    private val discarded = LinkedHashSet<String>()
     // The final names of the last rows published, oldest first, for savedDocumentName().
     private val published = LinkedHashMap<String, String>()
 
@@ -87,7 +91,12 @@ object DownloadsSave {
     /** The picker's insert: [insert] on the worker, its answer to [onDone] there; "" at once with no resolver held. */
     fun insertLater(name: String, mime: String, onDone: (String) -> Unit) {
         val held = resolver ?: return onDone("")
-        worker.execute { onDone(insert(held, name, mime)) }
+        try {
+            worker.execute { onDone(insert(held, name, mime)) }
+        } catch (e: RejectedExecutionException) {
+            Log.w(TAG, "could not make a row in the Download folder", e)
+            onDone("")
+        }
     }
 
     /** A new pending row named [name] of type [mime] in Download/DSD-neo: its URI, or "" when MediaStore made none. */
@@ -113,11 +122,16 @@ object DownloadsSave {
         return uri
     }
 
-    /** A write into [uriText] begins: a pending row is the write's from now on, for [settle], never for [discard]. */
-    fun take(uriText: String) = synchronized(lock) {
+    /**
+     * A write into [uriText] begins: a pending row is the write's from now on, for [settle], never for [discard].
+     *
+     * @return false when a discard already took the row: the write must fail, since its file is being deleted.
+     */
+    fun take(uriText: String): Boolean = synchronized(lock) {
         if (pending.remove(uriText)) {
             writing += uriText
         }
+        uriText !in discarded
     }
 
     /** Whether [uriText] is a row [insert] made that is not settled yet: its write must leave it to [settle]. */
@@ -134,7 +148,10 @@ object DownloadsSave {
     @JvmStatic
     fun discard(uriText: String) {
         val held = resolver ?: return
-        if (!synchronized(lock) { pending.remove(uriText) }) {
+        val claimed = synchronized(lock) {
+            pending.remove(uriText).also { if (it) bounded(discarded, uriText) }
+        }
+        if (!claimed) {
             return
         }
         try {
@@ -146,23 +163,26 @@ object DownloadsSave {
 
     /**
      * End the write into [uriText]: publish its row when [ok] (the bytes are all written and the document closed),
-     * else delete it. A document that is no pending row is left alone.
+     * else delete it. A document that is no pending row is left alone, unless a discard took it (see [take]).
      *
      * The work runs on the worker, and the caller waits for it in slices: it gives up at the teardown abort, or when
      * [signal] (the write's own) is cancelled before the publication began, and the row is then deleted instead. A
      * cancel that comes once the publication began is too late: the document is saved.
      *
-     * @return whether the document stands: true when it is no pending row or its row was published.
+     * @return whether the document stands: true when its row was published, or when it is no row of this app's and no
+     *     discard took it.
      */
     fun settle(resolver: ContentResolver, uriText: String, ok: Boolean, signal: CancellationSignal?): Boolean {
         if (!claim(uriText)) {
-            return true
+            return synchronized(lock) { uriText !in discarded }
         }
         val settlement = Settlement()
         val task = try {
             worker.submit(Callable { finish(resolver, Uri.parse(uriText), ok, signal, settlement) })
         } catch (e: RejectedExecutionException) {
+            // No worker to run it on: the row this settle claimed is deleted here, so it is not left pending.
             Log.w(TAG, "could not settle a row in the Download folder", e)
+            delete(resolver, Uri.parse(uriText))
             return false
         }
         return await(task, settlement, signal)
@@ -188,27 +208,33 @@ object DownloadsSave {
         }
     }
 
+    /** An interrupt counts as a cancel: it ends the wait unless the publication began, and stays raised. */
     private fun await(task: Future<Boolean>, settlement: Settlement, signal: CancellationSignal?): Boolean {
-        while (true) {
-            try {
-                return task.get(WAIT_SLICE_MS, TimeUnit.MILLISECONDS)
-            } catch (_: TimeoutException) {
-                // Still running, or still queued behind another row's call.
-            } catch (e: ExecutionException) {
-                Log.w(TAG, "a Download folder row failed to settle", e)
-                return false
-            } catch (_: InterruptedException) {
+        var interrupted = false
+        try {
+            while (true) {
+                try {
+                    return task.get(WAIT_SLICE_MS, TimeUnit.MILLISECONDS)
+                } catch (_: TimeoutException) {
+                    // Still running, or still queued behind another row's call.
+                } catch (e: ExecutionException) {
+                    Log.w(TAG, "a Download folder row failed to settle", e)
+                    return false
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
+                if (DocumentTransfer.isAborted) {
+                    // Teardown: whatever the worker is doing goes on without this thread.
+                    settlement.abandon()
+                    return false
+                }
+                if ((interrupted || signal?.isCanceled == true) && settlement.abandon()) {
+                    return false
+                }
+            }
+        } finally {
+            if (interrupted) {
                 Thread.currentThread().interrupt()
-                settlement.abandon()
-                return false
-            }
-            if (DocumentTransfer.isAborted) {
-                // Teardown: whatever the worker is doing goes on without this thread.
-                settlement.abandon()
-                return false
-            }
-            if (signal?.isCanceled == true && settlement.abandon()) {
-                return false
             }
         }
     }
@@ -271,6 +297,15 @@ object DownloadsSave {
         published[uriText] = name
         while (published.size > PUBLISHED_LIMIT) {
             published.remove(published.keys.first())
+        }
+    }
+
+    /** Add [uriText] to [set] as its newest, dropping the oldest past [DISCARDED_LIMIT]; under [lock]. */
+    private fun bounded(set: LinkedHashSet<String>, uriText: String) {
+        set.remove(uriText)
+        set += uriText
+        while (set.size > DISCARDED_LIMIT) {
+            set.remove(set.first())
         }
     }
 

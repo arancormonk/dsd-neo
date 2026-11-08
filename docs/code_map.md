@@ -13585,19 +13585,25 @@ request code (1305) is never used.
     `IS_PENDING` 1, plus `DATE_EXPIRES` now + 7 days on API 29 only (Android 11+ sets a pending row's expiry itself;
     Android 10 sets none but deletes expired rows in idle maintenance). MIME types: backup `application/octet-stream`,
     zip `application/zip`, WAV `audio/x-wav`, so MediaProvider keeps the extension when it renames a clash.
-  - Claims: settling or discarding a row first takes it out of the sets, so one row is published or deleted, never
-    both. `take()` at the start of a write moves a row to `writing`; `discard()` claims only rows no write took (a
-    refused duplicate request never deletes the row a write holds), `settle()` either.
+  - Claims: settling or discarding a row first takes it out of the sets, so one row is published or deleted, never both.
+    `take()` at the start of a write moves a row to `writing`; `discard()` claims only rows no write took, `settle()`
+    either. A discard that comes before the write's `take()` (a refused duplicate request while the accepted one is
+    still on its way) wins: it is remembered (the last 16 discards), `take()` answers false so the write never starts,
+    and `settle()` of that URI answers failure, so the write reports a failure, never a file the discard deletes. A
+    discard after `take()` does nothing; the write settles its row.
   - `settle(resolver, uri, ok, signal)` (in a `finally` at every exit of `copyFileToDocument()` and
-    `RecordingExport.transfer()`): no-op unless it claims. The task publishes only if, when it starts, `ok` and neither
-    `signal` nor `DocumentTransfer.isAborted` is set and the writer still waits: `update(IS_PENDING=0` (+
-    `DATE_EXPIRES` null on API 29)`)` must change 1 row, then the `DISPLAY_NAME` read back (MediaStore renames a clash
-    then) must be non-empty; any failure deletes the row (`ContentResolver.delete()`). The writer waits in 100 ms
-    slices and gives up at the teardown abort, or on a cancel that comes before the publication began (that task then
-    deletes); a cancel once `update()` began is too late, and the save stands. `update()` and `delete()` take no
-    signal, so teardown never joins one. A row left pending by a crash or an abort is hidden and expires (decided
-    limit, `android/README.md`).
-  - `discard()` never blocks: it claims and queues the delete. `publishedName()` is a lock-only read.
+    `RecordingExport.transfer()`): no-op unless it claims (true for a document that is no row of the app's, false for a
+    URI a discard took). The task publishes only if, when it starts, `ok` and neither `signal` nor
+    `DocumentTransfer.isAborted` is set and the writer still waits: `update(IS_PENDING=0` (+ `DATE_EXPIRES` null on API
+    29)`)` must change 1 row, then the `DISPLAY_NAME` read back (MediaStore renames a clash then) must be non-empty; any
+    failure deletes the row (`ContentResolver.delete()`). The writer waits in 100 ms slices and gives up at the teardown
+    abort, or on a cancel that comes before the publication began (that task then deletes); a cancel once `update()`
+    began is too late, and the save stands. `update()` and `delete()` take no signal, so teardown never joins one; an
+    interrupt of the writer counts as a cancel and stays raised. After the abort, a publication that already began
+    still completes on the worker although the save reported failure (the process is ending; the file is whole). A row
+    left pending by a crash or an abort is hidden and expires (decided limit, `android/README.md`).
+  - `discard()` never blocks: it claims, remembers and queues the delete; with no worker it deletes nothing (an
+    insert answers empty, a settle deletes its claimed row itself). `publishedName()` is a lock-only read.
   - Host: `savedDocumentName()` and `discardPendingDownload()` call `publishedName()` / `discard()` (any thread); the
     constructor calls `DownloadsSave.start()` with the held resolver, which keeps it for the picker's inserts and the
     discards and, on the executor, releases every persisted URI grant the app holds in the modes it holds, past any

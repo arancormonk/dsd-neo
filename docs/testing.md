@@ -190,9 +190,12 @@ manifest's `<queries>` names the GET_CONTENT intent the handler query needs.
 `DocumentCopies.kt` and `RecordingExport.kt` against a resolver stub that plays MediaStore's Download collection: the
 inserted values (the API 29 expiry through `Build.VERSION.SDK_INT`), the row published or deleted at every exit of
 both write entries, an update that changes no row or a name that cannot be read back failing the write, one row
-published or discarded but never both, a cancel before the publication (deleted, Cancelled) and after it began (saved),
-the teardown abort while an update is held (returns without it), the 16-name bound and the release of persisted
-grants. The abort case runs last: it is sticky for the process.
+published or discarded but never both, a discard that comes before the write began failing that write (the last 16
+remembered), a cancel during the copy (deleted, Cancelled), before the publication (deleted, Cancelled) and after it
+began (saved), an interrupt after it began (saved, interrupt kept), the teardown abort while an update is held
+(returns without it; the publication still completes), the 16-name bound and the release of persisted grants. The
+abort case runs last but one: it is sticky for the process. Last, with the worker shut down, an insert answers empty
+and a settle deletes the row it claimed.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a
