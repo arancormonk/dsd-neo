@@ -2285,7 +2285,7 @@ restore keeps it. While a Listen menu or sheet is open the tabs are greyed out a
 
 Saving a system (adding one, editing one, or saving a Signal search detection or a RadioReference import as one)
 switches Listen to **Systems**; saving a scan list, or saving it as a draft, switches it to **Scan lists**. A screen
-still open on top stays open (Signal search after **Save detection**, or a session's monitor), and Listen shows that
+still open on top stays open (Signal search after **Save as system**, or a session's monitor), and Listen shows that
 tab when you get back to it. Nothing else switches the tab: a save that fails, leaving an editor without saving,
 removing something, pinning or unpinning, and a start that is refused or fails all leave Listen on the tab it was on.
 

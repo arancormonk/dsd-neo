@@ -10717,7 +10717,7 @@ Qt Quick frontend (`src/ui/qt`):
   preference whether or not the store keeps it (the QML fixture's plain map keeps nothing), and ignores unknown ids.
   Home follows every `selected(id)` through `showSection()`. Main selects a tab after two flows (D6), selection only, so
   a screen still on top stays there and the restore waits for Home to show: the wizard's `saved` (every successful
-  wizard save: add, edit, Save detection, a RadioReference import, the site chooser's Edit, a session's Edit saved
+  wizard save: add, edit, Signal search's Save as system, a RadioReference import, the site chooser's Edit, a session's Edit saved
   system) calls `showSection("systems")` before Main closes the wizard (after pushing a running session's changed CSV
   files, as before), and `ScanListScreen.saved`, emitted only once `save()` or `saveDraft()` has persisted and just
   before `closed` (which also fires for a cancel and a removal), calls `showSection("scanLists")`. A failed save, a
@@ -10768,7 +10768,7 @@ Qt Quick frontend (`src/ui/qt`):
   Home suites select the tab a case needs; `tst_home_dongle_status.qml` `test_reveal_top` and
   `tst_home_pinned.qml` `test_refusal_revealed_when_scrolled` run `revealTop()` against an owed restore, a
   pending focus reveal and a focus handed back later; `tst_listen_tabs_flows.qml`, through Main: wizard add and edit
-  from either other tab and from History, Save detection under Signal search and Edit saved system under the monitor
+  from either other tab and from History, Save as system under Signal search and Edit saved system under the monitor
   selecting Systems for when Home shows, editor save and draft save saying `saved` then `closed` and selecting Scan
   lists, failed saves, cancels, removals and pins keeping the tab, a refusal and a host failure keeping the tab with the
   failure card above every tab's section, "Scan with other lists…" from the keyboard on a deep card with a failed start
