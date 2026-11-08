@@ -1119,18 +1119,17 @@ The older channel-scanning mode enabled with `-Y` instead uses `-t` as its dwell
 timer, so changing the app default or a saved-system hang-time override also
 changes that mode's rotation timing.
 
-Lists persist in `scan_lists.json`. Lists and entries have stable UIDs; system
-entries reference saved-system UIDs, so deleting or reordering a saved system
-cannot silently select a different system. A missing referenced system prevents
-start. An entry's UID is its target id in the generated CSV, so no two lists'
-entries share one: an entry that carries a UID another list already holds (a
-hand-edited or older `scan_lists.json`) gets a new UID when the lists load, the
-first list keeping the old one, and the repair is saved at once. History rows
-logged before that repair under the UID the two entries shared keep whatever name
-the app's map of scan-list ids gives them, since a history row records no list
-(a decided limit). Frequency entries select P25, DMR, NXDN48 or NXDN96 conventional decoding, or
-an analog channel: **NFM (analog)** (`nfm-conventional`) or **AM (analog)**
-(`am-conventional`).
+Lists persist in `scan_lists.json`. Lists and entries have stable UIDs; system entries
+reference saved-system UIDs, so deleting or reordering a saved system cannot silently
+select a different system. A missing referenced system prevents start. An entry's UID is
+its target id in the generated CSV, so no two lists' entries share one: an entry that
+carries a UID another list already holds (a hand-edited or older `scan_lists.json`) gets
+a new UID when the lists load, the first list keeping the old one, and the repair is
+saved at once. History rows logged before that repair under the UID the two entries
+shared keep whatever name the app's map of scan-list ids gives them, since a history row
+records no list (a decided limit). Frequency entries select P25, DMR, NXDN48 or NXDN96
+conventional decoding, or an analog channel: **NFM (analog)** (`nfm-conventional`) or
+**AM (analog)** (`am-conventional`).
 
 Saved P25 (`-ft`, `-f1`, `-mq`, `-^`), DMR (`-fs`), NXDN48 (`-fi`) and NXDN96
 (`-fn`) modes retain their trunked/conventional choice. `-mq` also selects CQPSK.

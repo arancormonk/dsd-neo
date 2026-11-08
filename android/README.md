@@ -2121,10 +2121,10 @@ of a saved system that scans its channel list) does not pause the scan: the scan
 to that entry and holds there, with the entry's own mode, keys and options (a paused
 scan resumes there). For a trunked system the scan goes to its control channel, which
 may not be the frequency you typed. **Hold** shows it held once the radio is there; tap
-**Hold** to let the scan go on. An entry that is avoided, or whose list is off, is not
-taken: **Go to** pauses the scan as usual and the message says why. Only **Go to** does
-this: on a paused scan, a tap, a drag or a step to the same frequency tunes it with your
-usual settings. The Go to sheet says so while a scan runs.
+**Hold** to let the scan go on. An entry that is avoided, or that no list switched on
+holds, is not taken: **Go to** pauses the scan as usual and the message says why. Only
+**Go to** does this: on a paused scan, a tap, a drag or a step to the same frequency
+tunes it with your usual settings. The Go to sheet says so while a scan runs.
 
 In Explore, when the frequency you are on is a scan list's entry or a saved system,
 Monitor (above Recent calls) and Spectrum (beside **Save**) offer to listen to it with
