@@ -1011,9 +1011,14 @@ main(int argc, char** argv) {
     assert(fwrite("DSS", 1, 3, f) == 3);
     fclose(f);
     assert(dsd_app_signal_search_store_open(journal.toUtf8().constData()) == 0);
+    // A torn tail is the journal's own load state (issue #828), for the frontend to word; the store's message is only
+    // ever a write failure.
+    dsd_app_search_file_load load = DSD_APP_SEARCH_FILE_OK;
+    assert(dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_HISTORY, &load, nullptr, nullptr, 0) == 0);
+    assert(load == DSD_APP_SEARCH_FILE_UNREADABLE);
     char error[256];
     dsd_app_signal_search_status_get(nullptr, error, sizeof(error));
-    assert(error[0]);
+    assert(!error[0]);
     assert(dsd_app_signal_search_history_get(hits.data(), hits.size()) == 1000);
     dsd_app_signal_search_store_close();
     // Failed storage retains the hit, surfaces a failure and retries on an explicit flush.

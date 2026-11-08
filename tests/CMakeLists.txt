@@ -23490,11 +23490,21 @@ add_test(
     COMMAND dsd-neo_test_engine_signal_search_protocol
 )
 
-# The native store keeps a failed history or avoid write owed until that file saves.
+# The native store keeps a failed history or avoid write owed until that file saves, and keeps a file it could not
+# read aside before replacing it (issue #828). The store source is compiled in with DSD_NEO_TEST_HOOKS for its open,
+# read, kept-name probe and after-move seams.
 add_executable(
     dsd-neo_test_app_signal_search_store
     ui/test_app_signal_search_store.c
     ${PROJECT_SOURCE_DIR}/src/app_control/signal_search_store.cpp
+)
+target_include_directories(
+    dsd-neo_test_app_signal_search_store
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_signal_search_store
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_app_signal_search_store

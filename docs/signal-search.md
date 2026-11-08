@@ -434,6 +434,26 @@ again. Detection history is not part of a backup. History and permanent avoids
 are saved separately, and a failed one stays reported and is retried by later
 saves until it is written.
 
+Files that can't be read. When the version 2 journal or the permanent avoid
+list (`signal-search-history.v1.avoids.json`) can't be read whole (it can't be
+opened, a read fails, a record is damaged or cut short, or the avoid list isn't
+a valid list), the app says so and shows what it read before the problem: the
+detections before it, or no permanent avoids. The file itself is not changed.
+The first time that file has to be saved, it is renamed to
+`<name>.unreadable-1` (or the next free number, up to 99) and a new file is
+written beside it, so nothing in it is lost; the app then names the kept file.
+A run that saves nothing leaves the file where it is, so a problem that goes
+away (a permission fixed, a storage error) reads normally at the next start. A
+folder or other non-file at that name is never moved or replaced: saving it
+stays reported until it is gone. While a kept version 2 journal exists and no
+new one does, the earlier releases' journal is not read again, so an
+interrupted save cannot bring old detections back. The earlier releases'
+journal is never moved: if it can't be read, the app says so and leaves it as
+it is. Leftover temporary files from an interrupted save are removed at start.
+Limit: if the app stops between keeping the avoid list and writing the new
+one, the next start shows no permanent avoids; the kept file still holds them.
+Kept files are never part of a backup or touched by a restore.
+
 A recording belongs to a detection through the call recording journal: each
 recording published from audio received on a detection's visit names it there
 (the `search` key; see `docs/code_map.md`, "Recording journal"). The detection
@@ -704,7 +724,13 @@ EDACS, M17) a frame interrupted part-way and check that nothing read across the 
 plays, publishes, captures or reports evidence.
 Persistence and Qt tests cover bounded history, duplicate suppression, failed
 writes/retry (history and avoids each stay owed until their own write succeeds,
-including when storage only recovers by close), recreation, fractional steps,
+including when storage only recovers by close), files that can't be read (each
+kept byte for byte by the first save and never touched by a run that saves
+nothing: damaged, torn, unopenable and read-error journals, invalid and
+NUL-holding avoid lists, a failure after the rename and its retry, a kept
+journal or an unknown name blocking the earlier journal, the earlier journal
+reported and left in place, folders and FIFOs never moved, leftover temporary
+files), recreation, fractional steps,
 ambiguous matches, nested channel maps, immutable saves (including each source's own
 receiver settings and the detection's gain mode reaching the saved system), phone
 text scaling and navigation ownership. They also check that connection and USB-access

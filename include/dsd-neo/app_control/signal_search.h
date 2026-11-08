@@ -20,13 +20,50 @@ int dsd_app_signal_search_control(const dsd_signal_search_control* control);
  * @p path names the version 1 journal, which is only ever read: the store keeps version 2 records (site, slot and
  * encryption included) in its own journal beside it (a trailing ".v1" becomes ".v2", else ".v2" is appended), and
  * the avoid list in "<path>.avoids.json". While no version 2 journal exists, the version 1 rows load with those
- * details empty and the first write creates the version 2 journal from them; once it exists it alone is read. */
+ * details empty and the first write creates the version 2 journal from them; once it exists it alone is read.
+ * A version 2 journal or avoid list that did not load whole (it could not be opened or read, or is damaged, torn or
+ * invalid) is never replaced: before its first replacement it is renamed, without replacing anything, to
+ * "<name>.unreadable-N" (N = 1..99). A missing version 2 journal beside a kept one keeps the version 1 rows out, and a
+ * version 1 journal that cannot be read is reported and left in place. Opening also removes this store's own
+ * temporary files a crash left behind. dsd_app_signal_search_store_file_state() reports each file. */
 int dsd_app_signal_search_store_open(const char* path);
 /** Stop the worker after one last attempt at any write owed. The store then holds no permanent avoids, and neither does
  * the runtime's permanent list, until the next open loads the file again. */
 void dsd_app_signal_search_store_close(void);
 void dsd_app_signal_search_store_flush(void);
+/** @p error receives the store's write failure ("…could not be saved; retained in memory") while a history or avoid
+ * write is owed, else "". How each file loaded is dsd_app_signal_search_store_file_state()'s, for the frontend to
+ * word. */
 void dsd_app_signal_search_status_get(dsd_signal_search_status* status, char* error, size_t capacity);
+
+/** The files dsd_app_signal_search_store_file_state() reports on. */
+typedef enum {
+    DSD_APP_SEARCH_STORE_HISTORY = 0, /**< the version 2 journal */
+    DSD_APP_SEARCH_STORE_AVOIDS = 1,  /**< the permanent avoid list */
+    DSD_APP_SEARCH_STORE_V1 = 2       /**< the version 1 journal, only ever read */
+} dsd_app_search_store_file;
+
+/** How the open found a store file, and whether one it could not read has been kept aside since. */
+typedef enum {
+    /** Read whole. */
+    DSD_APP_SEARCH_FILE_OK,
+    /** Not there (or, for the version 1 journal, not read because a version 2 journal or a kept one exists); also a
+     * file that could not be read and was gone by its first replacement. */
+    DSD_APP_SEARCH_FILE_MISSING,
+    /** Could not be opened or read, or damaged, torn or invalid: what loaded before the failure is shown, and the file
+     * stays as it is until it can be kept aside (the version 1 journal never is). Also a missing version 2 journal
+     * whose kept names could not all be checked. */
+    DSD_APP_SEARCH_FILE_UNREADABLE,
+    /** Kept aside under the reported name, either by this run's first replacement or, for a missing version 2
+     * journal, by an earlier run (the newest kept name is reported). */
+    DSD_APP_SEARCH_FILE_KEPT
+} dsd_app_search_file_load;
+
+/** One store file's state (@p which a dsd_app_search_store_file) under the store's lock: its load state, whether its
+ * write is owed after a failure (always 0 for the version 1 journal) and the base name (no folder) it was kept aside as,
+ * "" unless DSD_APP_SEARCH_FILE_KEPT. Any output may be NULL. @return 0, or -1 for an unknown @p which. */
+int dsd_app_signal_search_store_file_state(int which, dsd_app_search_file_load* state, int* write_failed,
+                                           char* kept_name, size_t cap);
 /** Newest first; consistent copied records, retained even without any frontend screen. */
 size_t dsd_app_signal_search_history_get(dsd_signal_search_hit* hits, size_t capacity);
 /** Bumped by every history change (upsert, trim, reload); status refreshes, and a republished detection whose

@@ -7,9 +7,11 @@
 #include <cerrno>
 #include <condition_variable>
 #include <cstdio>
+#include <cstring>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <mutex>
@@ -20,10 +22,31 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#ifdef DSD_NEO_TEST_HOOKS
+#include "signal_search_store_test_hooks.h"
+#endif
 
 namespace {
 using Hit = dsd_signal_search_hit;
 using Bytes = std::vector<unsigned char>;
+using FileLoad = dsd_app_search_file_load;
+constexpr int history_file = DSD_APP_SEARCH_STORE_HISTORY;
+constexpr int avoids_file = DSD_APP_SEARCH_STORE_AVOIDS;
+constexpr int v1_file = DSD_APP_SEARCH_STORE_V1;
+constexpr int file_count = 3;
+/* A file the store could not read is kept as "<name>.unreadable-1" .. "-99", the first name that is free. */
+constexpr int kept_limit = 99;
+
+#ifdef DSD_NEO_TEST_HOOKS
+struct TestHooks {
+    int fail_open[file_count] = {0, 0, 0};
+    long fail_read[file_count] = {-1, -1, -1};
+    int fail_probe = 0;
+    void (*after_aside)(const char*, const char*) = nullptr;
+};
+
+TestHooks test_hooks;
+#endif
 /* Record magics, little endian. Version 2 appends the checked site, call slot and encryption to version 1's body.
    Each version has its own file: version 2 records live in the version 2 journal, and the version 1 journal an
    earlier release keeps writing is only ever read (migrated from while no version 2 journal exists). */
@@ -237,11 +260,15 @@ parse_avoid_frequency(const char*& p, uint32_t& frequency) {
     return true;
 }
 
-/* A frequency the file repeats is kept once (issue #828 A-B6), so one removal lifts it; more than
-   DSD_SEARCH_MAX_AVOIDS different frequencies is not a list the store takes. */
+/* @p text is the file's @p n bytes followed by a NUL. A NUL inside them is not a list the store takes (issue #828: the
+   text after it would be dropped), nor are more than DSD_SEARCH_MAX_AVOIDS different frequencies; a frequency the file
+   repeats is kept once (A-B6), so one removal lifts it. */
 bool
-parse_avoids(const char* p, std::vector<uint32_t>& result) {
-    p = skip_space(p);
+parse_avoids(const char* text, size_t n, std::vector<uint32_t>& result) {
+    if (std::memchr(text, '\0', n) != nullptr || text[n] != '\0') {
+        return false;
+    }
+    const char* p = skip_space(text);
     if (*p++ != '[') {
         return false;
     }
@@ -270,6 +297,230 @@ parse_avoids(const char* p, std::vector<uint32_t>& result) {
     }
 }
 
+/* The name after @p path's last folder separator. */
+size_t
+name_start(const std::string& path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    const size_t cut = path.find_last_of("/\\");
+#else
+    const size_t cut = path.find_last_of('/');
+#endif
+    return cut == std::string::npos ? 0 : cut + 1;
+}
+
+std::string
+base_name(const std::string& path) {
+    return path.substr(name_start(path));
+}
+
+std::string
+kept_path(const std::string& path, int n) {
+    return path + ".unreadable-" + std::to_string(n);
+}
+
+bool
+confirmed_absent(int err) {
+    return err == ENOENT || err == ENOTDIR;
+}
+
+/* Every load opens through here: a regular file only, without following a final symbolic link and without waiting on a
+   FIFO (B-10/11). */
+FILE*
+open_existing(const std::string& path, int which) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (test_hooks.fail_open[which]) {
+        errno = test_hooks.fail_open[which];
+        return nullptr;
+    }
+#else
+    (void)which;
+#endif
+    errno = 0;
+    return dsd_fopen_existing_regular_file(path.c_str(), "rb");
+}
+
+/* What an open_existing() that just failed says about the file: only a confirmed absence is missing. */
+FileLoad
+open_failure() {
+    return confirmed_absent(errno) ? DSD_APP_SEARCH_FILE_MISSING : DSD_APP_SEARCH_FILE_UNREADABLE;
+}
+
+/* Reads one store file, telling a read error from its end: a short fread() is either, and only ferror() says which
+   (B-4). */
+class Reader {
+  public:
+    Reader(FILE* file, int which) : f_(file) {
+#ifdef DSD_NEO_TEST_HOOKS
+        fail_after_ = test_hooks.fail_read[which];
+#else
+        (void)which;
+#endif
+    }
+
+    size_t
+    read(void* out, size_t n) {
+        size_t want = n;
+#ifdef DSD_NEO_TEST_HOOKS
+        if (fail_after_ >= 0 && at_ + n > (size_t)fail_after_) {
+            want = (size_t)fail_after_ > at_ ? (size_t)fail_after_ - at_ : 0;
+            failed_ = true;
+        }
+#endif
+        const size_t got = want ? fread(out, 1, want, f_) : 0;
+#ifdef DSD_NEO_TEST_HOOKS
+        at_ += got;
+#endif
+        if (ferror(f_)) {
+            failed_ = true;
+        }
+        return got;
+    }
+
+    bool
+    failed() const {
+        return failed_;
+    }
+
+  private:
+    FILE* f_;
+    bool failed_ = false;
+#ifdef DSD_NEO_TEST_HOOKS
+    size_t at_ = 0;
+    long fail_after_ = -1;
+#endif
+};
+
+/* Whether kept name @p n of a version 2 journal exists: 1, 0, or -1 when that cannot be told. */
+int
+probe_kept(const std::string& name, int n) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (test_hooks.fail_probe == n) {
+        errno = EACCES;
+        return -1;
+    }
+#else
+    (void)n;
+#endif
+    return dsd_path_exists_nofollow(name.c_str());
+}
+
+/* What renaming a marked file aside found. */
+enum class Aside { None, Kept, Gone, Refused };
+
+/* Renames the marked @p path, never following it, to its first free kept name, which @p kept receives as a base name.
+   Gone when the path is confirmed absent (removed behind the store's back: nothing is left to keep). Refused, leaving
+   everything as it was, when it cannot be told whether the path exists, when it is a folder, FIFO or socket (or a link
+   to one), which is never moved or replaced, or when no kept name is free. A no-replace rename that made the new name
+   but could not remove the old one (its out_source_left) has still kept the file: the replacement then takes the old
+   name. */
+Aside
+keep_aside(const std::string& path, std::string& kept) {
+    const int present = dsd_path_exists_nofollow(path.c_str());
+    if (present == 0) {
+        return Aside::Gone;
+    }
+    dsd_stat_t st;
+    if (present < 0 || (dsd_stat_path(path.c_str(), &st) == 0 && !dsd_stat_is_regular(&st))) {
+        return Aside::Refused;
+    }
+    for (int n = 1; n <= kept_limit; ++n) {
+        const std::string to = kept_path(path, n);
+        if (dsd_rename_noreplace(path.c_str(), to.c_str(), nullptr) == 0) {
+#ifdef DSD_NEO_TEST_HOOKS
+            if (test_hooks.after_aside) {
+                test_hooks.after_aside(path.c_str(), to.c_str());
+            }
+#endif
+            kept = base_name(to);
+            return Aside::Kept;
+        }
+        if (errno != EEXIST) {
+            return Aside::Refused;
+        }
+    }
+    return Aside::Refused;
+}
+
+/* How one file's write went, and what renaming it aside first found. */
+struct Replaced {
+    bool ok = false;
+    Aside aside = Aside::None;
+    std::string kept;
+};
+
+/* Replaces @p target with what @p write puts in a temporary file beside it, in the order that keeps a file the store
+   could not read (@p marked): (1) write and sync the temporary file, (2) rename the marked target aside, (3) replace
+   the target. A failure at (1) or (2) moves nothing; one at (3) leaves the file kept. */
+template <typename Write>
+Replaced
+replace_file(const std::string& target, bool marked, Write write) {
+    Replaced out;
+    char temp[4096];
+    FILE* f = dsd_fopen_private_temp_for_replace(target.c_str(), temp, sizeof(temp), "wb");
+    if (!f) {
+        return out;
+    }
+    bool ok = write(f);
+    if (fflush(f) != 0 || dsd_fsync(dsd_fileno(f)) != 0) {
+        ok = false;
+    }
+    if (fclose(f) != 0) {
+        ok = false;
+    }
+    if (ok && marked) {
+        out.aside = keep_aside(target, out.kept);
+        ok = out.aside == Aside::Kept || out.aside == Aside::Gone;
+    }
+    if (ok) {
+        ok = dsd_replace_file_with_temp(temp, target.c_str()) == 0;
+    }
+    if (!ok) {
+        (void)dsd_remove_file(temp);
+    }
+    out.ok = ok;
+    return out;
+}
+
+/* The temporary files of the store's own targets ("<target>.tmp.XXXXXX", dsd_fopen_private_temp_for_replace()) that a
+   crash between their creation and their rename left behind (B-15). */
+struct TempSweep {
+    std::vector<std::string> prefixes, found;
+};
+
+int
+collect_temp(const char* name, void* user) {
+    auto* sweep = static_cast<TempSweep*>(user);
+    const std::string entry(name);
+    if (std::any_of(sweep->prefixes.begin(), sweep->prefixes.end(), [&entry](const std::string& prefix) {
+            return entry.size() == prefix.size() + 6 && entry.compare(0, prefix.size(), prefix) == 0;
+        })) {
+        sweep->found.push_back(entry);
+    }
+    return 0;
+}
+
+/* Removes those of @p targets, which share one folder. Nothing else there is touched. */
+void
+sweep_temps(const std::vector<std::string>& targets) {
+    if (targets.empty()) {
+        return;
+    }
+    const size_t start = name_start(targets.front());
+    const std::string prefix = targets.front().substr(0, start);
+    std::string folder = prefix.empty() ? std::string(".") : prefix.substr(0, start - 1);
+    if (folder.empty()) {
+        folder = prefix; // the root folder
+    }
+    TempSweep sweep;
+    for (const std::string& target : targets) {
+        sweep.prefixes.push_back(base_name(target) + ".tmp.");
+    }
+    (void)dsd_dir_list(folder.c_str(), collect_temp, &sweep);
+    for (const std::string& name : sweep.found) {
+        (void)dsd_remove_file((prefix + name).c_str());
+    }
+}
+
 bool
 append_history(const std::string& path, const std::vector<Hit>& batch) {
     FILE* f = dsd_fopen_private(path.c_str(), "ab");
@@ -286,22 +537,56 @@ append_history(const std::string& path, const std::vector<Hit>& batch) {
     return ok;
 }
 
+/* One store file's state (issue #828): how the open found it, whether it is marked (it did not load whole, so its
+   first replacement renames it aside first; only that clears the mark, or its confirmed absence then), the base name
+   it was kept as, and whether its write is owed. */
+struct StoreFile {
+    FileLoad load = DSD_APP_SEARCH_FILE_MISSING;
+    bool marked = false;
+    bool write_failed = false;
+    std::string kept;
+
+    void
+    loaded(FileLoad state) {
+        load = state;
+        marked = state == DSD_APP_SEARCH_FILE_UNREADABLE;
+    }
+
+    /* Under the lock, after this file's write: a move clears the mark for good, so a replacement that fails after it
+       leaves the file kept and the write owed, and the retry only writes. */
+    void
+    written(const Replaced& result) {
+        write_failed = !result.ok;
+        if (result.aside == Aside::Kept) {
+            marked = false;
+            load = DSD_APP_SEARCH_FILE_KEPT;
+            kept = result.kept;
+        } else if (result.aside == Aside::Gone) {
+            marked = false;
+            load = DSD_APP_SEARCH_FILE_MISSING;
+        }
+    }
+};
+
 struct Store {
     std::mutex mutex;
     std::condition_variable wake, flushed;
     std::thread worker;
     /* `base` is the path the store was opened with: the version 1 journal, and the avoid list's prefix (unchanged, so
        every release shares one avoid list). `path` is the version 2 journal this store reads and writes. */
-    std::string base, path, avoid_path, error;
+    std::string base, path, avoid_path;
     std::vector<Hit> history, pending;
     /* The permanent avoids. The runtime's permanent list, which the running search reads, is set from it under the
        mutex at every change, so the two never disagree and only this store writes that list (issue #828). */
     std::vector<uint32_t> avoids;
     dsd_signal_search_status status{};
     bool stop = false, dirty_avoids = false, busy = false, compact = true;
-    /* A file whose write failed stays owed until its own write succeeds; every worker pass retries it. `retry` wakes
-       the worker for one more attempt (flush, close) without looping on storage that keeps failing. */
-    bool history_failed = false, avoids_failed = false, retry = false;
+    /* `retry` wakes the worker for one more attempt at a write owed (flush, close) without looping on storage that
+       keeps failing. */
+    bool retry = false;
+    /* Indexed by dsd_app_search_store_file. A file whose write failed stays owed until its own write succeeds; every
+       worker pass retries it. */
+    StoreFile files[file_count];
     size_t records = 0;
     /* Bumped on every change a frontend shows: history rows (upserts, trims, reloads), the permanent avoids, and
        which session's avoid list is shown (session_avoids_shown_locked()); the runtime's session revision adds the
@@ -310,12 +595,17 @@ struct Store {
 
     ~Store() { close(); }
 
+    bool
+    owed() const {
+        return files[history_file].write_failed || files[avoids_file].write_failed;
+    }
+
     void
     close() {
         {
             std::lock_guard<std::mutex> lock(mutex);
             stop = true;
-            if (history_failed || avoids_failed) {
+            if (owed()) {
                 retry = true;
             }
             wake.notify_all();
@@ -325,28 +615,31 @@ struct Store {
         }
     }
 
-    /* Reads every record of @p version from @p f, stopping with an error at the first record that is incomplete,
-       damaged or of any other version. */
-    void
-    read_journal(FILE* f, uint32_t version) {
+    /* Reads every record of @p version from @p f: whole at a clean end; unreadable at a read error or at the first
+       record that is incomplete, damaged or of any other version, keeping the records before it (a damaged or torn
+       journal is kept aside too, so nothing after the damage is lost: decision D3). */
+    FileLoad
+    read_journal(FILE* f, uint32_t version, int which) {
         const size_t size = version == 2 ? encode(Hit{}).size() : v1_size();
+        Reader in{f, which};
         for (;;) {
             Bytes header(12);
-            size_t got = fread(header.data(), 1, header.size(), f);
+            const size_t got = in.read(header.data(), header.size());
+            if (in.failed()) {
+                return DSD_APP_SEARCH_FILE_UNREADABLE;
+            }
             if (!got) {
-                break;
+                return DSD_APP_SEARCH_FILE_OK;
             }
             size_t at = 0;
             if (got != header.size() || take(header, at, 4) != (version == 2 ? magic : magic_v1)
                 || take(header, at, 4) != size) {
-                error = "History journal has an incomplete or unsupported record";
-                break;
+                return DSD_APP_SEARCH_FILE_UNREADABLE;
             }
             uint32_t sum = (uint32_t)take(header, at, 4);
             Bytes bytes(size);
-            if (fread(bytes.data(), 1, size, f) != size || checksum(bytes) != sum) {
-                error = "History journal has an incomplete or damaged record";
-                break;
+            if (in.read(bytes.data(), size) != size || checksum(bytes) != sum) {
+                return DSD_APP_SEARCH_FILE_UNREADABLE;
             }
             Hit h = decode(bytes, version);
             if (h.session_id && h.hit_id && h.frequency_hz) {
@@ -357,26 +650,79 @@ struct Store {
         }
     }
 
+    /* With no version 2 journal, whether the version 1 rows may load: not while a kept version 2 journal exists, which
+       a crash between renaming it aside and replacing it leaves alone. Every kept name is checked (one may have been
+       removed), and one that cannot be checked counts as kept. The history then reports the newest kept name, or
+       stays unreadable when only unknowns were found. */
+    bool
+    v1_allowed() {
+        bool unknown = false;
+        std::string newest;
+        for (int n = 1; n <= kept_limit; ++n) {
+            const std::string name = kept_path(path, n);
+            const int found = probe_kept(name, n);
+            if (found > 0) {
+                newest = name;
+            } else if (found < 0) {
+                unknown = true;
+            }
+        }
+        if (!newest.empty()) {
+            files[history_file].load = DSD_APP_SEARCH_FILE_KEPT;
+            files[history_file].kept = base_name(newest);
+            return false;
+        }
+        if (unknown) {
+            files[history_file].loaded(DSD_APP_SEARCH_FILE_UNREADABLE);
+            return false;
+        }
+        return true;
+    }
+
     /* The version 2 journal when it exists, even empty or damaged; otherwise the rows of the version 1 journal, which
        the first write after opening (a compaction) copies into a new version 2 journal. The version 1 journal is never
-       written, replaced or removed. */
+       written, replaced, moved or removed: one that cannot be read whole is only reported (B-9). */
     void
     load_history() {
-        errno = 0;
-        FILE* f = dsd_fopen_existing_regular_file(path.c_str(), "rb");
+        FILE* f = open_existing(path, history_file);
         if (f) {
-            read_journal(f, 2);
+            files[history_file].loaded(read_journal(f, 2, history_file));
             fclose(f);
             return;
         }
-        if (errno != ENOENT) {
-            error = "History journal could not be read";
+        files[history_file].loaded(open_failure());
+        if (files[history_file].load != DSD_APP_SEARCH_FILE_MISSING || !v1_allowed()) {
             return;
         }
-        f = dsd_fopen_private(base.c_str(), "rb");
-        if (f) {
-            read_journal(f, 1);
-            fclose(f);
+        f = open_existing(base, v1_file);
+        if (!f) {
+            files[v1_file].load = open_failure();
+            return;
+        }
+        files[v1_file].load = read_journal(f, 1, v1_file);
+        fclose(f);
+    }
+
+    /* All or nothing: a list that cannot be read whole loads empty and is marked. */
+    void
+    load_avoids() {
+        FILE* f = open_existing(avoid_path, avoids_file);
+        if (!f) {
+            files[avoids_file].loaded(open_failure());
+            return;
+        }
+        char buf[16385];
+        Reader in{f, avoids_file};
+        const size_t n = in.read(buf, sizeof(buf) - 1);
+        const bool whole = !in.failed() && n < sizeof(buf) - 1;
+        buf[n] = '\0';
+        fclose(f);
+        std::vector<uint32_t> parsed;
+        if (whole && parse_avoids(buf, n, parsed)) {
+            avoids = std::move(parsed);
+            files[avoids_file].loaded(DSD_APP_SEARCH_FILE_OK);
+        } else {
+            files[avoids_file].loaded(DSD_APP_SEARCH_FILE_UNREADABLE);
         }
     }
 
@@ -387,119 +733,75 @@ struct Store {
         records = 0;
         ++history_revision;
         ++avoids_revision;
+        std::fill(files, files + file_count, StoreFile{});
         load_history();
-        FILE* f = dsd_fopen_private(avoid_path.c_str(), "rb");
-        if (!f) {
-            return;
-        }
-        char buf[16385];
-        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-        bool ok = !ferror(f) && n < sizeof(buf) - 1;
-        buf[n] = '\0';
-        fclose(f);
-        std::vector<uint32_t> parsed;
-        if (ok && parse_avoids(buf, parsed)) {
-            avoids = std::move(parsed);
-        } else {
-            error = "Invalid permanent avoid store";
-        }
+        load_avoids();
     }
 
-    bool
-    compact_history(const std::vector<Hit>& all) const {
-        char temp[4096];
-        FILE* f = dsd_fopen_private_temp_for_replace(path.c_str(), temp, sizeof(temp), "wb");
-        if (!f) {
-            return false;
-        }
-        bool ok = std::all_of(all.begin(), all.end(), [f](const Hit& h) { return write_hit(f, h); });
-        if (fflush(f) != 0 || dsd_fsync(dsd_fileno(f)) != 0) {
-            ok = false;
-        }
-        if (fclose(f) != 0) {
-            ok = false;
-        }
-        if (ok) {
-            ok = dsd_replace_file_with_temp(temp, path.c_str()) == 0;
-        }
-        if (!ok) {
-            remove(temp);
-        }
-        return ok;
+    Replaced
+    compact_history(const std::vector<Hit>& all, bool marked) const {
+        return replace_file(path, marked, [&all](FILE* f) {
+            return std::all_of(all.begin(), all.end(), [f](const Hit& h) { return write_hit(f, h); });
+        });
     }
 
-    bool
-    save_avoids(const std::vector<uint32_t>& list) const {
-        char temp[4096];
-        FILE* f = dsd_fopen_private_temp_for_replace(avoid_path.c_str(), temp, sizeof(temp), "wb");
-        if (!f) {
-            return false;
-        }
-        bool ok = DSD_FPRINTF(f, "[") >= 0;
-        for (size_t i = 0; i < list.size(); ++i) {
-            if (DSD_FPRINTF(f, "%s%u", i ? "," : "", list[i]) < 0) {
-                ok = false;
+    Replaced
+    save_avoids(const std::vector<uint32_t>& list, bool marked) const {
+        return replace_file(avoid_path, marked, [&list](FILE* f) {
+            bool ok = DSD_FPRINTF(f, "[") >= 0;
+            for (size_t i = 0; i < list.size(); ++i) {
+                if (DSD_FPRINTF(f, "%s%u", i ? "," : "", list[i]) < 0) {
+                    ok = false;
+                }
             }
-        }
-        if (DSD_FPRINTF(f, "]\n") < 0 || fflush(f) != 0 || dsd_fsync(dsd_fileno(f)) != 0) {
-            ok = false;
-        }
-        if (fclose(f) != 0) {
-            ok = false;
-        }
-        if (ok) {
-            ok = dsd_replace_file_with_temp(temp, avoid_path.c_str()) == 0;
-        }
-        if (!ok) {
-            remove(temp);
-        }
-        return ok;
+            return DSD_FPRINTF(f, "]\n") >= 0 && ok;
+        });
     }
 
-    /* Saving one file settles nothing about the other: the error clears only once neither is owed. A failed history
-       write leaves `compact` set, so its retry rewrites every retained record once instead of appending again. */
+    /* Saving one file settles nothing about the other. A failed history write leaves `compact` set, so its retry
+       rewrites every retained record once instead of appending again. */
     void
-    record_write_result(bool write_history, bool history_ok, bool write_avoids, bool avoids_ok, size_t saved_records) {
-        const bool owed = history_failed || avoids_failed;
+    record_write_result(bool write_history, const Replaced& history_result, bool write_avoids,
+                        const Replaced& avoids_result, size_t saved_records) {
         if (write_history) {
-            history_failed = !history_ok;
-            compact = !history_ok;
-            if (history_ok) {
+            files[history_file].written(history_result);
+            compact = !history_result.ok;
+            if (history_result.ok) {
                 records = saved_records;
             }
         }
         if (write_avoids) {
-            avoids_failed = !avoids_ok;
-        }
-        if (history_failed || avoids_failed) {
-            error = "Signal search history or avoids could not be saved; retained in memory";
-        } else if (owed) {
-            error.clear();
+            files[avoids_file].written(avoids_result);
         }
     }
 
     /* One worker pass, entered and left holding @p lock: takes the pending detections and every file still owed,
-       writes them unlocked, and records how each write went. */
+       writes them unlocked, and records how each write went. A marked history is always replaced, never appended to. */
     void
     write_pass(std::unique_lock<std::mutex>& lock) {
         std::vector<Hit> batch;
         batch.swap(pending);
         auto all = history;
         auto avoid_copy = avoids;
-        const bool write_history = !batch.empty() || history_failed;
-        const bool write_avoids = dirty_avoids || avoids_failed;
+        const bool write_history = !batch.empty() || files[history_file].write_failed;
+        const bool write_avoids = dirty_avoids || files[avoids_file].write_failed;
+        const bool history_marked = files[history_file].marked, avoids_marked = files[avoids_file].marked;
         dirty_avoids = false;
         retry = false;
-        bool replace = compact || records + batch.size() > 4000;
+        bool replace = compact || history_marked || records + batch.size() > 4000;
         busy = true;
         lock.unlock();
-        bool history_ok = true;
+        Replaced history_result{true, Aside::None, {}};
         if (write_history) {
-            history_ok = replace ? compact_history(all) : append_history(path, batch);
+            history_result =
+                replace ? compact_history(all, history_marked) : Replaced{append_history(path, batch), Aside::None, {}};
         }
-        const bool avoids_ok = !write_avoids || save_avoids(avoid_copy);
+        Replaced avoids_result{true, Aside::None, {}};
+        if (write_avoids) {
+            avoids_result = save_avoids(avoid_copy, avoids_marked);
+        }
         lock.lock();
-        record_write_result(write_history, history_ok, write_avoids, avoids_ok,
+        record_write_result(write_history, history_result, write_avoids, avoids_result,
                             replace ? all.size() : records + batch.size());
         busy = false;
         flushed.notify_all();
@@ -565,11 +867,9 @@ dsd_app_signal_search_store_open(const char* path) {
     store.avoid_path = store.base + ".avoids.json";
     store.stop = false;
     store.compact = true;
-    store.history_failed = false;
-    store.avoids_failed = false;
     store.retry = false;
-    store.error.clear();
     store.pending.clear();
+    sweep_temps({store.path, store.avoid_path});
     store.load();
     avoids_publish_locked();
     store.worker = std::thread([] { store.run(); });
@@ -594,7 +894,7 @@ dsd_app_signal_search_store_flush(void) {
     if (!store.worker.joinable()) {
         return;
     }
-    if (store.history_failed || store.avoids_failed) {
+    if (store.owed()) {
         store.retry = true;
     }
     store.wake.notify_all();
@@ -627,9 +927,57 @@ dsd_app_signal_search_status_get(dsd_signal_search_status* status, char* error, 
         *status = store.status;
     }
     if (error && capacity) {
-        DSD_SNPRINTF(error, capacity, "%s", store.error.c_str());
+        DSD_SNPRINTF(error, capacity, "%s",
+                     store.owed() ? "Signal search history or avoids could not be saved; retained in memory" : "");
     }
 }
+
+extern "C" int
+dsd_app_signal_search_store_file_state(int which, dsd_app_search_file_load* state, int* write_failed, char* kept_name,
+                                       size_t cap) {
+    if (which < 0 || which >= file_count) {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(store.mutex);
+    const StoreFile& file = store.files[which];
+    if (state) {
+        *state = file.load;
+    }
+    if (write_failed) {
+        *write_failed = file.write_failed ? 1 : 0;
+    }
+    if (kept_name && cap) {
+        DSD_SNPRINTF(kept_name, cap, "%s", file.load == DSD_APP_SEARCH_FILE_KEPT ? file.kept.c_str() : "");
+    }
+    return 0;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+extern "C" void
+dsd_app_signal_search_store_test_fail_open(int which, int err) {
+    if (which >= 0 && which < file_count) {
+        test_hooks.fail_open[which] = err;
+    }
+}
+
+extern "C" void
+dsd_app_signal_search_store_test_fail_read(int which, long after) {
+    if (which >= 0 && which < file_count) {
+        test_hooks.fail_read[which] = after;
+    }
+}
+
+extern "C" void
+dsd_app_signal_search_store_test_fail_probe(int n) {
+    test_hooks.fail_probe = n;
+}
+
+extern "C" void
+dsd_app_signal_search_store_test_after_aside(void (*fn)(const char* path, const char* kept)) {
+    std::lock_guard<std::mutex> lock(store.mutex);
+    test_hooks.after_aside = fn;
+}
+#endif
 
 static size_t
 history_copy_locked(Hit* hits, size_t capacity) {

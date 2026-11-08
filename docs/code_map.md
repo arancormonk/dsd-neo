@@ -4134,17 +4134,45 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     no version 2 journal exists, the version 1 journal's rows load with those details empty
     and the first write after opening (always a compaction) creates the version 2 journal
     from them; once it exists, even empty or damaged, it alone is read. The version 1
-    journal is never written, replaced or removed, so an earlier release keeps its own
-    history (rows it adds later are not migrated). Each file accepts only its own
+    journal is never written, replaced, moved or removed, so an earlier release keeps its
+    own history (rows it adds later are not migrated). Each file accepts only its own
     version's magic; another magic, a size that does not match or a bad checksum stops
-    the load with an error, keeping the records before it. Loaded texts are cut at their
+    the load, keeping the records before it. Loaded texts are cut at their
     last byte and an out-of-range slot loads as 0. Texts are encoded up to their NUL and
     zero-padded, and a republished hit whose encoding is unchanged neither advances the
     history revision nor queues a write, so only new checked content does. Detection
-    history (either file) is not part of a backup. History
+    history (either file) is not part of a backup.
+    Unreadable files (issue #828, spec "keep-aside rule"): all three loads open through
+    `dsd_fopen_existing_regular_file()` (regular files only, no symlink followed, no FIFO
+    wait) and read through `Reader`, which tells a read error (`ferror()`) from the end of
+    the file. Each file has a `StoreFile` state under the mutex: `load`
+    (`dsd_app_search_file_load`: OK, MISSING only on ENOENT/ENOTDIR, UNREADABLE, KEPT),
+    `marked`, `kept` and `write_failed`, read with
+    `dsd_app_signal_search_store_file_state()` (Qt words it; the
+    `dsd_app_signal_search_status_get()` string is only the write failure). A load that
+    did not read the whole file (open or read error, damaged or torn journal, invalid,
+    oversized or NUL-holding avoid list) marks it; the rows before the failure stay shown
+    and an avoid list loads empty (and is pushed to the runtime as such). The first
+    replacement of a marked file (`replace_file()`, worker, unlocked) writes and syncs the
+    temp, then `keep_aside()` renames the path, never followed, with
+    `dsd_rename_noreplace()` to `<name>.unreadable-N` (first free N of 1..99; a source
+    left behind counts as kept), then replaces it. A failed temp or move changes nothing
+    (the write stays owed and the mark stays); the path confirmed absent at the move
+    clears the mark (state MISSING); a folder, FIFO or socket there (or a link to one) and
+    an unknown existence are never moved or replaced; a failed replacement after the move
+    leaves the state KEPT and its retry only writes. Lazy: a run that writes nothing moves
+    nothing. A marked history is always compacted, never appended to. A missing version 2
+    journal reads the version 1 rows only when none of `<v2>.unreadable-1..99` exists
+    (`dsd_path_exists_nofollow()`, all 99 probed, a dangling link counts, an unknown
+    blocks): a crash between the move and the replacement then leaves an empty history
+    reporting the newest kept name, not the old rows. The avoid list has no such probe: the
+    same crash loads it empty with the original kept (documented limit). A version 1
+    journal that cannot be read whole is only reported (its rows before the failure
+    migrate). `dsd_app_signal_search_store_open()` first removes its own
+    `<v2 or avoids>.tmp.XXXXXX` leftovers (`sweep_temps()`, exact names only). History
     and permanent avoids are separate files with separate write state: one whose write
-    failed stays owed, with its error, until its own write succeeds, so saving the other
-    neither retires it nor clears the error. Each later worker pass, flush and close
+    failed stays owed until its own write succeeds, so saving the other neither retires
+    it nor clears the message. Each later worker pass, flush and close
     retries it; a history retry compacts every retained record, so nothing is appended
     twice. The worker survives QML teardown; it never reads live decoder state. History
     and avoid revisions let frontends copy history only when it changed. Avoids (issue
