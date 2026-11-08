@@ -8,9 +8,11 @@
  * @brief Library of imported CSV files (channel maps, talkgroups, keys, P25 band plans, radio IDs), persisted as JSON.
  *
  * The wizard's pickers and the imports screen share this model: importing copies
- * the picked document into durable app storage through DecoderHost::importDocument(),
- * dry-run validates it for row counts, and records one library row per stored file.
- * Saved systems reference stored paths, so one file can serve several systems.
+ * the picked document into a private staging folder on the import worker
+ * (ImportService), dry-run validates it there for row counts, then publishes it
+ * into durable app storage on the Qt thread and records one library row per
+ * stored file. Saved systems reference stored paths, so one file can serve
+ * several systems.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_IMPORTED_FILES_MODEL_H_
@@ -19,6 +21,8 @@
 #include <QAbstractListModel>
 #include <QList>
 #include <QObject>
+#include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -26,15 +30,21 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
 struct CsvBundleImport;
 
 class DecoderHost;
+class ImportService;
 
 class ImportedFilesModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    /** Whether an import this model began has not finished yet. */
+    Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
+    /** Changes with every change to the library, a replaced file's counts included; bind entriesForType() to it. */
+    Q_PROPERTY(int revision READ revision NOTIFY entriesChanged)
 
   public:
     /* Append new roles; never insert. A delegate that binds by number would
@@ -52,6 +62,13 @@ class ImportedFilesModel : public QAbstractListModel {
         RrSiteIdsRole   // every selected siteId, comma-joined - what a refresh matches on
     };
 
+    /**
+     * @brief The library, importing through @p imports, the app's one import worker.
+     *
+     * The service may be destroyed first (the app's is); the model never calls it from its destructor.
+     */
+    ImportedFilesModel(DecoderHost* host, ImportService* imports, QObject* parent = nullptr);
+    /** @brief The library with an import worker of its own, copying through @p host's transport (tests, fixtures). */
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
     ~ImportedFilesModel() override;
 
@@ -79,17 +96,52 @@ class ImportedFilesModel : public QAbstractListModel {
         return static_cast<int>(m_rows.size());
     }
 
-    /** WP-D1: generate an app-owned destination without registering or writing a file. */
+    bool
+    importing() const {
+        return !m_inFlight.isEmpty();
+    }
+
+    int
+    revision() const {
+        return static_cast<int>(m_revision & 0x7fffffffU);
+    }
+
+    /**
+     * WP-D1: generate an app-owned destination without registering or writing a file. The path stays reserved for the
+     * life of the process (the engine may still write it after the export flow gave up), so no import takes its name.
+     */
     Q_INVOKABLE QString newTalkgroupListPath() const;
     /** Register a successfully exported list in place; the engine keeps writing this path. */
     Q_INVOKABLE bool registerTalkgroupList(const QString& path);
 
     /**
-     * @brief Copy a picked document into the library, validate it, record a row.
+     * @brief Import a picked document: copied and checked on the import worker, published on the Qt thread.
      *
-     * @return {ok, path, name, accepted, skipped, error}. error is "" on success,
-     *         "open" when the copy or parse failed (no row is added), or "empty"
-     *         when the file parsed but no row was usable — the row is kept, so
+     * @param reference   The picker's reference (a file:// URL, a path, or an Android content URI).
+     * @param fileName    The picker's name hint; the provider's own name for the document wins over it.
+     * @param type        The library type to import it as.
+     * @param companions  A bundle's companion choices (channel maps and target lists).
+     * @param replacePath The stored path of the row to replace, or empty for a new row. A replace commits only when
+     *                    that row is still there unchanged (else "stale"); replacing a target list is refused while
+     *                    the decoder runs ("busy"), at the start and again at the commit.
+     * @return The request id (> 0); importFinished() answers it exactly once, queued, a refusal included. Result keys:
+     *         ok, error, detail, path, name, type, accepted, skipped, limitBytes, noSpace. error is "" or "empty"
+     *         (ok, no usable row) on success, else too_large (limitBytes), read, local (noSpace), format (detail),
+     *         stale, busy, save (detail), path or cancelled.
+     */
+    Q_INVOKABLE int beginImport(const QString& reference, const QString& fileName, const QString& type,
+                                const QVariantMap& companions, const QString& replacePath);
+    /** @brief Cancel import @p id; it answers "cancelled" unless its commit already ran. */
+    Q_INVOKABLE void cancelImport(int id);
+
+    /**
+     * @brief Copy a document into the library, validate it, record a row: beginImport()'s stage and commit, run at
+     * once on the calling thread.
+     *
+     * @p fileName names the copy (a blank one leaves the document's own name); a pick goes through beginImport() or
+     * importBundle(), where the name the document's provider reports wins over the picker's hint.
+     *
+     * @return beginImport()'s result. error "empty" means the file parsed but no row was usable — the row is kept, so
      *         the user can fix the file and update, but the UI should warn.
      */
     Q_INVOKABLE QVariantMap importFile(const QString& reference, const QString& fileName, const QString& type);
@@ -97,9 +149,10 @@ class ImportedFilesModel : public QAbstractListModel {
                                          const QVariantMap& companions, int replaceRow = -1);
 
     /**
-     * @brief Re-pick flow: replace the row's stored file and re-validate.
+     * @brief Re-pick flow: replace the row's stored file and re-validate, as beginImport() with a replacePath, run at
+     * once on the calling thread.
      *
-     * The pick is staged beside the library and validated BEFORE it is committed
+     * The pick is staged outside the library and validated BEFORE it is committed
      * over the row's file, so a file that is not parseable as the row's type
      * leaves the stored copy byte-identical. Every saved system referencing that
      * path keeps working.
@@ -109,8 +162,8 @@ class ImportedFilesModel : public QAbstractListModel {
     /**
      * @brief Adopt a file this process generated, recording where it came from.
      *
-     * Same validate/rollback/persist flow as importFile(), but the source is a
-     * plain path we wrote rather than a picker reference.
+     * Same stage and commit as importFile(), but the source is a plain path we
+     * wrote rather than a picker reference, and @p fileName names the copy.
      *
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
@@ -174,13 +227,44 @@ class ImportedFilesModel : public QAbstractListModel {
 
   Q_SIGNALS:
     void countChanged();
+    /** Every library change: a row added, removed or replaced. */
+    void entriesChanged();
+    void importingChanged();
+    void importFinished(int id, const QVariantMap& result);
 
   private:
+    /** What a request imports into: a new row of a type, or the row a replace began against (its commit needs that row
+     * still there, unchanged). */
+    struct ImportTarget {
+        QString path; // empty for a new row
+        quint64 revision = 0;
+        QString type;
+        /* A RadioReference refresh: it keeps the row's provenance, and the decoder running does not hold it back. */
+        bool refresh = false;
+    };
+
     QVariantMap companionDetails(const CsvBundleImport& bundle) const;
     QVariantMap companionChoices(const QVariantMap& requirement) const;
     QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
     QString bundleReplacementError(int row, const QString& type) const;
     bool decoderBusy() const;
+    /** Whether replacing a row of @p type must wait: the engine reads target lists while it runs. */
+    bool replacementBusy(const QString& type) const;
+    /** beginImport()'s answer when it refuses at once, else empty with @p target filled. */
+    QVariantMap importRefusal(const QString& type, const QString& replacePath, ImportTarget* target) const;
+    /** Answer a request at once, through a queued importFinished(), under a fresh id. */
+    int answerLater(const QVariantMap& result);
+    /** Run a single-file stage and its commit at once on the calling thread; the commit's result. */
+    QVariantMap importNow(const QString& reference, const QString& providerName, const QString& hint,
+                          const QString& type, const ImportTarget& target, const QVariantMap& origin);
+    void finishImport(qint64 id, const QVariantMap& staged, bool cancelled, const ImportTarget& target);
+    QVariantMap commitStaged(const QVariantMap& staged, bool cancelled, const ImportTarget& target,
+                             const QVariantMap& origin);
+    QVariantMap commitNewFile(const QVariantMap& staged, const QVariantMap& origin);
+    QVariantMap commitReplacement(const QVariantMap& staged, const ImportTarget& target);
+    /** Replace row @p row's file with the staged copy: the index saved first, then the file moved over. */
+    QVariantMap replaceRowFile(int row, const QVariantMap& staged, bool refresh);
+    void updateImporting(bool before);
 
     struct Row {
         QString name;
@@ -211,6 +295,9 @@ class ImportedFilesModel : public QAbstractListModel {
         bool rrPartialEnc = true;
         int rrEncryptionPolicy = 0;
         QString bundleRoot;
+        /* In memory only: the library revision of the row's last change (added, replaced, refreshed). A replace
+         * commits only over the revision it began against. */
+        quint64 revision = 0;
     };
 
     static Row rowFromMap(const QVariantMap& map);
@@ -225,32 +312,31 @@ class ImportedFilesModel : public QAbstractListModel {
     static QVariant provenanceRole(const Row& row, int role);
 
     /**
-     * @brief Validate an already-stored copy and record a library row for it.
-     *
-     * Shared tail of importFile() and importGeneratedFile(): on a validation
-     * failure the copy is taken back out, because a row that cannot be parsed is
-     * a dead entry and nothing else would ever delete the file.
+     * @brief Record a library row for a bundle primary already stored and validate it (the bundle import's tail): on
+     * a validation failure the copy is taken back out, because a row that cannot be parsed is a dead entry and nothing
+     * else would ever delete the file.
      */
     QVariantMap adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin);
-
-    /**
-     * @brief Shared tail of updateFile() and refreshGeneratedFile(): stamp the
-     *        row's new counts, notify, persist, and build the result map.
-     *
-     * @param keepProvenance True for a refresh, which rewrites the row from the
-     *        same RadioReference selection. False for a user re-pick: the bytes
-     *        are theirs now, and leaving the provenance behind would keep
-     *        offering a refresh that would silently overwrite their file.
-     */
-    QVariantMap commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance = true);
+    /** @brief Append @p row, saved first: false, with nothing changed, when the index cannot be saved. */
+    bool appendRow(Row row);
+    /** @brief Take @p next, which replaced row @p row, as the library, and notify. */
+    void applyReplacement(int row, QList<Row> next);
+    static Row newRow(const QString& path, const QString& type, int accepted, int skipped, const QVariantMap& origin);
+    /** @brief A successful import's result for @p row. */
+    static QVariantMap rowResult(const Row& row);
 
     void load();
     bool save() const;
     bool saveRows(const QList<Row>& rows) const;
 
     DecoderHost* m_host = nullptr;
+    QPointer<ImportService> m_imports;
     QList<Row> m_rows;
     QStringList m_pruned_paths;
+    /* The library revision: every change takes the next one. */
+    quint64 m_revision = 0;
+    /* Imports begun through the worker whose commit has not run yet. */
+    QSet<qint64> m_inFlight;
 };
 
 } // namespace dsd_qt

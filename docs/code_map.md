@@ -12394,10 +12394,27 @@ Qt Quick frontend (`src/ui/qt`):
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
-  picked documents into durable app storage through `DecoderHost::importDocument()` and dry-run validates them via
+  picked documents into durable app storage and dry-run validates them via
   `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, `src/core/file/p25_bandplan_csv.c`, and
   `src/core/file/source_alias_csv.c`) for row-count feedback. Kinds are `chan`, `group`, `keysDec`, `keysHex`,
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
+  Single files import through the import service (#832): `beginImport(reference, fileName, type, companions,
+  replacePath)` returns an id and `importFinished(id, result)` answers it exactly once, queued, refusals included
+  (`cancelImport(id)` answers `cancelled` until the commit runs; `importing` says whether one is pending). The stage,
+  on the worker, copies the document into its staging folder (at most `backup::kMaxFileBytes`, 32 MiB), names it from
+  the transport's display name, else the picker's hint (`sanitized_import_name`), and validates it there. The commit,
+  on the Qt thread, only renames and saves the index: a new file moves in under a free name
+  (`unique_import_destination`, skipping every `newTalkgroupListPath()` this process handed out, then
+  `dsd_rename_noreplace`, the next name on `EEXIST`) before `saveRows`, which on failure removes it again; a replace
+  rechecks the row's path, in-memory revision and type (else `stale`), saves the index with the new counts first and
+  then moves the copy over the stored path (`dsd_replace_file_with_temp`), putting the old index back if the move
+  fails (both failing keeps the new rows in memory and answers `save` with a detail). Replacing a `trunkTargets`
+  row is refused (`busy`) while the decoder runs, at the start and again at the commit. Errors are `too_large`
+  (`limitBytes`), `read`, `local` (`noSpace`), `format` (`detail`), `stale`, `busy`, `save`, `path` and `cancelled`. `chan` and `trunkTargets` still build their bundles on the Qt thread and
+  answer through the same signal. The synchronous `importFile`/`updateFile`/`importBundle` run the same stage and
+  commit at once (`ImportService::runNow`); `importGeneratedFile`/`refreshGeneratedFile` (RadioReference) do too, so a
+  refresh shares the replace order and its rollback. Every library change bumps the model's `revision` and emits
+  `entriesChanged`; `countChanged` stays for count changes.
   `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most 247
   UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also skips
   reserved paths).

@@ -333,7 +333,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     // WP-S1: persisted lists and the pre-start validation facade.
     auto* scanLists = new ScanListsModel(&engine);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
-    auto* importedFiles = new ImportedFilesModel(host, &engine);
+    auto* importedFiles = new ImportedFilesModel(host, imports, &engine);
     wire_target_files(scanListStarter, scanLists, importedFiles);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);

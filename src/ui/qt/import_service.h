@@ -93,6 +93,21 @@ class ImportService : public QObject {
     qint64 submit(Stage stage, Commit commit);
 
     /**
+     * @brief Run a request at once on the calling thread: @p stage in a staging folder of its own, then @p commit
+     * (never cancelled); the folder is removed after the commit.
+     *
+     * For the synchronous library calls, which share the stage and commit of a submitted request. The request has its
+     * own id, as submit()'s; a folder that cannot be made skips the stage and commits {ok: false, error: "local"}.
+     */
+    void runNow(const Stage& stage, const Commit& commit);
+
+    /**
+     * @brief A request id no request uses: for a caller that answers a request at once, without the worker, under an
+     * id unique among submit()'s.
+     */
+    static qint64 newRequestId();
+
+    /**
      * @brief Cancel request @p id: a copy it runs stops, and its commit is told it was cancelled. Once the commit ran,
      * or for an unknown id, it does nothing.
      */

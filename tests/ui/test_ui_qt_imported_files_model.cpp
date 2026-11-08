@@ -23,6 +23,7 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -58,6 +59,7 @@ extern "C" {
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include "csv_bundle_import.h"
 #include "decoder_host.h"
+#include "import_service.h"
 #include "imported_files_model.h"
 #include "json_store.h"
 
@@ -796,6 +798,346 @@ test_remove_finishes_on_retry() {
     expect("unblock the index save", QDir().rmdir(store) && QFile::rename(store + ".held", store));
     expect("the retry finishes", model.remove(model.rowForPath(path)));
     expect("the row is gone", model.count() == count - 1 && model.rowForPath(path) < 0 && !indexed());
+}
+
+/*
+ * Issue #832: imports copy and check on the import worker and answer through importFinished(), once per id, queued.
+ */
+
+/* The answer to import @p id that @p spy caught: waits for it, and expects exactly one. */
+QVariantMap
+waitForImport(QSignalSpy& spy, int id) {
+    const auto answers = [&spy, id]() {
+        QList<QVariantMap> found;
+        for (const auto& arguments : spy) {
+            if (arguments.at(0).toInt() == id) {
+                found.append(arguments.at(1).toMap());
+            }
+        }
+        return found;
+    };
+    for (int waits = 0; waits < 100 && answers().isEmpty(); waits++) {
+        spy.wait(50);
+    }
+    QCoreApplication::processEvents();
+    const auto found = answers();
+    expect("an import is answered exactly once", found.size() == 1);
+    return found.value(0);
+}
+
+QVariantMap
+importAndWait(dsd_qt::ImportedFilesModel& model, const QString& reference, const QString& fileName, const QString& type,
+              const QString& replacePath = QString()) {
+    QSignalSpy spy(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    const int id = model.beginImport(reference, fileName, type, QVariantMap(), replacePath);
+    expect("an import has an id", id > 0);
+    return waitForImport(spy, id);
+}
+
+QString
+importsDirPath() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/imports");
+}
+
+int
+storedFileCount() {
+    return static_cast<int>(QDir(importsDirPath()).entryList(QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot).size());
+}
+
+/* The accepted count the index on disk records for @p path; -1 when no row names it. */
+int
+indexedAccepted(const QString& path) {
+    for (const auto& value : dsd_qt::json_store_load_array(QStringLiteral("imported_files.json"))) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QStringLiteral("path")).toString() == path) {
+            return row.value(QStringLiteral("accepted")).toInt();
+        }
+    }
+    return -1;
+}
+
+/* Put a directory where the index is, so it cannot be saved; undo with unblockIndex(). */
+bool
+blockIndex() {
+    const QString store = dsd_qt::json_store_path(QStringLiteral("imported_files.json"));
+    if (!QFile::exists(store) && !write_file(store, "[]")) {
+        return false;
+    }
+    return QFile::rename(store, store + QStringLiteral(".held")) && QDir().mkdir(store);
+}
+
+bool
+unblockIndex() {
+    const QString store = dsd_qt::json_store_path(QStringLiteral("imported_files.json"));
+    return QDir().rmdir(store) && QFile::rename(store + QStringLiteral(".held"), store);
+}
+
+/* Make the library folder read-only; false when this system still lets the owner add a file there (root, Windows). */
+bool
+makeImportsReadOnly() {
+    const QString dir = importsDirPath();
+    QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    QFile probe(dir + QStringLiteral("/probe"));
+    if (probe.open(QIODevice::WriteOnly)) {
+        probe.close();
+        probe.remove();
+        return false;
+    }
+    return true;
+}
+
+void
+makeImportsWritable() {
+    QFile::setPermissions(importsDirPath(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+}
+
+void
+test_async_import_outcomes() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir source;
+    const QString groups = source.filePath("county.csv");
+    expect("async group fixture", write_file(groups, "TG,Mode,Name\n101,D,Dispatch\n102,D,Fire\nbogus,D,Bad\n"));
+
+    QSignalSpy importing(&model, &dsd_qt::ImportedFilesModel::importingChanged);
+    QSignalSpy entries(&model, &dsd_qt::ImportedFilesModel::entriesChanged);
+    QSignalSpy finished(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    const int revision = model.revision();
+    const int id = model.beginImport(QUrl::fromLocalFile(groups).toString(), "county.csv", "group", {}, QString());
+    expect("an import in progress is reported", model.importing() && importing.size() == 1);
+    expect("an import is answered later, never inside beginImport()", finished.isEmpty() && model.count() == 0);
+    const QVariantMap ok = waitForImport(finished, id);
+    expect("async import succeeds", ok.value("ok").toBool() && ok.value("error").toString().isEmpty());
+    expect("async import counts its rows", ok.value("accepted").toInt() == 2 && ok.value("skipped").toInt() == 1);
+    expect("async import keeps the provider's name", ok.value("name") == "county.csv" && ok.value("type") == "group"
+                                                         && ok.value("path") == importsDirPath() + "/county.csv");
+    expect("async import stores the bytes", read_file(ok.value("path").toString()) == read_file(groups));
+    expect("async import adds and saves a row", model.count() == 1 && model.rowForPath(ok.value("path").toString()) == 0
+                                                    && indexedAccepted(ok.value("path").toString()) == 2);
+    expect("an ended import is reported", !model.importing() && importing.size() == 2);
+    expect("an added row changes the library revision", entries.size() == 1 && model.revision() != revision);
+
+    const QString header = source.filePath("header.csv");
+    expect("async empty fixture", write_file(header, "TG,Mode,Name\n"));
+    const QVariantMap empty = importAndWait(model, header, "header.csv", "group");
+    expect("a file with no usable row is kept and flagged",
+           empty.value("ok").toBool() && empty.value("error") == "empty" && model.count() == 2);
+
+    const QString large = source.filePath("large.csv");
+    QFile oversized(large);
+    expect("async oversized fixture", oversized.open(QIODevice::WriteOnly) && oversized.resize(32LL * 1024 * 1024 + 1));
+    oversized.close();
+    const QVariantMap tooLarge = importAndWait(model, large, "large.csv", "group");
+    expect("a file over 32 MiB is refused with the limit",
+           !tooLarge.value("ok").toBool() && tooLarge.value("error") == "too_large"
+               && tooLarge.value("limitBytes").toLongLong() == 32LL * 1024 * 1024
+               && tooLarge.value("name") == "large.csv");
+
+    const QVariantMap unreadable = importAndWait(model, source.filePath("absent.csv"), "absent.csv", "group");
+    expect("a missing document is a read failure",
+           !unreadable.value("ok").toBool() && unreadable.value("error") == "read");
+
+    // A file where the staging root belongs: no request folder can be made, so nothing can be copied locally.
+    const QString staging = dsd_qt::ImportService::stagingRoot();
+    expect("block the staging root", QDir(staging).removeRecursively() && write_file(staging, "not a folder"));
+    const QVariantMap local = importAndWait(model, groups, "county.csv", "group");
+    expect("a copy this device cannot write is a local failure",
+           !local.value("ok").toBool() && local.value("error") == "local");
+    expect("unblock the staging root", QFile::remove(staging));
+
+    const QString badMap = source.filePath("tg-keys.csv");
+    expect("async format fixture", write_file(badMap, "not a talkgroup row\n"));
+    const QVariantMap format = importAndWait(model, badMap, "tg-keys.csv", "dmrTgKeys");
+    expect("a file its type cannot parse is a format failure with its detail",
+           !format.value("ok").toBool() && format.value("error") == "format" && format.contains("detail"));
+    const QVariantMap unknown = importAndWait(model, groups, "county.csv", "futureType");
+    expect("an unknown type is refused through the same answer",
+           !unknown.value("ok").toBool() && unknown.value("error") == "format");
+    expect("no failure adds a row or leaves a file", model.count() == 2 && storedFileCount() == 2);
+
+    QSignalSpy pair(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    const int cancelled = model.beginImport(groups, "county.csv", "group", {}, QString());
+    model.cancelImport(cancelled);
+    const int after = model.beginImport(groups, "county.csv", "group", {}, QString());
+    const QVariantMap cancel = waitForImport(pair, cancelled);
+    expect("a cancelled import answers cancelled",
+           !cancel.value("ok").toBool() && cancel.value("error") == "cancelled" && cancel.value("type") == "group");
+    const QVariantMap next = waitForImport(pair, after);
+    expect("an import after a cancel succeeds", next.value("ok").toBool() && model.count() == 3);
+    expect("the cancelled copy left nothing", storedFileCount() == 3);
+
+    QSignalSpy twice(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    const int first = model.beginImport(header, "header.csv", "group", {}, QString());
+    const int second = model.beginImport(header, "header.csv", "group", {}, QString());
+    const QVariantMap one = waitForImport(twice, first);
+    const QVariantMap two = waitForImport(twice, second);
+    expect("the same document picked twice gets two ids", first != second);
+    expect("the same document picked twice gets two names",
+           one.value("ok").toBool() && two.value("ok").toBool() && one.value("path") != two.value("path")
+               && QFileInfo(two.value("path").toString()).fileName() == "header (3).csv");
+    expect("both copies are listed", model.count() == 5 && twice.size() == 2);
+
+    while (model.count() > 0) {
+        model.remove(0);
+    }
+}
+
+/* A replace commits only over the row it began against: a refresh, a remove and re-add, or a new type in between makes
+ * it stale, and the file keeps what the change in between wrote. */
+void
+test_async_replace_stale() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir source;
+    const QString groups = source.filePath("groups.csv");
+    const QByteArray refreshed("TG,Mode,Name\n7,D,Refreshed\n");
+    const QString refresh = source.filePath("refresh.csv");
+    const QString repick = source.filePath("repick.csv");
+    expect("stale fixtures", write_file(groups, "TG,Mode,Name\n1,D,One\n") && write_file(refresh, refreshed)
+                                 && write_file(repick, "TG,Mode,Name\n2,D,Two\n3,D,Three\n"));
+    const QString stored = importAndWait(model, groups, "groups.csv", "group").value("path").toString();
+
+    QSignalSpy spy(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    int id = model.beginImport(repick, "repick.csv", "group", {}, stored);
+    expect("refresh between begin and commit",
+           model.refreshGeneratedFile(model.rowForPath(stored), refresh).value("ok").toBool());
+    QVariantMap result = waitForImport(spy, id);
+    expect("a replace after a refresh is stale", !result.value("ok").toBool() && result.value("error") == "stale");
+    expect("a stale replace keeps the refreshed bytes", read_file(stored) == refreshed);
+    expect("a stale replace keeps the refreshed counts", model.get(model.rowForPath(stored)).value("accepted") == 1);
+
+    id = model.beginImport(repick, "repick.csv", "group", {}, stored);
+    expect("remove between begin and commit", model.remove(model.rowForPath(stored)));
+    expect("re-add at the same path", importAndWait(model, groups, "groups.csv", "group").value("path") == stored);
+    result = waitForImport(spy, id);
+    expect("a replace after a remove and re-add is stale", result.value("error") == "stale");
+    expect("the re-added file stays", read_file(stored) == read_file(groups));
+
+    id = model.beginImport(repick, "repick.csv", "group", {}, stored);
+    expect("remove before a new type", model.remove(model.rowForPath(stored)));
+    expect("re-add as another type", importAndWait(model, groups, "groups.csv", "src").value("path") == stored);
+    result = waitForImport(spy, id);
+    expect("a replace after a type change is stale", result.value("error") == "stale");
+    expect("the re-typed row stays", model.get(model.rowForPath(stored)).value("type") == "src");
+
+    const QVariantMap missing = importAndWait(model, repick, "repick.csv", "group", stored + ".gone");
+    expect("a replace of no row is refused", missing.value("error") == "path");
+    const QVariantMap wrongType = importAndWait(model, repick, "repick.csv", "group", stored);
+    expect("a replace as another type is refused", wrongType.value("error") == "path");
+    expect("refusals change nothing", model.count() == 1 && read_file(stored) == read_file(groups));
+    model.remove(model.rowForPath(stored));
+}
+
+/* The replace order: the index is saved first, then the file moves over the old one. Either step failing leaves the
+ * old index and the old bytes. */
+void
+test_replace_failures() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir source;
+    const QString groups = source.filePath("groups.csv");
+    const QString repick = source.filePath("repick.csv");
+    const QByteArray kept("TG,Mode,Name\n1,D,One\n");
+    expect("replace failure fixtures",
+           write_file(groups, kept) && write_file(repick, "TG,Mode,Name\n2,D,Two\n3,D,Three\n"));
+    const QString stored = importAndWait(model, groups, "groups.csv", "group").value("path").toString();
+    const int row = model.rowForPath(stored);
+
+    expect("block the index", blockIndex());
+    const QVariantMap unsaved = importAndWait(model, repick, "repick.csv", "group", stored);
+    expect("unblock the index", unblockIndex());
+    expect("an index that will not save fails the replace", unsaved.value("error") == "save");
+    expect("an unsaved replace keeps the old bytes and counts",
+           read_file(stored) == kept && model.get(row).value("accepted") == 1 && indexedAccepted(stored) == 1);
+
+    QSignalSpy entries(&model, &dsd_qt::ImportedFilesModel::entriesChanged);
+    if (makeImportsReadOnly()) {
+        const QVariantMap unpublished = importAndWait(model, repick, "repick.csv", "group", stored);
+        expect("a file that will not move fails the replace", unpublished.value("error") == "local");
+        expect("an unpublished replace puts the old index back", indexedAccepted(stored) == 1);
+        expect("an unpublished replace keeps the old bytes and counts",
+               read_file(stored) == kept && model.get(row).value("accepted") == 1 && entries.isEmpty());
+
+        // A RadioReference refresh shares the order and its rollback (B6).
+        const QVariantMap refreshed = model.refreshGeneratedFile(row, repick);
+        expect("a refresh whose file will not move fails", refreshed.value("error") == "local");
+        expect("a failed refresh puts the old index back and keeps the bytes",
+               indexedAccepted(stored) == 1 && read_file(stored) == kept && model.get(row).value("accepted") == 1);
+        makeImportsWritable();
+    } else {
+        makeImportsWritable();
+        DSD_FPRINTF(stderr, "SKIP: this system lets the owner write a read-only folder\n");
+    }
+    const QVariantMap replaced = importAndWait(model, repick, "repick.csv", "group", stored);
+    expect("the replace succeeds once both can be written",
+           replaced.value("ok").toBool() && indexedAccepted(stored) == 2 && read_file(stored) == read_file(repick));
+    model.remove(row);
+}
+
+/* Issue #832 (B7): the screens list entriesForType() again on entriesChanged, so a replace or a refresh that keeps the
+ * count still announces itself. */
+void
+test_entries_changed_on_replace() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir source;
+    const QString groups = source.filePath("groups.csv");
+    const QString repick = source.filePath("repick.csv");
+    expect("entries fixtures",
+           write_file(groups, "TG,Mode,Name\n1,D,One\n") && write_file(repick, "TG,Mode,Name\n2,D,Two\n3,D,Three\n"));
+    const QString stored = model.importFile(groups, "groups.csv", "group").value("path").toString();
+    const int row = model.rowForPath(stored);
+    QSignalSpy entries(&model, &dsd_qt::ImportedFilesModel::entriesChanged);
+    QSignalSpy counts(&model, &dsd_qt::ImportedFilesModel::countChanged);
+
+    int revision = model.revision();
+    expect("plain replace", model.updateFile(row, repick, "repick.csv").value("ok").toBool());
+    expect("a plain replace announces the change", entries.size() == 1 && model.revision() != revision);
+    revision = model.revision();
+    expect("refresh", model.refreshGeneratedFile(row, groups).value("ok").toBool());
+    expect("a refresh announces the change", entries.size() == 2 && model.revision() != revision);
+    revision = model.revision();
+    expect("async replace", importAndWait(model, repick, "repick.csv", "group", stored).value("ok").toBool());
+    expect("an async replace announces the change", entries.size() == 3 && model.revision() != revision);
+    expect("a replace keeps the count, so it does not announce one", counts.isEmpty());
+    expect("remove", model.remove(row));
+    expect("a remove announces both", entries.size() == 4 && counts.size() == 1);
+}
+
+/* Nothing in the library is swept by name: a stored file shaped like the old Android staging names survives imports
+ * that succeed and fail. And no import takes a name the talkgroup export handed out. */
+void
+test_stored_names_kept() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir source;
+    const QByteArray mine("TG,Mode,Name\n9,D,Mine\n");
+    const QString stored = importsDirPath() + "/.import-x.tmp";
+    expect("stored dot file fixture", QDir().mkpath(importsDirPath()) && write_file(stored, mine));
+    const QString groups = source.filePath("groups.csv");
+    expect("names fixture", write_file(groups, "TG,Mode,Name\n1,D,One\n"));
+    const QString added = importAndWait(model, groups, "groups.csv", "group").value("path").toString();
+    expect("a stored .import file survives a successful import", read_file(stored) == mine && !added.isEmpty());
+    const QVariantMap failed = importAndWait(model, source.filePath("absent.csv"), "absent.csv", "group");
+    expect("a stored .import file survives a failed import", !failed.value("ok").toBool() && read_file(stored) == mine);
+
+    const QString reserved = model.newTalkgroupListPath();
+    const QString sameName = source.filePath(QFileInfo(reserved).fileName());
+    expect("reserved name fixture", write_file(sameName, "TG,Mode,Name\n1,D,One\n"));
+    const QVariantMap result = importAndWait(model, sameName, QFileInfo(reserved).fileName(), "group");
+    expect("an import skips a name the export handed out",
+           result.value("ok").toBool() && result.value("path") != reserved && !QFile::exists(reserved)
+               && QFileInfo(result.value("path").toString()).fileName()
+                      == QFileInfo(reserved).completeBaseName() + " (2).csv");
+    while (model.count() > 0) {
+        model.remove(0);
+    }
+    QFile::remove(stored);
 }
 
 } // namespace
@@ -1715,6 +2057,11 @@ main(int argc, char** argv) {
     }
     test_metadata_failure_keeps_file();
     test_remove_finishes_on_retry();
+    test_async_import_outcomes();
+    test_async_replace_stale();
+    test_replace_failures();
+    test_entries_changed_on_replace();
+    test_stored_names_kept();
     test_channel_bundle();
     test_channel_bundle_quoted_options();
     test_channel_review_bandwidth();

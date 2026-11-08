@@ -173,8 +173,29 @@ ImportService::journalPath() {
 }
 
 qint64
+ImportService::newRequestId() {
+    return ++g_next_request;
+}
+
+void
+ImportService::runNow(const Stage& stage, const Commit& commit) {
+    const qint64 id = newRequestId();
+    const QString dir = stagingRoot() + QLatin1Char('/') + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QVariantMap staged;
+    if (make_private_dir(dir)) {
+        staged = stage(ImportJob{id, dir, m_shared->transport, []() { return false; }});
+    } else {
+        staged.insert(QStringLiteral("ok"), false);
+        staged.insert(QStringLiteral("error"), QStringLiteral("local"));
+    }
+    m_shared->transport->forget(id);
+    commit(id, staged, false);
+    QDir(dir).removeRecursively();
+}
+
+qint64
 ImportService::submit(Stage stage, Commit commit) {
-    const qint64 id = ++g_next_request;
+    const qint64 id = newRequestId();
     auto request = std::make_shared<Request>();
     const QString dir = stagingRoot() + QLatin1Char('/') + QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_pending.insert(id, Pending{request, std::move(commit), dir});

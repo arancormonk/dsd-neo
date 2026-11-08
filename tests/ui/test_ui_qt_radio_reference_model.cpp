@@ -1431,8 +1431,9 @@ test_destructor_marks_its_teardown_stage(void) {
         auto* h = new Harness;
         h->model.loadSystem(6673);
         delete h;
+        // The harness's library brings its own import worker (#832), which marks its own teardown stage too.
         expect("~RadioReferenceModel marks its teardown stage",
-               TeardownCapture::lines()
+               TeardownCapture::lines().filter(QStringLiteral("~RadioReferenceModel"))
                    == QStringList({QStringLiteral("teardown: ~RadioReferenceModel started"),
                                    QStringLiteral("teardown: ~RadioReferenceModel took 7 ms")}));
     }
