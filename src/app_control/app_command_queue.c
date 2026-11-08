@@ -32,6 +32,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -7151,10 +7152,7 @@ apply_dmr_reset(dsd_state* state) {
     state->nxdn_idas_site_code = 0;
     state->nxdn_last_ran = -1;
     state->nxdn_ran = 0;
-    state->nxdn_rcn = 0;
-    state->nxdn_base_freq = 0;
-    state->nxdn_step = 0;
-    state->nxdn_bw = 0;
+    dsd_nxdn_ca_reset(state);
     /* And what the received identity holds of them: the DMR trunking site, keeping the colour code the reset
        keeps, the DMR RAS evidence, and the NXDN location and IDAS site with the RAN. */
     {

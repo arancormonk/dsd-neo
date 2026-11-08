@@ -44,6 +44,11 @@ long int process_channel_to_freq(const dsd_opts* opts, dsd_state* state, int cha
 long int process_channel_to_freq_trace(const dsd_opts* opts, dsd_state* state, int channel, p25_freq_trace_t* trace);
 long int nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel);
 long int nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel);
+/**
+ * Resolve an NXDN channel for display only: printed as nxdn_channel_to_frequency() prints it, but no channel map row
+ * is learned. For channels a message names that the receiver will not follow or keep.
+ */
+long int nxdn_channel_to_frequency_display(const dsd_state* state, uint16_t channel);
 
 void p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz);
 int p25_channel_type_is_tdma(int chan_type);

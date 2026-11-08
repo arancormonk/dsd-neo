@@ -755,6 +755,32 @@ typedef struct {
     uint8_t gap;
 } dsd_nxdn_call_identity;
 
+/* NXDN Type-C: where the channel access parameters (dsd_state::nxdn_rcn, nxdn_base_freq, nxdn_step) came from
+   (dsd_state::nxdn_ca). They are a site's, carried only by its SITE_INFO (TS 1-A §6.5.36), so they are kept apart from
+   the site identity: <dsd-neo/core/nxdn_channel_access.h> owns every write. */
+typedef struct {
+    uint32_t location_id; /**< the Location ID of the SITE_INFO that set them; 0 none */
+    /** Advances whenever the parameters, their site or their validity change: what was computed under one generation
+     * does not hold under the next. */
+    uint32_t generation;
+    /** 1 while the parameters are a SITE_INFO's and still hold. nxdn_rcn stays as the last notation heard while they
+     * are not (the message layouts still follow it), but no channel is resolved by DFA arithmetic. */
+    uint8_t valid;
+} dsd_nxdn_ca_source;
+
+enum { DSD_NXDN_DFA_LEARNED_MAX = 128 };
+
+/* NXDN Type-C: the channel map rows DFA arithmetic wrote (dsd_state::nxdn_dfa_learned), all computed under the
+   parameter generation recorded here. They are dropped when the parameters change, so an old site's frequency never
+   answers for the new site's channel number. A row any other writer sets (an imported channel map, another protocol)
+   leaves this record and is never dropped by it. */
+typedef struct {
+    uint16_t chan[DSD_NXDN_DFA_LEARNED_MAX];
+    long int freq[DSD_NXDN_DFA_LEARNED_MAX]; /**< the frequency written, so a row changed behind the record stays */
+    uint32_t generation;                     /**< dsd_nxdn_ca_source::generation the rows were computed under */
+    uint16_t count;
+} dsd_nxdn_dfa_learned;
+
 /**
  * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
  *
@@ -2366,6 +2392,8 @@ struct dsd_state {
     uint8_t nxdn_base_freq;
     uint8_t nxdn_step;
     uint8_t nxdn_bw;
+    dsd_nxdn_ca_source nxdn_ca;
+    dsd_nxdn_dfa_learned nxdn_dfa_learned;
 
     // NXDN trunking: last observed call grant mapping (for UI/logging)
     uint16_t nxdn_grant_chan;
@@ -2967,10 +2995,35 @@ dsd_state_untrack_trunk_chan(dsd_state* state, uint16_t channel) {
     state->trunk_chan_map_used_count = count;
 }
 
+/* Take a channel map row out of the NXDN DFA record (dsd_nxdn_dfa_learned): its next writer owns it. */
+static inline void
+dsd_state_nxdn_dfa_untag(dsd_state* state, uint32_t channel) {
+    dsd_nxdn_dfa_learned* learned = &state->nxdn_dfa_learned;
+    uint16_t count = learned->count;
+    if (count > DSD_NXDN_DFA_LEARNED_MAX) {
+        count = DSD_NXDN_DFA_LEARNED_MAX;
+    }
+    for (uint16_t i = 0; i < count; i++) {
+        if (learned->chan[i] != channel) {
+            continue;
+        }
+        learned->chan[i] = learned->chan[count - 1U];
+        learned->freq[i] = learned->freq[count - 1U];
+        count--;
+        break;
+    }
+    learned->count = count;
+}
+
+/* Set one channel map row. Every writer but the NXDN DFA resolver (dsd_nxdn_dfa_learn()) sets a row it owns, so the
+   row leaves the DFA record and no later parameter change drops it. */
 static inline void
 dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
     if (!state || !dsd_state_trunk_chan_valid(channel)) {
         return;
+    }
+    if (state->nxdn_dfa_learned.count != 0U) {
+        dsd_state_nxdn_dfa_untag(state, channel);
     }
 
     const long int old_freq = state->trunk_chan_map[channel];

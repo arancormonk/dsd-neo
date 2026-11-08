@@ -15,6 +15,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
@@ -5115,6 +5116,77 @@ test_nxdn_state_isolated_per_target(void) {
                                     96, 12, 4);
     if (state.nxdn_last_ran_stand_in != 0U) {
         DSD_FPRINTF(stderr, "restored target retained a stale stand-in mark\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * An NXDN DFA target's channel access parameters, with their site and generation, and the channel map rows DFA
+ * computed from them, are the target's: another target starts with none, and returning restores both together, so a
+ * later parameter change at the first target still drops exactly the rows it learned.
+ */
+static int
+test_nxdn_channel_access_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,nxdn-trunk,461000000,,250,,\n"
+                             "b,nxdn-trunk,462000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn channel access scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    const uint32_t site_a = (2U << 12) | 0x21U;
+    dsd_nxdn_ca_apply(&state, site_a, 1U, 1U, 2U);
+    dsd_nxdn_dfa_learn(&state, 10U, 100012500L);
+    const uint32_t generation_a = dsd_nxdn_ca_generation(&state);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dsd_nxdn_ca_valid(&state) || state.nxdn_ca.location_id != 0U
+        || state.nxdn_dfa_learned.count != 0U || state.trunk_chan_map[10] != 0) {
+        DSD_FPRINTF(stderr,
+                    "fresh target took the first target's channel access: valid=%d site=%06X rows=%u ch10=%ld\n",
+                    dsd_nxdn_ca_valid(&state), state.nxdn_ca.location_id, (unsigned)state.nxdn_dfa_learned.count,
+                    state.trunk_chan_map[10]);
+        test_rc = 1;
+    }
+
+    dsd_nxdn_ca_apply(&state, (2U << 12) | 0x22U, 1U, 3U, 2U);
+    dsd_nxdn_dfa_learn(&state, 10U, 400012500L);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dsd_nxdn_ca_valid(&state)
+        || state.nxdn_ca.location_id != site_a || dsd_nxdn_ca_generation(&state) != generation_a
+        || state.nxdn_base_freq != 1U || state.nxdn_dfa_learned.count != 1U || state.trunk_chan_map[10] != 100012500L) {
+        DSD_FPRINTF(stderr, "restored target lost its channel access: valid=%d site=%06X base=%u rows=%u ch10=%ld\n",
+                    dsd_nxdn_ca_valid(&state), state.nxdn_ca.location_id, (unsigned)state.nxdn_base_freq,
+                    (unsigned)state.nxdn_dfa_learned.count, state.trunk_chan_map[10]);
+        test_rc = 1;
+    }
+    dsd_nxdn_ca_invalidate(&state);
+    if (state.trunk_chan_map[10] != 0 || state.nxdn_dfa_learned.count != 0U) {
+        DSD_FPRINTF(stderr, "restored target's learned row survived its invalidation: ch10=%ld\n",
+                    state.trunk_chan_map[10]);
         test_rc = 1;
     }
 
@@ -20816,6 +20888,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_nxdn_channel_access_isolated_per_target);
     rc |= run_with_default_tune_hook(test_nxdn_state_survives_failed_switch_rollback);
     rc |= run_with_default_tune_hook(test_each_target_keeps_its_scan_position);
     rc |= run_with_default_tune_hook(test_p25p1_mod_verdict_isolated_per_target);

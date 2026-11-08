@@ -19,6 +19,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -2516,6 +2517,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_str("first import keeps row 0's name", dsd_state_trunk_lcn_name_get(&state, 0U), "Dispatch");
     rc |= expect_str("first import leaves row 1 unnamed", dsd_state_trunk_lcn_name_get(&state, 1U), "");
     rc |= expect_str("first import keeps row 2's name", dsd_state_trunk_lcn_name_get(&state, 2U), "Tac 3");
+    // An NXDN DFA site's resolver learns a row the next file will list at the same frequency.
+    dsd_nxdn_ca_apply(&state, (2U << 12) | 0x21U, 1U, 1U, 2U);
+    dsd_nxdn_dfa_learn(&state, 201U, 860000000L);
 
     g_chan_import_count = 2;
     g_chan_import_chan[0] = 201;
@@ -2535,6 +2539,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("reimport applies new chan", (int)state.trunk_chan_map[201], 860000000);
     rc |= expect_int("reimport replaces used count", (int)state.trunk_chan_map_used_count, 2);
     rc |= expect_int("reimport replaces lcn list", (int)state.trunk_lcn_freq[0], 860000000);
+    // That row is the file's now: a change of the DFA parameters must not drop it.
+    dsd_nxdn_ca_invalidate(&state);
+    rc |= expect_int("reimported row survives a DFA parameter change", (int)state.trunk_chan_map[201], 860000000);
 
     g_chan_import_result = -1;
     rc |= expect_int("failed reimport rc", svc_import_channel_map(&opts, &state, "bad.csv"), -1);
@@ -2668,6 +2675,8 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     state.lcn_scan_hold = 1;
     state.lcn_scan_entry_hold = 1;
     rc |= expect_int("clear: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 1U, 1), 0);
+    dsd_nxdn_ca_apply(&state, (2U << 12) | 0x21U, 1U, 1U, 2U);
+    dsd_nxdn_dfa_learn(&state, 150U, 100187500L);
     const unsigned int seq_before = state.trunk_chan_map_seq;
 
     rc |= expect_int("chan map clear ok", svc_clear_channel_map(&opts, &state), 0);
@@ -2686,6 +2695,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     // Provenance goes with the map for the same reason it does on an adopt: a
     // surviving trust byte authorizes an off-CC tune to a frequency now gone.
     rc |= expect_int("chan map clear drops lcn trust", (int)state.dmr_lcn_trust[101], 0);
+    rc |= expect_int("chan map clear empties the NXDN DFA record", (int)state.nxdn_dfa_learned.count, 0);
     rc |= expect_int("chan map clear advances the map seq", (int)(state.trunk_chan_map_seq != seq_before), 1);
 
     // Trunk scan owns per-target maps; emptying a global one is not this

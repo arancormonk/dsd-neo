@@ -8730,6 +8730,22 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   ID messages (IDs 2046, 2045, 2044, 2041) go through the INFO4 handling (`nxdn_scch_handle_repeater_status()`) and never
   become the call's target; its busy repeater message keeps the target handling of `nxdn_scch_handle_info2()`. The
   terminal's IDAS line and the Qt site view show the IDAS fields, the NXDN ones the Type-C location.
+- NXDN channel access parameters (`<dsd-neo/core/nxdn_channel_access.h>`, TS 1-A §6.5.36). `nxdn_rcn`,
+  `nxdn_base_freq` and `nxdn_step` are a site's, set only by a SITE_INFO's Channel Access Information
+  (`dsd_nxdn_ca_apply()`), in either notation: channel notation (RCN 0) clears the DFA base and step. They carry
+  their own provenance, apart from the site identity (`dsd_state::nxdn_ca`: the SITE_INFO's Location ID, a validity
+  flag and a generation that moves on every change), are dropped wherever the location is (`dsd_nxdn_ca_reset()`: the
+  untrunked no-carrier pass, the DMR/NXDN reset command, `initState()`) and travel with a trunk scan target's
+  snapshot. `dsd_nxdn_ca_invalidate()` stops trusting them and keeps the notation, which the message layouts still
+  follow. `nxdn_channel_to_frequency()` and its quiet form read the channel map first, then compute a DFA frequency
+  only while the parameters are valid, and keep what they compute in the map through `dsd_nxdn_dfa_learn()`, which
+  records each row with the generation it was computed under (`dsd_state::nxdn_dfa_learned`, at most
+  `DSD_NXDN_DFA_LEARNED_MAX` rows; past that a frequency is answered, not kept). A new generation drops exactly those
+  rows, and only while they still hold what was written: any other writer of a row (`dsd_state_set_trunk_chan_freq()`,
+  so an import or another protocol) takes it out of the record, and a channel map adopt or clear empties the record,
+  so an imported row is never dropped. `nxdn_channel_to_frequency_display()` resolves for display only and keeps
+  nothing. A DFA CCH_INFO prints its Curr/New/Add/Del status from the same four bits as the channel notation
+  (TS 1-A §6.4.3.3); the DFA layout's two low bits only say which channel fields are present.
 - NXDN trunking admission and preemption (`nxdn_element.c`; NXDN has no trunk state machine). Two records in
   `dsd_state`, both saved with a trunk scan target's snapshot (and so restored by a failed switch's rollback):
   - `nxdn_follow` (`dsd_nxdn_follow_route`): the route the receiver last followed a grant or busy repeater message to

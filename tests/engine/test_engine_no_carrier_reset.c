@@ -13,6 +13,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
@@ -7370,8 +7371,18 @@ test_carrier_boundary_forgets_the_access_codes(void) {
         opts->trunk_enable = trunked;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500L;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+        /* An NXDN DFA site's channel access parameters, a row computed from them and one an import set. */
+        dsd_nxdn_ca_apply(state, (2U << 12) | 0x21U, 1U, 1U, 2U);
+        dsd_nxdn_dfa_learn(state, 10U, 100012500L);
+        dsd_state_set_trunk_chan_freq(state, 5U, 155500000L);
         dsd_engine_forget_untrunked_carrier_state(opts, state);
         const long want = trunked ? 851012500L : 0L;
+        rc |= expect_true(trunked ? "access-codes: trunking keeps the NXDN channel access parameters and their rows"
+                                  : "access-codes: the untrunked forget drops the NXDN channel access parameters and "
+                                    "the rows DFA computed from them",
+                          dsd_nxdn_ca_valid(state) == trunked && state->nxdn_rcn == (trunked ? 1U : 0U)
+                              && state->trunk_chan_map[10] == (trunked ? 100012500L : 0L));
+        rc |= expect_true("access-codes: an imported channel map row stays", state->trunk_chan_map[5] == 155500000L);
         rc |= expect_true(trunked ? "access-codes: trunking keeps the P25 voice frequencies"
                                   : "access-codes: the untrunked forget drops the P25 voice frequencies",
                           state->p25_vc_freq[0] == want && state->p25_vc_freq[1] == want);

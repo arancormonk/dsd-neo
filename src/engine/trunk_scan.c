@@ -212,6 +212,8 @@ typedef struct {
     uint8_t nxdn_base_freq;
     uint8_t nxdn_step;
     uint8_t nxdn_bw;
+    dsd_nxdn_ca_source nxdn_ca;
+    dsd_nxdn_dfa_learned nxdn_dfa_learned;
     nxdn_trunk_diag_ledger nxdn_diag;
 } dsd_trunk_scan_snapshot;
 
@@ -1950,6 +1952,9 @@ trunk_scan_save_nxdn_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
     snapshot->nxdn_base_freq = state->nxdn_base_freq;
     snapshot->nxdn_step = state->nxdn_step;
     snapshot->nxdn_bw = state->nxdn_bw;
+    // The parameters' site and generation, and the map rows DFA learned under them, travel with the target's own map.
+    snapshot->nxdn_ca = state->nxdn_ca;
+    snapshot->nxdn_dfa_learned = state->nxdn_dfa_learned;
     // Channels seen without a mapping are a property of the site, not of the decoder, so each
     // target keeps its own ledger rather than accumulating every target's misses in one.
     nxdn_trunk_diag_ledger_save(state, &snapshot->nxdn_diag);
@@ -1972,6 +1977,8 @@ trunk_scan_restore_nxdn_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     state->nxdn_base_freq = snapshot->nxdn_base_freq;
     state->nxdn_step = snapshot->nxdn_step;
     state->nxdn_bw = snapshot->nxdn_bw;
+    state->nxdn_ca = snapshot->nxdn_ca;
+    state->nxdn_dfa_learned = snapshot->nxdn_dfa_learned;
     nxdn_trunk_diag_ledger_restore(state, &snapshot->nxdn_diag);
 }
 

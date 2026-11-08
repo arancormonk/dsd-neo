@@ -1409,6 +1409,9 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     state->nxdn_base_freq = 0;
     state->nxdn_step = 0;
     state->nxdn_bw = 0;
+    // The channel map is emptied with the rest of the trunking state, so the DFA record starts empty with it.
+    DSD_MEMSET(&state->nxdn_ca, 0, sizeof(state->nxdn_ca));
+    DSD_MEMSET(&state->nxdn_dfa_learned, 0, sizeof(state->nxdn_dfa_learned));
 
     //multi-key array
     DSD_MEMSET(state->rkey_array, 0, sizeof(state->rkey_array));

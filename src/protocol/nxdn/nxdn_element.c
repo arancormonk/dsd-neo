@@ -23,6 +23,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
@@ -136,7 +137,7 @@ static char* NXDN_Cipher_Type_To_Str(uint8_t CipherType);
 static void nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type);
 static void nxdn_srv_info_handler(dsd_state* state, uint16_t svc_info);
 static void nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info);
-static void nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info);
+static void nxdn_ca_info_handler(dsd_state* state, uint32_t location_id, uint32_t ca_info);
 
 /* The label of a call's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
@@ -1419,23 +1420,20 @@ nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info) {
 }
 
 static void
-nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info) {
+nxdn_ca_info_handler(dsd_state* state, uint32_t location_id, uint32_t ca_info) {
     //handle the channel access info for channel or dfa
     //Part 1-A Common Air Interface Ver.2.0
     //6.5.36. Channel Access Information
     //this element only seems to appear in the SITE_INFO message
-    uint32_t RCN = ca_info >> 23;          //Radio Channel Notation
+    uint32_t RCN = (ca_info >> 23) & 0x1;  //Radio Channel Notation
     uint32_t step = (ca_info >> 21) & 0x3; //Stepping
     uint32_t base = (ca_info >> 18) & 0x7; //Base Frequency
     uint32_t spare = ca_info & 0x3FF;
     UNUSED(spare);
 
-    //set state variable here to tell us to use DFA or Channel Versions
-    if (RCN == 1) {
-        state->nxdn_rcn = RCN;
-        state->nxdn_step = step;
-        state->nxdn_base_freq = base;
-    }
+    /* Both notations are the site's: a channel-notation SITE_INFO after a DFA one switches the layouts back and
+       clears the DFA base and step, and a change drops the frequencies the old parameters computed. */
+    dsd_nxdn_ca_apply(state, location_id, (uint8_t)RCN, (uint8_t)base, (uint8_t)step);
 }
 
 //end sub-element handlers
@@ -2225,11 +2223,12 @@ nxdn_print_dfa_bandwidth(uint8_t bw) {
     }
 }
 
+/*
+ * CCH_INFO's status flags (TS 1-A §6.4.3.3): the top four bits of the 6-bit field, Curr, New, Add and Del, in both
+ * notations. The DFA layout's low two bits say which channel fields are present; they are not a status.
+ */
 static void
-nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t channel1sts, uint16_t channel1,
-                              uint16_t channel2) {
-    DSD_FPRINTF(stderr, "  Location ID [%06X] CC1 [%03X][%04d] CC2 [%03X][%04d] Status: ", location_id, channel1,
-                channel1, channel2, channel2);
+nxdn_cch_info_print_status(uint8_t channel1sts) {
     if (channel1sts & 0x20U) {
         DSD_FPRINTF(stderr, "Current ");
     }
@@ -2242,6 +2241,14 @@ nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t ch
     if (channel1sts & 0x04U) {
         DSD_FPRINTF(stderr, "Candidate Deleted ");
     }
+}
+
+static void
+nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t channel1sts, uint16_t channel1,
+                              uint16_t channel2) {
+    DSD_FPRINTF(stderr, "  Location ID [%06X] CC1 [%03X][%04d] CC2 [%03X][%04d] Status: ", location_id, channel1,
+                channel1, channel2, channel2);
+    nxdn_cch_info_print_status(channel1sts);
     UNUSED(state);
 }
 
@@ -2335,15 +2342,7 @@ nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Messa
     }
 
     DSD_FPRINTF(stderr, "Status: ");
-    if (channel1sts & 0x10U) {
-        DSD_FPRINTF(stderr, "New ");
-    }
-    if (channel1sts & 0x02U) {
-        DSD_FPRINTF(stderr, "Current 1 ");
-    }
-    if (channel1sts & 0x01U) {
-        DSD_FPRINTF(stderr, "Current 2 ");
-    }
+    nxdn_cch_info_print_status(channel1sts);
 
     nxdn_print_dfa_bandwidth(bw1);
 
@@ -2558,7 +2557,7 @@ NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, 
     channel2 = (uint16_t)convert_bits_into_output(&Message[134], 10);
 
     //check the channel access information first
-    nxdn_ca_info_handler(state, ca_info);
+    nxdn_ca_info_handler(state, location_id, ca_info);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr,

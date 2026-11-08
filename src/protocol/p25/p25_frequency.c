@@ -13,6 +13,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -571,73 +572,88 @@ p25_iden_vu_bandwidth_hz(uint8_t bw_vu) {
     }
 }
 
-long int
-nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
-    UNUSED(opts);
+/* The DFA base frequency (TS 1-A §6.5.36) in Hz; 0 for a code with no fixed value (system definable). */
+static long int
+nxdn_dfa_base_hz(uint8_t code) {
+    switch (code) {
+        case 1U: return 100000000L; //100 MHz
+        case 2U: return 330000000L; //330 MHz
+        case 3U: return 400000000L; //400 MHz
+        case 4U: return 750000000L; //750 MHz
+        default: return 0;
+    }
+}
 
-    long int freq;
+/* The DFA step (TS 1-A §6.5.36) in Hz; 0 for a code with no fixed value (system definable). */
+static long int
+nxdn_dfa_step_hz(uint8_t code) {
+    switch (code) {
+        case 2U: return 1250L; //1.25 kHz
+        case 3U: return 3125L; //3.125 kHz
+        default: return 0;
+    }
+}
 
-    //reworked to include Direct Frequency Assignment if available
-
-    //first, check channel map for imported value, DFA systems most likely won't need an import,
-    //unless it has 'system definable' attributes
+/*
+ * Resolve an NXDN channel number without changing anything: an imported or learned channel map row first (a DFA site
+ * most likely needs no import, unless it has 'system definable' attributes), then DFA arithmetic, only while the
+ * channel access parameters are a SITE_INFO's and hold (<dsd-neo/core/nxdn_channel_access.h>). *from_dfa says the
+ * frequency was computed rather than read from the map.
+ */
+static long int
+nxdn_channel_resolve(const dsd_state* state, uint16_t channel, int verbose, int* from_dfa) {
+    *from_dfa = 0;
     // trunk_chan_map holds DSD_TRUNK_CHAN_MAP_SIZE entries, so the largest uint16_t channel is one
     // past the end; a miscorrected 16-bit outbound number reaches here unfiltered. Only the map
     // lookup is bounded -- DFA below is arithmetic and stays valid for every channel number.
     const long int mapped = dsd_state_trunk_chan_valid(channel) ? state->trunk_chan_map[channel] : 0;
     if (mapped != 0) {
-        freq = mapped;
-        DSD_FPRINTF(stderr, "\n  Frequency [%.6lf] MHz", (double)freq / 1000000);
-        return (freq);
+        if (verbose) {
+            DSD_FPRINTF(stderr, "\n  Frequency [%.6lf] MHz", (double)mapped / 1000000);
+        }
+        return mapped;
     }
 
-    //then, let's see if its DFA instead -- 6.5.36
-    else if (state->nxdn_rcn == 1) {
-        long int base;
-        long int step;
-        //determine the base frequency in Hz
-        if (state->nxdn_base_freq == 1) {
-            base = 100000000; //100 MHz
-        } else if (state->nxdn_base_freq == 2) {
-            base = 330000000; //330 Mhz
-        } else if (state->nxdn_base_freq == 3) {
-            base = 400000000; //400 Mhz
-        } else if (state->nxdn_base_freq == 4) {
-            base = 750000000; //750 Mhz
-        } else {
-            base = 0; //just set to zero, will be system definable most likely and won't be able to calc
+    if (state->nxdn_rcn != 1) {
+        if (verbose) {
+            DSD_FPRINTF(stderr, "\n    Channel not found in import file");
         }
-
-        //determine the step value in Hz
-        if (state->nxdn_step == 2) {
-            step = 1250; //1.25 kHz
-        } else if (state->nxdn_step == 3) {
-            step = 3125; //3.125 kHz
-        } else {
-            step = 0; //just set to zero, will be system definable most likely and won't be able to calc
+        return 0;
+    }
+    if (!dsd_nxdn_ca_valid(state)) {
+        if (verbose) {
+            DSD_FPRINTF(stderr, "\n    DFA Settings Not Known -- Unknown Freq;");
         }
+        return 0;
+    }
 
-        //if we have a valid base and step, then calc frequency
-        //6.5.45. Outbound/Inbound Frequency Number (OFN/IFN)
-        if (base && step) {
-            freq = base + (channel * step);
-            DSD_FPRINTF(stderr, "\n  DFA Frequency [%.6lf] MHz", (double)freq / 1000000);
-            // Persist learned mapping for UI visibility and later reuse
-            if (freq != 0) {
-                dsd_state_set_trunk_chan_freq(state, channel, freq);
-            }
-            return (freq);
-        } else {
+    //6.5.45. Outbound/Inbound Frequency Number (OFN/IFN)
+    const long int base = nxdn_dfa_base_hz(state->nxdn_base_freq);
+    const long int step = nxdn_dfa_step_hz(state->nxdn_step);
+    if (!base || !step) {
+        if (verbose) {
             DSD_FPRINTF(stderr, "\n    Custom DFA Settings -- Unknown Freq;");
-            return (0);
         }
-
+        return 0;
     }
-
-    else {
-        DSD_FPRINTF(stderr, "\n    Channel not found in import file");
-        return (0);
+    const long int freq = base + ((long int)channel * step);
+    if (verbose) {
+        DSD_FPRINTF(stderr, "\n  DFA Frequency [%.6lf] MHz", (double)freq / 1000000);
     }
+    *from_dfa = 1;
+    return freq;
+}
+
+long int
+nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
+    UNUSED(opts);
+    int from_dfa = 0;
+    const long int freq = nxdn_channel_resolve(state, channel, 1, &from_dfa);
+    // Kept for UI visibility and later reuse, recorded with the parameters it was computed under.
+    if (from_dfa) {
+        dsd_nxdn_dfa_learn(state, channel, freq);
+    }
+    return freq;
 }
 
 long int
@@ -645,44 +661,19 @@ nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
     if (!state) {
         return 0;
     }
-
-    // First: imported/learned mapping. Bounded because the largest uint16_t channel is one past
-    // the end of trunk_chan_map; the DFA fallback below is arithmetic and needs no bound.
-    long int freq = dsd_state_trunk_chan_valid(channel) ? state->trunk_chan_map[channel] : 0;
-    if (freq != 0) {
-        return freq;
-    }
-
-    // DFA/RCN=1 mapping (base + step) when broadcast and usable.
-    if (state->nxdn_rcn != 1) {
-        return 0;
-    }
-
-    long int base = 0;
-    if (state->nxdn_base_freq == 1) {
-        base = 100000000; //100 MHz
-    } else if (state->nxdn_base_freq == 2) {
-        base = 330000000; //330 Mhz
-    } else if (state->nxdn_base_freq == 3) {
-        base = 400000000; //400 Mhz
-    } else if (state->nxdn_base_freq == 4) {
-        base = 750000000; //750 Mhz
-    }
-
-    long int step = 0;
-    if (state->nxdn_step == 2) {
-        step = 1250; //1.25 kHz
-    } else if (state->nxdn_step == 3) {
-        step = 3125; //3.125 kHz
-    }
-
-    if (!base || !step) {
-        return 0;
-    }
-
-    freq = base + ((long int)channel * step);
-    if (freq != 0) {
-        dsd_state_set_trunk_chan_freq(state, channel, freq);
+    int from_dfa = 0;
+    const long int freq = nxdn_channel_resolve(state, channel, 0, &from_dfa);
+    if (from_dfa) {
+        dsd_nxdn_dfa_learn(state, channel, freq);
     }
     return freq;
+}
+
+long int
+nxdn_channel_to_frequency_display(const dsd_state* state, uint16_t channel) {
+    if (!state) {
+        return 0;
+    }
+    int from_dfa = 0;
+    return nxdn_channel_resolve(state, channel, 1, &from_dfa);
 }

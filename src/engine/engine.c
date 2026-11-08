@@ -17,6 +17,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -2811,10 +2812,8 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     set_spaces(state->nxdn_location_category, 1);
     state->nxdn_idas_system_id = 0;
     state->nxdn_idas_site_code = 0;
-    state->nxdn_rcn = 0;
-    state->nxdn_base_freq = 0;
-    state->nxdn_step = 0;
-    state->nxdn_bw = 0;
+    // The channel access parameters were the site's, and so are the channel map rows DFA computed from them.
+    dsd_nxdn_ca_reset(state);
     state->dmr_branding_sub[0] = '\0';
     state->dmr_branding[0] = '\0';
     state->dmr_site_parms[0] = '\0';

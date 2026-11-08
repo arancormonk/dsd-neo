@@ -2388,6 +2388,22 @@ add_test(
     COMMAND dsd-neo_test_nxdn_search_site_notes
 )
 
+# NXDN channel access parameters: SITE_INFO in either notation, learned DFA rows dropped on change, CCH_INFO status
+add_executable(
+    dsd-neo_test_nxdn_channel_access
+    protocol/nxdn/test_nxdn_channel_access.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_channel_access
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_channel_access
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME NXDN_CHANNEL_ACCESS COMMAND dsd-neo_test_nxdn_channel_access)
+
 add_executable(
     dsd-neo_test_nxdn_enc_class
     protocol/nxdn/test_nxdn_enc_class.c
