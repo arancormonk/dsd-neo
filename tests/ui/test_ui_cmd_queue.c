@@ -27878,18 +27878,18 @@ test_scan_list_set_judged_in_queue_order(void) {
 
     const struct {
         const char* name;
-        queued_switch switches[3];
         size_t count;
         int needs;
+        queued_switch switches[3];
     } cases[] = {
-        {"list 1 off, then list 2 off", {{1, 0, 0U}, {2, 0, 0U}}, 2U, 1},
-        {"list 2 off, then list 1 off", {{2, 0, 0U}, {1, 0, 0U}}, 2U, 1},
-        {"list 1 off, list 1 on, list 2 off", {{1, 0, 0U}, {1, 1, 0U}, {2, 0, 0U}}, 3U, 0},
-        {"list 1 off, every list on, list 2 off", {{1, 0, 0U}, {DSD_APP_SCAN_LIST_ALL, 1, 0U}, {2, 0, 0U}}, 3U, 0},
-        {"list 1 off, then list 3 off", {{1, 0, 0U}, {3, 0, 0U}}, 2U, 0},
-        {"another scan's list 1 off, then list 2 off", {{1, 0, 7U}, {2, 0, 0U}}, 2U, 0},
-        {"list 9 off, then list 2 off", {{9, 0, 0U}, {2, 0, 0U}}, 2U, 0},
-        {"every list off (refused), then list 2 off", {{DSD_APP_SCAN_LIST_ALL, 0, 0U}, {2, 0, 0U}}, 2U, 0},
+        {"list 1 off, then list 2 off", 2U, 1, {{1, 0, 0U}, {2, 0, 0U}}},
+        {"list 2 off, then list 1 off", 2U, 1, {{2, 0, 0U}, {1, 0, 0U}}},
+        {"list 1 off, list 1 on, list 2 off", 3U, 0, {{1, 0, 0U}, {1, 1, 0U}, {2, 0, 0U}}},
+        {"list 1 off, every list on, list 2 off", 3U, 0, {{1, 0, 0U}, {DSD_APP_SCAN_LIST_ALL, 1, 0U}, {2, 0, 0U}}},
+        {"list 1 off, then list 3 off", 2U, 0, {{1, 0, 0U}, {3, 0, 0U}}},
+        {"another scan's list 1 off, then list 2 off", 2U, 0, {{1, 0, 7U}, {2, 0, 0U}}},
+        {"list 9 off, then list 2 off", 2U, 0, {{9, 0, 0U}, {2, 0, 0U}}},
+        {"every list off (refused), then list 2 off", 2U, 0, {{DSD_APP_SCAN_LIST_ALL, 0, 0U}, {2, 0, 0U}}},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -27906,10 +27906,12 @@ test_scan_list_set_judged_in_queue_order(void) {
         dsd_app_frontend_runtime_start(&opts, &state);
         for (size_t k = 0; k < cases[i].count; k++) {
             const queued_switch* q = &cases[i].switches[k];
-            const dsd_app_scan_list_set_payload p = {.session = q->session != 0U ? q->session : 1U,
-                                                     .request = (uint32_t)(k + 1U),
-                                                     .list = (int16_t)q->list,
-                                                     .enabled = (uint8_t)q->enabled};
+            const dsd_app_scan_list_set_payload p = {
+                .session = q->session != 0U ? q->session : 1U,
+                .request = (uint32_t)(k + 1U),
+                .list = (int16_t)q->list,
+                .enabled = (uint8_t)q->enabled,
+            };
             rc |=
                 expect_true("list switch queued", dsd_app_command_submit(DSD_APP_CMD_SCAN_LIST_SET, &p, sizeof p) > 0);
         }
