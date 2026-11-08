@@ -25,6 +25,7 @@ Item {
     Accessible.onToggleAction: activate()
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     FocusFrame {}
 
     implicitWidth: Theme.minimumTouchSize

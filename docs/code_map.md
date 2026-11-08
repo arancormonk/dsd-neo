@@ -13439,6 +13439,13 @@ truncates a fractional size). The fit runs when the text, width or text size cha
 from the label's `height`. Tests: `tst_whole_word_label.qml`, and `tst_segmented_whole_words.qml`, which measures every
 `SegmentedControl` label set in the screen or sheet that holds it at 320 and 360 px and text 1.0, 1.6 and 2.0.
 
+A control a keyboard can press takes Return, keypad Enter (`Keys.onEnterPressed`) and Space, each through the control's
+one guarded activation function (`enabled`, `Navigation.allows()` and any gate of its own), as its accessibility press
+does. A key handler never calls the action directly: a control can keep the keyboard focus while a sheet opens over it.
+Issue #646 added keypad Enter to `SegmentedControl`, `BottomNav`, `DashedActionButton`, `PlayCircle`, `CallRow`,
+`DisclosureRow`, `PlexSwitch` and `ToggleRow` and to the Spectrum, Monitor, RadioReference and wizard buttons and rows
+that took Return alone, and moved the Monitor's Spectrum button's keys behind its gate. Tests: `tst_keypad_enter.qml`.
+
 Accessibility churn (issue #782). On Android, Qt 6.11.3's accessibility bridge turns each ObjectShow or ObjectHide into
 a main-thread task that makes 8 blocking round trips to the Qt thread, so a screen that creates or toggles accessible
 items on every metrics tick stalls the app (the bridge runs only under TalkBack now, "Android foundation integration

@@ -567,6 +567,7 @@ Item {
                                 browseSheet.chosen(modelData);
                         }
                         Keys.onReturnPressed: choose()
+                        Keys.onEnterPressed: choose()
                         Keys.onSpacePressed: choose()
                         FocusFrame {}
                         Text {
@@ -1024,6 +1025,7 @@ Item {
                 Accessible.onPressAction: goBack()
                 activeFocusOnTab: Navigation.allows(backToResults) && !radioReference.busy
                 Keys.onReturnPressed: goBack()
+                Keys.onEnterPressed: goBack()
                 Keys.onSpacePressed: goBack()
                 FocusFrame {}
                 function goBack() {
@@ -1266,6 +1268,7 @@ Item {
                                     screen.toggleSite(modelData.index);
                             }
                             Keys.onReturnPressed: choose()
+                            Keys.onEnterPressed: choose()
                             Keys.onSpacePressed: choose()
                             FocusFrame {}
                             Column {

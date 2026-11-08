@@ -665,12 +665,16 @@ Item {
                     Accessible.name: qsTr("Spectrum")
                     readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
                     Accessible.ignored: !navigationAllowed
-                    Accessible.onPressAction: {
-                        if (Navigation.allows(spectrumPill))
+                    Accessible.onPressAction: activate()
+                    // One guarded press for keys and accessibility alike: a key
+                    // reaching it under an open sheet does nothing.
+                    function activate() {
+                        if (enabled && Navigation.allows(spectrumPill))
                             screen.openSpectrum();
                     }
-                    Keys.onReturnPressed: screen.openSpectrum()
-                    Keys.onSpacePressed: screen.openSpectrum()
+                    Keys.onReturnPressed: activate()
+                    Keys.onEnterPressed: activate()
+                    Keys.onSpacePressed: activate()
                     FocusFrame {}
                     visible: metrics.radioInput && screen.wideHeaderActions
                     width: spectrumLabel.implicitWidth + 22
@@ -1733,6 +1737,7 @@ Item {
                         keySheet.open();
                 }
                 Keys.onReturnPressed: activate()
+                Keys.onEnterPressed: activate()
                 Keys.onSpacePressed: activate()
                 FocusFrame {}
                 Text {

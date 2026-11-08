@@ -29,6 +29,7 @@ Item {
         clicked();
     }
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     Keys.onSpacePressed: activate()
     FocusFrame {}
     implicitWidth: Math.max(Theme.minimumTouchSize, Math.ceil(label.implicitWidth) + 24)

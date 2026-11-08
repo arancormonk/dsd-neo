@@ -37,6 +37,7 @@ Item {
     }
     Keys.onSpacePressed: activate()
     Keys.onReturnPressed: activate()
+    Keys.onEnterPressed: activate()
     FocusFrame {}
     TapHandler {
         onTapped: row.activate()

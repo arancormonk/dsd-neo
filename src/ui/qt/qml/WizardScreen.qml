@@ -1731,6 +1731,7 @@ Item {
                         Accessible.ignored: !navigationAllowed
                         Accessible.onPressAction: choose()
                         Keys.onReturnPressed: choose()
+                        Keys.onEnterPressed: choose()
                         Keys.onSpacePressed: choose()
                         FocusFrame {}
                         function choose() {

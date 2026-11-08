@@ -55,6 +55,7 @@ Rectangle {
                 }
                 Keys.onSpacePressed: choose()
                 Keys.onReturnPressed: choose()
+                Keys.onEnterPressed: choose()
                 FocusFrame {}
                 readonly property bool active: nav.currentIndex === index
                 readonly property color tone: active ? Theme.cyan : Theme.textSubdued

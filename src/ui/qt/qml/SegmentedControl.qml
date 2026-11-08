@@ -63,6 +63,7 @@ Rectangle {
                 }
                 Keys.onSpacePressed: choose()
                 Keys.onReturnPressed: choose()
+                Keys.onEnterPressed: choose()
                 FocusFrame {}
                 readonly property bool active: control.currentIndex === index
 

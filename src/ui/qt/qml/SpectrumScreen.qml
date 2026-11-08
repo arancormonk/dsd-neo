@@ -949,6 +949,7 @@ Item {
                             Accessible.name: qsTr("Tune down")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -985,6 +986,7 @@ Item {
                             Accessible.description: sweepLabel.text
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -1064,6 +1066,7 @@ Item {
                             Accessible.name: qsTr("Tune up")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -1114,6 +1117,7 @@ Item {
                             Accessible.name: qsTr("Previous signal")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
@@ -1160,6 +1164,7 @@ Item {
                             Accessible.name: qsTr("Next signal")
                             Accessible.onPressAction: activate()
                             Keys.onReturnPressed: activate()
+                            Keys.onEnterPressed: activate()
                             Keys.onSpacePressed: activate()
                             FocusFrame {}
                             function activate() {
