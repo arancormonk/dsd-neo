@@ -648,8 +648,10 @@ Item {
                         anchors.right: card.hasSites ? siteButton.left : play.left
                         anchors.leftMargin: Theme.cardPadding
                         anchors.rightMargin: 12
-                        // 10 px above the middle of the actions' extent, where they
-                        // sit at normal text; never above the card's top padding.
+                        // Centred 10 px above the middle of the actions' box: the
+                        // actions plus the bottom padding, 122 px at normal text,
+                        // so they sit where they always have; never above the top
+                        // padding.
                         y: Math.max(Theme.cardPadding, (card.actionsBottom + Theme.cardPadding - height) / 2 - 10)
                         spacing: 4
 

@@ -10735,9 +10735,10 @@ Qt Quick frontend (`src/ui/qt`):
   condition, `readonly property bool shown` (no sites, or the first of its group), and its height is `shown ?
   fullHeight : 0`, never keyed on `visible`, which also goes false while Main hides Home: a collapsing card would cut
   the body's range and Flickable would clamp the scroll position. `fullHeight` follows the content: the label column
-  sits 10 px above the middle of the actions' extent (More at the top, Play at `minimumTouchSize + 6`, the site button
-  centred on Play), never above the top padding; the refresh hint takes the full width 8 px below the lower of labels
-  and actions; the card ends `cardPadding` below the lowest. A card without the hint is 122 px at normal text, as
+  is centred 10 px above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
+  `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
+  refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
+  lowest. A card without the hint is 122 px at normal text, as
   before, and grows at large text. Keyboard focus moving onto a control in the body restarts the owned
   `revealFocusTimer`, which reveals `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem,
   item)`; the timer lets a stronger scroll writer cancel a pending reveal. `Theme.revealFocus` maps the target into

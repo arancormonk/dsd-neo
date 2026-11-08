@@ -215,7 +215,7 @@ Item {
                 var labels = findChild(card, "savedSystemTitle").parent;
                 if (data.scale === 1.0) {
                     fuzzyCompare(card.height, 122, 0.01, name + ": the height at normal text");
-                    // 10 px above the card's middle, where they always sat.
+                    // Centred 10 px above the card's middle, where they always sat.
                     fuzzyCompare(labels.y, (122 - labels.height) / 2 - 10, 0.01, name + ": the labels' place at normal text");
                 }
                 var parts = [["labels", labels], ["Play", findChild(card, "savedSystemPlay")],
