@@ -92,14 +92,33 @@ Item {
     // and has no pill; its title is fixed above the body only while the Pinned
     // strip or the Listen tabs are (fixedTitle).
     readonly property bool pinnedHeader: !!decoderHost && decoderHost.localDeviceBrokered === true
-    // Issue #646: the Listen tabs sit fixed under the header and the Pinned
-    // strip, above the body.
-    readonly property bool tabsFixed: true
+    // Issue #646: how tall the fixed region is with the Listen tabs in it,
+    // down to the tabs' hairline, where the body starts: the title row (and
+    // the receiver pill as it wraps), the Pinned strip as held, the gaps and
+    // the tabs. It never reads where the tabs are, any `visible` or which tab
+    // is chosen, so where they go cannot feed back into it.
+    readonly property real fixedExtent: listenHeader.y + listenHeader.naturalHeight
+        + (pinnedStrip.shown ? pinnedStrip.pinGap + pinnedStrip.height : 0) + pinnedStrip.pinGap + listenTabs.implicitHeight
+    // The tabs stay fixed while that leaves the body at least half of Home
+    // (a tie is fixed); on a shorter screen they are the first thing in the
+    // body and scroll with it. With no height yet, the last answer stands
+    // (fixed to begin with). Only placeTabs() sets it, from the inputs'
+    // change signals: as a binding (even a readonly copy of a plain
+    // property) it is first evaluated inside fixedTitle's own evaluation
+    // while Home is built, which Qt reports as a binding loop.
+    property bool tabsFixed: true
+    function placeTabs() {
+        if (height > 0)
+            tabsFixed = fixedExtent <= height / 2;
+    }
+    onHeightChanged: placeTabs()
+    onFixedExtentChanged: placeTabs()
     // Issue #801: the title is fixed above the body wherever the header is
     // pinned, and on the desktop too while the Pinned strip or the Listen tabs
     // are fixed, so the order is title, strip, tabs, body on both hosts. The
-    // desktop's header then holds the title alone. Keyed on the strip's stored
-    // pins, not on `visible` (below).
+    // desktop's header then holds the title alone; with neither, the title
+    // leads the body. Keyed on the strip's stored pins, not on `visible`
+    // (below).
     readonly property bool fixedTitle: pinnedHeader || pinnedStrip.shown || tabsFixed
     readonly property bool dongleReady: pinnedHeader && deviceStatus.state === "ready"
     readonly property bool showDeviceDetails: pinnedHeader && localDeviceRelevant && !dongleReady && !(failure.message || "").length
@@ -128,12 +147,17 @@ Item {
         heldPinFont = Theme.pinLabelFont;
     }
     readonly property font pinLabelFont: Theme.pinLabelFont
-    onVisibleChanged: takePins()
+    onVisibleChanged: {
+        takePins();
+        if (visible && restorePending)
+            restoreTimer.restart();
+    }
     onColumnWidthChanged: takePins()
     onPinLabelFontChanged: takePins()
     Component.onCompleted: {
         section = knownSection(prefsStore ? prefsStore.listenSection : "");
         takePins();
+        placeTabs();
     }
 
     // Issue #646 D5: the Listen tab shown. It is read once from the tab this
@@ -167,14 +191,78 @@ Item {
     // any other id does nothing. Keyboard focus inside the section being
     // hidden moves first to the current tab, else to the body, so nothing
     // hidden keeps it; the tabs then hand it to the new current tab.
+    // The body returns to where this tab was left (see restoreTimer).
     function showSection(id) {
         if (id !== knownSection(id) || id === section)
             return;
+        // A fling stops with the tab it was on. The place left is kept unless
+        // a restore is still owed: until then the body shows a range clamped
+        // to the section before, which is no place the user left.
+        scrollBody.cancelFlick();
+        if (!restorePending)
+            sectionScroll[section] = clampedScroll(scrollBody.contentY);
+        restorePending = true;
+        ++restoreGeneration;
+        revealFocusTimer.stop();
+        focusRevealHeld = false;
         if (holdsFocus(sectionItem(section)) && !listenTabs.focusCurrent())
             scrollBody.forceActiveFocus();
         section = id;
         if (prefsStore && prefsStore.listenSection !== undefined)
             prefsStore.listenSection = id;
+        restoreTimer.generation = restoreGeneration;
+        restoreTimer.restart();
+    }
+
+    // Issue #646: each tab's place in the body, its contentY when it was left;
+    // a tab not yet left opens at the top.
+    property var sectionScroll: ({})
+    // A tab's place is owed to the body from the choice until restoreTimer
+    // puts it back; restoreGeneration names the latest choice, so a timer
+    // armed for an earlier one drops itself.
+    property bool restorePending: false
+    property int restoreGeneration: 0
+    function clampedScroll(y) {
+        return Math.max(scrollBody.originY, Math.min(y, scrollBody.originY + scrollBody.contentHeight - scrollBody.height));
+    }
+    function cancelRestore() {
+        restorePending = false;
+        ++restoreGeneration;
+        restoreTimer.stop();
+    }
+    // Puts the shown tab's place back a turn after the choice, once Home is
+    // shown (a hidden Home waits to be shown again). It lays the section and
+    // the body's column out itself first, so the range it clamps to is the
+    // new section's, not one a positioning pass still owes. With the
+    // keyboard focus on the tabs in the body, they stay in view: the place
+    // yields to them.
+    function restoreSection() {
+        if (!restorePending || restoreTimer.generation !== restoreGeneration || !visible)
+            return;
+        sectionItem(section).forceLayout();
+        content.forceLayout();
+        restorePending = false;
+        var place = sectionScroll[section];
+        scrollBody.contentY = clampedScroll(place === undefined ? scrollBody.originY : place);
+        if (!tabsFixed && holdsFocus(listenTabs))
+            revealFocus();
+    }
+    Timer {
+        id: restoreTimer
+        interval: 0
+        // The choice this restore is for (restoreGeneration).
+        property int generation: 0
+        onTriggered: screen.restoreSection()
+    }
+    // Forgets every tab's place and any scroll still owed, as a new Home
+    // starts. For tests, which reuse one Home across cases.
+    function resetScrollMemory() {
+        cancelRestore();
+        revealFocusTimer.stop();
+        focusRevealHeld = false;
+        sectionScroll = {};
+        scrollBody.cancelFlick();
+        scrollBody.contentY = scrollBody.originY;
     }
     Connections {
         target: listenPins
@@ -200,13 +288,25 @@ Item {
     }
 
     // B5: a session's ending or failure is reported at the top of the body.
+    // Issue #646 B3: this is the strongest of Home's scroll writers. It
+    // drops a tab's place still owed and a focus reveal still pending, keeps
+    // the top as the shown tab's place, and holds off focus reveals until the
+    // user scrolls or moves the focus by key, so a sheet handing the focus
+    // back to its opener later cannot scroll the failure card away.
     function revealTop() {
+        cancelRestore();
+        revealFocusTimer.stop();
+        scrollBody.cancelFlick();
         scrollBody.contentY = scrollBody.originY;
+        sectionScroll[section] = scrollBody.originY;
+        focusRevealHeld = true;
     }
 
     // Issue #646 B3: keyboard focus moving onto a control in the body scrolls
     // it into view once the move has settled. The timer is owned, so a scroll
-    // with a stronger claim can cancel a reveal still pending.
+    // with a stronger claim can cancel a reveal still pending: revealTop()
+    // above all, and a tab's place being put back (which reveals the tabs
+    // itself when they hold the focus in the body).
     function revealFocus() {
         var window = screen.Window.window;
         if (window && screen.visible)
@@ -217,11 +317,28 @@ Item {
         interval: 0
         onTriggered: screen.revealFocus()
     }
+    property bool focusRevealHeld: false
+    // The last item with the keyboard focus, to tell a move by Tab or Backtab
+    // (to the next stop either way from a control on screen) from the focus
+    // being handed somewhere.
+    property var lastFocusItem: null
+    function movedByKey(from, to) {
+        return !!from && !!to && from.visible && (from.nextItemInFocusChain(true) === to || from.nextItemInFocusChain(false) === to);
+    }
     Connections {
         target: screen.Window.window
         function onActiveFocusItemChanged() {
-            if (screen.visible)
-                revealFocusTimer.restart();
+            var from = screen.lastFocusItem;
+            var to = screen.Window.window.activeFocusItem;
+            screen.lastFocusItem = to;
+            if (!screen.visible || screen.restorePending)
+                return;
+            if (screen.focusRevealHeld) {
+                if (!screen.movedByKey(from, to))
+                    return;
+                screen.focusRevealHeld = false;
+            }
+            revealFocusTimer.restart();
         }
     }
 
@@ -260,10 +377,13 @@ Item {
         // spaces rather than eliding.
         readonly property bool stacked: screen.pinnedHeader && headerTitle.implicitWidth + Theme.gap + dongleStatusPill.implicitWidth > width
         readonly property real titleHeight: Math.max(44, headerTitle.implicitHeight)
+        // The pill as it is laid out, its label wrapped at the width it has,
+        // never only its minimum (fixedExtent reads this too).
+        readonly property real naturalHeight: !screen.pinnedHeader ? titleHeight : stacked ? titleHeight + 4 + dongleStatusPill.height : Math.max(titleHeight, dongleStatusPill.height)
         // Keyed on the host and the strip's held pins, not on `visible`: Main
         // hides Home on the other tabs, and a collapsing header would move the
         // body's scroll position.
-        height: !screen.fixedTitle ? 0 : !screen.pinnedHeader ? titleHeight : stacked ? titleHeight + 4 + dongleStatusPill.height : Math.max(titleHeight, dongleStatusPill.height)
+        height: screen.fixedTitle ? naturalHeight : 0
 
         ListenTitle {
             id: headerTitle
@@ -484,20 +604,30 @@ Item {
     // Issue #646: the Listen tabs, under the Pinned strip (or the title with
     // nothing pinned) on the content column, the last of the fixed region and
     // the last Tab stop before the body. Their own hairline marks where the
-    // body's cards scroll away, so the body starts right under it.
-    ListenTabs {
-        id: listenTabs
+    // body's cards scroll away, so the body starts right under it. On a short
+    // screen (not tabsFixed) the same tabs move into the body's first slot
+    // instead, where they sit as they would here and scroll with the cards.
+    Item {
+        id: fixedTabsSlot
 
         visible: screen.tabsFixed
-        enabled: !screen.managementSheetOpen
         x: screen.columnX
         y: (pinnedStrip.shown ? pinnedStrip.y + pinnedStrip.height : listenHeader.y + listenHeader.height) + pinnedStrip.pinGap
         width: screen.columnWidth
-        height: implicitHeight
-        model: screen.sectionTabs
-        currentId: screen.section
-        onSelected: function (id) {
-            screen.showSection(id);
+        height: screen.tabsFixed ? listenTabs.implicitHeight : 0
+
+        ListenTabs {
+            id: listenTabs
+
+            parent: screen.tabsFixed ? fixedTabsSlot : bodyTabsSlot
+            enabled: !screen.managementSheetOpen
+            width: screen.columnWidth
+            height: implicitHeight
+            model: screen.sectionTabs
+            currentId: screen.section
+            onSelected: function (id) {
+                screen.showSection(id);
+            }
         }
     }
 
@@ -506,12 +636,14 @@ Item {
 
         objectName: "dongleScrollBody"
         anchors.fill: parent
+        // The user scrolling takes over from revealTop() (focusRevealHeld).
+        onMovementStarted: screen.focusRevealHeld = false
         // Pinned, the body is clipped a few pixels below the header, so cards
         // scroll away short of the pill; the rest of the header's gap to the
         // first card stays at the body's top, and nothing moves at rest.
         // The Pinned strip, when shown, sits between them on the same terms.
         // Under the fixed Listen tabs it starts at their hairline.
-        anchors.topMargin: screen.tabsFixed ? listenTabs.y + listenTabs.height
+        anchors.topMargin: screen.tabsFixed ? fixedTabsSlot.y + fixedTabsSlot.height
             : pinnedStrip.shown ? pinnedStrip.y + pinnedStrip.height + screen.headerClearance
             : screen.fixedTitle ? listenHeader.y + listenHeader.height + screen.headerClearance : 0
         contentHeight: content.y + content.height + Theme.screenPadding
@@ -525,7 +657,10 @@ Item {
             id: content
 
             x: screen.columnX
-            y: screen.tabsFixed ? Theme.gap : screen.fixedTitle ? Theme.gap - screen.headerClearance : Theme.screenPadding
+            // Under fixed tabs the cards start a gap below their hairline.
+            // With the tabs in the body under a fixed title, the tabs start
+            // where fixed ones would, the strip's 8 px under what is fixed.
+            y: screen.tabsFixed ? Theme.gap : screen.fixedTitle ? pinnedStrip.pinGap - screen.headerClearance : Theme.screenPadding
             width: screen.columnWidth
             spacing: Theme.gap
 
@@ -539,6 +674,16 @@ Item {
                     anchors.left: parent.left
                     anchors.verticalCenter: parent.verticalCenter
                 }
+            }
+
+            // Issue #646: where the Listen tabs go on a short screen (see
+            // fixedTabsSlot), first in the body, after the title when the
+            // title leads it.
+            Item {
+                id: bodyTabsSlot
+                visible: !screen.tabsFixed
+                width: parent.width
+                height: screen.tabsFixed ? 0 : listenTabs.implicitHeight
             }
 
             // Issue #580: what this start's restore did, first thing, until dismissed.
@@ -1060,9 +1205,17 @@ Item {
 
     // Once cards pass under the pinned header or the Pinned strip, a hairline
     // marks where they go, as the bottom navigation's top edge does. Under the
-    // fixed Listen tabs their own hairline does, so there is one line only.
+    // fixed Listen tabs their own hairline does, so there is one line only;
+    // with the tabs in the body, this one stands aside while theirs passes
+    // the edge.
+    function bodyTabsLineAtEdge() {
+        var line = content.y + bodyTabsSlot.y + bodyTabsSlot.height - 1 - scrollBody.contentY;
+        return line > -1 && line < 1;
+    }
     Rectangle {
+        objectName: "listenScrollDivider"
         visible: screen.fixedTitle && !screen.tabsFixed && scrollBody.contentY > scrollBody.originY + 0.5
+            && !screen.bodyTabsLineAtEdge()
         y: scrollBody.y - 1
         width: screen.supportingPane ? screen.columnX + screen.columnWidth : screen.width
         height: 1

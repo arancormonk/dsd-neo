@@ -349,6 +349,9 @@ Item {
             verify(contains({x: 0, y: 0, w: home.width, h: home.height}, rectOf(pill)), "the pill stays on screen");
         }
 
+        // Issue #646 B3: revealTop() wins over Home's other deferred scroll writers. A tab's place still owed and a
+        // focus reveal still pending are dropped, the top becomes the tab's place, and a focus handed back later (a
+        // sheet restoring its opener) does not scroll it away.
         function test_reveal_top() {
             root.width = 360;
             root.height = 400;
@@ -356,10 +359,35 @@ Item {
             var body = findChild(home, "dongleScrollBody");
             verify(waitForPolish(home));
             waitForRendering(home);
+            var plays = [];
+            (function look(node) {
+                for (var child of node.children) {
+                    if (child.objectName === "savedSystemPlay" && child.visible)
+                        plays.push(child);
+                    look(child);
+                }
+            })(findChild(home, "listenSystemsSection"));
+            compare(plays.length, 4);
             body.contentY = body.contentHeight - body.height;
             verify(body.contentY > 0);
+            home.showSection("explore");
+            home.showSection("systems");
+            verify(home.restorePending, "Systems' place is owed");
+            plays[3].forceActiveFocus();
             home.revealTop();
             compare(body.contentY, body.originY);
+            verify(!home.restorePending, "the owed place is dropped");
+            waitFrames(3);
+            compare(body.contentY, body.originY, "nothing pending scrolled the top away");
+            verify(plays[2].mapToItem(body, 0, 0).y > body.height, "the control handed the focus is out of view at the top");
+            plays[2].forceActiveFocus();
+            waitFrames(3);
+            compare(body.contentY, body.originY, "a focus handed back later scrolls nothing");
+            home.showSection("explore");
+            home.showSection("systems");
+            waitFrames(3);
+            compare(body.contentY, body.originY, "the top is Systems' place now");
+            root.forceActiveFocus();
         }
 
         function test_receiver_on_the_bus_is_not_missing() {
@@ -481,17 +509,22 @@ Item {
             // then, or the body loses the place the user scrolled to.
             root.width = 360;
             root.height = 400;
+            // Cards enough that the height set below keeps the Listen tabs fixed (issue #646): a shorter Home would
+            // move them into the body and change the range being set.
+            fillSystems();
             testContext.setAttachedDeviceSource("usb");
             var body = findChild(home, "dongleScrollBody");
             var header = findChild(home, "listenHeader");
             tryCompare(findChild(home, "dongleRetry"), "visible", true);
             verify(waitForPolish(home));
+            waitForRendering(home);
             var headerHeight = header.height;
             verify(headerHeight > 0);
             // A body that scrolls by less than the details panel is tall, so
             // the panel collapsing would leave nothing to scroll.
             root.height += body.contentHeight - body.height - 60;
             verify(waitForPolish(home));
+            verify(home.tabsFixed, "the Listen tabs stay fixed at this height");
             var panel = findChild(home, "dongleDetailsPanel");
             var panelHeight = panel.height;
             verify(panelHeight > 60);
@@ -589,7 +622,7 @@ Item {
             verify(pill === null || !pill.visible, "no pill");
             var tabs = findChild(home, "listenTabs");
             verify(rectOf(tabs).y >= rectOf(header).y + header.height, "the tabs under the title");
-            compare(body.y, tabs.y + tabs.height);
+            compare(body.y, rectOf(tabs).y + tabs.height);
             compare(body.height, home.height - body.y);
         }
 

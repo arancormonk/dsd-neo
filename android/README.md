@@ -954,7 +954,8 @@ libusb target, and Java retains descriptor ownership until native transfers end.
 
 Listen keeps the receiver's status in a pill beside the title, in a header that
 stays put while the list scrolls (the desktop has no pill; its title stays put
-above the Listen tabs as well). One shared reading (`DeviceStatus.qml`) names the receiver —
+above the Pinned row or Listen tabs that stay put, and otherwise leads the list).
+One shared reading (`DeviceStatus.qml`) names the receiver —
 RTL-SDR, Airspy, or "receiver" when it cannot tell — for Listen, Onboarding and
 the Monitor:
 
@@ -2270,7 +2271,9 @@ not be exported or logged. QString/QML key copies cannot guarantee memory erasur
 ### Listen tabs
 
 Listen shows one group at a time under three tabs, **Systems**, **Scan lists** and **Explore**, which stay in place
-under the title (and the Pinned row) while the list scrolls:
+under the title (and the Pinned row) while the list scrolls. On a short screen, where tabs that stay in place would
+leave the list less than half of Listen (a phone held sideways at a large text size, say), the tabs are the first
+thing in the list instead and scroll away with it; this follows rotation and text size as they change:
 
 - **Systems**: **+ Add a system**, then the saved systems.
 - **Scan lists**: **+ Add a scan list**, a line saying what a scan list is for while there is none, then the lists.
@@ -2280,8 +2283,14 @@ A failure, a finished replay, a backup's result and the receiver's details show 
 name is the group's heading. Listen opens on the tab last chosen on this phone; that choice is not in backups, and a
 restore keeps it. While a Listen menu or sheet is open the tabs are greyed out and do nothing.
 
-From a keyboard the tabs are one Tab stop, the current tab: Left and Right move to the next tab and show it, Home
-and End go to the first and last, and Enter or Space shows the focused one. TalkBack reads each tab as a radio
+Each tab keeps its own place in the list while the app runs: going back to a tab shows it where it was left, and a tab
+not shown yet starts at its top. When Listen scrolls to its top to show a failure (or, with a USB receiver, a session
+that ended), that is the tab's place, and nothing scrolls the message away until you scroll or move on with the
+keyboard.
+
+From a keyboard the tabs are one Tab stop, the current tab: Left and Right move to the next tab and show it, Home and
+End go to the first and last, and Enter or Space shows the focused one. When the tabs are in the list, a tab chosen from
+the keyboard stays in view, so the list stops short of the tab's place if it has to. TalkBack reads each tab as a radio
 button, "checked" on the current one, because Qt's Android bridge has no tab role.
 
 ### Pinned shortcuts

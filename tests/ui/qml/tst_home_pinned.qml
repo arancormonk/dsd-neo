@@ -59,6 +59,7 @@ Item {
             app.attemptedSource = null;
             app.dismissedFailure = "";
             findChild(app, "homeScreen").showSection("systems");
+            findChild(app, "homeScreen").resetScrollMemory();
         }
 
         function cleanup() {
@@ -261,9 +262,32 @@ Item {
             waitForRendering(home);
             body.contentY = body.contentHeight - body.height;
             verify(body.contentY > body.originY + 100, "the body scrolled");
+            // Issue #646 B3: a tab's place still owed and a focus reveal still pending when the refusal lands.
+            home.showSection("explore");
+            home.showSection("systems");
+            verify(home.restorePending, "Systems' place is owed");
+            var plays = [];
+            (function look(node) {
+                for (var child of node.children) {
+                    if (child.objectName === "savedSystemPlay" && child.visible)
+                        plays.push(child);
+                    look(child);
+                }
+            })(findChild(home, "listenSystemsSection"));
+            plays[plays.length - 1].forceActiveFocus();
             app.startSystem(savedSystems.rowForUid(sites[1]));
             compareRefused(avoidedText("County"), sites[1]);
             compare(body.contentY, body.originY, "the failure card is in view");
+            verify(waitForPolish(home));
+            waitForRendering(home);
+            compare(body.contentY, body.originY, "and stays in view once the deferred scrolls have run");
+            // A focus handed back afterwards, as a sheet does to its opener, scrolls nothing either.
+            plays[plays.length - 2].forceActiveFocus();
+            verify(waitForPolish(home));
+            waitForRendering(home);
+            compare(body.contentY, body.originY, "a later focus hand-back leaves the failure card in view");
+            verify(findChild(home, "homeFailureCard").visible);
+            root.forceActiveFocus();
         }
 
         // A refused pin start is the newest attempt: a finished replay's card goes, so its Play again cannot retry the

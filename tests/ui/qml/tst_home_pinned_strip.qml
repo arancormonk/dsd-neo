@@ -129,6 +129,13 @@ Item {
             var p = item.mapToItem(home, 0, 0);
             return {x: p.x, y: p.y, w: item.width, h: item.height};
         }
+        function descends(item, scope) {
+            for (var at = item; at; at = at.parent) {
+                if (at === scope)
+                    return true;
+            }
+            return false;
+        }
         function sameButtons(a, b, message) {
             compare(a.length, b.length, message);
             for (var i = 0; i < a.length; ++i)
@@ -168,7 +175,7 @@ Item {
             verify(!strip().visible, "no strip");
             compare(strip().height, 0);
             compare(home.pinnedStripHeight, 0);
-            compare(tabs().y, restingTabs, "the tabs under the title");
+            compare(rectOf(tabs()).y, restingTabs, "the tabs under the title");
             compare(body().y, restingTabs + tabs().height, "the body under the tabs");
             compare(body().height, home.height - body().y);
             var title = findChild(home, "listenTitle");
@@ -181,14 +188,14 @@ Item {
             compare(home.pinnedStripHeight, strip().height);
             verify(header.visible, "the title is fixed above the strip");
             compare(strip().y, header.y + header.height + 8);
-            compare(tabs().y, strip().y + strip().height + 8, "the tabs under the strip");
-            compare(body().y, tabs().y + tabs().height, "the body starts under the tabs");
+            compare(rectOf(tabs()).y, strip().y + strip().height + 8, "the tabs under the strip");
+            compare(body().y, rectOf(tabs()).y + tabs().height, "the body starts under the tabs");
             compare(JSON.stringify(stripTexts()), JSON.stringify(["Alpha"]));
             verify(!title.visible, "the body's own title row is not shown as well");
 
             listenPins.unpin("system", uid);
             tryCompare(strip(), "visible", false);
-            compare(tabs().y, restingTabs, "unpinned, the tabs are back where they were");
+            compare(rectOf(tabs()).y, restingTabs, "unpinned, the tabs are back where they were");
             compare(body().y, restingTabs + tabs().height, "and the body");
         }
 
@@ -252,15 +259,21 @@ Item {
             verify(s.x >= Ui.Theme.screenPadding - 0.5 && s.x + s.w <= right + 0.5, "strip inside the column");
             var b = rectOf(body());
             var t = rectOf(tabs());
-            verify(t.y >= s.y + s.h, "the tabs below the strip");
-            verify(b.y >= t.y + t.h, "body below the tabs");
+            compare(t.y, s.y + s.h + 8, "the tabs 8 px below the strip");
+            // Issue #646: the Listen tabs are fixed while that leaves the body half of Home at least; these landscape
+            // phones are shorter, and there the tabs lead the body instead, at rest just where fixed ones would be.
+            var short = ["320 px landscape at 1", "320 px landscape at 1.3", "320 px landscape at 1.6",
+                "360 px landscape at 1.6"].indexOf(data.tag) >= 0;
+            compare(home.tabsFixed, !short, "the tabs fixed");
+            compare(home.tabsFixed, home.fixedExtent <= home.height / 2, "by the short-screen rule");
+            if (home.tabsFixed) {
+                compare(b.y, t.y + t.h, "body below the tabs");
+            } else {
+                compare(body().contentY, body().originY);
+                verify(descends(tabs(), body()), "the tabs in the body");
+                verify(t.y >= b.y && t.y + t.h <= b.y + b.h, "the tabs at the top of the body, in view");
+            }
             compare(b.y + b.h, home.height, "the body runs to the bottom");
-            // Issue #646: the Listen tabs are fixed under the strip at every size for now, which leaves these landscape
-            // phones less than half their height for the body. Named rows, not the outcome: every other row still
-            // asserts, and these pass again (failing the run) once the tabs move into the body on short screens.
-            if (["320 px landscape at 1", "320 px landscape at 1.3", "320 px landscape at 1.6",
-                    "360 px landscape at 1.6"].indexOf(data.tag) >= 0)
-                expectFailContinue(data.tag, "the fixed Listen tabs take the body below half of a landscape phone");
             verify(b.h >= home.height / 2, "the body keeps most of the screen: " + b.h + " of " + home.height);
             var header = rectOf(findChild(home, "listenHeader"));
             verify(s.y >= header.y + header.h, "strip under the header");
@@ -669,8 +682,8 @@ Item {
             verify(header.visible && headerTitle.visible);
             compare(header.height, Math.max(44, headerTitle.implicitHeight));
             verify(!bodyTitle.visible);
-            compare(tabs().y, header.y + header.height + 8);
-            compare(body().y, tabs().y + tabs().height);
+            compare(rectOf(tabs()).y, header.y + header.height + 8);
+            compare(body().y, rectOf(tabs()).y + tabs().height);
         }
 
         // Hidden on another tab with pins, Home keeps its scroll range and position, also when the pins change there.

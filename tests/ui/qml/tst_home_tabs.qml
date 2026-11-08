@@ -43,6 +43,7 @@ Item {
     SignalSpy { id: exploreSetUp; target: home; signalName: "exploreSetup" }
     SignalSpy { id: systemPlayed; target: home; signalName: "playSystem" }
     SignalSpy { id: listPlayed; target: home; signalName: "playScanList" }
+    SignalSpy { id: placementFlips; target: home; signalName: "tabsFixedChanged" }
 
     TestCase {
         name: "HomeTabs"
@@ -142,6 +143,7 @@ Item {
             emptyModels();
             home.visible = true;
             home.showSection("systems");
+            home.resetScrollMemory();
             testContext.resetListenSection();
             testContext.resetBackup();
             testContext.setRadioReference("available", false);
@@ -151,7 +153,7 @@ Item {
             root.height = 844;
             Ui.Theme.resetFontScale();
             body().contentY = body().originY;
-            for (var spy of [systemAdded, scanAdded, searchOpened, exploreStarted, exploreSetUp, systemPlayed, listPlayed])
+            for (var spy of [systemAdded, scanAdded, searchOpened, exploreStarted, exploreSetUp, systemPlayed, listPlayed, placementFlips])
                 spy.clear();
             failOnWarning(/(HomeScreen|ListenTabs)\.qml.*(Binding loop|Unable to assign|TypeError)/);
         }
@@ -163,12 +165,15 @@ Item {
                 return prefs;
             });
             home.showSection("systems");
+            home.resetScrollMemory();
             home.visible = true;
             testContext.resetListenSection();
             testContext.resetPins();
             testContext.resetBackup();
             testContext.setRadioReference("available", false);
             testContext.setDongleStatus(false, 0, "");
+            testContext.setLocalDeviceRecord("usb", false, "");
+            testContext.setAttachedDeviceSource("");
             testContext.useLifecycleHost(false);
             home.failure = ({});
             home.completionMessage = "";
@@ -583,5 +588,525 @@ Item {
             });
             compare(titles.length, 1, "the title read once");
         }
+
+        // --- Short screens (§2): the tabs are fixed while fixedExtent <= height / 2, else they lead the body. ---
+
+        function useBrokeredHost() {
+            // The brokered capability is CONSTANT: set it before publishing the host (see tst_home_dongle_status).
+            testContext.setDongleStatus(false, 0, "");
+            testContext.useLifecycleHost(true);
+        }
+        function pinSystems(count) {
+            for (var i = 0; i < count; ++i)
+                compare(listenPins.pin("system", savedSystems.get(i).uid), "");
+        }
+        // Where the body starts, below everything that stays put.
+        function fixedRegion() {
+            return rectIn(body(), home).y;
+        }
+        // The one title shown and read, wherever it is.
+        function checkOneTitle(why) {
+            var shown = [item("listenHeaderTitle"), item("listenTitle")].filter(function (title) {
+                for (var at = title; at; at = at.parent) {
+                    if (!at.visible)
+                        return false;
+                }
+                return true;
+            });
+            compare(shown.length, 1, "one title shown " + why);
+            var read = testContext.accessibleNodesUnder(home).filter(function (node) {
+                return node.inTree && node.role === Accessible.Heading && node.name === "Listen";
+            });
+            compare(read.length, 1, "one title read " + why);
+        }
+        // The placement the rule gives, laid out: fixed tabs above the body with the region at most half of Home, or
+        // the tabs in the body (just where fixed ones would be when it is at its top).
+        function checkPlacement(why) {
+            settle();
+            compare(home.tabsFixed, home.fixedExtent <= home.height / 2, "the rule " + why);
+            var strip = item("listenTabs");
+            var inBody = false;
+            for (var at = strip; at; at = at.parent)
+                inBody = inBody || at === body();
+            compare(inBody, !home.tabsFixed, "the tabs in the body " + why);
+            if (home.tabsFixed) {
+                fuzzyCompare(fixedRegion(), home.fixedExtent, 0.5, "the fixed region is what the rule measured " + why);
+                verify(fixedRegion() <= home.height / 2 + 0.5, "the fixed region at most half of Home " + why);
+                fuzzyCompare(rectIn(strip, home).y + strip.height, fixedRegion(), 0.5, "the body under the tabs " + why);
+            } else {
+                verify(fixedRegion() < home.fixedExtent, "the body starts above where fixed tabs would end " + why);
+                if (home.fixedTitle && body().contentY <= body().originY + 0.5)
+                    fuzzyCompare(rectIn(strip, home).y + strip.height, home.fixedExtent, 0.5, "at rest the tabs sit where fixed ones would " + why);
+            }
+            checkOneTitle(why);
+        }
+
+        // The extent is prospective: it is the same in both placements, with Home hidden and on every tab.
+        function test_fixed_extent_independent_of_placement_data() {
+            return [{tag: "brokered with pins", brokered: true, pins: true},
+                {tag: "brokered", brokered: true, pins: false},
+                {tag: "desktop with pins", brokered: false, pins: true},
+                {tag: "desktop", brokered: false, pins: false}];
+        }
+        function test_fixed_extent_independent_of_placement(data) {
+            if (data.brokered)
+                useBrokeredHost();
+            addSystems(3);
+            if (data.pins)
+                pinSystems(2);
+            root.width = 360;
+            root.height = 740;
+            Ui.Theme.fontScale = 1.6;
+            settle();
+            verify(home.tabsFixed, "fixed at 360 x 740");
+            var extent = home.fixedExtent;
+            verify(extent > 0);
+            checkPlacement("at 360 x 740");
+            root.height = Math.floor(2 * extent) - 2;
+            checkPlacement("shorter");
+            verify(!home.tabsFixed, "in the body when shorter");
+            compare(home.fixedExtent, extent, "the same extent with the tabs in the body");
+            for (var id of ids) {
+                choose(id);
+                compare(home.fixedExtent, extent, "the same extent on " + id);
+            }
+            home.visible = false;
+            waitFrames(3);
+            compare(home.fixedExtent, extent, "the same extent with Home hidden");
+            compare(home.tabsFixed, false, "and the placement held");
+            home.visible = true;
+            root.height = 740;
+            checkPlacement("taller again");
+            compare(home.fixedExtent, extent);
+        }
+
+        // A tie is fixed; a pixel less moves the tabs into the body, a pixel more brings them back, each flip once.
+        function test_tie_counts_as_fixed() {
+            useBrokeredHost();
+            addSystems(3);
+            pinSystems(1);
+            settle();
+            var extent = home.fixedExtent;
+            root.height = 2 * extent;
+            checkPlacement("at the tie");
+            verify(home.tabsFixed, "a tie is fixed");
+            placementFlips.clear();
+            root.height = 2 * extent - 1;
+            checkPlacement("a pixel short");
+            verify(!home.tabsFixed);
+            compare(placementFlips.count, 1, "one flip");
+            root.height = 2 * extent;
+            checkPlacement("back at the tie");
+            verify(home.tabsFixed);
+            compare(placementFlips.count, 2, "one flip back");
+        }
+
+        // The keyboard focus stays on the current tab when the tabs move into the body and back, still one Tab stop.
+        function test_focus_kept_across_a_move() {
+            addSystems(3);
+            settle();
+            root.forceActiveFocus();
+            for (var i = 0; i < 4 && !tab("systems").activeFocus; ++i)
+                keyClick(Qt.Key_Tab);
+            verify(tab("systems").activeFocus);
+            root.height = Math.floor(2 * home.fixedExtent) - 2;
+            settle();
+            verify(!home.tabsFixed);
+            verify(tab("systems").activeFocus, "kept moving into the body");
+            compare(JSON.stringify(tabStops()), JSON.stringify(["systems"]));
+            keyClick(Qt.Key_Right);
+            compare(home.section, "scanLists", "the keys still work there");
+            root.height = 844;
+            settle();
+            verify(home.tabsFixed);
+            verify(tab("scanLists").activeFocus, "kept moving back");
+            keyClick(Qt.Key_Tab);
+            verify(item("addScanListButton").activeFocus, "Tab goes on into the body");
+        }
+
+        // With no height (not laid out yet, or hidden at zero size) the last placement stands, either way.
+        function test_no_height_keeps_the_last_placement() {
+            addSystems(3);
+            settle();
+            verify(home.tabsFixed);
+            root.height = 0;
+            settle();
+            verify(home.tabsFixed, "fixed stays fixed at zero height");
+            root.height = Math.floor(2 * home.fixedExtent) - 2;
+            settle();
+            verify(!home.tabsFixed);
+            root.height = 0;
+            settle();
+            verify(!home.tabsFixed, "in the body stays in the body at zero height");
+            root.height = 844;
+            checkPlacement("laid out again");
+            verify(home.tabsFixed);
+        }
+
+        // The phones the spec names: landscape at 1.6 with pins puts the tabs in the body, portrait keeps them fixed.
+        // In either, one title, and Tab runs pill, pins, More, the current tab, then the body.
+        function test_short_screens_data() {
+            return [{tag: "landscape 640 x 360 at 1.6 with pins", width: 640, height: 360, fixed: false, brokered: true},
+                {tag: "landscape 640 x 360 at 1.6 with pins on the desktop", width: 640, height: 360, fixed: false, brokered: false},
+                {tag: "portrait 360 x 740 at 1.6 with pins", width: 360, height: 740, fixed: true, brokered: true}];
+        }
+        function test_short_screens(data) {
+            if (data.brokered)
+                useBrokeredHost();
+            addSystems(6);
+            pinSystems(2);
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = 1.6;
+            checkPlacement(data.tag);
+            compare(home.tabsFixed, data.fixed, "the tabs fixed");
+            var order = [];
+            if (data.brokered)
+                order.push(item("dongleStatusPill"));
+            var pins = [];
+            for (var child of item("pinnedStrip").children) {
+                if (child.objectName === "pinnedStripPin" && child.opacity > 0)
+                    pins.push(child);
+            }
+            pins.sort(function (a, b) {
+                return a.x - b.x;
+            });
+            verify(pins.length >= 1);
+            order = order.concat(pins, [item("pinnedStripMore"), tab("systems"), item("addSystemButton")]);
+            root.forceActiveFocus();
+            for (var i = 0; i < order.length; ++i) {
+                keyClick(Qt.Key_Tab);
+                verify(order[i].activeFocus, "Tab " + (i + 1) + " reaches " + (order[i].objectName || order[i].text) + ", not " + focused());
+            }
+            keyClick(Qt.Key_Backtab);
+            verify(tab("systems").activeFocus, "Backtab from the body lands on the current tab");
+            settle();
+            verify(inView(tab("systems")) || home.tabsFixed, "the tab in view");
+        }
+
+        // One title in both placements, on both hosts, with and without pins.
+        function test_one_title_in_both_placements_data() {
+            return [{tag: "desktop", brokered: false, pins: false}, {tag: "desktop with pins", brokered: false, pins: true},
+                {tag: "brokered", brokered: true, pins: false}, {tag: "brokered with pins", brokered: true, pins: true}];
+        }
+        function test_one_title_in_both_placements(data) {
+            if (data.brokered)
+                useBrokeredHost();
+            addSystems(3);
+            if (data.pins)
+                pinSystems(1);
+            settle();
+            checkPlacement("fixed");
+            verify(home.tabsFixed);
+            verify(item("listenHeaderTitle").visible && item("listenHeader").visible, "the fixed title, as fixed tabs need");
+            root.height = Math.floor(2 * home.fixedExtent) - 2;
+            checkPlacement("in the body");
+            verify(!home.tabsFixed);
+            // The title stays where it is without the tabs: fixed with the pill or pins, else leading the body.
+            compare(item("listenHeader").visible, data.brokered || data.pins, "the title fixed with the pill or pins");
+            compare(item("listenTitle").visible, !data.brokered && !data.pins, "else the body's own title row");
+            if (!data.brokered && !data.pins) {
+                var title = item("listenTitle");
+                verify(rectIn(title, body().contentItem).y + title.height <= rectIn(item("listenTabs"), body().contentItem).y,
+                    "the title above the tabs in the body");
+            }
+        }
+
+        // Live resize, font change and the widest receiver label just above and just below the threshold: each flips
+        // the placement once, and the rendered fixed region is at most half of Home whenever the tabs are fixed.
+        function test_threshold_crossings_data() {
+            return [{tag: "live resize"}, {tag: "font change"}, {tag: "widest receiver label"}];
+        }
+        function test_threshold_crossings(data) {
+            useBrokeredHost();
+            addSystems(6);
+            pinSystems(1);
+            root.width = 320;
+            // At 2.0 the widest label wraps inside the pill, which then stands taller than its minimum.
+            Ui.Theme.fontScale = data.tag === "widest receiver label" ? 2.0 : 1.0;
+            settle();
+            var low = home.fixedExtent;
+            var high;
+            var change;
+            if (data.tag === "live resize") {
+                high = low + 2;
+                change = function (up) {
+                    root.height = up ? 2 * low - 2 : 2 * low;
+                };
+            } else if (data.tag === "font change") {
+                Ui.Theme.fontScale = 1.3;
+                settle();
+                high = home.fixedExtent;
+                change = function (up) {
+                    Ui.Theme.fontScale = up ? 1.3 : 1.0;
+                };
+            } else {
+                testContext.setAttachedDeviceSource("usb");
+                testContext.setDongleStatus(false, 4, "USB permission denied");
+                testContext.setLocalDeviceRecord("", false, "usb");
+                tryCompare(item("dongleStatusLabel"), "text", "RTL-SDR NO ACCESS");
+                settle();
+                var pill = item("dongleStatusPill");
+                compare(item("dongleStatusLabel").lineCount, 2, "the widest label wraps");
+                verify(pill.height > pill.implicitHeight + 0.5, "so the pill is taller than its minimum");
+                high = home.fixedExtent;
+                // One input, so one label change: access refused, or the same receiver waiting to connect.
+                change = function (up) {
+                    testContext.setDongleStatus(false, up ? 4 : 0, up ? "USB permission denied" : "");
+                    tryCompare(item("dongleStatusLabel"), "text", up ? "RTL-SDR NO ACCESS" : "CONNECT RTL-SDR");
+                };
+                change(false);
+                settle();
+                low = home.fixedExtent;
+            }
+            verify(high > low + 0.5, "the change moves the extent: " + low + " to " + high);
+            if (data.tag !== "live resize")
+                root.height = low + high;
+            change(false);
+            checkPlacement("below the threshold");
+            verify(home.tabsFixed, "fixed below the threshold");
+            for (var round = 0; round < 2; ++round) {
+                placementFlips.clear();
+                change(true);
+                checkPlacement("above the threshold");
+                verify(!home.tabsFixed, "in the body above it");
+                compare(placementFlips.count, 1, "one flip up");
+                change(false);
+                checkPlacement("below it again");
+                verify(home.tabsFixed);
+                compare(placementFlips.count, 2, "one flip back");
+            }
+        }
+
+        // The single scroll divider under the fixed region: under fixed tabs their own hairline is the only line;
+        // with the tabs in the body under a fixed title, the divider shows once the body scrolls, and stands aside
+        // while the tabs' own hairline passes the edge; with nothing fixed there is none.
+        function test_one_line_under_the_fixed_region_data() {
+            return [{tag: "fixed tabs", pins: true, fixed: true}, {tag: "tabs in the body under pins", pins: true, fixed: false},
+                {tag: "nothing fixed", pins: false, fixed: false}];
+        }
+        function test_one_line_under_the_fixed_region(data) {
+            addSystems(20);
+            if (data.pins)
+                pinSystems(1);
+            settle();
+            if (!data.fixed)
+                root.height = Math.floor(2 * home.fixedExtent) - 2;
+            settle();
+            compare(home.tabsFixed, data.fixed);
+            compare(item("listenHeader").visible, data.pins, "the title fixed with pins");
+            var divider = item("listenScrollDivider");
+            var strip = item("listenTabs");
+            verify(!divider.visible, "no divider at rest");
+            body().contentY = body().originY + 200;
+            settle();
+            compare(divider.visible, !data.fixed && data.pins, "one line under the fixed region when scrolled");
+            if (divider.visible)
+                fuzzyCompare(rectIn(divider, home).y + 1, fixedRegion(), 0.5, "on the body's top edge");
+            if (!data.fixed && data.pins) {
+                // The tabs' own hairline on the body's top row: the divider stands aside for it.
+                var line = rectIn(strip, body().contentItem).y + strip.height - 1;
+                body().contentY = line;
+                settle();
+                verify(!divider.visible, "the tabs' hairline is the line at the edge");
+                body().contentY = line + 2;
+                settle();
+                verify(divider.visible, "and the divider once it has gone");
+            }
+        }
+
+        // --- Each tab keeps its place in the body. ---
+
+        function deepPlace() {
+            var range = body().contentHeight - body().height;
+            verify(range > 400, "the body scrolls far");
+            return Math.round(range / 2);
+        }
+        function test_each_tab_keeps_its_place() {
+            addSystems(30);
+            addLists(20);
+            settle();
+            var deep = deepPlace();
+            body().contentY = deep;
+            choose("explore");
+            compare(body().contentY, body().originY, "Explore opens at its top, not at a clamp past it");
+            choose("systems");
+            compare(body().contentY, deep, "back on Systems, where it was left");
+            choose("scanLists");
+            compare(body().contentY, body().originY, "Scan lists at its top the first time");
+            var listPlace = Math.round((body().contentHeight - body().height) / 3);
+            body().contentY = listPlace;
+            choose("systems");
+            compare(body().contentY, deep);
+            choose("scanLists");
+            compare(body().contentY, listPlace, "each tab its own place");
+        }
+
+        // Switches in one turn remember no place a restore still owed: the body's range was the wrong section's.
+        function test_rapid_switches_remember_no_clamp() {
+            addSystems(30);
+            settle();
+            var deep = deepPlace();
+            body().contentY = deep;
+            home.showSection("explore");
+            home.showSection("scanLists");
+            home.showSection("explore");
+            home.showSection("systems");
+            settle();
+            compare(body().contentY, deep, "Systems where it was left");
+            choose("explore");
+            compare(body().contentY, body().originY, "Explore kept no clamped place");
+            choose("scanLists");
+            compare(body().contentY, body().originY, "nor Scan lists");
+            // Laid out between the switches, but with the restore still owed.
+            choose("systems");
+            home.showSection("explore");
+            verify(waitForPolish(home));
+            home.showSection("systems");
+            settle();
+            compare(body().contentY, deep);
+            choose("explore");
+            compare(body().contentY, body().originY);
+        }
+
+        // A switch during a fling stops it: the new tab opens still at its top, and the old one keeps where the fling
+        // was when the tab changed.
+        function test_switch_during_a_fling() {
+            addSystems(30);
+            settle();
+            var deep = deepPlace();
+            body().contentY = deep;
+            body().flick(0, -2500);
+            tryVerify(function () {
+                return body().flicking && body().contentY > deep + 20;
+            }, 2000, "the body is flinging down");
+            var at = body().contentY;
+            home.showSection("explore");
+            verify(!body().flicking && !body().moving, "the fling stopped with the tab");
+            settle();
+            compare(body().contentY, body().originY, "Explore at its top");
+            wait(100);
+            compare(body().contentY, body().originY, "and still there: no fling carried over");
+            choose("systems");
+            verify(Math.abs(body().contentY - at) <= 1, "Systems where the fling was: " + body().contentY + " vs " + at);
+            verify(body().contentY <= body().originY + body().contentHeight - body().height + 0.5, "inside the range");
+        }
+
+        // A tab chosen while Home is hidden is put back where it was once Home shows again, not before.
+        function test_restore_waits_while_hidden() {
+            addSystems(30);
+            settle();
+            var deep = deepPlace();
+            body().contentY = deep;
+            choose("explore");
+            home.visible = false;
+            home.showSection("systems");
+            waitFrames(3);
+            verify(home.restorePending, "the place is still owed while Home is hidden");
+            verify(Math.abs(body().contentY - deep) > 0.5, "and not put back yet");
+            home.visible = true;
+            settle();
+            verify(!home.restorePending);
+            compare(body().contentY, deep, "put back once shown");
+        }
+
+        // With the tabs in the body, a tab chosen from the keyboard keeps them in view: the place it puts back yields
+        // to the focused tab. A tap with the focus elsewhere puts the whole place back.
+        function test_keyboard_choice_keeps_the_tabs_in_view() {
+            addSystems(30);
+            addLists(30);
+            root.width = 640;
+            root.height = 250;
+            Ui.Theme.fontScale = 1.6;
+            settle();
+            verify(!home.tabsFixed, "the tabs in the body");
+            choose("scanLists");
+            var deep = deepPlace();
+            body().contentY = deep;
+            // Scrolled that far the tabs are out of reach of a finger; a screen reader still presses them.
+            tab("systems").Accessible.pressAction();
+            compare(home.section, "systems");
+            settle();
+            compare(body().contentY, body().originY);
+            root.forceActiveFocus();
+            for (var i = 0; i < 6 && !tab("systems").activeFocus; ++i)
+                keyClick(Qt.Key_Tab);
+            verify(tab("systems").activeFocus, "the keyboard is on the tabs");
+            settle();
+            verify(inView(tab("systems")), "in view");
+            keyClick(Qt.Key_Right);
+            compare(home.section, "scanLists");
+            settle();
+            verify(tab("scanLists").activeFocus);
+            verify(inView(tab("scanLists")), "the focused tab stays in view");
+            verify(body().contentY > body().originY, "the place yields only as far as the tabs need");
+            // A press with the focus outside the tabs: the place comes back whole, the tabs scrolling away with it.
+            body().contentY = deep;
+            tab("systems").Accessible.pressAction();
+            settle();
+            root.forceActiveFocus();
+            choose("scanLists");
+            compare(body().contentY, deep, "a tap puts the whole place back");
+            verify(!inView(tab("scanLists")), "and the tabs scroll away with it");
+        }
+
+        // --- revealTop() is the strongest scroll writer (B3 precedence). ---
+
+        // It drops a place still owed and keeps the top as the shown tab's place.
+        function test_reveal_top_cancels_a_pending_restore() {
+            addSystems(30);
+            settle();
+            var deep = deepPlace();
+            body().contentY = deep;
+            choose("explore");
+            home.showSection("systems");
+            verify(home.restorePending);
+            home.revealTop();
+            verify(!home.restorePending, "the owed place is dropped");
+            settle();
+            wait(50);
+            compare(body().contentY, body().originY, "the top stands");
+            choose("explore");
+            choose("systems");
+            compare(body().contentY, body().originY, "the top is Systems' place now");
+        }
+
+        // A focus reveal still pending, or one a sheet's late focus hand-back starts, does not scroll the top away;
+        // the user's next key move or scroll reveals again.
+        function test_reveal_top_holds_off_focus_reveals() {
+            addSystems(30);
+            settle();
+            var plays = [];
+            (function look(node) {
+                for (var child of node.children) {
+                    if (child.objectName === "savedSystemPlay")
+                        plays.push(child);
+                    look(child);
+                }
+            })(section("systems"));
+            verify(plays.length >= 20);
+            var deepPlay = plays[20];
+            deepPlay.forceActiveFocus();
+            home.revealTop();
+            settle();
+            compare(body().contentY, body().originY, "a reveal pending before revealTop() was dropped");
+            plays[25].forceActiveFocus();
+            settle();
+            wait(50);
+            compare(body().contentY, body().originY, "a focus handed over after it scrolls nothing");
+            keyClick(Qt.Key_Tab);
+            settle();
+            verify(!plays[25].activeFocus);
+            verify(inView(focused()), "a key move reveals again");
+            // A scroll by the user lifts the hold too.
+            home.revealTop();
+            settle();
+            mouseDrag(body(), body().width / 2, body().height - 20, 0, -120);
+            settle();
+            plays[28].forceActiveFocus();
+            settle();
+            verify(inView(plays[28]), "after the user scrolls, focus moves are revealed again");
+        }
+
     }
 }
