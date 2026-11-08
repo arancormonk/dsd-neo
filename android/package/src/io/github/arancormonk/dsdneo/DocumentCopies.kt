@@ -123,11 +123,30 @@ object DocumentCopies {
      * Write the file at [sourcePath] into the document [uriText] names; false on any failure.
      *
      * The document is replaced and settled as [DocumentWrite] describes. A missing source never opens the document.
+     * A Download-folder row ([DownloadsSave]) is published once written, and deleted at every other exit; a row that
+     * could not be published fails the save.
      */
     @JvmStatic
-    fun copyFileToDocument(resolver: ContentResolver, sourcePath: String, uriText: String): Boolean = try {
+    fun copyFileToDocument(resolver: ContentResolver, sourcePath: String, uriText: String): Boolean {
+        DownloadsSave.take(uriText)
+        val signal = CancellationSignal()
+        var written = false
+        try {
+            written = writeFile(resolver, sourcePath, uriText, signal)
+        } finally {
+            written = DownloadsSave.settle(resolver, uriText, written, signal) && written
+        }
+        return written
+    }
+
+    private fun writeFile(
+        resolver: ContentResolver,
+        sourcePath: String,
+        uriText: String,
+        signal: CancellationSignal,
+    ): Boolean = try {
         File(sourcePath).inputStream().use { input ->
-            val write = beginWrite(resolver, uriText) ?: return false
+            val write = beginWrite(resolver, uriText, signal) ?: return false
             write.complete { output -> DocumentTransfer.copyCapped(input, output, Long.MAX_VALUE) }
         }
         true
@@ -211,7 +230,10 @@ object DocumentCopies {
             end(signal)
         }
 
-        /** Close the document with an error and delete it, best effort; a no-op once it ended. */
+        /**
+         * Close the document with an error and delete it, best effort; a no-op once it ended. A Download-folder row is
+         * left to [DownloadsSave.settle], which deletes it through MediaStore: deleteDocument() cannot.
+         */
         fun fail(cause: Throwable) {
             if (ended) {
                 return
@@ -222,7 +244,7 @@ object DocumentCopies {
             } catch (closing: IOException) {
                 Log.w(TAG, "could not report a failed write to the document provider", closing)
             }
-            if (!DocumentTransfer.isAborted) {
+            if (!DocumentTransfer.isAborted && !DownloadsSave.isPending(uri.toString())) {
                 deletePartialDocument(resolver, uri)
             }
             end(signal)

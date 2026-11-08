@@ -199,22 +199,34 @@ DecoderHostAndroid::runRecordingTransfer(const std::shared_ptr<TransferLink>& li
     post([id, total](DecoderHostAndroid* host) { host->noteRecordingTransferTotal(id, total); });
 
     int result = TransferMissing;
-    if (!present.isEmpty()) {
-        if (isContentUri(reference)) {
-            const QStringList answer = platformTransferRecordings(id, present, presentNames, reference, zip);
-            bool ok = false;
-            const int code = answer.isEmpty() ? -1 : answer.first().toInt(&ok);
-            result = ok && code >= TransferDone && code <= TransferMissing ? code : TransferFailed;
-            missing += answer.mid(1);
-        } else if (!zip) {
-            // The base host's copy, on the link's own abort flag: the host may be gone before it ends.
-            result =
-                copyFileToLocalDocument(present.first(), reference, &link->aborted) ? TransferDone : TransferFailed;
-        } else {
-            result = TransferFailed; // a ZIP goes only into a platform document
-        }
+    if (present.isEmpty()) {
+        platformDiscardPendingDownload(reference); // nothing to write: a Download-folder row (#829) goes
+    } else if (isContentUri(reference)) {
+        result = transferToDocument(id, present, presentNames, reference, zip, missing);
+    } else if (!zip) {
+        // The base host's copy, on the link's own abort flag: the host may be gone before it ends.
+        result = copyFileToLocalDocument(present.first(), reference, &link->aborted) ? TransferDone : TransferFailed;
+    } else {
+        platformDiscardPendingDownload(reference);
+        result = TransferFailed; // a ZIP goes only into a platform document
     }
     post([id, result, missing](DecoderHostAndroid* host) { host->endRecordingTransfer(id, result, missing); });
+}
+
+int
+DecoderHostAndroid::transferToDocument(qint64 id, const QStringList& paths, const QStringList& names,
+                                       const QString& reference, bool zip, QStringList& missing) {
+    const QStringList answer = platformTransferRecordings(id, paths, names, reference, zip);
+    bool ok = false;
+    const int code = answer.isEmpty() ? -1 : answer.first().toInt(&ok);
+    missing += answer.mid(1);
+    if (ok && code >= TransferDone && code <= TransferMissing) {
+        return code;
+    }
+    /* No answer: the JNI call failed, maybe before RecordingExport settled the document. A row it settled is no longer
+     * pending, so the discard then does nothing. */
+    platformDiscardPendingDownload(reference);
+    return TransferFailed;
 }
 
 void

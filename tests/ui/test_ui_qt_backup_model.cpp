@@ -223,6 +223,22 @@ class FakeHost : public dsd_qt::DecoderHost {
         return m_aborts;
     }
 
+    /** Keeps each reference the model hands back as never to be written (#829). */
+    void
+    discardPendingDownload(const QString& reference) override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_discarded.append(reference);
+    }
+
+    /** The references discarded since the last call, which forgets them. */
+    QStringList
+    takeDiscarded() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        QStringList taken;
+        taken.swap(m_discarded);
+        return taken;
+    }
+
     void
     closeGate() {
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -254,6 +270,7 @@ class FakeHost : public dsd_qt::DecoderHost {
     bool m_open = true;
     mutable int m_arrived = 0;
     int m_aborts = 0;
+    QStringList m_discarded;
 };
 
 /** A host with the base quitApp(), which cannot close the app. */
@@ -686,10 +703,13 @@ test_export(FakeHost& host, const QString& document) {
     expect("the cache file is gone", cache_entries().isEmpty());
     expect("the card shows the save",
            model.lastResult().value("action") == "saveExport" && model.lastResult().value("ok").toBool());
+    expect("a save that ran left its document to the host's write", host.takeDiscarded().isEmpty());
     model.saveExport(QUrl::fromLocalFile(document).toString());
     expect("nothing is left to save", pump_until([&]() { return results.finished.size() == 2; })
                                           && !results.finished.value(1).value("ok").toBool()
                                           && results.finished.value(1).value("error") == "Io");
+    expect("a save refused with nothing prepared hands its document back (#829)",
+           host.takeDiscarded() == QStringList{QUrl::fromLocalFile(document).toString()});
 }
 
 /* ---- restore ---- */
@@ -1036,7 +1056,10 @@ test_busy_refusals(FakeHost& host, const QString& document) {
     expect("the inspection holds at the copy", host.waitArrived(1));
     expect("busy: no restore allowed", model.busy() && !model.restoreAllowed());
     model.prepareExport(kPass);
+    (void)host.takeDiscarded();
     model.saveExport(QStringLiteral("/nonexistent"));
+    expect("a save refused while busy hands its document back (#829)",
+           host.takeDiscarded() == QStringList{QStringLiteral("/nonexistent")});
     model.inspectRestore(document, kPass);
     const QVariantMap commit = model.commitRestore();
     expect("commit refused while busy", !commit.value("ok").toBool() && commit.value("error") == "Busy");

@@ -143,6 +143,31 @@ picker() {
     return value;
 }
 
+namespace {
+/* DownloadsSave (#829): the rows the host discards, from any thread, and the names of the rows it published. */
+struct PlatformDownloads {
+    std::mutex mutex;
+    QStringList discarded;
+    QMap<QString, QString> published;
+};
+} // namespace
+
+static PlatformDownloads&
+downloads() {
+    static PlatformDownloads value;
+    return value;
+}
+
+/* The rows discarded since the last call, which forgets them. */
+static QStringList
+take_discarded() {
+    PlatformDownloads& d = downloads();
+    const std::lock_guard<std::mutex> lock(d.mutex);
+    QStringList taken;
+    taken.swap(d.discarded);
+    return taken;
+}
+
 /* What the platform's transfer last saw, and the answer it gives, under its lock. */
 template <class F>
 static auto
@@ -537,6 +562,20 @@ QString
 DecoderHostAndroid::platformPollDocumentPick() {
     QStringList& records = picker().records;
     return records.isEmpty() ? QString() : records.takeFirst();
+}
+
+QString
+DecoderHostAndroid::platformSavedDocumentName(const QString& reference) {
+    PlatformDownloads& d = downloads();
+    const std::lock_guard<std::mutex> lock(d.mutex);
+    return d.published.value(reference);
+}
+
+void
+DecoderHostAndroid::platformDiscardPendingDownload(const QString& reference) {
+    PlatformDownloads& d = downloads();
+    const std::lock_guard<std::mutex> lock(d.mutex);
+    d.discarded.append(reference);
 }
 } // namespace dsd_android
 
@@ -1388,6 +1427,96 @@ check_recording_transfers() {
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "and still ends");
     check(finished.value(0).value(1) == DecoderHost::TransferFailed && r.transfers.load() == before,
           "failed, without the platform");
+}
+
+/*
+ * #829: the Android host names a Download-folder row from DownloadsSave's memory, and hands it a row to discard at
+ * every exit of a save, export or backup save that never reached the platform's write, which settles the row itself.
+ */
+static void
+check_download_discards() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    const QTemporaryDir dir;
+    const QString a = temp_recording(dir, "a.wav", QByteArray(100, 'a'));
+    const QString row = row_uri();
+    const QString other = row + QStringLiteral("3");
+    reset_recordings();
+    (void)take_discarded();
+    PlatformRecordings& r = recordings();
+    DecoderHostAndroid host;
+    QList<int> results;
+    QObject::connect(&host, &DecoderHost::recordingTransferFinished,
+                     [&results](int, int result, int) { results.append(result); });
+    const QVariantMap save = {{"selection", 3}, {"paths", QStringList({a})}};
+    const QVariantMap exported = {{"selection", 4}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}};
+    // The next transfer end, in order.
+    const auto ended = [&results](int result) {
+        return wait_for([&results]() { return !results.isEmpty(); }) && results.takeFirst() == result;
+    };
+
+    {
+        PlatformDownloads& d = downloads();
+        const std::lock_guard<std::mutex> lock(d.mutex);
+        d.published.insert(row, QStringLiteral("calls (1).zip"));
+    }
+    check(host.savedDocumentName(row) == QStringLiteral("calls (1).zip") && host.savedDocumentName(other).isEmpty(),
+          "a saved row's name is DownloadsSave's");
+    host.discardPendingDownload(row);
+    check(take_discarded() == QStringList{row}, "a discard goes to DownloadsSave");
+
+    // The backup's save: the platform settles a row it was asked to write; a call that failed may not have.
+    platform() = PlatformCopies();
+    check(host.copyFileToDocument(a, row) && take_discarded().isEmpty(), "a written save leaves its row to settle");
+    platform().saves = false;
+    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row}, "a failed save discards its row");
+    platform() = PlatformCopies();
+    platform().holdsResolver = false;
+    check(!host.copyFileToDocument(a, row) && platform().calls == 0 && take_discarded() == QStringList{row},
+          "a save without a resolver discards its row");
+    platform() = PlatformCopies();
+
+    // Recordings: an answer the platform gave settled the row; every other exit discards it.
+    check(host.saveRecording(save, row) && ended(DecoderHost::TransferDone) && take_discarded().isEmpty(),
+          "a saved recording leaves its row to the platform");
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("1")}; });
+    check(host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed) && take_discarded().isEmpty(),
+          "a failure the platform answered settled the row there");
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = QStringList(); });
+    check(host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{row},
+          "a transfer with no answer (a failed JNI call) discards its row");
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0")}; });
+    const int transfers = r.transfers.load();
+    check(
+        host.saveRecording({{"selection", 5}, {"paths", QStringList({dir.filePath(QStringLiteral("gone.wav"))})}}, row)
+            && ended(DecoderHost::TransferMissing) && r.transfers.load() == transfers
+            && take_discarded() == QStringList{row},
+        "a transfer with every recording gone never writes, and discards its row");
+    const QString file = QUrl::fromLocalFile(dir.filePath(QStringLiteral("x.zip"))).toString();
+    check(host.exportRecordings(exported, file) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{file},
+          "a ZIP refused for a file reference is discarded too");
+    check(!host.saveRecording({{"selection", 6}, {"paths", QStringList()}}, row) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{row},
+          "an empty selection is refused and discards its row");
+
+    // Busy: the running transfer keeps its own row; the refused one goes.
+    r.hold = true;
+    check(host.exportRecordings(exported, row) && r.entered.tryAcquire(1, 5000), "a transfer runs");
+    check(!host.saveRecording(save, other) && take_discarded() == QStringList{other},
+          "a transfer refused while another runs discards its row only");
+    host.cancelRecordingTransfer();
+    check(ended(DecoderHost::TransferBusy) && ended(DecoderHost::TransferDone), "the refusal, then the running end");
+    r.hold = false;
+    (void)r.returned.tryAcquire(r.returned.available());
+
+    host.abortDocumentTransfers();
+    check(!host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{row},
+          "a transfer after the teardown abort discards its row");
+    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row},
+          "a backup save after the teardown abort discards its row");
 }
 
 /* #708: a share reaches the platform only for a recording the store manages that is there. Its copy (G2: a stable copy,
@@ -2635,6 +2764,7 @@ main(int argc, char** argv) {
     check_recording_roots();
     check_recording_playback();
     check_recording_transfers();
+    check_download_discards();
     check_recording_share();
     check_queued_share_holds_its_recording();
     DecoderHostAndroid host;

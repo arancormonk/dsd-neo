@@ -7,7 +7,8 @@
  * worker thread.
  *
  * The document picker's requests and answers (#829), less their JNI transport (platform*Document*() there), on the Qt
- * thread.
+ * thread. The Download-folder rows its saves write into (DownloadsSave.kt) are named and discarded through
+ * platformSavedDocumentName() and platformDiscardPendingDownload() there, from any thread.
  */
 
 #include <QFile>
@@ -63,10 +64,13 @@ DecoderHostAndroid::copyFileToDocument(const QString& sourcePath, const QString&
     if (!isContentUri(reference)) {
         return dsd_qt::DecoderHost::copyFileToDocument(sourcePath, reference);
     }
-    if (documentTransfersAborted() || !platformHoldsResolver()) {
+    /* A save that never reached DocumentCopies leaves a Download-folder row (#829) to discard. One that did settled it
+     * there, so the discard after a failed call is a no-op unless the JNI call itself failed. */
+    if (documentTransfersAborted() || !platformHoldsResolver() || !platformCopyFileToDocument(sourcePath, reference)) {
+        platformDiscardPendingDownload(reference);
         return false;
     }
-    return platformCopyFileToDocument(sourcePath, reference);
+    return true;
 }
 
 qint64
@@ -96,6 +100,16 @@ DecoderHostAndroid::cancelDocumentRequest(qint64 requestId) {
     }
     m_document_request = 0;
     platformCancelDocument(requestId);
+}
+
+QString
+DecoderHostAndroid::savedDocumentName(const QString& reference) const {
+    return platformSavedDocumentName(reference);
+}
+
+void
+DecoderHostAndroid::discardPendingDownload(const QString& reference) {
+    platformDiscardPendingDownload(reference);
 }
 
 void

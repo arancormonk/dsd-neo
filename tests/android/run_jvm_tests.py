@@ -834,6 +834,24 @@ def android_native_writes_no_environment():
     return None
 
 
+# The platform the document writes run on (DocumentCopies, RecordingExport) with the Download folder save they settle
+# through (DownloadsSave): a resolver that plays the document providers and MediaStore.
+DOWNLOADS_SAVE_STUBS = (
+    "AssetFileDescriptor.kt",
+    "ContentResolver.kt",
+    "ContentValues.kt",
+    "Cursor.kt",
+    "GrantIntent.kt",
+    "Log.kt",
+    "MediaStore.kt",
+    "Os.kt",
+    "ParcelFileDescriptor.kt",
+    "Provider.kt",
+    "ShareEnvironment.kt",
+    "SystemOs.kt",
+    "Uri.kt",
+)
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -868,19 +886,9 @@ SUITES = {
         builds=(
             Build(sources=("DocumentTransfer.kt",), tests=("DocumentTransferTest.kt",)),
             Build(
-                sources=("DocumentCopies.kt", "DocumentTransfer.kt"),
+                sources=("DocumentCopies.kt", "DocumentTransfer.kt", "DownloadsSave.kt"),
                 tests=("DocumentCopiesTest.kt",),
-                stubs=(
-                    "AssetFileDescriptor.kt",
-                    "ContentResolver.kt",
-                    "Cursor.kt",
-                    "Log.kt",
-                    "Os.kt",
-                    "ParcelFileDescriptor.kt",
-                    "Provider.kt",
-                    "SystemOs.kt",
-                    "Uri.kt",
-                ),
+                stubs=DOWNLOADS_SAVE_STUBS,
             ),
         ),
     ),
@@ -892,21 +900,36 @@ SUITES = {
         checks=(document_picker_wiring,),
         builds=(
             Build(
-                sources=("DocumentPicker.kt",),
+                sources=("DocumentPicker.kt", "DownloadsSave.kt", "DocumentTransfer.kt"),
                 tests=("DocumentPickerTest.kt",),
                 stubs=(
                     "AssetFileDescriptor.kt",
                     "ContentResolver.kt",
+                    "ContentValues.kt",
                     "Cursor.kt",
                     "JSONObject.kt",
+                    "Log.kt",
+                    "MediaStore.kt",
                     "Os.kt",
                     "ParcelFileDescriptor.kt",
                     "PickerActivity.kt",
                     "PickerContext.kt",
                     "PickerPackageManager.kt",
                     "Provider.kt",
+                    "ShareEnvironment.kt",
                     "Uri.kt",
                 ),
+            ),
+        ),
+    ),
+    # The Download folder save (#829): pending rows, their publication or delete at every exit of the backup's save and
+    # the recording transfers, the discards, and the release of leftover persisted grants, against a MediaStore stub.
+    "downloads_save": Suite(
+        builds=(
+            Build(
+                sources=("DownloadsSave.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "RecordingExport.kt"),
+                tests=("DownloadsSaveTest.kt",),
+                stubs=DOWNLOADS_SAVE_STUBS,
             ),
         ),
     ),
@@ -922,19 +945,9 @@ SUITES = {
         checks=(recording_transfer_codes_match,),
         builds=(
             Build(
-                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt"),
+                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "DownloadsSave.kt"),
                 tests=("RecordingExportTest.kt",),
-                stubs=(
-                    "AssetFileDescriptor.kt",
-                    "ContentResolver.kt",
-                    "Cursor.kt",
-                    "Log.kt",
-                    "Os.kt",
-                    "ParcelFileDescriptor.kt",
-                    "Provider.kt",
-                    "SystemOs.kt",
-                    "Uri.kt",
-                ),
+                stubs=DOWNLOADS_SAVE_STUBS,
             ),
         ),
     ),

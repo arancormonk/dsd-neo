@@ -49,6 +49,8 @@ class Intent(val action: String? = null) {
         const val EXTRA_TITLE = "android.intent.extra.TITLE"
         const val EXTRA_INTENT = "android.intent.extra.INTENT"
         const val EXTRA_EXCLUDE_COMPONENTS = "android.intent.extra.EXCLUDE_COMPONENTS"
+        const val FLAG_GRANT_READ_URI_PERMISSION = 0x00000001
+        const val FLAG_GRANT_WRITE_URI_PERMISSION = 0x00000002
 
         // As the platform's: the target goes in EXTRA_INTENT, and a title only when there is one.
         @JvmStatic

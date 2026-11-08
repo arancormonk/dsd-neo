@@ -11716,10 +11716,14 @@ Qt Quick frontend (`src/ui/qt`):
     `CancellationSignal` (`cancelRecordingTransfer()`), distinct from the teardown abort. A ZIP's entries are DEFLATED
     at level 0 (measured: BEST_SPEED saved 13% of 8 kHz voice and 23% of NFM at about sixty times the CPU), so it
     streams with data descriptors, ZIP64 as needed; a recording found gone is left out and reported. Progress is polled
-    on the refresh tick; the end comes back queued. A host going away aborts the document transfers, cancels its
-    transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a file URL's
-    storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself (`TransferLink`): a job
-    never calls into the host. A single save to a file URL takes the base copy
+    on the refresh tick; the end comes back queued. A Download-folder row (#829, `DownloadsSave.kt`; Android host,
+    "Download folder save") is settled at every exit of `transfer()`, under the transfer's own signal, so a Cancel
+    still reaches it until its publication begins; every exit that never reaches `transfer()` (a busy, unsupported or
+    malformed request in `DecoderHost::beginTransfer()`, every recording gone, a ZIP refused for a file reference, a
+    JNI call with no answer) hands it to `discardPendingDownload()`. A host going away aborts the document transfers,
+    cancels its transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a
+    file URL's storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself
+    (`TransferLink`): a job never calls into the host. A single save to a file URL takes the base copy
     (`DecoderHost::copyFileToLocalDocument()`) on the link's own abort flag, which teardown sets and no user cancel
     reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
     whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder) on the GUI
@@ -12723,8 +12727,10 @@ Qt Quick frontend (`src/ui/qt`):
     (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them
     (`discard_staging()` for its staging directory). Construction sweeps both (`sweep_stale_staging()`).
     `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` calls
-    `DecoderHost::copyFileToDocument()`; `inspectRestore()` copies the document with `copyDocumentToFile()` (capped at
-    64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and stages, and the UI thread promotes.
+    `DecoderHost::copyFileToDocument()`, and a refused save (busy, nothing prepared) hands its reference to
+    `discardPendingDownload()` (#829), since nothing will write it; `inspectRestore()` copies the document with
+    `copyDocumentToFile()` (capped at 64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and
+    stages, and the UI thread promotes.
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
     once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
     `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
@@ -13516,13 +13522,16 @@ thread, which the rest of the interface never is.
   document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
   than a short document, and deletes it; only a whole save closes normally. The write side is
   `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
-  too.
+  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
+  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
+  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
+  failed discards it.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
 - Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document dispatch), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
-  `finishAndRemoveTask()` need a device or emulator.
+  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs), `UI_QT_BACKUP_MODEL` (a refused
+  save discards its reference). Real providers, JNI and `finishAndRemoveTask()` need a device or emulator.
 
 Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
 `DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own
@@ -13559,7 +13568,8 @@ request code (1305) is never used.
     `DocumentPicker.downloads` (`DownloadsFallback.insert(name, mime, onDone)`, answered from any thread and moved to
     the main looper) within 10 s: a row is `picked` with `downloads` and the requested name, none or the deadline
     `noSavePicker`. A row that comes late, or for a request cancelled or replaced, goes to `DownloadsFallback.discard()`.
-    The default `NoDownloadsFallback` makes no row.
+    The default, `DownloadsFolder`, is `DownloadsSave` (below); before the host handed it the resolver it makes no
+    row.
   - Result: `RESULT_OK` takes `data` or ClipData item 0; none is `noResult`, a scheme other than `content`
     (any case) `unreadable`. The display name is a `DISPLAY_NAME` query on its own one-thread executor with a
     `CancellationSignal`, through the application's resolver; a lookup task checks the signal before its provider
@@ -13568,10 +13578,38 @@ request code (1305) is never used.
     it came; no persistable grant is taken.
   - `proguard-rules.pro` keeps `open`, `create`, `cancel` and `pollResult`; the class constant sits in
     `decoder_host_android.cpp`, which calls them.
-- Tests: `ANDROID_DOCUMENT_PICKER_JVM` (`docs/testing.md`), `UI_QT_ANDROID_HOST` (`check_document_pick_record()`,
-  `check_document_requests()`, `check_document_reentrant_drain()`: a request made from an answer's slot during
-  the drain stays live and is answered by its record later in the same drain). The launches themselves need an emulator: DocumentsUI on and off (the family queries must
-  never return the two photo-picker aliases), a chooser pick, re-entry and process death while a picker is up.
+- Download folder save (`DownloadsSave.kt`): the owner of the app's pending MediaStore rows. Every MediaStore and grant
+  call runs on its own one-thread executor; one lock guards only the in-memory rows (`pending`; `writing`, those a
+  write took) and the `published` names (the last 16, oldest evicted), and is never held across a provider call.
+  - `insert()`: a `MediaStore.Downloads` row with `DISPLAY_NAME`, `MIME_TYPE`, `RELATIVE_PATH` `Download/DSD-neo` and
+    `IS_PENDING` 1, plus `DATE_EXPIRES` now + 7 days on API 29 only (Android 11+ sets a pending row's expiry itself;
+    Android 10 sets none but deletes expired rows in idle maintenance). MIME types: backup `application/octet-stream`,
+    zip `application/zip`, WAV `audio/x-wav`, so MediaProvider keeps the extension when it renames a clash.
+  - Claims: settling or discarding a row first takes it out of the sets, so one row is published or deleted, never
+    both. `take()` at the start of a write moves a row to `writing`; `discard()` claims only rows no write took (a
+    refused duplicate request never deletes the row a write holds), `settle()` either.
+  - `settle(resolver, uri, ok, signal)` (in a `finally` at every exit of `copyFileToDocument()` and
+    `RecordingExport.transfer()`): no-op unless it claims. The task publishes only if, when it starts, `ok` and neither
+    `signal` nor `DocumentTransfer.isAborted` is set and the writer still waits: `update(IS_PENDING=0` (+
+    `DATE_EXPIRES` null on API 29)`)` must change 1 row, then the `DISPLAY_NAME` read back (MediaStore renames a clash
+    then) must be non-empty; any failure deletes the row (`ContentResolver.delete()`). The writer waits in 100 ms
+    slices and gives up at the teardown abort, or on a cancel that comes before the publication began (that task then
+    deletes); a cancel once `update()` began is too late, and the save stands. `update()` and `delete()` take no
+    signal, so teardown never joins one. A row left pending by a crash or an abort is hidden and expires (decided
+    limit, `android/README.md`).
+  - `discard()` never blocks: it claims and queues the delete. `publishedName()` is a lock-only read.
+  - Host: `savedDocumentName()` and `discardPendingDownload()` call `publishedName()` / `discard()` (any thread); the
+    constructor calls `DownloadsSave.start()` with the held resolver, which keeps it for the picker's inserts and the
+    discards and, on the executor, releases every persisted URI grant the app holds in the modes it holds, past any
+    single failure (B7: Qt's old file dialog took one per pick; nothing in the app uses one). `proguard-rules.pro` keeps
+    `start`, `publishedName` and `discard`; the class constant sits in `decoder_host_android.cpp`.
+- Tests: `ANDROID_DOWNLOADS_SAVE_JVM` (insert values, settlement at every exit of both write entries, publication
+  failures, claims, a queued and a late cancel, the abort while `update()` is held, the `published` bound, grant
+  release), `ANDROID_DOCUMENT_PICKER_JVM` (`docs/testing.md`), `UI_QT_ANDROID_HOST` (`check_download_discards()`,
+  `check_document_pick_record()`, `check_document_requests()`, `check_document_reentrant_drain()`: a request made from
+  an answer's slot during the drain stays live and is answered by its record later in the same drain). The launches
+  themselves need an emulator: DocumentsUI on and off (the family queries must never return the two photo-picker
+  aliases), a chooser pick, re-entry and process death while a picker is up.
 
 #### Accessibility bridge (issue #782)
 

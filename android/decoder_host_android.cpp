@@ -51,6 +51,7 @@ constexpr const char* kPlaybackClass = "io/github/arancormonk/dsdneo/RecordingPl
 constexpr const char* kExportClass = "io/github/arancormonk/dsdneo/RecordingExport";
 constexpr const char* kRecordingShareClass = "io/github/arancormonk/dsdneo/RecordingShare";
 constexpr const char* kPickerClass = "io/github/arancormonk/dsdneo/DocumentPicker";
+constexpr const char* kDownloadsClass = "io/github/arancormonk/dsdneo/DownloadsSave";
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
  * mapping below hands one straight to the other. */
@@ -215,6 +216,7 @@ android_exit_lines_logged() {
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
     dsd_qt::DiagnosticsLog::installTap();
     hold_content_resolver();
+    platformStartDownloads();
     startRecordingShareClean();
     refreshPresentation();
 }
@@ -787,6 +789,33 @@ DecoderHostAndroid::platformPollDocumentPick() {
     // Must match DocumentPicker.kt: @JvmStatic fun pollResult(): String.
     const QJniObject record = QJniObject::callStaticObjectMethod(kPickerClass, "pollResult", "()Ljava/lang/String;");
     return record.isValid() ? record.toString() : QString();
+}
+
+/* #829: DownloadsSave runs every MediaStore and grant call on its own thread; these only hand work over or read memory,
+ * so the Qt thread and the transfer workers call them alike. */
+void
+DecoderHostAndroid::platformStartDownloads() {
+    const jobject resolver = g_content_resolver.load();
+    if (resolver != nullptr) {
+        // Must match DownloadsSave.kt: @JvmStatic fun start(resolver: ContentResolver).
+        QJniObject::callStaticMethod<void>(kDownloadsClass, "start", "(Landroid/content/ContentResolver;)V", resolver);
+    }
+}
+
+QString
+DecoderHostAndroid::platformSavedDocumentName(const QString& reference) {
+    // Must match DownloadsSave.kt: @JvmStatic fun publishedName(uriText: String): String.
+    const QJniObject name =
+        QJniObject::callStaticObjectMethod(kDownloadsClass, "publishedName", "(Ljava/lang/String;)Ljava/lang/String;",
+                                           QJniObject::fromString(reference).object());
+    return name.isValid() ? name.toString() : QString();
+}
+
+void
+DecoderHostAndroid::platformDiscardPendingDownload(const QString& reference) {
+    // Must match DownloadsSave.kt: @JvmStatic fun discard(uriText: String).
+    QJniObject::callStaticMethod<void>(kDownloadsClass, "discard", "(Ljava/lang/String;)V",
+                                       QJniObject::fromString(reference).object());
 }
 
 void

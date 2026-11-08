@@ -114,6 +114,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     qint64 requestOpenDocument() override;
     qint64 requestSaveDocument(const QString& suggestedName, const QString& mimeType) override;
     void cancelDocumentRequest(qint64 requestId) override;
+    /** @brief DownloadsSave's name for a Download-folder row it published, from memory only. */
+    QString savedDocumentName(const QString& reference) const override;
+    /** @brief DownloadsSave deletes the row on its own thread, if it is still pending and no write took it. */
+    void discardPendingDownload(const QString& reference) override;
 
     bool isRunning() const override;
     QString statusText() const override;
@@ -329,6 +333,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     static void runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
                                      const QStringList& names, const QString& reference, bool zip);
+    /**
+     * @brief RecordingExport's transfer of @p paths into the platform document @p reference: its result, with the
+     * paths it found gone added to @p missing. A call that gave no answer discards a Download-folder row (#829).
+     */
+    static int transferToDocument(qint64 id, const QStringList& paths, const QStringList& names,
+                                  const QString& reference, bool zip, QStringList& missing);
     void noteRecordingTransferTotal(qint64 id, qint64 total);
     void endRecordingTransfer(qint64 id, int result, const QStringList& missing);
     /**
@@ -466,6 +476,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static void platformCancelDocument(qint64 id);
     /** @brief DocumentPicker.pollResult(): the oldest record not yet read, or empty. */
     static QString platformPollDocumentPick();
+    /*
+     * DownloadsSave over JNI (#829), from any thread; none waits on a provider. start() hands it the held
+     * ContentResolver and releases the app's leftover persisted grants on its own thread.
+     */
+    static void platformStartDownloads();
+    /** @brief DownloadsSave.publishedName(); empty when the call failed. */
+    static QString platformSavedDocumentName(const QString& reference);
+    static void platformDiscardPendingDownload(const QString& reference);
     void refreshPresentation();
     void refreshNotificationPermission();
     void refreshLocalDevice();

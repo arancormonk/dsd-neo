@@ -341,18 +341,21 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
     const int id = selection.value(QStringLiteral("selection")).toInt();
     const QStringList paths = selection.value(QStringLiteral("paths")).toStringList();
     const QStringList names = selection.value(QStringLiteral("names")).toStringList();
-    if (recordingTransferActive()) {
-        announceTransferEnd(id, TransferBusy, 0);
+    const auto refuse = [this, id, &reference](int result) {
+        // Nothing will write the document: a Download-folder save the picker made for it goes (#829).
+        discardPendingDownload(reference);
+        announceTransferEnd(id, result, 0);
         return false;
+    };
+    if (recordingTransferActive()) {
+        return refuse(TransferBusy);
     }
     if (zip && !recordingExportSupported()) {
-        announceTransferEnd(id, TransferUnsupported, 0);
-        return false;
+        return refuse(TransferUnsupported);
     }
     // A save copies one recording; a zip names each entry, so the two lists go together.
     if (id <= 0 || reference.isEmpty() || paths.isEmpty() || (zip ? names.size() != paths.size() : paths.size() != 1)) {
-        announceTransferEnd(id, TransferFailed, 0);
-        return false;
+        return refuse(TransferFailed);
     }
     // No file is looked at here, on the GUI thread (an export may name tens of thousands): the transfer finds the ones
     // gone on its own thread, reports them at its end and publishes the total it really has.
@@ -361,6 +364,7 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
     m_transferTotalBytes = selection.value(QStringLiteral("bytes")).toLongLong();
     Q_EMIT recordingTransferChanged();
     if (!beginRecordingTransfer(paths, zip ? names : QStringList(), reference, zip)) {
+        discardPendingDownload(reference);
         finishRecordingTransfer(TransferFailed, {});
         return false;
     }

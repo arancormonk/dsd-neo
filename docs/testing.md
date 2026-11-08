@@ -183,8 +183,16 @@ fallback (a chooser, or a held Download-folder insert) goes on; results for othe
 replaced one; ClipData-only, empty, `file:` and custom-code results; the 2 s name deadline with a provider that never
 answers, a retired lookup leaving the queue, the 10 s insert deadline and a late or abandoned row discarded; cancel and
 supersede. Then the Intents each launch becomes, the handler query on API 29 and 33, and the public entry points end to
-end. It first checks that `DsdNeoActivity.onActivityResult` hands every result to the picker before Qt, and that the
+end, and a save with no save picker through the real `DownloadsSave` (no row before the host hands it the resolver).
+It first checks that `DsdNeoActivity.onActivityResult` hands every result to the picker before Qt, and that the
 manifest's `<queries>` names the GET_CONTENT intent the handler query needs.
+`ANDROID_DOWNLOADS_SAVE_JVM` (the `downloads_save` suite, issue #829) runs `DownloadsSave.kt` with the backup's
+`DocumentCopies.kt` and `RecordingExport.kt` against a resolver stub that plays MediaStore's Download collection: the
+inserted values (the API 29 expiry through `Build.VERSION.SDK_INT`), the row published or deleted at every exit of
+both write entries, an update that changes no row or a name that cannot be read back failing the write, one row
+published or discarded but never both, a cancel before the publication (deleted, Cancelled) and after it began (saved),
+the teardown abort while an update is held (returns without it), the 16-name bound and the release of persisted
+grants. The abort case runs last: it is sticky for the process.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

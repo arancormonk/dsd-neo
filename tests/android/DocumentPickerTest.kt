@@ -6,7 +6,9 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ComponentName
 import android.content.ContentResolver
+import android.content.ContentValues
 import android.content.Intent
+import android.content.UriPermission
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
@@ -15,6 +17,7 @@ import android.os.CancellationSignal
 import android.os.Handler
 import android.provider.OpenableColumns
 import org.json.JSONObject
+import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -314,7 +317,7 @@ private fun nameDeadline() {
         check(records().isEmpty() && !asked) { "the stuck lookup's answer is dropped" }
     } finally {
         release.countDown()
-        DocumentPicker.downloads = NoDownloadsFallback
+        DocumentPicker.downloads = DownloadsFolder
     }
 
     // A provider that throws, or names nothing, gets the same fallback name.
@@ -394,14 +397,45 @@ private fun saveFallback() {
         Handler.drain()
         check(records().single().isPicked(57, ROW, "backup.dsdbak", true) && downloads.discarded.isEmpty())
     } finally {
-        DocumentPicker.downloads = NoDownloadsFallback
+        DocumentPicker.downloads = DownloadsFolder
     }
 
-    // Until the Download folder save exists, the default fallback has no row to give.
+    // The real Download folder: before the host handed DownloadsSave the resolver, it has no row to give.
+    check(DocumentPicker.downloads === DownloadsFolder) { "the picker saves through DownloadsSave" }
     save(FakeHost().apply { refusals.add(ActivityNotFoundException()) }, 58)
     check(records().single().isUnavailable(58, "noSavePicker"))
     save(FakeHost().apply { refusals.add(IllegalStateException()) }, 59)
     check(records().single().isUnavailable(59, "failed")) { "a failed CREATE_DOCUMENT launch is no reason to save" }
+
+    // With it: the row is made on DownloadsSave's thread, and the record names the requested name.
+    val resolver = MediaRows()
+    DownloadsSave.start(resolver)
+    save(FakeHost().apply { refusals.add(ActivityNotFoundException()) }, 60, "calls.zip", "application/zip")
+    awaitMain()
+    check(records().single().isPicked(60, ROW, "calls.zip", true)) { "a Download-folder row through DownloadsSave" }
+    val inserted = resolver.inserts.single()
+    check(inserted.first == "dsd-downloads" && inserted.second["_display_name"] == "calls.zip") { "inserted off main" }
+    check(DownloadsSave.isPending(ROW)) { "the row waits for its write" }
+    DownloadsSave.discard(ROW)
+    DownloadsSave.worker.submit {}.get(5, TimeUnit.SECONDS)
+    check(resolver.deleted == listOf(ROW) && !DownloadsSave.isPending(ROW)) { "a discarded row is deleted" }
+}
+
+/** MediaStore for the picker's own save: every insert makes [ROW]; deletes are kept. */
+private class MediaRows : ContentResolver() {
+    val inserts: MutableList<Pair<String, Map<String, Any?>>> = Collections.synchronizedList(mutableListOf())
+    val deleted: MutableList<String> = Collections.synchronizedList(mutableListOf())
+    override val persistedUriPermissions: List<UriPermission> get() = emptyList()
+
+    override fun insert(url: Uri, values: ContentValues?): Uri? {
+        inserts += Thread.currentThread().name to values!!.values.toMap()
+        return Uri.parse(ROW)
+    }
+
+    override fun delete(url: Uri, where: String?, selectionArgs: Array<String>?): Int {
+        deleted += url.toString()
+        return 1
+    }
 }
 
 private fun fallbackNames() {
@@ -517,5 +551,6 @@ fun main() {
         println("PASS: document picker fallbacks, request codes, results, deadlines, supersede, cancel and adapters")
     } finally {
         DocumentPicker.lookups.shutdownNow()
+        DownloadsSave.worker.shutdownNow()
     }
 }

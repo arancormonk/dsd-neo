@@ -2,8 +2,11 @@
 package android.os
 import java.io.File
 
-// Shared storage's path, which the platform answers mounted or not.
+// Shared storage's path, which the platform answers mounted or not, and the Download folder's name.
 object Environment {
+    @JvmField
+    var DIRECTORY_DOWNLOADS: String = "Download"
+
     @JvmStatic
     @Deprecated("the platform's is deprecated too")
     fun getExternalStorageDirectory(): File = File("/storage/emulated/0")

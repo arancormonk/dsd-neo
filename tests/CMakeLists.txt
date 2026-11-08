@@ -22456,6 +22456,13 @@ if(Python3_Interpreter_FOUND)
             document_picker
     )
     add_test(
+        NAME ANDROID_DOWNLOADS_SAVE_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            downloads_save
+    )
+    add_test(
         NAME ANDROID_RECORDING_PLAYER_JVM
         COMMAND
             ${Python3_EXECUTABLE}
@@ -22489,6 +22496,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
         ANDROID_DOCUMENT_PICKER_JVM
+        ANDROID_DOWNLOADS_SAVE_JVM
         ANDROID_USB_RECEIVER_JVM
         ANDROID_USB_BROKER_JVM
         ANDROID_ENGINE_STOP_JVM

@@ -238,6 +238,16 @@ than a document reads **That app gave DSD-neo a file it can't open. Pick the fil
 writes a picked file while the app is open and keeps no lasting permission to it. A pick that comes back after Android
 closed DSD-neo in the background is ignored: open the screen again and pick the file.
 
+With no save picker, a save (Back up, Export as zip, Save to file) goes straight to the phone's **Download/DSD-neo**
+folder, which Files and other file managers show. The file appears there only once it is completely written; a save
+that fails or is cancelled leaves nothing behind. When a file of that name is already there, Android adds a number, as
+in `dsd-neo-backup-2026-11-08 (1).dsdbak`. When even the Download folder cannot
+be written, the save says **This device has no save picker, and DSD-neo could not save to the Download folder.** Files
+saved there stay after DSD-neo is uninstalled; a backup there stays encrypted with its passphrase.
+
+At start DSD-neo gives back any lasting file permissions an earlier version kept from picks, since it no longer uses
+them and Android limits how many an app may hold.
+
 ## Imported files (trunking CSVs)
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
@@ -376,7 +386,9 @@ from Explore); **Export all** and **Delete all** sit below the rows. An export f
 **Yesterday**, **Last 7 days**, **Last 30 days** or **All**, by the day each call started on the phone's calendar. Then
 the save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
 gains little from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count
-limit. A progress line with **Cancel export** shows while it runs, one export at a time. A recording deleted meanwhile
+limit. A progress line with **Cancel export** shows while it runs, one export at a time. On a phone with no save
+picker, the export (and **Save to file**) goes to Download/DSD-neo ("Choosing files"); Cancel still stops it until the
+file is finished, and a cancelled or failed export leaves nothing there. A recording deleted meanwhile
 is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
 rdio-scanner upload is deleted once it is free.
 
@@ -452,8 +464,9 @@ leaves that reference out and lists it under **Not included** on the Settings ca
 ### Exporting
 
 **Export backup** works while listening too. Type a passphrase of at least 8 characters twice (**Show passphrases**
-reveals both fields), then **Encrypt**. The save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`;
-keep DSD-neo open until Settings reads **Backup saved.** The passphrase is the only way to open the backup. DSD-neo
+reveals both fields), then **Encrypt**. The save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`
+(on a phone with none, the backup goes to Download/DSD-neo; see "Choosing files"); keep DSD-neo open until Settings
+reads **Backup saved.** The passphrase is the only way to open the backup. DSD-neo
 keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session keeps adding to its
 talkgroup lists; if a file changes while the backup is being made, the export stops with **Your setup changed while the
 backup was being made. Try again.**
@@ -1586,6 +1599,10 @@ module behind it, so androiddeployqt has nothing extra to package.
 
 ## Known limits
 
+- **A save to Download/DSD-neo cut off by a crash or a forced close** (#829) stays hidden from other apps and is deleted
+  by Android about a week later; it never shows as a finished file. On Android 10 the half-written file keeps its
+  normal name, and a file manager that reads the folder directly (rather than through Android's media store) can list
+  it until then.
 - **arm64-v8a only.** armv7 would run scalar-only DSP and is out of scope.
 - **One decoder per process.** The service rejects a start unless it is idle.
 - **SoapySDR is not supported** and is not planned.

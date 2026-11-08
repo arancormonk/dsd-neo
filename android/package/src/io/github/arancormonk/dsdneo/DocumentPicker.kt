@@ -36,10 +36,15 @@ internal interface DownloadsFallback {
     fun discard(uri: String)
 }
 
-/** No Download-folder save: every insert fails, so a save with no save picker ends unavailable("noSavePicker"). */
-internal object NoDownloadsFallback : DownloadsFallback {
-    override fun insert(name: String, mime: String, onDone: (String) -> Unit) = onDone("")
-    override fun discard(uri: String) {}
+/**
+ * The Download folder through [DownloadsSave], with the application's resolver the host gave it at start; before that,
+ * every insert fails, so a save with no save picker ends unavailable("noSavePicker").
+ */
+internal object DownloadsFolder : DownloadsFallback {
+    override fun insert(name: String, mime: String, onDone: (String) -> Unit) =
+        DownloadsSave.insertLater(name, mime, onDone)
+
+    override fun discard(uri: String) = DownloadsSave.discard(uri)
 }
 
 /** One activity launch the picker makes; [intentFor] builds its Intent. */
@@ -116,7 +121,7 @@ object DocumentPicker {
     internal val lookups = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue()) { task ->
         Thread(task, "dsd-picker-names").apply { isDaemon = true }
     }
-    internal var downloads: DownloadsFallback = NoDownloadsFallback
+    internal var downloads: DownloadsFallback = DownloadsFolder
 
     private class Request(val id: Long, val host: PickerHost) {
         var launchCode: Int? = null
