@@ -21,6 +21,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
@@ -637,14 +638,16 @@ class DecoderHost : public QObject {
      *
      * Hosts whose file pickers hand back opaque references (Android SAF content URIs)
      * copy the payload somewhere real and return that path. Hosts with real paths
-     * return @p reference unchanged.
+     * return a file:// URL's local path (desktop Browse hands back URLs, and -i
+     * opens only a path), and any other @p reference unchanged.
      *
      * @return Absolute filesystem path, or an empty string on failure.
      */
     virtual QString
     importContentUri(const QString& reference, const QString& fileName) {
         (void)fileName;
-        return reference;
+        const QUrl url(reference);
+        return url.isLocalFile() ? url.toLocalFile() : reference;
     }
 
     /**
