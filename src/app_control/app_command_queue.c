@@ -10866,10 +10866,11 @@ scan_list_count(const dsd_state* state) {
                                                                    : DSD_TRUNK_SCAN_MAX_LISTS;
 }
 
-/* Whether list switch @p set names this scan and one of its lists (or, switching on, every list). */
+/* Whether list switch @p set is one the drain takes (scan_list_set_payload_valid()) and names this scan and one of its
+   lists (or, switching on, every list). A payload the drain refuses as invalid (enabled 2, say) switches nothing. */
 static int
 scan_list_set_names_this_scan(const dsd_app_scan_list_set_payload* set, const dsd_state* state) {
-    if (set->session == 0U || set->session != state->trunk_scan_session) {
+    if (!scan_list_set_payload_valid(set) || set->session != state->trunk_scan_session) {
         return 0;
     }
     return (set->list >= 1 && set->list <= scan_list_count(state))

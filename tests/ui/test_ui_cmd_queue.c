@@ -27859,8 +27859,8 @@ test_scan_list_set_judged_by_the_lists_holding_the_target(void) {
 }
 
 /* Queued list switches are judged in queue order (issue #697), each against the lists on as the switches of this scan
-   before it leave them: three lists, all on, the target on air held by lists 1 and 2. Here the state is written by
-   hand. */
+   before it leave them, a switch the drain refuses as malformed moving nothing: three lists, the target on air held by
+   lists 1 and 2. Here the state is written by hand. */
 static int
 test_scan_list_set_judged_in_queue_order(void) {
     static dsd_opts opts;
@@ -27868,35 +27868,54 @@ test_scan_list_set_judged_in_queue_order(void) {
     init_test_context(&opts, &state);
     int rc = 0;
 
-    /* Each switch: its list (DSD_APP_SCAN_LIST_ALL: every list), whether it switches on, and its session (0: this
-       scan's). */
+    /* Each switch: its list (DSD_APP_SCAN_LIST_ALL: every list), its enabled byte (1 on, 0 off, 2 a malformed one the
+       drain refuses), and its session (0: this scan's; k_no_session: session 0, which the drain refuses). Each case:
+       the lists on before them (bit N-1: list N). */
     typedef struct {
         int list;
         int enabled;
         uint32_t session;
     } queued_switch;
 
+    const uint32_t k_no_session = UINT32_MAX;
+
     const struct {
         const char* name;
         size_t count;
         int needs;
+        unsigned on;
         queued_switch switches[3];
     } cases[] = {
-        {"list 1 off, then list 2 off", 2U, 1, {{1, 0, 0U}, {2, 0, 0U}}},
-        {"list 2 off, then list 1 off", 2U, 1, {{2, 0, 0U}, {1, 0, 0U}}},
-        {"list 1 off, list 1 on, list 2 off", 3U, 0, {{1, 0, 0U}, {1, 1, 0U}, {2, 0, 0U}}},
-        {"list 1 off, every list on, list 2 off", 3U, 0, {{1, 0, 0U}, {DSD_APP_SCAN_LIST_ALL, 1, 0U}, {2, 0, 0U}}},
-        {"list 1 off, then list 3 off", 2U, 0, {{1, 0, 0U}, {3, 0, 0U}}},
-        {"another scan's list 1 off, then list 2 off", 2U, 0, {{1, 0, 7U}, {2, 0, 0U}}},
-        {"list 9 off, then list 2 off", 2U, 0, {{9, 0, 0U}, {2, 0, 0U}}},
-        {"every list off (refused), then list 2 off", 2U, 0, {{DSD_APP_SCAN_LIST_ALL, 0, 0U}, {2, 0, 0U}}},
+        {"list 1 off, then list 2 off", 2U, 1, 0x7U, {{1, 0, 0U}, {2, 0, 0U}}},
+        {"list 2 off, then list 1 off", 2U, 1, 0x7U, {{2, 0, 0U}, {1, 0, 0U}}},
+        {"list 1 off, list 1 on, list 2 off", 3U, 0, 0x7U, {{1, 0, 0U}, {1, 1, 0U}, {2, 0, 0U}}},
+        {"list 1 off, every list on, list 2 off",
+         3U,
+         0,
+         0x7U,
+         {{1, 0, 0U}, {DSD_APP_SCAN_LIST_ALL, 1, 0U}, {2, 0, 0U}}},
+        {"list 1 off, then list 3 off", 2U, 0, 0x7U, {{1, 0, 0U}, {3, 0, 0U}}},
+        {"another scan's list 1 off, then list 2 off", 2U, 0, 0x7U, {{1, 0, 7U}, {2, 0, 0U}}},
+        {"list 9 off, then list 2 off", 2U, 0, 0x7U, {{9, 0, 0U}, {2, 0, 0U}}},
+        {"every list off (refused), then list 2 off", 2U, 0, 0x7U, {{DSD_APP_SCAN_LIST_ALL, 0, 0U}, {2, 0, 0U}}},
+        /* List 2 off, the target's other list 1 on, list 3 an alternative: a malformed enable of list 2 switches
+           nothing, so list 1 off still leaves; a valid one keeps the target. */
+        {"list 2 off: a malformed list 2 on, then list 1 off", 2U, 1, 0x5U, {{2, 2, 0U}, {1, 0, 0U}}},
+        {"list 2 off: list 2 on, then list 1 off", 2U, 0, 0x5U, {{2, 1, 0U}, {1, 0, 0U}}},
+        {"list 2 off: a malformed every list on, then list 1 off",
+         2U,
+         1,
+         0x5U,
+         {{DSD_APP_SCAN_LIST_ALL, 2, 0U}, {1, 0, 0U}}},
+        /* A disable the drain refuses switches nothing off either. */
+        {"session 0's list 1 off, then list 2 off", 2U, 0, 0x7U, {{1, 0, k_no_session}, {2, 0, 0U}}},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         state.trunk_scan_session = 1U;
         state.trunk_scan_list_count = 3U;
         for (int l = 0; l < 3; l++) {
-            state.trunk_scan_lists[l].enabled = 1U;
+            state.trunk_scan_lists[l].enabled = (cases[i].on & (1U << l)) != 0U ? 1U : 0U;
         }
         state.trunk_scan_paused = 0U;
         state.trunk_scan_active_lists = 0x3U;
@@ -27907,7 +27926,7 @@ test_scan_list_set_judged_in_queue_order(void) {
         for (size_t k = 0; k < cases[i].count; k++) {
             const queued_switch* q = &cases[i].switches[k];
             const dsd_app_scan_list_set_payload p = {
-                .session = q->session != 0U ? q->session : 1U,
+                .session = q->session == k_no_session ? 0U : (q->session != 0U ? q->session : 1U),
                 .request = (uint32_t)(k + 1U),
                 .list = (int16_t)q->list,
                 .enabled = (uint8_t)q->enabled,
