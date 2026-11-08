@@ -438,10 +438,17 @@ Files that can't be read. When the version 2 journal or the permanent avoid
 list (`signal-search-history.v1.avoids.json`) can't be read whole (it can't be
 opened, a read fails, a record is damaged or cut short, or the avoid list isn't
 a valid list), the app says so and shows what it read before the problem: the
-detections before it, or no permanent avoids. The file itself is not changed.
-The first time that file has to be saved, it is renamed to
-`<name>.unreadable-1` (or the next free number, up to 99) and a new file is
-written beside it, so nothing in it is lost; the app then names the kept file.
+detections before it, or no permanent avoids. The Signal search screen says it
+in its message line ("Signal search history couldn't be read completely, so
+some entries may be missing. The file won't be overwritten."), and a card on
+Home lists every file the app couldn't read this run until you dismiss it; a
+dismissed file shows again only if what is known about it changes. The file
+itself is not changed. The first time that file has to be saved, it is renamed
+to `<name>.unreadable-1` (or the next free number, up to 99) and a new file is
+written beside it, so nothing in it is lost; the screen and the card then name
+the kept file ("The file was kept as signal-search-history.v2.unreadable-1.").
+A save that fails is said on the screen too, and is retried with the next
+change.
 A run that saves nothing leaves the file where it is, so a problem that goes
 away (a permission fixed, a storage error) reads normally at the next start. A
 link at that name is renamed itself, never what it points to. A folder, FIFO or

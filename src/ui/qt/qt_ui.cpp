@@ -55,6 +55,7 @@
 #include "site_groups.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
+#include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
@@ -289,6 +290,16 @@ publish_input_context(QQmlContext* context, QObject* owner) {
     context->setContextProperty(QStringLiteral("screenReader"), new ScreenReaderState(owner));
 }
 
+/* What every screen may read that no model owns: the version, how the person reads and types, and the files this run
+   could not read (issue #828), whose list is process-lifetime rather than the engine's, so a dismissal holds while the
+   app runs. */
+static void
+publish_app_context(QQmlContext* context, QObject* owner) {
+    context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
+    publish_input_context(context, owner);
+    context->setContextProperty(QStringLiteral("storeNotices"), StoreNotices::instance());
+}
+
 ListenPins*
 load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
                  ScanListsModel* scanLists, QObject* owner) {
@@ -387,8 +398,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     context->setContextProperty(QStringLiteral("listenPins"), listenPins);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
-    context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
-    publish_input_context(context, &engine);
+    publish_app_context(context, &engine);
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

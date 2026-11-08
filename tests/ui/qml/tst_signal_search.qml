@@ -23,6 +23,7 @@ Item {
         property var sessionAvoids: []
         property var status: ({phase: 0})
         property string error: ""
+        property string storeMessage: ""
         property var actions: []
         property var lifted: []
         property int arms: 0
@@ -593,6 +594,37 @@ Item {
             button.clicked();
             compare(started.count, 1);
             compare(message.text, "Device detached: RTL-SDR");
+        }
+        // Issue #828: one line each, in a fixed order: the screen's refusal, the
+        // host's failure or else the search's message, the model's own error,
+        // then the store's lines. The store's text is its own line, never the
+        // model's error as well, and it stays under the Now panel while a
+        // search runs.
+        function test_message_lines_in_order() {
+            var message = findChild(loader.item, "searchMessage");
+            var store = "Signal search history couldn't be read completely, so some entries may be missing. The file won't be overwritten.\n"
+                + "Permanent avoids couldn't be saved. Check available storage. DSD-neo tries again with the next change.";
+            model.storeMessage = store;
+            compare(message.text, store, "the store's lines alone");
+            verify(message.visible);
+            compare(message.parent.objectName, "searchSessionMessageSlot", "under the Now panel while the search runs");
+            model.error = "The decoder did not accept this action.";
+            model.status = Object.assign({}, model.status, {message: "The avoid list is full"});
+            compare(message.text, "The avoid list is full\nThe decoder did not accept this action.\n" + store);
+            root.hostFailure = "Device detached: RTL-SDR";
+            compare(message.text, "Device detached: RTL-SDR\nThe decoder did not accept this action.\n" + store,
+                    "the host's failure stands in for the search's message");
+            loader.item.sessionActive = false;
+            model.armError = "Enable at least one range.";
+            findChild(loader.item, "searchStartPause").clicked();
+            compare(message.text, "Enable at least one range.\nDevice detached: RTL-SDR\nThe decoder did not accept this action.\n" + store);
+            compare(message.parent.objectName, "searchIdleMessageSlot");
+            compare(message.text.split(store).length, 2, "the store's text once");
+            model.error = "";
+            model.storeMessage = "";
+            root.hostFailure = "";
+            model.armError = "";
+            loader.item.localFailure = "";
         }
         // A refused Resume is shown; it belongs to that attempt, so leaving the
         // screen discards it while the host's failure stays bound.

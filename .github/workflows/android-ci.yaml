@@ -356,6 +356,7 @@ jobs:
             dsd-neo_test_ui_qt_backup_apply \
             dsd-neo_test_ui_qt_backup_model \
             dsd-neo_test_ui_qt_settings_recovery \
+            dsd-neo_test_ui_qt_store_notices \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
             dsd-neo_test_ui_qt_auto_start_policy \

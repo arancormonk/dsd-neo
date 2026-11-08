@@ -59,6 +59,7 @@
 #include "scan_lists_model.h"
 #include "session_args.h"
 #include "signal_search_model.h"
+#include "store_notices.h"
 #include "teardown_trace_capture.h"
 
 namespace {
@@ -402,6 +403,104 @@ testRangeSaveFailureClears(dsd_qt::KnownFrequencyIndex* index) {
         assert(model.error().isEmpty());
     }
     assert(dsd_qt::json_store_save_array(file, previous));
+}
+
+void
+writeBytes(const QString& path, const QByteArray& bytes) {
+    QFile file(path);
+    assert(file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size());
+}
+
+QVariantMap
+storeFile(const dsd_qt::SignalSearchModel& model, int which) {
+    return model.storeFiles().value(which).toMap();
+}
+
+bool
+noticeShown(const QString& file, const QString& state) {
+    for (const QVariant& value : dsd_qt::StoreNotices::instance()->notices()) {
+        const QVariantMap notice = value.toMap();
+        if (notice.value(QStringLiteral("file")).toString() == file) {
+            return notice.value(QStringLiteral("state")).toString() == state;
+        }
+    }
+    return false;
+}
+
+/* Issue #828: the store's files as the Signal search screen words them and as Home's card takes them. What the store
+   could not read or save is its own line, never the model's error as well. */
+void
+testStoreFilesWorded(dsd_qt::KnownFrequencyIndex* index) {
+    dsd_app_signal_search_store_close();
+    const QString v1 = dsd_qt::json_store_path(QStringLiteral("signal-search-history.v1"));
+    const QString v2 = dsd_qt::json_store_path(QStringLiteral("signal-search-history.v2"));
+    const QString avoids = v1 + QStringLiteral(".avoids.json");
+    const QString keptAvoids = QStringLiteral("signal-search-history.v1.avoids.json.unreadable-1");
+    assert(QDir().mkpath(QFileInfo(v1).absolutePath()));
+    writeBytes(v2, "not a journal\n");
+    writeBytes(avoids, "not a list");
+    const QString historyLine = QStringLiteral("Signal search history couldn't be read completely, so some entries may "
+                                               "be missing. The file won't be overwritten.");
+    const QString avoidsUnsaved = QStringLiteral("Permanent avoids couldn't be saved. Check available storage. DSD-neo "
+                                                 "tries again with the next change.");
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        assert(model.storeFiles().size() == 3);
+        assert(storeFile(model, 0).value(QStringLiteral("state")) == QStringLiteral("unreadable"));
+        assert(storeFile(model, 1).value(QStringLiteral("state")) == QStringLiteral("unreadable"));
+        assert(storeFile(model, 2).value(QStringLiteral("state")).toString().isEmpty());
+        assert(model.storeMessage()
+               == historyLine
+                      + QStringLiteral("\nPermanent avoids couldn't be read completely, so some entries may be "
+                                       "missing. The file won't be overwritten."));
+        assert(model.error().isEmpty());
+        assert(noticeShown(QStringLiteral("signal-search-history.v2"), QStringLiteral("unreadable")));
+        assert(noticeShown(QStringLiteral("signal-search-history.v1.avoids.json"), QStringLiteral("unreadable")));
+
+        // The first save keeps the file aside, and both surfaces name it.
+        assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+        dsd_app_signal_search_store_flush();
+        model.refresh();
+        assert(storeFile(model, 1).value(QStringLiteral("kept")) == keptAvoids);
+        assert(model.storeMessage()
+               == historyLine
+                      + QStringLiteral("\nPermanent avoids couldn't be read completely, so some entries may be "
+                                       "missing. The file was kept as ")
+                      + keptAvoids + QStringLiteral("."));
+        assert(noticeShown(QStringLiteral("signal-search-history.v1.avoids.json"), QStringLiteral("kept")));
+
+        // A folder at the path: the save is owed, said once, on the store's line only.
+        assert(QFile::remove(avoids) && QDir().mkpath(avoids));
+        assert(dsd_app_signal_search_avoid_remove(451000000) == 0);
+        dsd_app_signal_search_store_flush();
+        model.refresh();
+        assert(storeFile(model, 1).value(QStringLiteral("writeFailed")).toBool());
+        assert(model.storeMessage().endsWith(QStringLiteral("\n") + avoidsUnsaved));
+        assert(model.storeMessage().count(avoidsUnsaved) == 1);
+        assert(model.error().isEmpty());
+        assert(QDir().rmdir(avoids));
+        assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+        dsd_app_signal_search_store_flush();
+        model.refresh();
+        assert(!model.storeMessage().contains(avoidsUnsaved));
+        assert(dsd_app_signal_search_avoid_remove(451000000) == 0);
+        dsd_app_signal_search_store_flush();
+    }
+    // No version 2 journal and none kept: the version 1 journal is read, and one that can't be is left in place.
+    dsd_app_signal_search_store_close();
+    assert(QFile::remove(v2) && QFile::remove(dsd_qt::json_store_path(keptAvoids)));
+    writeBytes(v1, "not a journal\n");
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        assert(storeFile(model, 2).value(QStringLiteral("state")) == QStringLiteral("leftInPlace"));
+        assert(
+            model.storeMessage()
+            == QStringLiteral("Signal search history from an older version couldn't be read. It was left in place."));
+        assert(noticeShown(QStringLiteral("signal-search-history.v1"), QStringLiteral("leftInPlace")));
+    }
+    dsd_app_signal_search_store_close();
+    assert(QFile::remove(v1));
+    QFile::remove(avoids);
 }
 
 /* A Resume refused while the session winds down (admission already closed) is kept until that session ends, and
@@ -1594,6 +1693,7 @@ main(int argc, char** argv) {
     testStoredMarginBelowMinimum(&index);
     testRangesKeptAside(&index);
     testRangeSaveFailureClears(&index);
+    testStoreFilesWorded(&index);
     testKnownFrequencyIdentity(temp.path());
     testKnownFrequencyListsApart();
     testKnownFrequencyEngineIds(temp.path());

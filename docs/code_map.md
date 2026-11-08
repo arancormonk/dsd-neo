@@ -4151,8 +4151,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     the file. Each file has a `StoreFile` state under the mutex: `load`
     (`dsd_app_search_file_load`: OK, MISSING only on ENOENT/ENOTDIR, UNREADABLE, KEPT),
     `marked`, `kept` and `write_failed`, read with
-    `dsd_app_signal_search_store_file_state()` (Qt words it; the
-    `dsd_app_signal_search_status_get()` string is only the write failure). A load that
+    `dsd_app_signal_search_store_file_state()` (Qt words it: `SignalSearchModel::storeMessage()`
+    and `storeFiles()`; the `dsd_app_signal_search_status_get()` string is only the write
+    failure, and Qt words that from `write_failed` too). A load that
     did not read the whole file (open or read error, damaged or torn journal, invalid,
     oversized or NUL-holding avoid list) marks it; the rows before the failure stay shown
     and an avoid list loads empty (and is pushed to the runtime as such). The first
@@ -10616,7 +10617,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   nothing is lost or refused at the Stop edge; the running search follows at its next
   tick, issue #828). The verdicts arrive as the status message or the model's error.
   "Avoided this session" (Stop avoiding) lists `sessionAvoids` only while
-  `sessionAvoidsLive`. That message (`searchMessage`, an `AlertMessage`) is
+  `sessionAvoidsLive`. That message (`searchMessage`, an `AlertMessage`) has one line for
+  each, in this order: the screen's own refusal (`localFailure`), the host's failure or else
+  the search's status message, the model's own error (`SignalSearchModel::error()`, never the
+  store's text), then the store's lines (`storeMessage()`, issue #828: per file of
+  `dsd_app_signal_search_store_file_state()`, the history and Permanent avoids read
+  incompletely, not yet overwritten or kept as their kept name, the version 1 journal left in
+  place, and each write owed; `test_message_lines_in_order`, `testStoreFilesWorded`). The
+  model forwards the same files (`storeFiles()`) to `StoreNotices` for Home's card. It is
   reparented by `sessionActive`: under the Now panel while a session runs, so it never moves
   the panel, and above the setup while idle (`test_message_never_moves_the_now_panel`).
   Leaving for another session is one Main operation,
@@ -12550,7 +12558,7 @@ Qt Quick frontend (`src/ui/qt`):
     `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the settings
     INI), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread
     that loaded or saved. `call_history_seen.json` gets a notice like any store; it is internal, so a frontend
-    shows no card for it.
+    shows no card for it (`StoreNotices` leaves it out).
   - Test seams (`DSD_NEO_TEST_HOOKS`, `json_store_test_hooks.h`): a read error, and a hook run right after the move.
   Tests: `UI_QT_PERSISTENCE` (each read class, keep-aside numbering, a mark surviving an `Ok` re-read, folder, FIFO,
   link, mode 0200, a folder that cannot be searched, a marked file removed, retry after a failed replace,
@@ -12600,6 +12608,28 @@ Qt Quick frontend (`src/ui/qt`):
   Documented limits: a crash between the rename and the replacement leaves no settings file at the next start
   (defaults), with the original kept; a transient read error that hits only Qt's own later read, and not the check, is
   not seen. Tests: `UI_QT_SETTINGS_RECOVERY`.
+- `store_notices.{h,cpp}` (`storeNotices`; issue #828) is the list Home's `StoreNoticeCard.qml` shows: every file this
+  run could not read. `StoreNotices::instance()` is made once, on the GUI thread (`ui_load()`'s
+  `publish_app_context()` or the first `SignalSearchModel` refresh), and never destroyed, so neither it nor a dismissal
+  goes with a QML engine. It installs the json_store sink, which only queues `sync()` onto its own thread
+  (`QMetaObject::invokeMethod(…, Qt::QueuedConnection)`), so a call history worker's save changes nothing off the GUI
+  thread; `sync()` re-reads `json_store_notices()`. `SignalSearchModel` hands over the native store's files
+  (`setSignalSearchFiles()`) from its GUI-thread refresh. Each shown notice is `{file, store, state, kept,
+  earlierKept}`: `store` is what `Util.storeLabel()` names (the file name, or `call-history-settings` for call history's
+  settings file, named after the application); `state` is `unreadable` (not moved, not written over), `kept`,
+  `unsaved` (a settings file on its scratch copy, `settings_recovery_scratch(fileName)`; `kept` set when a rename
+  succeeded before the write failed) or `leftInPlace` (the version 1 Signal search journal); `earlierKept` names a copy
+  kept earlier this run of a file unreadable again after a clean save (json_store's notice then names none).
+  `call_history_seen.json` is never listed. `dismiss(file)` hides the notice as it stands (file, state, kept and
+  earlier kept names): the same notice posted again stays hidden, a changed one shows again. The card is one
+  `AlertMessage` named by all its text, navigation-gated, its lines plain `Text`; each notice is announced once (a
+  dismissal or a second file repeats nothing; a `Timer` it owns, not `Qt.callLater`); Dismiss dismisses every shown
+  file. Its copy never promises lost data: "Some entries may be missing" (a 0-byte store is unreadable too). Write
+  failures are not on it: they stay on their screens (the Signal search line below, each model's save error). Tests:
+  `UI_QT_STORE_NOTICES` (queued delivery from workers under TSan, a real worker load and save, the seen store,
+  dismissals, earlier kept names, the Signal search files, a scratch settings file), `tst_home_store_notices.qml`
+  (labels per store, kept name after the move, dismissal across a rebuilt Home, gating and one announcement each,
+  360 px at the largest text).
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
   the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays

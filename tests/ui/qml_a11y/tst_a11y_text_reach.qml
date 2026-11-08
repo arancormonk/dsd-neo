@@ -199,6 +199,13 @@ Item {
             {file: "SiteSheet"},
             {file: "SpectrumScreen"},
             {file: "SquelchSheet"},
+            // Issue #828: one notice of each kind, through the production list.
+            {file: "StoreNoticeCard", open: function (card) {
+                testContext.setSignalSearchStoreFiles([
+                    {file: "signal-search-history.v2", state: "kept", kept: "signal-search-history.v2.unreadable-1"},
+                    {file: "signal-search-history.v1.avoids.json", state: "unreadable", kept: ""},
+                    {file: "signal-search-history.v1", state: "leftInPlace", kept: ""}]);
+            }},
             {file: "TalkgroupCard", properties: {idText: "100", name: "Fire dispatch", tags: "Fire", listening: true,
                 listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1}},
             {file: "TalkgroupEditSheet"},

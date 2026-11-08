@@ -22,6 +22,7 @@ Item {
         property var history: []
         property var avoids: []
         property string error: ""
+        property string storeMessage: ""
         property int arms: 0
         property int cancels: 0
         function control(action, session, hit) { return true; }

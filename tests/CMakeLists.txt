@@ -5096,6 +5096,29 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_settings_recovery
     )
 
+    # The files a run could not read, as Home's card lists them (issue #828):
+    # json_store's notices queued from worker threads onto the list's thread,
+    # dismissals, the Signal search store's files and a settings file on its
+    # scratch copy. It links the whole UI library, so the deferred engine link
+    # below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_store_notices
+        ui/test_ui_qt_store_notices.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE QT_NO_KEYWORDS
+    )
+    add_test(NAME UI_QT_STORE_NOTICES COMMAND dsd-neo_test_ui_qt_store_notices)
+
     # The backup screens' model (issue #580): export, inspect, commit and the
     # startup outcome through the model's worker, with a fake host, archives
     # built from the real models' stores and the apply the next start runs. It
@@ -5345,6 +5368,10 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
             # Issue #782: whether a screen reader is on, as views read it.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
+            # Issue #828: Home's store notice card reads the production list,
+            # fed through json_store's notices as the app feeds it.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/store_notices.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/settings_recovery.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
             # production one, so the preset a chip sends is really under test. It
             # needs the CLI mapping behind it, and that translation unit is
@@ -8896,6 +8923,7 @@ foreach(
     dsd-neo_test_ui_qt_backup_apply
     dsd-neo_test_ui_qt_backup_model
     dsd-neo_test_ui_qt_settings_recovery
+    dsd-neo_test_ui_qt_store_notices
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(

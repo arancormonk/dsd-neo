@@ -29,6 +29,11 @@ class SignalSearchModel : public QObject {
     Q_PROPERTY(QVariantList sessionAvoids READ sessionAvoids NOTIFY avoidsChanged)
     Q_PROPERTY(QVariantMap status READ status NOTIFY changed)
     Q_PROPERTY(QString error READ error NOTIFY changed)
+    /** The Signal search store's files that could not be read or saved, worded for the screen: one line each. */
+    Q_PROPERTY(QString storeMessage READ storeMessage NOTIFY storeChanged)
+    /** The Signal search store's files, {file, state, kept, writeFailed}: state "unreadable", "kept", "leftInPlace" (the
+     * version 1 journal, never moved) or "" (read whole, or missing). Forwarded to StoreNotices for Home's card. */
+    Q_PROPERTY(QVariantList storeFiles READ storeFiles NOTIFY storeChanged)
   public:
     explicit SignalSearchModel(DecoderHost* host, KnownFrequencyIndex* index, QObject* parent = nullptr);
     ~SignalSearchModel() override;
@@ -58,9 +63,20 @@ class SignalSearchModel : public QObject {
         return m_status;
     }
 
+    /** This model's own refusal or failure. What the store could not read or save is storeMessage(), never here. */
     QString
     error() const {
-        return m_error.isEmpty() ? m_persistenceError : m_error;
+        return m_error;
+    }
+
+    QString
+    storeMessage() const {
+        return m_storeMessage;
+    }
+
+    QVariantList
+    storeFiles() const {
+        return m_storeFiles;
     }
 
     /**
@@ -95,13 +111,15 @@ class SignalSearchModel : public QObject {
     void changed();
     void historyChanged();
     void avoidsChanged();
+    void storeChanged();
 
   private:
     DecoderHost* m_host;
     KnownFrequencyIndex* m_index;
     QVariantList m_ranges, m_history, m_avoids, m_sessionAvoids;
     QVariantMap m_status;
-    QString m_error, m_persistenceError;
+    QString m_error, m_storeMessage;
+    QVariantList m_storeFiles;
     QTimer m_timer;
     dsd_signal_search_config m_pending{};
     /* A start waiting for the decoder to take it, and whether the session it waits for has been seen up. */
@@ -116,6 +134,7 @@ class SignalSearchModel : public QObject {
     bool persistRanges(const QVariantList& list);
     bool refreshAvoids();
     bool refreshHistory();
+    bool refreshStoreFiles();
     bool unavoid(uint32_t frequency);
     QVariantMap hitMap(const dsd_signal_search_hit& h) const;
 };

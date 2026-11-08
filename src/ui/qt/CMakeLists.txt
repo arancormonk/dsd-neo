@@ -65,6 +65,7 @@ target_sources(
         screen_reader_state.cpp # Issue #782
         session_args.cpp
         settings_recovery.cpp # Issue #828
+        store_notices.cpp # Issue #828
         talkgroup_filter_model.cpp
         talkgroup_list_model.cpp
         ui_controller.cpp
@@ -91,6 +92,7 @@ qt_add_resources(
         qml/FailureCard.qml
         qml/BackupFlow.qml
         qml/BackupResultCard.qml
+        qml/StoreNoticeCard.qml # Issue #828
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml

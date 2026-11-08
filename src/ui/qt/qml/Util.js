@@ -684,10 +684,18 @@ function notIncludedText(items) {
 }
 
 // Issue #828: the name the app gives each file a backup reads (the five stores,
-// the Signal search avoid file and the settings file), for messages that name a
-// file that couldn't be read. A name not listed is shown as it is.
+// the Signal search avoid file and the settings file) and each other file Home's
+// store notice card can name (call history's, the Signal search history), for
+// messages that name a file that couldn't be read. A name not listed is shown
+// as it is.
 function storeLabel(fileName) {
     switch (String(fileName || "")) {
+    case "call_history.json":
+        return qsTr("Call history")
+    case "call-history-settings":
+        return qsTr("Call history settings")
+    case "signal-search-history.v2":
+        return qsTr("Signal search history")
     case "saved_systems.json":
         return qsTr("Saved systems")
     case "scan_lists.json":

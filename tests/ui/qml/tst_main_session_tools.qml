@@ -18,6 +18,7 @@ Item {
         property var history: []
         property var avoids: []
         property string error: ""
+        property string storeMessage: ""
         property int lastAction: -1
         property string armError: ""
         property int cancels: 0

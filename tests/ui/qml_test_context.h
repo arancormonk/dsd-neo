@@ -88,6 +88,7 @@
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <iterator>
 #include <memory>
+#include <thread>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "decryption_profiles_model.h"
@@ -102,6 +103,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
+#include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
 #include "p25_network_model.h" // WP-F2
@@ -118,6 +120,7 @@
 #include "site_groups.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
+#include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
 
@@ -3592,6 +3595,23 @@ class Setup : public QObject {
         return m_backup != nullptr && m_backup->setState(key, value);
     }
 
+    /**
+     * @brief Issue #828: post a store notice for @p fileName (kept as @p keptName, "" while not moved) from a thread of
+     *        its own, as a call history worker's save does; `storeNotices` takes it once the event loop runs.
+     */
+    Q_INVOKABLE void
+    postStoreNotice(const QString& fileName, const QString& keptName) {
+        std::thread poster(
+            [fileName, keptName] { dsd_qt::json_store_post_notice({fileName, QStringLiteral("test"), keptName}); });
+        poster.join();
+    }
+
+    /** @brief Issue #828: the Signal search store's files as SignalSearchModel::storeFiles() reports them. */
+    Q_INVOKABLE void
+    setSignalSearchStoreFiles(const QVariantList& files) {
+        dsd_qt::StoreNotices::instance()->setSignalSearchFiles(files);
+    }
+
     /** @brief What `backup`'s commitRestore(), discardRestore() or discardDeferredRestore() answers next. */
     Q_INVOKABLE void
     setBackupReply(const QString& call, const QVariantMap& reply) {
@@ -5058,6 +5078,8 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("backup"), m_backup);
         // Issue #718: the production composing-text commit, on its fallback path here.
         ctx->setContextProperty(QStringLiteral("inputCommit"), new dsd_qt::InputCommit(engine));
+        // Issue #828: the production list, which outlives every engine here as it does in the app.
+        ctx->setContextProperty(QStringLiteral("storeNotices"), dsd_qt::StoreNotices::instance());
     }
 
   private:

@@ -40,8 +40,8 @@ Item {
     property string failure: ""
     // This screen's own refusal of a Start, Resume (searchModel.arm()) or
     // handoff, shown first until the next attempt or until Back closes it; the
-    // host's failure, else the search's later message or the model's error,
-    // follows it.
+    // host's failure, else the search's later message, then the model's error
+    // and the store's lines follow it.
     property string localFailure: ""
     property string sourceType: "usb"
     property string host: ""
@@ -805,10 +805,11 @@ Item {
                     objectName: "searchMessage"
                     parent: screen.sessionActive ? sessionMessageSlot : idleMessageSlot
                     width: parent.width
-                    // This screen's own refusal comes first and never hides what
-                    // the search says now: the host's failure, else the search's
-                    // message or the model's error.
-                    text: [screen.localFailure, screen.failure || screen.status.message || (searchModel ? searchModel.error : "")].filter(function (s) { return s.length > 0; }).join("\n")
+                    // One line each, in this order: this screen's own refusal,
+                    // which never hides what the search says now; the host's
+                    // failure, else the search's message; the model's own error;
+                    // then what the store couldn't read or save (issue #828).
+                    text: [screen.localFailure, screen.failure || screen.status.message, searchModel ? searchModel.error : "", searchModel ? searchModel.storeMessage || "" : ""].filter(function (s) { return !!s && s.length > 0; }).join("\n")
                     // A failure can name a device, host or path.
                     textFormat: Text.PlainText
                     color: Theme.textPrimary

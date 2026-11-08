@@ -32,6 +32,7 @@
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "signal_search_model.h"
+#include "store_notices.h"
 #include "teardown_trace.h"
 
 namespace dsd_qt {
@@ -589,6 +590,73 @@ statusMHz(uint32_t hz) {
     return text;
 }
 
+/* The store's files as storeFiles() lists them, in the order the screen words them: the version 2 journal (the
+   history), the permanent avoids, the version 1 journal. Named as each sits in the app data folder. */
+static QVariantList
+storeFileList() {
+    static const struct {
+        int which;
+        const char* name;
+    } files[] = {{DSD_APP_SEARCH_STORE_HISTORY, "signal-search-history.v2"},
+                 {DSD_APP_SEARCH_STORE_AVOIDS, "signal-search-history.v1.avoids.json"},
+                 {DSD_APP_SEARCH_STORE_V1, "signal-search-history.v1"}};
+
+    QVariantList list;
+    for (const auto& file : files) {
+        dsd_app_search_file_load load = DSD_APP_SEARCH_FILE_OK;
+        int writeFailed = 0;
+        char kept[256] = {0};
+        if (dsd_app_signal_search_store_file_state(file.which, &load, &writeFailed, kept, sizeof(kept)) != 0) {
+            continue;
+        }
+        QString state;
+        if (load == DSD_APP_SEARCH_FILE_UNREADABLE) {
+            state =
+                file.which == DSD_APP_SEARCH_STORE_V1 ? QStringLiteral("leftInPlace") : QStringLiteral("unreadable");
+        } else if (load == DSD_APP_SEARCH_FILE_KEPT) {
+            state = QStringLiteral("kept");
+        }
+        list.append(QVariantMap{{QStringLiteral("file"), QString::fromLatin1(file.name)},
+                                {QStringLiteral("state"), state},
+                                {QStringLiteral("kept"), QString::fromUtf8(kept)},
+                                {QStringLiteral("writeFailed"), writeFailed != 0}});
+    }
+    return list;
+}
+
+/* What the screen says about one store file: how it loaded, then whether its save is owed. */
+static QStringList
+storeLines(const QVariantMap& file) {
+    const QString name = file.value(QStringLiteral("file")).toString();
+    const QString state = file.value(QStringLiteral("state")).toString();
+    const QString kept = file.value(QStringLiteral("kept")).toString();
+    const bool history = name.endsWith(QLatin1String(".v2"));
+    QStringList lines;
+    if (state == QLatin1String("leftInPlace")) {
+        lines.append(SignalSearchModel::tr(
+            "Signal search history from an older version couldn't be read. It was left in place."));
+    } else if (state == QLatin1String("unreadable")) {
+        lines.append(history
+                         ? SignalSearchModel::tr("Signal search history couldn't be read completely, so some "
+                                                 "entries may be missing. The file won't be overwritten.")
+                         : SignalSearchModel::tr("Permanent avoids couldn't be read completely, so some entries may "
+                                                 "be missing. The file won't be overwritten."));
+    } else if (state == QLatin1String("kept")) {
+        lines.append((history ? SignalSearchModel::tr("Signal search history couldn't be read completely, so some "
+                                                      "entries may be missing. The file was kept as %1.")
+                              : SignalSearchModel::tr("Permanent avoids couldn't be read completely, so some entries "
+                                                      "may be missing. The file was kept as %1."))
+                         .arg(kept));
+    }
+    if (file.value(QStringLiteral("writeFailed")).toBool()) {
+        lines.append(history ? SignalSearchModel::tr("Signal search history couldn't be saved. Check available "
+                                                     "storage. DSD-neo tries again with the next change.")
+                             : SignalSearchModel::tr("Permanent avoids couldn't be saved. Check available storage. "
+                                                     "DSD-neo tries again with the next change."));
+    }
+    return lines;
+}
+
 static QVariantList
 frequencyList(size_t (*get)(uint32_t*, size_t)) {
     std::vector<uint32_t> frequencies(DSD_SEARCH_MAX_AVOIDS);
@@ -628,6 +696,24 @@ SignalSearchModel::refreshHistory() {
     return true;
 }
 
+/* The store's files change only at its open, a keep-aside and a save's outcome, so a tick that finds them as they
+   were changes nothing. A change is worded for the screen and handed to Home's card (StoreNotices). */
+bool
+SignalSearchModel::refreshStoreFiles() {
+    const QVariantList files = storeFileList();
+    if (files == m_storeFiles) {
+        return false;
+    }
+    m_storeFiles = files;
+    QStringList lines;
+    for (const QVariant& file : files) {
+        lines.append(storeLines(file.toMap()));
+    }
+    m_storeMessage = lines.join(QLatin1Char('\n'));
+    StoreNotices::instance()->setSignalSearchFiles(files);
+    return true;
+}
+
 void
 SignalSearchModel::refresh() {
     if (refreshAvoids()) {
@@ -636,13 +722,12 @@ SignalSearchModel::refresh() {
     if (refreshHistory()) {
         Q_EMIT historyChanged();
     }
+    if (refreshStoreFiles()) {
+        Q_EMIT storeChanged();
+    }
     dsd_signal_search_status s{};
-    char errorText[256];
-    dsd_app_signal_search_status_get(&s, errorText, sizeof(errorText));
-    const QString persistenceError = QString::fromUtf8(errorText);
-    bool changedError = persistenceError != m_persistenceError;
-    m_persistenceError = persistenceError;
-    if (s.revision == m_revision && s.session_id == m_session && !changedError) {
+    dsd_app_signal_search_status_get(&s, nullptr, 0);
+    if (s.revision == m_revision && s.session_id == m_session) {
         return;
     }
     m_revision = s.revision;
