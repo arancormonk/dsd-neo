@@ -9654,27 +9654,30 @@ as before. Every downlink burst runs the TDMA clock to its own slot on the symbo
 normal burst at its training sequence (`tetra_tdma_advance_ndb()`), a synchronisation burst at its BSCH, which sets the
 clock when its CRC passes and otherwise only runs it (`tetra_sb_bsch()`), so block 2 of a burst whose BSCH failed is not
 decoded as the last burst's timeslot. Normal bursts cannot tell the signal's polarity (NTS2 is NTS1 inverted), so the
-carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's training, which the frame sync latches,
-and on the uplink from a control burst: its extended training sequence is no other training sequence inverted, so its
-synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the decoder makes it the
-carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity NTS2 burst can match
-the inverted extended training sequence. That SCH/HU also proves a trunked mode uplink, which no BSCH comes to say there:
-like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`: the mode, the DM colour
-code, its protection and the direct mode call with its canonical call), so the normal bursts after it are NUBs again
-and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at fixed thresholds of the
-CQPSK symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`; under the 18000/4 profile without the adaptive centre
-P25's CQPSK hunt slices about, `frame_sync_cqpsk_slice_center()`), where the RTL front end and a soft symbol capture
-give them; a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads it as it is
-(`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled by 10000
-into the PCM sample domain; scaled, both inner levels would slice as outer ones. The payload is sliced the same way:
-under a TETRA sync type `digitize()` cuts at the quadrant boundaries 0 and ±2 (`cqpsk_slice()`), never at the adaptive
-four-level slicer's `center`/`umid`/`lmid`, which put the inner/outer edge near ±60° instead of ±90°, and the decoder's
-soft costs come from `cqpsk_soft_symbol_to_viterbi_cost()`, taken against the fixed levels ±1 and ±3 (the four-level
-mapping of `soft_symbol_to_viterbi_cost()` at the regions -4, -2, 0, 2, 4). All three read the fixed levels on QPSK
-only (`rf_mod` 1, `dsd_tetra_quadrant_levels()`; the hunt tests `rf_mod` itself): under another modulation (`-fT -mc`,
-not a supported TETRA receiver) the hunt, `digitize()` and the soft costs read TETRA on the adaptive levels together.
-Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`, `DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`,
-`DIBIT_TETRA_QUADRANT_SLICER`.
+carrier's polarity (`tetra_sync.polarity`) comes from a synchronisation burst's training: the frame sync hands the
+burst's polarity over with its capture (`tetra_sync.sb_polarity`), the burst is read with it, and the decoder makes it
+the carrier's only once the BSCH, or a DSB's SCH/S, passed its CRC (`tetra_tmo_sb_commit_polarity()`,
+`tetra_dmo_dsb_commit_polarity()`), so a false or failed burst of the other polarity leaves the normal bursts after it
+classified as before; on the uplink it comes from a control burst: its extended training sequence is no other training
+sequence inverted, so its synctype's sign is its polarity, its SCH/HU is decoded with it, and once that CRC passed the
+decoder makes it the carrier's (`tetra_uplink_process_cb()`); one that fails changes nothing, since a normal-polarity
+NTS2 burst can match the inverted extended training sequence. That SCH/HU also proves a trunked mode uplink, which no
+BSCH comes to say there: like a BSCH of a trunked system code on the downlink, it ends direct mode (`tetra_dmo_leave()`:
+the mode, the DM colour code, its protection and the direct mode call with its canonical call), so the normal bursts
+after it are NUBs again and not DNBs descrambled with a DM colour code. The frame-sync slicer cuts TETRA's symbols at
+fixed thresholds of the CQPSK symbol domain (0 and ±2, `frame_sync_slice_cqpsk_dibit()`; under the 18000/4 profile
+without the adaptive centre P25's CQPSK hunt slices about, `frame_sync_cqpsk_slice_center()`), where the RTL front end
+and a soft symbol capture give them; a float symbol file (`.raw`, `.sym`) holds them there too, so a TETRA session reads
+it as it is (`symbol_file_flt_scale()` in `dsd_symbol.c`), while the other modes' level-tracking slicers read one scaled
+by 10000 into the PCM sample domain; scaled, both inner levels would slice as outer ones. The payload is sliced the same
+way: under a TETRA sync type `digitize()` cuts at the quadrant boundaries 0 and ±2 (`cqpsk_slice()`), never at the
+adaptive four-level slicer's `center`/`umid`/`lmid`, which put the inner/outer edge near ±60° instead of ±90°, and the
+decoder's soft costs come from `cqpsk_soft_symbol_to_viterbi_cost()`, taken against the fixed levels ±1 and ±3 (the
+four-level mapping of `soft_symbol_to_viterbi_cost()` at the regions -4, -2, 0, 2, 4). All three read the fixed levels
+on QPSK only (`rf_mod` 1, `dsd_tetra_quadrant_levels()`; the hunt tests `rf_mod` itself): under another modulation (`-fT
+-mc`, not a supported TETRA receiver) the hunt, `digitize()` and the soft costs read TETRA on the adaptive levels
+together. Tests: `FRAME_SYNC_INTERNAL_HELPERS`, `TETRA_BURST_VERDICT`, `DSP_SYMBOL_REPLAY`,
+`DECODE_IQ_TETRA_FLOAT_SYMBOL_REPLAY`, `DIBIT_TETRA_QUADRANT_SLICER`.
 
 #### Signalling decoders
 
@@ -10412,7 +10415,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | The followed call's receive permission and AACH counts (`confirm.rx_perm`, `rx_run`, `rx_adverse`, `rx_chan_bad`, `rx_qual_start`) | the followed call on the carrier | its U-plane switching, N.213 qualifying ACCESS-ASSIGN PDUs | its U-plane switching off, N.212, T.212, with its proof (carrier boundary, follow change, retirement); a failed tune puts the permission back, the counts start over |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return, its channel allocated to a call it does not follow (it moves to one it does); a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return |
 | Speech in progress (`voice`) | one transmission | its first burst | speech of another kind, call identifier, timeslot, target or talker; a canonical call ended; a grant after D-TX CEASED; the heard speech stopping; a pause of `TETRA_CALL_SPEECH_END_S` in it, in every mode; another cell; a carrier boundary |
-| Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst's training, a CRC-passed SCH/HU | the next of them |
+| Polarity (`dsd_state::tetra_sync.polarity`) | the receiver chain | a synchronisation burst whose BSCH or SCH/S passed its CRC (its training's polarity), a CRC-passed SCH/HU | the next of them |
 
 What each decoded event does:
 

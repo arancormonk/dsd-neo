@@ -227,20 +227,32 @@ feed(session* s, const uint8_t* dibits, int count) {
     s->state->symbol_replay_header_checked = 0;
 }
 
-/* A synchronisation burst whose BSCH the frame sync captured as @p bsch, followed by block 2 @p block2. */
+/* A synchronisation burst whose BSCH the frame sync captured as @p bsch, followed by block 2 @p block2, received
+ * @p inverted: every dibit with its sign bit flipped, and the burst's polarity, which its training told, handed over
+ * with the capture as the frame sync hands it (dsd_frame_sync.c); the carrier's polarity is the decoder's to set. */
 static dsd_frame_verdict
-sync_burst(session* s, const uint8_t* bsch, const uint8_t* block2) {
-    uint8_t tail[SB_BB_DIBITS + BLOCK_DIBITS] = {0};
-    DSD_MEMCPY(tail + SB_BB_DIBITS, block2, BLOCK_DIBITS);
+sync_burst_as(session* s, const uint8_t* bsch, const uint8_t* block2, int inverted) {
+    const uint8_t flip = inverted ? 2U : 0U;
+    uint8_t tail[SB_BB_DIBITS + BLOCK_DIBITS];
+    for (size_t i = 0; i < sizeof tail; i++) {
+        tail[i] = (uint8_t)((i < SB_BB_DIBITS ? 0U : block2[i - SB_BB_DIBITS]) ^ flip);
+    }
     feed(s, tail, (int)sizeof tail);
-    DSD_MEMCPY(s->state->tetra_sync.sb1_dibuf, bsch, BSCH_DIBITS);
+    for (size_t i = 0; i < BSCH_DIBITS; i++) {
+        s->state->tetra_sync.sb1_dibuf[i] = (uint8_t)(bsch[i] ^ flip);
+    }
     s->state->tetra_sync.sb1_valid = 1;
     s->state->tetra_sync.sb1_soft_valid = 0;
     s->state->tetra_sync.phase_rot = 0;
-    s->state->tetra_sync.polarity = 0;
-    s->state->lastsynctype = DSD_SYNC_TETRA_SB_POS;
-    s->state->synctype = DSD_SYNC_TETRA_SB_POS;
+    s->state->tetra_sync.sb_polarity = (uint8_t)(inverted != 0);
+    s->state->lastsynctype = inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS;
+    s->state->synctype = s->state->lastsynctype;
     return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
+static dsd_frame_verdict
+sync_burst(session* s, const uint8_t* bsch, const uint8_t* block2) {
+    return sync_burst_as(s, bsch, block2, 0);
 }
 
 /* A normal downlink burst, NTS2 with two half-slot blocks or NTS1 with one full-slot channel: block 1 and AACH half 1
@@ -783,27 +795,49 @@ test_carrier_boundary_leaves_direct_mode(void) {
     }
 }
 
+/* The nominal level of dibit @p d (+1 00, +3 01, -1 10, -3 11), as a soft symbol. */
+static float
+level_of(uint8_t d) {
+    static const float k_levels[4] = {1.0F, 3.0F, -1.0F, -3.0F};
+    return k_levels[d & 3U];
+}
+
 /* A direct mode synchronisation burst (EN 300 396-2 clause 9.4.3.3) as the frame sync locks it: SCH/S, captured before
  * the training sequence like a BSCH, and SCH/H right after it, then 15 dibits, all scrambled with the all-zero colour
  * code (EN 300 396-3 clause 8.2.4). @p sch_h is the 124 type-1 bits of SCH/H, or NULL for a block that fails its
- * CRC. */
+ * CRC. Received @p inverted, its dibits have their sign bit flipped, and the frame sync hands over the burst's
+ * polarity with the capture. With @p soft_only the captured hard decisions of SCH/S are lost and only its soft values
+ * carry it, so it is a DSB only to the soft decision. */
 static dsd_frame_verdict
-dmo_sync_burst(session* s, const uint8_t* sch_s, const uint8_t* sch_h) {
+dmo_sync_burst_as(session* s, const uint8_t* sch_s, const uint8_t* sch_h, int inverted, int soft_only) {
+    const uint8_t flip = inverted ? 2U : 0U;
     uint8_t sch_s_dibits[BSCH_DIBITS];
     encode_signalling(sch_s, 60, 120, 11, 3u, sch_s_dibits);
     uint8_t tail[BLOCK_DIBITS + SB_BB_DIBITS] = {0};
     if (sch_h) {
         encode_sch_hd(sch_h, 3u, tail);
     }
+    for (size_t i = 0; i < sizeof tail; i++) {
+        tail[i] ^= flip;
+    }
     feed(s, tail, (int)sizeof tail);
-    DSD_MEMCPY(s->state->tetra_sync.sb1_dibuf, sch_s_dibits, BSCH_DIBITS);
+    for (size_t i = 0; i < BSCH_DIBITS; i++) {
+        const uint8_t d = (uint8_t)(sch_s_dibits[i] ^ flip);
+        s->state->tetra_sync.sb1_dibuf[i] = soft_only ? 0U : d;
+        s->state->tetra_sync.sb1_soft[i] = level_of(d);
+    }
     s->state->tetra_sync.sb1_valid = 1;
-    s->state->tetra_sync.sb1_soft_valid = 0;
+    s->state->tetra_sync.sb1_soft_valid = (uint8_t)(soft_only != 0);
     s->state->tetra_sync.phase_rot = 0;
-    s->state->tetra_sync.polarity = 0;
-    s->state->lastsynctype = DSD_SYNC_TETRA_SB_POS;
-    s->state->synctype = DSD_SYNC_TETRA_SB_POS;
+    s->state->tetra_sync.sb_polarity = (uint8_t)(inverted != 0);
+    s->state->lastsynctype = inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS;
+    s->state->synctype = s->state->lastsynctype;
     return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
+static dsd_frame_verdict
+dmo_sync_burst(session* s, const uint8_t* sch_s, const uint8_t* sch_h) {
+    return dmo_sync_burst_as(s, sch_s, sch_h, 0, 0);
 }
 
 /* A DMAC-SYNC SCH/S (EN 300 396-3 table 21), direct, channel A, slot 1, frame 3, under security class @p enc. */
@@ -928,6 +962,85 @@ test_dsb_of_unread_layout(void) {
         assert(!ts->calls.dmo.active && ts->calls.published == TETRA_PUB_NONE && !ts->dmo_dcc_valid);
         session_close(&s);
     }
+}
+
+/* Normal bursts cannot tell the carrier's polarity (NTS2 is NTS1 inverted), so a synchronisation burst sets it, but only
+ * one whose BSCH passed its CRC: a burst of the other polarity that fails -- noise that matched the training, or a
+ * burst of another carrier -- leaves the polarity the home cell's accepted burst set, and the home cell's normal bursts
+ * after it still decode. Each burst is read with its own polarity, so an accepted one of either polarity sets it. */
+static void
+test_sync_burst_polarity_needs_its_bsch(void) {
+    session s = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    uint8_t inverted_sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    uint8_t inverted_zeros[BLOCK_DIBITS];
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    for (size_t i = 0; i < BLOCK_DIBITS; i++) {
+        inverted_sysinfo[i] = (uint8_t)(sysinfo[i] ^ 2U);
+        inverted_zeros[i] = 2U;
+    }
+
+    /* The home cell, received inverted. */
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->net_known && ts->colour == 17U && ts->frames_sysinfo == 1U);
+    assert(s.state->tetra_sync.polarity == 1);
+
+    /* A synchronisation burst of normal polarity whose BSCH fails. */
+    assert(sync_burst_as(&s, zeros, zeros, 0) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(s.state->tetra_sync.polarity == 1);
+
+    /* The home cell's next normal burst, NTS2: its block 2 decodes with the home polarity. */
+    assert(nts2_burst(&s, inverted_zeros, inverted_sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(ts->frames_sysinfo == 2U);
+
+    /* Accepted bursts of either polarity set it, their block 2 decoded with it. */
+    assert(sync_burst_as(&s, bsch, sysinfo, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_sync.polarity == 0 && ts->frames_sysinfo == 3U);
+    /* One whose BSCH fails still has its block 2 read with its own polarity, and leaves the carrier's. */
+    assert(sync_burst_as(&s, zeros, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_sync.polarity == 0 && ts->frames_sysinfo == 4U);
+    assert(nts2_burst(&s, zeros, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN && ts->frames_sysinfo == 5U);
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_sync.polarity == 1 && ts->frames_sysinfo == 6U);
+    session_close(&s);
+}
+
+/* An inverted direct mode carrier: its DSB is read with the burst's own polarity, its SCH/H as well, and once accepted
+ * that polarity is the carrier's for the DNBs after it, whether the hard decisions decoded its SCH/S or only the soft
+ * ones did (its SCH/H then goes by unread). */
+static void
+test_inverted_dsb_sets_the_polarity(void) {
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    bits_of(k_dmo_sch_h, sch_h);
+
+    session s = session_open();
+    assert(dmo_sync_burst_as(&s, sch_s, sch_h, 1, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->dmo && ts->dmo_dcc_valid && ts->calls.dmo.active);
+    assert(s.state->tetra_sync.polarity == 1);
+    /* A DNB with two half-slot blocks, NTS2, scrambled with the call's DM colour code: the same layout as a NUB. */
+    const uint8_t mac[TTB_SCH_HD_BITS] = {0};
+    uint8_t block[BLOCK_DIBITS];
+    encode_sch_hd(mac, ts->dmo_dcc_seed, block);
+    for (size_t i = 0; i < BLOCK_DIBITS; i++) {
+        block[i] ^= 2U;
+    }
+    const uint32_t decoded = ts->decode_ok;
+    assert(uplink_nts2_burst(&s, block, block) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(ts->decode_ok == decoded + 2U);
+    session_close(&s);
+
+    s = session_open();
+    assert(dmo_sync_burst_as(&s, sch_s, NULL, 1, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    ts = tetra_st_existing(s.state);
+    assert(ts->dmo && s.state->tetra_sync.polarity == 1);
+    session_close(&s);
 }
 
 /* A normal burst whose signalling failed its CRC is tried as speech, full-slot on NTS1 and half-slot on NTS2, but not
@@ -1403,6 +1516,8 @@ main(void) {
     test_dmo_unread_sync_seals_the_traffic();
     test_dsb_leaves_trunked_mode();
     test_dsb_of_unread_layout();
+    test_sync_burst_polarity_needs_its_bsch();
+    test_inverted_dsb_sets_the_polarity();
     test_retune_leaves_the_rest_of_the_burst();
     test_burst_entry_settles();
     test_frame_18_tries_no_speech();

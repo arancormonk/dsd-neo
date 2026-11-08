@@ -151,10 +151,18 @@ tetra_expand_dibits_as(const dsd_state* state, int inverted, const uint8_t* dibi
     }
 }
 
-/* tetra_expand_dibits_as() with the carrier's polarity, which a synchronisation burst or a control uplink burst set. */
+/* tetra_expand_dibits_as() with the carrier's polarity, which an accepted synchronisation burst or a control uplink
+   burst set. */
 static void
 tetra_expand_dibits(const dsd_state* state, const uint8_t* dibits, const float* soft_in, int count, uint16_t* out) {
     tetra_expand_dibits_as(state, state->tetra_sync.polarity != 0, dibits, soft_in, count, out);
+}
+
+/* tetra_expand_dibits_as() with the polarity of the synchronisation burst in hand, which its training sequence told
+   (dsd_tetra_sync_capture::sb_polarity): the burst is read with it whether or not it is accepted. */
+static void
+tetra_expand_sb_dibits(const dsd_state* state, const uint8_t* dibits, const float* soft_in, int count, uint16_t* out) {
+    tetra_expand_dibits_as(state, state->tetra_sync.sb_polarity != 0, dibits, soft_in, count, out);
 }
 
 /* Block 1 of the burst, as the frame sync captured it. */
@@ -752,7 +760,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     skipDibit(opts, state, SB_BB_DIBITS);
     (void)tetra_dmo_parse_sync_s(sch_s, &s);
 
-    tetra_expand_dibits(state, b2_dibits, b2_soft, SB_BKN2_DIBITS, b2_costs);
+    tetra_expand_sb_dibits(state, b2_dibits, b2_soft, SB_BKN2_DIBITS, b2_costs);
     tetra_descramble_soft(b2_costs, NB_BLOCK_BITS, TETRA_SB_SCRAMB_SEED);
     const int h_ok = tetra_hd_decode_bits(b2_costs, sch_h);
     if (h_ok) {
@@ -789,7 +797,7 @@ tetra_sb_decode_block(const dsd_state* state, int use_soft, uint8_t* decoded) {
     uint16_t deint[SB_BSCH_BITS];
     uint16_t depunc[SB_TYPE2 * 4];
     const float* soft = (use_soft && state->tetra_sync.sb1_soft_valid) ? state->tetra_sync.sb1_soft : NULL;
-    tetra_expand_dibits(state, state->tetra_sync.sb1_dibuf, soft, SB_BSCH_DIBITS, costs);
+    tetra_expand_sb_dibits(state, state->tetra_sync.sb1_dibuf, soft, SB_BSCH_DIBITS, costs);
     tetra_descramble_soft(costs, SB_BSCH_BITS, TETRA_SB_SCRAMB_SEED);
     tetra_block_deinterleave_soft(costs, deint, SB_BSCH_BITS, SB_BSCH_A);
     (void)tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, deint, SB_BSCH_BITS, depunc, SB_TYPE2 * 4);
@@ -811,6 +819,21 @@ tetra_sb_log_bits(const dsd_state* state, const tetra_state_t* ts, const uint8_t
     TETRA_LOG_PAYLOAD(ts, " [TETRA SB  rot=%d first12=%s]", (int)(state->tetra_sync.phase_rot & 3), first);
 }
 
+/* A trunked synchronisation burst whose BSCH passed its CRC is accepted: its polarity becomes the carrier's, for the
+   normal bursts after it, whose training cannot tell it (NTS2 is NTS1 inverted). One that fails, or a false training
+   match, leaves the carrier's polarity as it was. */
+static void
+tetra_tmo_sb_commit_polarity(dsd_state* state) {
+    state->tetra_sync.polarity = state->tetra_sync.sb_polarity;
+}
+
+/* A DSB whose SCH/S passed its CRC is accepted, whichever decision decoded it: its polarity becomes the carrier's, for
+   the direct mode normal bursts after it. */
+static void
+tetra_dmo_dsb_commit_polarity(dsd_state* state) {
+    state->tetra_sync.polarity = state->tetra_sync.sb_polarity;
+}
+
 /* A direct-mode synchronisation burst is told from a trunked one by its SCH/S system code (EN 300 396-3 clause
    9.3.29), decoded from the hard decisions first: they do not consume symbols or depend on the slicer, so a trunked
    burst then takes exactly the path it would have taken. 1 when the burst was a DSB and is done. */
@@ -829,6 +852,7 @@ tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
     tetra_confirm_note_block(state);
     tetra_sb_log_bits(state, ts, pre);
     tetra_dmo_process_dsb(opts, state, pre);
+    tetra_dmo_dsb_commit_polarity(state);
     return 1;
 }
 
@@ -850,6 +874,7 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     if (tetra_dmo_system_code_is_dmo(decoded)) {
         tetra_dmo_sync_s_t s;
         (void)tetra_dmo_parse_sync_s(decoded, &s);
+        tetra_dmo_dsb_commit_polarity(state);
         tetra_enter_dmo(opts, state);
         tetra_dmo_apply_sync(state, &s, NULL);
         tetra_calls_dmo_protection(opts, state);
@@ -860,6 +885,7 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     }
     tetra_dmo_leave(opts, state);
     (void)tetra_bsch_parse(decoded, SB_TYPE1, opts, state);
+    tetra_tmo_sb_commit_polarity(state);
     tetra_confirm_note_signalling(state);
     return 1;
 }
@@ -875,7 +901,7 @@ tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const f
     }
     uint16_t block[NB_BLOCK_BITS];
     const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "", 0, 0};
-    tetra_expand_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
+    tetra_expand_sb_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
     /* Block 2 of the slot: an SCH/HD there takes key stream bits 216.. (EN 300 392-7 table 6.4, BSCH+SCH/HD). */
     (void)tetra_nb_half(opts, state, &ctx, block, "BNCH", TETRA_AIR_KSS_SECOND_HALF_BLOCK);
 }

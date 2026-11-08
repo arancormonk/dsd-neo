@@ -282,6 +282,44 @@ test_tetra_bursts_wait_for_their_own_look_back(void) {
     free(opts);
 }
 
+/* A synchronisation burst's training tells the burst's polarity, which the frame sync hands the decoder
+   (tetra_sync.sb_polarity), but only the decoder makes it the carrier's, once the burst's BSCH passed its CRC. A burst
+   of the other polarity -- a false match, or one whose BSCH fails -- leaves the carrier's polarity, so the normal bursts
+   after it are still told NTS1 from NTS2 (NTS2 is NTS1 inverted) with the carrier's polarity, at either polarity of
+   the carrier. */
+static void
+test_tetra_sb_training_leaves_the_carrier_polarity(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->frame_tetra = 1;
+    char stream[160];
+    uint32_t seed = 13u;
+    for (int home = 0; home <= 1; home++) {
+        DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+        state->tetra_sync.polarity = (uint8_t)home;
+
+        /* A synchronisation burst of the other polarity. */
+        tetra_data_dibits(stream, 60, &seed);
+        DSD_MEMCPY(stream + 60, home ? TETRA_SB_SSB_SYNC : INV_TETRA_SB_SSB_SYNC, 19);
+        assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 79)
+               == (home ? DSD_SYNC_TETRA_SB_POS : DSD_SYNC_TETRA_SB_NEG));
+        assert(state->tetra_sync.sb_polarity == (uint8_t)!home && state->tetra_sync.sb1_valid == 1);
+        assert(state->tetra_sync.polarity == (uint8_t)home);
+
+        /* The carrier's normal bursts: NTS1, and NTS2, which is NTS1 inverted, as an inverted carrier turns them. */
+        for (int nts2 = 0; nts2 <= 1; nts2++) {
+            tetra_data_dibits(stream, 125, &seed);
+            DSD_MEMCPY(stream + 125, (nts2 ^ home) ? INV_TETRA_NDB_NTS_SYNC : TETRA_NDB_NTS_SYNC, 11);
+            assert(dsd_frame_sync_test_try_protocol_matches(opts, state, stream, 136)
+                   == ((nts2 ^ home) ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS));
+            assert(state->tetra_sync.nts2 == (uint8_t)nts2 && state->tetra_sync.polarity == (uint8_t)home);
+        }
+    }
+    free(state);
+    free(opts);
+}
+
 static int g_vc_sync_hook_calls;
 static int g_vc_no_sync_hook_calls;
 static int g_release_hook_calls;
@@ -5394,6 +5432,7 @@ main(void) {
     test_tetra_hunt_slices_at_the_quadrant_edges();
     test_tetra_uplink_control_burst_is_not_a_normal_burst();
     test_tetra_bursts_wait_for_their_own_look_back();
+    test_tetra_sb_training_leaves_the_carrier_polarity();
     test_scan_class_matchers_and_no_sync();
     test_p25_vc_acquisition_hooks();
     test_sps_hunt_skips_disabled_protocol_rates();

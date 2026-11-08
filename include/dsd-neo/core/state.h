@@ -156,9 +156,11 @@ typedef struct {
      *
      * b1_valid:   1 when b1_dibuf holds a fresh capture, cleared
      *                   after processTetraFrame() consumes it.
-     * polarity:   0 = normal (+TETRA), 1 = inverted (-TETRA).
-     *                     Written by the frame sync from a synchronisation
-     *                     burst, and by the decoder from a control uplink
+     * polarity:   0 = normal (+TETRA), 1 = inverted (-TETRA): the
+     *                     carrier's, which normal bursts are classified
+     *                     and decoded with. Written by the decoder only:
+     *                     from a synchronisation burst whose BSCH (or DSB
+     *                     SCH/S) passed its CRC, and from a control uplink
      *                     burst whose SCH/HU passed its CRC.
      * nts2:        1 = this NDB matched training sequence 2.
      * cb:          1 = the frame sync locked a control uplink burst. Every
@@ -189,6 +191,9 @@ typedef struct {
     float sb1_soft[60];
     uint8_t sb1_valid;
     uint8_t sb1_soft_valid;
+    /* The polarity of the synchronisation burst in sb1_dibuf, 0 normal or 1 inverted, as its training sequence matched
+     * it: the burst is decoded with it, and it becomes the carrier's (polarity) only once the burst is accepted. */
+    uint8_t sb_polarity;
     /* Set by the decoder: 1 when block 1 sits directly against the training sequence (direct mode and the
      * uplink normal burst have no AACH), so the frame sync captures it from the right symbols. */
     uint8_t block1_follows_training;
