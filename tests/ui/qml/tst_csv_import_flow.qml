@@ -408,6 +408,20 @@ Item {
             compare(importedFiles.count, 0);
         }
 
+        // An update whose row has no stored path (a row index past the
+        // library) is refused like one whose row went: never a new import.
+        function test_an_update_without_a_row_is_refused() {
+            var path = testContext.writeFixtureCsv("orphan-update.csv", "id,mode,name\n1,A,One\n");
+            flow.pick("group", 99);
+            answer("file://" + path, "orphan-update.csv");
+            compare(completion.count, 1);
+            var result = completion.signalArguments[0][0];
+            verify(!result.ok);
+            compare(result.error, "changed");
+            compare(result.detail, "That file changed while you were picking. Try again.");
+            compare(importedFiles.count, 0, "an update never adds a row");
+        }
+
         // B3: "Selected:" names the picked file as the picker named it, not the
         // reference's last segment; a library choice then names the library file.
         function test_companion_label_names_the_picked_file() {

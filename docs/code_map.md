@@ -12876,34 +12876,36 @@ Qt Quick frontend (`src/ui/qt`):
   went to the Download folder. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
   `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
   `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
-- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the
-  scan list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary
-  and companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; the primary
-  pick's `displayName` is the stored file's name, a companion's names its "Selected:" line until a library choice
-  names the library file (#829 B3). `pick(kind, row, context)` / `begin(…, context)` first cancel the import before
-  (with that import's context), then keep `context`; every `finished` result carries it as `result.context`.
-  `complete()` closes both pickers silently; an owner ends a pick by calling the flow's `cancel()`. Ownership (#829
-  B4): each owner cancels its flow when it stops being visible (`onVisibleChanged`, so Imports' Back, which clears
-  `importsOpen` in `Main.qml` directly, and the wizard's Save, which clears `wizardOpen`, both count) and when it is
-  reused (`WizardScreen.openForAdd/openForFound/openForEdit`, `ScanListScreen.openFor`). Newer choice wins: the wizard
-  keeps a generation per CSV field (`csvGenerations`, bumped by `assignCsvPath()` and by `applyRadioReference()` for
-  the files it writes), the scan list editor one for its targets (`targetsGeneration`, bumped by `selectTargets()`
-  and the target source switch), the flow one per companion slot (`companionGenerations`, bumped by every write to
-  the slot). A pick carries the generation it was asked with (`importCsvFile()` passes `{target, keyFormat,
-  generation}`; the scan list `{generation}`) and the owner's `wanted(context)` answers whether it still holds; a pick
-  that comes back after a newer choice ends as cancelled with nothing imported and no notice, and a late companion
-  pick leaves the slot alone (B6: a later pick never carries an earlier reference). The wizard's `finished` handler
-  fills `result.context.target` with its key format, never `pickerTarget`, which the next sheet and Browse rewrite.
-  An update names its row by the stored path taken at pick time (`replacePath`); `ImportedFilesModel::
-  importBundleReplacing()` resolves it at delivery and refuses a row that went with `error` "changed" ("That file
-  changed while you were picking. Try again."). A primary picker that is `unavailable` ends the flow with `{ok false,
-  error "unavailable", detail: message}`; a companion one brings the sheet back with every choice kept and the message
-  in `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end of the import). Owners
-  show `result.detail` (Imports' notice, the scan list's validation line, the wizard's `csvNotice` with "Could not
-  read that file" as the fallback); each of those lines and the companion notice is an `AlertMessage` while it reports
-  a problem and is read out once per failure while `Navigation.allows` it (`announced`/`announcements` for tests).
-  Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan list, imports, wizard band plan, modal
-  input and settings layout QML suites.
+- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
+  list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
+  companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; the primary pick's
+  `displayName` is the stored file's name, a companion's names its "Selected:" line until a library choice names the
+  library file (#829 B3). `pick(kind, row, context)` / `begin(…, context)` first cancel the import before (with that
+  import's context), then keep `context`; every `finished` result carries it as `result.context`. `complete()` closes
+  both pickers silently; an owner ends a pick by calling the flow's `cancel()`. Ownership (#829 B4): each owner cancels
+  its flow when it stops being visible (`onVisibleChanged`, so Imports' Back, which clears `importsOpen` in `Main.qml`
+  directly, and the wizard's Save, which clears `wizardOpen`, both count) and when it is reused
+  (`WizardScreen.openForAdd/openForFound/openForEdit`, `ScanListScreen.openFor`). Newer choice wins: the wizard keeps a
+  generation per CSV field (`csvGenerations`, bumped by `assignCsvPath()` and by `applyRadioReference()` for the files
+  it writes), the scan list editor one for its targets (`targetsGeneration`, bumped by `selectTargets()` and the target
+  source switch), the flow one per companion slot (`companionGenerations`, bumped by every write to the slot). A pick
+  carries the generation it was asked with (`importCsvFile()` passes `{target, keyFormat, generation}`; the scan list
+  `{generation}`) and the owner's `wanted(context)` answers whether it still holds (so a `pick()`/`begin()` against an
+  owner with `wanted` must carry that owner's context, or it is dropped); a pick that comes back after a newer choice
+  ends as cancelled with nothing imported and no notice, and a late companion pick leaves the slot alone (B6: a later
+  pick never carries an earlier reference). The wizard's `finished` handler fills `result.context.target` with its key
+  format, never `pickerTarget`, which the next sheet and Browse rewrite. An update names its row by the stored path
+  taken at pick time (`replacePath`); `ImportedFilesModel:: importBundleReplacing()` resolves it at delivery and refuses
+  a row that went, or an empty path, with `error` "changed" ("That file changed while you were picking. Try again."), so
+  an update never becomes a new import; a new file goes through `importBundle()`. Choosing a decryption profile in the
+  wizard clears the key file and bumps its generation too. A primary picker that is `unavailable` ends the flow with
+  `{ok false, error "unavailable", detail: message}`; a companion one brings the sheet back with every choice kept and
+  the message in `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end of the import).
+  Owners show `result.detail` (Imports' notice, the scan list's validation line, the wizard's `csvNotice` with "Could
+  not read that file" as the fallback); each of those lines and the companion notice is an `AlertMessage` while it
+  reports a problem and is read out once per failure while `Navigation.allows` it (`announced`/`announcements` for
+  tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan list, imports, wizard band plan,
+  modal input and settings layout QML suites.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 

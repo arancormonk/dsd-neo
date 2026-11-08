@@ -336,10 +336,7 @@ ImportedFilesModel::importBundle(const QString& reference, const QString& fileNa
 QVariantMap
 ImportedFilesModel::importBundleReplacing(const QString& reference, const QString& fileName, const QString& type,
                                           const QVariantMap& companions, const QString& replacePath) {
-    if (replacePath.isEmpty()) {
-        return importBundle(reference, fileName, type, companions);
-    }
-    const int row = rowForPath(replacePath);
+    const int row = replacePath.isEmpty() ? -1 : rowForPath(replacePath);
     if (row < 0) {
         return {
             {"ok", false},

@@ -100,11 +100,12 @@ class ImportedFilesModel : public QAbstractListModel {
      *
      * The row to replace is named by the stored path it had when the pick was
      * asked for, not by its index, since rows can be removed while a picker is
-     * up and the index would then name another file. @p replacePath "" imports
-     * a new file.
+     * up and the index would then name another file. It always replaces: a
+     * new file goes through importBundle().
      *
      * @return importBundle()'s result, or {ok false, error "changed", detail}
-     *         when no row holds @p replacePath any more; nothing is imported.
+     *         when no row holds @p replacePath any more (or it is empty);
+     *         nothing is imported.
      */
     Q_INVOKABLE QVariantMap importBundleReplacing(const QString& reference, const QString& fileName,
                                                   const QString& type, const QVariantMap& companions,

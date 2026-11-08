@@ -74,8 +74,16 @@ Item {
             } else {
                 var source = testContext.writeFixtureCsv("cancel-targets.csv",
                     "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-trunk,851012500,missing-map.csv,,,\n");
-                findChild(screen, "targetCsvImport").begin(source, "Targets.csv", "trunkTargets");
-                findChild(screen, "csvCompanionSheet").requestDismiss();
+                // The scan list drops a pick that is not for its current
+                // targets, so the import carries the context importTargets() gives.
+                var flow = findChild(screen, "targetCsvImport");
+                flow.begin(source, "Targets.csv", "trunkTargets", -1, {generation: screen.targetsGeneration});
+                verify(flow.active, "the import waits on its companion sheet");
+                var sheet = findChild(screen, "csvCompanionSheet");
+                verify(sheet.visible, "the companion sheet is up");
+                sheet.requestDismiss();
+                verify(!sheet.visible);
+                verify(!flow.active, "dismissing the sheet ended the import");
             }
             compare(screen.fingerprint(), before);
             compare(screen.initialDraft, initial);

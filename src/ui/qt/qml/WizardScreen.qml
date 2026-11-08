@@ -1229,6 +1229,7 @@ Item {
                 }
 
                 DecryptionProfileSelector {
+                    objectName: "wizardDecryptionProfile"
                     width: parent.width
                     overlayParent: wizard
                     profileUid: wizard.decryptionProfileUid
@@ -1236,6 +1237,9 @@ Item {
                     onSelected: function (uid) {
                         wizard.decryptionProfileUid = uid;
                         encryptionEditor.reset();
+                        // A profile replaces the key file: a choice for that
+                        // field like any other (issue #829).
+                        wizard.bumpCsvGeneration("keys");
                         wizard.keyCsvPath = "";
                     }
                 }

@@ -24,19 +24,18 @@ Channel maps retain their support for longer rows with mode/key options; a NUL b
 ## Importing on Android
 
 The Android app does not take CLI flags directly. Import CSVs through the UI instead: **Settings → Imported files**
-manages the library (import, update, remove), and the add/edit-system wizard's **Trunking data** panel assigns a
-channel map, talkgroup list, key file, P25 band plan, or source ID list (**Radio IDs**, kind `src`) to a system.
-Files are picked with the app's document picker (Android's file picker, or any installed app that can hand over a
-document) and copied into app-private storage (`files/imports/`), so the original can live anywhere (Downloads,
-Drive, …) and is not read again after import — use "Update from file" to pull in a changed original. A device with no
-file picker gets a message saying so instead of a picker that never opens. Each import is validated immediately and
-the row shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is
-flagged "No usable rows". While a session is running, open the monitor's session menu and choose **Edit saved
-system**; saving
-applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
-channel map, talkgroup list, keys, or source ID list from the running session. This action is available
-only for a session this app instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the
-app and ends the session (`android/README.md` "Known limits").
+manages the library (import, update, remove), and the add/edit-system wizard's **Trunking data** panel assigns a channel
+map, talkgroup list, key file, P25 band plan, or source ID list (**Radio IDs**, kind `src`) to a system. Files are
+picked with the app's document picker (Android's file picker, or any installed app that can hand over a document) and
+copied into app-private storage (`files/imports/`), so the original can live anywhere (Downloads, Drive, …) and is not
+read again after import — use "Update from file" to pull in a changed original. A device with no file picker gets a
+message saying so instead of a picker that never opens. Each import is validated immediately and the row shows how many
+entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged "No usable rows".
+While a session is running, open the monitor's session menu and choose **Edit saved system**; saving applies the files
+that changed to the live session immediately, including clearing a field to "None" — that unloads the channel map,
+talkgroup list, keys, or source ID list from the running session. This action is available only for a session this app
+instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the app and ends the session
+(`android/README.md` "Known limits").
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
 air is discarded along with the previous file's entries; a grant for a channel the new file omits stays unresolved

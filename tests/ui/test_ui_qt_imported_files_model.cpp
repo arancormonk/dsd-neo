@@ -411,11 +411,11 @@ test_replace_by_stored_path(void) {
     expect("replace-by-path refusal leaves the other file alone", read_file(stored.at(2)) == bytes.at(2));
     expect("replace-by-path refusal adds no row", model.rowCount() == 1);
 
-    /* No path: a new import. */
+    /* No path names no row: an update is never turned into a new import. */
     result = model.importBundleReplacing(reference, QStringLiteral("replacement.csv"), QStringLiteral("group"), {},
                                          QString());
-    expect("replace-by-path empty path imports", result.value(QStringLiteral("ok")).toBool());
-    expect("replace-by-path empty path adds a row", model.rowCount() == 2);
+    expect("replace-by-path refuses an empty path", result.value(QStringLiteral("error")).toString() == "changed");
+    expect("replace-by-path empty path adds no row", model.rowCount() == 1);
     while (model.rowCount() > 0) {
         model.remove(0);
     }

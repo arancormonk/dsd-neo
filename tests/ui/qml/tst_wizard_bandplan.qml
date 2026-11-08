@@ -170,21 +170,27 @@ Item {
         // A choice made for the field while the picker is out wins: the late
         // pick is dropped without a notice and without an import.
         function test_newer_choice_survives_a_late_pick_data() {
-            return [{tag: "library"}, {tag: "none"}, {tag: "radioreference"}];
+            return [{tag: "library", target: "chan"}, {tag: "none", target: "chan"},
+                    {tag: "radioreference", target: "chan"}, {tag: "decryption-profile", target: "keys"}];
         }
         function test_newer_choice_survives_a_late_pick(data) {
-            var id = importFor("chan")
+            var id = importFor(data.target)
             if (data.tag === "library")
                 tc.wizard.assignCsvPath("chan", "/data/imports/library.csv", false)
             else if (data.tag === "none")
                 tc.wizard.assignCsvPath("chan", "", false)
-            else
+            else if (data.tag === "radioreference")
                 tc.wizard.applyRadioReference({chanCsvPath: "/data/imports/rr.csv", groupCsvPath: "", decodeFlag: "", trunking: true})
-            var chosen = tc.wizard.chanCsvPath
+            else
+                // A decryption profile takes the place of the key file.
+                findChild(tc.wizard, "wizardDecryptionProfile").selected("profile-uid")
+            var path = function () { return data.target === "keys" ? tc.wizard.keyCsvPath : tc.wizard.chanCsvPath }
+            var chosen = path()
             var notice = tc.wizard.csvNotice
-            testContext.answerDocumentPicked(id, mapFile("late-map.csv"), "late.csv", false)
+            var late = data.target === "keys" ? "file://" + testContext.writeFixtureCsv("late-keys.csv", "id,value\n1,12345\n") : mapFile("late-map.csv")
+            testContext.answerDocumentPicked(id, late, "late.csv", false)
             verify(!flow().active)
-            compare(tc.wizard.chanCsvPath, chosen)
+            compare(path(), chosen)
             compare(tc.wizard.csvNotice, notice, "the newer choice's notice stays")
             compare(importedFiles.count, 0, "the dropped pick imported nothing")
         }

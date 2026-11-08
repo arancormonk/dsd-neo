@@ -7,10 +7,11 @@ Item {
     property string reference: ""
     property string fileName: ""
     property string type: ""
-    // The stored path of the library row an update replaces, "" for a new
-    // file. Taken when the pick is asked for, never the row's index: a row
-    // removed while the picker is up would turn an index onto another file
-    // (issue #829).
+    // An update: the stored path of the library row it replaces, taken when
+    // the pick is asked for, never the row's index: a row removed while the
+    // picker is up would turn an index onto another file (issue #829). An
+    // update whose row has no path is refused like one whose row went.
+    property bool replacing: false
     property string replacePath: ""
     property var companions: ({})
     // What each companion's "Selected:" line names: a picked file's own name
@@ -52,7 +53,8 @@ Item {
         reference = "";
         fileName = "";
         type = kind;
-        replacePath = row !== undefined && row >= 0 ? importedFiles.get(row).path || "" : "";
+        replacing = row !== undefined && row >= 0;
+        replacePath = replacing ? importedFiles.get(row).path || "" : "";
         companions = ({});
         companionNames = ({});
         companionGenerations = ({});
@@ -84,6 +86,7 @@ Item {
         sheet.visible = false;
         reference = "";
         fileName = "";
+        replacing = false;
         replacePath = "";
         choosing = "";
         companions = ({});
@@ -209,7 +212,7 @@ Item {
             cancel();
             return;
         }
-        var result = importedFiles.importBundleReplacing(reference, fileName, type, companions, replacePath);
+        var result = replacing ? importedFiles.importBundleReplacing(reference, fileName, type, companions, replacePath) : importedFiles.importBundle(reference, fileName, type, companions);
         if (result.error === "companions") {
             showRequirements(result);
             return;
