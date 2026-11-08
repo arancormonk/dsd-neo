@@ -434,7 +434,9 @@ It does not carry: call history, call recordings, replay recordings (the files r
 detection history, diagnostics, the last location fix, the Listen tab the phone opens on (each phone remembers its
 own, and a restore keeps it) and first-run state. The RadioReference password is never saved,
 so it is never in a backup.
-Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again. A
+Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again,
+and neither are temporary files an import left behind in a bundle folder (only when nothing uses them). An imported
+file is carried whatever it is called. A
 file that a saved system, scan list or profile names outside DSD-neo's imported files cannot be carried: the export
 leaves that reference out and lists it under **Not included** on the Settings card.
 
@@ -499,6 +501,9 @@ Limits:
   included** when you export.
 - The file is encrypted with AES-256-GCM under a key that scrypt derives from the passphrase (N = 2^16, r = 8, p = 2,
   about 64 MiB of memory per attempt). That slows guessing; it cannot protect a short or common passphrase.
+- Older DSD-neo versions left out imported files whose names start with `.import` or `.staged-`. A backup made by one
+  of them does not hold those files, so restoring it cannot bring them back. Those older versions also refuse a newer
+  backup that holds such a file, as damaged: restore it with a current version.
 - The sealed backup file is at most 64 MiB. Inside it: up to 4096 files of up to 32 MiB each, and up to 4096 entries
   of each kind (saved systems, scan lists, imported files, profiles, ranges).
 - Google Drive has not been tested as a place to save or restore: it cannot be exercised on the test emulators. If it

@@ -869,28 +869,39 @@ test_staging_layout(const Backup& b) {
     remove_tree(dir);
 }
 
-/** @p b's archive with the file at @p path replaced by @p bytes, size and hash updated. */
+/**
+ * @p archive rebuilt with the file at @p path replaced by @p bytes (size and hash updated), or left out when @p bytes
+ * is null; @p edit may change the manifest after that.
+ */
 QByteArray
-with_file_bytes(const QByteArray& archive, const QString& path, const QByteArray& bytes) {
+with_file_bytes(const QByteArray& archive, const QString& path, const QByteArray& bytes,
+                const std::function<void(QJsonObject&)>& edit = {}) {
     const quint32 length = qFromBigEndian<quint32>(archive.constData() + 4);
     QJsonObject manifest = QJsonDocument::fromJson(archive.mid(8, static_cast<qsizetype>(length))).object();
-    QJsonArray table = manifest.value("files").toArray();
+    const QJsonArray table = manifest.value("files").toArray();
+    QJsonArray kept;
     QByteArray data;
     qsizetype offset = 8 + static_cast<qsizetype>(length);
-    for (qsizetype i = 0; i < table.size(); ++i) {
-        QJsonObject entry = table.at(i).toObject();
+    for (const auto& value : table) {
+        QJsonObject entry = value.toObject();
         const qsizetype size = static_cast<qsizetype>(entry.value("size").toInteger());
         QByteArray file = archive.mid(offset, size);
         offset += size;
         if (entry.value("path").toString() == path) {
+            if (bytes.isNull()) {
+                continue;
+            }
             file = bytes;
             entry.insert("size", file.size());
             entry.insert("sha256", sha256_hex(file));
-            table.replace(i, entry);
         }
+        kept.append(entry);
         data.append(file);
     }
-    manifest.insert("files", table);
+    manifest.insert("files", kept);
+    if (edit) {
+        edit(manifest);
+    }
     const QByteArray json = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
     QByteArray out("DNBA");
     char size[4];
@@ -2141,6 +2152,80 @@ test_bundle_named_from_outside(TestHost& host, const Old& old) {
 }
 
 /**
+ * @p archive as an export from before #832 wrote it for a configuration whose library row @p name keeps its file at
+ * @p path, a name it left out: no file, no row, every other value naming it cleared, and the row listed instead.
+ */
+QByteArray
+as_exported_before_832(const QByteArray& archive, const QString& path, const QString& name) {
+    return with_file_bytes(archive, path, QByteArray(), [&](QJsonObject& manifest) {
+        const QString absolute = manifest.value("sourceRoots").toArray().at(0).toString() + '/' + path;
+        QJsonObject stores = manifest.value("stores").toObject();
+        for (const QString& store : stores.keys()) {
+            QJsonArray rows = dsd_qt::backup::map_typed_path_values(
+                store, stores.value(store).toArray(), [&absolute](const dsd_qt::backup::TypedPathValue& v) {
+                    return v.value == absolute ? QString() : v.value;
+                });
+            for (qsizetype i = rows.size() - 1; store == "imported_files.json" && i >= 0; --i) {
+                if (rows.at(i).toObject().value("path").toString().isEmpty()) {
+                    rows.removeAt(i);
+                }
+            }
+            stores.insert(store, rows);
+        }
+        manifest.insert("stores", stores);
+        manifest.insert("notIncluded", QJsonArray{"Imported file " + name});
+    });
+}
+
+/**
+ * Issue #832 (B2): a library file named like an import's temp file is configuration like any other. A backup used to
+ * leave it out, and restoring that backup over the configuration it came from then deleted the file, as the library
+ * named it; now the backup carries it and the restore puts it back byte-identical. A backup written before the change
+ * still restores (without the file it never carried).
+ */
+void
+test_restore_keeps_import_named_file(TestHost& host) {
+    put_back(Tree());
+    QString list;
+    {
+        dsd_qt::ImportedFilesModel library(&host);
+        list = import_path(library, example("group.csv"), ".import-list.tmp", "group");
+    }
+    {
+        dsd_qt::SavedSystemsModel systems;
+        expect("a system names the list",
+               systems.add({{"name", "Metro"}, {"sourceType", "usb"}, {"groupCsvPath", list}}));
+    }
+    expect("the list keeps its .import* name", list == at("imports/.import-list.tmp"));
+    const QByteArray bytes = read_file(list);
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, root());
+    expect("the backup builds and parses", built.error == BackupError::None && parsed.error == BackupError::None);
+    expect("the backup carries the .import* file",
+           parsed.files.size() == 1 && parsed.files.at(0).path == "imports/.import-list.tmp");
+    const Tree tree = capture();
+
+    stage_over(parsed, built.archive, tree);
+    expect("over its own configuration: applied", apply().outcome == ApplyOutcome::Applied);
+    expect("the .import* file is kept byte-identical", !bytes.isEmpty() && read_file(list) == bytes);
+    const QJsonArray library = dsd_qt::json_store_load_array("imported_files.json");
+    expect("its library row is kept", library.size() == 1 && library.at(0).toObject().value("path") == list);
+    expect("the system still names it",
+           dsd_qt::json_store_load_array("saved_systems.json").at(0).toObject().value("groupCsvPath") == list);
+
+    const QByteArray older = as_exported_before_832(built.archive, "imports/.import-list.tmp", ".import-list.tmp");
+    const auto olderParsed = dsd_qt::backup::backup_parse_archive(older, root());
+    expect("a backup written before #832 parses",
+           olderParsed.error == BackupError::None && olderParsed.files.isEmpty()
+               && olderParsed.summary.notIncluded == QStringList{"Imported file .import-list.tmp"});
+    stage_over(olderParsed, older, tree);
+    expect("a backup written before #832 restores", apply().outcome == ApplyOutcome::Applied);
+    expect("its library holds no row for the file it left out",
+           dsd_qt::json_store_load_array("imported_files.json").isEmpty()
+               && dsd_qt::json_store_load_array("saved_systems.json").at(0).toObject().value("groupCsvPath") == "");
+}
+
+/**
  * Two restores in a row: B, exported from a restored A, is restored over it. The second restore's journal owns
  * exactly what the first restore wrote (the moved "-1" bundle and the files with free names included), the stores and
  * the generated folders; its only owned roots are A's two bundles, so no wider root gains deletion authority, and
@@ -2281,6 +2366,7 @@ main(int argc, char** argv) {
         test_empty_avoids(host, backup, old);
         test_two_restores_in_a_row(backup, old, reference);
         test_bundle_named_from_outside(host, old);
+        test_restore_keeps_import_named_file(host);
     }
     dsd_app_signal_search_store_close();
 

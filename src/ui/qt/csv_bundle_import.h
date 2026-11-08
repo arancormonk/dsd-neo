@@ -97,6 +97,13 @@ bool owned_bundle_revision(const QString& dir);
 void remove_bundle_root(const QString& root);
 
 /**
+ * The files below @p root that @p path, a library row's primary of @p type ("chan" or "trunkTargets"), reaches, as
+ * clean absolute paths spelled from @p path. False when the primary cannot be parsed: a caller then treats every file
+ * as reached.
+ */
+bool bundle_reached_files(const QString& path, const QString& root, const QString& type, QSet<QString>* files);
+
+/**
  * The revision directories (names) below @p root that @p path, a library row's primary of @p type ("chan" or
  * "trunkTargets"), reaches. False when the primary cannot be parsed: a caller then treats every revision as used.
  */

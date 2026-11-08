@@ -836,7 +836,7 @@ collectReachableReferences(const QString& path, QList<TargetReference>& refs) {
 }
 
 bool
-bundle_reached_revisions(const QString& path, const QString& root, const QString& type, QSet<QString>* names) {
+bundle_reached_files(const QString& path, const QString& root, const QString& type, QSet<QString>* files) {
     QList<TargetReference> refs;
     if (type == QLatin1String("trunkTargets")) {
         // A target list reaches its channel maps' companions too; one that no longer validates keeps everything.
@@ -854,8 +854,21 @@ bundle_reached_revisions(const QString& path, const QString& root, const QString
     for (const auto& ref : refs) {
         const QString resolved = QDir::cleanPath(ref.resolved);
         if (resolved.startsWith(prefix)) {
-            names->insert(resolved.mid(prefix.size()).section('/', 0, 0));
+            files->insert(resolved);
         }
+    }
+    return true;
+}
+
+bool
+bundle_reached_revisions(const QString& path, const QString& root, const QString& type, QSet<QString>* names) {
+    QSet<QString> files;
+    if (!bundle_reached_files(path, root, type, &files)) {
+        return false;
+    }
+    const qsizetype skip = QDir::cleanPath(root).size() + 1;
+    for (const auto& file : files) {
+        names->insert(file.mid(skip).section('/', 0, 0));
     }
     return true;
 }

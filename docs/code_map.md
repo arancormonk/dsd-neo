@@ -12427,9 +12427,9 @@ Qt Quick frontend (`src/ui/qt`):
   replace, in the new root) and saves the row, or replaces the row's file index-first as above; a failure removes the
   directory, and the journal entry goes once the primary is in place. Unanswered companions answer `companions` with
   `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread).
-  Bundle revisions the row's primary no longer reaches are reclaimed on the import worker
-  (`clean_bundle_revisions()`), for channel maps and target lists, after a successful bundle replace and once after
-  `load()`, never while the decoder runs. Only owned, registered roots, never through a link; a primary that cannot be
+  Bundle revisions the row's primary no longer reaches (`bundle_reached_revisions()`, from `bundle_reached_files()`,
+  which the backup export uses too) are reclaimed on the import worker (`clean_bundle_revisions()`), for channel maps
+  and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs. Only owned, registered roots, never through a link; a primary that cannot be
   parsed (a target list that no longer validates) keeps every revision, and so does the journal naming the revision or
   its root (listed, then the journal read, then the primary parsed, so a commit finishing in between is seen) or any
   typed path field (`backup::typed_file_paths()`, the stores on disk; a store that cannot be read keeps everything)
@@ -12774,15 +12774,22 @@ Qt Quick frontend (`src/ui/qt`):
     `File` value in the stores on disk), free of the models, so the import library's revision cleanup reads the same
     inventory. The export (worker-safe; only `backup_take_snapshot()` reads app state, on the UI thread)
     repairs rows the way the loaders would, clears every `Recording`, strips each profile's `compiled`, `runtimeRef`
-    and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/` (an owned bundle
-    whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check. A
+    and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/`, whatever they are
+    called (#832), clears any other reference and lists it in `notIncluded`, then parses its own output as a
+    self-check. An owned bundle carries first every file its row's file reaches (`bundle_reached_files()`, the revision
+    cleanup's parse) or a typed value names, then every other file except an unreferenced exact leftover of an import's
+    own temp files (`detail::leftover_name()`: `.staged-<uuid>.csv`, `.bundle-check-XXXXXX.csv`, `<name>.tmp.XXXXXX`;
+    an export filter, never proof the app made the file); a primary that does not parse carries everything. A
     carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with
     `BackupError::SourceChanged`, not `Io`.
     `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB
     a file, 4096 rows a store, 4 MiB manifest), a sha256 per file, archive paths under `imports/` with case- and
     NFC-folded duplicates refused, store shapes and identities, settings filtered to `AppPrefs::portableKeys()`; it
-    rebases every typed value from the source root onto the target root. Every carried file must be named exactly by a
-    `File` value or lie inside a claimed bundle root. A bundle root is an owned `imports/bundles/<id>` holding a carried
+    rebases every typed value from the source root onto the target root. No name is refused (#832, no format bump):
+    this reader, and the staging reader, accept every older archive; an app from before #832 refuses an archive that
+    carries a `.staged-*` or `.import*` name, and an older archive that left such a file out cannot bring it back
+    (restoring it over a library that still names the file removes it as old configuration, as before). Every carried
+    file must be named exactly by a `File` value or lie inside a claimed bundle root. A bundle root is an owned `imports/bundles/<id>` holding a carried
     file and claimed by one row only; a row's file under `imports/bundles/` lies in its own root, and no row's file lies
     in another row's root. A plain channel map updated in place with companions keeps its file in `imports/` beside its
     bundle, so a root need not hold its row's file. `Summary::systemsWithExtraArgs` counts systems with extra

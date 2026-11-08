@@ -9,12 +9,14 @@
 #include <QChar>
 #include <QLatin1String>
 #include <QObject>
+#include <QRegularExpression>
 #include <QUuid>
 #include <QVariant>
 #include <algorithm>
 #include <dsd-neo/core/safe_api.h>
 #include <functional>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
+#include <iterator>
 #include <stddef.h>
 #include "decode_mode_flag.h"
 #include "decryption_profiles_model.h"
@@ -190,8 +192,20 @@ owned_name(const QString& id) {
 }
 
 bool
-staging_name(const QString& name) {
-    return name.startsWith(QLatin1String(".staged-")) || name.startsWith(QLatin1String(".import"));
+leftover_name(const QString& name) {
+    // A channel map's staged revision (QUuid::WithoutBraces), a trunk row's check copy (QTemporaryFile's letters) and
+    // the replace helper's temp ("%s.tmp.XXXXXX": [A-Za-z0-9] on POSIX, a subset on Windows).
+    static const QRegularExpression patterns[] = {
+        QRegularExpression(
+            QStringLiteral("^\\.staged-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.csv$")),
+        QRegularExpression(QStringLiteral("^\\.bundle-check-[A-Za-z]{6}\\.csv$")),
+        QRegularExpression(QStringLiteral("^.+\\.tmp\\.[A-Za-z0-9]{6}$")),
+    };
+    return std::any_of(std::begin(patterns), std::end(patterns), [&name](const QRegularExpression& pattern) {
+        // '$' also matches before a final newline: the match must span the whole name.
+        const QRegularExpressionMatch match = pattern.match(name);
+        return match.hasMatch() && match.capturedLength() == name.size();
+    });
 }
 
 QString
@@ -226,10 +240,8 @@ archive_path_problem(const QString& path) {
     const bool unusable = std::any_of(parts.cbegin(), parts.cend(), [](const QString& part) {
         return part.isEmpty() || part == QLatin1String(".") || part == QLatin1String("..");
     });
-    if (unusable) {
-        return QStringLiteral("empty, '.' or '..' component");
-    }
-    return staging_name(parts.last()) ? QStringLiteral("staging leftover") : QString();
+    // No name is refused: a stored file is carried whatever it is called (#832).
+    return unusable ? QStringLiteral("empty, '.' or '..' component") : QString();
 }
 
 QString

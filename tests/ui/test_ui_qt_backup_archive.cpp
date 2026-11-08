@@ -880,7 +880,8 @@ test_sanitize() {
     expect("missing file listed", lists(missing, "Metro: missing.csv"));
     expect("external file listed", lists(missing, "Metro: external.csv"));
     expect("symlinked file listed", lists(missing, "Metro: linked.csv"));
-    expect("staging leftover listed", lists(missing, "Metro: .staged-abc.csv"));
+    // #832: a file a value names is carried whatever it is called (this check once expected it left out).
+    expect("a named .staged-* file is not listed", !lists(missing, ".staged-abc.csv"));
     expect("symlink to an import listed", lists(missing, "Patrol: internal-link.csv"));
     expect("dropped library row listed", lists(missing, "gone.csv"));
     expect("non-owned bundle listed", lists(missing, "group.csv: companion files"));
@@ -891,9 +892,9 @@ test_sanitize() {
     const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
     expect("sanitized backup passes restore validation", parsed.error == BackupError::None);
     const QJsonObject metro = parsed.stores.value("saved_systems.json").at(0).toObject();
-    expect("uncarried references are cleared", metro.value("chanCsvPath") == "" && metro.value("groupCsvPath") == ""
-                                                   && metro.value("keyCsvPath") == ""
-                                                   && metro.value("srcCsvPath") == "");
+    expect("uncarried references are cleared",
+           metro.value("chanCsvPath") == "" && metro.value("groupCsvPath") == "" && metro.value("keyCsvPath") == "");
+    expect("a named .staged-* file keeps its reference", metro.value("srcCsvPath") == setup.staged);
     expect("carried references survive", !metro.value("p25BandplanCsvPath").toString().isEmpty());
     const QJsonArray library = parsed.stores.value("imported_files.json");
     expect("missing library row dropped", row_where(library, "name", "gone.csv") < 0);
@@ -901,10 +902,15 @@ test_sanitize() {
     expect("non-owned bundle root cleared, file carried alone",
            groups.value("bundleRoot") == "" && !groups.value("path").toString().isEmpty());
     bool bundleLeaked = false;
+    bool stagedCarried = false;
     for (const auto& file : parsed.files) {
-        bundleLeaked = bundleLeaked || file.path.contains("not owned") || file.path.contains(".staged-");
+        bundleLeaked = bundleLeaked || file.path.contains("not owned");
+        stagedCarried =
+            stagedCarried
+            || (file.path == "imports/.staged-abc.csv" && built.archive.mid(file.offset, file.size) == "x\n");
     }
-    expect("non-owned bundle and staging files are not carried", !bundleLeaked);
+    expect("non-owned bundle files are not carried", !bundleLeaked);
+    expect("a named .staged-* file is carried with its bytes", stagedCarried);
     expect("recording cleared", parsed.stores.value("saved_systems.json").at(1).toObject().value("filePath") == "");
     expect("symlink to an import cleared",
            parsed.stores.value("scan_lists.json").at(0).toObject().value("srcCsvPath") == "");
@@ -913,6 +919,132 @@ test_sanitize() {
     remove_file(setup.staged);
     remove_file(setup.absoluteMap);
     remove_tree(setup.notOwned);
+}
+
+/** The files test_carry_by_reference() imports or writes, by what each one shows. */
+struct CarrySetup {
+    QString reach, reachMap, reachKeys;    // a bundle whose map reaches a companion shaped like the helper's temp
+    QString reachLeftover;                 // beside it, a leftover the map does not reach
+    QString opaque, opaqueMap, opaqueTemp; // a bundle whose target list does not parse, and a temp-shaped file in it
+    QString named;                         // a file shaped like the helper's temp that a scan list names
+    QString check, temp, revision;         // real leftovers nothing references
+    QString list, staged, stagedRoot;      // made by the library: a row's .import-list.tmp, a .staged-x.csv primary
+};
+
+/* The library's own imports: a talkgroup list named .import-list.tmp and a channel map picked as .staged-x.csv, which
+ * becomes its bundle's primary (B3). */
+void
+import_leftover_names(TestHost& host, CarrySetup& setup) {
+    QTemporaryDir source;
+    expect("write the .staged-x.csv map",
+           write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
+               && write_file(source.filePath(".staged-x.csv"),
+                             "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr,keys.csv\n"));
+    dsd_qt::ImportedFilesModel library(&host);
+    setup.list = import_path(library, example("group.csv"), ".import-list.tmp", "group");
+    const QVariantMap result = library.importBundle(source.filePath(".staged-x.csv"), ".staged-x.csv", "chan", {});
+    expect(".staged-x.csv imports with its companion", result.value("ok").toBool());
+    setup.staged = result.value("path").toString();
+    setup.stagedRoot = library.get(library.rowForPath(setup.staged)).value("bundleRoot").toString();
+    expect("the row keeps its .import-list.tmp name", QFileInfo(setup.list).fileName() == ".import-list.tmp");
+    expect("the .staged-x.csv map is its bundle's primary",
+           !setup.stagedRoot.isEmpty() && setup.staged == setup.stagedRoot + "/.staged-x.csv");
+}
+
+/* Files shaped like an import's leftovers: some a reference reaches, the rest unreferenced. */
+void
+write_leftover_shapes(const Fixture& f, CarrySetup& setup) {
+    const QString root = dsd_qt::json_store_root();
+    setup.reach = root + "/imports/bundles/reach";
+    setup.reachMap = setup.reach + "/map.csv";
+    setup.reachKeys = setup.reach + "/rev/keys.tmp.Ab12Cd";
+    setup.reachLeftover = setup.reach + "/rev/0.csv.tmp.Q1w2E3";
+    setup.opaque = root + "/imports/bundles/opaque";
+    setup.opaqueMap = setup.opaque + "/targets.csv";
+    setup.opaqueTemp = setup.opaque + "/rev/keys.tmp.Zx81Yw";
+    setup.named = f.chanRoot + "/held.csv.tmp.Zz9Yy8";
+    setup.check = f.targetsRoot + "/.bundle-check-AbCdEf.csv";
+    setup.temp = f.targetsRoot + "/targets.csv.tmp.a1B2c3";
+    setup.revision = f.chanRoot + "/.staged-" + QUuid::createUuid().toString(QUuid::WithoutBraces) + ".csv";
+    expect("write the leftover shapes",
+           write_file(setup.reachMap, "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr,rev/keys.tmp.Ab12Cd\n")
+               && write_file(setup.reachKeys, "keyid,value\n02,ABCDE\n")
+               && write_file(setup.reachLeftover, "left over\n") && write_file(setup.opaqueMap, "not,a,target,list\n")
+               && write_file(setup.opaqueTemp, "keyid,value\n02,ABCDE\n")
+               && write_file(setup.named, "TG,Mode,Name\n1,A,Held\n") && write_file(setup.check, "check\n")
+               && write_file(setup.temp, "temp\n") && write_file(setup.revision, "revision\n"));
+}
+
+/** The archive paths @p parsed carries. */
+QSet<QString>
+carried_paths(const dsd_qt::backup::ParseResult& parsed) {
+    QSet<QString> paths;
+    for (const auto& file : parsed.files) {
+        paths.insert(dsd_qt::json_store_root() + '/' + file.path);
+    }
+    return paths;
+}
+
+/*
+ * Issue #832 (I3, B3, B4): a backup carries a stored file by reference, whatever it is called. A library row's
+ * .import-list.tmp, a .staged-x.csv bundle primary with its companions, a companion a map reaches and a file a scan
+ * list names, both shaped like the helper's temp files, all round-trip. Exact leftovers nothing references stay out.
+ */
+void
+test_carry_by_reference(TestHost& host, const Fixture& f) {
+    const QJsonArray before = dsd_qt::json_store_load_array("imported_files.json");
+    CarrySetup setup;
+    import_leftover_names(host, setup);
+    write_leftover_shapes(f, setup);
+    auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    QJsonArray scanLists = snapshot.stores.value("scan_lists.json");
+    QJsonObject patrol = scanLists.at(0).toObject();
+    patrol.insert("groupCsvPath", setup.named);
+    scanLists.replace(0, patrol);
+    snapshot.stores.insert("scan_lists.json", scanLists);
+    QJsonArray library = snapshot.stores.value("imported_files.json");
+    library.append(
+        QJsonObject{{"name", "reach.csv"}, {"path", setup.reachMap}, {"type", "chan"}, {"bundleRoot", setup.reach}});
+    library.append(QJsonObject{
+        {"name", "opaque.csv"}, {"path", setup.opaqueMap}, {"type", "trunkTargets"}, {"bundleRoot", setup.opaque}});
+    snapshot.stores.insert("imported_files.json", library);
+
+    const auto built = build(snapshot);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
+    expect("the export carrying leftover shapes builds and parses",
+           built.error == BackupError::None && parsed.error == BackupError::None);
+    expect("nothing is left out", built.summary.notIncluded.isEmpty());
+    const QSet<QString> paths = carried_paths(parsed);
+    const QJsonArray out = parsed.stores.value("imported_files.json");
+    expect("a row's .import-list.tmp round-trips",
+           paths.contains(setup.list) && row_where(out, "path", setup.list) >= 0);
+    const int stagedRow = row_where(out, "path", setup.staged);
+    QDirIterator it(setup.stagedRoot, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+    int companions = 0;
+    while (it.hasNext()) {
+        const QString file = it.next();
+        companions += file != setup.staged ? 1 : 0;
+        expect("every file of the .staged-x.csv bundle is carried", paths.contains(file));
+    }
+    expect("a .staged-x.csv primary round-trips with its bundle",
+           stagedRow >= 0 && companions >= 1 && out.at(stagedRow).toObject().value("bundleRoot") == setup.stagedRoot);
+    expect("a companion shaped like a temp file is carried when its map reaches it, a leftover beside it is not",
+           paths.contains(setup.reachKeys) && !paths.contains(setup.reachLeftover));
+    expect("a bundle whose target list does not parse carries every file", paths.contains(setup.opaqueTemp));
+    expect("a file shaped like a temp file is carried when a value names it",
+           paths.contains(setup.named)
+               && parsed.stores.value("scan_lists.json").at(0).toObject().value("groupCsvPath") == setup.named);
+    expect("unreferenced leftovers in a carried bundle are not",
+           paths.contains(f.targets) && paths.contains(f.chan) && !paths.contains(setup.check)
+               && !paths.contains(setup.temp) && !paths.contains(setup.revision));
+
+    expect("restore the library store", dsd_qt::json_store_save_array("imported_files.json", before));
+    for (const QString& file : {setup.list, setup.named, setup.check, setup.temp, setup.revision}) {
+        remove_file(file);
+    }
+    remove_tree(setup.stagedRoot);
+    remove_tree(setup.reach);
+    remove_tree(setup.opaque);
 }
 
 /* Stores a model would repair or prune as it loads them: the export repairs and prunes the same way, so the backup
@@ -1266,7 +1398,6 @@ refuse_file_table(const QByteArray& archive) {
         {"too deep", {"imports/1/2/3/4/5/6.csv"}},
         {"outside imports", {"decryption/a.csv"}},
         {"imports itself", {"imports"}},
-        {"staging leftover", {"imports/bundles/x/.staged-1.csv"}},
         {"exact duplicate", {"imports/dup.csv", "imports/dup.csv"}},
         {"case duplicate", {"imports/Dup.csv", "imports/dUP.csv"}},
         {"NFC duplicate",
@@ -1282,6 +1413,26 @@ refuse_file_table(const QByteArray& archive) {
         }
         refuse(item.first, assemble(forged), BackupError::Damaged, "path:");
     }
+
+    // #832: a name the app's imports once used for their temp files is a name like any other. This case was refused
+    // as a "staging leftover"; a row that claims it now restores it.
+    Parts staged = parts;
+    const QString source = parts.manifest.value("sourceRoots").toArray().at(0).toString();
+    add_file(staged, "imports/bundles/x/.staged-1.csv", "TG,Mode,Name\n1,A,x\n");
+    with_store(staged, "imported_files.json", [&source](QJsonArray& rows) {
+        rows.append(QJsonObject{{"name", ".staged-1.csv"},
+                                {"path", source + "/imports/bundles/x/.staged-1.csv"},
+                                {"type", "group"},
+                                {"bundleRoot", source + "/imports/bundles/x"}});
+    });
+    const auto accepted = dsd_qt::backup::backup_parse_archive(assemble(staged), dsd_qt::json_store_root());
+    const QJsonArray library = accepted.stores.value("imported_files.json");
+    const int row = row_where(library, "name", ".staged-1.csv");
+    expect("a carried .staged-* file is accepted with the row that claims it",
+           accepted.error == BackupError::None && !accepted.files.isEmpty()
+               && accepted.files.last().path == "imports/bundles/x/.staged-1.csv" && row >= 0
+               && library.at(row).toObject().value("path")
+                      == dsd_qt::json_store_root() + "/imports/bundles/x/.staged-1.csv");
 }
 
 void
@@ -1851,6 +2002,7 @@ main(int argc, char** argv) {
         test_export_folded_bundle_paths(fixture);
         test_build_caps_and_cancel();
         test_sanitize();
+        test_carry_by_reference(host, fixture);
     }
     dsd_app_signal_search_store_close();
 
