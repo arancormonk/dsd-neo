@@ -242,6 +242,12 @@ class ImportedFilesModel : public QAbstractListModel {
     QVariantMap bundleRequest(const QString& reference, const QString& fileName, const QString& type,
                               const QVariantMap& companions, const ImportTarget& target) const;
     bool decoderBusy() const;
+    /**
+     * Whether a cleanup must delete nothing: no host, or a decoder this UI sees or the host's live answer says is
+     * starting or running. The live answer matters at startup, where Android's cached phase reads Idle until its first
+     * refresh() even while the service runs a session that may still read an older revision.
+     */
+    bool cleanupBlocked() const;
     /** Whether replacing a row of @p type must wait: the running engine writes talkgroup lists, reads target lists. */
     bool replacementBusy(const QString& type) const;
     /** beginImport()'s answer when it refuses at once, else empty with @p target filled. */
@@ -273,7 +279,7 @@ class ImportedFilesModel : public QAbstractListModel {
     QVariantMap replaceRowFile(int row, const QVariantMap& staged, bool refresh, const QStringList& created = {});
     /**
      * Reclaim @p bundles' unreached revisions on the import worker, keeping any file another row's CSV reaches;
-     * nothing while the decoder runs.
+     * nothing while cleanupBlocked().
      */
     void reclaimRevisions(const QList<BundleRevisions>& bundles);
     void updateImporting(bool before);
@@ -337,7 +343,8 @@ class ImportedFilesModel : public QAbstractListModel {
      * that @p rows do not reference (a row's bundle root, or a revision its primary reaches), that holds no file
      * kept_library_files() keeps (a typed path field names it, or any row's stored CSV reaches it), and that lies
      * under imports/bundles/ with an owned name. A journal that cannot be read deletes nothing and is set aside; a
-     * store or stored file that cannot be read deletes nothing and keeps the journal.
+     * store or stored file that cannot be read deletes nothing and keeps the journal. load() skips it while
+     * cleanupBlocked(), which keeps the journal for the next start.
      */
     static void recoverJournal(const QList<Row>& rows);
     /** The stored file and type of each of @p rows, for kept_library_files(). */

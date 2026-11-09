@@ -535,6 +535,11 @@ ImportedFilesModel::decoderBusy() const {
     return m_host && (m_host->sessionActive() || m_host->transitioning());
 }
 
+bool
+ImportedFilesModel::cleanupBlocked() const {
+    return m_host == nullptr || decoderBusy() || m_host->engineBusy();
+}
+
 QVariantMap
 ImportedFilesModel::companionChoices(const QVariantMap& requirement) const {
     auto detail = requirement;
@@ -915,7 +920,7 @@ ImportedFilesModel::replaceBundleRow(int row, const QVariantMap& staged, const Q
 void
 ImportedFilesModel::reclaimRevisions(const QList<BundleRevisions>& bundles) {
     // While the decoder runs it may still read an older revision's files (B5).
-    if (bundles.isEmpty() || !m_imports || decoderBusy()) {
+    if (bundles.isEmpty() || !m_imports || cleanupBlocked()) {
         return;
     }
     // Every row, not only these bundles': another row's CSV may still need a file in one of their revisions.
@@ -1213,8 +1218,9 @@ ImportedFilesModel::load() {
             stored.append(rowFromMap(value.toObject().toVariantMap()));
         }
     }
-    // An index that cannot be read references nothing, which proves nothing about the journal.
-    if (status != JsonStoreLoad::Failed) {
+    // An index that cannot be read references nothing, which proves nothing about the journal. A running decoder may
+    // still read a journaled revision: the journal then waits for a start that finds it stopped.
+    if (status != JsonStoreLoad::Failed && !cleanupBlocked()) {
         recoverJournal(stored);
     }
     QList<Row> rows;

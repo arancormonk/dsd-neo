@@ -12444,7 +12444,9 @@ Qt Quick frontend (`src/ui/qt`):
   `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread).
   Bundle revisions the row's primary no longer reaches (`bundle_reached_revisions()`, from `bundle_reached_files()`,
   which the backup export uses too) are reclaimed on the import worker (`clean_bundle_revisions()`), for channel maps
-  and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs. Only owned,
+  and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs
+  (`cleanupBlocked()`: no host, a session this UI sees, or the host's live `engineBusy()`, since Android's cached phase
+  reads Idle until its first `refresh()` while the service may still run a session). Only owned,
   registered roots, never through a link; a primary that cannot be parsed (a target list that no longer validates) keeps
   every revision, and so does the journal naming the revision or its root (listed, then the journal read, then the
   primary parsed, so a commit finishing in between is seen) or any file `kept_library_files()` keeps in it: those a
@@ -12452,7 +12454,8 @@ Qt Quick frontend (`src/ui/qt`):
   reaches (a channel map's key columns and option cells, a target list's channel maps and theirs), whichever bundle
   they lie in, compared as canonical paths (a reference through a symlink or another spelling of the data folder
   still counts; a file that is gone by its clean path); a store or stored CSV that cannot be read or parsed keeps everything. `load()` first settles the commit
-  journal (`recoverJournal()`, before the prune; skipped when the index cannot be read or the journal is empty): a
+  journal (`recoverJournal()`, before the prune; skipped when the index cannot be read, the journal is empty or
+  `cleanupBlocked()`, which keeps every entry for the next start): a
   journaled directory under `imports/bundles/` with an owned name that no row references (its bundle root, or a
   revision its primary reaches) and that holds no file `kept_library_files()` keeps is removed; a store or stored CSV
   that cannot be read deletes nothing and keeps the journal; an unreadable journal deletes nothing and is set

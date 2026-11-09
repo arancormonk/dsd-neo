@@ -250,6 +250,8 @@ class ReferenceLog {
 class TestHost : public dsd_qt::DecoderHost {
   public:
     bool running = false;
+    // The live answer, apart from the cached phase: Android's reads Idle until its first refresh().
+    bool engine = false;
     std::shared_ptr<TestDocuments> shared = std::make_shared<TestDocuments>();
     DocumentMap documents{shared};
 
@@ -261,6 +263,11 @@ class TestHost : public dsd_qt::DecoderHost {
     bool
     isRunning() const override {
         return running;
+    }
+
+    bool
+    engineBusy() const override {
+        return engine;
     }
 
     QString
@@ -1791,6 +1798,50 @@ test_startup_revision_cleanup() {
     QFile::remove(dsd_qt::json_store_path("saved_systems.json"));
 }
 
+/* A model built while the cached phase still reads Idle but the host's live answer says a decoder starts or runs (an
+   Android UI recreated beside its running service): neither the revision cleanup nor journal recovery deletes
+   anything, and the journal keeps its entries until a start that finds the decoder stopped. */
+void
+test_startup_cleanup_asks_the_live_engine() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    QTemporaryDir source;
+    const QString bundled = source.filePath("bundled.csv");
+    expect("live-engine fixtures",
+           write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
+               && write_file(bundled, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n"));
+    dsd_qt::ImportService service(host.importTransport());
+    QString root;
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        const QString stored = importAndWait(model, bundled, "bundled.csv", "chan").value("path").toString();
+        root = model.get(model.rowForPath(stored)).value("bundleRoot").toString();
+    }
+    const QString orphan = root + "/99999999-9999-9999-9999-999999999999";
+    const QString unsaved = importsDirPath() + "/bundles/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    expect("live-engine leftovers", QDir().mkpath(orphan) && write_file(orphan + "/0.csv", "x\n")
+                                        && QDir().mkpath(unsaved) && write_file(unsaved + "/0.csv", "x\n")
+                                        && dsd_qt::ImportService::journalAdd({unsaved}));
+
+    host.running = false;
+    host.engine = true;
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        waitForWorker(service);
+        expect("the startup cleanup asks the live engine, not the cached phase", QFileInfo::exists(orphan + "/0.csv"));
+        expect("journal recovery asks the live engine too", QFileInfo::exists(unsaved + "/0.csv"));
+        expect("the journal keeps its entries for the next start", journal() == QStringList{unsaved});
+    }
+    host.engine = false;
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        waitForWorker(service);
+        expect("a start that finds the decoder stopped reclaims the revision", !QFileInfo::exists(orphan));
+        expect("and settles the journal", !QFileInfo::exists(unsaved) && journal().isEmpty());
+        model.remove(0);
+    }
+}
+
 /* The commit journal after a crash: the next load removes the journaled directories the index does not reference and
    keeps the ones it does; a journal that cannot be read deletes nothing. */
 void
@@ -3074,6 +3125,7 @@ main(int argc, char** argv) {
     test_async_bundle_limits_and_failures();
     test_async_target_write_failure();
     test_startup_revision_cleanup();
+    test_startup_cleanup_asks_the_live_engine();
     test_journal_recovery();
     test_journal_recovery_keeps_named_revisions();
     test_cleanup_keeps_revisions_other_rows_reach();
