@@ -245,7 +245,9 @@ the checked copy over the stored file in one step, so a half-copied CSV is never
 seen there. These copies must survive restarts — saved systems reference the path,
 and the engine appends learned talkgroup rows to the group list in place — so none
 of them goes to the evictable cache. While a file copies, its sheet shows its name
-and **Cancel**.
+and **Cancel**, which closes the sheet at once even if the provider has not let go
+of the copy yet; the copy then stores nothing. Copies run one at a time, so a
+provider that ignores the cancel delays later imports until its copy returns.
 
 The wizard's audio/capture **File** source copies a replay the same way into
 `files/replays/`, as long as the free space less 512 MiB holds it, with

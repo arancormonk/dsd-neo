@@ -1260,10 +1260,14 @@ context)` fires exactly once when the import succeeds, fails, or is cancelled, a
 hands the context back: a screen closed or opened again since ignores it, and closing
 the wizard, Imported files or a scan list cancels a copy still running. Cancel,
 Back/Escape, scrim dismissal, and closing the primary picker without choosing a file
-all cancel. While a copy runs, Cancel reads "Cancelling…" until the import answers:
-`{ok:false, error:"cancelled"}`, or the import's own result when the file was already
-stored. A new pick is refused while a copy runs. "Import complete bundle" reads
-"Importing…" while its copy runs. Each failure has its own message
+all cancel. Cancel answers at once, `{ok:false, error:"cancelled"}`, even when the
+copy has not stopped yet (a provider can hold a copy past its cancel): "Cancelling…"
+shows only until that answer comes on the next turn, and the copy stores nothing when
+it does return. Imports copy one at a time, so a provider that never lets go of a
+cancelled copy delays every later import (and replay copy) until it returns; that is a
+known limit. A new pick is refused while a copy runs. "Import complete bundle" reads
+"Importing…" while its copy runs, and the companion choices cannot change until it
+answers. Each failure has its own message
 (`Util.importMessage()`): too large (32 MiB for a CSV, 64 MiB for a CSV and its
 companions together; a file over 32 MiB names itself and that limit even inside a
 bundle), could not be read, could not be saved on this device (and, when storage is

@@ -12404,8 +12404,10 @@ Qt Quick frontend (`src/ui/qt`):
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
   Single files import through the import service (#832): `beginImport(reference, fileName, type, companions,
   replacePath)` returns an id and `importFinished(id, result)` answers it exactly once, queued, refusals included
-  (`cancelImport(id)` answers `cancelled` until the commit runs; `importing` says whether one is pending). The stage, on
-  the worker, copies the document into its staging folder (at most `backup::kMaxFileBytes`, 32 MiB), names it from the
+  (`cancelImport(id)` on an import whose commit has not run answers `cancelled` at once, queued, without waiting for the
+  copy to stop, and marks the id so its later commit publishes nothing and answers nothing; `importing` says whether one
+  is unanswered). The stage, on the worker, copies the document into its staging folder (at most
+  `backup::kMaxFileBytes`, 32 MiB), names it from the
   transport's display name, else the picker's hint (`sanitized_import_name`), and validates it there; a refusal's
   `detail` is the parser's reason, which the C parsers give only to the log, so `validate()` keeps the worker thread's
   first error (`dsd_neo_log_capture_error()`) and the stage names each file by its picked name, not the staging path
@@ -12439,9 +12441,10 @@ Qt Quick frontend (`src/ui/qt`):
   `required`, `requiredLabels` and `requiredDetails` (library choices added on the Qt thread).
   Bundle revisions the row's primary no longer reaches (`bundle_reached_revisions()`, from `bundle_reached_files()`,
   which the backup export uses too) are reclaimed on the import worker (`clean_bundle_revisions()`), for channel maps
-  and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs. Only owned, registered roots, never through a link; a primary that cannot be
-  parsed (a target list that no longer validates) keeps every revision, and so does the journal naming the revision or
-  its root (listed, then the journal read, then the primary parsed, so a commit finishing in between is seen) or any
+  and target lists, after a successful bundle replace and once after `load()`, never while the decoder runs. Only owned,
+  registered roots, never through a link; a primary that cannot be parsed (a target list that no longer validates) keeps
+  every revision, and so does the journal naming the revision or its root (listed, then the journal read, then the
+  primary parsed, so a commit finishing in between is seen) or any
   typed path field (`backup::typed_file_paths()`, the stores on disk; a store that cannot be read keeps everything)
   naming a file in it. `load()` first settles the commit journal (`recoverJournal()`, before the prune; skipped when
   the index cannot be read): a journaled directory under `imports/bundles/` with an owned name that no row references
@@ -12458,20 +12461,22 @@ Qt Quick frontend (`src/ui/qt`):
   time, `idle → picking → copying(id) →
   [companions sheet → copying(id′) …] → idle`, and emits `finished(result, context)` once per start with the host's
   context. Its `ModalSheet` shows at once while a copy runs ("Copying <name>…", Cancel); Cancel, Back and Escape go
-  through the sheet's `dismissHandler` to `cancelImport(id)` and the sheet stays ("Cancelling…") until the
-  authoritative `importFinished(id)`, which may be the commit's success. `start()` is refused while a copy runs. Hosts
-  pass a context with a generation they bump on every open and close (`WizardScreen.csvContext()`, also carrying the
-  target field and key format captured at the pick; `ImportsScreen.importContext()`, carrying the replaced row's
+  through the sheet's `dismissHandler` to `cancelImport(id)`, and the sheet shows "Cancelling…" only until the queued
+  `cancelled` answer on the next turn (a Cancel that lands while the commit itself runs gets the commit's answer).
+  `start()` is refused while a copy runs. Hosts pass a context with a generation they bump on every open and close
+  (`WizardScreen.csvContext()`, also carrying the target field and key format captured at the pick;
+  `ImportsScreen.importContext()`, carrying the replaced row's
   stored path, not its index; `ScanListScreen.importContext()`), drop an answer from another generation and cancel the
   flow when hidden. `Util.importMessage(result, context)` is every screen's failure text. The wizard's Replay file
   Browse goes through `replayFiles.beginReplayImport()`; while it copies, the row shows the export progress pattern
-  ("Copying <name>…", then "<bytes> of <total>" with a bar, or "<bytes> copied" and no bar when the size is unknown)
-  with Cancel copy, Browse and Continue/Save are disabled (`commit()` refuses too), a failure shows under the row and
-  keeps the earlier file, and closing or reopening the wizard cancels the copy and drops its answer.
+  ("Copying <name>…", then "<bytes> of <total>" with a bar a screen reader reads as a whole percent, or "<bytes> copied"
+  and no bar when the size is unknown) with Cancel copy, Browse and Continue/Save are disabled (`commit()` refuses too),
+  a failure shows under the row and keeps the earlier file, and closing or reopening the wizard cancels the copy and
+  drops its answer.
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
-  `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most 247
-  UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also skips
-  reserved paths).
+  `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most
+  247 UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also
+  skips reserved paths).
   `document_import_transport.{h,cpp}` is the import copies' transport (#832): `DecoderHost::importTransport()` hands
   out a new `DocumentImportTransport` each call, which never calls the host, so the import worker may keep it past the
   host. `copy(request, reference, destPath, maxBytes)` blocks and returns a `DocumentCopy` code; `cancel(request)`
@@ -12483,7 +12488,7 @@ Qt Quick frontend (`src/ui/qt`):
   (`ResourceError` or errno) is `DocumentLocalFailed` with `noSpace`. `abortDocumentTransfers()` aborts every transport
   handed out (the host keeps weak references), and one handed out after it starts aborted.
   `import_service.{h,cpp}` is the import worker (#832) the library and the replay imports share; `ui_load()` makes the
-  one service (QML context `imports`) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
+  one service (not published to QML) from `host->importTransport()` right after `ImportService::sweepStaging()`, which
   runs once after the restore applies and removes `<AppData>/import-staging/` wholly (a link is removed, never
   followed). `submit(stage, commit)` returns a process-unique positive id that is also the transport's request id.
   `stage` runs on a one-thread `QThreadPool`, requests in order, with its own owner-only folder
@@ -12491,7 +12496,9 @@ Qt Quick frontend (`src/ui/qt`):
   `{ok: false, error: "local"}`). It touches no QObject. When a stage ends, the worker calls `transport->forget(id)`
   and queues `commit(id, staged, cancelled)` to the Qt thread through a link the destructor clears. The commit runs
   exactly once per id. A request cancelled before its stage started skips the stage and commits an empty map.
-  `cancel(id)` also cancels the transport's copy; once the commit has run, or for an unknown id, it does nothing. The
+  `cancel(id)` also cancels the transport's copy; once the commit has run, or for an unknown id, it does nothing.
+  There is one worker, so a copy that ignores its cancel (a provider blocked in a read) delays every later request
+  until it returns: a documented limit. The library and the replay store answer a cancel at once regardless. The
   staging folder is removed on the worker after the commit returns; removals go ahead of waiting requests. The
   destructor cancels every request, queues their folders' removal and waits `kStopWaitMs` (2 s). If a copy ignores
   the cancel, the pool is left to finish it without the service (never deleted, as `closeRecordingWork()`), and no
@@ -12511,9 +12518,11 @@ Qt Quick frontend (`src/ui/qt`):
   the list still holds for that name is stale, since the no-replace move proved the name free, and is replaced). Every
   answer carries `name`. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`, `reserveBytes`),
   `local` (`noSpace`),
-  `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`); `copying`, `copyName`,
-  `copyBytes` and `copyTotal` (-1 unknown) come from `ImportService::progress(id)`, read every 250 ms while it runs, and
-  `progressChanged` fires only on a change. The manifest `<AppData>/replay_copies.json` (`[{path, state}]`, Qt thread)
+  `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`, which answers `cancelled`
+  at once, queued, and ends `copying`, while the copy's later commit publishes nothing and answers nothing); `copying`,
+  `copyName`, `copyBytes` and `copyTotal` (-1 unknown) come from `ImportService::progress(id)`, read every 250 ms while
+  it runs, and `progressChanged` fires only on a change. The manifest `<AppData>/replay_copies.json` (`[{path, state}]`,
+  Qt thread)
   lists every copy the store made, pending or kept. `SavedSystemsModel` (given the store by `setReplayStore()`) adopts a
   copy (pending → kept) before it saves a system that newly names it, refusing the save when that cannot be written, and
   releases one (kept → pending) only after the save of the remove or edit that left no system naming it (canonical
@@ -12809,7 +12818,10 @@ Qt Quick frontend (`src/ui/qt`):
     own temp files (`detail::leftover_name()`: `.staged-<uuid>.csv`, `.bundle-check-XXXXXX.csv`, `<name>.tmp.XXXXXX`;
     an export filter, never proof the app made the file); a primary that does not parse carries everything. A
     carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with
-    `BackupError::SourceChanged`, not `Io`.
+    `BackupError::SourceChanged`, not `Io`. Backup and revision cleanup: the import library's revision cleanup (on the
+    import worker) is not held off while a backup job runs, so it can remove a revision the export already listed; the
+    export then fails to read that file (`Io`, "Couldn't create the backup"), and a retry succeeds, since the next
+    listing no longer has it (a documented limit).
     `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB
     a file, 4096 rows a store, 4 MiB manifest), a sha256 per file, archive paths under `imports/` with case- and
     NFC-folded duplicates refused, store shapes and identities, settings filtered to `AppPrefs::portableKeys()`; it
@@ -12817,9 +12829,10 @@ Qt Quick frontend (`src/ui/qt`):
     this reader, and the staging reader, accept every older archive; an app from before #832 refuses an archive that
     carries a `.staged-*` or `.import*` name, and an older archive that left such a file out cannot bring it back
     (restoring it over a library that still names the file removes it as old configuration, as before). Every carried
-    file must be named exactly by a `File` value or lie inside a claimed bundle root. A bundle root is an owned `imports/bundles/<id>` holding a carried
-    file and claimed by one row only; a row's file under `imports/bundles/` lies in its own root, and no row's file lies
-    in another row's root. A plain channel map updated in place with companions keeps its file in `imports/` beside its
+    file must be named exactly by a `File` value or lie inside a claimed bundle root. A bundle root is an owned
+    `imports/bundles/<id>` holding a carried file and claimed by one row only; a row's file under `imports/bundles/`
+    lies in its own root, and no row's file lies in another row's root. A plain channel map updated in place with
+    companions keeps its file in `imports/` beside its
     bundle, so a root need not hold its row's file. `Summary::systemsWithExtraArgs` counts systems with extra
     arguments or a decode flag with a token `decode_flag_is_standard()` (`decode_mode_flag.h`) does not list. That
     allowlist is every token the app's producers write (wizard chips, scan-list entries, signal search, the
@@ -13658,8 +13671,8 @@ thread, which the rest of the interface never is.
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
 - Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document and import dispatch), `UI_QT_IMPORT_TRANSPORT` (the
   base transport's cap, cancel, abort and progress, and the host's hand-out), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs). Real providers, JNI and
-  `finishAndRemoveTask()` need a device or emulator.
+  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` and its import copies against provider stubs). Real
+  providers, JNI and `finishAndRemoveTask()` need a device or emulator.
 
 #### Accessibility bridge (issue #782)
 
