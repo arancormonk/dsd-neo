@@ -1364,7 +1364,7 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
 
 /*
  * Whether a Type-C SITE_INFO or SRV_INFO naming @p location_id speaks for this site. While no traffic channel is
- * followed the receiver is on the control channel it chose, a composite one included, so its broadcast latches this
+ * followed (dsd_opts_trunk_vc_followed(): trunking on and tuned) the receiver is on the control channel it chose, a composite one included, so its broadcast latches this
  * site (dsd_nxdn_site_latch()); while one is followed, only this site's own broadcast on the traffic channel counts.
  * A SITE_INFO on a frame read as Type-D is not a Type-C site's (nxdn_element_handle_site_info()), and another
  * control channel's broadcast heard on the followed channel (dsd_state::nxdn_frame_foreign) is that channel's.
@@ -1375,7 +1375,8 @@ nxdn_site_broadcast_is_this_site(const dsd_opts* opts, dsd_state* state, uint32_
         return 0;
     }
     const nxdn_location loc = nxdn_location_parse(location_id);
-    if (opts->trunk_is_tuned == 0 && nxdn_location_names_site(&loc)) {
+    // Trunking switched off mid-follow leaves the tuned flag set with nothing followed (ui_handle_trunk_toggle()).
+    if (!dsd_opts_trunk_vc_followed(opts) && nxdn_location_names_site(&loc)) {
         dsd_nxdn_site_latch(state, location_id);
     }
     return dsd_nxdn_site_is(state, location_id);

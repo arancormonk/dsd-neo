@@ -309,6 +309,27 @@ test_foreign_site_info_while_following_keeps_parameters(dsd_opts* opts, dsd_stat
 }
 
 /*
+ * Trunking switched off during a follow leaves the tuned flag set (ui_handle_trunk_toggle()), but nothing is followed
+ * any more: once a carrier loss cleared the site, the site's own SITE_INFO latches it and its parameters again.
+ */
+static int
+test_trunking_off_mid_follow_relearns_the_site(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    clear_state(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1; // a call followed to a traffic channel
+    opts->trunk_enable = 0;   // trunking switched off; the tuned flag stays
+    clear_state(state);       // the carrier loss clears the site and its parameters
+    site_info(opts, state, SITE_A, 1U, BASE_100_MHZ, STEP_1250_HZ);
+    rc |= expect_long("site latched with trunking off", dsd_nxdn_site_is(state, SITE_A), 1);
+    rc |= expect_long("parameters relearned with trunking off", dsd_nxdn_ca_valid(state), 1);
+    rc |= expect_long("channel 10 resolves", nxdn_channel_to_frequency_quiet(state, 10U), 100012500L);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    return rc;
+}
+
+/*
  * An SRV_INFO naming a new site, heard on the control channel the receiver chose, latches that site: the parameters
  * the old site's SITE_INFO set no longer resolve a channel until the new site's SITE_INFO sets its own.
  */
@@ -383,6 +404,7 @@ main(void) {
     rc |= test_full_record_answers_without_keeping(opts, state);
     rc |= test_cch_info_dfa_status_text(opts, state);
     rc |= test_foreign_site_info_while_following_keeps_parameters(opts, state);
+    rc |= test_trunking_off_mid_follow_relearns_the_site(opts, state);
     rc |= test_srv_info_of_a_new_site_stops_old_parameters(opts, state);
 
     dsd_state_ext_free_all(state);

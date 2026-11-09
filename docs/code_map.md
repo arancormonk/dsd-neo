@@ -8865,8 +8865,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   nothing. A DFA CCH_INFO prints its Curr/New/Add/Del status from the same four bits as the channel notation
   (TS 1-A §6.4.3.3); the DFA layout's two low bits only say which channel fields are present.
 - NXDN "this site" (`dsd_state::nxdn_site`, `dsd_nxdn_site_record`, same header). A SITE_INFO or SRV_INFO ("for
-  current site") decoded while no traffic channel is followed (`trunk_is_tuned == 0`, whatever the frame's channel, a
-  composite control channel included) latches its Location ID (`dsd_nxdn_site_latch()`); an SRV_INFO naming a new site
+  current site") decoded while no traffic channel is followed (`dsd_opts_trunk_vc_followed()` false: untuned, or
+  trunking off, a tuned flag left by switching it off mid-follow included; whatever the frame's channel, a composite
+  control channel included) latches its Location ID (`dsd_nxdn_site_latch()`); an SRV_INFO naming a new site
   invalidates the old site's parameters until the new site's SITE_INFO. Only this site's SITE_INFO/SRV_INFO write the
   site identity and only its SITE_INFO the parameters (`nxdn_site_broadcast_is_this_site()`); while a call is followed,
   another site's broadcast on the traffic channel is printed only, and a SITE_INFO on a frame read as Type-D always is.
