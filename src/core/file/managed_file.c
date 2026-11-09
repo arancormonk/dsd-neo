@@ -15,7 +15,6 @@ static atomic_int s_waiters;
 
 /* Read and written only with the lock held. */
 static dsd_managed_file_test_hook s_test_hook;
-static void* s_test_user;
 
 void
 dsd_managed_file_lock(void) {
@@ -43,15 +42,14 @@ dsd_managed_file_unlock(void) {
 void
 dsd_managed_file_step_reached(dsd_managed_file_step step) {
     if (s_test_hook) {
-        s_test_hook(step, s_test_user);
+        s_test_hook(step);
     }
 }
 
 void
-dsd_managed_file_test_set_hook(dsd_managed_file_test_hook hook, void* user) {
+dsd_managed_file_test_set_hook(dsd_managed_file_test_hook hook) {
     dsd_managed_file_lock();
     s_test_hook = hook;
-    s_test_user = user;
     dsd_managed_file_unlock();
 }
 

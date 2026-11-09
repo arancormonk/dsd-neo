@@ -33,6 +33,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
+#include <memory>
 #include <stdio.h>
 #include <thread>
 #include <utility>
@@ -834,10 +835,13 @@ struct CheckedRace {
     std::atomic<bool> qtDone{false};
 };
 
+// The races the managed-file hook drives (the hook takes no context pointer).
+std::unique_ptr<CheckedRace> g_checked_race;
+
 void
-race_at_checked(dsd_managed_file_step step, void* user) {
-    auto* race = static_cast<CheckedRace*>(user);
-    if (step == DSD_MANAGED_FILE_STEP_CHECKED && !race->atChecked.exchange(true)) {
+race_at_checked(dsd_managed_file_step step) {
+    CheckedRace* race = g_checked_race.get();
+    if (race != nullptr && step == DSD_MANAGED_FILE_STEP_CHECKED && !race->atChecked.exchange(true)) {
         wait_for_lock_waiter(race->qtDone);
     }
 }
@@ -864,9 +868,10 @@ test_update_waits_for_decoder_rewrite(bool viaRefresh) {
     }
     expect("race decoder lockout", dsd_tg_policy_set_mode(decoder.state, 123, 123, "B") == 0);
 
-    CheckedRace race;
+    g_checked_race = std::make_unique<CheckedRace>();
+    CheckedRace& race = *g_checked_race;
     int saved = -100;
-    dsd_managed_file_test_set_hook(race_at_checked, &race);
+    dsd_managed_file_test_set_hook(race_at_checked);
     std::thread saver([&decoder, &saved] { saved = decoder.save(); });
     for (int i = 0; i < 2000 && !race.atChecked.load(); i++) {
         dsd_sleep_ms(1);
@@ -876,7 +881,7 @@ test_update_waits_for_decoder_rewrite(bool viaRefresh) {
                                    : model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "update.csv");
     race.qtDone = true;
     saver.join();
-    dsd_managed_file_test_set_hook(nullptr, nullptr);
+    dsd_managed_file_test_set_hook(nullptr);
     expect("race decoder reached its checked point", race.atChecked.load());
     expect("race decoder saved", saved == 0);
     expect(viaRefresh ? "race refresh applied" : "race update applied", result.value("ok").toBool());
@@ -884,6 +889,7 @@ test_update_waits_for_decoder_rewrite(bool viaRefresh) {
     expect("race next save refuses the unreloaded update", decoder.save() == 2);
     expect("race update stays", read_file(path) == update);
     model.remove(model.rowForPath(path));
+    g_checked_race.reset();
 }
 
 struct InstalledRace {
@@ -896,10 +902,12 @@ struct InstalledRace {
     std::thread appender;
 };
 
+std::unique_ptr<InstalledRace> g_installed_race;
+
 void
-race_at_installed(dsd_managed_file_step step, void* user) {
-    auto* race = static_cast<InstalledRace*>(user);
-    if (step != DSD_MANAGED_FILE_STEP_INSTALLED || race->started.exchange(true)) {
+race_at_installed(dsd_managed_file_step step) {
+    InstalledRace* race = g_installed_race.get();
+    if (race == nullptr || step != DSD_MANAGED_FILE_STEP_INSTALLED || race->started.exchange(true)) {
         return;
     }
     if (!race->outsideEdit.isEmpty()) {
@@ -930,7 +938,9 @@ test_rollback_keeps_newer_files(bool outsideEdit, bool viaRefresh) {
            write_file(original, before) && write_file(replacement, "id,mode,name\n321,B,Replacement\n"));
     const auto path = model.importFile(original, "rollback.csv", "group").value("path").toString();
     const int row = model.rowForPath(path);
-    DecoderList decoder(path);
+    // On the heap: the race the hook reads at file scope points at it.
+    auto decoderOwner = std::make_unique<DecoderList>(path);
+    DecoderList& decoder = *decoderOwner;
     expect("rollback decoder load", row >= 0 && decoder.loaded);
     if (row < 0 || !decoder.loaded) {
         return;
@@ -939,18 +949,19 @@ test_rollback_keeps_newer_files(bool outsideEdit, bool viaRefresh) {
     expect("rollback move metadata store", QFile::rename(store, store + ".held"));
     expect("rollback block metadata write", QDir().mkdir(store));
 
-    InstalledRace race;
-    race.decoder = &decoder;
+    g_installed_race = std::make_unique<InstalledRace>();
+    InstalledRace& race = *g_installed_race;
+    race.decoder = decoderOwner.get();
     race.path = path;
     race.outsideEdit = outsideEdit ? QByteArray("id,mode,name\n123,A,Edited outside\n") : QByteArray();
-    dsd_managed_file_test_set_hook(race_at_installed, &race);
+    dsd_managed_file_test_set_hook(race_at_installed);
     const QVariantMap result =
         viaRefresh ? model.refreshGeneratedFile(row, replacement)
                    : model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "replacement.csv");
     if (race.appender.joinable()) {
         race.appender.join();
     }
-    dsd_managed_file_test_set_hook(nullptr, nullptr);
+    dsd_managed_file_test_set_hook(nullptr);
     expect("rollback unblock metadata write", QDir().rmdir(store) && QFile::rename(store + ".held", store));
     expect("rollback reached the installed point", race.started.load());
     expect("rollback update reports failure", !result.value("ok").toBool());
@@ -962,6 +973,7 @@ test_rollback_keeps_newer_files(bool outsideEdit, bool viaRefresh) {
         expect("rollback decoder save after both", decoder.save() == 0);
     }
     model.remove(model.rowForPath(path));
+    g_installed_race.reset();
 }
 
 void

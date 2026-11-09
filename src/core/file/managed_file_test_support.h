@@ -14,9 +14,10 @@ extern "C" {
 
 /* Test seam for the managed-file lock; not part of any public header. @p hook (NULL clears it) runs at each
    dsd_managed_file_step_reached(), inside the lock, on the thread that holds it: a test starts a competing writer
-   there and waits until dsd_managed_file_test_waiters() shows it blocked on the lock. */
-typedef void (*dsd_managed_file_test_hook)(dsd_managed_file_step step, void* user);
-void dsd_managed_file_test_set_hook(dsd_managed_file_test_hook hook, void* user);
+   there and waits until dsd_managed_file_test_waiters() shows it blocked on the lock. The hook takes no context
+   pointer, so the lock keeps no caller's address: a test holds its race state at file scope. */
+typedef void (*dsd_managed_file_test_hook)(dsd_managed_file_step step);
+void dsd_managed_file_test_set_hook(dsd_managed_file_test_hook hook);
 
 /* Threads waiting in dsd_managed_file_lock() right now. */
 int dsd_managed_file_test_waiters(void);

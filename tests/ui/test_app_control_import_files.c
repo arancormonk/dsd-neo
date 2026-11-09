@@ -222,7 +222,7 @@ test_write_and_replace(const char* dir) {
 
 /* A RadioReference refresh racing the decoder's save of the same group list. */
 typedef struct {
-    const char* path;
+    char path[DSD_TEST_PATH_MAX];
     const char* text;
     atomic_int started;
     atomic_int done;
@@ -230,6 +230,9 @@ typedef struct {
     int rc;
     dsd_thread_t thread;
 } refresh_race;
+
+/* The race the managed-file hook drives (the hook takes no context pointer). */
+static refresh_race s_refresh_race;
 
 static DSD_THREAD_RETURN_TYPE
 refresh_race_run(void* arg) {
@@ -242,8 +245,8 @@ refresh_race_run(void* arg) {
 /* At the decoder's "file checked, about to replace" point (inside the managed-file lock): start the refresh, and wait,
    two seconds at most, until it is blocked on the lock, or has finished because nothing held it back. */
 static void
-refresh_race_at_checked(dsd_managed_file_step step, void* user) {
-    refresh_race* race = (refresh_race*)user;
+refresh_race_at_checked(dsd_managed_file_step step) {
+    refresh_race* race = &s_refresh_race;
     if (step != DSD_MANAGED_FILE_STEP_CHECKED || atomic_load(&race->started)) {
         return;
     }
@@ -280,20 +283,20 @@ test_refresh_waits_for_decoder_rewrite(const char* dir) {
     rc |= expect_int("race: load", dsd_tg_policy_reload_group_file(opts, st), 0);
     rc |= expect_int("race: lockout", dsd_tg_policy_set_mode(st, 100, 100, "B"), 0);
 
-    refresh_race race;
-    DSD_MEMSET(&race, 0, sizeof race);
-    race.path = path;
-    race.text = k_refresh;
-    race.rc = -1;
-    dsd_managed_file_test_set_hook(refresh_race_at_checked, &race);
+    refresh_race* race = &s_refresh_race;
+    DSD_MEMSET(race, 0, sizeof *race);
+    DSD_SNPRINTF(race->path, sizeof race->path, "%s", path);
+    race->text = k_refresh;
+    race->rc = -1;
+    dsd_managed_file_test_set_hook(refresh_race_at_checked);
     rc |= expect_int("race: decoder save", dsd_tg_policy_write_group_file(opts, st), 0);
-    dsd_managed_file_test_set_hook(NULL, NULL);
-    rc |= expect_int("race: refresh started at the checked point", atomic_load(&race.started), 1);
-    rc |= expect_int("race: refresh waited for the save", atomic_load(&race.done), 0);
-    if (race.created) {
-        (void)dsd_thread_join(race.thread);
+    dsd_managed_file_test_set_hook(NULL);
+    rc |= expect_int("race: refresh started at the checked point", atomic_load(&race->started), 1);
+    rc |= expect_int("race: refresh waited for the save", atomic_load(&race->done), 0);
+    if (race->created) {
+        (void)dsd_thread_join(race->thread);
     }
-    rc |= expect_int("race: refresh written", race.rc, 0);
+    rc |= expect_int("race: refresh written", race->rc, 0);
     rc |= expect_int("race: the refresh is on disk", file_is(path, k_refresh), 1);
     rc |= expect_int("race: the next save refuses the unreloaded refresh", dsd_tg_policy_write_group_file(opts, st), 2);
     rc |= expect_int("race: the refresh stays", file_is(path, k_refresh), 1);
