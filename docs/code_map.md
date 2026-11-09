@@ -12409,15 +12409,18 @@ Qt Quick frontend (`src/ui/qt`):
   account check still in flight (the `cancel()` steps, with the status cleared instead of "Cancelled."; other fetches
   keep running) and resets the state to None. `checkAccount()` is a no-op while a check is in flight. Any other new
   batch and `cancel()` retire a check in flight (state None); a finished verdict survives them both, so only an edit
-  clears it. The verdict is set before the reply settles `busy`. A verified check calls the C++-only
-  `setVerifiedSink()` callback synchronously with the request's own username and password (copied out of its
-  `dsd_rr_auth`, scrubbed after the call, dropped if the revision moved on); no signal or QML property carries a
-  credential. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill` context object,
-  built in `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the platform's autofill
-  support through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` virtuals (in the plain
-  `public:` section, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, "Sign-in
-  autofill" under Android foundation integration contracts; the desktop does nothing). Field 1 is the username,
-  field 2 the password, whose structure value is always empty.
+  clears it. Any other fetch refused for the current revision (`AuthError`, `SubscriptionError`) sets Rejected or
+  Expired too, so "Account verified." never stands next to a notice that the password was refused; other failures
+  leave the verdict alone. A refusal from an older revision (a fetch an edit left running) settles its batch with no
+  error, since it blames values that were never sent. The verdict is set before the reply settles `busy`. A verified
+  check calls the C++-only `setVerifiedSink()` callback synchronously with the request's own username and password
+  (copied out of its `dsd_rr_auth`, scrubbed after the call, dropped if the revision moved on); no signal or QML
+  property carries a credential. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill`
+  context object, built in `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the
+  platform's autofill support through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End`
+  virtuals (in the plain `public:` section, not slots: QML reaches every slot and signal of `decoderHost`; Android
+  implements them, "Sign-in autofill" under Android foundation integration contracts; the desktop does nothing). Field 1
+  is the username, field 2 the password, whose structure value is always empty.
   `begin()` hands out a token (positive, only growing) and retires the older one; every call and fill carries it, and
   any other token is dropped. `track(token, field, input, visible)` follows a field's inner TextInput through a
   `QPointer` (focus from `hasActiveFocus()`), and `note()` sets the username's structure value. A rect is the input's

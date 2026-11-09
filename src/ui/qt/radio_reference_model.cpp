@@ -166,6 +166,12 @@ error_kind_for(dsd_rr_status status) {
     }
 }
 
+/** @brief Whether @p errorKind is RadioReference refusing the credentials a request was sent with. */
+bool
+is_refusal(int errorKind) {
+    return errorKind == RadioReferenceModel::AuthError || errorKind == RadioReferenceModel::SubscriptionError;
+}
+
 } // namespace
 
 /* ------------------------------------------------------------------------- */
@@ -1175,7 +1181,19 @@ RadioReferenceModel::applyAccountVerified(const Reply& reply) {
 
 void
 RadioReferenceModel::applyAccountVerdict(const Reply& reply) {
-    if (reply.kind != FetchUserData || reply.credRevision != m_credRevision) {
+    if (reply.credRevision != m_credRevision) {
+        return;
+    }
+    if (reply.kind != FetchUserData) {
+        /* Any other fetch speaks for the account only when RadioReference
+         * refuses these credentials (the password changed on the website, the
+         * subscription lapsed): the form must not go on saying "Account
+         * verified." next to a notice that says otherwise. */
+        if (reply.errorKind == AuthError) {
+            setAccountState(AccountRejected);
+        } else if (reply.errorKind == SubscriptionError) {
+            setAccountState(AccountExpired);
+        }
         return;
     }
     switch (reply.errorKind) {
@@ -1223,7 +1241,12 @@ RadioReferenceModel::applyReply(const Reply& reply) {
             m_outstanding = 0;
             Q_EMIT busyChanged();
         }
-        setError(reply.errorKind, reply.errorText);
+        /* A refusal of credentials since edited (a fetch an edit left running)
+         * blames values that were never sent with the new ones: it settles the
+         * batch and says nothing. */
+        if (!is_refusal(reply.errorKind) || reply.credRevision == m_credRevision) {
+            setError(reply.errorKind, reply.errorText);
+        }
         setStatus(QString());
         if (m_refreshRow >= 0) {
             /* finishSystemLoad() will never run for this batch, so the caller

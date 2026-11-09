@@ -1553,6 +1553,75 @@ test_edit_drops_a_late_auth_failure(void) {
     }
 }
 
+/* Plan 2.1: the same for any other fetch. An edit leaves a list fetch running, and
+ * one that leaves the credentials incomplete starts no check to retire it, so its
+ * refusal of the old credentials still lands - and must not blame the new ones. */
+void
+test_edit_drops_a_late_auth_failure_of_any_fetch(void) {
+    for (const CredentialEdit& edit : credential_edits()) {
+        Harness h;
+        const ReplyCounter counter(&h.model);
+        h.fake.serveFault = true;
+
+        h.model.loadCountries();
+        edit.apply(h);
+        await_replies(counter, 1);
+        expect(edit_label(edit, "a late list refusal never sets errorIsAuth").constData(), !h.model.errorIsAuth());
+        expect_int(edit_label(edit, "or any error").constData(), h.model.errorKind(),
+                   dsd_qt::RadioReferenceModel::NoError);
+        expect(edit_label(edit, "and the batch settles").constData(), !h.model.busy());
+        expect_int(edit_label(edit, "or gives a verdict").constData(), h.model.accountState(),
+                   dsd_qt::RadioReferenceModel::AccountNone);
+    }
+}
+
+/* A refusal by any fetch is a verdict on the current credentials: after "Account
+ * verified.", a search RadioReference refuses (the password changed on the
+ * website) must not leave the form saying verified next to a notice saying the
+ * password was not accepted. Other failures say nothing about the account. */
+void
+test_any_refusal_updates_the_verdict(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    {
+        Harness h;
+        SinkLog log;
+        install_sink(h, &log);
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("the check verifies", h.model.accountState(), M::AccountVerified);
+        h.fake.serveFault = true;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("a refused browse makes it Rejected", h.model.accountState(), M::AccountRejected);
+        expect("with errorIsAuth as before", h.model.errorIsAuth());
+        expect_int("and calls no sink", log.calls, 1);
+    }
+    {
+        Harness h;
+        h.model.checkAccount();
+        pump(h.model);
+        h.fake.failWith = DSD_RR_ERR_NETWORK;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("a network failure keeps Verified", h.model.accountState(), M::AccountVerified);
+        h.fake.failWith = DSD_RR_ERR_HTTP;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("and so does a server failure", h.model.accountState(), M::AccountVerified);
+    }
+    {
+        Harness h;
+        h.fake.serveFault = true;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("a refused browse with no check yet is Rejected too", h.model.accountState(), M::AccountRejected);
+        h.fake.serveFault = false;
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int("and a check then verifies", h.model.accountState(), M::AccountVerified);
+    }
+}
+
 /* B7: every field's editingFinished and the Check button all ask, so the same
  * check is requested several times in a row. The second must not cancel the
  * first and start the wait over. */
@@ -1908,6 +1977,8 @@ main(int argc, char** argv) {
     test_results_and_loaded_system_stay_exclusive();
     test_edit_retires_the_check_in_flight();
     test_edit_drops_a_late_auth_failure();
+    test_edit_drops_a_late_auth_failure_of_any_fetch();
+    test_any_refusal_updates_the_verdict();
     test_check_is_deduplicated_while_in_flight();
     test_account_state_follows_the_check();
     test_account_state_for_each_failure();

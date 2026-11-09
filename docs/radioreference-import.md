@@ -115,8 +115,9 @@ The account is checked (`getUserData`) when a field you finish makes the sign-in
 tap **Check account**. A field you leave unchanged does not check again, and one tap sends one check.
 An expired premium subscription is reported as such, rather than surfacing later as an opaque failure.
 The result line shows only the verdict for the current username and password (it resets when either
-changes); on the import screen a failure is reported in the notice line at the top instead, and the
-credentials card stays open until the check has an answer.
+changes, and a later search that RadioReference refuses changes it too); on the import screen a failure
+is reported in the notice line at the top instead, and the credentials card stays open until the check
+has an answer.
 
 ### Password managers (Android)
 
