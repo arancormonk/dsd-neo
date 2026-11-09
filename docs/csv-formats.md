@@ -37,10 +37,11 @@ reloads it if it is the file the session uses (the notice adds "sent to the runn
 does not use is left alone. To change the files of a running session, open the monitor's session menu and choose
 **Edit saved system**; saving applies the files that changed to the live session immediately, including clearing a
 field to "None" — that unloads the channel map, talkgroup list, keys, or source ID list from the running session. A
-talkgroup list chosen there whose rows all fail to load, or that cannot be read, is not loaded: the session's list is
-cleared instead, so the previous system's talkgroups do not stay in use. This action is available only for a session
-this app instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the app and ends the
-session (`android/README.md` "Known limits").
+talkgroup list chosen there (an imported file) whose rows all fail to load, or that cannot be read, is not loaded: the
+session's list is cleared instead, so the previous system's talkgroups do not stay in use. A file outside the library
+is sent to the decoder as it is; one the decoder refuses keeps the session's list. This action is available only for
+a session this app instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the app and
+ends the session (`android/README.md` "Known limits").
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
 air is discarded along with the previous file's entries; a grant for a channel the new file omits stays unresolved

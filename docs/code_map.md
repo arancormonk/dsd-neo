@@ -11103,13 +11103,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     the renderer measures and cuts labels in bytes (a non-ASCII name widens the overlay by its extra bytes, never cut
     at 80 columns). The import prompt's prefill is held in `CsvPickerCtx` until the "Enter a path..." prompt opens.
     `ui_menu_tick()` copies each new live decoder toast into the menu's status line
-    (`ui_menu_follow_decoder_toast()`), since an open overlay can cover the main screen's toast line: new by
-    `ui_msg_seq` (which app-control's `ui_set_toast()` increments, so the same command twice within a second still
-    shows), or by text or expiry for a toast written directly; sanitized through `ui_text_sanitize()`; held no longer
-    than `ui_msg_expire` (`ui_status_expire_by()`). A toast live when the menu or a modal opens is marked seen there, so
-    it never replaces the open hint. Limit: a writer that sets `ui_msg` directly, bypassing `ui_set_toast()`, and
-    repeats the same text with the same expiry second is shown once (none of them answers a menu row). Tests:
-    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_CSV_PICKER`, `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`).
+    (`ui_menu_follow_decoder_toast()`), since an open overlay can cover the main screen's toast line. Every toast is
+    counted: each writer, `ui_set_toast()` included, ends with `dsd_state_toast_publish()` (`<dsd-neo/core/state.h>`),
+    which sets `ui_msg_expire` and increments `ui_msg_seq`, so the same text twice within its second is a new toast;
+    clearing a toast or amending the one just published does not count. The menu takes a toast as new when its count,
+    expiry or text differs from the last one it showed; sanitizes it through `ui_text_sanitize()`; and holds it no
+    longer than `ui_msg_expire` (`ui_status_expire_by()`). A toast live when the menu or a modal opens is marked seen
+    there, so it never replaces the open hint. Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_CSV_PICKER`,
+    `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`), `APP_COMMAND_QUEUE`.
   - Scan lists (issue #697): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
     `#` = `DSD_KEY_SCAN_LISTS`, `lbl_scan_lists()` `[2 of 3 on]`, offered by `scan_lists_offered()`, the scan list
     view's `toggleable`: a running trunk scan with 2+ lists) and the `#` key (`ui_menu_open_modal_async()` with
@@ -13557,17 +13558,16 @@ metadata in Android CI; `ANDROID_R8` tests its failure cases. Device testing of
 optimized releases and mapping retention are described in `android/README.md`.
 
 Shared command IDs 592/593/594 are the talkgroup row set, remove and export (`apply_cmd_tg_row_set()`,
-`apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless
-its `policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
+`apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless its
+`policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
 listen/priority/preempt/name/tags/record (record applied after a mode change in the same edit). Set and remove refuse a
-learned alias row, rewrite the group file (outside a scan row; `tg_listen_persist()` keeps the edit for the session
-when the write returns 1 or 2, Core "the group file stands for the list") and end an active group call the edit newly
-blocks (by mode or allow list) as a lockout does, returning to the control channel
-(`tg_listen_release_blocked_calls()`; so do a group list import, reload and clear whose global list judges the calls,
-read before the scoped suspend and released after the resume, `ui_group_list_calls_before()`); export is refused for
-a scan row's list, an incomplete list, or a list whose own file changed on disk, writes the list to the given path and
-makes it the session's group file. IDs 652/653
-are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
+learned alias row, rewrite the group file (outside a scan row; `tg_listen_persist()` keeps the edit for the session when
+the write returns 1 or 2, Core "the group file stands for the list") and end an active group call the edit newly blocks
+(by mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`; so do
+a group list import, reload and clear whose global list judges the calls, read before the scoped suspend and released
+after the resume, `ui_group_list_calls_before()`); export is refused for a scan row's list, an incomplete list, or a
+list whose own file changed on disk, writes the list to the given path and makes it the session's group file. IDs
+652/653 are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
 `dsd_scan_keys_apply_direct()`, keeping an active scan row's signalled key IDs, key loader and profile) and an int32
 force-key mode 0/1/2 (`apply_cmd_force_key()`; a change bumps the key epoch). Force-key and the export run against the
 saved scan baseline as configured scan-mode settings (`command_updates_scan_mode()`).
