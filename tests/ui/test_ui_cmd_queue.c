@@ -24159,12 +24159,21 @@ test_group_startup_list_guards_its_file(void) {
 /* A learned alias is appended to the global group file even while a -Y row's own list (another file, or the same one)
    is in effect. The global list held aside keeps its baseline in step with that row and takes the row itself, so once
    the row is left the next saved change goes through and keeps the alias (R4). When the append creates the global
-   file, the global list (not the row's) starts its baseline. */
-enum { ROW_ALIAS_OWN_FILE, ROW_ALIAS_SAME_FILE, ROW_ALIAS_GLOBAL_MISSING };
+   file, the global list (not the row's) starts its baseline, an empty global list included. While the row's list is
+   suspended (a group import edits the global list beneath it) the global list is the effective one, and the row's
+   list for the same file follows the append too. */
+enum {
+    ROW_ALIAS_OWN_FILE,
+    ROW_ALIAS_SAME_FILE,
+    ROW_ALIAS_GLOBAL_MISSING,
+    ROW_ALIAS_NO_GLOBAL_LIST,
+    ROW_ALIAS_SUSPENDED
+};
 
 static int
 test_group_alias_learned_on_a_row_list_is_kept(int mode) {
-    const int same_file = mode == ROW_ALIAS_SAME_FILE;
+    const int same_file = mode == ROW_ALIAS_SAME_FILE || mode == ROW_ALIAS_SUSPENDED;
+    const int no_global_file = mode == ROW_ALIAS_GLOBAL_MISSING || mode == ROW_ALIAS_NO_GLOBAL_LIST;
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);
@@ -24175,13 +24184,15 @@ test_group_alias_learned_on_a_row_list_is_kept(int mode) {
         freeState(&state);
         return 1;
     }
-    if (mode == ROW_ALIAS_GLOBAL_MISSING) {
-        // A global list with no file yet: rows entered this session, saved nowhere until the file exists.
+    if (no_global_file) {
+        // No file yet: a global list with rows entered this session, or no global list at all.
         rc |= remove(global) != 0;
         DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", global);
-        dsd_tg_policy_entry dispatch;
-        rc |= dsd_tg_policy_make_exact_entry(100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &dispatch);
-        rc |= dsd_tg_policy_append_exact(&state, &dispatch);
+        if (mode == ROW_ALIAS_GLOBAL_MISSING) {
+            dsd_tg_policy_entry dispatch;
+            rc |= dsd_tg_policy_make_exact_entry(100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &dispatch);
+            rc |= dsd_tg_policy_append_exact(&state, &dispatch);
+        }
     } else {
         post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, global);
         rc |= expect_int("R4 row global import drained", dsd_app_drain_cmds(&opts, &state), 1);
@@ -24196,6 +24207,9 @@ test_group_alias_learned_on_a_row_list_is_kept(int mode) {
     rc |= expect_int("R4 row scope", dsd_scan_groups_begin(&state), 0);
     dsd_scan_groups_enter(&state, row);
     rc |= expect_true("R4 row list in effect", dsd_scan_groups_row_active(&state));
+    if (mode == ROW_ALIAS_SUSPENDED) {
+        rc |= expect_true("R4 row list suspended", dsd_scan_groups_suspend(&state));
+    }
 
     dsd_tg_policy_entry alias;
     rc |=
@@ -24203,13 +24217,21 @@ test_group_alias_learned_on_a_row_list_is_kept(int mode) {
                    dsd_tg_policy_make_exact_entry(300, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias), 0);
     rc |= expect_true("R4 row alias learned", dsd_tg_policy_learn_exact(&state, &alias) == DSD_TG_POLICY_LEARN_ADDED);
     rc |= expect_int("R4 row alias appended", dsd_tg_policy_append_group_file_row(&opts, &state, &alias, ""), 0);
+    if (mode == ROW_ALIAS_SUSPENDED) {
+        dsd_scan_groups_resume(&state);
+        dsd_tg_policy_lookup lookup;
+        rc |= expect_true("R4 resumed row list has the alias", dsd_scan_groups_row_active(&state)
+                                                                   && dsd_tg_policy_lookup_id(&state, 300, &lookup) == 0
+                                                                   && strcmp(lookup.entry.name, "Learned") == 0);
+    }
     dsd_scan_groups_leave(&state);
 
     dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
     rc |= expect_true("R4 row edit after leave queued", dsd_app_command_set_tg_listen(&edit) > 0);
     rc |= expect_int("R4 row edit after leave drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_true("R4 row edit after leave saved", strstr(state.ui_msg, "changed on disk") == NULL);
-    rc |= expect_file_bytes(global, "id,mode,name\n100,B,Dispatch\n300,D,Learned\n");
+    rc |= expect_file_bytes(global, mode == ROW_ALIAS_NO_GLOBAL_LIST ? "id,mode,name\n300,D,Learned\n100,B,\n"
+                                                                     : "id,mode,name\n100,B,Dispatch\n300,D,Learned\n");
     if (!same_file) {
         rc |= expect_file_bytes(row_file, "id,mode,name\n500,A,Row\n");
     }
@@ -28985,6 +29007,8 @@ main(void) {
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_OWN_FILE);
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_SAME_FILE);
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_GLOBAL_MISSING);
+    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_NO_GLOBAL_LIST);
+    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_SUSPENDED);
 #ifdef DSD_NEO_TEST_TG_POLICY_WRAP
     rc |= test_group_import_refuses_a_partial_load();
     rc |= test_group_startup_partial_load_is_not_saved();

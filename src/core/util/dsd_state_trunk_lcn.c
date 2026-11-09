@@ -32,6 +32,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "talkgroup_policy_internal.h"
 
 /* The process-wide revision counter (issue #672). Only the decoder thread's semantic helpers draw from it, so the
  * atomic only guards against a future caller elsewhere; it costs one add per mutation, never one per sample. */
@@ -898,6 +899,9 @@ dsd_scan_groups_enter(dsd_state* state, const dsd_scan_row_profile* profile) {
         return;
     }
     if (!modes->group_active) {
+        // An empty global list is held as a store too, so an alias the row's session appends to the global file has a
+        // list to land in, and the next save of that list keeps it.
+        (void)dsd_tg_policy_ensure(state);
         modes->group_baseline = dsd_tg_policy_retain(state);
         modes->group_active = 1;
     }

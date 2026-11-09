@@ -3251,6 +3251,11 @@ dsd_tg_policy_store_mark_incomplete(dsd_tg_policy_store* store) {
     }
 }
 
+dsd_tg_policy_store*
+dsd_tg_policy_ensure(dsd_state* state) {
+    return tg_policy_ctx_get_mut(state, 1);
+}
+
 int
 dsd_tg_policy_mark_incomplete(dsd_state* state) {
     dsd_tg_policy_context* ctx = tg_policy_ctx_get_mut(state, 1);
