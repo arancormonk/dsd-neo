@@ -184,6 +184,39 @@ test_peak_search_stays_inside_the_window(void) {
 }
 
 /*
+ * The inward bounds a tap or a hop is limited to. freq_to_bin() rounds, so a
+ * window edge a quarter-bin past a bin center keeps that bin and one a quarter
+ * short of the next takes it: either way a bin centered outside the window.
+ */
+void
+test_inward_bin_bounds(void) {
+    const double bin_width = kSpan / kBins;
+    const double low = kCenter - (kSpan / 2.0);
+    /* An edge exactly on bin 448's center keeps it on both sides. */
+    const double on_448 = low + (448.0 * bin_width);
+    assert(sm::first_bin_at_or_above(kCenter, kSpan, kBins, on_448) == 448);
+    assert(sm::last_bin_at_or_below(kCenter, kSpan, kBins, on_448) == 448);
+    /* A quarter-bin above it: 448 is outside, below the edge. */
+    const double above_448 = on_448 + (bin_width / 4.0);
+    assert(sm::freq_to_bin(kCenter, kSpan, kBins, above_448) == 448);
+    assert(sm::first_bin_at_or_above(kCenter, kSpan, kBins, above_448) == 449);
+    assert(sm::last_bin_at_or_below(kCenter, kSpan, kBins, above_448) == 448);
+    /* Three quarters above: rounding takes 449, which is above the edge, not below it. */
+    const double near_449 = on_448 + (0.75 * bin_width);
+    assert(sm::freq_to_bin(kCenter, kSpan, kBins, near_449) == 449);
+    assert(sm::last_bin_at_or_below(kCenter, kSpan, kBins, near_449) == 448);
+    /* Clamped at both ends of the capture, with n and -1 meaning "none". */
+    assert(sm::first_bin_at_or_above(kCenter, kSpan, kBins, low - 1.0e6) == 0);
+    assert(sm::first_bin_at_or_above(kCenter, kSpan, kBins, low + kSpan + 1.0e6) == kBins);
+    assert(sm::last_bin_at_or_below(kCenter, kSpan, kBins, low - 1.0e6) == -1);
+    assert(sm::last_bin_at_or_below(kCenter, kSpan, kBins, low + kSpan + 1.0e6) == kBins - 1);
+    /* Degenerate spans answer without dividing by zero. */
+    assert(sm::first_bin_at_or_above(kCenter, 0.0, kBins, kCenter) == 0);
+    assert(sm::last_bin_at_or_below(kCenter, 0.0, kBins, kCenter) == kBins - 1);
+    assert(sm::first_bin_at_or_above(kCenter, kSpan, kBins, std::numeric_limits<double>::quiet_NaN()) == 0);
+}
+
+/*
  * "Next signal" is a different question from the tap's snap: it must skip what is
  * already tuned, must refuse to answer at all on an empty band, and must not treat
  * noise as a find. Each of those failing looks like a dead button or a radio that
@@ -398,6 +431,7 @@ main(void) {
     test_snap_window();
     test_peak_search();
     test_peak_search_stays_inside_the_window();
+    test_inward_bin_bounds();
     test_directional_peak();
     test_directional_seed();
     test_zoom_anchor();

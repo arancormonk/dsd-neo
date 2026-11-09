@@ -6,13 +6,26 @@
 #include "spectrum_view_item.h"
 
 #include <QPainter>
+#include <QPointF>
+#include <QQuickWindow>
 #include <QRectF>
+#include <QSGFlatColorMaterial>
+#include <QSGGeometry>
+#include <QSGGeometryNode>
+#include <QSGImageNode>
+#include <QSGRendererInterface>
+#include <QSGTexture>
+#include <QSGVertexColorMaterial>
+#include <QSizeF>
 #include <Qt>
+#include <QtMath>
 #include <cmath>
+#include <cstddef>
 #include <dsd-neo/core/wideband_spectrum.h>
 #include <qpen.h>
 
 #include "spectrum_model.h"
+#include "spectrum_trace_geometry.h"
 
 namespace dsd_qt {
 
@@ -111,29 +124,170 @@ lerp_channel(int from, int to, double t) {
 
 // ---------------------------------------------------------------- trace ----
 
-SpectrumTraceItem::SpectrumTraceItem(QQuickItem* parent) : QQuickPaintedItem(parent) {}
+namespace {
+
+/* QPainter's pens, kept: the trace was a 1.5 px line, the grid 1 px. */
+constexpr float kTraceHalfWidth = 0.75F;
+constexpr float kGridHalfWidth = 0.5F;
+constexpr int kGridLines = 3;
+
+/**
+ * @brief A layer of stroke triangles colored per vertex.
+ *
+ * 32-bit index type with no indices: Qt merges only 16-bit-indexed geometry
+ * into shared batches, whose index runs are cut every 65534 vertices, and a
+ * wide desktop trace passes that. Kept out of merging, the list is drawn on its
+ * own without indices.
+ */
+QSGGeometryNode*
+make_stroke_node() {
+    auto* node = new QSGGeometryNode;
+    auto* geometry =
+        new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0, 0, QSGGeometry::UnsignedIntType);
+    geometry->setDrawingMode(QSGGeometry::DrawTriangles);
+    node->setGeometry(geometry);
+    node->setMaterial(new QSGVertexColorMaterial);
+    node->setFlags(QSGNode::OwnsGeometry | QSGNode::OwnsMaterial);
+    return node;
+}
+
+/** @brief The filled area: one flat color, a strip of two vertices per column. */
+QSGGeometryNode*
+make_area_node() {
+    auto* node = new QSGGeometryNode;
+    auto* geometry = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), 0, 0, QSGGeometry::UnsignedIntType);
+    geometry->setDrawingMode(QSGGeometry::DrawTriangleStrip);
+    node->setGeometry(geometry);
+    node->setMaterial(new QSGFlatColorMaterial);
+    node->setFlags(QSGNode::OwnsGeometry | QSGNode::OwnsMaterial);
+    return node;
+}
+
+/** @brief The GPU tree's root, so the next sync finds its layers where it left them. */
+class TraceGpuRoot : public QSGNode {
+  public:
+    TraceGpuRoot() : grid(make_stroke_node()), area(make_area_node()), line(make_stroke_node()) {
+        appendChildNode(grid);
+        appendChildNode(area);
+        appendChildNode(line);
+    }
+
+    QSGGeometryNode* grid;
+    QSGGeometryNode* area;
+    QSGGeometryNode* line;
+};
+
+/**
+ * @brief Where the software path's image goes: at its own pixel scale, from the item's origin.
+ *
+ * The image is the item's size times the pixel ratio, rounded up to whole
+ * pixels, so at a fractional ratio it is a fraction of a pixel larger than the
+ * item. Mapped onto exactly the item it would be squeezed by that fraction,
+ * shifting the chart and filtering its antialiased edges a second time; at its
+ * own scale the extra sliver lies past the item's edge, where the clip drops it.
+ */
+QRectF
+software_image_rect(const QImage& image) {
+    return QRectF(QPointF(0.0, 0.0), image.deviceIndependentSize());
+}
+
+quint8
+unit_to_byte(float v) {
+    if (!(v > 0.0F)) {
+        return 0;
+    }
+    return (v >= 1.0F) ? 255 : static_cast<quint8>(std::lround(v * 255.0F));
+}
+
+/**
+ * @brief Load stroke vertices into @p node in @p color, premultiplied by color alpha times coverage.
+ *
+ * QSGVertexColorMaterial expects premultiplied colors, so a vertex whose
+ * coverage is zero is transparent black, not the line color at alpha 0.
+ */
+void
+set_stroke_vertices(QSGGeometryNode* node, const spectrum_geometry::StrokeVertex* v, int count, const QColor& color) {
+    QSGGeometry* geometry = node->geometry();
+    if (geometry->vertexCount() != count) {
+        geometry->allocate(count);
+    }
+    QSGGeometry::ColoredPoint2D* out = geometry->vertexDataAsColoredPoint2D();
+    const float alpha = static_cast<float>(color.alphaF());
+    const float red = static_cast<float>(color.redF());
+    const float green = static_cast<float>(color.greenF());
+    const float blue = static_cast<float>(color.blueF());
+    for (int i = 0; i < count; i++) {
+        const float a = alpha * std::fmin(1.0F, std::fmax(0.0F, v[i].coverage));
+        out[i].set(v[i].x, v[i].y, unit_to_byte(red * a), unit_to_byte(green * a), unit_to_byte(blue * a),
+                   unit_to_byte(a));
+    }
+    node->markDirty(QSGNode::DirtyGeometry);
+}
+
+void
+set_area_vertices(QSGGeometryNode* node, const spectrum_geometry::AreaVertex* v, int count, const QColor& color) {
+    QSGGeometry* geometry = node->geometry();
+    if (geometry->vertexCount() != count) {
+        geometry->allocate(count);
+    }
+    QSGGeometry::Point2D* out = geometry->vertexDataAsPoint2D();
+    for (int i = 0; i < count; i++) {
+        out[i].set(v[i].x, v[i].y);
+    }
+    node->markDirty(QSGNode::DirtyGeometry);
+    auto* material = static_cast<QSGFlatColorMaterial*>(node->material());
+    if (material->color() != color) {
+        material->setColor(color); /* also turns blending on for a translucent color */
+        node->markDirty(QSGNode::DirtyMaterial);
+    }
+}
+
+} // namespace
+
+SpectrumTraceItem::SpectrumTraceItem(QQuickItem* parent) : QQuickItem(parent) {
+    setFlag(ItemHasContents, true);
+    /* A painted item was confined to its rectangle; geometry is not. The caps,
+     * bevels and fringes reach past their points, and a saturated peak would
+     * draw over whatever sits above the panel. Axis-aligned, so a scissor. */
+    setClip(true);
+}
 
 SpectrumTraceItem::~SpectrumTraceItem() = default;
 
 void
 SpectrumTraceItem::setModel(SpectrumModel* next) {
-    if (m_model == next) {
+    if (m_model.data() == next) {
         return;
     }
     if (m_model) {
-        disconnect(m_model, nullptr, this, nullptr);
+        disconnect(m_model.data(), nullptr, this, nullptr);
     }
     m_model = next;
     if (m_model) {
-        connect(m_model, &SpectrumModel::frameChanged, this, &SpectrumTraceItem::onFrame);
-        connect(m_model, &SpectrumModel::viewChanged, this, &SpectrumTraceItem::onFrame);
-        connect(m_model, &SpectrumModel::retuned, this, &SpectrumTraceItem::onRetuned);
+        connect(m_model.data(), &SpectrumModel::frameChanged, this, &SpectrumTraceItem::onFrame);
+        connect(m_model.data(), &SpectrumModel::viewChanged, this, &SpectrumTraceItem::onFrame);
+        connect(m_model.data(), &SpectrumModel::retuned, this, &SpectrumTraceItem::onRetuned);
+        connect(m_model.data(), &QObject::destroyed, this, &SpectrumTraceItem::onModelDestroyed);
     }
+    forgetFrames();
+    Q_EMIT modelChanged();
+    update();
+}
+
+void
+SpectrumTraceItem::onModelDestroyed() {
+    /* The pointer is already null; what is left is the state that came from it. */
+    m_model.clear();
+    forgetFrames();
+    Q_EMIT modelChanged();
+    update();
+}
+
+void
+SpectrumTraceItem::forgetFrames() {
     m_range.reset();
     m_have_frame = false;
     m_last_frame_index = 0;
-    Q_EMIT modelChanged();
-    update();
 }
 
 void
@@ -168,9 +322,9 @@ SpectrumTraceItem::setGridColor(const QColor& color) {
 
 void
 SpectrumTraceItem::onFrame() {
-    /* Folded here rather than in paint(): the range is an EMA that relaxes a few
+    /* Folded here rather than at draw time: the range is an EMA that relaxes a few
      * percent per call, and this slot also runs on viewChanged, so folding at
-     * paint time would advance it at touch rate during a pan and settle the trace
+     * draw time would advance it at touch rate during a pan and settle the trace
      * on a different scale than the waterfall shows for the same bins. */
     if (m_model != nullptr && m_model->hasData()) {
         const quint64 index = m_model->frameIndex();
@@ -193,44 +347,42 @@ SpectrumTraceItem::onRetuned() {
      * The frame stamp goes with it: a retune bumps the model's index before the
      * frame captured at the new center is announced, so keeping the stamp would
      * skip the fold for exactly the frame the new range has to be built from. */
-    m_range.reset();
-    m_have_frame = false;
-    m_last_frame_index = 0;
+    forgetFrames();
     update();
 }
 
 void
-SpectrumTraceItem::paint(QPainter* painter) {
-    if (!painter) {
-        return;
+SpectrumTraceItem::geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) {
+    QQuickItem::geometryChange(new_geometry, old_geometry);
+    if (new_geometry.size() != old_geometry.size()) {
+        update();
     }
-    const int w = static_cast<int>(width());
-    const int h = static_cast<int>(height());
-    if (w <= 1 || h <= 1) {
-        return;
+}
+
+void
+SpectrumTraceItem::itemChange(ItemChange change, const ItemChangeData& value) {
+    QQuickItem::itemChange(change, value);
+    /* The feather is one device pixel and the software image is sized in them. */
+    if (change == ItemDevicePixelRatioHasChanged) {
+        update();
     }
+}
 
-    painter->setRenderHint(QPainter::Antialiasing, true);
-
-    /* The grid is drawn even with no data, so the panel reads as a chart that is
-     * waiting rather than as a hole in the screen. */
-    if (m_grid_color.alpha() > 0) {
-        QPen grid(m_grid_color);
-        grid.setWidthF(1.0);
-        painter->setPen(grid);
-        for (int i = 1; i < 4; i++) {
-            const double y = (static_cast<double>(h) * i) / 4.0;
-            painter->drawLine(QPointF(0.0, y), QPointF(static_cast<double>(w), y));
-        }
-    }
-
-    if (!m_model || !m_model->hasData()) {
-        return;
+/**
+ * @brief Map the current frame onto one point per pixel column, in m_xs/m_ys.
+ *
+ * Runs in the scene graph's sync, with the GUI thread blocked, as paint() did.
+ * @return Whether there is a frame to draw.
+ */
+bool
+SpectrumTraceItem::buildTrace(int w, int h) {
+    if (m_model == nullptr || !m_model->hasData() || w <= 1 || h <= 1) {
+        return false;
     }
     const int n = m_model->binCount();
     const QVector<float>& bins = m_model->bins();
     if (n <= 0 || bins.size() < n) {
-        return;
+        return false;
     }
 
     /* A model handed over after its first frame has landed announces nothing until
@@ -251,30 +403,158 @@ SpectrumTraceItem::paint(QPainter* painter) {
     const int hi = spectrum_math::freq_to_bin(center, span, n, m_model->viewHighHz());
     const int count = (hi >= lo) ? (hi - lo + 1) : 1;
 
-    /* Index 0 and w+1 are the polygon's baseline corners; the trace occupies
-     * 1..w, which is where the polyline is drawn from. */
-    m_points.resize(w + 2);
+    const auto columns = static_cast<size_t>(w);
     m_columns.resize(w);
+    m_xs.resize(columns);
+    m_ys.resize(columns);
     resample_columns(bins.constData(), lo, count, m_columns.data(), w);
     for (int x = 0; x < w; x++) {
         const double t = m_range.normalize(static_cast<double>(m_columns[x]));
-        m_points[x + 1] = QPointF(static_cast<double>(x), static_cast<double>(h) * (1.0 - t));
+        m_xs[static_cast<size_t>(x)] = static_cast<float>(x);
+        m_ys[static_cast<size_t>(x)] = static_cast<float>(static_cast<double>(h) * (1.0 - t));
     }
-    m_points[0] = QPointF(0.0, static_cast<double>(h));
-    m_points[w + 1] = QPointF(static_cast<double>(w - 1), static_cast<double>(h));
-
-    if (m_area_color.alpha() > 0) {
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(m_area_color);
-        painter->drawPolygon(m_points.constData(), w + 2);
-    }
-
-    QPen line(m_line_color);
-    line.setWidthF(1.5);
-    painter->setBrush(Qt::NoBrush);
-    painter->setPen(line);
-    painter->drawPolyline(m_points.constData() + 1, w);
+    return true;
 }
+
+QSGNode*
+SpectrumTraceItem::updateGpuTree(QSGNode* old, int w, int h, double pixel_ratio, bool have_trace) {
+    auto* root = (old != nullptr && old->type() == QSGNode::BasicNodeType) ? static_cast<TraceGpuRoot*>(old) : nullptr;
+    if (root == nullptr) {
+        delete old;
+        root = new TraceGpuRoot;
+    }
+    const float feather = (pixel_ratio > 0.0) ? static_cast<float>(1.0 / pixel_ratio) : 1.0F;
+    const auto fw = static_cast<float>(w);
+    const auto fh = static_cast<float>(h);
+
+    /* The grid is drawn even with no data, so the panel reads as a chart that is
+     * waiting rather than as a hole in the screen. */
+    int count = 0;
+    if (m_grid_color.alpha() > 0) {
+        const int per_line = spectrum_geometry::stroke_vertex_capacity(2);
+        m_stroke.resize(static_cast<size_t>(per_line) * static_cast<size_t>(kGridLines));
+        for (int i = 1; i <= kGridLines; i++) {
+            const float y = (fh * static_cast<float>(i)) / static_cast<float>(kGridLines + 1);
+            const float xs[2] = {0.0F, fw};
+            const float ys[2] = {y, y};
+            count += spectrum_geometry::build_stroke(xs, ys, 2, kGridHalfWidth, feather, y, m_stroke.data() + count);
+        }
+    }
+    set_stroke_vertices(root->grid, m_stroke.data(), count, m_grid_color);
+
+    count = 0;
+    if (have_trace && m_area_color.alpha() > 0) {
+        m_area.resize(static_cast<size_t>(w) * 2U);
+        count = spectrum_geometry::build_area_strip(m_ys.data(), w, fh, m_area.data());
+    }
+    set_area_vertices(root->area, m_area.data(), count, m_area_color);
+
+    count = 0;
+    if (have_trace && m_line_color.alpha() > 0) {
+        m_stroke.resize(static_cast<size_t>(spectrum_geometry::stroke_vertex_capacity(w)));
+        count =
+            spectrum_geometry::build_stroke(m_xs.data(), m_ys.data(), w, kTraceHalfWidth, feather, fh, m_stroke.data());
+    }
+    set_stroke_vertices(root->line, m_stroke.data(), count, m_line_color);
+    return root;
+}
+
+/**
+ * @brief The whole chart, drawn the way the painted item drew it, for the software scene graph.
+ */
+QImage
+SpectrumTraceItem::paintSoftwareImage(int w, int h, double pixel_ratio, bool have_trace) const {
+    const double ratio = (pixel_ratio > 0.0) ? pixel_ratio : 1.0;
+    QImage image(qCeil(w * ratio), qCeil(h * ratio), QImage::Format_ARGB32_Premultiplied);
+    image.setDevicePixelRatio(ratio);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    if (m_grid_color.alpha() > 0) {
+        QPen grid(m_grid_color);
+        grid.setWidthF(1.0);
+        painter.setPen(grid);
+        for (int i = 1; i <= kGridLines; i++) {
+            const double y = (static_cast<double>(h) * i) / static_cast<double>(kGridLines + 1);
+            painter.drawLine(QPointF(0.0, y), QPointF(static_cast<double>(w), y));
+        }
+    }
+    if (!have_trace) {
+        return image;
+    }
+    /* Index 0 and w+1 are the polygon's baseline corners; the trace is 1..w. */
+    QVector<QPointF> points(w + 2);
+    for (int x = 0; x < w; x++) {
+        points[x + 1] = QPointF(static_cast<double>(m_xs[static_cast<size_t>(x)]),
+                                static_cast<double>(m_ys[static_cast<size_t>(x)]));
+    }
+    points[0] = QPointF(0.0, static_cast<double>(h));
+    points[w + 1] = QPointF(static_cast<double>(w - 1), static_cast<double>(h));
+    if (m_area_color.alpha() > 0) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(m_area_color);
+        painter.drawPolygon(points.constData(), w + 2);
+    }
+    QPen line(m_line_color);
+    line.setWidthF(static_cast<double>(kTraceHalfWidth) * 2.0);
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(line);
+    painter.drawPolyline(points.constData() + 1, w);
+    return image;
+}
+
+QSGNode*
+SpectrumTraceItem::updatePaintNode(QSGNode* old, UpdatePaintNodeData* /*data*/) {
+    QQuickWindow* win = window();
+    const int w = static_cast<int>(width());
+    const int h = static_cast<int>(height());
+    if (win == nullptr || w <= 1 || h <= 1) {
+        delete old;
+        return nullptr;
+    }
+    const double ratio = win->effectiveDevicePixelRatio();
+    const bool have_trace = buildTrace(w, h);
+    if (win->rendererInterface()->graphicsApi() != QSGRendererInterface::Software) {
+        return updateGpuTree(old, w, h, ratio, have_trace);
+    }
+    /* The software scene graph skips plain geometry nodes; it does draw images. */
+    auto* node =
+        (old != nullptr && old->type() == QSGNode::GeometryNodeType) ? static_cast<QSGImageNode*>(old) : nullptr;
+    if (node == nullptr) {
+        delete old;
+        node = win->createImageNode();
+        node->setOwnsTexture(true);
+        node->setFiltering(QSGTexture::Linear);
+    }
+    const QImage image = paintSoftwareImage(w, h, ratio, have_trace);
+    node->setTexture(win->createTextureFromImage(image));
+    node->setRect(software_image_rect(image));
+    return node;
+}
+
+#ifdef DSD_NEO_TEST_HOOKS
+QSGNode*
+SpectrumTraceItem::testUpdateGpuTree(QSGNode* old, double width, double height, double pixel_ratio) {
+    const int w = static_cast<int>(width);
+    const int h = static_cast<int>(height);
+    return updateGpuTree(old, w, h, pixel_ratio, buildTrace(w, h));
+}
+
+void
+SpectrumTraceItem::testSoftwareRectSize(double width, double height, double pixel_ratio, double* shown_width,
+                                        double* shown_height) {
+    const QRectF rect = software_image_rect(testSoftwareImage(width, height, pixel_ratio));
+    *shown_width = (rect.x() < 0.5 && rect.y() < 0.5 && rect.x() > -0.5 && rect.y() > -0.5) ? rect.width() : -1.0;
+    *shown_height = rect.height();
+}
+
+QImage
+SpectrumTraceItem::testSoftwareImage(double width, double height, double pixel_ratio) {
+    const int w = static_cast<int>(width);
+    const int h = static_cast<int>(height);
+    return paintSoftwareImage(w, h, pixel_ratio, buildTrace(w, h));
+}
+#endif
 
 // ------------------------------------------------------------ waterfall ----
 
@@ -288,20 +568,31 @@ WaterfallItem::~WaterfallItem() = default;
 
 void
 WaterfallItem::setModel(SpectrumModel* next) {
-    if (m_model == next) {
+    if (m_model.data() == next) {
         return;
     }
     if (m_model) {
-        disconnect(m_model, nullptr, this, nullptr);
+        disconnect(m_model.data(), nullptr, this, nullptr);
     }
     m_model = next;
     if (m_model) {
-        connect(m_model, &SpectrumModel::frameChanged, this, &WaterfallItem::onFrame);
+        connect(m_model.data(), &SpectrumModel::frameChanged, this, &WaterfallItem::onFrame);
         /* Pan and zoom are a source rectangle, so they need a repaint but not a
          * new row. */
-        connect(m_model, &SpectrumModel::viewChanged, this, [this]() { update(); });
-        connect(m_model, &SpectrumModel::retuned, this, &WaterfallItem::clearHistory);
+        connect(m_model.data(), &SpectrumModel::viewChanged, this, [this]() { update(); });
+        connect(m_model.data(), &SpectrumModel::retuned, this, &WaterfallItem::clearHistory);
+        connect(m_model.data(), &QObject::destroyed, this, &WaterfallItem::onModelDestroyed);
     }
+    m_range.reset();
+    clearHistory();
+    Q_EMIT modelChanged();
+}
+
+void
+WaterfallItem::onModelDestroyed() {
+    /* As setModel(nullptr) would, without touching the model that is going away:
+     * its pointer is already null, and history drawn from it means nothing now. */
+    m_model.clear();
     m_range.reset();
     clearHistory();
     Q_EMIT modelChanged();

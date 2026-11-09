@@ -190,13 +190,16 @@ Item {
      * with its own message. It is the point past which the number stops meaning
      * itself: manualTuneHz takes a uint, and QML converts a JS number to one by
      * ECMAScript ToUint32, so 5 GHz typed into "Go to" arrives as 705 MHz and
-     * retunes the receiver somewhere plausible that nobody asked for.
+     * retunes the receiver somewhere plausible that nobody asked for. The check
+     * is on the rounded value, the one that is sent: 0.25 and 4294967295.75
+     * pass a check on the raw number and round to 0 and to 2^32, which is 0 again.
      */
     function tuneTo(hz) {
-        if (screen.viewOnly || !(hz > 0) || !(hz < 4294967296))
+        const want = Math.round(hz);
+        if (screen.viewOnly || !(want >= 1) || !(want <= 4294967295))
             return false;
         screen.hint = "";
-        commands.manualTuneHz(Math.round(hz));
+        commands.manualTuneHz(want);
         return true;
     }
 
@@ -206,10 +209,11 @@ Item {
      * one; tuneTo()'s uint bound holds for the same reason.
      */
     function goTo(hz) {
-        if (!screen.goToAllowed || !(hz > 0) || !(hz < 4294967296))
+        const want = Math.round(hz);
+        if (!screen.goToAllowed || !(want >= 1) || !(want <= 4294967295))
             return false;
         screen.hint = "";
-        commands.tuneHz(Math.round(hz));
+        commands.tuneHz(want);
         return true;
     }
 

@@ -4612,6 +4612,38 @@ elseif(MSVC)
 endif()
 add_test(NAME UI_QT_SPECTRUM_MATH COMMAND dsd-neo_test_ui_qt_spectrum_math)
 
+# The triangles the spectrum trace hands the GPU (spectrum_trace_geometry.cpp),
+# Qt-free like the viewport arithmetic above. Headless Qt has no RHI backend,
+# so this is the only check of the drawn shape that CI can run: full pen width
+# on the steep sides of a spike, bevels on the outside of every turn, and no
+# NaN out of repeated or non-finite points.
+add_executable(
+    dsd-neo_test_ui_qt_spectrum_trace_geometry
+    ui/test_ui_qt_spectrum_trace_geometry.cpp
+    ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_spectrum_trace_geometry
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+# IEEE semantics, as dsd-neo_ui_qt builds this file: the non-finite cases
+# check guards that fast-math would compile out.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_ui_qt_spectrum_trace_geometry
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(
+        dsd-neo_test_ui_qt_spectrum_trace_geometry
+        PRIVATE /fp:precise
+    )
+endif()
+add_test(
+    NAME UI_QT_SPECTRUM_TRACE_GEOMETRY
+    COMMAND dsd-neo_test_ui_qt_spectrum_trace_geometry
+)
+
 # The persistence layer itself (json_store atomic writes, the saved-systems
 # field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
 # policy tests above it links Qt and is registered only when the Qt frontend
@@ -5189,6 +5221,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_spectrum_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_spectrum_model
@@ -5203,6 +5236,20 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_spectrum_model
         PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
+    # IEEE semantics, as dsd-neo_ui_qt builds these sources: the model and the
+    # trace guard against non-finite frames, and fast-math would compile the
+    # guards out of this copy.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(
+            dsd-neo_test_ui_qt_spectrum_model
+            PRIVATE -fno-fast-math
+        )
+    elseif(MSVC)
+        target_compile_options(
+            dsd-neo_test_ui_qt_spectrum_model
+            PRIVATE /fp:precise
+        )
+    endif()
     set_target_properties(
         dsd-neo_test_ui_qt_spectrum_model
         PROPERTIES AUTOMOC ON
@@ -5285,6 +5332,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
             # Issue #672: the Monitor's avoid sheet lists the real list model, which a case fills by key.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
@@ -5351,6 +5399,17 @@ if(DSD_ENABLE_QT_UI)
                 DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
                 DSD_QML_FONT_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/fonts"
         )
+        # IEEE semantics, as dsd-neo_ui_qt builds the production sources this
+        # recompiles: their non-finite guards (the spectrum's among them) would
+        # otherwise be compiled out of this copy under fast-math.
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(
+                dsd-neo_test_ui_qt_qml
+                PRIVATE -fno-fast-math
+            )
+        elseif(MSVC)
+            target_compile_options(dsd-neo_test_ui_qt_qml PRIVATE /fp:precise)
+        endif()
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
         add_test(
