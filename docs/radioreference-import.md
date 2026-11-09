@@ -463,6 +463,9 @@ browser reports that no imports were found there.
 - Sites are matched by RadioReference `siteId`, not by position and not by RF site number: the site
   list is free to be reordered, and a system can number several sites the same.
 - A refreshed file is pushed into a running session only when that session is actually using it.
+  The terminal and the app send the session a reload naming the refreshed file, and the decoder
+  decides when it applies it: it reloads the file only if it is the channel map or group list in use
+  at that moment, so a session that moved to another file, or a `-Y` row's own list, is left alone.
   Applying a channel map replaces the live one wholesale and discards what the decoder had learned
   on the air — see `docs/csv-formats.md`.
 - A talkgroup-list refresh in which none of RadioReference's talkgroups has a usable ID keeps the

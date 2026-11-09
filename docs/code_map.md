@@ -2213,6 +2213,54 @@ suite runs under this compiler.
   compare. Only a first-learned row is appended to the group file, which is append-only and whose first row for an ID
   is the one a reload keeps: a renamed radio's new alias holds for the session, and after a restart the file's earlier
   name loads as an imported row and wins (documented limit). Tests: `CORE_TALKGROUP_POLICY`, `P25_MOTOROLA_ALIAS`.
+- Invariant (the group file stands for the list, discussion #748, `<dsd-neo/core/talkgroup_policy.h>`): dsd-neo writes
+  its group file back (a rewrite on every saved edit, an export, an appended alias row), so a list that is not what
+  the file holds must never be written over it.
+  - One read: every group load (startup `csvGroupImportPath()`, the scan-row `dsd_tg_policy_load()`, the live
+    `dsd_tg_policy_load_group_file()`, the dry-run validator) is one pass in `dsd_import.c` that counts each data row
+    into a `dsd_tg_policy_load_report` (`accepted`, `skipped` malformed and logged, `failed` not stored for want of
+    memory, `not_found`, `unreadable`). `dsd_tg_policy_load_report_incomplete()` is `failed`, `unreadable`, or data
+    rows none of which loaded (`accepted == 0 && skipped > 0`, such as an Excel CSV saved with `;`); a header-only or
+    zero-byte file is complete and loads as an empty list.
+  - Incomplete store: the live load refuses one (-1, store untouched). Startup and scan-row loads keep it for
+    decoding, marked (`dsd_tg_policy_incomplete()`; the mark rides clones, so snapshots and suspended copies carry it)
+    and logged once (`Group file '<path>' loaded incomplete: <why>`). Nothing writes it back:
+    `dsd_tg_policy_write_group_file()` returns 1 (rewrite and export alike), the alias append returns 1, and the
+    engine's `import_group_csv_if_needed()` does not read the file again. A complete load of the file replaces it.
+  - Baseline (`{valid, rows_hash, path}` in the store, copied by clones; not by the UI snapshot copy, since frontend
+    snapshots never write): a 64-bit FNV-1a over the rows the importer accepted, in file order, each in the canonical
+    form the store keeps (`tg_policy_canonical_entry()`), without the source or line number, so line endings, blank
+    lines, unmodelled columns and malformed rows never enter it. Every load sets it from the rows just read (no extra
+    read). A write sets it from the lines it wrote, read back through the importer's own row parser
+    (`dsd_tg_policy_rows_hash_line()`) under the header it wrote, so sanitised commas, header-dependent columns and
+    pattern canonicalisation hash as the next load reads them; an export moves it to the export path.
+  - Rewrite check (`tg_policy_baseline_check()`), only when the baseline names the destination: the file on disk is
+    hashed with a quiet importer pass (`dsd_tg_policy_rows_hash_file()`, no row warnings) and compared. Equal:
+    replaced. Different: nothing written, return 2 (app-control's `Talkgroup change kept for this session only; group
+    list changed on disk, reload it`, and `Talkgroup export refused: group list changed on disk; reload it` for an
+    export over the list's own file). Missing: written, since nothing on disk is lost. Unreadable: -1. No baseline (a
+    new export path): written as before, and it becomes the baseline. The temporary file is staged before the lock.
+  - Append (`dsd_tg_policy_append_group_file_row(opts, state, entry, metadata)`, the state added for the fold): no
+    check, since an append destroys nothing. The line is folded into every list whose baseline names the file: the
+    effective store and, while a `-Y` row's or trunk-scan target's own list is in effect or suspended, the list held
+    aside (`dsd_scan_groups_held_store()`), which also takes the learned row unless it has a row for that ID, as a
+    reload would. An append that creates the file starts the global list's baseline. An edit made outside dsd-neo
+    before an append still differs at the next rewrite, because the hash covers the whole row sequence.
+  - Managed-file lock (`<dsd-neo/core/managed_file.h>`, `src/core/file/managed_file.c`, one lazily created
+    process-wide mutex): taken by the decoder's check and replace (rewrite, export) and its append, by app-control's
+    `dsd_app_import_write()` and `dsd_app_import_replace_checked()` around the replace only (the terminal
+    RadioReference import and refresh), and by Qt's `ImportedFilesModel::replaceRowFile()` (see UI). It holds file
+    operations only and nothing under it waits for another thread. A guarded save of a 5,000-row list holds it about
+    2 ms (the check) and the tick guard about 4 ms longer than an unguarded save (dev-release). Test seam:
+    `dsd_managed_file_step_reached()` (`CHECKED`, `INSTALLED`) with `managed_file_test_support.h`.
+  - Limits: an outside save that lands between the check and the replace (milliseconds) is lost; an outside edit of
+    only unmodelled columns or malformed rows is not seen (a rewrite drops those anyway); each refused save reads the
+    file again, quietly, until the list is reloaded.
+  - Tests: `CORE_TALKGROUP_POLICY` (`test_group_load_report`, `test_group_startup_incomplete_not_written`,
+    `test_group_rows_hash_canonical`, `test_group_rewrite_guard`, `test_group_append_tracks_baseline`,
+    `test_group_check_is_quiet`, `test_group_startup_and_export_baseline`), `APP_COMMAND_QUEUE`,
+    `APP_CONTROL_IMPORT_FILES` and `UI_QT_IMPORTED_FILES` (the lock's interleavings), `P25_MOTOROLA_ALIAS`,
+    `ENGINE_RUN_SETUP`.
 - Invariant (alias rows are radios, `talkgroup_policy.c` `tg_policy_entry_is_learned_alias()`): a row with source
   `RUNTIME_ALIAS` or mode `D` (the durable mark a persisted alias keeps) never decides a talkgroup: group evaluation,
   allow-list membership and the followed calls' priority refresh skip it and fall through to a talkgroup row or the
@@ -4410,6 +4458,45 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   - Source ID imports: `DSD_APP_CMD_IMPORT_SRC_LIST = 572` carries a path string;
     `DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573` has no payload. Import validates one candidate, refuses zero usable
     rows, and adopts that same store and path on success; failure preserves both.
+  - Group list imports (discussion #748): `DSD_APP_CMD_IMPORT_GROUP_LIST = 561` (path), `_CLEAR = 565` and
+    `_RELOAD = 569` share `svc_import_group_list(opts, state, path, result)` / `svc_load_group_list()` and
+    `svc_clear_group_list()` (`services.h`). A load is refused, changing nothing (rows, path, baseline, generations,
+    temporary avoids, call skips), for a file not found, not readable, with a row it could not store, or with data
+    rows none of which loaded (`svc_group_list_status`); a file with no data rows at all (a header only, or no bytes)
+    is a list emptied on purpose and becomes the live list, saved to that file, as at startup. `svc_group_list_result`
+    carries the status, the core load report and whether temporary avoids or call skips went with the old list.
+    `group_list_load_feedback()` puts the outcome in the toast (`Applied: Group list imported -> 42 rows, 1 skipped`,
+    `-> empty list`, `Failed: Group list import -> no usable rows (3 skipped); list unchanged`, `reloaded`/`reload` for
+    a reload) and the path and the cleared temporaries in the log. Clear empties the path only after
+    `dsd_tg_policy_clear()` succeeds. CONFIG_APPLY loads its group file through `svc_load_group_list()` and the RR
+    apply through `svc_import_group_list()` (NULL result), so they refuse and take the same files.
+  - Reload commands (discussion #748): `DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD = 569` (payload none, or the path
+    expected in use) and `DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD = 574` (expected path, required) are listed wherever
+    their imports are (`command_writes_policy_store()`; the group reload also in `command_updates_scan_mode()`, the
+    scoped `group_update` and the action list). The group handler runs after `dsd_scan_groups_suspend()`, so
+    `opts->group_in_file` is the configured global file, never a row's: no payload reloads it (no file: `Failed: Group
+    list reload -> no group list file; import one first`); an expected path reloads only when it is that file, and
+    another path, or no file, is a no-op logged as `not reloaded: the session does not use it` (no toast, the command
+    completes). The channel map reload compares with `opts->chan_in_file` the same way and then applies as the import
+    (`channel_map_import_apply()`). The match is an exact string compare: frontends post the path they stored, but on
+    Windows the same file spelled with another case or separator is "not in use", which fails safe (no reload, and
+    the rewrite check refuses the next save until the list is reloaded). An overlong path is refused (`Invalid group
+    list path`). Frontends: the terminal row (UI, "Group list reload"), the terminal RadioReference refresh
+    (`rr_refresh_push_live()` posts the expected-path reload whenever the hook exists, never reading a snapshot), Qt
+    `CommandBridge::reloadGroupList(path)` (empty = the configured file) and `reloadChannelMap(path)`, and the API's
+    `reload_group_list` / `reload_channel_map` (`docs/api.md`). Tests: `APP_COMMAND_QUEUE`, `UI_RR_WIZARD`,
+    `API_COMMANDS`, `UI_QT_CONTROLLER`.
+  - Release after a list change (discussion #748 R3/R6): an import, reload or clear of the global group list ends a
+    followed call the new list blocks, as a row edit does. `apply_cmd_scoped()` reads, before the scan suspends,
+    whether the global list judges the calls (not while a row's or target's own list governs, whose policy did not
+    change) and which slots it blocks already (`ui_group_list_calls_before()`), and after the scopes resume, still
+    under the tick guard, releases the newly blocked ones (`ui_group_list_release_calls()` ->
+    `tg_listen_release_blocked_calls()`), so the return tune uses the row's own settings. A resume that fails reports
+    the command failed and releases nothing. A failed return tune also fails it, its toast appending `; return-to-CC
+    tune failed` to the command's own. CONFIG_APPLY does not release. `tg_listen_blocked_slots()` judges each call as
+    its protocol admits it (`tg_listen_evaluate_call()`; NXDN, see Core "radio policy"). Tests: `APP_COMMAND_QUEUE`
+    (`test_group_list_command_releases_blocked_calls`, `test_nxdn_source_fallback_call_released`,
+    `test_refused_save_survives_a_failed_return`).
   - Frontend runtime/control-pump glue and telemetry hook installation
   - Public frontend boundary headers under `<dsd-neo/app_control/...>`
   - RadioReference apply: `include/dsd-neo/app_control/rr_import_apply.h` carries the by-value apply payload
@@ -11011,16 +11098,18 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD` with no path (`act_group_list_reload()`); the decoder resolves the file
     after the scan scope is set aside. `group_list_reload_offered()`, `lbl_group_list_reload()` and
     `act_import_group()` read the configured group file through `menu_configured_group_file()` (`menu_labels.h`; the
-    frame's `dsd_scan_mode_configured_view()`, else `group_in_file`), never a `-Y` row's own list; the label shows its file name (after the last `/` or `\`) in the `ui_text` model, cut to 24 cells and 48
-    bytes with its marker, since the renderer measures and cuts labels in bytes (a non-ASCII name widens the overlay by
-    its extra bytes, never cut at 80 columns). The import prompt's prefill is held in `CsvPickerCtx` until the
-    "Enter a path..." prompt opens. `ui_menu_tick()` copies each new live decoder toast into the menu's status line
+    frame's `dsd_scan_mode_configured_view()`, else `group_in_file`), never a `-Y` row's own list; the label shows its
+    file name (after the last `/` or `\`) in the `ui_text` model, cut to 24 cells and 48 bytes with its marker, since
+    the renderer measures and cuts labels in bytes (a non-ASCII name widens the overlay by its extra bytes, never cut
+    at 80 columns). The import prompt's prefill is held in `CsvPickerCtx` until the "Enter a path..." prompt opens.
+    `ui_menu_tick()` copies each new live decoder toast into the menu's status line
     (`ui_menu_follow_decoder_toast()`), since an open overlay can cover the main screen's toast line: new by
     `ui_msg_seq` (which app-control's `ui_set_toast()` increments, so the same command twice within a second still
     shows), or by text or expiry for a toast written directly; sanitized through `ui_text_sanitize()`; held no longer
     than `ui_msg_expire` (`ui_status_expire_by()`). A toast live when the menu or a modal opens is marked seen there, so
-    it never replaces the open hint. Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_CSV_PICKER`,
-    `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`).
+    it never replaces the open hint. Limit: a writer that sets `ui_msg` directly, bypassing `ui_set_toast()`, and
+    repeats the same text with the same expiry second is shown once (none of them answers a menu row). Tests:
+    `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_CSV_PICKER`, `UI_MENU_NAVIGATION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`).
   - Scan lists (issue #697): Trunking > Scan lists... (`trunk.scan_lists`, right after Avoids, hotkey
     `#` = `DSD_KEY_SCAN_LISTS`, `lbl_scan_lists()` `[2 of 3 on]`, offered by `scan_lists_offered()`, the scan list
     view's `toggleable`: a running trunk scan with 2+ lists) and the `#` key (`ui_menu_open_modal_async()` with
@@ -12717,6 +12806,31 @@ Qt Quick frontend (`src/ui/qt`):
   launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
   (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
+- Replacing a library file in place (discussion #748): `ImportedFilesModel::updateFile()` (Update from file) and
+  `refreshGeneratedFile()` (RadioReference refresh) validate the staged file first, then call `replaceRowFile()`,
+  which runs backup, install (`DecoderHost::importLocalFile()`, a `QSaveFile` copy of the staged file, so the lock is
+  held for a file-sized copy) and commit-or-rollback under one `ManagedFileLock` (Core, "the group file stands for
+  the list"), so the decoder's rewrite check and its replace never straddle a Qt install. A rollback
+  (`CsvReplacementBackup::restore()`) puts the old file back only when the file still has the SHA-256 of what this
+  update installed (taken under the lock right after the install): a newer file, an editor's save, stays, and the
+  update reports failure as before. `replaceBundle()` (trunk-target bundles) takes no lock: the decoder never writes
+  those files. `ImportsScreen.qml` then calls `reloadIfInUse()` for a `group` or `chan` row whenever a session runs,
+  after an update (not a new import, a cancel or an unusable file) and after a refresh: it posts
+  `CommandBridge::reloadGroupList(path)` / `reloadChannelMap(path)`, and the decoder reloads the file only if it is
+  the one it uses at that moment. The screen no longer takes `sessionSystem` (the saved system a session started
+  from, which a manual Apply does not change). Its notice reads `Updated · 42 talkgroups · sent to the running
+  session` (`Updated`, never `Imported`, for an update), or `Updated, but the decoder is not accepting commands`.
+  `emptyList()` (a `group` row with no rows and none skipped) and `usable()` treat a header-only talkgroup list as a
+  list, as the decoder does: the notice says `Updated · empty list`, the row `Empty list · <date>` in the normal
+  colour, and it is reloaded; a channel map or other kind with no rows stays `No usable rows`. Main.qml's saved-system
+  edit of the running system posts `importGroupList(path)` for a changed group file, unless
+  `ImportedFilesModel::rowCounts(path)` (`{ok, accepted, skipped}`, read from the file now, since the decoder
+  rewrites a list in place and the import's counts go stale) says it has data rows none of which load, or the library
+  file cannot be read: then it posts `clearGroupList()`, since the refused import would leave the previous system's
+  list live, with this system's edits saved into that list's file. A path outside the library is imported, so the
+  decoder says why it refuses. Tests: `UI_QT_IMPORTED_FILES` (`test_update_waits_for_decoder_rewrite`,
+  `test_rollback_keeps_newer_files`, `test_row_counts_read_the_file_now`), `UI_QT_QML_CALL_LISTS`
+  (`tst_imports_live_reload.qml`, `tst_main_live_csv_apply.qml`), `UI_QT_CONTROLLER` (`test_reload_bridge`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
   ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
   Every history change rescans the whole history (a merge can move a row to another session, so contributions are
@@ -13446,11 +13560,13 @@ Shared command IDs 592/593/594 are the talkgroup row set, remove and export (`ap
 `apply_cmd_tg_row_remove()`, `apply_cmd_tg_list_export()` in `app_command_queue.c`); each is refused as stale unless
 its `policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
 listen/priority/preempt/name/tags/record (record applied after a mode change in the same edit). Set and remove refuse a
-learned alias row, rewrite the group file (outside a scan row) and end an active group call the edit newly blocks (by
-mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`; so do a
-group list import, reload and clear whose global list judges the calls, read before the scoped suspend and released
-after the resume, `ui_group_list_calls_before()`); export
-is refused for a scan row's list, writes the list to the given path and makes it the session's group file. IDs 652/653
+learned alias row, rewrite the group file (outside a scan row; `tg_listen_persist()` keeps the edit for the session
+when the write returns 1 or 2, Core "the group file stands for the list") and end an active group call the edit newly
+blocks (by mode or allow list) as a lockout does, returning to the control channel
+(`tg_listen_release_blocked_calls()`; so do a group list import, reload and clear whose global list judges the calls,
+read before the scoped suspend and released after the resume, `ui_group_list_calls_before()`); export is refused for
+a scan row's list, an incomplete list, or a list whose own file changed on disk, writes the list to the given path and
+makes it the session's group file. IDs 652/653
 are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
 `dsd_scan_keys_apply_direct()`, keeping an active scan row's signalled key IDs, key loader and profile) and an int32
 force-key mode 0/1/2 (`apply_cmd_force_key()`; a change bumps the key epoch). Force-key and the export run against the

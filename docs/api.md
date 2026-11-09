@@ -427,10 +427,13 @@ The decoder decides which file that is when it applies the command, after a
 `-Y` row's or trunk-scan target's own group list is set aside, so a row's file
 never becomes the session's list. With a `value`, the file is reloaded only when
 it is the one in use (an exact path match); otherwise nothing changes and the
-decoder logs why. `reload_group_list` without a `value` reloads the configured
-group file. As for the imports, `"status":"queued"` means only that the command
-was queued: the reload's outcome (rows loaded, or why the file was refused) is in
-the status message.
+decoder only logs it (no notice). `reload_group_list` without a `value` reloads
+the configured group file, and fails with a notice when none is set;
+`reload_channel_map` needs a `value`. As for the imports, `"status":"queued"`
+means only that the command was queued: the reload's outcome (rows loaded, an
+empty list, or why the file was refused and the list kept) is in the notice line
+(`status.message`). A group list reload that works clears temporary talkgroup
+avoids and call skips, as an import does.
 
 | Command | Parameters |
 | --- | --- |

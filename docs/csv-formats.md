@@ -30,11 +30,17 @@ Files are picked with the system document picker and copied into app-private sto
 original can live anywhere (Downloads, Drive, …) and is not read again
 after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
-"No usable rows". While a session is running, open the monitor's session menu and choose **Edit saved system**; saving
-applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
-channel map, talkgroup list, keys, or source ID list from the running session. This action is available
-only for a session this app instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the
-app and ends the session (`android/README.md` "Known limits").
+"No usable rows". A talkgroup list with a header and no rows is a list emptied on purpose, not a wrong file: its row
+reads "Empty list", and it loads as an empty list. While a session is running, "Update from file" and
+**Refresh from RadioReference** of a talkgroup list or channel map also send the new file to the session, which
+reloads it if it is the file the session uses (the notice adds "sent to the running session"); a file the session
+does not use is left alone. To change the files of a running session, open the monitor's session menu and choose
+**Edit saved system**; saving applies the files that changed to the live session immediately, including clearing a
+field to "None" — that unloads the channel map, talkgroup list, keys, or source ID list from the running session. A
+talkgroup list chosen there whose rows all fail to load, or that cannot be read, is not loaded: the session's list is
+cleared instead, so the previous system's talkgroups do not stay in use. This action is available only for a session
+this app instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the app and ends the
+session (`android/README.md` "Known limits").
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
 air is discarded along with the previous file's entries; a grant for a channel the new file omits stays unresolved
@@ -816,6 +822,37 @@ Important behavior:
 - Without a group file, edits last only for the session. A scan row's own effective list is also edited only
   in memory, never written into the global group file. If saving fails, the decoder keeps the live edit and
   reports that it is session-only; the previous file remains intact.
+- A data row that does not parse (fewer than three fields, or an ID that is not a number, range or pattern) is
+  skipped with a warning naming its row, and the other rows load. A file with no data rows at all (a header only, or
+  no bytes) is a list emptied on purpose: it loads as an empty list, and later changes save to it.
+- A live import or reload (terminal **Import group list CSV...** and **Reload group list**, Qt/Android, the control
+  API) changes nothing when the file is not found, cannot be read to the end, has a row dsd-neo could not store (out
+  of memory), or has data rows none of which load, most often a CSV saved with `;` separators. The list in use, its
+  file, temporary avoids and call skips all stay, and the toast says why: `Failed: Group list reload -> no usable
+  rows (12 skipped); list unchanged`. A load that works says what it read: `Applied: Group list reloaded -> 42 rows,
+  1 skipped`, or `-> empty list`. The log names the file and each skipped row.
+- A reload reads the session's group file again, so edits made in another program take effect: terminal **Reload
+  group list**, Qt/Android **Update from file** or **Refresh from RadioReference** of that file while a session runs,
+  and the control API's `reload_group_list`. The decoder decides which file that is when it applies the reload: the
+  global group file, even while a `-Y` row or trunk-scan target with its own `-G` list is on air (that list is not
+  reloaded). A frontend that names a file reloads it only when it is the file in use, compared exactly as the path
+  was given: on Windows the same file spelled with other letter case or slashes counts as another file, so nothing
+  reloads, and the next save is refused as described below until the list is reloaded.
+- A startup `-G` file that cannot be read to the end, has rows dsd-neo could not store, or has data rows none of which
+  load (the `;` case) is still used for decoding with the rows that did load, but dsd-neo never writes it back: edits
+  and lockouts last for the session (`Talkgroup change kept for this session only; group list incomplete, reload
+  it`), an export is refused, and learned radio aliases are not appended. The log says so once. Fix the file and
+  reload it, or import another; a load that works ends this.
+- Before a save rewrites the group file, dsd-neo reads the file and compares its rows with the rows it last read from
+  or wrote to it. If they differ (the file was edited in a text editor or spreadsheet and not reloaded, or a frontend
+  replaced it and its reload has not run yet), nothing is written: the change lasts for the session and the toast
+  says `Talkgroup change kept for this session only; group list changed on disk, reload it`. An export over that
+  file is refused the same way; an export to another file is written. Reload the list, which drops the change that
+  was not saved, then make the change again. What dsd-neo does not read is not compared (line endings, blank lines,
+  note columns, malformed rows), and a file that was deleted is written again. Appending a learned alias row needs
+  no check, since it loses nothing, and the comparison takes the appended row into account. Limits: a save made
+  outside dsd-neo in the few milliseconds between the check and the write is lost, and an outside edit that changes
+  only columns dsd-neo does not read, or rows it skips, is not seen (a rewrite drops those anyway, see above).
 - `--tg-lockout-session` (or `[trunking] persist_tg_lockouts = false`) makes terminal `!`/`@` temporary avoids
   and changes Qt/Android **Lock out** to **Avoid TG**. They block tuning and all media without editing policy rows or the file. Later
   list edits, exports and configuration saves cannot serialize these avoids. `--tg-lockout-persist` restores
@@ -830,9 +867,9 @@ Important behavior:
   user lockouts only; existing over-the-air radio-alias learning can still append alias rows to the groups file.
 - Qt/Android **Clear temporary avoids and call skips — current list** (terminal **Clear temporary TG avoids - current
   list**) clears only the active list's temporary avoids and call skips. It leaves saved blocks, encryption lockouts,
-  and channel/target avoids intact. Retunes and scan visits preserve avoids and unexpired call skips; reloading,
-  replacing, or clearing a list resets both in that scope. Stopping the decoder clears the session; reopening the
-  Android Activity while its service runs does not.
+  and channel/target avoids intact. Retunes and scan visits preserve avoids and unexpired call skips; a reload,
+  import or clear of a list that works resets both in that scope (one that is refused keeps them). Stopping the
+  decoder clears the session; reopening the Android Activity while its service runs does not.
 
 Example:
 

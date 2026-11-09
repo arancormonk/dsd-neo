@@ -2108,9 +2108,9 @@ The Qt/Android button reads **Lock out** when saving is on and **Avoid TG** when
 Temporary avoids block tuning, audio, recording and streaming without modifying the saved list. Explicit list
 edits still save, and exports omit temporary avoids. Use Qt/Android **Clear temporary avoids and call skips — current
 list** or terminal **Clear temporary TG avoids - current list** to undo them in the current scope. They also clear
-on list reload/replacement or decoder stop; ordinary retunes and scan visits preserve them. Scan rows with their
-own lists stay isolated; rows using the global list share its avoids. Changing the persistence setting does not
-change the lifetime of existing blocks.
+when a list reload or replacement works (one the decoder refuses keeps them) and at decoder stop; ordinary retunes
+and scan visits preserve them. Scan rows with their own lists stay isolated; rows using the global list share its
+avoids. Changing the persistence setting does not change the lifetime of existing blocks.
 
 Qt/Android **Skip** leaves the call without touching the talkgroup list, blocking tuning and all media for its
 target. On P25 a group-call skip lasts while the receiver keeps seeing the talkgroup's call (control-channel
@@ -2125,7 +2125,7 @@ skip (and no quick lockout), while a P25, DMR or NXDN call is skipped or locked 
 enables ProVoice too).
 Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-target revisits like session avoids,
 subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
-list reload/replacement or decoder stop also clears them.
+a list reload or replacement that works, or decoder stop, also clears them.
 
 On P25, a lockout (`B`/`DE` row), avoid or skip of a patched supergroup blocks the whole patch: a member talkgroup
 that is allowed, listed or held does not readmit the supergroup's grants. A member still selects the patch when

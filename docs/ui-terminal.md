@@ -513,6 +513,10 @@ Group policy reload:
   beside it is an edit of the path rather than a retype.
 - The outcome of an import or reload, as of any command a row posts, also shows on the menu's status line, where
   an open menu cannot cover it.
+- A saved lockout (`!`/`@`), like any talkgroup change the decoder saves, is not written over a group list file
+  that was edited outside dsd-neo and not reloaded yet, or that loaded incomplete at startup: the change lasts for the
+  session and the toast says `... group list changed on disk, reload it` or `... group list incomplete, reload it`.
+  Reload the list, then make the change again. `docs/csv-formats.md` (Group List CSV) has the rules and limits.
 
 Config profiles:
 
