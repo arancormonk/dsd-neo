@@ -106,6 +106,13 @@ typedef struct {
     uint64_t measurement_latency_us;
     dsd_signal_search_hit hit;
     char message[192];
+    /** 1 once a span was skipped because its measurements kept clipping (the receiver is overloaded; issue #828).
+     * Cleared at the end of a pass that skipped no span, at Resume and at a paused restart with edited ranges. Never
+     * written into message, so neither a refusal nor its clearing touches it. */
+    int overloaded;
+    /** The range of the first span skipped in the pass that set or kept the warning; later skips in that pass leave
+     * it, so it changes at most once a pass. "" while not overloaded. */
+    char overload_range[64];
 } dsd_signal_search_status;
 
 typedef struct {

@@ -110,6 +110,26 @@ Generated (do not edit/commit):
     publishes, captures or reports evidence. An analog visit's
     500 ms quiet timing starts only at the monitor's first verdict on the landed channel
     (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s.
+    Span measurement deadlines (issue #828, `search_measure_tick()`): each span tune keeps `measurement_started`
+    (first request), `clip_since` (first `CLIPPED` failure since the tune or the last complete report) and
+    `last_failure`, all reset in `search_queue_tune()`, which Resume and a paused restart reach through `need_span`.
+    Each tick reads the tap first, so a report that completed is used whatever the time (a late tick used to fail it);
+    an answer is the outstanding request's by session and request id (a complete report also by generation), and
+    any other is ignored. A `CLIPPED` failure starts `clip_since` if unset, any other keeps it, and either is requested
+    again in the same tick. The deadlines are judged on every tick, answered or not, on the realtime clock: the latest
+    failure `CLIPPED` with `clip_since` 1 s old (`SEARCH_CLIP_SKIP_MS`; a clip then no answer included), or more than
+    5 s since the first request (`SEARCH_MEASURE_MAX_MS`) with `clip_since` set (a first clip late in that time, or
+    clips mixed with drops), skips the span; more than 5 s with no clip fails the search, "No uninterrupted samples for
+    a measurement". A skip takes the no-detection branch (`channel_index = span.next`, `need_span`), so a single
+    clipping span, or every span clipping, keeps searching with `pass` climbing; the skipped channels were never
+    suppressed, so the next pass measures them again, and nothing is detected from a clipped measurement. It sets
+    `status.overloaded`, names `status.overload_range` from the running range only at the pass's first skip
+    (`pass_skipped` 0), so the name changes at most once a pass, and publishes. `search_select_range()` clears both at
+    a pass wrap when the pass just finished skipped nothing (`search_clear_overload()`); so do Resume and the paused
+    restart with edited ranges, so a lowered gain shows its effect. The warning is not in `message`: visits and actions
+    that clear a refusal leave it, and a frontend can word it per radio. A live-strength measurement that clips during
+    a visit only withdraws the level as above; it sets no warning and never ends the visit (`ENGINE_SIGNAL_SEARCH`,
+    `ENGINE_SIGNAL_SEARCH_SCENE`).
     Avoids (issue #828): a start carries none. The coordinator excludes the union of the store's permanent avoids,
     this session's avoids and the per-pass suppressed frequencies (`search_excluded()`), and a frequency is in one
     avoid list at most, each with room for 1,024 (`DSD_SEARCH_MAX_AVOIDS`). Both lists are the runtime's
@@ -130,7 +150,8 @@ Generated (do not edit/commit):
     every session avoid action and keeps its error, so nothing is published for a failed or stopped session. Pause,
     Resume and a paused restart with edited ranges keep both lists. A full session list refuses an avoid and publishes
     "The avoid list is full" in `status.message`; any action that takes effect, or the next visit's tune
-    (`search_queue_tune()`), clears an earlier refusal, and an ERROR phase keeps its message (`ENGINE_SIGNAL_SEARCH`).
+    (`search_queue_tune()`), clears an earlier refusal, never the overload warning, and an ERROR phase keeps its
+    message (`ENGINE_SIGNAL_SEARCH`).
     `dsd_engine_signal_search_target()` validates an action
     against the live coordinator without acting and gives the frequency it acts on;
     `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
@@ -6879,7 +6900,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   reason until the next request, and `get()` copies the report for any nonzero result.
   `rtl_signal_measure_request()` names a refusal in its out-parameter: `NO_MEMORY` when no
   tap detector could be allocated, else `UNSUPPORTED` (plan); the coordinator words them
-  "Not enough memory for a measurement" and "Unsupported FFT measurement plan". A pair is
+  "Not enough memory for a measurement" and "Unsupported FFT measurement plan", and skips a span whose failures keep
+  being `CLIPPED` (Engine, Signal search). A pair is
   clipped when either component's magnitude is at or above `dsd_signal_capture.clip_level`
   (0 means `DSD_SIGNAL_CLIP_LEVEL_DEFAULT`, 0.999), read once per feed into a register.
   The source sets it from its conversion (`rtl_device_signal_clip_level()`, from the same

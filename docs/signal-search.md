@@ -42,7 +42,7 @@ suppressed until the next pass.
 | Probe duration | 3 seconds after fresh tuned samples arrive; adjustable from 2 to 10 seconds |
 | Quiet time | Resume after 500 ms without relevant carrier or validated digital activity; an analog visit counts it from the monitor's first verdict on the landed channel (at most 3 seconds after landing) |
 | Maximum visit | 30 seconds; adjustable through 600 seconds, or 0 to disable |
-| Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls |
+| Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls. When the search warns that the receiver is overloaded, Pause, lower this, then Resume |
 
 The range editor closes with **Save range** or **Cancel**. Once a field differs
 from what the editor opened with, Cancel, Back, Escape or a tap beside the panel
@@ -89,7 +89,8 @@ rtl_tcp source, 6, 12 and 18 dB steps in the transmitter's level each showed at
 the next reading, on NFM, digital-identification and decoded DMR visits. When the receiver cannot measure the
 channel for about two seconds (the capture keeps changing, drops samples or clips),
 the screen stops showing **Now** and shows only the detection level until a fresh
-measurement arrives; a visit's live level also ends with the visit. A small dot
+measurement arrives; a visit's live level also ends with the visit. Clipping
+during a visit does not end the visit or skip anything. A small dot
 beside **Now** brightens briefly at each fresh measurement, including one that
 reads the same level as the last, so a steady reading is visibly a live one; it
 is hidden while no live level is shown.
@@ -560,6 +561,36 @@ Allocations, FFT size, candidates and total channels are bounded. An unsupported
 reports "Unsupported FFT measurement plan", and a detector that cannot be allocated
 reports "Not enough memory for a measurement".
 
+A span whose measurements keep clipping does not stop the search. When they keep
+clipping for one second, or one clipped a second ago and no answer has come since,
+the search skips the span and goes on to the next one. It also skips the span when
+five seconds have passed since the span's first measurement started, none has
+finished, and at least one of them clipped. A skipped span is
+measured again on the next pass. Nothing is ever detected from a clipped measurement.
+If the only span clips, or every span does, the search keeps going round, and the
+pass number keeps climbing. A measurement that fails for another reason, such as
+dropped samples or a changed capture, is simply tried again. If none finishes within
+five seconds and none of them clipped, the search fails with "No uninterrupted
+samples for a measurement". A measurement that finished in time is always used, even
+when the search reads it late.
+
+When a span is skipped, the search warns that the receiver is overloaded and names
+the range of the first span it skipped in that pass. A later skip in the same pass
+does not change the name. The warning stays while spans keep being skipped, and for
+the whole of the next pass, so there is time to read it. It clears at the end of a
+pass that skipped nothing. It also clears at Resume, including when Resume applies
+edited ranges, so a lower gain shows its effect at once; if the span still clips, the
+warning comes back a second later. To fix it, Pause, lower the range's receiver gain,
+then Resume. The warning is not a refusal or an error: visits, actions and new
+detections leave it in place.
+
+The receiver takes in a band at least two to three times wider than the span it
+searches at a time, and clipping anywhere in that band spoils every measurement taken
+from it. So one strong transmitter can overload the receiver even when it is outside
+the range being searched, and the spans near it, a few in a row, are all skipped. A
+lower gain, or a filter or attenuator in front of the receiver, keeps it from
+clipping.
+
 An Airspy's overload cannot be seen in the I/Q samples libairspy delivers. libairspy
 turns the Airspy's real samples into I/Q itself, and that conversion halves their
 amplitude and filters one of the two parts, so samples at the Airspy's limits arrive
@@ -738,11 +769,23 @@ by the main loop and a digitally confirmed visit serviced only by the in-frame y
 check each follow 12 dB and 6 dB level changes in the live strength within three
 intervals, withdraw a level the tap stops refreshing (a producer drop with every
 block, or clipped samples) within three intervals and a retry, show a fresh level
-once measurements succeed again, and publish no level for an ended visit. Coordinator
+once measurements succeed again, and publish no level for an ended visit; a clipped
+level on a main-loop visit is withdrawn the same way. A transmitter that overloads the
+receiver has its span skipped on every pass with the overload warning and the search
+never fails; once its level is back in range it is visited, and the first pass that
+skips nothing clears the warning. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
-live strength, the two avoid lists (1,024 permanent and 1,024 session avoids at once,
+live strength, span measurements that clip (a span skipped once clipping lasts a
+second, a clip followed by no answer included, or at five seconds when the first clip
+came late or clips were mixed with drops; nothing skipped under a second; a single
+span and every span clipping keep searching with the pass climbing), failures that
+are not clipping, no answer at all and clips of an earlier request (the search fails
+at five seconds), a finished report read late (used, not failed or skipped), and the
+overload warning (named at the first skip of a pass, kept through visits, actions and
+Pause, cleared by a pass that skips nothing, Resume and a restart with edited
+ranges), the two avoid lists (1,024 permanent and 1,024 session avoids at once,
 a session avoid of a permanent frequency adding nothing, Stop avoiding keeping a
 permanent avoid, a permanent avoid added or removed mid-search taking effect at the
 next tick, even on a held visit, and session avoids refused after a failure),

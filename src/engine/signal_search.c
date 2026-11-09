@@ -55,7 +55,14 @@ enum {
     /* A live strength no accepted measurement has refreshed for three intervals and a retry is no current level. */
     SEARCH_LIVE_STALE_MS = 3 * SEARCH_LIVE_INTERVAL_MS + SEARCH_LIVE_RETRY_MS,
     /* The P25 Phase 2 scrambling codes a session keeps (issue #804). */
-    SEARCH_P2_CODES = 16
+    SEARCH_P2_CODES = 16,
+    /* A span whose measurements keep clipping this long is skipped (issue #828): long enough that one or two clipped
+       attempts (a nearby key-up) skip nothing, short enough that the spans around one strong transmitter cost a few
+       seconds a pass. */
+    SEARCH_CLIP_SKIP_MS = 1000,
+    /* A span tune whose measurements have not completed this long after the first request is skipped when any of them
+       clipped, and otherwise ends the search. */
+    SEARCH_MEASURE_MAX_MS = 5000
 };
 
 /* The call tuple: what one checked canonical call record says, copied whole when its call is noted. */
@@ -122,6 +129,13 @@ typedef struct {
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
     int report_pending;
+    /* The span tune's measurement deadlines (issue #828), reset with measurement_started at every tune: the realtime of
+       its first clipped measurement since the tune or the last complete report (0 for none), and its latest failure's
+       reason. */
+    uint64_t clip_since;
+    dsd_signal_measure_failure last_failure;
+    /* Spans this pass skipped for clipping: a pass that skipped none clears the overload warning at its end. */
+    uint32_t pass_skipped;
     int live_measuring;
     uint64_t live_request, live_next;
     /* When the shown live strength was measured. */
@@ -272,6 +286,14 @@ search_suppress(search_coord* c, uint32_t f) {
     }
 }
 
+/* The overload warning goes, and the next skip names its range again. */
+static void
+search_clear_overload(search_coord* c) {
+    c->status.overloaded = 0;
+    c->status.overload_range[0] = '\0';
+    c->pass_skipped = 0;
+}
+
 static int
 search_select_range(search_coord* c) {
     for (uint32_t tries = 0; tries <= c->config.range_count; ++tries) {
@@ -279,6 +301,12 @@ search_select_range(search_coord* c) {
             c->status.range_index = 0;
             ++c->status.pass;
             c->suppressed_count = 0;
+            /* The warning stays through the next pass after one that skipped a span, so it is up long enough to read
+               while the spans around a strong transmitter keep clipping; a pass that skipped none clears it. */
+            if (!c->pass_skipped) {
+                search_clear_overload(c);
+            }
+            c->pass_skipped = 0;
         }
         const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
         if (r->enabled && c->status.channel_index < dsd_signal_search_channel_count(r)) {
@@ -423,6 +451,8 @@ static int
 search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int visit, int analog) {
     search_cancel_measurements(c);
     c->measurement_started = 0;
+    c->clip_since = 0;
+    c->last_failure = DSD_SIGNAL_MEASURE_OK;
     rtl_signal_search_bypass(1);
     c->visit = visit;
     c->target = target;
@@ -636,6 +666,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         previous->need_span = 1;
         previous->visit = previous->skip = previous->hold = 0;
         previous->status.phase = DSD_SEARCH_SEARCHING;
+        /* Edited ranges (a lower gain) are measured afresh: a span that still clips warns again at its skip. */
+        search_clear_overload(previous);
         /* The edited ranges show from this Resume on, not while they were being edited. */
         (void)search_select_range(previous);
         search_publish(previous, 0);
@@ -1284,6 +1316,8 @@ search_resume(search_coord* c) {
     c->need_span = 1;
     c->visit = 0;
     c->status.phase = DSD_SEARCH_SEARCHING;
+    /* A gain lowered while paused shows its effect: a span that still clips warns again at its skip. */
+    search_clear_overload(c);
     return 0;
 }
 
@@ -1576,41 +1610,105 @@ search_strongest_candidate(search_coord* c) {
     return best;
 }
 
+/* The span is done with no detection: the next span follows, the pass wrapping after the range's last. */
+static void
+search_leave_span(search_coord* c) {
+    c->status.channel_index = c->span.next;
+    c->need_span = 1;
+    search_publish(c, 0);
+}
+
+/* The span's measurements kept clipping: it is left as one with nothing detected, and the next pass measures it again,
+   since suppression is per pass and names visited frequencies only. Nothing comes from a clipped measurement. The
+   warning names the range of the pass's first skip, so its text changes at most once a pass. */
+static void
+search_skip_clipped_span(search_coord* c) {
+    if (!c->pass_skipped) {
+        DSD_SNPRINTF(c->status.overload_range, sizeof(c->status.overload_range), "%s", c->status.range_name);
+    }
+    ++c->pass_skipped;
+    c->status.overloaded = 1;
+    search_leave_span(c);
+}
+
+/* A complete report for the span request: visit its strongest eligible candidate, or move on with none. */
+static void
+search_use_report(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    c->report_pending = 1;
+    int best = search_strongest_candidate(c);
+    if (best == -2) {
+        return;
+    }
+    if (best < 0) {
+        search_leave_span(c);
+        return;
+    }
+    search_visit_candidate(c, opts, state, &c->report.candidates[best]);
+}
+
+/* Read the span request's answer. 1 when a complete report for it was used; 0 otherwise: nothing yet, a failure of the
+   request noted (a clipped one starts the clip run if none is under way, any other keeps it), or an answer to an
+   earlier request or capture ignored. */
+static int
+search_take_report(search_coord* c, dsd_opts* opts, dsd_state* state, const dsd_signal_capture* capture, uint64_t now) {
+    const int rc = rtl_signal_measure_get(&c->report);
+    if (rc == 0) {
+        return 0;
+    }
+    c->measuring = 0;
+    if (c->report.session_id != c->status.session_id || c->report.request_id != c->request) {
+        return 0;
+    }
+    if (rc < 0) {
+        if (c->report.failure == DSD_SIGNAL_MEASURE_CLIPPED && !c->clip_since) {
+            c->clip_since = now;
+        }
+        c->last_failure = c->report.failure;
+        return 0;
+    }
+    if (c->report.generation != capture->generation) {
+        return 0;
+    }
+    c->clip_since = 0;
+    c->last_failure = DSD_SIGNAL_MEASURE_OK;
+    search_use_report(c, opts, state);
+    return 1;
+}
+
+/* The span tune's deadlines, checked at every tick whether or not an answer came; 1 when the span was skipped or the
+   search failed. Clipping that lasts SEARCH_CLIP_SKIP_MS skips the span, a clip and then no answer included. So does
+   any clipping on a tune that has not completed a measurement in SEARCH_MEASURE_MAX_MS: a first clip late in that
+   time, or clipping mixed with drops. Without any, the search fails as the receiver cannot be measured. */
+static int
+search_measure_deadline(search_coord* c, uint64_t now) {
+    if (c->last_failure == DSD_SIGNAL_MEASURE_CLIPPED && now - c->clip_since >= SEARCH_CLIP_SKIP_MS) {
+        search_skip_clipped_span(c);
+        return 1;
+    }
+    if (!c->measurement_started || now - c->measurement_started <= SEARCH_MEASURE_MAX_MS) {
+        return 0;
+    }
+    if (c->clip_since) {
+        search_skip_clipped_span(c);
+    } else {
+        search_error(c, "No uninterrupted samples for a measurement");
+    }
+    return 1;
+}
+
 static int
 search_measure_tick(search_coord* c, dsd_opts* opts, dsd_state* state, const dsd_signal_capture* capture) {
-    if (c->measurement_started && dsd_realtime_mono_ms() - c->measurement_started > 5000) {
-        search_error(c, "No uninterrupted samples for a measurement");
+    const uint64_t now = dsd_realtime_mono_ms();
+    /* A report that completed is used before any deadline is judged, however late the tick that reads it. */
+    if (c->measuring && search_take_report(c, opts, state, capture, now)) {
+        return 1;
+    }
+    if (search_measure_deadline(c, now)) {
         return 1;
     }
     if (!c->measuring) {
         (void)search_begin_measurement(c, capture);
-        return 1;
     }
-    int rc = rtl_signal_measure_get(&c->report);
-    if (rc < 0) {
-        c->measuring = 0;
-        return 1;
-    }
-    if (!rc) {
-        return 1;
-    }
-    c->measuring = 0;
-    if (c->report.session_id != c->status.session_id || c->report.request_id != c->request
-        || c->report.generation != capture->generation) {
-        return 1;
-    }
-    c->report_pending = 1;
-    int best = search_strongest_candidate(c);
-    if (best == -2) {
-        return 1;
-    }
-    if (best < 0) {
-        c->status.channel_index = c->span.next;
-        c->need_span = 1;
-        search_publish(c, 0);
-        return 1;
-    }
-    search_visit_candidate(c, opts, state, &c->report.candidates[best]);
     return 1;
 }
 

@@ -182,12 +182,25 @@ rtl_signal_measure_request(const dsd_signal_measure_request* r, dsd_signal_reque
     return 0;
 }
 
+/* The reason of the failure answer `ready` -1 (the outstanding request's) or -3 (an earlier request's) gives. */
+static dsd_signal_measure_failure fail_reason = DSD_SIGNAL_MEASURE_CLIPPED;
+
+/* The next answer: 1 a report detecting every candidate, 2 one detecting none, 3 a stale report, -1 or -3 a failure
+   carrying its request's ids and generation, no candidates and fail_reason, as the tap's. */
 int
 rtl_signal_measure_get(dsd_signal_measure_report* out) {
     if (!ready) {
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
+    if (ready < 0) {
+        out->session_id = request.session_id;
+        out->request_id = request.request_id - (ready == -3 ? 1U : 0U);
+        out->generation = request.capture.generation;
+        out->failure = fail_reason;
+        ready = 0;
+        return -1;
+    }
     out->session_id = request.session_id;
     out->request_id = request.request_id;
     out->generation = capture.generation;
@@ -737,6 +750,313 @@ test_request_failure_messages(dsd_opts* o, dsd_state* s, dsd_signal_search_confi
         land(o, s);
         assert(status.phase == DSD_SEARCH_STOPPED);
     }
+}
+
+/* Clipping (issue #828): sessions over one or two one-span analog ranges, "Air band" and "Marine", whose span
+   measurements the stub answers by hand. The realtime clock drives the deadlines. */
+static void
+clip_start(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t ranges) {
+    dsd_signal_search_config config;
+    DSD_MEMSET(&config, 0, sizeof(config));
+    config.session_id = session;
+    config.range_count = ranges;
+    dsd_signal_search_range_default(&config.ranges[0]);
+    DSD_SNPRINTF(config.ranges[0].name, sizeof(config.ranges[0].name), "%s", "Air band");
+    config.ranges[0].start_hz = 100000000;
+    config.ranges[0].end_hz = 100025000;
+    config.ranges[0].digital = 0;
+    config.ranges[0].max_visit_ms = 0;
+    config.ranges[1] = config.ranges[0];
+    DSD_SNPRINTF(config.ranges[1].name, sizeof(config.ranges[1].name), "%s", "Marine");
+    config.ranges[1].start_hz = 100100000;
+    config.ranges[1].end_hz = 100125000;
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    char error[192];
+    assert(dsd_engine_signal_search_start(o, s, &config, observer, NULL, error, sizeof(error)) == 0);
+    assert(!status.overloaded && status.overload_range[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING);
+    land(o, s); // the first span request goes out
+    assert(status.phase == DSD_SEARCH_SEARCHING && status.range_index == 0 && status.channel_index == 0);
+}
+
+/* One tick @p ms after the last; the outstanding span request answered with a failure of @p reason. */
+static void
+fail_after(dsd_opts* o, dsd_state* s, uint64_t ms, dsd_signal_measure_failure reason) {
+    realtime_ms += ms;
+    fail_reason = reason;
+    ready = -1;
+    tick(o, s);
+}
+
+/* One tick @p ms after the last, the outstanding request unanswered. */
+static void
+wait_after(dsd_opts* o, dsd_state* s, uint64_t ms) {
+    realtime_ms += ms;
+    tick(o, s);
+}
+
+/* Still measuring range @p range's span. */
+static int
+measuring_span(uint32_t range) {
+    return status.phase == DSD_SEARCH_SEARCHING && status.range_index == range && status.channel_index == 0;
+}
+
+/* The span just left with nothing detected: the search is past its channels and the next span is still to plan. */
+static int
+left_span(void) {
+    return status.phase == DSD_SEARCH_SEARCHING && status.channel_index == status.channel_count;
+}
+
+/* The next span: its tune is queued, lands, and its first request goes out. */
+static void
+next_span(dsd_opts* o, dsd_state* s) {
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.channel_index == 0);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+}
+
+/* Skips the span being measured: a clip, and another a second later. */
+static void
+clip_span_out(dsd_opts* o, dsd_state* s) {
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    fail_after(o, s, 1000, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(left_span() && status.overloaded);
+}
+
+/* Measures the span clean (nothing detected) and leaves it. */
+static void
+clean_span_out(dsd_opts* o, dsd_state* s) {
+    ready = 2;
+    tick(o, s);
+    assert(left_span());
+}
+
+static void
+clip_stop(dsd_opts* o, dsd_state* s) {
+    ready = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    for (int i = 0; i < 3 && status.phase != DSD_SEARCH_STOPPED; ++i) {
+        land(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_STOPPED);
+}
+
+/* A span that keeps clipping for a second is skipped with the overload warning instead of failing the search, and
+   measured again next pass; nothing is detected from a clipped measurement. Shorter clipping skips nothing, a complete
+   report is used before any deadline is judged, any other failure keeps the clip run going but cannot end it at a
+   second, and the warning names the first skipped range of a pass until a pass skips nothing. */
+static void
+test_clipping_span_skipped(dsd_opts* o, dsd_state* s) {
+    clip_start(o, s, 60, 2);
+    const uint32_t air_hz = target;
+    const int hits = hits_published;
+
+    // Under a second of clipping skips nothing; a complete report a second after the first clip is still used.
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    fail_after(o, s, 999, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(measuring_span(0) && !status.overloaded);
+    realtime_ms += 1;
+    clean_span_out(o, s);
+    assert(!status.overloaded && status.range_index == 0);
+
+    // Range B: a drop keeps the run going without ending it; the next clip, a second and a half after the first, skips.
+    next_span(o, s);
+    assert(status.range_index == 1);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    fail_after(o, s, 1000, DSD_SIGNAL_MEASURE_DROPPED);
+    wait_after(o, s, 400);
+    assert(measuring_span(1) && !status.overloaded);
+    fail_after(o, s, 100, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(left_span() && status.range_index == 1 && status.pass == 1);
+    assert(status.overloaded && strcmp(status.overload_range, "Marine") == 0);
+    assert(status.message[0] == '\0' && hits_published == hits && status.hit.hit_id == 0);
+
+    // Pass 2 measures range A again on the same tune. Its first skip renames the warning; a later one does not.
+    next_span(o, s);
+    assert(status.pass == 2 && status.range_index == 0 && target == air_hz);
+    assert(status.overloaded && strcmp(status.overload_range, "Marine") == 0);
+    clip_span_out(o, s);
+    assert(strcmp(status.overload_range, "Air band") == 0);
+    next_span(o, s);
+    clip_span_out(o, s);
+    assert(status.range_index == 1 && strcmp(status.overload_range, "Air band") == 0);
+
+    // A pass after one that skipped keeps the warning while it runs, clean or not; the end of a clean pass clears it.
+    next_span(o, s);
+    assert(status.pass == 3 && status.overloaded && strcmp(status.overload_range, "Air band") == 0);
+    clean_span_out(o, s);
+    next_span(o, s);
+    clean_span_out(o, s);
+    assert(status.overloaded);
+    next_span(o, s);
+    assert(status.pass == 4 && !status.overloaded && status.overload_range[0] == '\0');
+    assert(hits_published == hits && status.phase != DSD_SEARCH_ERROR);
+    clip_stop(o, s);
+}
+
+/* The span deadlines that skip, each row on a fresh one-range session: a first clip late in the five seconds skips at
+   five seconds, a clip and then no answer a second after the clip, and clipping and then only drops at five seconds. */
+static void
+test_clipping_deadline_skips(dsd_opts* o, dsd_state* s) {
+    // A first clip at 4.6 s: neither deadline at 5 s, a skip just after.
+    clip_start(o, s, 61, 1);
+    wait_after(o, s, 4600);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    wait_after(o, s, 400);
+    assert(measuring_span(0) && !status.overloaded);
+    wait_after(o, s, 1);
+    assert(left_span() && status.overloaded && strcmp(status.overload_range, "Air band") == 0);
+    clip_stop(o, s);
+
+    // A clip and then no answer: the clip's second still runs out.
+    clip_start(o, s, 62, 1);
+    fail_after(o, s, 300, DSD_SIGNAL_MEASURE_CLIPPED);
+    wait_after(o, s, 999);
+    assert(measuring_span(0) && !status.overloaded);
+    wait_after(o, s, 1);
+    assert(left_span() && status.overloaded);
+    clip_stop(o, s);
+
+    // A clip, then only drops: no second-long clip run, the five seconds skip.
+    clip_start(o, s, 63, 1);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    for (int i = 0; i < 10; ++i) {
+        fail_after(o, s, 500, DSD_SIGNAL_MEASURE_DROPPED);
+    }
+    assert(measuring_span(0) && !status.overloaded);
+    fail_after(o, s, 1, DSD_SIGNAL_MEASURE_DROPPED);
+    assert(left_span() && status.overloaded && status.phase != DSD_SEARCH_ERROR);
+    clip_stop(o, s);
+}
+
+/* Without a clip of its own request, a span tune that completes no measurement in five seconds fails the search, as
+   before: drops alone, no answer at all, or clips answering an earlier request. */
+static void
+test_unclipped_deadline_fails(dsd_opts* o, dsd_state* s) {
+    for (int row = 0; row < 3; ++row) {
+        clip_start(o, s, 64 + (uint64_t)row, 1);
+        for (int i = 0; i < 10; ++i) {
+            if (row == 0) {
+                fail_after(o, s, 500, DSD_SIGNAL_MEASURE_DROPPED);
+            } else if (row == 1) {
+                wait_after(o, s, 500);
+            } else {
+                realtime_ms += 500;
+                fail_reason = DSD_SIGNAL_MEASURE_CLIPPED;
+                ready = -3;
+                tick(o, s);
+            }
+        }
+        assert(measuring_span(0) && !status.overloaded);
+        wait_after(o, s, 1);
+        assert(status.phase == DSD_SEARCH_ERROR && !status.overloaded);
+        assert(strcmp(status.message, "No uninterrupted samples for a measurement") == 0);
+        clip_stop(o, s);
+    }
+}
+
+/* A report that completed is read before any deadline is judged: used, not failed or skipped, when it is read after
+   five seconds or at the clip run's second. */
+static void
+test_completed_report_beats_deadlines(dsd_opts* o, dsd_state* s) {
+    clip_start(o, s, 67, 1);
+    realtime_ms += 5001;
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && !status.hit.ended && !status.overloaded);
+    clip_stop(o, s);
+    clip_start(o, s, 68, 1);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    realtime_ms += 1000;
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && !status.overloaded);
+    clip_stop(o, s);
+}
+
+/* One span, or every span, clipping for good keeps searching: each skip wraps or moves on, the pass climbs, the
+   warning stays and names the pass's first skipped range, and nothing is detected. */
+static void
+test_clipping_keeps_searching(dsd_opts* o, dsd_state* s) {
+    clip_start(o, s, 69, 1);
+    const uint32_t tune_hz = target;
+    const int hits = hits_published;
+    for (uint64_t pass = 1; pass <= 5; ++pass) {
+        assert(status.pass == pass && target == tune_hz);
+        clip_span_out(o, s);
+        assert(strcmp(status.overload_range, "Air band") == 0);
+        next_span(o, s);
+    }
+    assert(status.pass == 6 && status.overloaded && hits_published == hits);
+    clip_stop(o, s);
+
+    clip_start(o, s, 70, 2);
+    for (uint64_t pass = 1; pass <= 3; ++pass) {
+        assert(status.pass == pass && status.range_index == 0);
+        clip_span_out(o, s);
+        next_span(o, s);
+        assert(status.range_index == 1);
+        clip_span_out(o, s);
+        assert(strcmp(status.overload_range, "Air band") == 0);
+        next_span(o, s);
+    }
+    assert(status.pass == 4 && status.overloaded && hits_published == hits && status.phase != DSD_SEARCH_ERROR);
+    clip_stop(o, s);
+}
+
+/* The warning stays through Pause and the visits and actions that clear a refusal, and goes at Resume and at a paused
+   restart with edited ranges, so a gain lowered there shows its effect; a span that still clips warns again. */
+static void
+test_overload_clears(dsd_opts* o, dsd_state* s) {
+    // A detection visited after the skip, and a Skip taken on it, leave the warning.
+    clip_start(o, s, 71, 2);
+    clip_span_out(o, s);
+    next_span(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && status.overloaded);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.overloaded);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(status.hit.ended && status.overloaded && strcmp(status.overload_range, "Air band") == 0);
+
+    // Paused, it still shows; Resume clears it, and the span that still clips sets it again with its name.
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && status.overloaded);
+    act(o, s, DSD_SEARCH_ACTION_RESUME);
+    assert(!status.overloaded && status.overload_range[0] == '\0');
+    land(o, s); // the Skip's return tune completes; the span is planned again
+    assert(status.phase == DSD_SEARCH_TUNING);
+    land(o, s);
+    assert(measuring_span(1) && !status.overloaded);
+    clip_span_out(o, s);
+    assert(strcmp(status.overload_range, "Marine") == 0);
+    clip_stop(o, s);
+
+    // A paused restart with edited ranges clears it.
+    clip_start(o, s, 72, 1);
+    clip_span_out(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.overloaded);
+    dsd_signal_search_config edited;
+    DSD_MEMSET(&edited, 0, sizeof(edited));
+    edited.session_id = 72;
+    edited.range_count = 1;
+    dsd_signal_search_range_default(&edited.ranges[0]);
+    DSD_SNPRINTF(edited.ranges[0].name, sizeof(edited.ranges[0].name), "%s", "Air band");
+    edited.ranges[0].start_hz = 100000000;
+    edited.ranges[0].end_hz = 100025000;
+    edited.ranges[0].digital = 0;
+    edited.ranges[0].gain_set = 1;
+    edited.ranges[0].gain_tenth_db = 100;
+    char error[192];
+    assert(dsd_engine_signal_search_start(o, s, &edited, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING && !status.overloaded && status.overload_range[0] == '\0');
+    clip_stop(o, s);
 }
 
 /* The status names the range being searched, from the coordinator's own configuration: a detection in range A keeps
@@ -3567,6 +3887,12 @@ main(void) {
     test_restore_retune_carries_family(o, s, &config);
     test_capture_freshness(o, s, &config);
     test_request_failure_messages(o, s, &config);
+    test_clipping_span_skipped(o, s);
+    test_clipping_deadline_skips(o, s);
+    test_unclipped_deadline_fails(o, s);
+    test_completed_report_beats_deadlines(o, s);
+    test_clipping_keeps_searching(o, s);
+    test_overload_clears(o, s);
     test_status_names_running_range(o, s, &config);
     test_avoid_by_frequency(o, s, &config);
     test_site_record_binding();
