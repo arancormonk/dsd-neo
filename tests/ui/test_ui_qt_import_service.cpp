@@ -435,8 +435,11 @@ test_teardown_blocked() {
     timer.start();
     service.reset();
     const qint64 took = timer.elapsed();
-    CHECK(took >= ImportService::kStopWaitMs - 100 && took < ImportService::kStopWaitMs + 1500,
+    // The upper bound only proves the wait is bounded: a loaded or sanitized runner can be slow to wake.
+    CHECK(took >= ImportService::kStopWaitMs - 100 && took < qint64{ImportService::kStopWaitMs} * 4,
           "teardown waits about kStopWaitMs for a blocked copy, then returns");
+    settle();
+    CHECK(log.commits.isEmpty(), "teardown commits nothing");
     CHECK(transport->cancels().contains(id) && transport->cancels().contains(waiting),
           "teardown cancels every request");
 

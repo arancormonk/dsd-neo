@@ -28,7 +28,10 @@
 #include "document_import_transport.h"
 
 #ifndef _WIN32
+#include <cerrno>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 using dsd_qt::DecoderHost;
@@ -224,6 +227,29 @@ await_bytes(const DocumentImportTransport& transport, qint64 id, qint64 bytes) {
     return false;
 }
 
+/* Open @p fifo for writing once a reader has it open (blocking writes from then on); -1 after about five seconds
+   without one, so a copy that never opens its source fails the case rather than hanging it. */
+int
+open_fifo_writer(const QString& fifo) {
+    const QByteArray path = QFile::encodeName(fifo);
+    for (int i = 0; i < 5000; ++i) {
+        const int fd = ::open(path.constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd >= 0) {
+            const int flags = fcntl(fd, F_GETFL);
+            if (flags >= 0 && fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == 0) {
+                return fd;
+            }
+            ::close(fd);
+            return -1;
+        }
+        if (errno != ENXIO) {
+            return -1;
+        }
+        QThread::msleep(1);
+    }
+    return -1;
+}
+
 enum class Stop { Cancel, Abort };
 
 /*
@@ -242,8 +268,10 @@ stop_mid_copy(Stop stop) {
     int result = -1;
     std::thread worker([&transport, &fifo, &dest, &result]() { result = transport.copy(4, fifo, dest, 1 << 20); });
 
-    QFile feed(fifo);
-    CHECK(feed.open(QIODevice::WriteOnly), "the FIFO opens for writing once the copy opens it");
+    QFile feed;
+    const int writer = open_fifo_writer(fifo);
+    CHECK(writer >= 0 && feed.open(writer, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle),
+          "the FIFO opens for writing once the copy opens it");
     const QByteArray chunk(1 << 16, 'x');
     CHECK(feed.write(chunk) == chunk.size() && feed.flush(), "one chunk is fed");
     CHECK(await_bytes(transport, 4, chunk.size()), "the copy reports the chunk it copied");
