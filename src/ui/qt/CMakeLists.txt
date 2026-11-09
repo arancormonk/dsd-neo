@@ -65,6 +65,7 @@ target_sources(
         scan_list_starter.cpp
         scan_list_toggle_model.cpp
         spectrum_model.cpp
+        csv_text.cpp
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801

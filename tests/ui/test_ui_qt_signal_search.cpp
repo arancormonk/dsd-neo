@@ -30,6 +30,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QVector>
 #include <QtGlobal>
 #include <cassert>
 #include <cmath>
@@ -52,6 +53,7 @@
 #include <utility>
 #include <vector>
 #include "../test_support/qt_test_paths.h"
+#include "csv_text.h"
 #include "decoder_host.h"
 #include "json_store.h"
 #include "known_frequency_index.h"
@@ -1237,11 +1239,49 @@ testKnownFrequencyIdentity(const QString& dir) {
     assert(index.tunedMatches(482005000, 6000).isEmpty());
 }
 
+static void
+test_csv_text() {
+    using dsd_qt::csv_text::bom;
+    using dsd_qt::csv_text::field;
+    using dsd_qt::csv_text::record;
+    const auto S = [](const char* s) { return QString::fromUtf8(s); };
+    assert(bom() == QByteArray("\xEF\xBB\xBF", 3));
+    assert(field(S("plain"), true) == S("plain"));
+    assert(field(QString(), true).isEmpty());
+    assert(field(S("a,b"), true) == S("\"a,b\""));
+    assert(field(S("a\"b"), true) == S("\"a\"\"b\""));
+    assert(field(S("a\rb"), false) == S("\"a\rb\""));
+    assert(field(S("a\nb"), false) == S("\"a\nb\""));
+    assert(field(S("a\r\nb"), true) == S("\"a\r\nb\""));
+    assert(field(S(" a b "), true) == S(" a b "));
+    assert(field(S("=1+2"), true) == S("'=1+2"));
+    assert(field(S("=1,2"), true) == S("\"'=1,2\""));
+    assert(field(S("\n x"), true) == S("\"'\n x\""));
+    const QChar triggers[] = {QLatin1Char('='), QLatin1Char('+'), QLatin1Char('-'), QLatin1Char('@'), QLatin1Char('\t'),
+                              QChar(0xFF1D),    QChar(0xFF0B),    QChar(0xFF0D),    QChar(0xFF20)};
+    for (const QChar c : triggers) {
+        const QString v = QString(c) + QStringLiteral("x");
+        assert(field(v, true) == QLatin1Char('\'') + v);
+        assert(field(v, false) == v);
+    }
+    assert(field(QString(QLatin1Char('\r')) + QStringLiteral("x"), true) == S("\"'\rx\""));
+    assert(field(S("-47.2"), false) == S("-47.2"));
+    assert(field(S("a=b+c-d@e"), true) == S("a=b+c-d@e"));
+    const QString dot = QString(QChar(0x00B7)) + QStringLiteral("\u00e9\u4e2d");
+    assert(field(dot, true).toUtf8() == dot.toUtf8());
+    assert(record({dot}, {true}) == dot.toUtf8() + "\r\n");
+    assert(record({S("a"), S("b,c"), S("=x")}, {true, true, true}) == QByteArray("a,\"b,c\",'=x\r\n"));
+    assert(record({S("a"), S("-1")}, {true, false}) == QByteArray("a,-1\r\n"));
+    assert(record({S("a")}, {true, false}).isEmpty());
+    assert(record({}, {}) == QByteArray("\r\n"));
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("dsd-search-tests"));
     dsd_test_qt_isolate_paths();
+    test_csv_text();
     QTemporaryDir temp;
     assert(temp.isValid());
     const QString journal = temp.filePath(QStringLiteral("history"));
