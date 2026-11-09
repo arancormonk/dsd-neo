@@ -19,6 +19,7 @@
 #include <QTemporaryDir>
 #include <cerrno>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -392,21 +393,19 @@ keep_unclean(const QString& path, const SettingsRead& read, const SettingsParse&
     return read.regular ? rename_aside_and_write(path, parsed.rewritten, env, keptPath) : SettingsRecovery::Scratch;
 }
 
-/* The folder for the scratch copy of @p leaf's format: in the app cache (a copy an earlier start left there removed
-   first), or without one in a private temporary folder (0700, a random name) held for the process. Empty when neither
-   can be had. */
+/* The private temporary folders (0700, a random name) holding a scratch copy for the rest of the process, by format:
+   settings hold credentials, so never a predictable name in a shared folder. */
+std::map<QString, std::unique_ptr<QTemporaryDir>> g_tempScratch;
+
+/* A new private temporary folder for @p leaf's scratch copy, held for the process; empty when none can be made. */
 QString
-scratch_folder(const QString& leaf, const SettingsRecoveryEnv& env) {
-    if (env.noScratchFolder && env.noScratchFolder()) {
+temp_scratch_folder(const QString& leaf) {
+    auto folder = std::make_unique<QTemporaryDir>();
+    if (!folder->isValid()) {
         return QString();
     }
-    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (cache.isEmpty()) {
-        static const QTemporaryDir fallback; // settings hold credentials: never a predictable name in a shared folder
-        return fallback.isValid() ? fallback.path() + QLatin1Char('/') + leaf : QString();
-    }
-    const QString dir = cache + QStringLiteral("/settings-scratch/") + leaf;
-    QDir(dir).removeRecursively();
+    QString dir = folder->path() + QLatin1Char('/') + leaf;
+    g_tempScratch[leaf] = std::move(folder);
     return dir;
 }
 
@@ -421,25 +420,44 @@ uncreatable_folder() {
 #endif
 }
 
-/* Every QSettings of @p format made from now on reads and writes a scratch folder, so nothing this run writes the
-   settings file: constructor writes, deferred flushes, static helpers and destruction alike. The scratch copy starts
-   as @p seed, the keys that parsed. With no folder for one, the format is pointed where nothing can be written: its
-   settings are defaults held in memory this run, and nothing is written anywhere. False then. */
+/* Points @p format at @p dir (a copy an earlier start left there removed first) and writes its scratch copy there,
+   starting as @p seed. False, with nothing left there, when the copy could not be written. */
+bool
+seed_scratch(QSettings::Format format, const QString& organization, const QString& application, const QString& dir,
+             const QByteArray& seed) {
+    QDir(dir).removeRecursively();
+    QSettings::setPath(format, QSettings::UserScope, dir);
+    const QString scratch = settings_file_path(format, organization, application);
+    if (!scratch.isEmpty() && QDir().mkpath(QFileInfo(scratch).absolutePath()) && write_whole(scratch, seed)) {
+        return true;
+    }
+    QDir(dir).removeRecursively();
+    return false;
+}
+
+/* Every QSettings of @p format made from now on reads and writes a scratch copy, so nothing this run writes the
+   settings file: constructor writes, deferred flushes, static helpers and destruction alike. The copy starts as
+   @p seed, the keys that parsed, in the app cache, else in a private temporary folder. Where neither takes it, the
+   format is pointed where nothing can be written: its settings are defaults held in memory this run, and nothing is
+   written anywhere. False then. */
 bool
 use_scratch(QSettings::Format format, const QString& organization, const QString& application, const QByteArray& seed,
             const SettingsRecoveryEnv& env) {
-    const QString dir =
-        scratch_folder(format == QSettings::IniFormat ? QStringLiteral("ini") : QStringLiteral("native"), env);
-    if (dir.isEmpty()) {
-        QSettings::setPath(format, QSettings::UserScope, uncreatable_folder());
-        return false;
+    const QString leaf = format == QSettings::IniFormat ? QStringLiteral("ini") : QStringLiteral("native");
+    if (!env.noScratchFolder || !env.noScratchFolder()) {
+        const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        if (!cache.isEmpty()
+            && seed_scratch(format, organization, application, cache + QStringLiteral("/settings-scratch/") + leaf,
+                            seed)) {
+            return true;
+        }
+        const QString temp = temp_scratch_folder(leaf);
+        if (!temp.isEmpty() && seed_scratch(format, organization, application, temp, seed)) {
+            return true;
+        }
     }
-    QSettings::setPath(format, QSettings::UserScope, dir);
-    const QString scratch = settings_file_path(format, organization, application);
-    if (scratch.isEmpty() || !QDir().mkpath(QFileInfo(scratch).absolutePath()) || !write_whole(scratch, seed)) {
-        LOG_WARN("Settings run on defaults: their scratch copy could not be written.\n");
-    }
-    return true;
+    QSettings::setPath(format, QSettings::UserScope, uncreatable_folder());
+    return false;
 }
 
 void
@@ -447,7 +465,7 @@ report(const QString& path, const QString& reason, const QString& keptPath, bool
     const QString name = QFileInfo(path).fileName();
     const QString keptName = keptPath.isEmpty() ? QString() : QFileInfo(keptPath).fileName();
     if (inMemory) {
-        LOG_WARN("%s could not be read (%s) or replaced%s%s, and there is no folder for a scratch copy. This run uses "
+        LOG_WARN("%s could not be read (%s) or replaced%s%s, and no scratch copy could be written. This run uses "
                  "default settings and saves no changes; the next start tries again.\n",
                  qUtf8Printable(name), qUtf8Printable(reason), keptName.isEmpty() ? "" : "; it was kept as ",
                  qUtf8Printable(keptName));
@@ -462,7 +480,7 @@ report(const QString& path, const QString& reason, const QString& keptPath, bool
     }
     // The notice says it too, so it differs from a scratch-copy notice for the same file and the card shows the change.
     json_store_post_notice(
-        {name, inMemory ? reason + QStringLiteral("; no folder for a scratch copy") : reason, keptName});
+        {name, inMemory ? reason + QStringLiteral("; no scratch copy could be written") : reason, keptName});
 }
 
 QString

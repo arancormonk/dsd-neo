@@ -23,10 +23,10 @@
  *    and synced beside it, and that file then takes its place. A crash between the rename and the replacement leaves
  *    no settings file at the next start (defaults), with the original kept.
  *  - When that cannot be done (an unknown or special path, no free name, a failed write), nothing may write the file:
- *    every QSettings of that format writes a scratch copy in the app cache for the rest of the run, seeded with the
- *    keys that parsed. The file stays as it was, and the next start tries again. With no folder for a scratch copy
- *    (neither the app cache nor a private temporary folder), the format is pointed at a folder nothing can create:
- *    its settings are defaults held in memory this run, and nothing is written anywhere.
+ *    every QSettings of that format writes a scratch copy for the rest of the run, seeded with the keys that parsed, in
+ *    the app cache or, where that cannot take it, a private temporary folder. The file stays as it was, and the next
+ *    start tries again. Where neither takes the copy, the format is pointed at a folder nothing can create: its
+ *    settings are defaults held in memory this run, and nothing is written anywhere.
  *  - A file confirmed gone after it was read (removed meanwhile) counts as missing: nothing is kept or written.
  * Each such file gets a JsonStoreNotice (json_store_post_notice()): its fileName is the settings file's own name
  * ("dsd-neo-app.ini" for AppPrefs, "<application>.conf" for call history, "DSD-neo.conf" in the app) and its keptName
@@ -52,7 +52,7 @@ struct SettingsRecoveryEnv {
     /** @brief Whether writing @p path's kept copy ("keep") or its clean file ("rewrite") fails, or, once the file was
         renamed aside, putting the clean file in its place ("replace"). Called as each step starts. */
     std::function<bool(const char* step, const QString& path)> writeFails;
-    /** @brief Whether no folder for a scratch copy can be had: neither the app cache nor a private temporary folder. */
+    /** @brief Whether no folder can take a scratch copy: neither the app cache nor a private temporary folder. */
     std::function<bool()> noScratchFolder;
 };
 
@@ -61,8 +61,8 @@ enum class SettingsRecovery {
     Missing, ///< no file (confirmed absent, also when gone after it was read), or no organization or application name
     Clean,   ///< read whole and parsed cleanly; left alone
     Kept,    ///< kept as "<file>.unreadable-N" and replaced by a clean file
-    Scratch, ///< could not be kept: QSettings of its format write a scratch copy for the rest of the run (or, with no
-             ///< folder for one, hold defaults in memory)
+    Scratch, ///< could not be kept: QSettings of its format write a scratch copy for the rest of the run (or, where
+             ///< no folder takes one, hold defaults in memory)
 };
 
 /**
@@ -98,7 +98,7 @@ bool settings_recovery_scratch(const QString& fileName);
 
 /**
  * @brief Whether the settings file named @p fileName runs on defaults held in memory this run: it could not be kept and
- *        no folder for a scratch copy could be had, so nothing changed is written anywhere. Implies
+ *        no folder took a scratch copy, so nothing changed is written anywhere. Implies
  *        settings_recovery_scratch(@p fileName). Safe from any thread.
  */
 bool settings_recovery_in_memory(const QString& fileName);

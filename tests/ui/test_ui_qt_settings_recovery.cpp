@@ -10,7 +10,8 @@
  * (AppPrefs' constructor write, a deferred flush, the static helpers and destruction all leave the original alone); a
  * folder or FIFO at the path; a file gone before it is kept (missing: nothing kept or written, no notice); a failed
  * replacement after the rename; no folder for a scratch copy (defaults in memory, nothing written anywhere); no
- * system temp folder (Android's /tmp) and no app cache for the check; a later check forgetting an earlier scratch; the first call-history save
+ * system temp folder (Android's /tmp) and no app cache for the check; an app cache that cannot take the scratch copy,
+ * which a private temporary folder then takes; a later check forgetting an earlier scratch; the first call-history save
  * after a malformed file; replacePortable() after a recovery; and a pending restore that waits while the settings run
  * on the scratch copy, then applies after a later start recovers them. Registered only when the Qt frontend is enabled
  * (DSD_ENABLE_QT_UI). */
@@ -631,6 +632,13 @@ test_no_system_temp_folder() {
         expect("no folder at all: the app cache cannot be made",
                !QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)));
         expect_healthy_left_alone("no folder at all, healthy");
+        // One that is not clean gets no clean file and has no folder for a scratch copy: defaults in memory.
+        reset();
+        expect("no folder at all, not clean: written", write_file(g_paths.prefs, kUnreadSection));
+        expect("no folder at all, not clean: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+        expect("no folder at all, not clean: in memory",
+               dsd_qt::settings_recovery_in_memory(dsd_qt::settings_recovery_prefs_file_name()));
+        expect("no folder at all, not clean: the original is untouched", read_file(g_paths.prefs) == kUnreadSection);
         relaunch();
 #endif
     }
@@ -638,6 +646,61 @@ test_no_system_temp_folder() {
     QFile::remove(blocker);
 }
 #endif
+
+/* The app cache cannot take the scratch copy (a file stands where its folder would go): a private temporary folder
+   takes it, seeded with what parsed, and the run says it is on scratch; with no temporary folder either, the run holds
+   defaults in memory and says so. Never "on scratch" with nothing in the copy. */
+void
+test_scratch_copy_not_in_cache() {
+    const QString prefsName = dsd_qt::settings_recovery_prefs_file_name();
+    const QString cacheScratch =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/settings-scratch");
+    QDir(cacheScratch).removeRecursively();
+    expect("scratch not in cache: a file where the folder goes", write_file(cacheScratch, "not a folder"));
+    reset();
+    expect("scratch not in cache: written", write_file(g_paths.prefs, kUnreadSection));
+    take_every_kept_name("scratch not in cache", g_paths.prefs);
+
+#ifndef Q_OS_WIN
+    const QString blocker = not_a_folder();
+    {
+        const ScopedEnv tmp("TMPDIR", QFile::encodeName(blocker));
+        post_sentinel_notice();
+        expect("no scratch copy anywhere: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+        expect("no scratch copy anywhere: in memory", dsd_qt::settings_recovery_in_memory(prefsName));
+        const dsd_qt::JsonStoreNotice* notice = notice_for(dsd_qt::json_store_notices(), prefsName);
+        expect("no scratch copy anywhere: the notice says so",
+               notice != nullptr && notice->reason.endsWith(QLatin1String("; no scratch copy could be written")));
+        expect("no scratch copy anywhere: the settings are defaults",
+               !AppPrefs::readPortable().contains("decode/extraArgs"));
+        expect("no scratch copy anywhere: the original is untouched", read_file(g_paths.prefs) == kUnreadSection);
+    }
+    QFile::remove(blocker);
+    relaunch();
+#endif
+
+    expect("scratch in a temporary folder: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+    expect("scratch in a temporary folder: on scratch, not in memory",
+           dsd_qt::settings_recovery_scratch(prefsName) && !dsd_qt::settings_recovery_in_memory(prefsName));
+    const QString scratch = prefs_file_now();
+    expect("scratch in a temporary folder: outside the app cache and the settings folder",
+           scratch != g_paths.prefs
+               && !scratch.startsWith(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)));
+    expect("scratch in a temporary folder: seeded with what parsed",
+           AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
+    {
+        AppPrefs prefs;
+        prefs.setAutoStartOnAttach(!prefs.autoStartOnAttach());
+        QCoreApplication::processEvents();
+    }
+    expect("scratch in a temporary folder: writes go to the copy",
+           read_file(g_paths.prefs) == kUnreadSection && read_file(scratch).contains("autoStart"));
+    expect("scratch in a temporary folder: the taken names are untouched", kept_names_untouched(g_paths.prefs));
+
+    QFile::remove(cacheScratch);
+    relaunch();
+    reset();
+}
 
 /* A folder or a FIFO at the path is neither read nor written, and QSettings never opens it this run. */
 void
@@ -918,6 +981,7 @@ main(int argc, char** argv) {
 #ifndef Q_OS_WIN
     test_no_system_temp_folder();
 #endif
+    test_scratch_copy_not_in_cache();
 #ifndef _WIN32
     test_link_at_the_path();
 #endif

@@ -12682,13 +12682,14 @@ Qt Quick frontend (`src/ui/qt`):
     no notice is posted, and nothing stays noted from an earlier check.
   - Anything else (an unknown stat answer, a folder, FIFO or socket, no free name, a failed copy, rename or write):
     nothing may write the file this run. `QSettings::setPath(format, UserScope,
-    <CacheLocation>/settings-scratch/<ini|native>)` (without an app cache, a private `QTemporaryDir` held for the
-    process) re-points the format, so every later `QSettings` of it (constructor writes such as the location expiry,
-    static helpers, deferred flushes, destruction) writes a scratch copy seeded with the clean file of the keys that
-    parsed (the bytes read only when nothing could be parsed). With neither folder there is no scratch copy: the
-    format points at a folder no process can create, root included (`/dev/null/…`; on Windows a name holding `|`),
-    so its settings are defaults held in memory this run and nothing is written anywhere
-    (`settings_recovery_in_memory(fileName)`). The original stays byte-identical and the next start tries again.
+    <CacheLocation>/settings-scratch/<ini|native>)` (where the app cache is missing or cannot take the copy, a private
+    `QTemporaryDir` held for the process) re-points the format, so every later `QSettings` of it (constructor writes
+    such as the location expiry, static helpers, deferred flushes, destruction) writes a scratch copy seeded with the
+    clean file of the keys that parsed (the bytes read only when no clean file could be made). Where neither folder
+    takes the seeded copy there is no scratch copy: the format points at a folder no process can create, root
+    included (`/dev/null/…`; on Windows a name holding `|`), so its settings are defaults held in memory this run and
+    nothing is written anywhere (`settings_recovery_in_memory(fileName)`). The original stays byte-identical and the
+    next start tries again.
     `settings_recovery_scratch(fileName)` (per file, also true in memory) and `settings_recovery_scratch()` (any
     file) report it, safe from any thread, apart from QSettings' status, which reads `NoError` from the scratch copy.
     Every outcome of `recover_ini_settings()` replaces what an earlier check noted for the file. A pending
@@ -12696,11 +12697,13 @@ Qt Quick frontend (`src/ui/qt`):
     so a scratch sync never counts as a restore; call history's settings alone do not hold a restore back.
   - Each kept or scratch file posts a `JsonStoreNotice` through `json_store_post_notice()`: `fileName` is the settings
     file's own name (`dsd-neo-app.ini`; call history's `<application>.conf`, `DSD-neo.conf` in the app), `reason` is
-    for the log (in memory, it ends "; no folder for a scratch copy", so the notice changes and the card shows it), and
-    `keptName` is the kept file's name, empty when nothing was kept. Whether the file runs on scratch is
+    for the log (in memory, it ends "; no scratch copy could be written", so the notice changes and the card shows
+    it), and `keptName` is the kept file's name, empty when nothing was kept. Whether the file runs on scratch is
     `settings_recovery_scratch(fileName)`, not the notice (a rename can succeed and the write after it fail).
   - `SettingsRecoveryEnv` injects a read error after N bytes, a failing copy, rename, write or replacement (a step
-    callback may also remove the file, which is how the gone cases are tested) and no scratch folder, for tests.
+    callback may also remove the file, which is how the gone cases are tested) and no scratch folder, for tests. The
+    tests also take the folders away for real: `TMPDIR` and `XDG_CACHE_HOME` naming a file
+    (`test_no_system_temp_folder`) and a file where the cache's scratch folder goes (`test_scratch_copy_not_in_cache`).
   Documented limits: a crash between the rename and the replacement leaves no settings file at the next start
   (defaults), with the original kept; a transient read error that hits only Qt's own later read, and not the check, is
   not seen. Tests: `UI_QT_SETTINGS_RECOVERY`.
