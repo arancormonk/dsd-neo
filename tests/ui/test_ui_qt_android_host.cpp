@@ -30,6 +30,7 @@
 #include <thread>
 #include <utility>
 #include "../../android/decoder_host_android.h"
+#include "../../android/document_pick_record.h"
 #include "../../android/local_device_state.h"
 #include "../../android/location_record.h"
 #include "../../android/run_status.h"
@@ -123,6 +124,49 @@ static PlatformRecordings&
 recordings() {
     static PlatformRecordings value;
     return value;
+}
+
+namespace {
+/* The platform's document picker (#829): the requests the host made, whether the platform takes them, and the records
+ * DocumentPicker.pollResult() hands out, oldest first. */
+struct PlatformPicker {
+    QList<qint64> opened;
+    QStringList saved;
+    QList<qint64> cancelled;
+    QStringList records;
+    bool takes = true;
+};
+} // namespace
+
+static PlatformPicker&
+picker() {
+    static PlatformPicker value;
+    return value;
+}
+
+namespace {
+/* DownloadsSave (#829): the rows the host discards, from any thread, and the names of the rows it published. */
+struct PlatformDownloads {
+    std::mutex mutex;
+    QStringList discarded;
+    QMap<QString, QString> published;
+};
+} // namespace
+
+static PlatformDownloads&
+downloads() {
+    static PlatformDownloads value;
+    return value;
+}
+
+/* The rows discarded since the last call, which forgets them. */
+static QStringList
+take_discarded() {
+    PlatformDownloads& d = downloads();
+    const std::lock_guard<std::mutex> lock(d.mutex);
+    QStringList taken;
+    taken.swap(d.discarded);
+    return taken;
 }
 
 /* What the platform's transfer last saw, and the answer it gives, under its lock. */
@@ -503,6 +547,43 @@ DecoderHostAndroid::platformTakeRecordingShareFailure() {
     return failures.isEmpty() ? QString() : failures.takeFirst();
 }
 
+bool
+DecoderHostAndroid::platformOpenDocument(qint64 id) {
+    picker().opened.append(id);
+    return picker().takes;
+}
+
+bool
+DecoderHostAndroid::platformSaveDocument(qint64 id, const QString& suggestedName, const QString& mimeType) {
+    picker().saved.append(QString::number(id) + QLatin1Char(' ') + suggestedName + QLatin1Char(' ') + mimeType);
+    return picker().takes;
+}
+
+void
+DecoderHostAndroid::platformCancelDocument(qint64 id) {
+    picker().cancelled.append(id);
+}
+
+QString
+DecoderHostAndroid::platformPollDocumentPick() {
+    QStringList& records = picker().records;
+    return records.isEmpty() ? QString() : records.takeFirst();
+}
+
+QString
+DecoderHostAndroid::platformSavedDocumentName(const QString& reference) {
+    PlatformDownloads& d = downloads();
+    const std::lock_guard<std::mutex> lock(d.mutex);
+    return d.published.value(reference);
+}
+
+void
+DecoderHostAndroid::platformDiscardPendingDownload(const QString& reference) {
+    PlatformDownloads& d = downloads();
+    const std::lock_guard<std::mutex> lock(d.mutex);
+    d.discarded.append(reference);
+}
+
 /* The sign-in form's calls out are JNI only (decoder_host_android.cpp); the way a fill comes back in is real. */
 void
 DecoderHostAndroid::signInAutofillBegin(int) {}
@@ -621,6 +702,221 @@ check_location_record() {
               == QList<QString>{QStringLiteral("8 0 0  Location permission denied; use Browse."),
                                 QStringLiteral("9 1 1 52401 ")},
           "a denial and a fix, and a record with no cancelled field, are delivered as results");
+}
+
+namespace {
+/* The Android host, keeping the Download-folder rows it is asked to discard (#829). */
+class PickerHost : public dsd_android::DecoderHostAndroid {
+  public:
+    PickerHost() {
+        QObject::connect(this, &DecoderHost::documentPicked, this,
+                         [this](qint64 id, const QString& reference, const QString& name, bool inDownloads) {
+                             // Joined, not arg()ed: a reference's own %XX escapes are not placeholders.
+                             answers.append(QStringLiteral("picked ") + QString::number(id) + QLatin1Char(' ')
+                                            + reference + QLatin1Char(' ') + name
+                                            + (inDownloads ? QStringLiteral(" 1") : QStringLiteral(" 0")));
+                         });
+        QObject::connect(this, &DecoderHost::documentPickCancelled, this,
+                         [this](qint64 id) { answers.append(QStringLiteral("cancelled %1").arg(id)); });
+        QObject::connect(this, &DecoderHost::documentPickUnavailable, this, [this](qint64 id, const QString& reason) {
+            answers.append(QStringLiteral("unavailable %1 %2").arg(id).arg(reason));
+        });
+    }
+
+    void
+    discardPendingDownload(const QString& reference) override {
+        discarded.append(reference);
+    }
+
+    QStringList answers;
+    QStringList discarded;
+};
+
+// The issue's reference: a mixed-case authority and escapes, which must reach the signal unchanged (#829 B1).
+QString
+picked_uri() {
+    return QStringLiteral("content://com.Example.Provider/document/primary%3ADownload%2Fa%20b.csv");
+}
+
+// A Download-folder row.
+QString
+row_uri() {
+    return QStringLiteral("content://media/external/downloads/42");
+}
+
+QString
+picked_record(qint64 id, const QString& uri, bool downloads) {
+    return QStringLiteral(R"({"id":%1,"kind":"picked","uri":"%2","name":"a b.csv","downloads":%3})")
+        .arg(id)
+        .arg(uri, downloads ? QStringLiteral("true") : QStringLiteral("false"));
+}
+} // namespace
+
+/*
+ * #829: a DocumentPicker record answers the live request only, once; a record for any other request is dropped, and a
+ * Download-folder row in one is discarded, as nothing will write it. Malformed records and unknown kinds change
+ * nothing.
+ */
+static void
+check_document_pick_record() {
+    PickerHost host;
+    qint64 live = 5;
+    // Android's org.json escapes '/' as "\/"; the reference still arrives as it was.
+    dsd_android::deliver_document_pick_record(
+        host, live, picked_record(5, picked_uri().replace(QLatin1Char('/'), QStringLiteral("\\/")), false));
+    check(host.answers == QStringList{QStringLiteral("picked 5 ") + picked_uri() + QStringLiteral(" a b.csv 0")},
+          "the live request's pick reaches documentPicked with its reference unchanged");
+    check(live == 0, "an answered request is no longer live");
+    dsd_android::deliver_document_pick_record(host, live, picked_record(5, picked_uri(), false));
+    check(host.answers.size() == 1, "a request is answered once");
+
+    live = 6;
+    for (const QString& junk :
+         {QStringLiteral("{"), QString(), QStringLiteral("[]"), QStringLiteral(R"({"id":6,"kind":"maybe"})"),
+          QStringLiteral(R"({"id":"6","kind":"cancelled"})"), QStringLiteral(R"({"id":6.5,"kind":"cancelled"})"),
+          QStringLiteral(R"({"kind":"cancelled"})"),
+          QStringLiteral(R"({"id":6,"kind":"picked","name":"x","downloads":false})"),
+          QStringLiteral(R"({"id":6,"kind":"picked","uri":"content://x/y","name":"x"})"),
+          QStringLiteral(R"({"id":6,"kind":"unavailable"})")}) {
+        dsd_android::deliver_document_pick_record(host, live, junk);
+    }
+    check(host.answers.size() == 1 && live == 6 && host.discarded.isEmpty(),
+          "malformed records and unknown kinds change nothing");
+
+    dsd_android::deliver_document_pick_record(host, live, picked_record(4, row_uri(), true));
+    dsd_android::deliver_document_pick_record(host, live, picked_record(4, picked_uri(), false));
+    dsd_android::deliver_document_pick_record(host, live, QStringLiteral(R"({"id":4,"kind":"cancelled"})"));
+    check(host.answers.size() == 1 && live == 6, "another request's records are dropped");
+    check(host.discarded == QStringList{row_uri()}, "a dropped Download-folder row is discarded, and nothing else");
+
+    dsd_android::deliver_document_pick_record(host, live,
+                                              QStringLiteral(R"({"id":6,"kind":"unavailable","reason":"noPicker"})"));
+    live = 7;
+    dsd_android::deliver_document_pick_record(host, live, QStringLiteral(R"({"id":7,"kind":"cancelled"})"));
+    live = 8;
+    dsd_android::deliver_document_pick_record(host, live, picked_record(8, row_uri(), true));
+    check(host.answers
+              == QStringList{QStringLiteral("picked 5 ") + picked_uri() + QStringLiteral(" a b.csv 0"),
+                             QStringLiteral("unavailable 6 noPicker"), QStringLiteral("cancelled 7"),
+                             QStringLiteral("picked 8 ") + row_uri() + QStringLiteral(" a b.csv 1")},
+          "unavailable, cancelled and a Download-folder pick reach their signals");
+    dsd_android::deliver_document_pick_record(host, live, picked_record(8, row_uri(), true));
+    check(host.discarded == QStringList({row_uri(), row_uri()}),
+          "with no request live, a Download-folder row is discarded");
+}
+
+/*
+ * #829: the Android host's requests. Every answer comes after the request returned: DocumentPicker's records through
+ * refresh(), in order, and the host's own (a replaced request, a platform that could not take one) queued.
+ */
+static void
+check_document_requests() {
+    picker() = PlatformPicker();
+    PickerHost host;
+    check(host.documentPickerSupported() && host.property("documentPickerSupported").toBool(),
+          "QML asks the Android host for documents");
+
+    const qint64 open = host.requestOpenDocument();
+    const qint64 save = host.requestSaveDocument(QStringLiteral("calls.zip"), QStringLiteral("application/zip"));
+    check(open > 0 && save > open, "each request takes a new id");
+    check(picker().opened == QList<qint64>{open}
+              && picker().saved == QStringList{QString::number(save) + QStringLiteral(" calls.zip application/zip")},
+          "both requests reach the platform with their id, name and type");
+    check(host.answers.isEmpty(), "nothing is answered inside a request");
+    check(picker().cancelled == QList<qint64>{open}, "the replaced request is cancelled on the platform too");
+    QCoreApplication::processEvents();
+    check(host.answers == QStringList{QStringLiteral("cancelled %1").arg(open)},
+          "the replaced request is answered cancelled, queued");
+    picker().cancelled.clear();
+
+    picker().records =
+        QStringList{QStringLiteral(R"({"id":%1,"kind":"cancelled"})").arg(open), picked_record(save, row_uri(), true),
+                    QStringLiteral(R"({"id":%1,"kind":"unavailable","reason":"failed"})").arg(save)};
+    host.refresh();
+    check(picker().records.isEmpty(), "refresh() reads every record waiting");
+    check(host.answers
+              == QStringList{QStringLiteral("cancelled %1").arg(open),
+                             QStringLiteral("picked %1 ").arg(save) + row_uri() + QStringLiteral(" a b.csv 1")},
+          "the live request's first record answers it; the replaced request's own cancel is not a second answer");
+    check(host.discarded.isEmpty(), "an answered row is the flow's to write");
+
+    host.answers.clear();
+    const qint64 cancelled = host.requestOpenDocument();
+    host.cancelDocumentRequest(cancelled + 1);
+    host.cancelDocumentRequest(cancelled);
+    host.cancelDocumentRequest(cancelled);
+    check(picker().cancelled == QList<qint64>{cancelled}, "only the live request's cancel reaches the platform");
+    picker().records = QStringList{picked_record(cancelled, row_uri(), true)};
+    host.refresh();
+    QCoreApplication::processEvents();
+    check(host.answers.isEmpty() && host.discarded == QStringList{row_uri()},
+          "a cancelled request is never answered, and its Download-folder row is discarded");
+
+    /* Without an activity context (or a JNI call that failed) nothing will answer: "failed", queued. One replaced
+     * before that answer runs gets only the cancel. */
+    picker().takes = false;
+    const qint64 refused = host.requestOpenDocument();
+    check(host.answers.isEmpty(), "a refusal is not answered inside the request");
+    QCoreApplication::processEvents();
+    check(host.answers == QStringList{QStringLiteral("unavailable %1 failed").arg(refused)},
+          "a request the platform could not take is unavailable(\"failed\")");
+    host.answers.clear();
+    const qint64 replaced =
+        host.requestSaveDocument(QStringLiteral("a.dsdbak"), QStringLiteral("application/octet-stream"));
+    picker().takes = true;
+    const qint64 latest = host.requestOpenDocument();
+    QCoreApplication::processEvents();
+    check(host.answers == QStringList{QStringLiteral("cancelled %1").arg(replaced)},
+          "a refused request replaced before its answer ran is answered once, cancelled");
+    picker().records = QStringList{QStringLiteral(R"({"id":%1,"kind":"unavailable","reason":"noPicker"})").arg(latest)};
+    host.refresh();
+    check(host.answers.last() == QStringLiteral("unavailable %1 noPicker").arg(latest),
+          "the newer request is answered");
+
+    /* A request the platform took, replaced by one it could not take: the platform still learns that the first one
+     * went, so both sides agree that nothing it may still answer is live. */
+    host.answers.clear();
+    picker().cancelled.clear();
+    const qint64 taken = host.requestOpenDocument();
+    picker().takes = false;
+    const qint64 untaken = host.requestOpenDocument();
+    picker().takes = true;
+    check(picker().cancelled == QList<qint64>{taken},
+          "a request replaced by a refused one is cancelled on the platform");
+    QCoreApplication::processEvents();
+    check(host.answers
+              == QStringList{QStringLiteral("cancelled %1").arg(taken),
+                             QStringLiteral("unavailable %1 failed").arg(untaken)},
+          "the replaced request is cancelled and the refused one unavailable, each once");
+}
+
+/*
+ * #829: a flow that asks again from inside an answer ("Choose another file", a retry) does so during refresh()'s
+ * drain. The new request stays live, and its own record later in the same drain answers it.
+ */
+static void
+check_document_reentrant_drain() {
+    picker() = PlatformPicker();
+    PickerHost host;
+    const qint64 first = host.requestOpenDocument();
+    qint64 again = 0;
+    QObject::connect(&host, &dsd_qt::DecoderHost::documentPickCancelled, &host, [&host, &again, first](qint64 id) {
+        if (id == first && again == 0) {
+            again = host.requestOpenDocument();
+        }
+    });
+    // Ids go up by one, so the record for the request the slot will make can wait in the same drain.
+    picker().records = QStringList{QStringLiteral(R"({"id":%1,"kind":"cancelled"})").arg(first),
+                                   picked_record(first + 1, picked_uri(), false)};
+    host.refresh();
+    check(again == first + 1 && picker().opened == QList<qint64>({first, again}),
+          "the answer's slot made a new request inside the drain");
+    check(host.answers
+              == QStringList{QStringLiteral("cancelled %1").arg(first),
+                             QStringLiteral("picked %1 ").arg(again) + picked_uri() + QStringLiteral(" a b.csv 0")},
+          "the new request stays live and its record later in the same drain answers it");
+    QCoreApplication::processEvents();
+    check(host.answers.size() == 2, "nothing else is answered afterwards");
 }
 
 static QByteArray
@@ -1153,6 +1449,96 @@ check_recording_transfers() {
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "and still ends");
     check(finished.value(0).value(1) == DecoderHost::TransferFailed && r.transfers.load() == before,
           "failed, without the platform");
+}
+
+/*
+ * #829: the Android host names a Download-folder row from DownloadsSave's memory, and hands it a row to discard at
+ * every exit of a save, export or backup save that never reached the platform's write, which settles the row itself.
+ */
+static void
+check_download_discards() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    const QTemporaryDir dir;
+    const QString a = temp_recording(dir, "a.wav", QByteArray(100, 'a'));
+    const QString row = row_uri();
+    const QString other = row + QStringLiteral("3");
+    reset_recordings();
+    (void)take_discarded();
+    PlatformRecordings& r = recordings();
+    DecoderHostAndroid host;
+    QList<int> results;
+    QObject::connect(&host, &DecoderHost::recordingTransferFinished,
+                     [&results](int, int result, int) { results.append(result); });
+    const QVariantMap save = {{"selection", 3}, {"paths", QStringList({a})}};
+    const QVariantMap exported = {{"selection", 4}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}};
+    // The next transfer end, in order.
+    const auto ended = [&results](int result) {
+        return wait_for([&results]() { return !results.isEmpty(); }) && results.takeFirst() == result;
+    };
+
+    {
+        PlatformDownloads& d = downloads();
+        const std::lock_guard<std::mutex> lock(d.mutex);
+        d.published.insert(row, QStringLiteral("calls (1).zip"));
+    }
+    check(host.savedDocumentName(row) == QStringLiteral("calls (1).zip") && host.savedDocumentName(other).isEmpty(),
+          "a saved row's name is DownloadsSave's");
+    host.discardPendingDownload(row);
+    check(take_discarded() == QStringList{row}, "a discard goes to DownloadsSave");
+
+    // The backup's save: the platform settles a row it was asked to write; a call that failed may not have.
+    platform() = PlatformCopies();
+    check(host.copyFileToDocument(a, row) && take_discarded().isEmpty(), "a written save leaves its row to settle");
+    platform().saves = false;
+    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row}, "a failed save discards its row");
+    platform() = PlatformCopies();
+    platform().holdsResolver = false;
+    check(!host.copyFileToDocument(a, row) && platform().calls == 0 && take_discarded() == QStringList{row},
+          "a save without a resolver discards its row");
+    platform() = PlatformCopies();
+
+    // Recordings: an answer the platform gave settled the row; every other exit discards it.
+    check(host.saveRecording(save, row) && ended(DecoderHost::TransferDone) && take_discarded().isEmpty(),
+          "a saved recording leaves its row to the platform");
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("1")}; });
+    check(host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed) && take_discarded().isEmpty(),
+          "a failure the platform answered settled the row there");
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = QStringList(); });
+    check(host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{row},
+          "a transfer with no answer (a failed JNI call) discards its row");
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0")}; });
+    const int transfers = r.transfers.load();
+    check(
+        host.saveRecording({{"selection", 5}, {"paths", QStringList({dir.filePath(QStringLiteral("gone.wav"))})}}, row)
+            && ended(DecoderHost::TransferMissing) && r.transfers.load() == transfers
+            && take_discarded() == QStringList{row},
+        "a transfer with every recording gone never writes, and discards its row");
+    const QString file = QUrl::fromLocalFile(dir.filePath(QStringLiteral("x.zip"))).toString();
+    check(host.exportRecordings(exported, file) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{file},
+          "a ZIP refused for a file reference is discarded too");
+    check(!host.saveRecording({{"selection", 6}, {"paths", QStringList()}}, row) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{row},
+          "an empty selection is refused and discards its row");
+
+    // Busy: the running transfer keeps its own row; the refused one goes.
+    r.hold = true;
+    check(host.exportRecordings(exported, row) && r.entered.tryAcquire(1, 5000), "a transfer runs");
+    check(!host.saveRecording(save, other) && take_discarded() == QStringList{other},
+          "a transfer refused while another runs discards its row only");
+    host.cancelRecordingTransfer();
+    check(ended(DecoderHost::TransferBusy) && ended(DecoderHost::TransferDone), "the refusal, then the running end");
+    r.hold = false;
+    (void)r.returned.tryAcquire(r.returned.available());
+
+    host.abortDocumentTransfers();
+    check(!host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
+              && take_discarded() == QStringList{row},
+          "a transfer after the teardown abort discards its row");
+    check(!host.copyFileToDocument(a, row) && take_discarded() == QStringList{row},
+          "a backup save after the teardown abort discards its row");
 }
 
 /* #708: a share reaches the platform only for a recording the store manages that is there. Its copy (G2: a stable copy,
@@ -2467,6 +2853,9 @@ main(int argc, char** argv) {
     using namespace dsd_android;
     check_engine_busy();
     check_location_record();
+    check_document_pick_record();
+    check_document_requests();
+    check_document_reentrant_drain();
     check_document_dispatch();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();
@@ -2488,6 +2877,7 @@ main(int argc, char** argv) {
     check_recording_roots();
     check_recording_playback();
     check_recording_transfers();
+    check_download_discards();
     check_recording_share();
     check_queued_share_holds_its_recording();
     check_sign_in_fill_reaches_the_live_host();

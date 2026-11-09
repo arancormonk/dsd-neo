@@ -19,6 +19,7 @@
 
 #include <QMap>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -50,6 +51,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool screenPolicySupported READ screenPolicySupported CONSTANT)
     Q_PROPERTY(bool locationSupported READ locationSupported CONSTANT)
     Q_PROPERTY(bool shareSupported READ shareSupported CONSTANT)
+    Q_PROPERTY(bool documentPickerSupported READ documentPickerSupported CONSTANT)
     Q_PROPERTY(int localDeviceFailureKind READ localDeviceFailureKind NOTIFY localDeviceChanged)
     Q_PROPERTY(bool localDeviceRequestPending READ localDeviceRequestPending NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceRequestedSource READ localDeviceRequestedSource NOTIFY localDeviceChanged)
@@ -391,6 +393,66 @@ class DecoderHost : public QObject {
      * it go (RecordingStore::selectPath(), releaseSelection()).
      */
     void setRecordingHold(std::function<int(const QString&)> hold, std::function<void(int)> release);
+
+    /*
+     * The app's own document picker (issue #829). The QML picker uses it where documentPickerSupported() is true and
+     * Qt's FileDialog elsewhere. A request returns a new id, and the host answers it later with exactly one of
+     * documentPicked(), documentPickCancelled() or documentPickUnavailable(), never before the request returns, so a
+     * caller that stores the id first always sees its answer. A newer request supersedes a pending one, which is
+     * answered documentPickCancelled(). @c reference is a plain string (a file:// URL or a platform document URI)
+     * that callers pass on as it is, never through QUrl. Call these on the Qt thread, except
+     * discardPendingDownload().
+     */
+    virtual bool
+    documentPickerSupported() const {
+        return false;
+    }
+
+    /**
+     * @brief Ask the user for a document to read.
+     *
+     * The base host has no picker: it answers documentPickUnavailable(id, "unsupported"), queued.
+     * @return The request's id, larger than every id this host returned before.
+     */
+    Q_INVOKABLE virtual qint64 requestOpenDocument();
+
+    /**
+     * @brief Ask the user where to write a new document, offering @p suggestedName of type @p mimeType.
+     *
+     * The base host answers as requestOpenDocument() does.
+     * @return The request's id.
+     */
+    Q_INVOKABLE virtual qint64 requestSaveDocument(const QString& suggestedName, const QString& mimeType);
+
+    /**
+     * @brief Forget request @p requestId: no answer for it follows. Unknown and answered ids are ignored.
+     *
+     * The base host drops the "unsupported" answer it has queued for the id.
+     */
+    Q_INVOKABLE virtual void cancelDocumentRequest(qint64 requestId);
+
+    /**
+     * @brief The name a finished write into @p reference got in the Download folder, empty when the host has none.
+     *
+     * Only a save the host answered with inDownloads, and then wrote, has one; the lookup does no I/O. The base host
+     * has none.
+     */
+    Q_INVOKABLE virtual QString
+    savedDocumentName(const QString& reference) const {
+        (void)reference;
+        return QString();
+    }
+
+    /**
+     * @brief Drop @p reference, a save answered with inDownloads that will never be written.
+     *
+     * Safe from any thread, and never blocks. The base host writes nothing to the Download folder, so it has nothing
+     * to drop.
+     */
+    Q_INVOKABLE virtual void
+    discardPendingDownload(const QString& reference) {
+        (void)reference;
+    }
 
     virtual QString
     audioRoute() const {
@@ -852,6 +914,18 @@ class DecoderHost : public QObject {
      * later.
      */
     void recordingShareFailed(const QString& path);
+    /**
+     * @brief Request @p requestId got a document: @p reference to pass on, @p displayName to show. @p inDownloads: a
+     * save the host will write into its Download folder, as no save picker was there to ask.
+     */
+    void documentPicked(qint64 requestId, const QString& reference, const QString& displayName, bool inDownloads);
+    /** @brief Request @p requestId ended without a document: the user backed out, or a newer request replaced it. */
+    void documentPickCancelled(qint64 requestId);
+    /**
+     * @brief Request @p requestId could not ask the user: @p reason is "noPicker", "noSavePicker", "unreadable",
+     * "noResult", "failed" or "unsupported" (the host has no picker).
+     */
+    void documentPickUnavailable(qint64 requestId, const QString& reason);
 
   protected:
     /** @brief Start playing @p path, a file that exists, published Preparing. The base host has no player. */
@@ -906,6 +980,12 @@ class DecoderHost : public QObject {
     static bool copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
                                         const std::atomic<bool>* aborted);
 
+    /** @brief A new document request id, one more than the last; the base requests take theirs here too. */
+    qint64
+    nextDocumentRequestId() {
+        return ++m_documentRequestId;
+    }
+
     /** Whether abortDocumentTransfers() was called; document copies check it before every chunk. */
     bool
     documentTransfersAborted() const {
@@ -916,6 +996,8 @@ class DecoderHost : public QObject {
     bool beginTransfer(const QVariantMap& selection, const QString& reference, bool zip);
     /* recordingTransferFinished() for @p selection, queued: a caller sees its call return first. */
     void announceTransferEnd(int selection, int result, int missing);
+    /* A new request id, answered documentPickUnavailable(id, "unsupported"), queued. */
+    qint64 refuseDocumentRequest();
 
     std::atomic<bool> m_documentTransfersAborted{false};
     QString m_playbackPath;
@@ -927,6 +1009,9 @@ class DecoderHost : public QObject {
     int m_transferSelection = -1;
     qint64 m_transferBytes = 0;
     qint64 m_transferTotalBytes = 0;
+    qint64 m_documentRequestId = 0;
+    /* The base host's requests whose queued "unsupported" answer has not run yet and was not cancelled. */
+    QSet<qint64> m_refusedDocumentRequests;
     std::function<bool(const QString&)> m_recordingIndexed;
     std::function<int(const QString&)> m_recordingHold;
     std::function<void(int)> m_recordingRelease;

@@ -5,16 +5,23 @@
  * The backup's document copies (#580), less their JNI transport (platformHoldsResolver() and platformCopy*() in
  * decoder_host_android.cpp), so the desktop host test compiles this dispatch as it ships. They run on BackupModel's
  * worker thread.
+ *
+ * The document picker's requests and answers (#829), less their JNI transport (platform*Document*() there), on the Qt
+ * thread. The Download-folder rows its saves write into (DownloadsSave.kt) are named and discarded through
+ * platformSavedDocumentName() and platformDiscardPendingDownload() there, from any thread.
  */
 
 #include <QFile>
 #include <QFileInfo>
 #include <QLatin1String>
+#include <QObject>
 #include <QString>
 #include <QUrl>
+#include <Qt>
 #include <QtGlobal>
 #include "decoder_host.h"
 #include "decoder_host_android.h"
+#include "document_pick_record.h"
 
 namespace dsd_android {
 
@@ -57,10 +64,87 @@ DecoderHostAndroid::copyFileToDocument(const QString& sourcePath, const QString&
     if (!isContentUri(reference)) {
         return dsd_qt::DecoderHost::copyFileToDocument(sourcePath, reference);
     }
-    if (documentTransfersAborted() || !platformHoldsResolver()) {
+    /* A save that never reached DocumentCopies leaves a Download-folder row (#829) to discard. One that did settled it
+     * there, so the discard after a failed call is a no-op unless the JNI call itself failed. */
+    if (documentTransfersAborted() || !platformHoldsResolver() || !platformCopyFileToDocument(sourcePath, reference)) {
+        platformDiscardPendingDownload(reference);
         return false;
     }
-    return platformCopyFileToDocument(sourcePath, reference);
+    return true;
+}
+
+qint64
+DecoderHostAndroid::requestOpenDocument() {
+    const qint64 id = nextDocumentRequestId();
+    beginDocumentRequest(id);
+    if (!platformOpenDocument(id)) {
+        refuseDocumentRequestLater(id, QStringLiteral("failed"));
+    }
+    return id;
+}
+
+qint64
+DecoderHostAndroid::requestSaveDocument(const QString& suggestedName, const QString& mimeType) {
+    const qint64 id = nextDocumentRequestId();
+    beginDocumentRequest(id);
+    if (!platformSaveDocument(id, suggestedName, mimeType)) {
+        refuseDocumentRequestLater(id, QStringLiteral("failed"));
+    }
+    return id;
+}
+
+void
+DecoderHostAndroid::cancelDocumentRequest(qint64 requestId) {
+    if (requestId == 0 || requestId != m_document_request) {
+        return;
+    }
+    m_document_request = 0;
+    platformCancelDocument(requestId);
+}
+
+QString
+DecoderHostAndroid::savedDocumentName(const QString& reference) const {
+    return platformSavedDocumentName(reference);
+}
+
+void
+DecoderHostAndroid::discardPendingDownload(const QString& reference) {
+    platformDiscardPendingDownload(reference);
+}
+
+void
+DecoderHostAndroid::beginDocumentRequest(qint64 id) {
+    const qint64 replaced = m_document_request;
+    m_document_request = id;
+    if (replaced != 0) {
+        /* The platform drops it too, so its record (and a Download-folder row it holds) is never left waiting when the
+         * new request does not reach the platform. A request that does would replace it there anyway. */
+        platformCancelDocument(replaced);
+        QMetaObject::invokeMethod(
+            this, [this, replaced] { Q_EMIT documentPickCancelled(replaced); }, Qt::QueuedConnection);
+    }
+}
+
+void
+DecoderHostAndroid::refuseDocumentRequestLater(qint64 id, const QString& reason) {
+    QMetaObject::invokeMethod(
+        this,
+        [this, id, reason] {
+            if (m_document_request == id) {
+                m_document_request = 0;
+                Q_EMIT documentPickUnavailable(id, reason);
+            }
+        },
+        Qt::QueuedConnection);
+}
+
+void
+DecoderHostAndroid::refreshDocumentPicks() {
+    /* Drained even with no request live: a record for a request since given up may be a Download-folder row, which
+     * deliver_document_pick_record() discards. */
+    for (QString record = platformPollDocumentPick(); !record.isEmpty(); record = platformPollDocumentPick()) {
+        deliver_document_pick_record(*this, m_document_request, record);
+    }
 }
 
 } // namespace dsd_android

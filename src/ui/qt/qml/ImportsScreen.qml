@@ -13,10 +13,18 @@ Item {
     id: screen
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
-    onVisibleChanged: if (visible) Qt.callLater(function () {
-        if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
-            screen.forceActiveFocus();
-    })
+    onVisibleChanged: {
+        // Issue #829: every way off this screen (Back clears importsOpen in
+        // Main directly) ends a pick still out, so it never lands later.
+        if (!visible) {
+            csvImport.cancel();
+            return;
+        }
+        Qt.callLater(function () {
+            if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
+                screen.forceActiveFocus();
+        });
+    }
 
     signal closed
     // Asks Main.qml to push the RadioReference screen over this one.
@@ -32,6 +40,9 @@ Item {
     // Transient outcome line under the header; magenta when it reports a problem.
     property string notice: ""
     property bool noticeIsProblem: false
+    // The last import problem read out and how many have been, for tests.
+    property string announced: ""
+    property int announcements: 0
 
     function nounFor(type, count) {
         if (type === "trunkTargets")
@@ -163,7 +174,13 @@ Item {
             // A new import lands at a new path no session uses yet.
             if (updated && screen.usable(result))
                 screen.reloadIfInUse(qsTr("Updated"), result);
+            screen.announceProblem();
         }
+    }
+    // An import that went wrong is read out once, each time it happens.
+    function announceProblem() {
+        if (noticeIsProblem)
+            Navigation.announce(screen, noticeLine, notice);
     }
     DecryptionApplyFlow {
         id: mapApply
@@ -220,6 +237,7 @@ Item {
 
     ReadableText {
         id: noticeLine
+        objectName: "importsNotice"
 
         anchors.top: countLabel.bottom
         anchors.left: parent.left
@@ -233,6 +251,7 @@ Item {
         font.pixelSize: Theme.fontSize(13)
         color: screen.noticeIsProblem ? Theme.magenta : Theme.textSubdued
         wrapMode: Text.Wrap
+        Accessible.role: screen.noticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText
     }
 
     ListView {

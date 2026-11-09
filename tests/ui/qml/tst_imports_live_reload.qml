@@ -86,14 +86,22 @@ Item {
             verify(button !== null && button.visible, "Update from file is missing");
             button.clicked();
             var picker = findChild(findChild(tc.screen, "importsCsvImport"), "csvPrimaryPicker");
-            verify(picker !== null);
+            verify(picker !== null && picker.visible, "the picker did not open");
             if (source === null) {
-                picker.reject();
+                testContext.answerDocumentCancelled(pickRequest());
                 return;
             }
-            picker.selectedFile = "file://" + source;
-            picker.accepted();
-            picker.close();
+            pickFile(source);
+        }
+
+        // Issue #829: the open request the CSV picker waits on, answered by the host.
+        function pickRequest() {
+            var request = testContext.lastDocumentRequest();
+            compare(request.kind, "open");
+            return request.id;
+        }
+        function pickFile(source) {
+            testContext.answerDocumentPicked(pickRequest(), "file://" + source, source.split("/").pop(), false);
         }
 
         function test_update_reloads_the_file_in_a_running_session_data() {
@@ -158,10 +166,8 @@ Item {
                 var flow = findChild(tc.screen, "importsCsvImport");
                 tc.screen.pendingRow = -1;
                 flow.pick("group");
-                var picker = findChild(flow, "csvPrimaryPicker");
-                picker.selectedFile = "file://" + testContext.writeFixtureCsv("new-groups.csv", "id,mode,name\n7,A,Seven\n");
-                picker.accepted();
-                picker.close();
+                verify(findChild(flow, "csvPrimaryPicker").visible, "the picker did not open");
+                pickFile(testContext.writeFixtureCsv("new-groups.csv", "id,mode,name\n7,A,Seven\n"));
                 compare(tc.screen.notice, "Imported · 1 talkgroup");
             }
             compare(commands.listCommands(), []);

@@ -78,6 +78,19 @@
     public static java.lang.String pollResult();
 }
 
+-keep,allowoptimization class io.github.arancormonk.dsdneo.DocumentPicker {
+    public static boolean open(android.app.Activity, long);
+    public static boolean create(android.app.Activity, long, java.lang.String, java.lang.String);
+    public static void cancel(long);
+    public static java.lang.String pollResult();
+}
+
+-keep,allowoptimization class io.github.arancormonk.dsdneo.DownloadsSave {
+    public static void start(android.content.ContentResolver);
+    public static java.lang.String publishedName(java.lang.String);
+    public static void discard(java.lang.String);
+}
+
 -keep,allowoptimization class io.github.arancormonk.dsdneo.DiagnosticsShare {
     public static void share(android.content.Context, java.lang.String, java.lang.String);
 }

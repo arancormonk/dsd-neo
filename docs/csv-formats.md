@@ -26,9 +26,10 @@ Channel maps retain their support for longer rows with mode/key options; a NUL b
 The Android app does not take CLI flags directly. Import CSVs through the UI instead: **Settings → Imported files**
 manages the library (import, update, remove), and the add/edit-system wizard's **Trunking data** panel assigns a
 channel map, talkgroup list, key file, P25 band plan, or source ID list (**Radio IDs**, kind `src`) to a system.
-Files are picked with the system document picker and copied into app-private storage (`files/imports/`), so the
-original can live anywhere (Downloads, Drive, …) and is not read again
-after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
+Files are picked with the app's document picker (Android's file picker, or any installed app that can hand over a
+document) and copied into app-private storage (`files/imports/`), so the original can live anywhere (Downloads, Drive,
+…) and is not read again after import — use "Update from file" to pull in a changed original. A device with no file
+picker gets a message saying so instead of a picker that never opens. Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
 "No usable rows". A talkgroup list with a header and no rows is a list emptied on purpose, not a wrong file: its row
 reads "Empty list", and it loads as an empty list. While a session is running, "Update from file" and
@@ -40,7 +41,7 @@ field to "None" — that unloads the channel map, talkgroup list, keys, or sourc
 talkgroup list chosen there (an imported file) whose rows all fail to load, or that cannot be read, is not loaded: the
 session's list is cleared instead, so the previous system's talkgroups do not stay in use. A file outside the library
 is sent to the decoder as it is; one the decoder refuses keeps the session's list. This action is available only for
-a session this app instance started, which under Qt 6.11.2 is every session: a recreated Activity restarts the app and
+a session this app instance started, which under Qt 6.11.3 is every session: a recreated Activity restarts the app and
 ends the session (`android/README.md` "Known limits").
 
 Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the

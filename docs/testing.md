@@ -175,6 +175,28 @@ Each first checks what crosses JNI or the manifest (the playback states and tran
 enums, the provider serving only the two "Call recordings" folders and the share copies' cache folder, with a read
 grant). They skip the FIFO and
 symbolic-link cases where the host cannot make them.
+`ANDROID_DOCUMENT_PICKER_JVM` (the `document_picker` suite, issue #829) runs `DocumentPicker.kt` against stubs of the
+activity, intents, package manager and resolver. Its request core runs against a fake activity: OPEN_DOCUMENT first,
+then the GET_CONTENT fallback straight to the one app that takes documents or through a chooser without the media-only
+pickers (none: `noPicker`); the late RESULT_CANCELED for a launch that found no app dropped while the fallback (a
+chooser, or a held Download-folder insert) goes on; results for other codes, for no request and for a replaced one;
+ClipData-only, empty, `file:` and custom-code results; the 2 s name deadline with a provider that never answers, a
+retired lookup leaving the queue, a save's answer named by its requested title with no lookup, the 10 s insert deadline
+and a late or abandoned row discarded; cancel and supersede, which close the retired request's launch when one is out
+and nothing otherwise. Then the Intents each launch becomes, the handler query on API 29 and 33, and the public entry
+points end to end, and a save with no save picker through the real `DownloadsSave` (no row before the host hands it the
+resolver). It first checks that `DsdNeoActivity.onActivityResult` hands every result to the picker before Qt, and that
+the manifest's `<queries>` names the GET_CONTENT intent the handler query needs.
+`ANDROID_DOWNLOADS_SAVE_JVM` (the `downloads_save` suite, issue #829) runs `DownloadsSave.kt` with the backup's
+`DocumentCopies.kt` and `RecordingExport.kt` against a resolver stub that plays MediaStore's Download collection: the
+inserted values (the API 29 expiry through `Build.VERSION.SDK_INT`), the row published or deleted at every exit of
+both write entries, an update that changes no row or a name that cannot be read back failing the write, one row
+published or discarded but never both, a discard that comes before the write began failing that write (the last 16
+remembered), a cancel during the copy (deleted, Cancelled), before the publication (deleted, Cancelled) and after it
+began (saved), an interrupt after it began (saved, interrupt kept), the teardown abort while an update is held
+(returns without it; the publication still completes), the 16-name bound and the release of persisted grants. The
+abort case runs last but one: it is sticky for the process. Last, with the worker shut down, an insert answers empty
+and a settle deletes the row it claimed.
 `ANDROID_USB_RECEIVER_JVM` (the `usb_receiver` suite) runs `UsbReceiverKind.kt`, the USB id table `UsbSourceManager`
 classifies every device with, with no stubs: an Airspy beside a hub and other unrelated devices reads `airspy`, two
 RTL dongles `usb`, an RTL dongle and an Airspy `both`, and a bus with no known receiver empty. Which local receiver a

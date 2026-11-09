@@ -132,6 +132,61 @@ Item {
             compare(app.currentTab, 2);
         }
 
+        // Issue #829: Back off Imported files clears importsOpen in Main
+        // directly; a pick still out ends with the screen, and its late
+        // answer imports nothing.
+        function test_imports_back_ends_a_pick() {
+            app.importsOpen = true;
+            var imports = findChild(app, "importsScreen");
+            tryCompare(imports, "visible", true);
+            var flow = findChild(imports, "importsCsvImport");
+            var count = importedFiles.count;
+            imports.pendingRow = -1;
+            imports.pendingType = "group";
+            imports.importPickedFile();
+            var id = testContext.lastDocumentRequest().id;
+            verify(flow.active);
+            app.requestBack();
+            compare(app.importsOpen, false);
+            tryCompare(imports, "visible", false);
+            verify(!flow.active, "Back ended the pick");
+            var path = testContext.writeFixtureCsv("late-back-groups.csv", "id,mode,name\n1,A,Late\n");
+            testContext.answerDocumentPicked(id, "file://" + path, "late.csv", false);
+            compare(importedFiles.count, count, "nothing was imported");
+            compare(imports.notice, "");
+        }
+
+        // Issue #829: Save clears wizardOpen in Main directly; a CSV pick
+        // still out ends with the wizard, and its late answer fills nothing.
+        function test_wizard_save_ends_a_csv_pick() {
+            var wizard = findChild(app, "wizardScreen");
+            wizard.openForAdd(false);
+            app.wizardOpen = true;
+            tryCompare(wizard, "visible", true);
+            var flow = findChild(wizard, "wizardCsvImport");
+            var systems = savedSystems.count;
+            var count = importedFiles.count;
+            wizard.nameText = "Save route";
+            wizard.pickerTarget = "chan";
+            wizard.importCsvFile();
+            var id = testContext.lastDocumentRequest().id;
+            verify(flow.active);
+            try {
+                wizard.commit();
+                compare(savedSystems.count, systems + 1);
+                compare(app.wizardOpen, false);
+                tryCompare(wizard, "visible", false);
+                verify(!flow.active, "Save ended the pick");
+                var path = testContext.writeFixtureCsv("late-save-map.csv", "channel,frequency\n1,851012500\n");
+                testContext.answerDocumentPicked(id, "file://" + path, "late.csv", false);
+                compare(importedFiles.count, count, "nothing was imported");
+                compare(wizard.chanCsvPath, "");
+            } finally {
+                while (savedSystems.count > systems)
+                    savedSystems.remove(savedSystems.count - 1);
+            }
+        }
+
         function test_account_edits_persist() {
             var oldUsername = prefs.rrUsername;
             var oldKey = prefs.rrAppKey;

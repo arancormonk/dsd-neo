@@ -12101,28 +12101,43 @@ Qt Quick frontend (`src/ui/qt`):
     Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed picker
     releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of its
     own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen opened,
-    and `deletesWaiting`. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC tag for a row whose `hasRecording`
-    is true (History, Monitor, Home), and its accessible name adds "has a recording". `HistoryDetailSheet.qml` follows
-    its row by uid (`recordingsForUid()` again on every model change) and shows `CallRecordingPlayer.qml` above Hold:
-    play/pause, position and seek with a status line ("Opening…", "Paused") whose line stays laid out, empty and
-    unread, when there is none, so the block is as tall stopped, opening, playing and paused and a sheet centred on
-    its content does not move at a tap (`test_height_steady_across_states`), the parts (the one shown kept on its
-    recording by path) with a Play all parts action
-    (the host keeps no queue: a part that stopped at its end, path kept and position at its length, plays the next; a
-    stop clears the path and ends it), Share (`recordingShareFailed()` worded there), Save to file and Delete. A part
-    the host reports "missing" leaves the block at once, until the store lists it as away (its storage went): from then
-    on the store's availability speaks for it, so it shows away and plays again once the storage is back, without
-    reopening the sheet; closing the sheet stops what it played; a pause the host made in the background (D10) reads as
-    Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted. History and
-    detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say the same of
-    their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal search
-    detection, so "the call stays in History" would not hold (issue #809 B3). `DetectionRecordingsSheet.qml` (Signal
-    search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows Listening
-    (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it differs from
-    what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows `saveFailing`. Tests:
-    `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
-    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
-    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    and `deletesWaiting`. Issue #829: the picker (`callRecordingsExportPicker`) is a `DocumentPicker` (save,
+    `application/zip`, `suggestedName` the zip's name); one that is `unavailable` releases the selection and says its
+    message as a problem, and the screen `cancel()`s it when it stops being visible (Back clears `callRecordingsOpen`
+    in `Main.qml`), so the hold goes too; an export already writing runs on. Export all is enabled only while
+    `exportSelection === 0`, like a row's Export as zip, and "An export is running" is said only while a transfer runs
+    (B5). A Done export whose picker saved to the Download folder reads "Exported N recordings to Download/DSD-neo as
+    <name>." with `decoderHost.savedDocumentName()` (the name substituted last, so a `%` in it stays as written),
+    falling back to "Exported N recordings." when it has no name, then the missing count. `say()` reads every problem
+    out once, and the Download-folder result too (the only place that says where the file went), through
+    `Navigation.announce()`; other results are not read out. `CallRow.qml` draws `PlayGlyph.qml` before the time or ENC
+    tag for a row whose `hasRecording` is true (History, Monitor, Home), and its accessible name adds "has a recording".
+    `HistoryDetailSheet.qml` follows its row by uid (`recordingsForUid()` again on every model change) and shows
+    `CallRecordingPlayer.qml` above Hold: play/pause, position and seek with a status line ("Opening…", "Paused") whose
+    line stays laid out, empty and unread, when there is none, so the block is as tall stopped, opening, playing and
+    paused and a sheet centred on its content does not move at a tap (`test_height_steady_across_states`), the parts
+    (the one shown kept on its recording by path) with a Play all parts action (the host keeps no queue: a part that
+    stopped at its end, path kept and position at its length, plays the next; a stop clears the path and ends it), Share
+    (`recordingShareFailed()` worded there), Save to file and Delete. Save to file's picker (`recordingSavePicker`) is a
+    `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is `unavailable` releases the selection and
+    says why, and the block `cancel()`s a picker still asking when it stops being visible (the sheet closed, the row
+    emptied) or another recording becomes the shown part (issue #829), which releases the hold. `saveFinished()` takes
+    the Download-folder name (`savedDocumentName()` when the picker's `savedToDownloads`) and ends the save before its
+    shown-part return, so a save that finished on another row's sheet leaves nothing behind; a Done one shown here reads
+    "Saved to Download/DSD-neo as <name>." (else "Saved."). Problems and that Download-folder result are read out once
+    each, as on the screen. A part the host reports "missing" leaves the block at once, until the store lists it as away
+    (its storage went): from then on the store's availability speaks for it, so it shows away and plays again once the
+    storage is back, without reopening the sheet; closing the sheet stops what it played; a pause the host made in the
+    background (D10) reads as Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is
+    deleted. History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk
+    deletes say the same of their count: a recording may have no History row (never linked, or trimmed) and may belong
+    to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
+    `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
+    editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
+    with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added
+    listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`,
+    `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`,
+    `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
     `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
@@ -12139,10 +12154,14 @@ Qt Quick frontend (`src/ui/qt`):
     `CancellationSignal` (`cancelRecordingTransfer()`), distinct from the teardown abort. A ZIP's entries are DEFLATED
     at level 0 (measured: BEST_SPEED saved 13% of 8 kHz voice and 23% of NFM at about sixty times the CPU), so it
     streams with data descriptors, ZIP64 as needed; a recording found gone is left out and reported. Progress is polled
-    on the refresh tick; the end comes back queued. A host going away aborts the document transfers, cancels its
-    transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a file URL's
-    storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself (`TransferLink`): a job
-    never calls into the host. A single save to a file URL takes the base copy
+    on the refresh tick; the end comes back queued. A Download-folder row (#829, `DownloadsSave.kt`; Android host,
+    "Download folder save") is settled at every exit of `transfer()`, under the transfer's own signal, so a Cancel
+    still reaches it until its publication begins; every exit that never reaches `transfer()` (a busy, unsupported or
+    malformed request in `DecoderHost::beginTransfer()`, every recording gone, a ZIP refused for a file reference, a
+    JNI call with no answer) hands it to `discardPendingDownload()`. A host going away aborts the document transfers,
+    cancels its transfer and waits for the worker at most 2 s; past that (a write blocked on a provider's pipe or on a
+    file URL's storage) it logs, leaves the pool to finish (never deleted) and cuts the job off from itself
+    (`TransferLink`): a job never calls into the host. A single save to a file URL takes the base copy
     (`DecoderHost::copyFileToLocalDocument()`) on the link's own abort flag, which teardown sets and no user cancel
     reaches (system pickers hand out `content://`). Share: `RecordingShare.canShare()` (a regular `.wav`, not a link,
     whose real path, by `toRealPath()` so every link on the way resolves, is inside a root, folder by folder) on the GUI
@@ -12820,7 +12839,8 @@ Qt Quick frontend (`src/ui/qt`):
 - QML plus C++ view-models (metrics, call history + per-view filters, saved systems, imported CSV files, app
   preferences, command bridge) that poll app-control on a timer; used by the Android app today and intended as the
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
-  picked documents into durable app storage through `DecoderHost::importDocument()` and dry-run validates them via
+  picked documents into durable app storage through `DecoderHost::importDocument()` (an update by the row's stored
+  path, `importBundleReplacing()`, see `qml/CsvImportFlow.qml` below) and dry-run validates them via
   `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`, `src/core/file/p25_bandplan_csv.c`, and
   `src/core/file/source_alias_csv.c`) for row-count feedback. Kinds are `chan`, `group`, `keysDec`, `keysHex`,
   `p25Bandplan`, and `src` (source radio ID names), with `src` appended after `p25Bandplan`.
@@ -13236,8 +13256,10 @@ Qt Quick frontend (`src/ui/qt`):
     (`<CacheLocation>/backup/<job>.dsdbak` or `.in`, `restore-staging-<job>/`), so a cancelled job removes only them
     (`discard_staging()` for its staging directory). Construction sweeps both (`sweep_stale_staging()`).
     `prepareExport()` snapshots on the UI thread, then builds and seals on the worker; `saveExport()` calls
-    `DecoderHost::copyFileToDocument()`; `inspectRestore()` copies the document with `copyDocumentToFile()` (capped at
-    64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and stages, and the UI thread promotes.
+    `DecoderHost::copyFileToDocument()`, and a refused save (busy, nothing prepared) hands its reference to
+    `discardPendingDownload()` (#829), since nothing will write it; `inspectRestore()` copies the document with
+    `copyDocumentToFile()` (capped at 64 MiB), opens, parses, checks free space (twice the archive plus 1 MiB) and
+    stages, and the UI thread promotes.
     `commitRestore()` refuses while a job runs, a session is on screen or `engineBusy()`, commits, and asks `quitApp()`
     once; a refused commit leaves the stage as it was. `restorePending` follows the committed stage on disk, and
     `restoreCancellable` (pending, no complete journal) with it; `discardRestore()` reports `RestoreInProgress` once the
@@ -13254,7 +13276,14 @@ Qt Quick frontend (`src/ui/qt`):
     the flow's whole length, kept while the app closes) joins `autoStartBlocked`, a USB grant that lands while it is set
     starts nothing, and entering a restore drops pending starts (`dropPendingStarts()`). An unlock error about the file
     (not a backup, newer, too large, damaged, unreadable) swaps Unlock for "Choose another file", which reopens the
-    picker inside the same flow. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
+    picker inside the same flow as a new request, so only a new answer is taken, never the failed file again (#829 B2).
+    Both pickers are `DocumentPicker`s (`backupSavePicker`: save, `application/octet-stream`, `suggestedName` from
+    `suggestedFileName()` before each open; `backupOpenPicker`: open). A picker that is `unavailable` ends the flow
+    through `finish(message, true)`, the save after `discardExport()`, so the card shows the reason as a problem
+    (`AlertMessage`) and `setNotice()` announces it once (`announcements` counts them for tests); `finish()` closes
+    both pickers silently. A save that went to the Download folder (`savedToDownloads`) reads "Backup saved to
+    Download/DSD-neo as <name>." with `decoderHost.savedDocumentName()`, or "Backup saved." when that is empty, then
+    the "Not included" text. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
     (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. Settings' Backup card
     gates the Restore row on `restoreAllowed` and `!restorePending`, and it and the Home card offer "Cancel
     restore"/"Discard restore" only while `restoreCancellable`, else `Util.restorePartWayText()`. The confirmation, the
@@ -13365,6 +13394,74 @@ Qt Quick frontend (`src/ui/qt`):
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
   host (`android/decoder_host_android.cpp` today).
+- Document picker (issue #829): `DecoderHost::documentPickerSupported` (CONSTANT; base false) tells QML to ask the
+  host for documents instead of opening Qt's `FileDialog`; QML branches on it, never on `Qt.platform.os`.
+  `requestOpenDocument()` and `requestSaveDocument(suggestedName, mimeType)` return a new id, larger than every earlier
+  one (`nextDocumentRequestId()`, protected, so a platform host numbers its own requests the same way). Each id is
+  answered exactly once, after the request returned, by `documentPicked(id, reference, displayName, inDownloads)`,
+  `documentPickCancelled(id)` (backed out, or superseded by a newer request) or `documentPickUnavailable(id, reason)`
+  (`noPicker`, `noSavePicker`, `unreadable`, `noResult`, `failed`, `unsupported`). The base host answers every request
+  `unsupported`, queued. `cancelDocumentRequest(id)` drops a pending answer; `savedDocumentName(reference)` names a
+  finished Download-folder write without I/O (base: empty). These run on the Qt thread; `discardPendingDownload(
+  reference)` (base no-op) may run on any thread and never blocks. The reference is a plain string from end to end,
+  never a QML `url` or `QUrl::toString()`. QML tests: the `decoderHost` map and `ImportOnlyHost` both fake the picker
+  (`documentPickerSupported` true unless `testContext.setDocumentPickerSupported(false)`); a case reads
+  `testContext.lastDocumentRequest()` / `documentCalls()` and answers with `answerDocumentPicked`,
+  `answerDocumentCancelled`, `answerDocumentUnavailable` (on whichever host is installed) and `setSavedDocumentName`.
+  Test: `UI_QT_IMPORTED_FILES` (base defaults).
+- `qml/DocumentPicker.qml` is the one picker screens use (`mode` "open"/"save", `title`, `nameFilters`,
+  `defaultSuffix`, `mimeType`, `suggestedName`). `open()` asks the host when `documentPickerSupported`, cancelling its
+  own earlier request first, and otherwise opens a `FileDialog` it makes through an `Instantiator` (a QtObject root,
+  since `visible` here means "a request is waiting" and Item's is FINAL; a Loader would leave the dialog without a
+  window). Each `open()` ends in exactly one `accepted(reference, displayName)`, `rejected()` or `unavailable(reason,
+  message)`, the message from `messageFor(reason)`, unless `close()` ends it silently first. Owners that go away or are
+  reused call `cancel()` (emits `rejected` only while a request waits), so their own cancel path runs; flows that are
+  ending call `close()`. Only the live id is answered; a Download-folder pick for a request this picker gave up goes
+  to `discardPendingDownload`, never one another picker waits for. `savedToDownloads` says the last accepted save
+  went to the Download folder; it is set before `accepted`, so a save owner that no longer wants an accepted pick
+  (`BackupFlow.savePicked()`, `CallRecordingPlayer.savePicked()`, `CallRecordingsScreen.exportPicked()`) discards a
+  Download-folder row itself. On the desktop path an open clears the dialog's selection (`currentFiles = []`:
+  `selectedFiles` is read-only and `selectedFile = ""` is refused), so an accept with no new choice answers
+  `noResult`, never the previous file; a dialog that cannot open answers `failed`. Test: `UI_QT_QML_DOCUMENT_PICKER`.
+- `qml/CsvImportFlow.qml` imports a CSV and its companions for three owners: Imported files (`ImportsScreen`), the scan
+  list editor's target CSV (`ScanListScreen`) and the wizard's trunking-data fields (`WizardScreen`). Its primary and
+  companion pickers (`csvPrimaryPicker`, `csvCompanionPicker`) are `DocumentPicker`s with no filter; the primary pick's
+  `displayName` is the stored file's name, a companion's names its "Selected:" line until a library choice names the
+  library file (#829 B3). `pick(kind, row, context)` / `begin(…, context)` first cancel the import before (with that
+  import's context), then keep `context`; every `finished` result carries it as `result.context`. `complete()` closes
+  both pickers silently; an owner ends a pick by calling the flow's `cancel()`. Ownership (#829 B4): each owner cancels
+  its flow when it stops being visible (`onVisibleChanged`, so Imports' Back, which clears `importsOpen` in `Main.qml`
+  directly, and the wizard's Save, which clears `wizardOpen`, both count) and when it is reused
+  (`WizardScreen.openForAdd/openForFound/openForEdit`, `ScanListScreen.openFor`). Newer choice wins: the wizard keeps a
+  generation per CSV field (`csvGenerations`, bumped by `assignCsvPath()` and by `applyRadioReference()` for the files
+  it writes), the scan list editor one for its targets (`targetsGeneration`, bumped by `selectTargets()` and the target
+  source switch), the flow one per companion slot (`companionGenerations`, bumped by every write to the slot). A pick
+  carries the generation it was asked with (`importCsvFile()` passes `{target, keyFormat, generation}`; the scan list
+  `{generation}`) and the owner's `wanted(context)` answers whether it still holds (so a `pick()`/`begin()` against an
+  owner with `wanted` must carry that owner's context, or it is dropped); a pick that comes back after a newer choice
+  ends as cancelled with nothing imported and no notice, and a late companion pick leaves the slot alone (B6: a later
+  pick never carries an earlier reference). The wizard's `finished` handler fills `result.context.target` with its key
+  format, never `pickerTarget`, which the next sheet rewrites. An update names its row by the stored path
+  taken at pick time (`replacePath`); `ImportedFilesModel::importBundleReplacing()` resolves it at delivery and refuses
+  a row that went, or an empty path, with `error` "changed" ("That file changed while you were picking. Try again."), so
+  an update never becomes a new import; a new file goes through `importBundle()`. Choosing a decryption profile in the
+  wizard clears the key file and bumps its generation too. A primary picker that is `unavailable` ends the flow with
+  `{ok false, error "unavailable", detail: message}`; a companion one brings the sheet back with every choice kept and
+  the message in `csvCompanionNotice` (cleared by the next "Choose a file…", a library choice or the end of the import).
+  Owners show `result.detail` (Imports' notice, the scan list's validation line, the wizard's `csvNotice` with "Could
+  not read that file" as the fallback); each of those lines and the companion notice is an `AlertMessage` while it
+  reports a problem and is read out once per failure while `Navigation.allows` it (`announced`/`announcements` for
+  tests). Tests: `UI_QT_QML_CSV_IMPORT_FLOW`, `UI_QT_IMPORTED_FILES`, and the scan list, imports, wizard band plan,
+  modal input and settings layout QML suites.
+- The wizard's Replay file Browse (`WizardScreen.qml`, issue #829) opens `wizardSourcePicker`, a `DocumentPicker`
+  (open, no filter), and never touches `pickerTarget`. An accepted pick goes to `decoderHost.importContentUri(reference,
+  displayName)`; a path replaces `fileText`, and "" (the copy failed) keeps it and sets `sourceNotice` to "Could not
+  copy that file.", plus " The previous file is still selected." only when there was one (B8). An `unavailable` picker
+  sets `sourceNotice` to its message; backing out changes nothing. `wizardSourceNotice`, under the Replay file row, is
+  an `AlertMessage` read out once per failure while `Navigation.allows` it (`announced`/`announcements`, shared with
+  `csvNotice`); it clears on the next Browse, a successful copy, and the wizard opening or closing.
+  `endSessionPicks()` (on hide and in `openForAdd/openForFound/openForEdit`) cancels Browse with the CSV import. Test:
+  `tst_wizard_browse.qml` in `UI_QT_QML_CALL_LISTS`.
 - Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
   (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
@@ -14022,13 +14119,111 @@ thread, which the rest of the interface never is.
   document is open closes it with `closeWithError()`, so a provider reading a pipe or socket sees the failure rather
   than a short document, and deletes it; only a whole save closes normally. The write side is
   `DocumentCopies.beginWrite()` and its `DocumentWrite` (`finish(length)` / `fail()`), which call recording exports use
-  too.
+  too. `fail()` leaves a Download-folder row to `DownloadsSave` (`deleteDocument()` cannot remove a MediaStore row), and
+  `copyFileToDocument()` settles one at every exit: published only when the whole save was written, so a row that could
+  not be published fails the save. A save the host never hands to Kotlin (aborted, no resolver) or whose JNI call
+  failed discards it.
 - `abortDocumentTransfers()` (only `~BackupModel`) cancels the `CancellationSignal` of every provider call in flight,
   raises `DocumentTransfer`'s sticky flag, which every chunk checks, and then the base host's. The delete is skipped
   after an abort, so a save stopped partway leaves a partial document, which never opens as a backup.
 - Tests: `UI_QT_ANDROID_HOST` (engine-busy decision, document dispatch), `ANDROID_DOCUMENT_TRANSFER_JVM`
-  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
-  `finishAndRemoveTask()` need a device or emulator.
+  (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs), `UI_QT_BACKUP_MODEL` (a refused
+  save discards its reference). Real providers, JNI and `finishAndRemoveTask()` need a device or emulator.
+
+Document picker (issue #829; the host API and `qml/DocumentPicker.qml` are under UI, Qt, "Document picker"):
+`DecoderHostAndroid::documentPickerSupported()` is true, so no screen opens Qt's `FileDialog` on Android and Qt's own
+request code (1305) is never used.
+
+- Requests (`decoder_host_android_documents.cpp`, Qt thread): each takes the base host's next id and becomes the live
+  one (`m_document_request`); a live one it replaces is cancelled in `DocumentPicker` too (so the two agree even when
+  the new request never reaches it) and answered `documentPickCancelled`, queued. The JNI shims in
+  `decoder_host_android.cpp` (`platformOpenDocument()`, `platformSaveDocument()`) hand `DocumentPicker.open()` /
+  `create()` Qt's context only when `QAndroidApplication::isActivityContext()`; false there, or a call that failed
+  (both Kotlin entries return true), answers `documentPickUnavailable(id, "failed")`, queued, unless the request was
+  replaced first. `cancelDocumentRequest()` forgets the live id and calls `DocumentPicker.cancel()`; other ids are
+  ignored.
+- Answers: `refresh()` drains `DocumentPicker.pollResult()` every tick (`refreshDocumentPicks()`), live request or
+  not, and `android/document_pick_record.h` (JNI-free) turns each JSON record (`{"id","kind":"picked","uri","name",
+  "downloads"}`, `{"id","kind":"cancelled"}`, `{"id","kind":"unavailable","reason"}`) into the signal, for the live id
+  only, once. A record for another id is dropped, and a dropped `downloads` row goes to `discardPendingDownload()`;
+  malformed records and unknown kinds are ignored. Nothing is answered inside a request call.
+- `DocumentPicker.kt`: a process-level object whose request state belongs to the main looper (launches are posted
+  there); its record queue is locked on itself, since a `@Synchronized @JvmStatic` member of an object locks the class.
+  A request is its id; while an activity it launched is out it also holds that launch's code, the next in
+  `0x5D0000..0x5DFFFF` (wrapping). `DsdNeoActivity.onActivityResult()` hands it every result first; it claims the whole
+  range and settles only the live launch's code, so the late `RESULT_CANCELED` Android sends for a launch that threw
+  `ActivityNotFoundException` (the code is retired at the throw), a result after process death (no request) and one
+  for a replaced request are dropped. Each request settles once; a newer one settles the one it replaces `cancelled`.
+  A request retired (cancelled or replaced) while its launch is out has that launch closed through
+  `PickerHost.stop(code)` (`Activity.finishActivity(code)`, on the main looper), as the desktop path closes its
+  `FileDialog`: left up, a save picked there would leave an empty document nothing writes. A launch that threw has no
+  code to close. The `CREATE_DOCUMENT` result that comes back after process death cannot be stopped (no request is
+  left to close it): its empty document stays (decided limit, `android/README.md` "Known limits").
+  - Open: `ACTION_OPEN_DOCUMENT` + `CATEGORY_OPENABLE`, `*/*`. With no app for it, GET_CONTENT: `all` = the
+    `GET_CONTENT` + OPENABLE handlers for `*/*`, `capable` = the union of the same query for `application/*`, `text/*`
+    and `audio/*`. None capable: `noPicker`; one: GET_CONTENT `*/*` straight to it; several: `Intent.createChooser()`
+    (no title: the platform's own) with `EXTRA_EXCLUDE_COMPONENTS` = `all - capable`. A bare `*/*` GET_CONTENT also
+    reaches the system photo picker, which with no DocumentsUI to forward to relaunches itself until Android removes
+    the app's task; its `image/*`/`video/*` filters match no family. The manifest's `<queries>` entry (GET_CONTENT +
+    OPENABLE, `*/*`) makes the handlers visible to the query.
+  - Save: `ACTION_CREATE_DOCUMENT` + OPENABLE, the type and `EXTRA_TITLE`. With no app for it, the row comes from
+    `DocumentPicker.downloads` (`DownloadsFallback.insert(name, mime, onDone)`, answered from any thread and moved to
+    the main looper) within 10 s: a row is `picked` with `downloads` and the requested name, none or the deadline
+    `noSavePicker`. A row that comes late, or for a request cancelled or replaced, goes to
+    `DownloadsFallback.discard()`. The default, `DownloadsFolder`, is `DownloadsSave` (below); before the host handed
+    it the resolver it makes no row.
+  - Result: `RESULT_OK` takes `data` or ClipData item 0; none is `noResult`, a scheme other than `content`
+    (any case) `unreadable`. A save's document settles `picked` at once with the requested title (no save owner shows
+    the name). An open's display name is a `DISPLAY_NAME` query on its own one-thread executor with a
+    `CancellationSignal`, through the application's resolver; a lookup task checks the signal before its provider
+    call, a retired one is removed from the queue, and at the 2 s main-looper deadline the signal is cancelled and the
+    decoded last path segment stands in. Any other result code is `cancelled`. The reference is `uri.toString()` as
+    it came; no persistable grant is taken.
+  - `proguard-rules.pro` keeps `open`, `create`, `cancel` and `pollResult`; the class constant sits in
+    `decoder_host_android.cpp`, which calls them.
+- Download folder save (`DownloadsSave.kt`): the owner of the app's pending MediaStore rows. The MediaStore and grant
+  calls (insert, the publication's `update()` and name read, every delete, the grant release) run on its own
+  one-thread executor, except one: a `settle()` that finds the executor shut down (`RejectedExecutionException`)
+  deletes the row it claimed itself, on the writer's thread. One lock guards only the in-memory rows (`pending`;
+  `writing`, those a write took) and the `published` names (the last 16, oldest evicted), and is never held across a
+  provider call.
+  - `insert()`: a `MediaStore.Downloads` row with `DISPLAY_NAME`, `MIME_TYPE`, `RELATIVE_PATH` `Download/DSD-neo` and
+    `IS_PENDING` 1, plus `DATE_EXPIRES` now + 7 days on API 29 only (Android 11+ sets a pending row's expiry itself;
+    Android 10 sets none but deletes expired rows in idle maintenance). MIME types: backup `application/octet-stream`,
+    zip `application/zip`, WAV `audio/x-wav`, so MediaProvider keeps the extension when it renames a clash.
+  - Claims: settling or discarding a row first takes it out of the sets, so one row is published or deleted, never both.
+    `take()` at the start of a write moves a row to `writing`; `discard()` claims only rows no write took, `settle()`
+    either. A discard that comes before the write's `take()` (a refused duplicate request while the accepted one is
+    still on its way) wins: it is remembered (the last 16 discards), `take()` answers false so the write never starts,
+    and `settle()` of that URI answers failure, so the write reports a failure, never a file the discard deletes. A
+    discard after `take()` does nothing; the write settles its row.
+  - `settle(resolver, uri, ok, signal)` (in a `finally` at every exit of `copyFileToDocument()` and
+    `RecordingExport.transfer()`): no-op unless it claims (true for a document that is no row of the app's, false for a
+    URI a discard took). The task publishes only if, when it starts, `ok` and neither `signal` nor
+    `DocumentTransfer.isAborted` is set and the writer still waits: `update(IS_PENDING=0` (+ `DATE_EXPIRES` null on API
+    29)`)` must change 1 row, then the `DISPLAY_NAME` read back (MediaStore renames a clash then) must be non-empty; any
+    failure deletes the row (`ContentResolver.delete()`). The writer waits in 100 ms slices and gives up at the teardown
+    abort, or on a cancel that comes before the publication began (that task then deletes); both are checked before the
+    first slice, so a settle that comes cancelled (an export cancelled before it began settles with a cancelled signal,
+    as no later Cancel can reach it) or after the abort never waits, even behind a held provider call. A cancel once
+    `update()` began is too late, and the save stands. `update()` and `delete()` take no signal, so teardown never joins
+    one; an interrupt of the writer counts as a cancel and stays raised. After the abort, a publication that already
+    began still completes on the worker although the save reported failure (the process is ending; the file is whole). A
+    row left pending by a crash or an abort is hidden and expires (decided limit, `android/README.md`).
+  - `discard()` never blocks: it claims, remembers and queues the delete; with no worker it deletes nothing (an
+    insert answers empty, a settle deletes its claimed row itself). `publishedName()` is a lock-only read.
+  - Host: `savedDocumentName()` and `discardPendingDownload()` call `publishedName()` / `discard()` (any thread); the
+    constructor calls `DownloadsSave.start()` with the held resolver, which keeps it for the picker's inserts and the
+    discards and, on the executor, releases every persisted URI grant the app holds in the modes it holds, past any
+    single failure (B7: Qt's old file dialog took one per pick; nothing in the app uses one). `proguard-rules.pro` keeps
+    `start`, `publishedName` and `discard`; the class constant sits in `decoder_host_android.cpp`.
+- Tests: `ANDROID_DOWNLOADS_SAVE_JVM` (insert values, settlement at every exit of both write entries, publication
+  failures, claims, a queued and a late cancel, the abort while `update()` is held, the `published` bound, grant
+  release), `ANDROID_DOCUMENT_PICKER_JVM` (`docs/testing.md`), `UI_QT_ANDROID_HOST` (`check_download_discards()`,
+  `check_document_pick_record()`, `check_document_requests()`, `check_document_reentrant_drain()`: a request made from
+  an answer's slot during the drain stays live and is answered by its record later in the same drain). The launches
+  themselves need an emulator: DocumentsUI on and off (the family queries must never return the two photo-picker
+  aliases), a chooser pick, re-entry and process death while a picker is up.
 
 #### Sign-in autofill (password managers)
 
@@ -14183,9 +14378,10 @@ stays as it is, with no cleanup fallback. The app prevents it and records what s
 - The manifest's `launchMode="singleTask"` brings the one instance forward for all three outside launches: a USB
   attachment (to `onNewIntent`), the launcher icon and the decoding notification, where `singleTop` could create a
   second instance over a picker or permission prompt. The cost: each of the three closes a document picker or
-  permission prompt open in the app's task, which returns cancelled. The `FileDialog` flows end quietly on a reject,
-  and an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share sheets run in their own
-  task.
+  permission prompt open in the app's task, which returns cancelled. A closed document picker answers its request
+  `documentPickCancelled` (`DocumentPicker` gets `RESULT_CANCELED` for the live launch's code), and the flow ends
+  quietly as on a reject; an interrupted location prompt is a cancel (the location paragraph under UI, Qt). Share
+  sheets run in their own task.
 - `android:configChanges` lists every flag android-36 defines except `resourcesUnused` (19 flags; that one is meant
   for activities that use no resources, and this one has the splash, strings and the notice), so no configuration
   change recreates the activity. `assetsPaths` (a runtime overlay turned on) exists only from android-36, so
@@ -14294,7 +14490,10 @@ Each run gives its setup, then what must hold:
     -n io.github.arancormonk.dsdneo/.DsdNeoActivity
   ```
 
-  Same pid; `onNewIntent` takes the attachment; the picker is cancelled.
+  Same pid; `onNewIntent` takes the attachment; the picker is cancelled: `DocumentPicker` takes the
+  `RESULT_CANCELED`, the request is answered `documentPickCancelled` and the flow ends with no message. A result for a
+  code outside `DocumentPicker`'s range still reaches Qt (`super.onActivityResult()`), so a Qt bump re-reads
+  `QtActivityBase.onActivityResult()`.
 - **L-dup-launcher.** Cold-start through the USB intent (as in L-dup), start decoding, open Import CSV, press Home and
   tap the launcher icon; then repeat with the location prompt open (Nearby or "Use my location", permission not yet
   granted). Same pid; the import ends with no error; the cleared location prompt shows no "denied" text and the lookup
@@ -14694,6 +14893,15 @@ counts none). Its opacity is 0, so it is reported invisible (an item with no siz
 the window), and it has no name. A covered panel is nameless, and headings and the controls that set
 `Accessible.focusable` are focusable only while in the tree, so a node TalkBack may still ask about offers nothing to
 stop on (`tst_a11y_closed_sheets.qml` `test_a_covered_sheet_leaves_the_tree`).
+
+A notice that is read out when it is set (a picker failure, an import problem, a Download-folder save's location;
+issue #829) goes through `Navigation.announce(owner, line, text)`: it does nothing for an empty text or while
+`Navigation.allows(line)` is false (`line` null: no gate, as for the backup card's notices, which live on Settings),
+records `announced`/`announcements` on `owner` for tests, and calls `owner.Accessible.announce(text)` when the Qt in
+use has it. Each failure is read once, and a repeat is read again. Used by `BackupFlow`, `WizardScreen` (`csvNotice`,
+`sourceNotice`), `CallRecordingsScreen`, `CallRecordingPlayer`, `CsvImportFlow` (the companion sheet's notice),
+`ImportsScreen` (an import problem, `noticeLine`) and `ScanListScreen` (a target CSV import problem,
+`validationMessage`).
 
 Building a screen raises a hide for each accessible item created hidden: Qt makes an item accessible as its
 `Accessible` properties are set, before its gate is evaluated. The bridge answers each hide on a large new subtree with

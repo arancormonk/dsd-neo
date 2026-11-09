@@ -51,6 +51,8 @@ constexpr const char* kDocumentsClass = "io/github/arancormonk/dsdneo/DocumentCo
 constexpr const char* kPlaybackClass = "io/github/arancormonk/dsdneo/RecordingPlayback";
 constexpr const char* kExportClass = "io/github/arancormonk/dsdneo/RecordingExport";
 constexpr const char* kRecordingShareClass = "io/github/arancormonk/dsdneo/RecordingShare";
+constexpr const char* kPickerClass = "io/github/arancormonk/dsdneo/DocumentPicker";
+constexpr const char* kDownloadsClass = "io/github/arancormonk/dsdneo/DownloadsSave";
 constexpr const char* kSignInClass = "io/github/arancormonk/dsdneo/SignInAutofill";
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
@@ -231,6 +233,7 @@ android_exit_lines_logged() {
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
     dsd_qt::DiagnosticsLog::installTap();
     hold_content_resolver();
+    platformStartDownloads();
     startRecordingShareClean();
     refreshPresentation();
 }
@@ -812,6 +815,82 @@ DecoderHostAndroid::refreshLocation() {
     const auto locationRecord =
         QJniObject::callStaticObjectMethod(kLocationClass, "pollResult", "()Ljava/lang/String;");
     deliver_location_record(*this, QJsonDocument::fromJson(locationRecord.toString().toUtf8()).object());
+}
+
+/* #829: DocumentPicker posts each launch to the Android main thread itself, so these return at once. */
+bool
+DecoderHostAndroid::platformOpenDocument(qint64 id) {
+    if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
+        return false;
+    }
+    const QJniObject activity = android_context();
+    if (!activity.isValid()) {
+        return false;
+    }
+    // Must match DocumentPicker.kt: @JvmStatic fun open(activity: Activity, id: Long): Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kPickerClass, "open", "(Landroid/app/Activity;J)Z", activity.object(),
+                                                  static_cast<jlong>(id))
+           == JNI_TRUE;
+}
+
+bool
+DecoderHostAndroid::platformSaveDocument(qint64 id, const QString& suggestedName, const QString& mimeType) {
+    if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
+        return false;
+    }
+    const QJniObject activity = android_context();
+    if (!activity.isValid()) {
+        return false;
+    }
+    const QJniObject title = QJniObject::fromString(suggestedName);
+    const QJniObject mime = QJniObject::fromString(mimeType);
+    // Must match DocumentPicker.kt: @JvmStatic fun create(activity: Activity, id: Long, title: String, mime: String):
+    // Boolean. The descriptor stays one literal, which tools/check_android_r8.py reads whole.
+    // clang-format off
+    return QJniObject::callStaticMethod<jboolean>(kPickerClass, "create",
+        "(Landroid/app/Activity;JLjava/lang/String;Ljava/lang/String;)Z",
+        activity.object(), static_cast<jlong>(id), title.object(), mime.object()) == JNI_TRUE;
+    // clang-format on
+}
+
+void
+DecoderHostAndroid::platformCancelDocument(qint64 id) {
+    // Must match DocumentPicker.kt: @JvmStatic fun cancel(id: Long).
+    QJniObject::callStaticMethod<void>(kPickerClass, "cancel", "(J)V", static_cast<jlong>(id));
+}
+
+QString
+DecoderHostAndroid::platformPollDocumentPick() {
+    // Must match DocumentPicker.kt: @JvmStatic fun pollResult(): String.
+    const QJniObject record = QJniObject::callStaticObjectMethod(kPickerClass, "pollResult", "()Ljava/lang/String;");
+    return record.isValid() ? record.toString() : QString();
+}
+
+/* #829: DownloadsSave runs every MediaStore and grant call on its own thread; these only hand work over or read memory,
+ * so the Qt thread and the transfer workers call them alike. */
+void
+DecoderHostAndroid::platformStartDownloads() {
+    const jobject resolver = g_content_resolver.load();
+    if (resolver != nullptr) {
+        // Must match DownloadsSave.kt: @JvmStatic fun start(resolver: ContentResolver).
+        QJniObject::callStaticMethod<void>(kDownloadsClass, "start", "(Landroid/content/ContentResolver;)V", resolver);
+    }
+}
+
+QString
+DecoderHostAndroid::platformSavedDocumentName(const QString& reference) {
+    // Must match DownloadsSave.kt: @JvmStatic fun publishedName(uriText: String): String.
+    const QJniObject name =
+        QJniObject::callStaticObjectMethod(kDownloadsClass, "publishedName", "(Ljava/lang/String;)Ljava/lang/String;",
+                                           QJniObject::fromString(reference).object());
+    return name.isValid() ? name.toString() : QString();
+}
+
+void
+DecoderHostAndroid::platformDiscardPendingDownload(const QString& reference) {
+    // Must match DownloadsSave.kt: @JvmStatic fun discard(uriText: String).
+    QJniObject::callStaticMethod<void>(kDownloadsClass, "discard", "(Ljava/lang/String;)V",
+                                       QJniObject::fromString(reference).object());
 }
 
 void

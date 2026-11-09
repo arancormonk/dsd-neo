@@ -446,6 +446,9 @@ BackupModel::saveExport(const QString& reference) {
         refusal = error_name(BackupError::Io); // nothing prepared
     }
     if (!refusal.isEmpty()) {
+        if (m_host != nullptr) {
+            m_host->discardPendingDownload(reference); // nothing will write it: a Download-folder save goes (#829)
+        }
         refuse(&BackupModel::exportFinished, QStringLiteral("saveExport"), refusal);
         return;
     }

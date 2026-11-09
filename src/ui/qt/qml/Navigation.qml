@@ -52,6 +52,18 @@ QtObject {
             return contains(surface, item);
         });
     }
+    // Read @p text out once, a repeat included, while @p line is reachable
+    // (no gate when null). @p owner speaks it and keeps the last text read and
+    // how many have been (`announced`, `announcements`) for tests. True when read.
+    function announce(owner, line, text) {
+        if (!text.length || (line && !allows(line)))
+            return false;
+        owner.announced = text;
+        owner.announcements++;
+        if (typeof owner.Accessible.announce === "function")
+            owner.Accessible.announce(text);
+        return true;
+    }
     function presented(item) {
         for (var node = item; node; node = node.parent) {
             if (!node.visible || (node !== item && node.opacity < 0.9))

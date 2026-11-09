@@ -315,9 +315,9 @@ object LocationSupport {
         if (permissionActivity === activity) permissionActivity = null
     }
 
-    @JvmStatic @Synchronized fun pollResult(): String {
-        val record = result ?: ""
-        result = null
-        return record
-    }
+    /**
+     * The one result waiting, or "", read and cleared under the writers' monitor. Not @Synchronized: on a @JvmStatic
+     * member of an object that locks the class, while finish() and the posted writers lock the object.
+     */
+    @JvmStatic fun pollResult(): String = synchronized(this) { result.also { result = null } } ?: ""
 }

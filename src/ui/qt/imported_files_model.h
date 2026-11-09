@@ -95,6 +95,21 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE QVariantMap importFile(const QString& reference, const QString& fileName, const QString& type);
     Q_INVOKABLE QVariantMap importBundle(const QString& reference, const QString& fileName, const QString& type,
                                          const QVariantMap& companions, int replaceRow = -1);
+    /**
+     * @brief importBundle() for a pick that finished after the user asked for it (issue #829).
+     *
+     * The row to replace is named by the stored path it had when the pick was
+     * asked for, not by its index, since rows can be removed while a picker is
+     * up and the index would then name another file. It always replaces: a
+     * new file goes through importBundle().
+     *
+     * @return importBundle()'s result, or {ok false, error "changed", detail}
+     *         when no row holds @p replacePath any more (or it is empty);
+     *         nothing is imported.
+     */
+    Q_INVOKABLE QVariantMap importBundleReplacing(const QString& reference, const QString& fileName,
+                                                  const QString& type, const QVariantMap& companions,
+                                                  const QString& replacePath);
 
     /**
      * @brief Re-pick flow: replace the row's stored file and re-validate.

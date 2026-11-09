@@ -5586,6 +5586,7 @@ if(DSD_ENABLE_QT_UI)
                 device_status
                 main_receiver_notice
                 monitor_receiver
+                document_picker
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
@@ -22693,6 +22694,20 @@ if(Python3_Interpreter_FOUND)
             watchdog
     )
     add_test(
+        NAME ANDROID_DOCUMENT_PICKER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            document_picker
+    )
+    add_test(
+        NAME ANDROID_DOWNLOADS_SAVE_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            downloads_save
+    )
+    add_test(
         NAME ANDROID_RECORDING_PLAYER_JVM
         COMMAND
             ${Python3_EXECUTABLE}
@@ -22732,6 +22747,8 @@ if(Python3_Interpreter_FOUND)
         ANDROID_DECODER_STATUS_JVM
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
+        ANDROID_DOCUMENT_PICKER_JVM
+        ANDROID_DOWNLOADS_SAVE_JVM
         ANDROID_USB_RECEIVER_JVM
         ANDROID_USB_BROKER_JVM
         ANDROID_ENGINE_STOP_JVM
