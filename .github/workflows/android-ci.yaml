@@ -207,7 +207,8 @@ jobs:
           echo "ANDROID_QT_VERSION=$ANDROID_QT_VERSION" >> "$GITHUB_ENV"
 
       # The project's own dependencies, plus the handful of runtime libraries
-      # Qt Gui links even when the platform plugin is offscreen.
+      # Qt Gui links even when the platform plugin is offscreen. libxkbcommon-dev:
+      # Qt6GuiPrivate needs XKB::XKB at configure time (UI_QT_DISPLAY_SCALE).
       - name: Install build dependencies
         shell: bash
         run: |
@@ -218,7 +219,7 @@ jobs:
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
             libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev \
-            libgl1-mesa-dev libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+            libgl1-mesa-dev libegl1 libxkbcommon0 libxkbcommon-dev libfontconfig1 libdbus-1-3
 
       - name: Build and install mbelib-neo
         shell: bash
@@ -366,6 +367,7 @@ jobs:
             dsd-neo_test_ui_qt_auto_start_policy \
             dsd-neo_test_ui_qt_qml_gc_policy \
             dsd-neo_test_ui_qt_android_host \
+            dsd-neo_test_ui_qt_display_scale \
             dsd-neo_test_ui_qt_session_state \
             dsd-neo_test_ui_qt_screen_reader_state \
             dsd-neo_test_ui_qt_diagnostics_log \

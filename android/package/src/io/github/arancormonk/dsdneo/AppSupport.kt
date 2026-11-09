@@ -12,6 +12,7 @@ import android.graphics.Rect
 import android.view.WindowInsets
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.DisplayMetrics
 import android.util.TypedValue
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -51,15 +52,47 @@ object AppSupport {
     @JvmStatic
     fun takeBackRequests(): Int = pendingBack.getAndSet(0)
 
+    // What the font table depends on: the font scale and the density. Read on every UI tick to notice a change.
     @JvmStatic
-    fun fontConfiguration(context: Context): String {
+    fun fontKey(context: Context): FloatArray {
         val config = context.resources.configuration
-        return "${config.fontScale}:${config.densityDpi}"
+        return floatArrayOf(config.fontScale, config.densityDpi.toFloat())
     }
+
+    // The font scale, the density, then the physical pixels for 0..128 sp, from one consistent read. Empty while
+    // Android is part-way through updating the resources: the configuration changed during the read, or the
+    // metrics do not match its density yet. The caller tries again on its next tick.
+    @JvmStatic
+    fun fontTable(context: Context): FloatArray {
+        val resources = context.resources
+        val config = resources.configuration
+        val fontScale = config.fontScale
+        val densityDpi = config.densityDpi
+        val metrics = resources.displayMetrics
+        if (kotlin.math.abs(metrics.density * DisplayMetrics.DENSITY_DEFAULT - densityDpi) > 0.5f) return FloatArray(0)
+        val table = FloatArray(2 + FONT_TABLE_SIZE)
+        table[0] = fontScale
+        table[1] = densityDpi.toFloat()
+        for (sp in 0 until FONT_TABLE_SIZE) {
+            table[2 + sp] = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sp.toFloat(), metrics)
+        }
+        val after = resources.configuration
+        if (after.fontScale != fontScale || after.densityDpi != densityDpi) return FloatArray(0)
+        return table
+    }
+
+    // Must match PresentationScale::kFontTableMaxSp + 1 (android/presentation_scale.h).
+    private const val FONT_TABLE_SIZE = 129
 
     @JvmStatic
     fun fontPixels(context: Context, sp: Float): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, sp, context.resources.displayMetrics)
+
+    // The density Qt's display listener reads, from the Activity's resources (Qt 6.11.3 QtDisplayManager); 0 for a
+    // Service or Application context, which has no display of its own to follow.
+    @JvmStatic
+    fun activityDensity(context: Context): Float =
+        (context as? Activity)?.resources?.displayMetrics?.density ?: 0f
 
     @JvmStatic
     fun setDarkAppearance(activity: Activity, dark: Boolean) {

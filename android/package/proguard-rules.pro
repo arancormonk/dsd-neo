@@ -17,8 +17,10 @@
 -keep,allowoptimization class io.github.arancormonk.dsdneo.AppSupport {
     public static int keyboardTopPixels();
     public static int takeBackRequests();
-    public static java.lang.String fontConfiguration(android.content.Context);
+    public static float[] fontKey(android.content.Context);
+    public static float[] fontTable(android.content.Context);
     public static float fontPixels(android.content.Context, float);
+    public static float activityDensity(android.content.Context);
     public static void setDarkAppearance(android.app.Activity, boolean);
     public static java.lang.String audioRouteName(android.content.Context, int);
     public static boolean takeNotificationPermissionRefresh();

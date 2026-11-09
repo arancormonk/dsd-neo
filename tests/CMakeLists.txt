@@ -102,6 +102,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
         PROPERTIES COMPILE_OPTIONS "-fno-fast-math"
     )
 elseif(MSVC)
@@ -139,6 +140,7 @@ elseif(MSVC)
         ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_level.c
         ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
         PROPERTIES COMPILE_OPTIONS "/fp:precise"
     )
 endif()
@@ -22477,6 +22479,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_sign_in.cpp
+        ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
@@ -22500,6 +22503,58 @@ if(DSD_ENABLE_QT_UI)
     )
     set_target_properties(dsd-neo_test_ui_qt_android_host PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_ANDROID_HOST COMMAND dsd-neo_test_ui_qt_android_host)
+    # Android display-size changes (android/display_scale, presentation_scale): offscreen windows and a Quick
+    # window whose scale is changed behind Qt's back, plus the per-tick state machine with a fake platform.
+    # Qt6GuiPrivate needs the XKB development files on Linux; like QuickTest below, a missing module leaves the
+    # test unregistered rather than failing the configure (android-ci builds the target by name, so CI fails).
+    find_package(Qt6 QUIET COMPONENTS GuiPrivate Quick)
+    if(TARGET Qt6::GuiPrivate AND TARGET Qt6::Quick)
+        add_executable(
+            dsd-neo_test_ui_qt_display_scale
+            ui/test_ui_qt_display_scale.cpp
+            ${PROJECT_SOURCE_DIR}/android/display_scale.cpp
+            ${PROJECT_SOURCE_DIR}/android/presentation_scale.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_ui_qt_display_scale
+            PRIVATE ${PROJECT_SOURCE_DIR}/android
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_qt_display_scale
+            PRIVATE Qt6::Gui Qt6::GuiPrivate Qt6::Quick
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_display_scale
+            PRIVATE QT_NO_KEYWORDS
+        )
+        # IEEE semantics, as the app builds these sources: the state machine rejects NaN and infinite values.
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(
+                dsd-neo_test_ui_qt_display_scale
+                PRIVATE -fno-fast-math
+            )
+        elseif(MSVC)
+            target_compile_options(
+                dsd-neo_test_ui_qt_display_scale
+                PRIVATE /fp:precise
+            )
+        endif()
+        add_test(
+            NAME UI_QT_DISPLAY_SCALE
+            COMMAND dsd-neo_test_ui_qt_display_scale
+        )
+        set_tests_properties(
+            UI_QT_DISPLAY_SCALE
+            PROPERTIES
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
+    else()
+        message(
+            STATUS
+            "UI_QT_DISPLAY_SCALE not registered: Qt6 GuiPrivate (XKB development files on Linux) or Quick not found"
+        )
+    endif()
     add_executable(
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp

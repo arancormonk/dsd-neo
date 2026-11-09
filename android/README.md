@@ -654,6 +654,10 @@ name from `decoder_host_android.cpp` and the `DsdNative` JNI bindings. Add a mat
 rule whenever adding a native upcall. `qt-rules.pro` preserves Qt's native method
 registration, `UsedFromNativeCode` annotations and the unannotated bridge types and
 methods in Qt 6.11.3. Re-audit it on a Qt upgrade: annotations alone are incomplete.
+The app also calls one Qt method by name: `QtDisplayManager.handleScreenDensityChanged`,
+Qt's registered native, to hand Qt a display-size change (`docs/code_map.md`
+"Display size (density)"); the native-method rule keeps it and the artifact check
+verifies it.
 This includes the `relativePath`, `size` and `isDir` fields of
 `QtApkFileEngine.JFileInfo`: native plugin discovery reads them when libraries stay
 inside Play's APK splits. Removing or renaming them prevents the Android platform

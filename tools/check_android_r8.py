@@ -84,7 +84,10 @@ def dex_api(xml):
 
 
 def jni_contract(source_root):
-    """Read literal QJniObject upcalls and exported downcalls from production C++."""
+    """Read literal QJniObject upcalls and exported downcalls from production C++.
+
+    Upcalls into Qt's own package count too: the app calls Qt's registered density native by name (display size).
+    """
     upcalls, downcalls = set(), set()
     call = re.compile(
         r'QJniObject::callStatic(?:ObjectMethod|Method(?:<[^>]+>)?)\s*\(\s*'
@@ -99,7 +102,7 @@ def jni_contract(source_root):
         for match in calls:
             owner, name, signature = match.groups()
             owner = owner.strip('"') if owner.startswith('"') else aliases[owner]
-            if owner.startswith(APP_PACKAGE):
+            if owner.startswith(APP_PACKAGE) or owner.startswith(QT_PACKAGE):
                 upcalls.add((owner, name, signature))
         for name in re.findall(r'Java_io_github_arancormonk_dsdneo_DsdNative_(\w+)\s*\(', source):
             downcalls.add((APP_PACKAGE + "DsdNative", name))

@@ -18,10 +18,16 @@ qt_add_executable(
     decoder_host_android_lifecycle.cpp
     decoder_host_android_recordings.cpp
     decoder_host_android_sign_in.cpp
+    display_scale.cpp
     dsdneo_jni.cpp
+    presentation_scale.cpp
 )
 
 set_target_properties(dsd-neo-app PROPERTIES AUTOMOC ON)
+
+# display_scale.cpp re-announces the display density Qt's Android plugin changes without an event; no
+# public API raises those events, so it uses Qt's platform API.
+find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
 
 # The Kotlin service binds to this same library, so the service and the UI share one
 # instance of the engine's globals (ground rule 4: one decoder per process).
@@ -32,9 +38,14 @@ target_link_libraries(
         dsd-neo_engine
         dsd-neo_feature_rtlsdr
         dsd-neo_feature_codec2
+        Qt6::GuiPrivate
         ${LIBS}
         log
 )
+
+# The host rejects NaN and infinite densities, ratios and font sizes (presentation_scale.cpp): keep IEEE
+# semantics under the global fast-math option, as dsd-neo_ui_qt does.
+target_compile_options(dsd-neo-app PRIVATE -fno-fast-math)
 
 target_include_directories(dsd-neo-app SYSTEM PRIVATE ${_PUBLIC_INCLUDES})
 target_include_directories(dsd-neo-app PRIVATE "${PROJECT_SOURCE_DIR}/include")

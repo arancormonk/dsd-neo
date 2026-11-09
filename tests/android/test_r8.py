@@ -23,6 +23,11 @@ DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
   <method name="nativeRun" return="int" static="false" native="true"/>
 </class>
 </package><package name="org.qtproject.qt.android">
+<class name="QtDisplayManager">
+  <method name="handleScreenDensityChanged" return="void" static="true" native="true">
+    <parameter type="double"/>
+  </method>
+</class>
 <class name="QtWindow">
   <constructor name="QtWindow" static="false"><parameter type="long"/></constructor>
 </class>
@@ -57,6 +62,8 @@ def kept_static_methods(class_name):
 START = (r8.APP_PACKAGE + "DecoderService", "startDecoder",
          "(Landroid/content/Context;[Ljava/lang/String;J)V")
 NATIVE = (r8.APP_PACKAGE + "DsdNative", "nativeRun")
+# The app hands Qt a new display density through Qt's own registered native (display size).
+QT_DENSITY = (r8.QT_PACKAGE + "QtDisplayManager", "handleScreenDensityChanged", "(D)V")
 
 
 class R8ArtifactTests(unittest.TestCase):
@@ -92,6 +99,18 @@ class R8ArtifactTests(unittest.TestCase):
     def test_native_qt_class_cannot_disappear(self):
         with self.assertRaisesRegex(ValueError, "Missing Qt class"):
             self.check_api(qt_classes={r8.QT_PACKAGE + "QtServiceBase"})
+
+    def test_app_upcall_into_qt_is_checked(self):
+        self.check_api(upcalls={START, QT_DENSITY})
+        for change, broken in (
+                ("renamed method", DEX_XML.replace('name="handleScreenDensityChanged"', 'name="a"')),
+                ("renamed class", DEX_XML.replace('name="QtDisplayManager"', 'name="a"')),
+                ("other descriptor", DEX_XML.replace('<parameter type="double"/>', '<parameter type="float"/>')),
+                ("not static", DEX_XML.replace('return="void" static="true" native="true"',
+                                               'return="void" static="false" native="true"'))):
+            with self.subTest(change=change):
+                with self.assertRaisesRegex(ValueError, "Missing static JNI entry point"):
+                    self.check_api(broken, upcalls={START, QT_DENSITY})
 
     def test_unannotated_qt_method_cannot_disappear(self):
         with self.assertRaisesRegex(ValueError, "Missing Qt JNI entry point"):
@@ -140,6 +159,8 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertIn(NATIVE, downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeHostDiagnostic"), downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeQuitUi"), downcalls)
+        self.assertIn(QT_DENSITY, upcalls)
+        self.assertIn((r8.APP_PACKAGE + "AppSupport", "activityDensity", "(Landroid/content/Context;)F"), upcalls)
 
     def test_import_copy_entry_points_are_kept(self):
         # DecoderHostAndroid calls these by literal name and descriptor from the import worker (#832).

@@ -2878,6 +2878,12 @@ ctest --preset dev-debug -L qml --output-on-failure
 Each carries its own headless environment (offscreen platform, software renderer)
 in the CTest registration, so it needs no window server and no GPU.
 
+`UI_QT_DISPLAY_SCALE` (the Android display-size follow) uses Qt's private
+`Qt6::GuiPrivate` module, whose Linux package needs the XKB development files
+(`libxkbcommon-dev` on Debian and Ubuntu). It is left unregistered with a `STATUS`
+message when the module is missing; android-ci installs the package and builds the
+target by name.
+
 The QML suites, and the C++ cases that load a production screen (`UI_QT_CONTROLLER`,
 `UI_QT_RADIO_REFERENCE`), run the QML collector to completion, as the app does: each calls
 `dsd_qt::applyQmlGcPolicy()` (`src/ui/qt/qml_gc_policy.h`) before its first engine exists.

@@ -1448,8 +1448,12 @@ expect_rename_noreplace_utf8_names(void) {
     ok = ok && dsd_rename_noreplace(from, to, &left) == 0 && left == 0;
     ok = ok && !utf8_name_exists(from) && utf8_name_exists(to);
 #if DSD_PLATFORM_WIN_NATIVE
-    /* Through the ANSI code page the UTF-8 bytes name another file, which must not have been made. */
-    ok = ok && (GetACP() == CP_UTF8 || !file_exists(to));
+    /* Through the ANSI code page the UTF-8 bytes name another file, which must not have been made. The test's reads
+       take a UTF-8 name by its real characters, so this one is looked up in the ANSI code page. */
+    g_test_ansi_names = 1;
+    const int ansi_name_made = file_exists(to);
+    g_test_ansi_names = 0;
+    ok = ok && (GetACP() == CP_UTF8 || !ansi_name_made);
 #endif
     ok = ok && dsd_rename_noreplace(to, back, &left) == 0 && file_text_is(back, "from");
     for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {

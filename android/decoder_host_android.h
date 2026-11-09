@@ -21,7 +21,6 @@
 #include <QStringList>
 #include <QThreadPool>
 #include <QVariantMap>
-#include <QVector>
 #include <QtGlobal>
 #include <memory>
 #include <stdint.h>
@@ -29,6 +28,7 @@
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "local_device_state.h"
+#include "presentation_scale.h"
 #include "session_state_map.h"
 
 class QObject;
@@ -48,14 +48,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     int
     fontRevision() const override {
-        return m_font_revision;
+        return m_scale.fontRevision();
     }
 
     qreal fontPixelSize(qreal sp) const override;
 
     qreal
     keyboardTop() const override {
-        return m_keyboard_top;
+        return m_scale.keyboardTop();
     }
 
     void setDarkAppearance(bool dark) override;
@@ -547,6 +547,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static QString platformSavedDocumentName(const QString& reference);
     static void platformDiscardPendingDownload(const QString& reference);
     void refreshPresentation();
+    /** @brief Hands Qt the Activity's display density on the Android main thread; PresentationScale's push. */
+    void startDisplayDensityPush();
     void refreshNotificationPermission();
     void refreshLocalDevice();
     /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
@@ -590,10 +592,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     SessionPhaseTracker m_phase;
     SessionPhase m_published_phase = kSessionIdle;
     QString m_failure;
-    QString m_font_configuration;
-    QVector<qreal> m_font_sizes;
-    int m_font_revision = 0;
-    qreal m_keyboard_top = -1;
+    // Display size: the font table, the keyboard inset and the density follow (presentation_scale.h).
+    PresentationScale m_scale;
     int m_input_failure = 0;
     int m_input_error = 0;
     int m_terminal_reason = 0;
