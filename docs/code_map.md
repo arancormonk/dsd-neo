@@ -1198,8 +1198,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     fallback, `dsd_rename_noreplace_by_link()` in `src/platform/file_compat_internal.h`, tests reach directly), and on
     a filesystem with neither an exclusive create that claims the name, then a rename onto that empty claim
     (`dsd_rename_noreplace_by_reservation()`, also tested directly), which only a process deleting the claim can
-    race (never a check then a rename); Windows keeps the CRT's `rename()`, which refuses an existing name, and reports
-    that refusal (`_doserrno` exists) as EEXIST (issue #661: per-call WAV publication)
+    race (never a check then a rename); Windows moves UTF-8 names through `MoveFileExW()` with neither
+    `MOVEFILE_REPLACE_EXISTING` nor `MOVEFILE_COPY_ALLOWED` (the ANSI call only for a name the wide call does not
+    find), so an existing name is EEXIST and another volume EXDEV, never a copy; not the CRT's `rename()`, which
+    reads the path in the process code page (not UTF-8 in the Qt app) and copies across volumes (issue #661: per-call
+    WAV publication; #832: import and replay publication)
   - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
     thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
     has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files

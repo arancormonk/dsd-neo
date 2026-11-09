@@ -21,6 +21,8 @@
 #include "test_support.h"
 #if DSD_PLATFORM_WIN_NATIVE
 #include <locale.h>
+#include <stdlib.h>
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -887,6 +889,56 @@ expect_rename_noreplace_non_ascii_dir(void) {
     return rc;
 }
 
+/* Whether a file is at @p path, a UTF-8 name: on Windows looked up through the wide call, as the app names it. */
+static int
+utf8_name_exists(const char* path) {
+#if DSD_PLATFORM_WIN_NATIVE
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
+    const DWORD attrs = wide ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
+    free(wide);
+    return attrs != INVALID_FILE_ATTRIBUTES;
+#else
+    return file_exists(path);
+#endif
+}
+
+/* Gate r1 (#832): UTF-8 names move under those names whatever the process code page. The Qt app keeps the "C" locale,
+   where the CRT's rename() read the bytes in the ANSI code page and published a mangled name (two characters for the
+   accented letter). The file goes from an ASCII name to UTF-8 names and back, so its bytes are read through the ASCII
+   name. */
+static int
+expect_rename_noreplace_utf8_names(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)setlocale(LC_CTYPE, "C");
+#endif
+    const char* const plain = "dsd_neo_utf8_plain.tmp";
+    const char* const back = "dsd_neo_utf8_back.tmp";
+    const char* const from = "dsd_neo_caf\xC3\xA9_from.tmp";
+    const char* const taken = "dsd_neo_caf\xC3\xA9_taken.tmp";
+    const char* const to = "dsd_neo_caf\xC3\xA9.tmp";
+    const char* const all[] = {plain, back, from, taken, to};
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        (void)dsd_remove_file(all[i]);
+    }
+    int left = -1;
+    int ok = write_text_file(plain, "taken") == 0 && dsd_rename_noreplace(plain, taken, &left) == 0;
+    ok = ok && write_text_file(plain, "from") == 0 && dsd_rename_noreplace(plain, from, &left) == 0 && left == 0;
+    ok = ok && utf8_name_exists(from) && utf8_name_exists(taken) && !file_exists(plain);
+    errno = 0;
+    ok = ok && dsd_rename_noreplace(from, taken, &left) == -1 && errno == EEXIST;
+    ok = ok && dsd_rename_noreplace(from, to, &left) == 0 && left == 0;
+    ok = ok && !utf8_name_exists(from) && utf8_name_exists(to);
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Through the ANSI code page the UTF-8 bytes name another file, which must not have been made. */
+    ok = ok && (GetACP() == CP_UTF8 || !file_exists(to));
+#endif
+    ok = ok && dsd_rename_noreplace(to, back, &left) == 0 && file_text_is(back, "from");
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        (void)dsd_remove_file(all[i]);
+    }
+    return ok ? 0 : 1;
+}
+
 /* Issue #832: the move helpers carry a regular file between directories of one volume (the import staging folder to
    the imports folder), never write over a taken name, and refuse a directory source before anything moves. */
 static int
@@ -1068,6 +1120,7 @@ main(void) {
     rc |= expect_private_exclusive_create();
     rc |= expect_rename_noreplace();
     rc |= expect_rename_noreplace_non_ascii_dir();
+    rc |= expect_rename_noreplace_utf8_names();
     rc |= expect_move_helpers_across_directories();
 #if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_rejects_symlink();

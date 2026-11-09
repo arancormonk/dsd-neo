@@ -230,8 +230,10 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
  * it fails (EXDEV; on Windows ERROR_NOT_SAME_DEVICE maps to EXDEV). A directory @p from is refused with EISDIR before
  * anything moves. Never replaces an existing @p to: the call fails with EEXIST and leaves both files as they were. The
  * rename is atomic where the platform and filesystem offer a no-replace rename (Linux renameat2(RENAME_NOREPLACE),
- * macOS renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' rename() refuses an
- * existing name). On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to
+ * macOS renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' MoveFileExW() without
+ * MOVEFILE_REPLACE_EXISTING or MOVEFILE_COPY_ALLOWED). On Windows both paths are UTF-8, as dsd_remove_file() takes
+ * them (the wide call, whatever the process code page); a name the wide call does not find moves through the ANSI
+ * call. On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to
  * with an exclusive create and renames onto that claim: @p to briefly exists as an empty file, and only a process that
  * deletes the claim in between can still be replaced.
  *

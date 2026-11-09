@@ -499,21 +499,22 @@ dsd_move_source_is_directory(const char* path) {
 }
 
 /* Both names in UTF-8 (the app's own files, in any script) move through the wide call; a name in the ANSI code page, or
-   one the wide call does not find, through the ANSI one, as before. Returns ERROR_SUCCESS or the native error. */
+   one the wide call does not find, through the ANSI one, as before. @p flags never holds MOVEFILE_COPY_ALLOWED: another
+   volume fails with ERROR_NOT_SAME_DEVICE. Returns ERROR_SUCCESS or the native error. */
 static DWORD
-dsd_win32_move_replacing(const char* tmp_path, const char* final_path) {
+dsd_win32_move(const char* tmp_path, const char* final_path, DWORD flags) {
     wchar_t* wide_tmp = dsd_win32_utf8_path_to_wide(tmp_path);
     wchar_t* wide_final = wide_tmp ? dsd_win32_utf8_path_to_wide(final_path) : NULL;
     BOOL moved = FALSE;
     DWORD err = ERROR_FILE_NOT_FOUND;
     if (wide_tmp && wide_final) {
-        moved = MoveFileExW(wide_tmp, wide_final, MOVEFILE_REPLACE_EXISTING);
+        moved = MoveFileExW(wide_tmp, wide_final, flags);
         err = moved ? ERROR_SUCCESS : GetLastError();
     }
     free(wide_tmp);
     free(wide_final);
     if (!moved && (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND)) {
-        moved = MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING);
+        moved = MoveFileExA(tmp_path, final_path, flags);
         err = moved ? ERROR_SUCCESS : GetLastError();
     }
     return err;
@@ -529,7 +530,7 @@ dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
         errno = EISDIR;
         return -1;
     }
-    const DWORD err = dsd_win32_move_replacing(tmp_path, final_path);
+    const DWORD err = dsd_win32_move(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING);
     if (err != ERROR_SUCCESS) {
         /* Never a copy: another volume is a failure the caller can tell from a denial. */
         errno = err == ERROR_NOT_SAME_DEVICE ? EXDEV : EACCES;
@@ -551,21 +552,18 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
         errno = EISDIR;
         return -1;
     }
-    /* The CRT's rename() refuses an existing destination and keeps the CRT's own path conversion (the UTF-8 locale the
-       runtime selects included), which MoveFileExA() would not. It reports that refusal as EACCES, the errno of every
-       other denial too, so the native error the same call left tells them apart. */
-    _doserrno = 0;
-    if (rename(from, to) == 0) {
-        return 0;
-    }
-    const int saved = errno;
-    const unsigned long native = (unsigned long)_doserrno;
-    if (native == ERROR_ALREADY_EXISTS || native == ERROR_FILE_EXISTS) {
-        errno = EEXIST;
-    } else if (native == ERROR_NOT_SAME_DEVICE) {
-        errno = EXDEV;
-    } else {
-        errno = saved;
+    /* Not the CRT's rename(): it converts through the process code page, which is not UTF-8 in the Qt app, and the UCRT
+       moves with MOVEFILE_COPY_ALLOWED, so another volume would copy the whole file instead of failing. Without
+       MOVEFILE_REPLACE_EXISTING an existing @p to is refused. */
+    const DWORD err = dsd_win32_move(from, to, 0);
+    switch (err) {
+        case ERROR_SUCCESS: return 0;
+        case ERROR_ALREADY_EXISTS:
+        case ERROR_FILE_EXISTS: errno = EEXIST; break;
+        case ERROR_NOT_SAME_DEVICE: errno = EXDEV; break;
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND: errno = ENOENT; break;
+        default: errno = EACCES; break;
     }
     return -1;
 }
