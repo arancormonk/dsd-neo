@@ -63,6 +63,14 @@ enum { CARR_A_CC = 50, CARR_F = 60, CARR_G = 70, CARR_H = 80 };
 
 enum { CALL_A = 0x0BEE, CALL_B = 0x0CAF, GSSI_A = 0x00BEEF, GSSI_B = 0x00CAFE, GSSI_HELD = 0x00F00D };
 
+/* The session's TETRA state: a missing one fails the test where it is read. */
+static const tetra_state_t*
+ts_of(const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    assert(ts != NULL);
+    return ts;
+}
+
 static int g_tunes;
 static int g_returns;
 static long g_tuned_hz;
@@ -328,7 +336,7 @@ open_on(const cell* home, int no_la) {
     }
     mac_burst(&s, &si);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && s.state->trunk_cc_freq == hz(CARR_A_CC));
-    assert(tetra_st_peek(s.state)->sysinfo_known == !no_la);
+    assert(ts_of(s.state)->sysinfo_known == !no_la);
     assert(tetra_sm_return_cc_hz(s.state) == 0 && !tetra_sm_guarding(s.opts, s.state));
     return s;
 }
@@ -379,7 +387,7 @@ follow_a(session* s, uint32_t carrier) {
 /* The follow holds A's control channel as its home, however the session's control channel reads now. */
 static void
 assert_home_is_a(const session* s) {
-    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    const tetra_state_t* const ts = ts_of(s->state);
     assert(ts->sm.home.valid && ts->sm.home.cc_hz == hz(CARR_A_CC));
     assert(ts->sm.home.mcc == MCC && ts->sm.home.mnc == MNC && ts->sm.home.colour == COL_A && ts->sm.home.net_known);
     assert(ts->sm.home.la == LA_A && ts->sm.home.la_known);
@@ -395,7 +403,7 @@ assert_back_home(const session* s, int returns) {
     assert(tetra_sm_get_state(s->state) == TETRA_SM_ON_CC && !tetra_sm_followed(s->state, NULL));
     assert(s->state->trunk_cc_freq == hz(CARR_A_CC));
     assert(tetra_sm_return_cc_hz(s->state) == 0 && !tetra_sm_guarding(s->opts, s->state));
-    assert(!tetra_st_peek(s->state)->sm.home.valid && !tetra_st_peek(s->state)->sm.return_required);
+    assert(!ts_of(s->state)->sm.home.valid && !ts_of(s->state)->sm.return_required);
 }
 
 /* ---------------------------------------------------------------------------------------------------------------
@@ -598,7 +606,7 @@ typedef struct {
 
 static follow_view
 view_of(const session* s) {
-    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    const tetra_state_t* const ts = ts_of(s->state);
     follow_view v;
     DSD_MEMSET(&v, 0, sizeof v);
     v.tuned = tetra_sm_followed(s->state, &v.followed);
@@ -729,12 +737,12 @@ test_every_return_goes_home(void) {
             }
             assert_home_is_a(&s);
             const follow_view before = view_of(&s);
-            const uint32_t sysinfos = tetra_st_peek(s.state)->frames_sysinfo;
+            const uint32_t sysinfos = ts_of(s.state)->frames_sysinfo;
             hear_on_f(&s, &k_cases[k]);
             assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED);
             assert(tetra_sm_return_cc_hz(s.state) == hz(CARR_A_CC) && tetra_sm_guarding(s.opts, s.state));
             assert_unchanged(&s, &before);
-            assert(tetra_st_peek(s.state)->frames_sysinfo == sysinfos + (is_home_case(&k_cases[k]) ? 2U : 0U));
+            assert(ts_of(s.state)->frames_sysinfo == sysinfos + (is_home_case(&k_cases[k]) ? 2U : 0U));
             assert_home_is_a(&s);
             end_follow(&s, how);
             assert_back_home(&s, 1);
@@ -790,7 +798,7 @@ test_pending_grant(void) {
         dsd_trunk_tuning_request_publish(g_request, fails ? DSD_TRUNK_TUNE_RESULT_FAILED : DSD_TRUNK_TUNE_RESULT_OK);
         tetra_sm_tick(s.opts, s.state);
         if (fails) {
-            assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && !tetra_st_peek(s.state)->sm.home.valid);
+            assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && !ts_of(s.state)->sm.home.valid);
             assert(tetra_sm_return_cc_hz(s.state) == 0 && !tetra_sm_guarding(s.opts, s.state));
         } else {
             assert_home_is_a(&s);
@@ -805,7 +813,7 @@ test_pending_grant(void) {
         g_tune_result = unaccepted[k];
         setup_burst(&s, GSSI_A, CALL_A, 0x4U, CARR_F);
         assert(g_tunes == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
-        assert(!tetra_st_peek(s.state)->sm.home.valid && tetra_sm_return_cc_hz(s.state) == 0);
+        assert(!ts_of(s.state)->sm.home.valid && tetra_sm_return_cc_hz(s.state) == 0);
         close_session(&s);
     }
 
@@ -930,7 +938,7 @@ test_letting_go_drops_the_home(void) {
                 tetra_state_reset(s.state);
             }
             assert(tetra_sm_return_cc_hz(s.state) == 0 && !tetra_sm_guarding(s.opts, s.state));
-            assert(!tetra_st_peek(s.state)->sm.home.valid);
+            assert(!ts_of(s.state)->sm.home.valid);
             if (pending != 0) {
                 const long operator_hz = hz(CARR_H);
                 s.state->trunk_cc_freq = operator_hz;
@@ -952,7 +960,7 @@ enum { OFF_HEARS_B, OFF_HEARS_OTHER_LA, OFF_HEARS_DMO };
 static void
 hear_while_untrunked(session* s, int what) {
     advance(s, 0.2);
-    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    const tetra_state_t* const ts = ts_of(s->state);
     ttb_block si = {0};
     if (what == OFF_HEARS_B) {
         const cell b = {MCC, MNC, COL_B};
@@ -999,7 +1007,7 @@ test_trunking_back_on_returns_home(void) {
             session s = open_untrunked_on_f(what);
             if (by_command) {
                 tetra_sm_on_trunking_on(s.state);
-                assert(s.state->trunk_cc_freq == hz(CARR_A_CC) && tetra_st_peek(s.state)->sm.return_required);
+                assert(s.state->trunk_cc_freq == hz(CARR_A_CC) && ts_of(s.state)->sm.return_required);
             }
             s.opts->trunk_enable = 1;
             assert(tetra_sm_guarding(s.opts, s.state));
@@ -1030,7 +1038,7 @@ test_return_required_until_home(void) {
             dsd_trunk_tuning_request_publish(g_request, DSD_TRUNK_TUNE_RESULT_FAILED);
             assert(tetra_sm_settle(s.opts, s.state) == 1);
         }
-        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const tetra_state_t* const ts = ts_of(s.state);
         assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && ts->sm.return_required);
         assert(tetra_sm_return_cc_hz(s.state) == hz(CARR_A_CC));
 
@@ -1068,11 +1076,11 @@ test_trunking_back_on_on_the_home_carrier(void) {
     advance(&s, 0.2);
     bsch_burst(&s, COL_B);
     sysinfo_burst(&s, CARR_F, LA_B);
-    assert(s.state->trunk_cc_freq == hz(CARR_F) && tetra_st_peek(s.state)->dl_carrier_hz == hz(CARR_F));
+    assert(s.state->trunk_cc_freq == hz(CARR_F) && ts_of(s.state)->dl_carrier_hz == hz(CARR_F));
 
     s.opts->trunk_enable = 1;
     tetra_sm_tick(s.opts, s.state);
-    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    const tetra_state_t* const ts = ts_of(s.state);
     assert(g_returns == 0 && g_tunes == 0 && s.opts->trunk_is_tuned == 0);
     assert(tetra_sm_get_state(s.state) == TETRA_SM_ON_CC && !tetra_sm_followed(s.state, NULL));
     assert(s.state->trunk_cc_freq == hz(CARR_A_CC) && tetra_sm_return_cc_hz(s.state) == 0);
@@ -1101,7 +1109,7 @@ test_foreign_sync_burst_is_not_taken(void) {
             reset_backend();
             session s = open_on_a();
             follow_a(&s, CARR_F);
-            const tetra_state_t* const ts = tetra_st_peek(s.state);
+            const tetra_state_t* const ts = ts_of(s.state);
             const follow_view before = view_of(&s);
             const uint32_t sysinfos = ts->frames_sysinfo;
             const uint32_t decoded = ts->decode_ok;
@@ -1125,7 +1133,7 @@ test_foreign_sync_burst_is_not_taken(void) {
     reset_backend();
     session s = open_on_a();
     follow_a(&s, CARR_F);
-    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    const tetra_state_t* const ts = ts_of(s.state);
     const uint32_t sysinfos = ts->frames_sysinfo;
     const uint32_t signalling = ts->confirm.signalling_blocks;
     ttb_block si = {0};
@@ -1185,7 +1193,7 @@ test_guarded_direct_mode_is_not_taken(void) {
         reset_backend();
         session s = open_on_a();
         follow_a(&s, CARR_F);
-        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const tetra_state_t* const ts = ts_of(s.state);
         const follow_view before = view_of(&s);
         advance(&s, 0.2);
         assert(dsb_on_air(&s, 1, soft_only) == 1);
@@ -1209,7 +1217,7 @@ test_home_location_area_learned_on_the_carrier(void) {
     reset_backend();
     session s = open_on_a_as(1);
     follow_a(&s, CARR_F);
-    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    const tetra_state_t* const ts = ts_of(s.state);
     assert(ts->sm.home.valid && ts->sm.home.cc_hz == hz(CARR_A_CC) && !ts->sm.home.la_known);
     uint32_t sysinfos = ts->frames_sysinfo;
 
@@ -1412,7 +1420,7 @@ test_cell_change_mm_writes_nothing(void) {
         reset_backend();
         session s = open_on_a();
         follow_a(&s, CARR_F);
-        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const tetra_state_t* const ts = ts_of(s.state);
         assert(!ts->mm_status_valid && tetra_air_ksg_seen(s.state, MCC, MNC) == 0U);
         ttb_block status = {0};
         ttb_put(&status, TETRA_MM_D_MM_STATUS, 4);
@@ -1445,7 +1453,7 @@ test_cell_change_mm_writes_nothing(void) {
  * slot, EN 300 392-2 clause 9.4.1). */
 static void
 in_next_slot(session* s, uint8_t tn) {
-    const tetra_state_t* const ts = tetra_st_peek(s->state);
+    const tetra_state_t* const ts = ts_of(s->state);
     assert(ts->tdma_valid);
     uint32_t k = 1U;
     for (; k <= 4U * 19U; k++) {
@@ -1500,7 +1508,7 @@ test_cell_change_in_a_mac_end(void) {
         fragmented_setup(&first, &end, cell_change);
         in_next_slot(&s, 2U);
         assert(cell_ndb(&s, &k_cell_a, NULL, &first) == 1);
-        assert(tetra_st_peek(s.state)->mac_frag[2].active);
+        assert(ts_of(s.state)->mac_frag[2].active);
         const follow_view before = view_of(&s);
         const assignments held = assignments_of(&s);
         in_next_slot(&s, 2U);
@@ -1582,7 +1590,7 @@ test_aach_cannot_outlive_home_evidence(void) {
         follow_marked(&s);
         const double t0 = s.t;
         const double deadline = t0 + k_last_sync[k] + TETRA_SM_GRANT_TIMEOUT_S;
-        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const tetra_state_t* const ts = ts_of(s.state);
 
         char log[16384];
         dsd_test_capture_stderr cap;
@@ -1637,7 +1645,7 @@ test_aach_run_needs_home_evidence(void) {
     session s = open_on(&k_vec_home, 0);
     s.opts->trunk_hangtime = 10.0F;
     follow_marked(&s);
-    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    const tetra_state_t* const ts = ts_of(s.state);
     advance(&s, 0.1);
     speech(&s);
     advance(&s, 4.4);
@@ -1663,7 +1671,7 @@ test_rx_perm_lapses_without_home_evidence(void) {
         session s = open_on(&k_vec_home, 0);
         s.opts->trunk_hangtime = 30.0F;
         follow_marked(&s);
-        const tetra_state_t* const ts = tetra_st_peek(s.state);
+        const tetra_state_t* const ts = ts_of(s.state);
         advance(&s, 0.1);
         speech(&s);
         three_other_aachs(&s);
@@ -1735,7 +1743,7 @@ test_home_speech_keeps_a_silent_call(void) {
     reset_backend();
     session s = open_on(&k_vec_home, 0);
     follow_marked(&s);
-    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    const tetra_state_t* const ts = ts_of(s.state);
     const double sync_m = ts->sm.t_home_crc_m;
     advance(&s, 0.25);
     speech_burst_on_air(&s, 3U, seed_of(&k_vec_other));
