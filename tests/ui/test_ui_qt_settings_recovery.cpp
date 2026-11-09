@@ -11,9 +11,10 @@
  * folder or FIFO at the path; a file gone before it is kept (missing: nothing kept or written, no notice); a failed
  * replacement after the rename; no folder for a scratch copy (defaults in memory, nothing written anywhere); no
  * system temp folder (Android's /tmp) and no app cache for the check, parsed in place through the file read (a FIFO
- * swapped in, a path Qt cannot read); an app cache that cannot take the scratch copy (defaults in memory, nothing
- * written outside the cache); leftover work folders and cache scratch copies; a later check forgetting an earlier
- * scratch; the first call-history save after a malformed file; replacePortable() after a recovery; and a pending
+ * swapped in, a path Qt cannot read, two files of one size and modification time parsed one after the other); an
+ * app cache that cannot take the scratch copy (defaults in memory, nothing written outside the cache); leftover work
+ * folders and cache scratch copies; a later check forgetting an earlier scratch; the first call-history save after a
+ * malformed file; replacePortable() after a recovery; and a pending
  * restore that waits while the settings run on the scratch copy, then applies after a later start recovers them.
  * Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
@@ -21,6 +22,7 @@
 #include <QByteArrayView>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -33,6 +35,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTimeZone>
 #include <QVariant>
 #include <QtGlobal>
 #include <cstring>
@@ -748,6 +751,60 @@ test_no_cache_writes_nothing_in_temp() {
 }
 #endif
 
+#if defined(HISTORY_SETTINGS_ARE_INI) && !defined(Q_OS_MACOS)
+/* Gives @p path the modification time @p when, to the millisecond. */
+bool
+set_modified(const QString& path, const QDateTime& when) {
+    QFile file(path);
+    return file.open(QIODevice::ReadWrite | QIODevice::ExistingOnly)
+           && file.setFileTime(when, QFileDevice::FileModificationTime);
+}
+
+/* No app cache, so both settings files are parsed in place, one after the other, through the descriptor each check
+   opened. QSettings keeps a parse by its path and takes it again unread for a file at that path with the same size and
+   modification time: a malformed call history file parsed through the number AppPrefs' clean file had just used would
+   pass as clean, and its next save would drop the malformed lines unkept. Each parse reads through its own path. */
+void
+test_in_place_parses_apart() {
+    const QString blocker = not_a_folder();
+    const QByteArray clean = "[decode]\nextraArgs=-Z\n";
+    const QByteArray malformed = "[zz]\nno equals sign 2\n";
+    expect("in place apart: the files are the same size", clean.size() == malformed.size());
+    const QDateTime when = QDateTime::fromMSecsSinceEpoch(Q_INT64_C(1700000000123), QTimeZone::UTC);
+    {
+        const ScopedEnv cache("XDG_CACHE_HOME", QFile::encodeName(blocker + QStringLiteral("/cache")));
+        expect("in place apart: no app cache",
+               !QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)));
+        reset();
+        expect("in place apart: AppPrefs' file written", write_file(g_paths.prefs, clean));
+        expect("in place apart: history written", write_file(g_paths.history, malformed));
+        expect("in place apart: one modification time",
+               set_modified(g_paths.prefs, when) && set_modified(g_paths.history, when));
+        const QString name = QFileInfo(g_paths.history).fileName();
+        post_sentinel_notice();
+        dsd_qt::json_store_post_notice({name, QStringLiteral("sentinel"), QString()});
+        dsd_qt::recover_settings_files();
+        expect("in place apart: AppPrefs' file is clean",
+               !dsd_qt::settings_recovery_scratch(dsd_qt::settings_recovery_prefs_file_name())
+                   && sentinel_notice_stands() && read_file(g_paths.prefs) == clean);
+        expect("in place apart: the history file is not clean", dsd_qt::settings_recovery_in_memory(name));
+        const dsd_qt::JsonStoreNotice* notice = notice_for(dsd_qt::json_store_notices(), name);
+        expect("in place apart: the history file's notice",
+               notice != nullptr && notice->reason.startsWith(QLatin1String("not valid INI")));
+        {
+            dsd_qt::CallHistoryModel history;
+            history.beginSession();
+            history.clearAll(); // writes the next uid
+            QCoreApplication::processEvents();
+        }
+        expect("in place apart: the history file is untouched", read_file(g_paths.history) == malformed);
+    }
+    relaunch();
+    reset();
+    QFile::remove(blocker);
+}
+#endif
+
 /* The app cache cannot take the scratch copy (a file stands where its folder would go): the run holds defaults in
    memory and says so, and no copy of the settings is written anywhere else, the system temp folder included. Never
    "on scratch" with nothing in the copy. */
@@ -1165,6 +1222,9 @@ main(int argc, char** argv) {
     test_scratch_copy_not_in_cache();
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
     test_no_cache_writes_nothing_in_temp();
+#endif
+#if defined(HISTORY_SETTINGS_ARE_INI) && !defined(Q_OS_MACOS)
+    test_in_place_parses_apart();
 #endif
 #ifndef _WIN32
     test_link_at_the_path();

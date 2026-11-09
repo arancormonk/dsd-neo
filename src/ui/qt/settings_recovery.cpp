@@ -458,22 +458,71 @@ rewind_read(const SettingsRead& read) {
 }
 #endif
 
-/* The path Qt reads the checked file through: on POSIX the file the check opened and read, by its descriptor, never
-   the name again, so a FIFO swapped in meanwhile cannot hold the start; by name on Windows, which has no FIFO at a
-   file path. Empty when there is none. */
-QString
-in_place_source(const QString& path, const SettingsRead& read, const SettingsRecoveryEnv& env) {
+#ifndef Q_OS_WIN
+/* The highest descriptor number a parse in place has read through in this process. Read and written by the recovery
+   alone, on the GUI thread. */
+int g_lastInPlaceFd = -1;
+#endif
+
+/* The descriptor a parse in place reads the checked file through on POSIX: a duplicate of the check's own, at a
+   number no parse in place used before in this process, closed with this. QSettings keeps what it parsed of a file
+   by its path and takes that again, unread, for a file at the same path with the same size and modification time:
+   through a reused /proc/self/fd/N, a malformed file could pass as the clean one parsed there before. -1 when there
+   is none (always on Windows, which parses by name). */
+class InPlaceDescriptor {
+  public:
+    explicit InPlaceDescriptor(const SettingsRead& read) {
 #ifdef Q_OS_WIN
-    QString source = path;
+        (void)read;
+#else
+        if (read.file != nullptr) {
+            m_fd = ::fcntl(dsd_fileno(read.file.get()), F_DUPFD_CLOEXEC, g_lastInPlaceFd + 1);
+            if (m_fd >= 0) {
+                g_lastInPlaceFd = m_fd;
+            }
+        }
+#endif
+    }
+
+    ~InPlaceDescriptor() {
+#ifndef Q_OS_WIN
+        if (m_fd >= 0) {
+            (void)::close(m_fd);
+        }
+#endif
+    }
+
+    InPlaceDescriptor(const InPlaceDescriptor&) = delete;
+    InPlaceDescriptor& operator=(const InPlaceDescriptor&) = delete;
+    InPlaceDescriptor(InPlaceDescriptor&&) = delete;
+    InPlaceDescriptor& operator=(InPlaceDescriptor&&) = delete;
+
+    int
+    fd() const {
+        return m_fd;
+    }
+
+  private:
+    int m_fd = -1;
+};
+
+/* The path Qt reads the checked file through: on POSIX the file the check opened and read, by the descriptor @p fd
+   (InPlaceDescriptor), never the name again, so a FIFO swapped in meanwhile cannot hold the start; by name on Windows,
+   which has no FIFO at a file path. Empty when there is none. */
+QString
+in_place_source(const QString& path, int fd, const SettingsRecoveryEnv& env) {
+#ifdef Q_OS_WIN
+    (void)fd;
+    const QString source = path;
 #else
     (void)path;
-    if (read.file == nullptr) {
+    if (fd < 0) {
         return QString();
     }
 #ifdef Q_OS_LINUX
-    QString source = QStringLiteral("/proc/self/fd/%1").arg(dsd_fileno(read.file.get()));
+    const QString source = QStringLiteral("/proc/self/fd/%1").arg(fd);
 #else
-    QString source = QStringLiteral("/dev/fd/%1").arg(dsd_fileno(read.file.get()));
+    const QString source = QStringLiteral("/dev/fd/%1").arg(fd);
 #endif
 #endif
     return env.inPlaceSource ? env.inPlaceSource(source) : source;
@@ -509,7 +558,8 @@ reads_back(const QString& source, const SettingsRead& read) {
 SettingsParse
 parse_in_place(const QString& path, const SettingsRead& read, const SettingsRecoveryEnv& env) {
     SettingsParse out;
-    const QString source = in_place_source(path, read, env);
+    const InPlaceDescriptor descriptor(read);
+    const QString source = in_place_source(path, descriptor.fd(), env);
     if (source.isEmpty() || !reads_back(source, read)) {
         return out;
     }

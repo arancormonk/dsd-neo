@@ -12679,7 +12679,11 @@ Qt Quick frontend (`src/ui/qt`):
     anything but a regular file), and held: a FIFO swapped in after the stat is refused, never waited on. With no work
     folder (no cache, or one that cannot take it), a file read whole is parsed in place by a read-only explicit-file
     `QSettings` on that open file (`/proc/self/fd/N`, else `/dev/fd/N`; by name only on Windows, which has no FIFO at
-    a file path), which tells a clean file (left alone) but writes no clean file for one that is not, so an
+    a file path), N a duplicate of the check's descriptor at a number no parse in place used before in the process
+    (`InPlaceDescriptor`, `F_DUPFD_CLOEXEC` above the last one): QSettings keeps a parse by its path and takes it again
+    unread for a file there with the same size and modification time, so a reused N would let a malformed call history
+    file pass as AppPrefs' clean one (`test_in_place_parses_apart`; with no number left, the file is "could not be
+    checked"). That parse tells a clean file (left alone) but writes no clean file for one that is not, so an
     unavailable cache never makes a healthy file "could not be checked", and the name is never opened again
     (`test_no_system_temp_folder`'s FIFO swap). Qt must first read that path back as exactly the bytes the check read
     (`reads_back()`): QSettings takes a path it cannot open as an empty file, which would pass as clean, so such a
