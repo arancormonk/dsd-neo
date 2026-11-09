@@ -2229,8 +2229,11 @@ suite runs under this compiler.
     engine's `import_group_csv_if_needed()` does not read the file again. A complete load of the file replaces it.
   - Engine start (`import_group_csv_if_needed()`): a configured `opts->group_in_file` (`-G` or the INI's `[trunking]
     group_csv`) is loaded whatever the trunking state, as `-G` loads it, when the list is still empty and not marked
-    incomplete; a file that does not load fails the start, as with trunking on. Before, a config file's group list was
-    never loaded with trunking off, and the first saved edit rewrote the file from the empty table.
+    incomplete. A file that does not load fails a start with trunking or trunk scan on, as before; with trunking off
+    the start goes on with a warning (`Group list '<path>' not loaded: <why>; continuing without it.`), and nothing is
+    written over the file: a missing one has the zero-row baseline (see Baseline), and an unreadable or unusable one is
+    marked incomplete. Before, a config file's group list was never loaded with trunking off, and the first saved edit
+    rewrote the file from the empty table.
   - Baseline (`{valid, rows_hash, path}` in the store, copied by clones; not by the UI snapshot copy, since frontend
     snapshots never write): a 64-bit FNV-1a over the rows the importer accepted, in file order, each in the canonical
     form the store keeps (`tg_policy_canonical_entry()`), without the source or line number, so line endings, blank

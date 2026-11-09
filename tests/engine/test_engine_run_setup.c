@@ -32,6 +32,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <signal.h>
@@ -1198,6 +1199,7 @@ test_incomplete_group_list_is_not_read_again(int incomplete) {
 /* What a start with trunking off made of a configured group file, and the first edit saved to it then. */
 typedef struct {
     size_t rows;
+    int incomplete;
     int saved;
 } group_start_probe;
 
@@ -1205,16 +1207,44 @@ static int
 edit_group_list_at_start(dsd_opts* opts, dsd_state* state, void* context) {
     group_start_probe* probe = (group_start_probe*)context;
     probe->rows = dsd_tg_policy_entry_count(state);
+    probe->incomplete = dsd_tg_policy_incomplete(state);
     // A Listen edit: the session's list, saved to its file.
     probe->saved = dsd_tg_policy_set_mode(state, 100, 100, "B") == 0 ? dsd_tg_policy_write_group_file(opts, state) : -9;
     return 0;
 }
 
+/* "Group list ... not loaded" warnings seen by the log tap. */
+static int g_group_not_loaded_warnings;
+
+static void
+count_group_not_loaded(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text && strstr(text, "WARNING: Group list '") && strstr(text, "not loaded: the file was not found")) {
+        g_group_not_loaded_warnings++;
+    }
+}
+
+enum { GROUP_CONFIG_ROWS, GROUP_CONFIG_MISSING, GROUP_CONFIG_UNUSABLE };
+
+static const char*
+group_config_after(int kind, const char* unusable) {
+    switch (kind) {
+        case GROUP_CONFIG_MISSING: return "id,mode,name\n100,B,\n";
+        case GROUP_CONFIG_UNUSABLE: return unusable;
+        default: return "id,mode,name\n100,B,ONE\n200,A,TWO\n";
+    }
+}
+
 /* A group file the config names (the INI's [trunking] group_csv sets opts->group_in_file, nothing reads it then) is
    loaded at the start with trunking off, as -G loads it, and is the list's baseline: the first edit keeps the file's
-   other rows (regression: with trunking off nothing loaded it, and that edit rewrote the file from the empty table). */
+   other rows (regression: with trunking off nothing loaded it, and that edit rewrote the file from the empty table).
+   One that does not load does not stop a start with trunking off, which never read it before, and nothing is written
+   over it: a missing file is warned about and then created by the first edit; a file none of whose rows load (';'
+   separators) is incomplete, and the edit is not saved to it. */
 static int
-test_configured_group_list_loads_with_trunking_off(void) {
+test_configured_group_list_loads_with_trunking_off(int kind) {
+    static const char k_unusable[] = "id;mode;name\n100;A;ONE\n";
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -1227,22 +1257,34 @@ test_configured_group_list_loads_with_trunking_off(void) {
         return 1;
     }
     (void)dsd_close(fd);
-    int rc = write_group_text(path, "id,mode,name\n100,A,ONE\n200,A,TWO\n");
+    int rc = 0;
+    if (kind == GROUP_CONFIG_MISSING) {
+        rc |= remove(path) != 0;
+    } else {
+        rc |=
+            write_group_text(path, kind == GROUP_CONFIG_UNUSABLE ? k_unusable : "id,mode,name\n100,A,ONE\n200,A,TWO\n");
+    }
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
     opts->trunk_enable = 0;
     opts->trunk_scan_enabled = 0;
-    group_start_probe probe = {0, -1};
+    dsd_neo_log_set_tap(count_group_not_loaded, NULL);
+    g_group_not_loaded_warnings = 0;
+    group_start_probe probe = {0, -1, -1};
     dsd_engine_lifecycle_hooks hooks = {.start = edit_group_list_at_start, .context = &probe};
     rc |= expect_true("conventional run completes", dsd_engine_run_with_lifecycle(opts, state, &hooks) == 0);
-    rc |= expect_true("configured group list loaded with trunking off", probe.rows == 2U);
-    rc |= expect_true("the edit is saved", probe.saved == 0);
+    rc |= expect_true("configured group list rows at start", probe.rows == (kind == GROUP_CONFIG_ROWS ? 2U : 0U));
+    rc |= expect_true("an unusable list is incomplete", probe.incomplete == (kind == GROUP_CONFIG_UNUSABLE));
+    rc |= expect_true("a missing file is warned about once",
+                      g_group_not_loaded_warnings == (kind == GROUP_CONFIG_MISSING ? 1 : 0));
+    rc |= expect_true("the edit is saved, except to an incomplete list",
+                      probe.saved == (kind == GROUP_CONFIG_UNUSABLE ? 1 : 0));
     char text[128] = {0};
     FILE* fp = dsd_fopen_existing_regular_file(path, "r");
     if (fp) {
         (void)fread(text, 1U, sizeof text - 1U, fp);
         (void)fclose(fp);
     }
-    rc |= expect_true("the edit keeps the file's rows", strcmp(text, "id,mode,name\n100,B,ONE\n200,A,TWO\n") == 0);
+    rc |= expect_true("the file after the edit", strcmp(text, group_config_after(kind, k_unusable)) == 0);
     (void)remove(path);
     free_test_runtime(opts, state);
     return rc;
@@ -2069,7 +2111,9 @@ main(void) {
     rc |= test_missing_source_labels_do_not_stop_decode();
     rc |= test_incomplete_group_list_is_not_read_again(1);
     rc |= test_incomplete_group_list_is_not_read_again(0);
-    rc |= test_configured_group_list_loads_with_trunking_off();
+    rc |= test_configured_group_list_loads_with_trunking_off(GROUP_CONFIG_ROWS);
+    rc |= test_configured_group_list_loads_with_trunking_off(GROUP_CONFIG_MISSING);
+    rc |= test_configured_group_list_loads_with_trunking_off(GROUP_CONFIG_UNUSABLE);
     rc |= test_per_call_wav_opens_in_the_cli_folder_at_start();
     rc |= test_run_journals_its_recordings_from_start_to_end();
     rc |= test_conflicting_scan_modes_fail_before_live_setup();

@@ -423,16 +423,25 @@ import_global_p25_bandplan_if_needed(dsd_opts* opts, dsd_state* state) {
 
 /* A configured group file is loaded whatever the trunking state, as -G loads it: conventional decoding names and
  * filters talkgroups by it too, and a list left empty would be saved over the file, from that empty table, at its
- * first edit. A store already filled means -G read it. */
+ * first edit. A store already filled means -G read it. One that does not load stops a trunking start, as before; with
+ * trunking off, which never read it before, the start goes on without it, and nothing can be written over the file: a
+ * missing file is the list's zero-row baseline (a file appearing there later refuses the first save), and one that
+ * could not be read is marked incomplete (never written back). */
 static int
 import_group_csv_if_needed(dsd_opts* opts, dsd_state* state) {
     // A list marked incomplete was already read, and logged, from this file: reading it again would not complete it.
-    if (opts->group_in_file[0] != '\0' && !dsd_tg_policy_has_entries(state) && !dsd_tg_policy_incomplete(state)) {
-        if (csvGroupImport(opts, state) != 0) {
-            return -1;
-        }
-        LOG_INFO("NOTICE: Imported group list from %s\n", opts->group_in_file);
+    if (opts->group_in_file[0] == '\0' || dsd_tg_policy_has_entries(state) || dsd_tg_policy_incomplete(state)) {
+        return 0;
     }
+    if (csvGroupImport(opts, state) == 0) {
+        LOG_INFO("NOTICE: Imported group list from %s\n", opts->group_in_file);
+        return 0;
+    }
+    if (opts->trunk_enable == 1 || opts->trunk_scan_enabled == 1) {
+        return -1;
+    }
+    LOG_WARN("WARNING: Group list '%s' not loaded: %s; continuing without it.\n", opts->group_in_file,
+             dsd_tg_policy_incomplete(state) ? "it could not be read" : "the file was not found");
     return 0;
 }
 

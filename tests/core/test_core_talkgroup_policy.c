@@ -3955,7 +3955,6 @@ test_group_check_is_quiet(void) {
     rc |= expect_true("file deleted again", remove(path) == 0);
     rc |= expect_true("load of a missing file", dsd_tg_policy_reload_group_file(opts, st) != 0);
     rc |= expect_true("load of a missing file logs the open error", g_group_open_errors == 1);
-    dsd_neo_log_set_tap(NULL, NULL);
     free_test_state(st);
     free(opts);
     (void)remove(path);
