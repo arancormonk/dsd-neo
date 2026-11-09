@@ -19,6 +19,7 @@
 #include <QTemporaryDir>
 #include <cerrno>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -120,9 +121,10 @@ read_settings_file(const QString& path, const SettingsRecoveryEnv& env) {
 
 /* What QSettings makes of a settings file's bytes. */
 struct SettingsParse {
-    bool checked = false; // false when the temporary files it takes could not be made
-    bool clean = false;   // every section parsed with no error
-    QByteArray rewritten; // the file written from what parsed: what Qt's next write would produce
+    bool checked = false;    // whether `clean` is known: false when the bytes could not be parsed at all
+    bool clean = false;      // every section parsed with no error
+    bool rewritable = false; // `rewritten` holds the clean file: false when no folder for the parse's files was had
+    QByteArray rewritten;    // the file written from what parsed: what Qt's next write would produce
 };
 
 bool
@@ -131,18 +133,37 @@ write_whole(const QString& path, const QByteArray& bytes) {
     return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
 }
 
-/* Parses @p bytes with QSettings' own parser, apart from any fallback file: a copy in a private temporary folder, read
-   by an explicit-file QSettings with every section parsed (QSettings parses a section only when something reads it),
-   then written back from the keys it parsed. */
+/* A private folder for a parse's files (0700, a random name, removed with what is in it): in the app cache, else in
+   the system temp folder. The app cache comes first because Android has no system temp folder an app may write:
+   QDir::tempPath() is /tmp there, which refuses it (EACCES). Null when neither can be had. */
+std::unique_ptr<QTemporaryDir>
+make_work_folder() {
+    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!cache.isEmpty() && QDir().mkpath(cache)) {
+        auto work = std::make_unique<QTemporaryDir>(cache + QStringLiteral("/settings-check-XXXXXX"));
+        if (work->isValid()) {
+            return work;
+        }
+    }
+    auto work = std::make_unique<QTemporaryDir>();
+    if (!work->isValid()) {
+        return nullptr;
+    }
+    return work;
+}
+
+/* Parses @p bytes with QSettings' own parser, apart from any fallback file: a copy in a private work folder, read by
+   an explicit-file QSettings with every section parsed (QSettings parses a section only when something reads it), then
+   written back from the keys it parsed. Nothing is known when no work folder can be had. */
 SettingsParse
 parse_settings(const QByteArray& bytes) {
     SettingsParse out;
-    const QTemporaryDir work; // 0700, removed with what is in it
-    if (!work.isValid()) {
+    const std::unique_ptr<QTemporaryDir> work = make_work_folder();
+    if (work == nullptr) {
         return out;
     }
-    const QString snapshot = work.filePath(QStringLiteral("snapshot.ini"));
-    const QString rewritten = work.filePath(QStringLiteral("rewritten.ini"));
+    const QString snapshot = work->filePath(QStringLiteral("snapshot.ini"));
+    const QString rewritten = work->filePath(QStringLiteral("rewritten.ini"));
     if (!write_whole(snapshot, bytes)) {
         return out;
     }
@@ -170,7 +191,31 @@ parse_settings(const QByteArray& bytes) {
         }
     }
     out.checked = true;
+    out.rewritable = true;
     return out;
+}
+
+/* With no work folder, a file read whole is parsed where it is, by an explicit-file QSettings that only reads: enough
+   to leave a healthy file alone, so a folder that cannot be had never makes one "could not be checked". One that is
+   not clean gets no clean file. */
+SettingsParse
+parse_in_place(const QString& path) {
+    SettingsParse out;
+    const QSettings parsed(path, QSettings::IniFormat);
+    (void)parsed.allKeys();
+    out.checked = true;
+    out.clean = parsed.status() == QSettings::NoError;
+    return out;
+}
+
+/* What @p read's bytes parse to: through a work folder, else, for a file read whole, in place. */
+SettingsParse
+check_settings(const QString& path, const SettingsRead& read) {
+    SettingsParse parsed = parse_settings(read.bytes);
+    if (!parsed.checked && read.status == FileRead::Ok) {
+        parsed = parse_in_place(path);
+    }
+    return parsed;
 }
 
 bool
@@ -338,7 +383,7 @@ rename_aside_and_write(const QString& path, const QByteArray& rewritten, const S
 SettingsRecovery
 keep_unclean(const QString& path, const SettingsRead& read, const SettingsParse& parsed, const SettingsRecoveryEnv& env,
              QString* keptPath) {
-    if (!parsed.checked) {
+    if (!parsed.rewritable) {
         return SettingsRecovery::Scratch;
     }
     if (read.status == FileRead::Ok) {
@@ -465,7 +510,7 @@ recover_ini_settings(QSettings::Format format, const QString& organization, cons
         note_scratch(name, false);
         return SettingsRecovery::Missing;
     }
-    const SettingsParse parsed = parse_settings(read.bytes);
+    const SettingsParse parsed = check_settings(path, read);
     if (read.status == FileRead::Ok && parsed.checked && parsed.clean) {
         note_scratch(name, false);
         return SettingsRecovery::Clean;
@@ -479,7 +524,8 @@ recover_ini_settings(QSettings::Format format, const QString& organization, cons
     const bool scratch = outcome == SettingsRecovery::Scratch;
     // The keys that parsed, as the clean file would hold them; the bytes read only when nothing could be parsed.
     const bool inMemory =
-        scratch && !use_scratch(format, organization, application, parsed.checked ? parsed.rewritten : read.bytes, env);
+        scratch
+        && !use_scratch(format, organization, application, parsed.rewritable ? parsed.rewritten : read.bytes, env);
     note_scratch(name, scratch, inMemory);
     report(path, problem(read, parsed), keptPath, scratch, inMemory);
     return outcome;

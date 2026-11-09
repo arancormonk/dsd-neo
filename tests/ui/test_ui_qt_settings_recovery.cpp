@@ -9,12 +9,14 @@
  * kept byte-identical; a copy or a rewrite that fails, after which every QSettings of the format writes a scratch copy
  * (AppPrefs' constructor write, a deferred flush, the static helpers and destruction all leave the original alone); a
  * folder or FIFO at the path; a file gone before it is kept (missing: nothing kept or written, no notice); a failed
- * replacement after the rename; no folder for a scratch copy (defaults in memory, nothing written anywhere); a later
- * check forgetting an earlier scratch; the first call-history save after a malformed file; replacePortable() after a
- * recovery; and a pending restore that waits while the settings run on the scratch copy, then applies after a later
- * start recovers them. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
+ * replacement after the rename; no folder for a scratch copy (defaults in memory, nothing written anywhere); no
+ * system temp folder (Android's /tmp) and no app cache for the check; a later check forgetting an earlier scratch; the first call-history save
+ * after a malformed file; replacePortable() after a recovery; and a pending restore that waits while the settings run
+ * on the scratch copy, then applies after a later start recovers them. Registered only when the Qt frontend is enabled
+ * (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
+#include <QByteArrayView>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
@@ -28,12 +30,15 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTemporaryDir>
 #include <QVariant>
 #include <QtGlobal>
 #include <cstring>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <functional>
+#include <qsystemdetection.h>
+#include <qtenvironmentvariables.h>
 #include <stdio.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
@@ -551,6 +556,89 @@ test_no_scratch_folder() {
     expect("no scratch folder: a later start forgets it", !dsd_qt::settings_recovery_in_memory(prefsName));
 }
 
+/* Sets an environment variable for this process while it lives, then puts back what was there. */
+class ScopedEnv {
+  public:
+    ScopedEnv(const char* name, const QByteArray& value)
+        : m_name(name), m_wasSet(qEnvironmentVariableIsSet(name)), m_old(qgetenv(name)) {
+        qputenv(m_name, value);
+    }
+
+    ~ScopedEnv() {
+        if (m_wasSet) {
+            qputenv(m_name, m_old);
+        } else {
+            qunsetenv(m_name);
+        }
+    }
+
+    ScopedEnv(const ScopedEnv&) = delete;
+    ScopedEnv& operator=(const ScopedEnv&) = delete;
+    ScopedEnv(ScopedEnv&&) = delete;
+    ScopedEnv& operator=(ScopedEnv&&) = delete;
+
+  private:
+    const char* m_name;
+    bool m_wasSet;
+    QByteArray m_old;
+};
+
+/* A regular file to point a folder variable at: nothing can be made under it (ENOTDIR), root included. */
+QString
+not_a_folder() {
+    const QString path =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/not-a-folder");
+    expect("not a folder: written", write_file(path, "x"));
+    return path;
+}
+
+/* A healthy file is left alone with no notice and no scratch, whatever folders the check could or could not have. */
+void
+expect_healthy_left_alone(const QString& what) {
+    const QByteArray healthy = "[decode]\nextraArgs=-Z\n\n[location]\nlastFixAt=1\n";
+    reset();
+    expect(what + ": written", write_file(g_paths.prefs, healthy));
+    post_sentinel_notice();
+    expect(what + ": Clean", recover_prefs() == SettingsRecovery::Clean);
+    expect(what + ": not on scratch", !dsd_qt::settings_recovery_scratch(dsd_qt::settings_recovery_prefs_file_name()));
+    expect(what + ": no notice", sentinel_notice_stands());
+    expect(what + ": left alone", read_file(g_paths.prefs) == healthy && !QFileInfo::exists(kept(g_paths.prefs, 1)));
+    expect(what + ": the real file is used", prefs_file_now() == g_paths.prefs);
+}
+
+#ifndef Q_OS_WIN
+/* Android has no system temp folder an app may write (QDir::tempPath() is /tmp, which refuses it): the check needs
+   none, so a healthy file is left alone at every start and one that is not clean is still kept, never "could not be
+   checked" and run on a scratch copy. TMPDIR names a file here. */
+void
+test_no_system_temp_folder() {
+    const QString blocker = not_a_folder();
+    {
+        const ScopedEnv tmp("TMPDIR", QFile::encodeName(blocker));
+        expect("no temp folder: the system temp folder takes nothing", !QTemporaryDir().isValid());
+        expect_healthy_left_alone("no temp folder, healthy");
+
+        reset();
+        expect("no temp folder, not clean: written", write_file(g_paths.prefs, kUnreadSection));
+        expect("no temp folder, not clean: Kept", recover_prefs() == SettingsRecovery::Kept);
+        expect("no temp folder, not clean: kept byte-identical", read_file(kept(g_paths.prefs, 1)) == kUnreadSection);
+        expect("no temp folder, not clean: not on scratch", !dsd_qt::settings_recovery_scratch());
+        relaunch();
+
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+        // No app cache either: the file is parsed where it is, which is enough to leave a healthy one alone.
+        const ScopedEnv cache("XDG_CACHE_HOME", QFile::encodeName(blocker + QStringLiteral("/cache")));
+        expect("no folder at all: the app cache cannot be made",
+               !QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)));
+        expect_healthy_left_alone("no folder at all, healthy");
+        relaunch();
+#endif
+    }
+    reset();
+    QFile::remove(blocker);
+}
+#endif
+
 /* A folder or a FIFO at the path is neither read nor written, and QSettings never opens it this run. */
 void
 test_not_a_file() {
@@ -827,6 +915,9 @@ main(int argc, char** argv) {
     test_missing_forgets_scratch();
     test_replace_fails_after_rename();
     test_no_scratch_folder();
+#ifndef Q_OS_WIN
+    test_no_system_temp_folder();
+#endif
 #ifndef _WIN32
     test_link_at_the_path();
 #endif

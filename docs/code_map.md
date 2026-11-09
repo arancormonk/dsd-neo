@@ -12661,8 +12661,13 @@ Qt Quick frontend (`src/ui/qt`):
     otherwise set `FormatError` on every instance and fail `replacePortable()`. The file is read through the json_store
     classifier (confirmed absence → Missing; any other stat error, not a regular file, an open or read error →
     Unreadable), then what was read is parsed apart from every fallback: an explicit-file `QSettings` on a copy in a
-    `QTemporaryDir`, `allKeys()` forcing every section, and the parsed keys written back by a fresh `QSettings` (byte
-    for byte what Qt's own next write would produce; empty when nothing parsed).
+    private work folder, `allKeys()` forcing every section, and the parsed keys written back by a fresh `QSettings`
+    (byte for byte what Qt's own next write would produce; empty when nothing parsed). The work folder is a
+    `QTemporaryDir` in the app cache (`<CacheLocation>/settings-check-XXXXXX`), else in the system temp folder: Android
+    lets an app write no system temp folder (`QDir::tempPath()` is `/tmp`, EACCES), and a default `QTemporaryDir` there
+    made every start after the first run on scratch. With neither, a file read whole is parsed in place by a read-only
+    explicit-file `QSettings`, which tells a clean file (left alone) but writes no clean file for one that is not, so an
+    unavailable folder never makes a healthy file "could not be checked".
   - Read whole and parsed cleanly, or missing: nothing happens.
   - Read whole but not clean: its bytes are copied to the first free `<file>.unreadable-N` (N = 1..99,
     `dsd_fopen_private(..., "wbx")`, never replacing anything; synced), then the clean file replaces it through a

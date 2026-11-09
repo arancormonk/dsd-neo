@@ -11,7 +11,9 @@
  * from what it parsed, dropping every line it could not. Two INI files hold the app's settings: AppPrefs'
  * (IniFormat) and call history's default QSettings (NativeFormat, an INI file on Linux and Android; the Windows
  * registry and Apple plists are left alone). recover_settings_files() checks both before anything else opens them:
- *  - It reads the exact file, checking the read, and parses that copy apart from QSettings' fallback files.
+ *  - It reads the exact file, checking the read, and parses that copy apart from QSettings' fallback files, in a private
+ *    work folder in the app cache (else the system temp folder, which Android does not let an app write). With neither,
+ *    a file read whole is parsed where it is, which tells a clean file but cannot write a clean one.
  *  - A file read whole that parses cleanly is left alone, as is a missing one.
  *  - Otherwise, a file read whole is copied to "<file>.unreadable-N" (N = 1..99, the first free one; created, never
  *    replacing anything, and synced) while it stays in place, and a clean file holding what Qt could parse replaces it,
