@@ -72,15 +72,18 @@ Item {
     // status keeps the warning after the search fails or stops, so it shows
     // only while the search runs or is paused, with the next step for that
     // phase and for the gain controls the range editor offers this radio.
-    // The range is filled in apart (overloadLine): the message's speech step
-    // holds the line without it, so a name that changes each pass is heard
-    // at the message's pace while the warning appearing or clearing is heard
-    // at once.
+    // The line is two sentences: what was skipped, naming the range (a range
+    // with no name reads as one), then that advice. The message's speech step
+    // holds the advice alone, so a name that changes each pass is heard at
+    // the message's pace while the warning appearing, clearing or changing
+    // phase is heard at once.
     readonly property bool overloadShown: sessionActive && !!status.overloaded && phase !== 0 && phase !== 7
-    readonly property string overloadTemplate: !overloadShown ? "" : phase === 6
-        ? (sourceType === "airspy" ? qsTr("Part of “%1” was skipped because the receiver is overloaded. Set a lower Airspy gain for the range, then Resume.") : qsTr("Part of “%1” was skipped because the receiver is overloaded. Lower the range's receiver gain, then Resume."))
-        : (sourceType === "airspy" ? qsTr("Part of “%1” was skipped because the receiver is overloaded. Pause, then set a lower Airspy gain for the range.") : qsTr("Part of “%1” was skipped because the receiver is overloaded. Pause, then lower the range's receiver gain."))
-    readonly property string overloadLine: overloadTemplate.length > 0 ? overloadTemplate.arg(status.overloadRange || "") : ""
+    readonly property string overloadAdvice: !overloadShown ? "" : phase === 6
+        ? (sourceType === "airspy" ? qsTr("Set a lower Airspy gain for the range, then Resume.") : qsTr("Lower the range's receiver gain, then Resume."))
+        : (sourceType === "airspy" ? qsTr("Pause, then set a lower Airspy gain for the range.") : qsTr("Pause, then lower the range's receiver gain."))
+    readonly property string overloadLine: !overloadShown ? "" : ((status.overloadRange || "").length > 0
+        ? qsTr("Part of “%1” was skipped because the receiver is overloaded.").arg(status.overloadRange)
+        : qsTr("Part of a range was skipped because the receiver is overloaded.")) + " " + overloadAdvice
     signal closed
     signal backRequested
     signal start(string sourceType, string host, int port, string frequency)
@@ -844,7 +847,7 @@ Item {
                     SpeechPacer {
                         id: messageSpeech
                         shown: searchMessage.navigationAllowed && searchMessage.visible && searchMessage.text.length > 0
-                        step: searchMessage.lines.concat([screen.overloadTemplate]).join("\n")
+                        step: searchMessage.lines.concat([screen.overloadAdvice]).join("\n")
                         read: function () {
                             return searchMessage.text;
                         }

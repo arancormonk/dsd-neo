@@ -136,9 +136,12 @@ While a search runs, the screen is laid out for what is on the air now:
   the last line there while the search runs or is paused, for example
   **Part of “Marine” was skipped because the receiver is overloaded. Pause, then
   lower the range's receiver gain.** Paused, it ends **Lower the range's receiver
-  gain, then Resume.** With an Airspy it asks for a lower Airspy gain for the
-  range instead (**Use Airspy gain settings for this range** in the range
-  editor). It is not shown once the search fails or stops. A screen reader hears
+  gain, then Resume.** With an Airspy it would ask for a lower Airspy gain for
+  the range instead (**Use Airspy gain settings for this range** in the range
+  editor), but an Airspy's overload cannot be seen, so the warning does not
+  appear for one (see the Airspy paragraph under [Scope and
+  implementation](#scope-and-implementation)). It is not shown once the search
+  fails or stops. A screen reader hears
   the warning at once as it appears or clears; a new range name in it is read at
   most every five seconds, so two ranges that take turns clipping do not
   interrupt every pass.

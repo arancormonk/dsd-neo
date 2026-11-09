@@ -1502,7 +1502,7 @@ Item {
         function overloadText(range, paused, airspy) {
             var fix = paused ? (airspy ? "Set a lower Airspy gain for the range, then Resume." : "Lower the range's receiver gain, then Resume.")
                 : (airspy ? "Pause, then set a lower Airspy gain for the range." : "Pause, then lower the range's receiver gain.");
-            return "Part of “" + range + "” was skipped because the receiver is overloaded. " + fix;
+            return (range.length > 0 ? "Part of “" + range + "”" : "Part of a range") + " was skipped because the receiver is overloaded. " + fix;
         }
         function overload(range, extra) {
             model.status = Object.assign({}, model.status, {overloaded: true, overloadRange: range}, extra || {});
@@ -1534,6 +1534,7 @@ Item {
                 {tag: "listening, USB", phase: 4, source: "usb", paused: false},
                 {tag: "held, rtl_tcp", phase: 5, source: "rtltcp", paused: false},
                 {tag: "tuning, Airspy", phase: 2, source: "airspy", paused: false},
+                {tag: "identifying, USB", phase: 3, source: "usb", paused: false},
                 {tag: "paused, USB", phase: 6, source: "usb", paused: true},
                 {tag: "paused, rtl_tcp", phase: 6, source: "rtltcp", paused: true},
                 {tag: "paused, Airspy", phase: 6, source: "airspy", paused: true}];
@@ -1550,6 +1551,22 @@ Item {
             overload("<b>North</b>");
             compare(message.textFormat, Text.PlainText);
             compare(message.text, overloadText("<b>North</b>", data.paused, data.source === "airspy"));
+        }
+        // A range with no name (the model refuses one; the engine copies what
+        // it is given) reads as "a range", never as empty quotes.
+        function test_overload_without_a_range_name_data() {
+            return [{tag: "searching", phase: 1, source: "usb", paused: false},
+                {tag: "paused, Airspy", phase: 6, source: "airspy", paused: true}];
+        }
+        function test_overload_without_a_range_name(data) {
+            loader.item.sourceType = data.source;
+            var message = findChild(loader.item, "searchMessage");
+            overload("", {phase: data.phase});
+            compare(message.text, "Part of a range was skipped because the receiver is overloaded. "
+                + (data.paused ? "Set a lower Airspy gain for the range, then Resume." : "Pause, then lower the range's receiver gain."));
+            compare(message.text, overloadText("", data.paused, data.source === "airspy"));
+            verify(message.text.indexOf("“”") < 0);
+            tryCompare(message.Accessible, "name", message.text);
         }
         // The status keeps the warning after the search fails or stops: the
         // screen drops it then, as it does with no session.

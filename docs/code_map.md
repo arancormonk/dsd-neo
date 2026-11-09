@@ -10700,12 +10700,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   STOPPED nor ERROR, since the engine keeps the warning in a failed or stopped status;
   worded per phase (paused: lower the gain, then Resume; otherwise Pause first) and per
   radio (`sourceType`: the range's receiver gain, or an Airspy gain for the range, as the
-  range editor labels them). The message is gated (`navigationAllowed` read first) and
+  range editor labels them); its first sentence names the range, or reads "Part of a range"
+  should the name be empty. The message is gated (`navigationAllowed` read first) and
   named through a `SpeechPacer` whose `shown` is that gate and its visibility, and whose
-  step is the other lines plus `overloadTemplate`, the warning without its range: the
-  warning appearing, clearing or changing phase is heard at once, a range renamed every
-  pass at the period, never the screen's `speechStep` (pass and range change it)
-  (`test_overload_*`, `test_message_nameless_behind_sheet`). It is
+  step is the other lines plus `overloadAdvice`, the warning's second sentence, which holds
+  no range: the warning appearing, clearing or changing phase is heard at once, a range
+  renamed every pass at the period, never the screen's `speechStep` (pass and range change
+  it) (`test_overload_*`, `test_message_nameless_behind_sheet`). The message is
   reparented by `sessionActive`: under the Now panel while a session runs, so it never moves
   the panel, and above the setup while idle (`test_message_never_moves_the_now_panel`).
   Leaving for another session is one Main operation,
