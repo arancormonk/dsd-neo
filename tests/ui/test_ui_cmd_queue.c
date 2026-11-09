@@ -67,6 +67,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -24549,7 +24550,9 @@ test_group_list_command_releases_blocked_calls(int scenario) {
         rc |= expect_true("R3 released with the row's P25 timing", g_cc_tune_ted_sps > 0);
     }
     if (scenario == GROUP_RELEASE_RETURN_FAILS) {
-        rc |= expect_str("R3 return failure toast", state.ui_msg, "Talkgroup not tuned; return-to-CC tune failed");
+        // The import's outcome first, then the failed return: the list applied, the receiver is still on the call.
+        rc |= expect_str("R3 return failure toast", state.ui_msg,
+                         "Applied: Group list imported -> 1 row; return-to-CC tune failed");
     }
     if (row_list) {
         dsd_scan_groups_leave(&state);
@@ -24592,7 +24595,13 @@ seed_active_nxdn_call(dsd_opts* opts, dsd_state* state, uint32_t tg, uint32_t so
     return rc;
 }
 
-enum { NXDN_RELEASE_ROW_EDIT, NXDN_RELEASE_IMPORT, NXDN_RELEASE_TYPE_D };
+enum {
+    NXDN_RELEASE_ROW_EDIT,
+    NXDN_RELEASE_IMPORT,
+    NXDN_RELEASE_TYPE_D,       /* the held call names it as Type-D */
+    NXDN_RELEASE_TYPE_D_FRAME, /* only the frame being decoded is a Type-D channel's (RTCH2) */
+    NXDN_RELEASE_TYPE_D_ROUTE, /* only the followed route is a Type-D repeater's */
+};
 
 /* An NXDN Type-C talkgroup with no row is admitted by its source's row (nxdn_policy_tune_allowed()), so blocking that
    row, by a row edit or by an import, releases the call (spec R6). On main every group call was judged by its target
@@ -24622,6 +24631,11 @@ test_nxdn_source_fallback_call_released(int scenario) {
         state.nxdn_call.target = 500U;
         state.nxdn_call.source = 1234U;
         state.nxdn_call.call_epoch = dsd_call_snapshot_transmission(&call);
+    } else if (scenario == NXDN_RELEASE_TYPE_D_FRAME) {
+        state.nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
+    } else if (scenario == NXDN_RELEASE_TYPE_D_ROUTE) {
+        state.nxdn_follow.freq_hz = state.trunk_vc_freq[0];
+        state.nxdn_follow.repeater = 3U;
     }
     if (scenario == NXDN_RELEASE_IMPORT) {
         post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, blocking);
@@ -24634,8 +24648,8 @@ test_nxdn_source_fallback_call_released(int scenario) {
     }
     rc |= expect_int("R6 command drained", dsd_app_drain_cmds(&opts, &state), 1);
     // The release ends the call (its return tune is the io_control leg's, which a radio-off build does not take).
-    rc |= expect_call_phase("R6 call released", &state, 0U,
-                            scenario != NXDN_RELEASE_TYPE_D ? DSD_CALL_PHASE_ENDED : DSD_CALL_PHASE_ACTIVE);
+    const int type_d = scenario >= NXDN_RELEASE_TYPE_D;
+    rc |= expect_call_phase("R6 call released", &state, 0U, type_d ? DSD_CALL_PHASE_ACTIVE : DSD_CALL_PHASE_ENDED);
     dsd_app_frontend_runtime_stop();
     freeState(&state);
     (void)remove(path);
@@ -29462,6 +29476,8 @@ main(void) {
     rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_ROW_EDIT);
     rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_IMPORT);
     rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_TYPE_D);
+    rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_TYPE_D_FRAME);
+    rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_TYPE_D_ROUTE);
     rc |= test_refused_save_survives_a_failed_return(0);
     rc |= test_refused_save_survives_a_failed_return(1);
 #endif

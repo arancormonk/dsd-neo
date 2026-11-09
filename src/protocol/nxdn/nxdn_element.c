@@ -1817,14 +1817,6 @@ nxdn_call_identity_end(const dsd_opts* opts, dsd_state* state) {
     (void)dsd_tg_policy_clear_active_call(state, -1);
 }
 
-/* Whether the receiver is on a Type-D (IDAS) channel: the frame being decoded is an RTCH2's, or the route it followed
- * is a Type-D repeater's. */
-static int
-nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state) {
-    return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
-           || (nxdn_follow_valid(opts, state) && state->nxdn_follow.repeater != 0U);
-}
-
 /* The held call when its identity is known here: one heard or followed on another frequency than the receiver's is
  * not, nor one whose call is over (nxdn_call_identity_refresh()). */
 static const dsd_nxdn_call_identity*

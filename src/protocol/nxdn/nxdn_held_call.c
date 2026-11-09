@@ -56,6 +56,17 @@ nxdn_held_call_note_call_end(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+int
+nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    const long int route = state->nxdn_follow.freq_hz;
+    return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
+           || (state->nxdn_follow.repeater != 0U && route > 0 && dsd_opts_trunk_vc_followed(opts)
+               && state->trunk_vc_freq[0] == route);
+}
+
 uint32_t
 nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint64_t transmission, uint64_t source) {
     if (!state || source > UINT32_MAX) {
@@ -64,8 +75,5 @@ nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint6
     const dsd_nxdn_call_identity* const id = &state->nxdn_call;
     const int held_type_d =
         id->type_d && (id->valid || id->gap) && id->call_epoch != 0U && id->call_epoch == transmission;
-    const long int route = state->nxdn_follow.freq_hz;
-    const int on_type_d_route = state->nxdn_follow.repeater != 0U && route > 0 && dsd_opts_trunk_vc_followed(opts)
-                                && state->trunk_vc_freq[0] == route;
-    return held_type_d || on_type_d_route ? 0U : (uint32_t)source;
+    return held_type_d || nxdn_receiver_on_type_d(opts, state) ? 0U : (uint32_t)source;
 }

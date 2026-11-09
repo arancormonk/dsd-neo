@@ -10655,13 +10655,19 @@ ui_group_list_calls_before(const dsd_opts* opts, const dsd_state* state, const s
 
 /* After the scopes resume, with the row's settings and list back in force, and still under the tick guard: a call the
    new global list blocks is released, as a row edit releases it. A row's or target's own list did not change, so its
-   calls stay. Returns -1 when the return tune failed (its toast says so). */
+   calls stay. A failed return tune is said after the command's own toast (whether the list applied comes first);
+   returns -1 then. */
 static int
 ui_group_list_release_calls(dsd_opts* opts, dsd_state* state, const ui_group_list_calls* before) {
     if (!before->global_list) {
         return 0;
     }
-    return tg_listen_release_blocked_calls(opts, state, ~before->blocked, NULL) == UI_CMD_APPLY_FAILED ? -1 : 0;
+    char outcome[sizeof state->ui_msg];
+    DSD_SNPRINTF(outcome, sizeof outcome, "%s", state->ui_msg);
+    return tg_listen_release_blocked_calls(opts, state, ~before->blocked, outcome[0] ? outcome : NULL)
+                   == UI_CMD_APPLY_FAILED
+               ? -1
+               : 0;
 }
 
 static int
