@@ -403,7 +403,6 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("scanLists"), scanLists);
     context->setContextProperty(QStringLiteral("scanListStarter"), scanListStarter);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
-    context->setContextProperty(QStringLiteral("imports"), imports);
     context->setContextProperty(QStringLiteral("replayFiles"), replays);
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);
