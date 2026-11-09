@@ -132,13 +132,17 @@ class ImportedFilesModel : public QAbstractListModel {
      * @param fileName    The picker's name hint; the provider's own name for the document wins over it.
      * @param type        The library type to import it as.
      * @param companions  A bundle's companion choices (channel maps and target lists).
-     * @param replacePath The stored path of the row to replace, or empty for a new row. A replace commits only when
-     *                    that row is still there unchanged (else "stale"); replacing a talkgroup list or a target
-     *                    list is refused while the decoder runs ("busy"), at the start and again at the commit.
+     * @param replacePath The stored path of the row to replace, or empty for a new row. It is taken when the pick
+     *                    is asked for, never a row index: rows can go while a picker is up (issue #829), and a path
+     *                    no row holds any more is refused at once ("changed", with detail). A replace commits only
+     *                    when that row is still there unchanged (else "stale"); replacing a target list is refused
+     *                    while the decoder runs ("busy"), at the start and again at the commit. A talkgroup list or
+     *                    channel map is replaced while it runs, its move under the managed-file lock
+     *                    (<dsd-neo/core/managed_file.h>), and the caller asks a running session to reload it.
      * @return The request id (> 0); importFinished() answers it exactly once, queued, a refusal included. Result keys:
      *         ok, error, detail, path, name, type, accepted, skipped, limitBytes, noSpace. error is "" or "empty"
      *         (ok, no usable row) on success, else too_large (limitBytes), read, local (noSpace), format (detail),
-     *         stale, busy, save (detail), path or cancelled.
+     *         changed (detail), stale, busy, save (detail), path or cancelled.
      */
     Q_INVOKABLE int beginImport(const QString& reference, const QString& fileName, const QString& type,
                                 const QVariantMap& companions, const QString& replacePath);
@@ -202,6 +206,15 @@ class ImportedFilesModel : public QAbstractListModel {
 
     /** @brief Row index whose stored path matches, or -1. */
     Q_INVOKABLE int rowForPath(const QString& path) const;
+
+    /**
+     * @brief The rows the file at @p path holds now, read as a talkgroup list: {ok, accepted, skipped}, with ok false
+     *        when @p path is empty or its file cannot be read. Any path, in the library or not.
+     *
+     * Read from the file, not a library row's import counts: the decoder rewrites a talkgroup list in place as the
+     * user edits it, and a file can be updated, so what it held at its import says little about it now.
+     */
+    Q_INVOKABLE QVariantMap groupListCounts(const QString& path) const;
 
     /**
      * @brief Stored paths dropped by load() because the file was gone, then forgets them.

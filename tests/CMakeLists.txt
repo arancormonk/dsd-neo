@@ -2388,6 +2388,43 @@ add_test(
     COMMAND dsd-neo_test_nxdn_search_site_notes
 )
 
+# NXDN channel access parameters: SITE_INFO in either notation, learned DFA rows dropped on change, CCH_INFO status
+add_executable(
+    dsd-neo_test_nxdn_channel_access
+    protocol/nxdn/test_nxdn_channel_access.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_channel_access
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_channel_access
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME NXDN_CHANNEL_ACCESS COMMAND dsd-neo_test_nxdn_channel_access)
+
+# NXDN composite control channels through the whole decoder: real LICH reading, channel decoders and elements
+add_executable(
+    dsd-neo_test_nxdn_composite_control
+    protocol/nxdn/test_nxdn_composite_control.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_composite_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_composite_control
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(
+    NAME NXDN_COMPOSITE_CONTROL
+    COMMAND dsd-neo_test_nxdn_composite_control
+)
+
 add_executable(
     dsd-neo_test_nxdn_enc_class
     protocol/nxdn/test_nxdn_enc_class.c
@@ -2901,6 +2938,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_labels
         ui/test_ui_menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
@@ -2943,6 +2981,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_labels_radio
         ui/test_ui_menu_labels_radio.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
@@ -3538,6 +3577,10 @@ add_executable(
     dsd-neo_test_app_control_import_files
     ui/test_app_control_import_files.c
     ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_import_files
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/core/file
 )
 target_link_libraries(
     dsd-neo_test_app_control_import_files
@@ -4224,6 +4267,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_navigation
         ui/test_ui_menu_navigation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_navigation
@@ -4248,6 +4292,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_paging_viewport
         ui/test_ui_menu_paging_viewport.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_paging_viewport
@@ -4612,6 +4657,38 @@ elseif(MSVC)
 endif()
 add_test(NAME UI_QT_SPECTRUM_MATH COMMAND dsd-neo_test_ui_qt_spectrum_math)
 
+# The triangles the spectrum trace hands the GPU (spectrum_trace_geometry.cpp),
+# Qt-free like the viewport arithmetic above. Headless Qt has no RHI backend,
+# so this is the only check of the drawn shape that CI can run: full pen width
+# on the steep sides of a spike, bevels on the outside of every turn, and no
+# NaN out of repeated or non-finite points.
+add_executable(
+    dsd-neo_test_ui_qt_spectrum_trace_geometry
+    ui/test_ui_qt_spectrum_trace_geometry.cpp
+    ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_spectrum_trace_geometry
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+# IEEE semantics, as dsd-neo_ui_qt builds this file: the non-finite cases
+# check guards that fast-math would compile out.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+        dsd-neo_test_ui_qt_spectrum_trace_geometry
+        PRIVATE -fno-fast-math
+    )
+elseif(MSVC)
+    target_compile_options(
+        dsd-neo_test_ui_qt_spectrum_trace_geometry
+        PRIVATE /fp:precise
+    )
+endif()
+add_test(
+    NAME UI_QT_SPECTRUM_TRACE_GEOMETRY
+    COMMAND dsd-neo_test_ui_qt_spectrum_trace_geometry
+)
+
 # The persistence layer itself (json_store atomic writes, the saved-systems
 # field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
 # policy tests above it links Qt and is registered only when the Qt frontend
@@ -4644,7 +4721,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_persistence
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
@@ -5029,7 +5106,10 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_import_transport
         PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
     )
-    target_link_libraries(dsd-neo_test_ui_qt_import_transport PRIVATE Qt6::Gui)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_import_transport
+        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+    )
     target_compile_definitions(
         dsd-neo_test_ui_qt_import_transport
         PRIVATE QT_NO_KEYWORDS
@@ -5059,7 +5139,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_import_service
-        PRIVATE Qt6::Gui dsd-neo_platform
+        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_import_service
@@ -5112,7 +5192,10 @@ if(DSD_ENABLE_QT_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/core/file
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
@@ -5188,6 +5271,58 @@ if(DSD_ENABLE_QT_UI)
     )
     set_target_properties(dsd-neo_test_ui_qt_backup_apply PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_BACKUP_APPLY COMMAND dsd-neo_test_ui_qt_backup_apply)
+
+    # A settings file Qt could not read whole is kept before Qt writes over it
+    # (issue #828): AppPrefs' and call history's INI files, the scratch copy a
+    # run writes when that fails, and the restore that waits for it. It links
+    # the whole UI library, so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_settings_recovery
+        ui/test_ui_qt_settings_recovery.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_settings_recovery
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SETTINGS_RECOVERY
+        COMMAND dsd-neo_test_ui_qt_settings_recovery
+    )
+
+    # The files a run could not read, as Home's card lists them (issue #828):
+    # json_store's notices queued from worker threads onto the list's thread,
+    # dismissals, the Signal search store's files and a settings file on its
+    # scratch copy. It links the whole UI library, so the deferred engine link
+    # below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_store_notices
+        ui/test_ui_qt_store_notices.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE QT_NO_KEYWORDS
+    )
+    add_test(NAME UI_QT_STORE_NOTICES COMMAND dsd-neo_test_ui_qt_store_notices)
 
     # The backup screens' model (issue #580): export, inspect, commit and the
     # startup outcome through the model's worker, with a fake host, archives
@@ -5273,6 +5408,61 @@ if(DSD_ENABLE_QT_UI)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
     )
 
+    # The RadioReference sign-in relay to the platform's password manager
+    # support: a recording host, a real form window at a fractional device
+    # pixel ratio, and the real model's account checks over the captured
+    # getUserData reply.
+    add_executable(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        ui/test_ui_qt_sign_in_autofill.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/sign_in_autofill.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PRIVATE
+            Qt6::Core
+            Qt6::Gui
+            Qt6::Qml
+            Qt6::Quick
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_runtime
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PRIVATE
+            QT_NO_KEYWORDS
+            "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_sign_in_autofill
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SIGN_IN_AUTOFILL
+        COMMAND dsd-neo_test_ui_qt_sign_in_autofill
+    )
+    set_tests_properties(
+        UI_QT_SIGN_IN_AUTOFILL
+        PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+    )
+
     # Issue #718: the composing-text commit Save, Cancel, Back and sheet
     # dismissal run before reading a field. A real TextInput gets preedit text
     # the way an Android keyboard sends it mid-word; offscreen has no input
@@ -5315,6 +5505,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_spectrum_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_spectrum_model
@@ -5329,6 +5520,20 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_spectrum_model
         PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
+    # IEEE semantics, as dsd-neo_ui_qt builds these sources: the model and the
+    # trace guard against non-finite frames, and fast-math would compile the
+    # guards out of this copy.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(
+            dsd-neo_test_ui_qt_spectrum_model
+            PRIVATE -fno-fast-math
+        )
+    elseif(MSVC)
+        target_compile_options(
+            dsd-neo_test_ui_qt_spectrum_model
+            PRIVATE /fp:precise
+        )
+    endif()
     set_target_properties(
         dsd-neo_test_ui_qt_spectrum_model
         PROPERTIES AUTOMOC ON
@@ -5411,6 +5616,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
             # Issue #672: the Monitor's avoid sheet lists the real list model, which a case fills by key.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
@@ -5447,6 +5653,10 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
             # Issue #782: whether a screen reader is on, as views read it.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
+            # Issue #828: Home's store notice card reads the production list,
+            # fed through json_store's notices as the app feeds it.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/store_notices.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/settings_recovery.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
             # production one, so the preset a chip sends is really under test. It
             # needs the CLI mapping behind it, and that translation unit is
@@ -5482,6 +5692,17 @@ if(DSD_ENABLE_QT_UI)
                 DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
                 DSD_QML_FONT_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/fonts"
         )
+        # IEEE semantics, as dsd-neo_ui_qt builds the production sources this
+        # recompiles: their non-finite guards (the spectrum's among them) would
+        # otherwise be compiled out of this copy under fast-math.
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(
+                dsd-neo_test_ui_qt_qml
+                PRIVATE -fno-fast-math
+            )
+        elseif(MSVC)
+            target_compile_options(dsd-neo_test_ui_qt_qml PRIVATE /fp:precise)
+        endif()
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
         add_test(
@@ -5559,6 +5780,7 @@ if(DSD_ENABLE_QT_UI)
                 device_status
                 main_receiver_notice
                 monitor_receiver
+                document_picker
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(
@@ -5671,6 +5893,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
@@ -5722,6 +5945,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
@@ -6399,6 +6623,24 @@ add_test(
     COMMAND dsd-neo_test_runtime_signal_search_visit_init_failure
 )
 
+# The Signal search avoid lists: normalising, revisions only on a change, whole snapshots across threads (issue #828).
+add_executable(
+    dsd-neo_test_runtime_signal_search_avoids
+    runtime/test_runtime_signal_search_avoids.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_avoids
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_avoids
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_AVOIDS
+    COMMAND dsd-neo_test_runtime_signal_search_avoids
+)
+
 add_executable(
     dsd-neo_test_runtime_udp_audio_hooks
     runtime/test_runtime_udp_audio_hooks.c
@@ -7005,6 +7247,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
     dsd-neo_test_core_source_alias_fail
@@ -7039,6 +7283,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
     dsd-neo_test_core_tg_policy_alloc_fail
@@ -8278,6 +8524,32 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_EDACS_FAILED_GRANT_STALL
         COMMAND dsd-neo_test_engine_edacs_failed_grant_stall
     )
+    # Discussion #748: an NXDN voice channel that is also another site's
+    # control channel must not keep the receiver after the call's end is missed.
+    add_executable(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        engine/test_engine_nxdn_foreign_control_return.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=getDibitSoft"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_NXDN_FOREIGN_CONTROL_RETURN
+        COMMAND dsd-neo_test_engine_nxdn_foreign_control_return
+    )
     add_executable(
         dsd-neo_test_engine_cold_start_hunt
         engine/test_engine_cold_start_hunt.c
@@ -8976,10 +9248,13 @@ foreach(
     _qt_import_target
     dsd-neo_test_ui_qt_imported_files_model
     dsd-neo_test_ui_qt_radio_reference_model
+    dsd-neo_test_ui_qt_sign_in_autofill
     dsd-neo_test_ui_qt_backup_archive
     dsd-neo_test_ui_qt_backup_apply
     dsd-neo_test_ui_qt_backup_model
     dsd-neo_test_ui_qt_replay_store
+    dsd-neo_test_ui_qt_settings_recovery
+    dsd-neo_test_ui_qt_store_notices
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(
@@ -9281,7 +9556,10 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_command_queue
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+        PRIVATE
+            DSD_NEO_TEST_IO_CONTROL_WRAP
+            DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+            DSD_NEO_TEST_TG_POLICY_WRAP
     )
     target_link_options(
         dsd-neo_test_app_command_queue
@@ -9298,6 +9576,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_tg_policy_clear_active_call"
+            "LINKER:--wrap=dsd_tg_policy_store_append"
+            "LINKER:--wrap=dsd_tg_policy_append_exact"
+            "LINKER:--wrap=dsd_tg_policy_clear"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
             "LINKER:--wrap=svc_tcp_connect_audio"
@@ -11503,6 +11784,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_clamp
@@ -11536,6 +11818,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_release
@@ -11569,6 +11852,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
@@ -11606,6 +11890,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_shim
@@ -11639,6 +11924,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11687,6 +11973,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11730,6 +12017,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11777,6 +12065,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13818,6 +14107,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_dmr_talker_alias_header_len
@@ -13842,6 +14133,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_dmr_talker_alias_utf16
@@ -13866,6 +14159,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_core_apx_embedded_alias_utf16
@@ -14213,6 +14508,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
@@ -14434,6 +14731,37 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+
+# A followed call returns to the control channel it left when another cell is decoded on its traffic carrier
+# (discussion #748), and nothing of that cell is taken on meanwhile: the real BSCH parser, MAC, call records and
+# trunking state machine, with real bursts from the test transmit chain through the burst entry.
+add_executable(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    protocol/tetra/test_tetra_foreign_cell.c
+)
+target_include_directories(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    PRIVATE
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_fec
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(
+    NAME PROTOCOL_TETRA_FOREIGN_CELL
+    COMMAND dsd-neo_test_protocol_tetra_foreign_cell
+)
+set_tests_properties(
+    PROTOCOL_TETRA_FOREIGN_CELL
+    PROPERTIES LABELS "protocol;tetra"
+)
 
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
 # the hooks on, ahead of the library's.
@@ -16944,6 +17272,31 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
     add_test(NAME IO_SOAPY_CS16_COPY COMMAND dsd-neo_test_io_soapy_cs16_copy)
+
+    # A 12-bit native CS16 stream (full scale 2048, Pluto and bladeRF) reaches the input ring as the driver's CF32
+    # (code / 2048) does, bit for bit: a real capture through the reader against the stand-in driver, both ways.
+    # Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        io/test_io_soapy_cs16_full_scale.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    add_test(
+        NAME IO_SOAPY_CS16_FULL_SCALE
+        COMMAND dsd-neo_test_io_soapy_cs16_full_scale
+    )
 
     # The narrow spectrum's frame buffers: the average carries across buffers, and a
     # frame folded while readers hold every spare buffer reaches the next one.
@@ -22123,6 +22476,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_imports.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_sign_in.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
@@ -22589,6 +22943,20 @@ if(Python3_Interpreter_FOUND)
             watchdog
     )
     add_test(
+        NAME ANDROID_DOCUMENT_PICKER_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            document_picker
+    )
+    add_test(
+        NAME ANDROID_DOWNLOADS_SAVE_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            downloads_save
+    )
+    add_test(
         NAME ANDROID_RECORDING_PLAYER_JVM
         COMMAND
             ${Python3_EXECUTABLE}
@@ -22616,11 +22984,20 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             a11y_bridge
     )
+    add_test(
+        NAME ANDROID_SIGN_IN_AUTOFILL_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            sign_in_autofill
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
         ANDROID_SCREEN_POLICY_JVM
         ANDROID_DOCUMENT_TRANSFER_JVM
+        ANDROID_DOCUMENT_PICKER_JVM
+        ANDROID_DOWNLOADS_SAVE_JVM
         ANDROID_USB_RECEIVER_JVM
         ANDROID_USB_BROKER_JVM
         ANDROID_ENGINE_STOP_JVM
@@ -22630,6 +23007,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_RECORDING_EXPORT_JVM
         ANDROID_RECORDING_SHARE_JVM
         ANDROID_A11Y_BRIDGE_JVM
+        ANDROID_SIGN_IN_AUTOFILL_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90
@@ -23621,11 +23999,21 @@ add_test(
     COMMAND dsd-neo_test_engine_signal_search_protocol
 )
 
-# The native store keeps a failed history or avoid write owed until that file saves.
+# The native store keeps a failed history or avoid write owed until that file saves, and keeps a file it could not
+# read aside before replacing it (issue #828). The store source is compiled in with DSD_NEO_TEST_HOOKS for its open,
+# read, kept-name probe and after-move seams.
 add_executable(
     dsd-neo_test_app_signal_search_store
     ui/test_app_signal_search_store.c
     ${PROJECT_SOURCE_DIR}/src/app_control/signal_search_store.cpp
+)
+target_include_directories(
+    dsd-neo_test_app_signal_search_store
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_signal_search_store
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_app_signal_search_store
@@ -23639,9 +24027,17 @@ add_test(
 # Signal discovery works on capture-rate samples, independently of any UI FFT.
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_signal_measure io/test_io_signal_measure.cpp)
+    target_include_directories(
+        dsd-neo_test_io_signal_measure
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
     target_link_libraries(
         dsd-neo_test_io_signal_measure
-        PRIVATE dsd-neo_io_radio dsd-neo_runtime
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_runtime
+            ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.

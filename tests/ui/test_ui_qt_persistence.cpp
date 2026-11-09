@@ -17,6 +17,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
@@ -39,14 +40,18 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <atomic>
 #include <cmath>
 #include <functional>
 #include <stdio.h>
+#include <thread>
 #include <utility>
+#include <vector>
 #include "../test_support/qt_test_paths.h"
 #ifndef _WIN32
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 #endif
 
 #include <dsd-neo/core/opts.h>
@@ -54,15 +59,19 @@
 #include "app_prefs.h"
 #include "dsd-neo/core/safe_api.h"
 #include "json_store.h"
+#include "json_store_test_hooks.h"
 #include "listen_pins.h"
 #include "saved_systems_model.h"
 #include "scan_lists_model.h"
 
 using dsd_qt::AppPrefs;
 using dsd_qt::json_store_load_array;
+using dsd_qt::json_store_notices;
 using dsd_qt::json_store_path;
+using dsd_qt::json_store_read;
 using dsd_qt::json_store_save_array;
 using dsd_qt::JsonStoreLoad;
+using dsd_qt::JsonStoreNotice;
 using dsd_qt::ListenPins;
 using dsd_qt::SavedSystemsModel;
 using dsd_qt::ScanListsModel;
@@ -80,7 +89,8 @@ expect(const char* what, bool ok) {
 }
 
 /* Issue #832: a startup cleanup may delete only when the store behind it loaded, so a missing file, a good one and an
- * unreadable or mangled one report differently. */
+ * unreadable or mangled one report differently. The status form marks an unreadable store as the one-argument form
+ * does. */
 void
 write_store_fixture(const char* name, const char* text) {
     QFile file(json_store_path(QString::fromLatin1(name)));
@@ -91,36 +101,36 @@ write_store_fixture(const char* name, const char* text) {
 
 void
 test_json_store_status(void) {
-    JsonStoreLoad status = JsonStoreLoad::Failed;
+    JsonStoreLoad status = JsonStoreLoad::Unreadable;
     expect("absent file is an empty array",
            json_store_load_array(QStringLiteral("status_absent.json"), &status).isEmpty());
-    expect("absent file reports Absent", status == JsonStoreLoad::Absent);
+    expect("absent file reports Missing", status == JsonStoreLoad::Missing);
 
     write_store_fixture("status_ok.json", "[1]");
-    status = JsonStoreLoad::Failed;
+    status = JsonStoreLoad::Unreadable;
     expect("good file loads its row", json_store_load_array(QStringLiteral("status_ok.json"), &status).size() == 1);
     expect("good file reports Ok", status == JsonStoreLoad::Ok);
 
     write_store_fixture("status_empty.json", "[]");
-    status = JsonStoreLoad::Failed;
+    status = JsonStoreLoad::Unreadable;
     expect("empty array loads empty", json_store_load_array(QStringLiteral("status_empty.json"), &status).isEmpty());
     expect("empty array reports Ok", status == JsonStoreLoad::Ok);
 
     write_store_fixture("status_object.json", "{}");
     status = JsonStoreLoad::Ok;
     expect("an object loads empty", json_store_load_array(QStringLiteral("status_object.json"), &status).isEmpty());
-    expect("an object reports Failed", status == JsonStoreLoad::Failed);
+    expect("an object reports Unreadable", status == JsonStoreLoad::Unreadable);
 
     write_store_fixture("status_cut.json", "[1,");
     status = JsonStoreLoad::Ok;
     expect("a cut file loads empty", json_store_load_array(QStringLiteral("status_cut.json"), &status).isEmpty());
-    expect("a cut file reports Failed", status == JsonStoreLoad::Failed);
+    expect("a cut file reports Unreadable", status == JsonStoreLoad::Unreadable);
 
     /* A folder where the file should be cannot be read. */
     QDir().mkpath(json_store_path(QStringLiteral("status_dir.json")));
     status = JsonStoreLoad::Ok;
     expect("a folder loads empty", json_store_load_array(QStringLiteral("status_dir.json"), &status).isEmpty());
-    expect("a folder reports Failed", status == JsonStoreLoad::Failed);
+    expect("a folder reports Unreadable", status == JsonStoreLoad::Unreadable);
 
 #ifndef Q_OS_WIN
     write_store_fixture("status_locked.json", "[1]");
@@ -130,7 +140,7 @@ test_json_store_status(void) {
         status = JsonStoreLoad::Ok;
         expect("an unreadable file loads empty",
                json_store_load_array(QStringLiteral("status_locked.json"), &status).isEmpty());
-        expect("an unreadable file reports Failed", status == JsonStoreLoad::Failed);
+        expect("an unreadable file reports Unreadable", status == JsonStoreLoad::Unreadable);
     }
     QFile::setPermissions(locked, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
 #endif
@@ -138,6 +148,49 @@ test_json_store_status(void) {
     /* The one-argument form keeps its old behaviour. */
     expect("one-argument load still returns the row",
            json_store_load_array(QStringLiteral("status_ok.json")).size() == 1);
+}
+
+/* Store fixtures written and read byte for byte, bypassing json_store. */
+bool
+write_raw(const QString& name, const QByteArray& bytes) {
+    QDir().mkpath(QFileInfo(json_store_path(name)).absolutePath());
+    QFile file(json_store_path(name));
+    return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+}
+
+QByteArray
+raw(const QString& path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray("<unopenable>");
+}
+
+/* Where the store @p name is kept as its @p n-th unreadable copy. */
+QString
+kept(const QString& name, int n) {
+    return json_store_path(name) + QStringLiteral(".unreadable-%1").arg(n);
+}
+
+void
+remove_kept(const QString& name, int n) {
+    expect("kept copy removed", QFile::remove(kept(name, n)));
+}
+
+/* The notice posted for @p name, or one with no file name. */
+JsonStoreNotice
+notice_for(const QString& name) {
+    for (const JsonStoreNotice& notice : json_store_notices()) {
+        if (notice.fileName == name) {
+            return notice;
+        }
+    }
+    return {};
+}
+
+/* Temporary files a save left beside @p name. */
+QStringList
+temps_of(const QString& name) {
+    const QFileInfo info(json_store_path(name));
+    return QDir(info.absolutePath()).entryList({info.fileName() + QStringLiteral(".tmp.*")}, QDir::AllEntries);
 }
 
 void
@@ -158,23 +211,305 @@ test_json_store(void) {
            loaded.at(0).toObject().value(QStringLiteral("name")).toString() == QStringLiteral("Hamilton Co P25")
                && loaded.at(0).toObject().value(QStringLiteral("port")).toInt() == 1234);
 
-    /* Persisted state is external input: a partially written or hand-mangled
-     * file must read as empty, never crash or hand garbage rows to a model. */
-    QFile corrupt(json_store_path(QStringLiteral("corrupt.json")));
-    expect("corrupt fixture opens", corrupt.open(QIODevice::WriteOnly));
-    corrupt.write("this is not json {]");
-    corrupt.close();
-    expect("corrupt file loads as empty array", json_store_load_array(QStringLiteral("corrupt.json")).isEmpty());
-
-    QFile wrongShape(json_store_path(QStringLiteral("object.json")));
-    expect("object fixture opens", wrongShape.open(QIODevice::WriteOnly));
-    wrongShape.write("{\"not\":\"an array\"}");
-    wrongShape.close();
-    expect("non-array document loads as empty array", json_store_load_array(QStringLiteral("object.json")).isEmpty());
+    /* Persisted state is external input: a partially written or hand-mangled file must read as empty, never crash
+     * or hand garbage rows to a model, and the next save must keep it (issue #828), never overwrite it. */
+    const QJsonArray fresh{QJsonObject{{QStringLiteral("name"), QStringLiteral("new")}}};
+    for (const auto& [name, junk] : {std::pair<QString, QByteArray>{"corrupt.json", "this is not json {]"},
+                                     std::pair<QString, QByteArray>{"object.json", "{\"not\":\"an array\"}"}}) {
+        expect("junk fixture written", write_raw(name, junk));
+        expect("an unreadable store loads as an empty array", json_store_load_array(name).isEmpty());
+        expect("the load moves nothing", raw(json_store_path(name)) == junk && !QFile::exists(kept(name, 1)));
+        expect("the next save succeeds", json_store_save_array(name, fresh));
+        expect("the unreadable file is kept byte for byte", raw(kept(name, 1)) == junk);
+        expect("the new list takes its place", json_store_load_array(name) == fresh);
+        expect("a later save keeps nothing more", json_store_save_array(name, fresh) && !QFile::exists(kept(name, 2)));
+        remove_kept(name, 1);
+    }
 
     /* Overwrite, not append: a shrunk list must not leave the old tail behind. */
     json_store_save_array(QStringLiteral("roundtrip.json"), QJsonArray());
     expect("save replaces the previous content", json_store_load_array(QStringLiteral("roundtrip.json")).isEmpty());
+}
+
+/* What json_store_read() reports for each kind of file, without marking any of them. */
+void
+test_json_store_read(void) {
+    using dsd_qt::JsonStoreLoad;
+    const QJsonArray rows{QJsonObject{{QStringLiteral("name"), QStringLiteral("row")}}};
+    expect("read: missing", json_store_read(QStringLiteral("read-absent.json")).status == JsonStoreLoad::Missing);
+    expect("read: fixture saved", json_store_save_array(QStringLiteral("read-ok.json"), rows));
+    const dsd_qt::JsonStoreRead ok = json_store_read(QStringLiteral("read-ok.json"));
+    expect("read: ok", ok.status == JsonStoreLoad::Ok && ok.array == rows && ok.reason.isEmpty());
+    for (const auto& [name, junk] : {std::pair<QString, QByteArray>{"read-corrupt.json", "[{\"name\":\"a\"}"},
+                                     std::pair<QString, QByteArray>{"read-object.json", "{\"rows\":[1]}"},
+                                     std::pair<QString, QByteArray>{"read-empty.json", ""}}) {
+        expect("read: fixture written", write_raw(name, junk));
+        const dsd_qt::JsonStoreRead read = json_store_read(name);
+        expect("read: unreadable, with a reason, and no rows",
+               read.status == JsonStoreLoad::Unreadable && !read.reason.isEmpty() && read.array.isEmpty());
+    }
+    expect("read: folder fixture", QDir().mkpath(json_store_path(QStringLiteral("read-folder.json"))));
+    expect("read: a folder is unreadable",
+           json_store_read(QStringLiteral("read-folder.json")).status == JsonStoreLoad::Unreadable);
+
+    /* A reader that never saves (a backup) must not license moving the file: nothing is marked. */
+    expect("read: no notice", notice_for(QStringLiteral("read-corrupt.json")).fileName.isEmpty());
+    expect("read: an unmarked file is replaced as before",
+           json_store_save_array(QStringLiteral("read-corrupt.json"), rows)
+               && !QFile::exists(kept(QStringLiteral("read-corrupt.json"), 1)));
+    expect("read: the folder is cleaned up", QDir().rmdir(json_store_path(QStringLiteral("read-folder.json"))));
+
+    /* A read error part way through is not taken as the end of the file. */
+    dsd_qt::json_store_test_fail_read(QStringLiteral("read-ok.json"));
+    expect("read: a read error is unreadable",
+           json_store_read(QStringLiteral("read-ok.json")).status == JsonStoreLoad::Unreadable);
+    dsd_qt::json_store_test_fail_read(QString());
+}
+
+/* The keep-aside rule beyond a plain corrupt file: the numbering, the mark's lifetime, notices, a path that changed
+ * between the load and the save, and a replacement that fails after the move. */
+void
+test_json_store_keep_aside(void) {
+    const QJsonArray rows{QJsonObject{{QStringLiteral("name"), QStringLiteral("new")}}};
+    int sinkCalls = 0;
+    dsd_qt::json_store_set_notice_sink([&sinkCalls] { ++sinkCalls; });
+
+    /* The first free number: a "-1" already there (a kept copy of an earlier run) is never replaced. */
+    const QString taken = QStringLiteral("taken.json");
+    expect("taken: fixtures", write_raw(taken, "[") && write_raw(taken + ".unreadable-1", "older"));
+    expect("taken: loads empty", json_store_load_array(taken).isEmpty());
+    expect("taken: a load posts a notice with no kept name yet",
+           sinkCalls == 1 && notice_for(taken).keptName.isEmpty() && !notice_for(taken).reason.isEmpty());
+    expect("taken: saved", json_store_save_array(taken, rows));
+    expect("taken: kept as the next free name", raw(kept(taken, 2)) == "[" && raw(kept(taken, 1)) == "older");
+    expect("taken: the notice names it", sinkCalls == 2 && notice_for(taken).keptName == "taken.json.unreadable-2");
+    expect("taken: no temporary file is left", temps_of(taken).isEmpty());
+    remove_kept(taken, 1);
+    remove_kept(taken, 2);
+
+    /* A read that succeeds later does not clear the mark: what the model was left without is still kept. */
+    const QString reread = QStringLiteral("reread.json");
+    expect("reread: corrupt fixture", write_raw(reread, "{"));
+    expect("reread: loads empty", json_store_load_array(reread).isEmpty());
+    expect("reread: repaired behind the store's back", write_raw(reread, "[1]"));
+    expect("reread: the repaired file reads", json_store_load_array(reread).size() == 1);
+    expect("reread: the save still keeps it", json_store_save_array(reread, rows) && raw(kept(reread, 1)) == "[1]");
+    remove_kept(reread, 1);
+
+    /* A folder at the path is never moved or replaced: the save stays owed. Once it is gone, nothing is kept. */
+    const QString folder = QStringLiteral("folder.json");
+    expect("folder: fixture", QDir().mkpath(json_store_path(folder)));
+    expect("folder: loads empty", json_store_load_array(folder).isEmpty());
+    expect("folder: the save fails", !json_store_save_array(folder, rows));
+    expect("folder: still a folder, nothing kept, no temporary file",
+           QFileInfo(json_store_path(folder)).isDir() && !QFile::exists(kept(folder, 1)) && temps_of(folder).isEmpty());
+    expect("folder: removed", QDir().rmdir(json_store_path(folder)));
+    expect("folder: then the save writes",
+           json_store_save_array(folder, rows) && json_store_load_array(folder) == rows);
+    expect("folder: and keeps nothing", !QFile::exists(kept(folder, 1)) && notice_for(folder).keptName.isEmpty());
+
+    /* A marked file removed behind the store's back: nothing to keep, the save proceeds. */
+    const QString vanished = QStringLiteral("vanished.json");
+    expect("vanished: fixture", write_raw(vanished, "nope"));
+    expect("vanished: loads empty", json_store_load_array(vanished).isEmpty());
+    expect("vanished: removed", QFile::remove(json_store_path(vanished)));
+    expect("vanished: the save writes, keeping nothing",
+           json_store_save_array(vanished, rows) && !QFile::exists(kept(vanished, 1)));
+
+    /* The replacement fails after the move: the file stays kept, and the retry only writes (no second move). */
+    const QString retry = QStringLiteral("retry.json");
+    expect("retry: fixture", write_raw(retry, "]"));
+    expect("retry: loads empty", json_store_load_array(retry).isEmpty());
+    dsd_qt::json_store_test_after_aside([](const QString& path, const QString&) { QDir().mkpath(path); });
+    expect("retry: the save fails", !json_store_save_array(retry, rows));
+    dsd_qt::json_store_test_after_aside({});
+    expect("retry: the file was kept",
+           raw(kept(retry, 1)) == "]" && notice_for(retry).keptName == "retry.json.unreadable-1");
+    expect("retry: no temporary file is left", temps_of(retry).isEmpty());
+    expect("retry: a file is put back at the path", QDir().rmdir(json_store_path(retry)) && write_raw(retry, "junk"));
+    expect("retry: the next save writes over it",
+           json_store_save_array(retry, rows) && json_store_load_array(retry) == rows);
+    expect("retry: without a second move", !QFile::exists(kept(retry, 2)) && raw(kept(retry, 1)) == "]");
+    remove_kept(retry, 1);
+
+    /* A read error marks like any unreadable file. */
+    const QString readError = QStringLiteral("read-error.json");
+    expect("read error: fixture", write_raw(readError, "[2]"));
+    dsd_qt::json_store_test_fail_read(readError);
+    expect("read error: loads empty", json_store_load_array(readError).isEmpty());
+    dsd_qt::json_store_test_fail_read(QString());
+    expect("read error: kept at the save", json_store_save_array(readError, rows) && raw(kept(readError, 1)) == "[2]");
+    remove_kept(readError, 1);
+
+    /* Settings recovery posts its own notices into the same list, replacing one per file name. */
+    const int before = sinkCalls;
+    dsd_qt::json_store_post_notice({QStringLiteral("dsd-neo-app.ini"), QStringLiteral("format error"), QString()});
+    dsd_qt::json_store_post_notice({QStringLiteral("dsd-neo-app.ini"), QStringLiteral("format error"),
+                                    QStringLiteral("dsd-neo-app.ini.unreadable-1")});
+    int iniNotices = 0;
+    for (const JsonStoreNotice& notice : json_store_notices()) {
+        iniNotices += notice.fileName == QStringLiteral("dsd-neo-app.ini") ? 1 : 0;
+    }
+    expect("posted notices: one per file, the latest",
+           iniNotices == 1 && notice_for("dsd-neo-app.ini").keptName == "dsd-neo-app.ini.unreadable-1"
+               && sinkCalls == before + 2);
+    dsd_qt::json_store_set_notice_sink({});
+}
+
+#ifndef _WIN32
+/* POSIX-only shapes: a FIFO (no hang), a link (moved itself, never its target), a write-only file, a folder that
+ * cannot be searched, and a no-replace rename that left the old name (out_source_left). */
+void
+test_json_store_keep_aside_posix(void) {
+    const QJsonArray rows{QJsonObject{{QStringLiteral("name"), QStringLiteral("new")}}};
+
+    const QString fifo = QStringLiteral("fifo.json");
+    const QByteArray fifoPath = QFile::encodeName(json_store_path(fifo));
+    expect("fifo: fixture", mkfifo(fifoPath.constData(), 0600) == 0);
+    expect("fifo: loads empty without waiting for a writer", json_store_load_array(fifo).isEmpty());
+    expect("fifo: the save fails", !json_store_save_array(fifo, rows));
+    struct stat info = {};
+    expect("fifo: never moved or replaced",
+           lstat(fifoPath.constData(), &info) == 0 && S_ISFIFO(info.st_mode) && !QFile::exists(kept(fifo, 1)));
+    expect("fifo: removed", unlink(fifoPath.constData()) == 0);
+
+    const QString linked = QStringLiteral("link.json");
+    expect("link: target fixture", write_raw(QStringLiteral("link-target.json"), "not json"));
+    expect("link: fixture", symlink("link-target.json", QFile::encodeName(json_store_path(linked)).constData()) == 0);
+    expect("link: loads empty", json_store_load_array(linked).isEmpty());
+    expect("link: saved", json_store_save_array(linked, rows));
+    expect("link: the link itself is kept", QFileInfo(kept(linked, 1)).symLinkTarget().endsWith("link-target.json"));
+    expect("link: its target is untouched", raw(json_store_path(QStringLiteral("link-target.json"))) == "not json");
+    expect("link: the path is a file with the new list",
+           !QFileInfo(json_store_path(linked)).isSymLink() && json_store_load_array(linked) == rows);
+    remove_kept(linked, 1);
+
+    if (geteuid() == 0) {
+        DSD_FPRINTF(stderr, "note: running as root, the unreadable-mode cases are skipped\n");
+    } else {
+        const QString writeOnly = QStringLiteral("write-only.json");
+        expect("0200: fixture", write_raw(writeOnly, "[3]")
+                                    && chmod(QFile::encodeName(json_store_path(writeOnly)).constData(), 0200) == 0);
+        expect("0200: loads empty", json_store_load_array(writeOnly).isEmpty());
+        expect("0200: saved", json_store_save_array(writeOnly, rows));
+        expect("0200: kept byte for byte",
+               chmod(QFile::encodeName(kept(writeOnly, 1)).constData(), 0600) == 0 && raw(kept(writeOnly, 1)) == "[3]");
+        remove_kept(writeOnly, 1);
+
+        /* A folder on the way that cannot be searched is no proof the file is gone. */
+        const QString locked = QStringLiteral("locked/store.json");
+        const QByteArray lockedDir = QFile::encodeName(json_store_path(QStringLiteral("locked")));
+        expect("parent: fixture", write_raw(locked, "[4]") && chmod(lockedDir.constData(), 0000) == 0);
+        expect("parent: unreadable, not missing", json_store_read(locked).status == dsd_qt::JsonStoreLoad::Unreadable);
+        expect("parent: loads empty", json_store_load_array(locked).isEmpty());
+        expect("parent: access returns", chmod(lockedDir.constData(), 0700) == 0);
+        expect("parent: the original is kept at the save",
+               json_store_save_array(locked, rows) && raw(kept(locked, 1)) == "[4]");
+        remove_kept(locked, 1);
+    }
+
+    /* A FIFO that appears at the path once the file is kept is never replaced, by that save or by its retry. */
+    const QString late = QStringLiteral("late-fifo.json");
+    const QByteArray latePath = QFile::encodeName(json_store_path(late));
+    expect("late fifo: fixture", write_raw(late, "[6"));
+    expect("late fifo: loads empty", json_store_load_array(late).isEmpty());
+    dsd_qt::json_store_test_after_aside(
+        [](const QString& path, const QString&) { (void)mkfifo(QFile::encodeName(path).constData(), 0600); });
+    expect("late fifo: the save fails", !json_store_save_array(late, rows));
+    dsd_qt::json_store_test_after_aside({});
+    expect("late fifo: kept", raw(kept(late, 1)) == "[6");
+    expect("late fifo: the retry fails too", !json_store_save_array(late, rows));
+    expect("late fifo: still a FIFO, no temporary file",
+           lstat(latePath.constData(), &info) == 0 && S_ISFIFO(info.st_mode) && temps_of(late).isEmpty());
+    expect("late fifo: removed", unlink(latePath.constData()) == 0);
+    expect("late fifo: then the retry writes, without a second move",
+           json_store_save_array(late, rows) && json_store_load_array(late) == rows && !QFile::exists(kept(late, 2)));
+    remove_kept(late, 1);
+
+    /* A no-replace rename that made the new name but left the old one counts as kept: the path is then replaced. */
+    const QString left = QStringLiteral("source-left.json");
+    expect("source left: fixture", write_raw(left, "[5"));
+    expect("source left: loads empty", json_store_load_array(left).isEmpty());
+    dsd_qt::json_store_test_after_aside([](const QString& path, const QString& keptPath) {
+        (void)::link(QFile::encodeName(keptPath).constData(), QFile::encodeName(path).constData());
+    });
+    expect("source left: saved", json_store_save_array(left, rows));
+    dsd_qt::json_store_test_after_aside({});
+    expect("source left: kept, and the path holds the new list",
+           raw(kept(left, 1)) == "[5" && json_store_load_array(left) == rows && !QFile::exists(kept(left, 2)));
+    remove_kept(left, 1);
+}
+#endif
+
+/* Marks are shared by every thread: a store marked on one thread is kept when another saves it (call history saves on
+ * its worker), while this thread loads and saves other stores. */
+void
+test_json_store_marks_across_threads(void) {
+    const QJsonArray rows{QJsonObject{{QStringLiteral("name"), QStringLiteral("new")}}};
+    QStringList names;
+    for (int i = 0; i < 4; ++i) {
+        names << QStringLiteral("threaded-%1.json").arg(i);
+        expect("threads: fixture", write_raw(names.last(), "x"));
+        expect("threads: loads empty", json_store_load_array(names.last()).isEmpty());
+    }
+    std::atomic<int> saved{0};
+    std::vector<std::thread> workers;
+    for (const QString& name : names) {
+        workers.emplace_back([name, &rows, &saved] {
+            if (json_store_save_array(name, rows)) {
+                saved.fetch_add(1);
+            }
+            (void)json_store_notices();
+        });
+    }
+    QStringList others;
+    for (int i = 0; i < 4; ++i) {
+        others << QStringLiteral("threaded-other-%1.json").arg(i);
+        expect("threads: other fixture", write_raw(others.last(), "y"));
+        expect("threads: other loads empty", json_store_load_array(others.last()).isEmpty());
+        expect("threads: other saved", json_store_save_array(others.last(), rows));
+    }
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+    expect("threads: every save landed", saved.load() == 4);
+    for (const QString& other : others) {
+        expect("threads: each other file was kept", raw(kept(other, 1)) == "y");
+        remove_kept(other, 1);
+    }
+    for (const QString& name : names) {
+        expect("threads: each file was kept",
+               raw(kept(name, 1)) == "x" && notice_for(name).keptName == name + ".unreadable-1");
+        remove_kept(name, 1);
+    }
+}
+
+/* The models need no change of their own: the first save after an unreadable load keeps the file. */
+void
+test_models_keep_unreadable_stores(void) {
+    const QString systemsStore = QStringLiteral("saved_systems.json");
+    const QString listsStore = QStringLiteral("scan_lists.json");
+    expect("models: no stores yet",
+           !QFile::exists(json_store_path(systemsStore)) && !QFile::exists(json_store_path(listsStore)));
+    expect("models: corrupt saved systems", write_raw(systemsStore, "[{\"name\":\"Lost\""));
+    expect("models: corrupt scan lists", write_raw(listsStore, "{\"name\":\"Lost\"}"));
+    {
+        SavedSystemsModel systems;
+        ScanListsModel lists;
+        expect("models: both load empty", systems.count() == 0 && lists.count() == 0);
+        expect("models: nothing moves before an edit",
+               !QFile::exists(kept(systemsStore, 1)) && !QFile::exists(kept(listsStore, 1)));
+        expect("models: a system is added", systems.add({{QStringLiteral("name"), QStringLiteral("New")}}));
+        expect("models: a list is added", lists.add({{QStringLiteral("name"), QStringLiteral("New")}}));
+    }
+    expect("models: saved systems kept", raw(kept(systemsStore, 1)) == "[{\"name\":\"Lost\"");
+    expect("models: scan lists kept", raw(kept(listsStore, 1)) == "{\"name\":\"Lost\"}");
+    expect("models: each holds its new row",
+           json_store_load_array(systemsStore).size() == 1 && json_store_load_array(listsStore).size() == 1);
+    remove_kept(systemsStore, 1);
+    remove_kept(listsStore, 1);
+    expect("models: stores removed",
+           QFile::remove(json_store_path(systemsStore)) && QFile::remove(json_store_path(listsStore)));
 }
 
 void
@@ -2418,6 +2753,13 @@ main(int argc, char** argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDir.path());
 
     test_json_store();
+    test_json_store_read();
+    test_json_store_keep_aside();
+#ifndef _WIN32
+    test_json_store_keep_aside_posix();
+#endif
+    test_json_store_marks_across_threads();
+    test_models_keep_unreadable_stores();
     test_json_store_status();
     test_private_key_store();
     test_saved_systems();

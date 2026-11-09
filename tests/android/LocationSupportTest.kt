@@ -362,6 +362,24 @@ private fun timeoutWithFixAndLateReplacement() {
     } finally { release.countDown() }
 }
 
+/**
+ * The result field is written under synchronized(this) on the main thread (finish, cancel, a new request), so the Qt
+ * thread's read-and-clear must take the same monitor; a finish() between its read and its clear would lose the answer.
+ */
+private fun pollSharesTheWritersLock() {
+    val polled = CountDownLatch(1)
+    val poller = Thread {
+        LocationSupport.pollResult()
+        polled.countDown()
+    }
+    synchronized(LocationSupport) {
+        poller.start()
+        check(!polled.await(200, TimeUnit.MILLISECONDS)) { "pollResult() ran while a writer held the lock" }
+    }
+    check(polled.await(5, TimeUnit.SECONDS)) { "pollResult() finished once the writer let go" }
+    poller.join()
+}
+
 fun main() {
     try {
         permissionAndTeardown()
@@ -376,6 +394,7 @@ fun main() {
         siteFixPrefersAccuracyAndHonorsCoarsePermission()
         siteCacheAndPermissionBoundaries()
         timeoutWithFixAndLateReplacement()
+        pollSharesTheWritersLock()
         println("PASS: location permission, cache freshness, provider fallback, legacy callbacks, deadlines and cancellation")
     } finally {
         val field = LocationSupport::class.java.getDeclaredField("worker").apply { isAccessible = true }

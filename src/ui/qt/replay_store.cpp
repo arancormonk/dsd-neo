@@ -56,11 +56,12 @@ struct ManifestEntry {
 /* The manifest's entries, or false when it cannot be read or holds anything but {absolute path, state} objects. */
 bool
 load_manifest(QList<ManifestEntry>* entries) {
-    JsonStoreLoad status = JsonStoreLoad::Failed;
-    const QJsonArray array = json_store_load_array(manifest_name(), &status);
-    if (status == JsonStoreLoad::Failed) {
+    // Read without marking: the manifest is the store's own record, not a store a person keeps.
+    const JsonStoreRead read = json_store_read(manifest_name());
+    if (read.status == JsonStoreLoad::Unreadable) {
         return false;
     }
+    const QJsonArray& array = read.array;
     for (const auto& value : array) {
         const QJsonObject object = value.toObject();
         const QString path = object.value(QStringLiteral("path")).toString();

@@ -21,8 +21,10 @@ Item {
             });
             return;
         }
-        // #832: the screen is kept while closed. An import still copying is
-        // cancelled, and what it answers is not this visit's to report.
+        // #832, #829: the screen is kept while closed, and every way off it
+        // (Back clears importsOpen in Main directly) ends a pick still out, so
+        // it never lands later. An import still copying is cancelled, and what
+        // it answers is not this visit's to report.
         generation++;
         csvImport.cancel();
     }
@@ -43,11 +45,9 @@ Item {
     // Transient outcome line under the header; magenta when it reports a problem.
     property string notice: ""
     property bool noticeIsProblem: false
-    // The saved system the running session was started from, or null. Bound by
-    // Main.qml, which owns it. A refresh only pushes a file into the live
-    // session when that session is actually using it: re-importing a channel map
-    // replaces the live one wholesale and clears what the protocol had learned.
-    property var sessionSystem: null
+    // The last import problem read out and how many have been, for tests.
+    property string announced: ""
+    property int announcements: 0
 
     function nounFor(type, count) {
         if (type === "trunkTargets")
@@ -65,7 +65,22 @@ Item {
         return count === 1 ? qsTr("key") : qsTr("keys");
     }
 
+    // Issue #748: a talkgroup list with no rows at all (a header only) is a
+    // list emptied on purpose, which the decoder takes as it does at startup.
+    // Rows that are there but none usable mean a wrong file, and so does any
+    // other kind of file with no rows.
+    function emptyList(type, accepted, skipped) {
+        return type === "group" && accepted === 0 && skipped === 0;
+    }
+
+    // Whether a finished import or refresh holds a file the decoder takes.
+    function usable(result) {
+        return result.ok && (result.error !== "empty" || screen.emptyList(result.type, result.accepted, result.skipped || 0));
+    }
+
     function summaryFor(type, accepted, skipped, importedAt) {
+        if (emptyList(type, accepted, skipped))
+            return [qsTr("Empty list"), Qt.formatDate(new Date(importedAt * 1000), "MMM d")].join(" · ");
         if (accepted === 0)
             return qsTr("No usable rows — check the file format");
         var parts = [accepted + " " + nounFor(type, accepted)];
@@ -81,6 +96,11 @@ Item {
             screen.noticeIsProblem = true;
             return;
         }
+        if (screen.emptyList(result.type, result.accepted, result.skipped || 0)) {
+            screen.notice = qsTr("%1 · empty list").arg(verb);
+            screen.noticeIsProblem = false;
+            return;
+        }
         if (result.error === "empty") {
             screen.notice = qsTr("%1 — no usable rows. Check the file format, then update it.").arg(verb);
             screen.noticeIsProblem = true;
@@ -91,6 +111,21 @@ Item {
         // channel map "keys" if the lookup missed.
         screen.notice = verb + " · " + result.accepted + " " + screen.nounFor(result.type, result.accepted);
         screen.noticeIsProblem = false;
+    }
+
+    // Issue #748: a talkgroup list or channel map just replaced in place may be
+    // the file the running session uses, and the session would otherwise keep
+    // the old table (and write it back over the new file at the next in-app
+    // edit). Only the decoder knows which file it uses now: a manual Apply, a
+    // restart or a scan row can each change it after the saved system this
+    // session started from. So it is asked whenever a session runs, and it
+    // reloads the file only if the file is its own. Call after resultNotice().
+    function reloadIfInUse(verb, result) {
+        if (!decoderHost.running || (result.type !== "group" && result.type !== "chan"))
+            return;
+        var sent = result.type === "chan" ? commands.reloadChannelMap(result.path) : commands.reloadGroupList(result.path);
+        screen.notice = sent ? qsTr("%1 · sent to the running session").arg(screen.notice) : qsTr("%1, but the decoder is not accepting commands").arg(verb);
+        screen.noticeIsProblem = !sent;
     }
 
     // A refresh is asynchronous — it re-fetches the whole system first — so the
@@ -116,31 +151,22 @@ Item {
                 return;
             }
             screen.resultNotice(qsTr("Refreshed"), result);
-            if (result.error === "empty")
-                return;
-            // Live-apply only the file the running session is actually using;
-            // pushing another system's channel map would retune the session onto
-            // frequencies it never asked for.
-            var sys = screen.sessionSystem;
-            if (!decoderHost.running || !sys)
-                return;
-            var sent = false;
-            if (result.type === "chan" && sys.chanCsvPath === result.path)
-                sent = commands.importChannelMap(result.path);
-            else if (result.type === "group" && sys.groupCsvPath === result.path)
-                sent = commands.importGroupList(result.path);
-            else
-                return;
-            screen.notice = sent ? qsTr("Refreshed · sent to the decoder") : qsTr("Refreshed, but the decoder is not accepting commands");
-            screen.noticeIsProblem = !sent;
+            // A reload, never an import: the decoder takes it only for the file
+            // it uses, so another system's channel map cannot retune the session
+            // onto frequencies it never asked for.
+            if (screen.usable(result))
+                screen.reloadIfInUse(qsTr("Refreshed"), result);
         }
     }
 
-    // An update names its row by the stored path: rows can move while the
-    // copy runs (another import, a removal), and the path stays the row's.
+    // An update names its row by the stored path, taken when the pick is
+    // asked for: rows can move while the picker is up or the copy runs
+    // (another import, a removal), and the path stays the row's. A row with
+    // no path is refused by the flow, never imported as a new file.
     function importContext() {
         return {
-            replacePath: pendingRow >= 0 ? importedFiles.get(pendingRow).path : "",
+            replacing: pendingRow >= 0,
+            replacePath: pendingRow >= 0 ? importedFiles.get(pendingRow).path || "" : "",
             generation: generation
         };
     }
@@ -156,12 +182,23 @@ Item {
         onFinished: function (result, context) {
             if (context.generation !== screen.generation)
                 return;
+            var updated = context.replacing === true;
             screen.pendingRow = -1;
             screen.notice = "";
             screen.noticeIsProblem = false;
-            if (result.error !== "cancelled")
-                screen.resultNotice(qsTr("Imported"), result);
+            if (result.error === "cancelled")
+                return;
+            screen.resultNotice(updated ? qsTr("Updated") : qsTr("Imported"), result);
+            // A new import lands at a new path no session uses yet.
+            if (updated && screen.usable(result))
+                screen.reloadIfInUse(qsTr("Updated"), result);
+            screen.announceProblem();
         }
+    }
+    // An import that went wrong is read out once, each time it happens.
+    function announceProblem() {
+        if (noticeIsProblem)
+            Navigation.announce(screen, noticeLine, notice);
     }
     DecryptionApplyFlow {
         id: mapApply
@@ -218,6 +255,7 @@ Item {
 
     ReadableText {
         id: noticeLine
+        objectName: "importsNotice"
 
         anchors.top: countLabel.bottom
         anchors.left: parent.left
@@ -231,6 +269,7 @@ Item {
         font.pixelSize: Theme.fontSize(13)
         color: screen.noticeIsProblem ? Theme.magenta : Theme.textSubdued
         wrapMode: Text.Wrap
+        Accessible.role: screen.noticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText
     }
 
     ListView {
@@ -309,7 +348,7 @@ Item {
                     text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
-                    color: fileRow.accepted === 0 ? Theme.magenta : Theme.textSubdued
+                    color: fileRow.accepted === 0 && !screen.emptyList(fileRow.type, fileRow.accepted, fileRow.skipped) ? Theme.magenta : Theme.textSubdued
                     elide: Text.ElideRight
                 }
             }
@@ -472,6 +511,9 @@ Item {
             }
         }
         OutlineButton {
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "updateFromFileButton"
+
             width: parent.width
             text: qsTr("Update from file")
             onClicked: {

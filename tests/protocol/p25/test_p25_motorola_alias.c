@@ -15,6 +15,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -593,6 +594,31 @@ test_learned_alias_row(void) {
     fixture_close(&f);
 }
 
+/* A list that loaded incomplete is never written back to its file, not even one learned row at a time: an alias row
+ * appended to a file none of whose rows loaded (an Excel CSV with ';' separators) would be the only row the next
+ * reload keeps. The alias still names the radio for the session. */
+static void
+test_incomplete_list_appends_no_alias(void) {
+    fixture f;
+    fixture_open(&f);
+    const char* excel_csv = "id;mode;name\n100;A;Dispatch\n";
+    FILE* fp = dsd_fopen_private(f.group_path, "w");
+    if (fp == NULL || fputs(excel_csv, fp) < 0 || fclose(fp) != 0) {
+        DSD_FPRINTF(stderr, "group file not written\n");
+        exit(2);
+    }
+    expect_true("';' group file loads at startup", csvGroupImport(f.opts, f.st) == 0);
+    const uint32_t rid = 0x00E002U;
+    alias_record record;
+    build_record_ascii(&record, rid, "ENGINE 9");
+    begin_call(&f, DSD_SYNC_P25P2_POS, 0U, 700U, rid);
+    p2_send_record(f.opts, f.st, 1, &record, 0x1U);
+    expect_true("alias names the radio for the session", policy_name_is(f.st, rid, "ENGINE 9"));
+    expect_true("alias is not appended to an incomplete list's file", file_count(f.group_path, "ENGINE 9") == 0);
+    expect_true("the file keeps its own rows", file_count(f.group_path, "100;A;Dispatch") == 1);
+    fixture_close(&f);
+}
+
 /* The committed row the slot's last call pushed, right behind the staged row. */
 static const Event_History*
 committed_row(const fixture* f, uint8_t slot) {
@@ -818,6 +844,7 @@ main(void) {
     test_record_length_with_zero_words();
     test_stored_name_is_utf8();
     test_learned_alias_row();
+    test_incomplete_list_appends_no_alias();
     test_late_alias_names_the_committed_call();
     test_ended_hold_names_the_group();
     test_late_alias_keeps_imported_names();

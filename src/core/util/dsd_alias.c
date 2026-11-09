@@ -47,8 +47,9 @@ policy_learn_alias(const dsd_opts* opts, dsd_state* state, uint32_t id, const ch
     if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &entry) != 0) {
         return;
     }
+    // The append refuses an incomplete list's file (dsd_tg_policy_incomplete()) and keeps the list's baseline in step.
     if (dsd_tg_policy_learn_exact(state, &entry) == DSD_TG_POLICY_LEARN_ADDED) {
-        (void)dsd_tg_policy_append_group_file_row(opts, &entry, metadata);
+        (void)dsd_tg_policy_append_group_file_row(opts, state, &entry, metadata);
     }
 }
 

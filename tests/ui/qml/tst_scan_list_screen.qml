@@ -48,6 +48,9 @@ Item {
 
     TestCase {
         function init() {
+            testContext.setDocumentPickerSupported(true);
+            testContext.resetHostPlayback();
+            screen.visible = true;
             while (scanLists.count)
                 scanLists.remove(0);
             screen.openFor(-1);
@@ -78,10 +81,12 @@ Item {
             var preview = JSON.stringify(screen.targetRows);
             if (data.tag.indexOf("primary") >= 0) {
                 screen.importTargets();
-                findChild(screen, "csvPrimaryPicker").reject();
+                testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
             } else {
                 var source = testContext.writeFixtureCsv("cancel-targets.csv",
                     "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-trunk,851012500,missing-map.csv,,,\n");
+                // The scan list drops a pick that is not for its current
+                // targets, so the import carries the context importTargets() gives.
                 var flow = findChild(screen, "targetCsvImport");
                 flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
                 tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
@@ -136,6 +141,107 @@ Item {
             screen.visible = true;
             compare(importedFiles.count, count, "the cancelled copy added nothing");
             verify(!screen.csvMode);
+        }
+
+        // ---- issue #829: the target CSV pick belongs to the list it was asked for ----
+
+        function targetsFile(name) {
+            var path = testContext.writeFixtureCsv(name,
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\n");
+            verify(path.length > 0);
+            return "file://" + path;
+        }
+        function clearLibrary() {
+            while (importedFiles.count)
+                importedFiles.remove(0);
+        }
+        function test_picked_targets_are_selected() {
+            try {
+                screen.importTargets();
+                testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, targetsFile("picked-targets.csv"), "Picked targets.csv", false);
+                // #832: the copy answers later, from the import worker.
+                tryVerify(function () { return screen.csvMode; }, 5000, "the picked targets are selected");
+                // The provider's own name for the document: a local file's name.
+                compare(importedFiles.get(importedFiles.rowForPath(screen.draft.targetsCsvPath)).name, "picked-targets.csv");
+                compare(screen.targetRows.length, 1);
+            } finally {
+                clearLibrary();
+            }
+        }
+        // B4: reusing the editor (openFor) or closing it, by any route, ends a
+        // pick still out; its late answer imports and selects nothing.
+        function test_a_pick_ends_with_its_editor_data() {
+            return [{tag: "openFor"}, {tag: "hidden"}];
+        }
+        function test_a_pick_ends_with_its_editor(data) {
+            try {
+                var flow = findChild(screen, "targetCsvImport");
+                screen.importTargets();
+                var id = testContext.lastDocumentRequest().id;
+                if (data.tag === "openFor")
+                    screen.openFor(-1);
+                else
+                    screen.visible = false;
+                verify(!flow.active, "the pick ended with the editor");
+                verify(testContext.documentCalls().some(function (call) {
+                    return call.name === "cancelDocumentRequest" && call.id === id;
+                }), "the host request was cancelled");
+                testContext.answerDocumentPicked(id, targetsFile("late-targets.csv"), "late.csv", false);
+                compare(screen.draft.targetSource, "entries");
+                compare(importedFiles.count, 0, "nothing was imported");
+                compare(screen.validationText, "");
+            } finally {
+                clearLibrary();
+            }
+        }
+        // A target CSV chosen from the library, or a switch back to entries,
+        // while the picker is out wins over the pick that answers after it.
+        function test_newer_choice_survives_a_late_pick_data() {
+            return [{tag: "library"}, {tag: "clear"}, {tag: "entries"}];
+        }
+        function test_newer_choice_survives_a_late_pick(data) {
+            try {
+                var library = testContext.importNamed(targetsFile("library-targets.csv").substring(7), "Library.csv", "trunkTargets");
+                verify(library.ok);
+                screen.importTargets();
+                var id = testContext.lastDocumentRequest().id;
+                if (data.tag === "library") {
+                    screen.selectTargets(library.path);
+                } else if (data.tag === "clear") {
+                    screen.selectTargets("");
+                } else {
+                    var mode = control("scanTargetMode");
+                    mode.selected(1);
+                    mode.selected(0);
+                }
+                var draft = JSON.stringify(screen.draft);
+                testContext.answerDocumentPicked(id, targetsFile("late-targets.csv"), "late.csv", false);
+                tryCompare(findChild(screen, "targetCsvImport"), "active", false);
+                compare(JSON.stringify(screen.draft), draft, "the newer choice stays");
+                compare(importedFiles.count, 1, "the dropped pick imported nothing");
+            } finally {
+                clearLibrary();
+            }
+        }
+        // A picker failure shows its reason on the validation line, as an
+        // alert read out once; the same failure again is read out again.
+        function test_picker_failure_is_shown_and_read_out() {
+            var said = screen.announcements;
+            screen.importTargets();
+            testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "unreadable");
+            var message = "That app gave DSD-neo a file it can't open. Pick the file from another app.";
+            compare(screen.validationText, message);
+            var line = control("scanValidation");
+            verify(line.visible);
+            compare(line.Accessible.role, Accessible.AlertMessage);
+            compare(screen.announcements, said + 1);
+            compare(screen.announced, message);
+            compare(screen.draft.targetSource, "entries");
+            screen.importTargets();
+            testContext.answerDocumentUnavailable(testContext.lastDocumentRequest().id, "unreadable");
+            compare(screen.announcements, said + 2);
+            screen.showValidation("Name this scan list.");
+            compare(line.Accessible.role, Accessible.StaticText, "an ordinary message is not an alert");
         }
 
         function test_edit_entries_and_persist() {

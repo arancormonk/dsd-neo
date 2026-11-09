@@ -2070,6 +2070,44 @@ test_empty_avoids(TestHost& host, const Backup& b, const Old& old) {
     dsd_app_signal_search_store_close();
 }
 
+/** A staged avoid list that repeats a frequency (an edited staging) is written, and loads, with it once (issue #828),
+ * so a single removal lifts it. */
+void
+test_repeated_avoids(TestHost& host, const Backup& b, const Old& old) {
+    put_back(old.tree);
+    dsd_qt::backup::ParseResult parsed = b.parsed;
+    parsed.avoids = {162550000U, 156800000U, 162550000U};
+    const QString dir = dsd_qt::backup::staging_dir_for_job("repeated");
+    QString error;
+    expect("stage a repeated avoid", dsd_qt::backup::stage_restore(root(), parsed, b.archive, dir, &error)
+                                         && dsd_qt::backup::promote_staging(dir) && dsd_qt::backup::commit_pending());
+    expect("apply it", apply().outcome == ApplyOutcome::Applied);
+    expect("the avoid file holds it once", read_file(at(kAvoidsFile)) == "[162550000,156800000]\n");
+    dsd_qt::SignalSearchModel search(&host, nullptr);
+    uint32_t avoids[4] = {};
+    expect("the native store loads it once",
+           dsd_app_signal_search_avoids_get(avoids, 4) == 2 && avoids[0] == 162550000U && avoids[1] == 156800000U);
+    dsd_app_signal_search_store_close();
+
+    // The cap counts different frequencies, as the avoid store does: 1,024 of them and a repeat apply, 1,025 do not.
+    parsed.avoids.clear();
+    for (quint32 i = 1; i <= DSD_SEARCH_MAX_AVOIDS; ++i) {
+        parsed.avoids.append(150000000U + i * 12500U);
+    }
+    parsed.avoids.append(150012500U);
+    expect("stage 1,024 different avoids and a repeat", stage_over(parsed, b.archive, old.tree));
+    expect("they apply", apply().outcome == ApplyOutcome::Applied);
+    dsd_qt::SignalSearchModel full(&host, nullptr);
+    std::vector<uint32_t> all(DSD_SEARCH_MAX_AVOIDS + 1);
+    expect("the native store loads 1,024",
+           dsd_app_signal_search_avoids_get(all.data(), all.size()) == DSD_SEARCH_MAX_AVOIDS);
+    dsd_app_signal_search_store_close();
+    parsed.avoids.last() = 170000000U;
+    expect("stage 1,025 different avoids", stage_over(parsed, b.archive, old.tree));
+    expect("they fail", apply().outcome == ApplyOutcome::Failed);
+    check_failed_state("1,025 different staged avoids", old);
+}
+
 /** A backup of one channel map kept beside its bundle, and the configuration it was exported from. */
 struct Beside {
     QByteArray archive;
@@ -2365,6 +2403,7 @@ main(int argc, char** argv) {
         test_links_inside_removed_trees(backup, old, reference);
         test_journal_leftover(backup, old);
         test_empty_avoids(host, backup, old);
+        test_repeated_avoids(host, backup, old);
         test_two_restores_in_a_row(backup, old, reference);
         test_bundle_named_from_outside(host, old);
         test_restore_keeps_import_named_file(host);

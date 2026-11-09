@@ -660,6 +660,41 @@ def launch_policy():
     return None
 
 
+def document_picker_wiring():
+    """#829: DsdNeoActivity never compiles here, so its forwarding is read from the source: every result goes to
+    DocumentPicker first, and only one it does not claim goes on to Qt. The GET_CONTENT fallback's handler queries see
+    other apps only through the manifest's <queries> entry (package visibility, targetSdk 30+)."""
+    where = APP_SOURCES / "DsdNeoActivity.kt"
+    try:
+        activity = (REPO / where).read_text(encoding="utf-8")
+        manifest = XML_COMMENT.sub(" ", (REPO / "android/package/AndroidManifest.xml").read_text(encoding="utf-8"))
+    except OSError as error:
+        return f"cannot read the activity or the manifest: {error}"
+    body = method_body(activity, "override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?)")
+    statements = [line.strip() for line in (body or "").splitlines() if line.strip() and not line.strip().startswith("//")]
+    expected = [
+        "if (!DocumentPicker.onActivityResult(this, requestCode, resultCode, data)) {",
+        "super.onActivityResult(requestCode, resultCode, data)",
+        "}",
+    ]
+    if statements != expected:
+        return f"{where}: onActivityResult must be exactly {expected}; found {statements}"
+    queries = re.findall(r"<queries>(.*?)</queries>", manifest, re.S)
+    intents = re.findall(r"<intent>(.*?)</intent>", "".join(queries), re.S)
+    wanted = {
+        ("action", "name", "android.intent.action.GET_CONTENT"),
+        ("category", "name", "android.intent.category.OPENABLE"),
+        ("data", "mimeType", "*/*"),
+    }
+    for intent in intents:
+        if set(re.findall(r'<(\w+)\s+android:(\w+)="([^"]*)"', intent)) == wanted:
+            return None
+    return (
+        "AndroidManifest.xml: <queries> needs an <intent> with exactly GET_CONTENT + OPENABLE + mimeType */*, which the "
+        "GET_CONTENT fallback's handler queries see other apps through"
+    )
+
+
 def launch_record_plumbing(facts):
     """What is wrong with how ProcessFacts.kt carries LaunchGuard's record, or None: the summary is set on API 30+ and
     read back into each exit record. Nothing else exercises this path."""
@@ -799,6 +834,24 @@ def android_native_writes_no_environment():
     return None
 
 
+# The platform the document writes run on (DocumentCopies, RecordingExport) with the Download folder save they settle
+# through (DownloadsSave): a resolver that plays the document providers and MediaStore.
+DOWNLOADS_SAVE_STUBS = (
+    "AssetFileDescriptor.kt",
+    "ContentResolver.kt",
+    "ContentValues.kt",
+    "Cursor.kt",
+    "GrantIntent.kt",
+    "Log.kt",
+    "MediaStore.kt",
+    "Os.kt",
+    "ParcelFileDescriptor.kt",
+    "Provider.kt",
+    "ShareEnvironment.kt",
+    "SystemOs.kt",
+    "Uri.kt",
+)
+
 # Each build compiles its own file set on its own, so one build's stubs never stand in for platform classes another
 # build's sources must not touch.
 SUITES = {
@@ -833,19 +886,50 @@ SUITES = {
         builds=(
             Build(sources=("DocumentTransfer.kt",), tests=("DocumentTransferTest.kt",)),
             Build(
-                sources=("DocumentCopies.kt", "DocumentTransfer.kt"),
+                sources=("DocumentCopies.kt", "DocumentTransfer.kt", "DownloadsSave.kt"),
                 tests=("DocumentCopiesTest.kt",),
+                stubs=DOWNLOADS_SAVE_STUBS,
+            ),
+        ),
+    ),
+    # The app's document picker (#829): the request core (launch order, request codes, results, deadlines, supersede
+    # and cancel) against a fake activity, and the Intents, handler queries and name lookup it makes, against stubs of
+    # the activity, intents, package manager and resolver. The activity's forwarding and the manifest's <queries> are
+    # read from the sources.
+    "document_picker": Suite(
+        checks=(document_picker_wiring,),
+        builds=(
+            Build(
+                sources=("DocumentPicker.kt", "DownloadsSave.kt", "DocumentTransfer.kt"),
+                tests=("DocumentPickerTest.kt",),
                 stubs=(
                     "AssetFileDescriptor.kt",
                     "ContentResolver.kt",
+                    "ContentValues.kt",
                     "Cursor.kt",
+                    "JSONObject.kt",
                     "Log.kt",
+                    "MediaStore.kt",
                     "Os.kt",
                     "ParcelFileDescriptor.kt",
+                    "PickerActivity.kt",
+                    "PickerContext.kt",
+                    "PickerPackageManager.kt",
                     "Provider.kt",
-                    "SystemOs.kt",
+                    "ShareEnvironment.kt",
                     "Uri.kt",
                 ),
+            ),
+        ),
+    ),
+    # The Download folder save (#829): pending rows, their publication or delete at every exit of the backup's save and
+    # the recording transfers, the discards, and the release of leftover persisted grants, against a MediaStore stub.
+    "downloads_save": Suite(
+        builds=(
+            Build(
+                sources=("DownloadsSave.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "RecordingExport.kt"),
+                tests=("DownloadsSaveTest.kt",),
+                stubs=DOWNLOADS_SAVE_STUBS,
             ),
         ),
     ),
@@ -861,19 +945,9 @@ SUITES = {
         checks=(recording_transfer_codes_match,),
         builds=(
             Build(
-                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt"),
+                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "DownloadsSave.kt"),
                 tests=("RecordingExportTest.kt",),
-                stubs=(
-                    "AssetFileDescriptor.kt",
-                    "ContentResolver.kt",
-                    "Cursor.kt",
-                    "Log.kt",
-                    "Os.kt",
-                    "ParcelFileDescriptor.kt",
-                    "Provider.kt",
-                    "SystemOs.kt",
-                    "Uri.kt",
-                ),
+                stubs=DOWNLOADS_SAVE_STUBS,
             ),
         ),
     ),
@@ -1014,6 +1088,12 @@ SUITES = {
             android_main_writes_no_environment,
             android_native_writes_no_environment,
         ),
+    ),
+    # The RadioReference sign-in form as the Autofill Framework sees it: tokens, the field snapshot, the framework
+    # session and the effects SignInAutofill carries out. Plain Kotlin with no Android imports, so no stubs;
+    # SignInAutofill runs it on the main looper against AutofillManager.
+    "sign_in_autofill": Suite(
+        builds=(Build(sources=("SignInAutofillState.kt",), tests=("SignInAutofillStateTest.kt",)),),
     ),
     # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
     # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and

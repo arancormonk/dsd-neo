@@ -9,6 +9,13 @@
 /**
  * @file
  * @brief Cross-platform file descriptor compatibility for DSD-neo.
+ *
+ * Paths on Windows: every helper here (and dsd_mkdir(), dsd_mkdtemp(), dsd_mkstemp()) takes a path in one encoding,
+ * chosen by dsd_win32_path_wide(). A path that is well-formed UTF-8 (the app's own files, named in any script) goes
+ * through the wide call only, whatever the ANSI code page and the CRT locale; a path that is not (one a command line
+ * gives in the ANSI code page) goes through the ANSI call only. A path never goes through both, so a name the wide
+ * call answered for is never read again in the ANSI code page, which can name another file or split the path apart.
+ * Pure ASCII is the same either way.
  */
 
 #include <dsd-neo/platform/platform.h>
@@ -230,12 +237,12 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
  * it fails (EXDEV; on Windows ERROR_NOT_SAME_DEVICE maps to EXDEV). A directory @p from is refused with EISDIR before
  * anything moves. Never replaces an existing @p to: the call fails with EEXIST and leaves both files as they were. The
  * rename is atomic where the platform and filesystem offer a no-replace rename (Linux renameat2(RENAME_NOREPLACE),
- * macOS renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' MoveFileExW() without
- * MOVEFILE_REPLACE_EXISTING or MOVEFILE_COPY_ALLOWED). On Windows both paths are UTF-8, as dsd_remove_file() takes
- * them (the wide call, whatever the process code page); a name the wide call does not find moves through the ANSI
- * call. On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to
- * with an exclusive create and renames onto that claim: @p to briefly exists as an empty file, and only a process that
- * deletes the claim in between can still be replaced.
+ * macOS renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' MoveFileEx() without
+ * MOVEFILE_REPLACE_EXISTING or MOVEFILE_COPY_ALLOWED). On Windows the pair takes one call, as dsd_win32_path_wide()
+ * picks: MoveFileExW() when both names are UTF-8 (whatever the process code page), MoveFileExA() otherwise, never
+ * both. On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to with an
+ * exclusive create and renames onto that claim: @p to briefly exists as an empty file, and only a process that deletes
+ * the claim in between can still be replaced.
  *
  * @param from              Existing file.
  * @param to                New name, on the same volume as @p from.
@@ -247,11 +254,47 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
 int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left);
 
 /**
+ * @brief Whether a name exists, without following a symbolic link at it.
+ *
+ * Answers for the name itself: lstat() on POSIX, GetFileAttributes() on Windows, both of which describe a link or
+ * reparse point rather than its target, so a dangling link exists. Only a confirmed absence answers 0; a caller that
+ * must not lose a file treats -1 as "may exist".
+ *
+ * @param path  Path to probe.
+ * @return 1 when the name exists (any type); 0 when it is confirmed absent, with errno ENOENT (or ENOTDIR: a parent is
+ *         not a folder); -1 when it cannot tell, with errno set (EINVAL for NULL or an empty path, EACCES for a parent
+ *         that cannot be searched).
+ */
+int dsd_path_exists_nofollow(const char* path);
+
+/** What a name is, never following a link at it (dsd_path_type_nofollow()). */
+typedef enum {
+    DSD_PATH_TYPE_FILE,  /**< a regular file */
+    DSD_PATH_TYPE_DIR,   /**< a folder that is not itself a link */
+    DSD_PATH_TYPE_LINK,  /**< a symbolic link, dangling or not, whatever it names; on Windows any reparse point (a
+                              symbolic link or a junction, file or folder) */
+    DSD_PATH_TYPE_OTHER, /**< a FIFO, socket or device */
+} dsd_path_type;
+
+/**
+ * @brief dsd_path_exists_nofollow(), also telling what the name is.
+ *
+ * Renaming the name moves a link itself, never its target, so a caller that may move a file aside but must leave a
+ * real folder or FIFO alone decides by this, not by dsd_stat_path(), which follows the link.
+ *
+ * @param path      Path to probe.
+ * @param out_type  Optional. Receives the type when the answer is 1; left as it was otherwise.
+ * @return As dsd_path_exists_nofollow(), with the same errno.
+ */
+int dsd_path_type_nofollow(const char* path, dsd_path_type* out_type);
+
+/**
  * @brief The absolute, canonical path of an existing file or folder.
  *
- * POSIX resolves symbolic links and "." and ".." (realpath()); Windows makes the path absolute and folds "." and ".."
- * (_fullpath()). Two paths that name one folder the same way compare equal, which is what a check whether a file lies
- * inside a folder needs.
+ * POSIX resolves symbolic links and "." and ".." (realpath()); Windows makes the path absolute and folds "." and "..",
+ * through the wide or the ANSI call as the file note says, and gives the result in the encoding @p path came in (a
+ * UTF-8 path's in UTF-8). Two paths in one encoding that name one folder the same way compare equal, which is what a
+ * check whether a file lies inside a folder needs; a UTF-8 and an ANSI path to one folder need not.
  *
  * @param path      Existing path.
  * @param out       Output buffer.
@@ -261,21 +304,38 @@ int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left)
 int dsd_path_canonical(const char* path, char* out, size_t out_size);
 
 /**
+ * @brief Whether two paths name one existing file, however each is spelled.
+ *
+ * POSIX compares the device and inode stat() gives each (a symbolic link counts as the file it points to). Windows
+ * compares the volume serial number and 128-bit file id GetFileInformationByHandleEx(FileIdInfo) gives each, exact on
+ * ReFS, whose ids do not fit 64 bits; where FileIdInfo is not supported (before Windows 8, some file systems), the volume
+ * serial number and 64-bit file index of GetFileInformationByHandle(). A hard link, another case of the same name on a
+ * file system that ignores case, and a Windows short (8.3) name each name the file they spell.
+ *
+ * @param a     A path (UTF-8 on Windows, where a path that is not opens as the ANSI code page).
+ * @param b     Another path.
+ * @param same  Set to 1 when @p a and @p b name one file, 0 when they name two.
+ * @return 0 with @p same set, or -1 with errno set when either file cannot be read (ENOENT for a missing file, EINVAL
+ *         for NULL or an empty path; EIO on Windows when one file gives a 128-bit id and the other only a 64-bit index,
+ *         which do not compare); @p same is then 0.
+ */
+int dsd_path_same_file(const char* a, const char* b, int* same);
+
+/**
  * @brief The bytes free to this user on the volume that holds @p path.
  *
  * Free space only: statvfs() on POSIX and Android, GetDiskFreeSpaceExW() on Windows. Nothing else about the volume is
  * read (no label, no mount table), so on Android it makes no request the app's SELinux policy denies, as QStorageInfo's
  * label lookup does.
  *
- * @param path  A folder on the volume, in UTF-8 (Windows refuses a file's path: ENOTDIR).
+ * @param path  A folder on the volume (Windows refuses a file's path: ENOTDIR).
  * @return The free bytes (capped at INT64_MAX), or -1 when they cannot be read, with errno set (ENOENT for a missing
  *         folder, EINVAL for NULL or an empty path).
  */
 int64_t dsd_path_free_bytes(const char* path);
 
 /**
- * @brief Remove the file at @p path: remove() on POSIX; on Windows the wide call when @p path is well-formed UTF-8 (the
- * app's own files, named in any script), else the ANSI one.
+ * @brief Remove the file at @p path: remove() on POSIX; on Windows the wide or the ANSI call, as the file note says.
  * @return 0, or -1 with errno set.
  */
 int dsd_remove_file(const char* path);
@@ -285,9 +345,20 @@ int dsd_remove_file(const char* path);
 /**
  * @brief @p path as UTF-16 for the wide Windows file calls when it is well-formed UTF-8, as the app's own paths are in
  * any script; NULL when it is not (a path in the ANSI code page, as a command line gives it) or memory runs out. The
- * caller frees it. Windows only: every file call that takes a path the app wrote decides wide or ANSI by it.
+ * caller frees it. Windows only, and only a conversion: NULL does not tell those two answers apart, so the path helpers
+ * decide wide or ANSI by dsd_win32_path_wide(), never by this.
  */
 wchar_t* dsd_win32_utf8_path_to_wide(const char* path);
+
+/**
+ * @brief The one encoding rule every Windows path helper follows (see the file note): which call @p path goes through.
+ *
+ * @param path      Path, UTF-8 or in the ANSI code page.
+ * @param out_wide  Receives @p path as UTF-16 when the answer is 1 (the caller frees it), else NULL.
+ * @return 1: @p path is well-formed UTF-8, use the wide call with @p out_wide only. 0: it is not, use the ANSI call
+ *         with @p path only. -1 with errno set: EINVAL for a NULL argument, ENOMEM when the copy cannot be made.
+ */
+int dsd_win32_path_wide(const char* path, wchar_t** out_wide);
 #endif
 
 /**
@@ -332,6 +403,20 @@ FILE* dsd_fopen_existing_local_file(const char* requested, char* out, size_t out
 FILE* dsd_fopen_existing_regular_file(const char* path, const char* mode);
 
 /**
+ * @brief Open @p path for binary appending, creating it owner-only when absent, never waiting on what is there.
+ *
+ * As dsd_fopen_private(path, "ab"), except that only a regular file is ever opened: the final name is opened without
+ * following a link (ELOOP on POSIX; a reparse point on Windows is refused with EINVAL), non-blocking, so a FIFO no
+ * process reads fails at once instead of holding the open, and anything opened that is not a regular file (a FIFO
+ * something reads, a device) is closed again, untouched, with EINVAL. A folder fails too (EISDIR or EINVAL). Writes
+ * through the stream block as usual.
+ *
+ * @param path  File path.
+ * @return Append stream for the regular file, or NULL with errno set.
+ */
+FILE* dsd_fopen_private_append_regular(const char* path);
+
+/**
  * @brief Callback invoked once per regular file found by dsd_dir_list().
  *
  * @param name  Directory entry name with no path prefix.
@@ -346,7 +431,9 @@ typedef int (*dsd_dir_list_cb)(const char* name, void* user);
  * Entries are reported by bare name with no path prefix; "." and ".." and every
  * subdirectory are skipped. The order is whatever the platform returns, so a
  * caller that needs a stable order must sort. Stopping the walk by returning
- * non-zero from @p cb is not an error.
+ * non-zero from @p cb is not an error. On Windows names come back in the
+ * folder's encoding: a UTF-8 folder reports UTF-8 names (skipping a name that
+ * has no UTF-8 form), an ANSI one ANSI names.
  *
  * @param dir   Directory to walk.
  * @param cb    Per-entry callback.

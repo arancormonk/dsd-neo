@@ -12,6 +12,7 @@
 
 #include <QByteArray>
 #include <QChar>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileDevice> // IWYU pragma: keep
@@ -28,6 +29,7 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/managed_file.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
@@ -64,14 +66,23 @@ failure(const QString& error) {
 }
 
 QVariantMap
-busy_failure(const QString& type) {
+busy_failure() {
     auto result = failure(QStringLiteral("busy"));
-    result.insert(QStringLiteral("detail"),
-                  type == QLatin1String("trunkTargets")
-                      ? ImportedFilesModel::tr("Stop the decoder before replacing target files.")
-                      : ImportedFilesModel::tr("Stop the decoder before replacing a talkgroup list."));
+    result.insert(QStringLiteral("detail"), ImportedFilesModel::tr("Stop the decoder before replacing target files."));
     return result;
 }
+
+/* The managed-file lock (<dsd-neo/core/managed_file.h>) for one replacement of a row's file: the decoder rewrites and
+   appends to the session's group list under the same lock, so its check and write never interleave with the move
+   here. Holds the file operation only; nothing in it waits for the decoder. */
+struct ManagedFileLock {
+    ManagedFileLock() { dsd_managed_file_lock(); }
+
+    ~ManagedFileLock() { dsd_managed_file_unlock(); }
+
+    ManagedFileLock(const ManagedFileLock&) = delete;
+    ManagedFileLock& operator=(const ManagedFileLock&) = delete;
+};
 
 /* A copy's failure as an import result. */
 QVariantMap
@@ -654,7 +665,9 @@ ImportedFilesModel::rowResult(const Row& row) {
 
 bool
 ImportedFilesModel::replacementBusy(const QString& type) const {
-    return (type == QLatin1String("group") || type == QLatin1String("trunkTargets")) && decoderBusy();
+    // A talkgroup list is not held back (issue #748): its move runs under the managed-file lock, the decoder refuses
+    // to save over a list it did not reload, and the Imports screen asks a running session to reload the file.
+    return type == QLatin1String("trunkTargets") && decoderBusy();
 }
 
 QVariantMap
@@ -663,11 +676,15 @@ ImportedFilesModel::importRefusal(const QString& type, const QString& replacePat
     QVariantMap result;
     if (!knownTypes().contains(type)) {
         result = failure(QStringLiteral("format"));
-    } else if (!replacePath.isEmpty() && (row < 0 || m_rows[row].type != type)) {
+    } else if (!replacePath.isEmpty() && row < 0) {
+        // The row the pick was asked for went while the picker was up (issue #829).
+        result = failure(QStringLiteral("changed"));
+        result.insert(QStringLiteral("detail"), tr("That file changed while you were picking. Try again."));
+    } else if (!replacePath.isEmpty() && m_rows[row].type != type) {
         result = failure(QStringLiteral("path"));
         result.insert(QStringLiteral("detail"), tr("Cannot replace this imported file."));
     } else if (row >= 0 && replacementBusy(type)) {
-        result = busy_failure(type);
+        result = busy_failure();
     } else {
         *target = row >= 0 ? ImportTarget{m_rows[row].path, m_rows[row].revision, type, false}
                            : ImportTarget{QString(), 0, type, false};
@@ -834,7 +851,7 @@ ImportedFilesModel::commitReplacement(const QVariantMap& staged, const ImportTar
     const int row = currentRow(target);
     QVariantMap result = failure(QStringLiteral("stale"));
     if (row >= 0) {
-        result = !target.refresh && replacementBusy(target.type) ? busy_failure(target.type)
+        result = !target.refresh && replacementBusy(target.type) ? busy_failure()
                                                                  : replaceRowFile(row, staged, target.refresh);
     }
     if (!result.value(QStringLiteral("ok")).toBool()) {
@@ -857,7 +874,7 @@ ImportedFilesModel::commitBundle(const QVariantMap& staged, const ImportTarget& 
     if (!target.path.isEmpty() && row < 0) {
         result = failure(QStringLiteral("stale"));
     } else if (row >= 0 && replacementBusy(target.type)) {
-        result = busy_failure(target.type);
+        result = busy_failure();
     } else {
         QStringList created;
         const QString error = place_bundle_files(staged, &created);
@@ -961,8 +978,20 @@ ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refr
         discard_created(created);
         return failure(QStringLiteral("save"));
     }
-    if (m_replaceFile(staged.value(QStringLiteral("staged")).toString(), stored.path) != 0) {
-        const bool noSpace = errno == ENOSPC;
+    int moved = -1;
+    int moveErrno = 0;
+    {
+        // The move is one step for the decoder's group list writer: its check and rewrite of the session's list never
+        // straddle it (issue #748).
+        const ManagedFileLock lock;
+        moved = m_replaceFile(staged.value(QStringLiteral("staged")).toString(), stored.path);
+        moveErrno = errno;
+        if (moved == 0) {
+            dsd_managed_file_step_reached(DSD_MANAGED_FILE_STEP_INSTALLED);
+        }
+    }
+    if (moved != 0) {
+        const bool noSpace = moveErrno == ENOSPC;
         if (saveRows(m_rows)) {
             discard_created(created);
             QVariantMap result = failure(QStringLiteral("local"));
@@ -1168,6 +1197,14 @@ ImportedFilesModel::rowForPath(const QString& path) const {
     return -1;
 }
 
+QVariantMap
+ImportedFilesModel::groupListCounts(const QString& path) const {
+    int accepted = 0;
+    int skipped = 0;
+    const bool ok = !path.isEmpty() && validate(path, QStringLiteral("group"), &accepted, &skipped);
+    return {{"ok", ok}, {"accepted", ok ? accepted : 0}, {"skipped", ok ? skipped : 0}};
+}
+
 ImportedFilesModel::Row
 ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     Row row;
@@ -1210,7 +1247,7 @@ ImportedFilesModel::mapFromRow(const Row& row) {
 
 void
 ImportedFilesModel::load() {
-    JsonStoreLoad status = JsonStoreLoad::Failed;
+    JsonStoreLoad status = JsonStoreLoad::Unreadable;
     const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName), &status);
     QList<Row> stored;
     for (const auto& value : array) {
@@ -1220,15 +1257,16 @@ ImportedFilesModel::load() {
     }
     // An index that cannot be read references nothing, which proves nothing about the journal. A running decoder may
     // still read a journaled revision: the journal then waits for a start that finds it stopped.
-    if (status != JsonStoreLoad::Failed && !cleanupBlocked()) {
+    if (status != JsonStoreLoad::Unreadable && !cleanupBlocked()) {
         recoverJournal(stored);
     }
     QList<Row> rows;
     QList<BundleRevisions> bundles;
     for (Row& row : stored) {
         // A copy Android or the user deleted behind the app's back must not
-        // survive as a ghost row pointing nowhere.
-        if (row.path.isEmpty() || !QFile::exists(row.path)) {
+        // survive as a ghost row pointing nowhere. Only a confirmed absence
+        // drops it: a folder that cannot be searched for now is no proof.
+        if (row.path.isEmpty() || json_store_definitely_missing(row.path)) {
             if (!row.path.isEmpty() && !m_pruned_paths.contains(row.path)) {
                 m_pruned_paths.append(row.path);
             }

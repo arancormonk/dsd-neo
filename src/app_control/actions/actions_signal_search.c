@@ -203,16 +203,14 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
     return 1;
 }
 
-/* A permanent avoid is saved first, and only then is the session's own avoid made, so a full permanent list changes
-   nothing at all. A history row (hit_id 0) names its frequency, and the session avoids it by frequency. */
+/* Avoid the hit being visited permanently. The store saves it first and puts the frequency the coordinator validated
+   in the permanent list the search reads, so a full permanent list changes nothing at all; the coordinator then finds
+   it permanent and leaves the visit, taking no room in the session's own list (issue #828). A history row's permanent
+   avoid changes the store directly, from the frontend. */
 static int
 avoid_permanently(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* control) {
-    dsd_signal_search_control session = *control;
-    if (!session.hit_id) {
-        session.action = DSD_SEARCH_ACTION_AVOID_FREQUENCY;
-    }
     uint32_t frequency = 0;
-    if (dsd_engine_signal_search_target(state, &session, &frequency)) {
+    if (dsd_engine_signal_search_target(state, control, &frequency)) {
         return 2;
     }
     const int saved = dsd_app_signal_search_permanent_avoid(frequency);
@@ -222,16 +220,11 @@ avoid_permanently(dsd_opts* opts, dsd_state* state, const dsd_signal_search_cont
                                                                            : "This frequency cannot be avoided");
         return 2;
     }
-    if (dsd_engine_signal_search_control(opts, state, &session)) {
-        /* Validated above on this thread, so only a full session list refuses. */
-        dsd_engine_signal_search_notice(state, control->session_id,
-                                        "Saved as a permanent avoid; this session's avoid list is full");
-        return 1;
-    }
-    dsd_app_signal_search_session_avoid_add(control->session_id, frequency);
-    return 1;
+    return dsd_engine_signal_search_control(opts, state, control) ? 2 : 1;
 }
 
+/* The session's own avoid list is the coordinator's, which publishes it to the runtime list the frontends read, so the
+   other actions only reach the coordinator; it validates each on this thread and says any refusal in its status. */
 static int
 control_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd) {
     if (cmd->n != sizeof(dsd_signal_search_control)) {
@@ -242,21 +235,7 @@ control_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c
     if (control.action == DSD_SEARCH_ACTION_AVOID_PERMANENT) {
         return avoid_permanently(opts, state, &control);
     }
-    /* The frequency an avoid mirrors is the one the coordinator validates now, never an older status copy's hit. */
-    uint32_t frequency = 0;
-    if (dsd_engine_signal_search_target(state, &control, &frequency)
-        || dsd_engine_signal_search_control(opts, state, &control)) {
-        return 2;
-    }
-    switch (control.action) {
-        case DSD_SEARCH_ACTION_AVOID:
-        case DSD_SEARCH_ACTION_AVOID_FREQUENCY:
-            dsd_app_signal_search_session_avoid_add(control.session_id, frequency);
-            break;
-        case DSD_SEARCH_ACTION_UNAVOID: dsd_app_signal_search_session_avoid_remove(frequency); break;
-        default: break;
-    }
-    return 1;
+    return dsd_engine_signal_search_control(opts, state, &control) ? 2 : 1;
 }
 const struct dsd_app_command_reg dsd_app_actions_signal_search[] = {
     {DSD_APP_CMD_SIGNAL_SEARCH_START, start_search},

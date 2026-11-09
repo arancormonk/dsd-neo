@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 import QtQuick.Window
 import "Util.js" as Util
 
@@ -21,15 +20,24 @@ Item {
     // saving, restorePicker, unlock, checking, confirm, closing.
     property string step: ""
     readonly property bool active: step.length > 0
-    // The last result, shown under the Settings card's rows.
+    // The last result, shown on the Settings card under the row of the action
+    // it reports on: "export" or "restore" (issue #828: an export refusal
+    // under Restore read as Restore's).
     property string notice: ""
     property bool noticeProblem: false
+    property string noticeAction: ""
+    // The action the flow on screen belongs to, for the notice it ends with.
+    property string flowAction: ""
     // The picked document, passed to the model exactly as the picker gave it.
     property string reference: ""
     property var notIncluded: []
     // The unlock sheet's last error was about the file, not the passphrase:
     // retrying cannot help, so the sheet offers another file instead.
     property bool fileProblem: false
+    // The last text read out and how many have been, so a test can tell each
+    // problem is read out once, and again when it happens again.
+    property string announced: ""
+    property int announcements: 0
 
     // Entering a restore: Main drops a start still waiting on USB access.
     signal restoreBegun
@@ -37,6 +45,12 @@ Item {
     function beginExport() {
         if (active)
             return;
+        // Issue #828: no passphrase is asked for a backup that can't be made.
+        var check = backup.checkExport();
+        if (!check.ok) {
+            setNotice(errorText(check.error, "prepare", check.unreadable), true, "export");
+            return;
+        }
         start("exportPassphrase");
         passphraseField.text = "";
         confirmField.text = "";
@@ -69,11 +83,11 @@ Item {
             return;
         var result = backup.discardRestore();
         if (result.ok)
-            setNotice(qsTr("Restore cancelled."), false);
+            setNotice(qsTr("Restore cancelled."), false, "restore");
         else if (result.discarded)
-            setNotice(qsTr("Restore cancelled. Its leftover files are removed the next time DSD-neo opens."), false);
+            setNotice(qsTr("Restore cancelled. Its leftover files are removed the next time DSD-neo opens."), false, "restore");
         else
-            setNotice(discardRefusedText(result.error), true);
+            setNotice(discardRefusedText(result.error), true, "restore");
     }
 
     // Settings offers "Cancel restore" only while backup.restoreCancellable, but
@@ -89,7 +103,8 @@ Item {
     }
 
     function start(first) {
-        setNotice("", false);
+        setNotice("", false, "");
+        flowAction = first === "exportPassphrase" ? "export" : "restore";
         reference = "";
         notIncluded = [];
         step = first;
@@ -123,19 +138,19 @@ Item {
         notIncluded = [];
         fileProblem = false;
         confirmRestore.error = "";
-        setNotice(text, problem);
+        setNotice(text, problem, flowAction);
         backup.setFlowActive(false);
     }
 
-    function setNotice(text, problem) {
+    function setNotice(text, problem, action) {
         notice = text;
         noticeProblem = problem;
+        noticeAction = text.length > 0 ? action : "";
         announce(text);
     }
 
     function announce(text) {
-        if (text.length && typeof Accessible.announce === "function")
-            Accessible.announce(text);
+        Navigation.announce(flow, null, text);
     }
 
     function focusField(field) {
@@ -163,10 +178,41 @@ Item {
         return qsTr("Use at least %1 characters.").arg(backup.minPassphraseLength);
     }
 
+    // Issue #828: files a backup carries that can't be read now (the model's
+    // file names), named in one message with what to do next. A list's next
+    // saved change writes it again, and the settings are tried again at the
+    // next start; the backup after that holds what DSD-neo has then, never the
+    // unreadable data.
+    function unreadableText(files) {
+        var names = [];
+        var lists = [];
+        var settings = false;
+        for (var i = 0; i < (files || []).length; ++i) {
+            var file = String(files[i]);
+            names.push(Util.storeLabel(file));
+            if (file === "dsd-neo-app.ini")
+                settings = true;
+            else
+                lists.push(Util.storeLabel(file));
+        }
+        var text = qsTr("%1 can't be read, so no backup was made.").arg(names.length ? Util.andList(names) : qsTr("Some files"));
+        var step = "";
+        if (lists.length === 1)
+            step = settings ? qsTr("Save a change to %1, restart DSD-neo, then back up again.").arg(lists[0]) : qsTr("Save a change to %1, then back up again.").arg(lists[0]);
+        else if (lists.length > 1)
+            step = settings ? qsTr("Save a change to each of %1, restart DSD-neo, then back up again.").arg(Util.andList(lists)) : qsTr("Save a change to each of %1, then back up again.").arg(Util.andList(lists));
+        else if (settings)
+            step = qsTr("Restart DSD-neo, then back up again.");
+        return step.length ? text + " " + step + " " + qsTr("That backup holds only what DSD-neo shows now.") : text;
+    }
+
     // One message per model error name. `action` picks the wording where the
     // same name means different things: prepare, save, inspect or commit.
-    function errorText(name, action) {
+    // `unreadable` is the result's list of files that couldn't be read.
+    function errorText(name, action, unreadable) {
         switch (name) {
+        case "Unreadable":
+            return unreadableText(unreadable);
         case "WrongPassphrase":
             return qsTr("Wrong passphrase, or the file is damaged.");
         case "NotBackup":
@@ -250,6 +296,12 @@ Item {
     function exportPrepared(result) {
         if (step !== "encrypting")
             return;
+        if (!result.ok && result.error === "Unreadable") {
+            // A file became unreadable after the check at Export backup:
+            // retyping can't help, so the flow ends with the reason on the card.
+            finish(errorText(result.error, "prepare", result.unreadable), true);
+            return;
+        }
         if (!result.ok) {
             step = "exportPassphrase";
             if (result.error === "PassphraseTooShort") {
@@ -267,14 +319,19 @@ Item {
         closeSheet(passphraseSheet);
         passphraseField.text = "";
         confirmField.text = "";
-        savePicker.selectedFile = backup.suggestedFileName();
+        savePicker.suggestedName = backup.suggestedFileName();
         savePicker.open();
     }
 
     function savePicked(ref) {
-        if (step !== "exportPicker")
+        if (step !== "exportPicker") {
+            // Not wanted any more: nothing will write a Download-folder row.
+            if (savePicker.savedToDownloads)
+                decoderHost.discardPendingDownload(ref);
             return;
+        }
         step = "saving";
+        reference = ref;
         savingSheet.open();
         backup.saveExport(ref);
     }
@@ -284,6 +341,15 @@ Item {
             return;
         backup.discardExport();
         finish("", false);
+    }
+
+    // The picker could not ask and nothing was saved: the encrypted backup
+    // goes, and the card says why.
+    function savePickUnavailable(message) {
+        if (step !== "exportPicker")
+            return;
+        backup.discardExport();
+        finish(message, true);
     }
 
     function exportFinished(result) {
@@ -296,11 +362,15 @@ Item {
         finish(savedText(result.notIncluded || notIncluded), false);
     }
 
-    // The backup leaves out what it cannot carry; name the first few.
+    // The backup leaves out what it cannot carry; name the first few. With no
+    // save picker on the phone the backup went to the Download folder, under
+    // the name Android gave it there.
     function savedText(items) {
+        var name = savePicker.savedToDownloads ? decoderHost.savedDocumentName(reference) : "";
+        var saved = name.length ? qsTr("Backup saved to Download/DSD-neo as %1.").arg(name) : qsTr("Backup saved.");
         if (!items || !items.length)
-            return qsTr("Backup saved.");
-        return qsTr("Backup saved.") + " " + Util.notIncludedText(items);
+            return saved;
+        return saved + " " + Util.notIncludedText(items);
     }
 
     // ---- restore ----
@@ -338,6 +408,14 @@ Item {
         if (step !== "restorePicker")
             return;
         finish("", false);
+    }
+
+    // The first pick or "Choose another file": either way the restore ends,
+    // since no file can come back.
+    function restorePickUnavailable(message) {
+        if (step !== "restorePicker")
+            return;
+        finish(message, true);
     }
 
     function submitUnlock() {
@@ -493,27 +571,38 @@ Item {
         }
     }
 
-    FileDialog {
+    // The suggested name is set before each open(), from the day the backup is
+    // made. Android knows no type for a .dsdbak, so the host saves it as
+    // application/octet-stream; the filter and suffix are the desktop dialog's.
+    DocumentPicker {
         id: savePicker
         objectName: "backupSavePicker"
-        fileMode: FileDialog.SaveFile
-        // Android takes the new document's MIME type from the first filter; an
-        // extension it does not know becomes application/octet-stream.
+        mode: "save"
+        mimeType: "application/octet-stream"
         nameFilters: [qsTr("DSD-neo backup") + " (*.dsdbak)"]
         defaultSuffix: "dsdbak"
-        onAccepted: flow.savePicked(selectedFile.toString())
+        onAccepted: function (reference) {
+            flow.savePicked(reference);
+        }
         onRejected: flow.savePickCancelled()
+        onUnavailable: function (reason, message) {
+            flow.savePickUnavailable(message);
+        }
     }
 
     // No filter: providers label files freely, and the model identifies a
     // backup by its content, never by its name.
-    FileDialog {
+    DocumentPicker {
         id: openPicker
         objectName: "backupOpenPicker"
-        fileMode: FileDialog.OpenFile
-        nameFilters: []
-        onAccepted: flow.restorePicked(selectedFile.toString())
+        mode: "open"
+        onAccepted: function (reference) {
+            flow.restorePicked(reference);
+        }
         onRejected: flow.restorePickCancelled()
+        onUnavailable: function (reason, message) {
+            flow.restorePickUnavailable(message);
+        }
     }
 
     ModalSheet {

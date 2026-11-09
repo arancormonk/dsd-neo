@@ -28,11 +28,13 @@ static void* observer_user;
 static dsd_signal_search_status published;
 static dsd_call_snapshot call;
 static int reject_start, coordinator_active;
-static uint32_t session_avoid_added, session_avoid_removed, permanent_avoided;
-static uint64_t session_avoid_session;
+static uint32_t permanent_avoided;
 /* The coordinator as the control handler sees it: the hit it validates, and what it does with each action. */
 static uint32_t live_hit_frequency = 463552100;
+static const uint64_t live_hit_id = 2;
 static int target_stale, control_refused, permanent_result, controls, permanent_calls;
+/* How many store adds had run when the coordinator last took an action. */
+static int permanent_calls_at_control;
 static dsd_signal_search_control last_control;
 static char notice[192];
 
@@ -57,24 +59,41 @@ dsd_engine_signal_search_active(const dsd_state* state) {
     return coordinator_active;
 }
 
+static int
+by_frequency(const dsd_signal_search_control* action) {
+    return action->action == DSD_SEARCH_ACTION_UNAVOID || action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY;
+}
+
+/* The coordinator's own validation: the session is current, and a hit-tied action names the hit being visited. */
+static int
+valid_action(const dsd_signal_search_control* action) {
+    if (target_stale) {
+        return 0;
+    }
+    return by_frequency(action) || action->action < DSD_SEARCH_ACTION_HOLD || action->hit_id == live_hit_id;
+}
+
+/* Counts only the actions the coordinator takes. */
 int
 dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* control) {
     (void)opts;
     (void)state;
+    if (!valid_action(control) || control_refused) {
+        return -1;
+    }
     ++controls;
     last_control = *control;
-    return control_refused ? -1 : 0;
+    permanent_calls_at_control = permanent_calls;
+    return 0;
 }
 
 int
 dsd_engine_signal_search_target(const dsd_state* state, const dsd_signal_search_control* action, uint32_t* frequency) {
     (void)state;
-    if (target_stale) {
+    if (!valid_action(action)) {
         return -1;
     }
-    const int by_frequency =
-        action->action == DSD_SEARCH_ACTION_UNAVOID || action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY;
-    *frequency = by_frequency ? action->frequency_hz : live_hit_frequency;
+    *frequency = by_frequency(action) ? action->frequency_hz : live_hit_frequency;
     return 0;
 }
 
@@ -117,17 +136,6 @@ dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
         permanent_avoided = frequency;
     }
     return permanent_result;
-}
-
-void
-dsd_app_signal_search_session_avoid_add(uint64_t session, uint32_t frequency) {
-    session_avoid_session = session;
-    session_avoid_added = frequency;
-}
-
-void
-dsd_app_signal_search_session_avoid_remove(uint32_t frequency) {
-    session_avoid_removed = frequency;
 }
 
 int
@@ -531,91 +539,84 @@ main(void) {
     test_rejected_code_access(opts, state);
     test_detection_tone();
 
-    // Controls mirror the session's own avoid list for the frontends; a permanent avoid goes to the store as well.
+    // Issue #828: the session's own avoid list is the coordinator's (the runtime list the screens read), so the
+    // session avoid actions only reach the coordinator, which validates them on this thread; the store is untouched.
     struct dsd_app_command* control = calloc(1, sizeof(*control));
     assert(control);
     control->n = sizeof(dsd_signal_search_control);
     dsd_signal_search_control action = {1, 2, DSD_SEARCH_ACTION_AVOID, 0};
-    // The published copy can be a tick old; the mirror takes the hit the coordinator validates now.
-    published.hit.frequency_hz = 451000000;
+    published.hit.frequency_hz = 451000000; // a tick-old published copy is never what an action resolves to
     DSD_MEMCPY(control->data, &action, sizeof(action));
     assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
-    assert(session_avoid_session == 1 && session_avoid_added == 463552100 && !permanent_avoided);
+    assert(controls == 1 && last_control.action == DSD_SEARCH_ACTION_AVOID && last_control.hit_id == 2);
     action.action = DSD_SEARCH_ACTION_UNAVOID;
     action.frequency_hz = 463552100;
     DSD_MEMCPY(control->data, &action, sizeof(action));
     assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
-    assert(session_avoid_removed == 463552100);
-    action.action = DSD_SEARCH_ACTION_AVOID_PERMANENT;
-    action.frequency_hz = 0;
-    session_avoid_added = 0;
-    DSD_MEMCPY(control->data, &action, sizeof(action));
-    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
-    assert(permanent_avoided == 463552100 && session_avoid_added == 463552100);
-    assert(last_control.action == DSD_SEARCH_ACTION_AVOID_PERMANENT && last_control.hit_id == 2);
-
-    // A history row avoids by frequency, for this session only, and is mirrored once the coordinator takes it.
+    assert(controls == 2 && last_control.action == DSD_SEARCH_ACTION_UNAVOID && last_control.frequency_hz == 463552100);
     action = (dsd_signal_search_control){1, 0, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 462575000};
     DSD_MEMCPY(control->data, &action, sizeof(action));
     assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
-    assert(session_avoid_added == 462575000 && last_control.frequency_hz == 462575000);
-    control_refused = 1; // the session's list is full: nothing is mirrored
+    assert(controls == 3 && last_control.frequency_hz == 462575000);
+    control_refused = 1; // the session's list is full: refused, which the coordinator says in its status
     action.frequency_hz = 462600000;
     DSD_MEMCPY(control->data, &action, sizeof(action));
     assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
-    assert(session_avoid_added == 462575000);
     control_refused = 0;
+    assert(controls == 3 && permanent_calls == 0);
 
-    // A history row's permanent avoid: saved first, then avoided this session by frequency.
+    // Avoid permanently, for the hit being visited: the store saves it first, which puts the frequency the coordinator
+    // validated in the permanent list the search reads; the coordinator then finds it permanent and leaves the visit.
+    action = (dsd_signal_search_control){1, 2, DSD_SEARCH_ACTION_AVOID_PERMANENT, 0};
+    DSD_MEMCPY(control->data, &action, sizeof(action));
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
+    assert(permanent_avoided == 463552100 && permanent_calls == 1);
+    assert(last_control.action == DSD_SEARCH_ACTION_AVOID_PERMANENT && last_control.hit_id == 2);
+    assert(permanent_calls_at_control == 1);
+
+    // It names the hit being visited and nothing else: a history row (hit ID 0) changes the store directly, from the
+    // frontend, so here it is refused and saves nothing.
     permanent_avoided = 0;
     action = (dsd_signal_search_control){1, 0, DSD_SEARCH_ACTION_AVOID_PERMANENT, 462625000};
     DSD_MEMCPY(control->data, &action, sizeof(action));
-    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
-    assert(permanent_avoided == 462625000 && session_avoid_added == 462625000);
-    assert(last_control.action == DSD_SEARCH_ACTION_AVOID_FREQUENCY && last_control.frequency_hz == 462625000);
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
+    assert(!permanent_avoided && permanent_calls == 1 && controls == 4);
 
-    // Stale: refused before either avoid store or the coordinator is touched, from both entry points.
-    for (int history = 0; history < 2; ++history) {
-        target_stale = 1;
-        const int before_controls = controls, before_permanent = permanent_calls;
-        session_avoid_added = 0;
-        action =
-            (dsd_signal_search_control){1, history ? 0 : 2, DSD_SEARCH_ACTION_AVOID_PERMANENT, history ? 462650000 : 0};
+    // Stale: refused before the store or the coordinator is touched, by every avoid action.
+    static const int stale_actions[] = {DSD_SEARCH_ACTION_AVOID_PERMANENT, DSD_SEARCH_ACTION_AVOID,
+                                        DSD_SEARCH_ACTION_AVOID_FREQUENCY, DSD_SEARCH_ACTION_UNAVOID};
+    target_stale = 1;
+    for (size_t i = 0; i < sizeof(stale_actions) / sizeof(stale_actions[0]); ++i) {
+        action = (dsd_signal_search_control){1, 2, stale_actions[i], 462650000};
         DSD_MEMCPY(control->data, &action, sizeof(action));
         assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
-        action.action = history ? DSD_SEARCH_ACTION_AVOID_FREQUENCY : DSD_SEARCH_ACTION_AVOID;
-        DSD_MEMCPY(control->data, &action, sizeof(action));
-        assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
-        assert(controls == before_controls && permanent_calls == before_permanent && !session_avoid_added);
-        target_stale = 0;
     }
+    assert(controls == 4 && permanent_calls == 1);
+    target_stale = 0;
 
     // A full permanent list refuses visibly and changes nothing else: no skip, no session avoid.
-    for (int history = 0; history < 2; ++history) {
-        permanent_result = DSD_APP_SEARCH_AVOID_FULL;
-        notice[0] = '\0';
-        const int before_controls = controls;
-        session_avoid_added = 0;
-        action =
-            (dsd_signal_search_control){1, history ? 0 : 2, DSD_SEARCH_ACTION_AVOID_PERMANENT, history ? 462675000 : 0};
-        DSD_MEMCPY(control->data, &action, sizeof(action));
-        assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
-        assert(strcmp(notice, "The permanent avoid list is full") == 0);
-        assert(controls == before_controls && !session_avoid_added);
-        // Already a permanent avoid: no refusal, and this session avoids it too.
-        permanent_result = DSD_APP_SEARCH_AVOID_DUPLICATE;
-        assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
-        assert(session_avoid_added == (history ? 462675000U : 463552100U));
-        // Saved, but the session's own list is full: said so, and nothing is mirrored.
-        permanent_result = DSD_APP_SEARCH_AVOID_ADDED;
-        control_refused = 1;
-        session_avoid_added = 0;
-        notice[0] = '\0';
-        assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
-        assert(strcmp(notice, "Saved as a permanent avoid; this session's avoid list is full") == 0);
-        assert(!session_avoid_added);
-        control_refused = 0;
-    }
+    action = (dsd_signal_search_control){1, 2, DSD_SEARCH_ACTION_AVOID_PERMANENT, 0};
+    DSD_MEMCPY(control->data, &action, sizeof(action));
+    permanent_result = DSD_APP_SEARCH_AVOID_FULL;
+    notice[0] = '\0';
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
+    assert(strcmp(notice, "The permanent avoid list is full") == 0 && controls == 4);
+    // Frequency 0 names no channel: refused the same way.
+    permanent_result = DSD_APP_SEARCH_AVOID_INVALID;
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
+    assert(strcmp(notice, "This frequency cannot be avoided") == 0 && controls == 4);
+    // Already a permanent avoid: no refusal, and the coordinator leaves the visit.
+    permanent_result = DSD_APP_SEARCH_AVOID_DUPLICATE;
+    notice[0] = '\0';
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 1);
+    assert(controls == 5 && last_control.action == DSD_SEARCH_ACTION_AVOID_PERMANENT && !notice[0]);
+    // A saved avoid takes no room in the session's list, so nothing here speaks for the coordinator: a refusal (the
+    // search failed in the meantime) keeps the save and the coordinator's own message.
+    permanent_result = DSD_APP_SEARCH_AVOID_ADDED;
+    control_refused = 1;
+    assert(dsd_app_actions_signal_search[1].fn(opts, state, control) == 2);
+    assert(permanent_avoided == 463552100 && !notice[0] && controls == 5);
+    control_refused = 0;
     free(control);
 
     // A start the engine rejects is shown, but owns nothing: no coordinator will ever publish STOPPED for it.

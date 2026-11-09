@@ -171,10 +171,15 @@ fixture(void) {
         g_state.trunk_scan_lists[i].enabled = 1;
         g_state.trunk_scan_lists[i].targets = targets[i];
     }
+    /* No list shares a target: each list's targets are in its own membership mask only. */
+    g_state.trunk_scan_membership_counts[0x1 - 1] = 12;
+    g_state.trunk_scan_membership_counts[0x2 - 1] = 1;
+    g_state.trunk_scan_membership_counts[0x4 - 1] = 3;
     g_state.trunk_scan_list_count = 3;
     g_state.trunk_scan_session = 7U;
     g_state.trunk_scan_lists_seq = 10U;
     g_state.trunk_scan_active_list = 1;
+    g_state.trunk_scan_active_lists = 0x1;
     g_sent_count = 0;
     g_reject_next = 0;
     /* A fresh history: the newest result (none) and the sequence the next one takes start over together, as the
@@ -437,6 +442,7 @@ test_all_lists_on(void) {
     g_state.trunk_scan_lists[0].enabled = 0;
     g_state.trunk_scan_lists[2].enabled = 0;
     g_state.trunk_scan_active_list = 2;
+    g_state.trunk_scan_active_lists = 0x2;
     assert(scan_list_modal_open(&g_opts, &g_state) == 1);
     expect_title("Scan lists (1 of 3 on, 1 target)");
     select_row(3);
@@ -590,10 +596,12 @@ test_paused_answer_before_the_pause_shows(void) {
     expect_row(0, "1  security      On   12 targets  on air  Scan paused: resume it first");
     g_state.trunk_scan_paused = 1;
     g_state.trunk_scan_active_list = 0;
+    g_state.trunk_scan_active_lists = 0;
     tick();
     expect_row(0, "1  security      On   12 targets          Scan paused: resume it first");
     g_state.trunk_scan_paused = 0;
     g_state.trunk_scan_active_list = 1;
+    g_state.trunk_scan_active_lists = 0x1;
     tick();
     expect_row(0, "1  security      On   12 targets  on air");
     scan_list_modal_close();
@@ -660,6 +668,61 @@ test_a_gap_found_while_results_keep_coming_ends_the_wait_once_drained(void) {
     scan_list_modal_close();
 }
 
+/* Issue #697: lists that share targets. security's file holds 12 (s, which hospital holds too, m, which municipality
+   holds too, and 10 of its own), hospital's 1 (s), municipality's 3 (m and 2 of its own): each row keeps its file's
+   count, the title counts each target once for the lists the rows show on (an answered switch ahead of its snapshot
+   included; a refused or out-of-order answer moves nothing it should not), and every list holding the target on air
+   (s) says so. */
+static void
+test_shared_targets_count_once(void) {
+    fixture();
+    DSD_MEMSET(g_state.trunk_scan_membership_counts, 0, sizeof g_state.trunk_scan_membership_counts);
+    g_state.trunk_scan_membership_counts[0x1 - 1] = 10;
+    g_state.trunk_scan_membership_counts[0x3 - 1] = 1; /* s */
+    g_state.trunk_scan_membership_counts[0x5 - 1] = 1; /* m */
+    g_state.trunk_scan_membership_counts[0x4 - 1] = 2;
+    g_state.trunk_scan_active_lists = 0x3;
+    assert(scan_list_modal_open(&g_opts, &g_state) == 1);
+    expect_title("Scan lists (3 of 3 on, 14 targets)");
+    expect_row(0, "1  security      On   12 targets  on air");
+    expect_row(1, "2  hospital      On    1 target   on air");
+    expect_row(2, "3  municipality  On    3 targets");
+
+    /* municipality off, refused: the row (On while it waits) and the total stay. */
+    select_row(2);
+    key('\n');
+    assert(g_sent_count == 1 && g_sent[0].list == 3 && g_sent[0].enabled == 0);
+    expect_title("Scan lists (3 of 3 on, 14 targets)");
+    publish_result(g_sent[0].request, 3, 0, DSD_APP_SCAN_LIST_SET_STALE);
+    tick();
+    expect_row(2, "3  municipality  On    3 targets          Scan changed; nothing applied");
+    expect_title("Scan lists (3 of 3 on, 14 targets)");
+
+    /* hospital off, then municipality off; the later answered first (busy), then hospital's (switched, ahead of the
+       snapshot): s stays counted through security all along. */
+    select_row(1);
+    key('\n');
+    select_row(2);
+    key('\n');
+    assert(g_sent_count == 3 && g_sent[1].list == 2 && g_sent[2].list == 3);
+    expect_title("Scan lists (3 of 3 on, 14 targets)");
+    publish_result(g_sent[2].request, 3, 0, DSD_APP_SCAN_LIST_SET_BUSY);
+    tick();
+    expect_title("Scan lists (3 of 3 on, 14 targets)");
+    publish_result(g_sent[1].request, 2, 0, DSD_APP_SCAN_LIST_SET_OK);
+    tick();
+    expect_row(1, "2  hospital      Off   1 target   on air");
+    expect_title("Scan lists (2 of 3 on, 14 targets)");
+    /* The snapshot shows it: s still on air, named by security, held by hospital too. */
+    g_state.trunk_scan_lists[1].enabled = 0;
+    g_state.trunk_scan_lists_seq = 11U;
+    tick();
+    expect_row(0, "1  security      On   12 targets  on air");
+    expect_row(1, "2  hospital      Off   1 target   on air");
+    expect_title("Scan lists (2 of 3 on, 14 targets)");
+    scan_list_modal_close();
+}
+
 int
 main(void) {
     test_opens_only_with_lists_to_switch();
@@ -676,6 +739,7 @@ main(void) {
     test_a_history_gap_ends_the_wait();
     test_an_answer_kept_past_a_history_gap_answers_its_row();
     test_a_gap_found_while_results_keep_coming_ends_the_wait_once_drained();
+    test_shared_targets_count_once();
     printf("UI_SCAN_LIST_MODAL: OK\n");
     return 0;
 }

@@ -56,12 +56,13 @@ int ui_csv_picker_collect(const char* dir, const char* kind, char paths[][CSV_PI
  *
  * @param kind         "chan" or "group".
  * @param prompt_title Title for the fall-back path prompt.
+ * @param prefill      Text the path prompt starts with (copied), or NULL/"" for none.
  * @param cap          Buffer capacity for a typed path.
  * @param on_done      Callback invoked with the result.
  * @param user_ctx     Context passed to @p on_done.
  */
-void ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
-                               void* user_ctx);
+void ui_csv_import_picker_open(const char* kind, const char* prompt_title, const char* prefill, size_t cap,
+                               ui_prompt_string_done_fn on_done, void* user_ctx);
 
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Test hook: picker contexts allocated and not yet disposed. */

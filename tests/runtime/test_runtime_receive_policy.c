@@ -130,6 +130,56 @@ test_names(void) {
     }
 }
 
+/* Two naming tables are equal when the lookup names every identity the same from both (issue #697): the order their
+   rules were written in does not count, another name, another identifier or one more rule does. */
+static void
+test_names_equal_ignores_order(void) {
+    char error[160];
+    dsd_service_names forward = {0};
+    dsd_service_names reverse = {0};
+    assert(dsd_receive_names_parse("--slot-name 1=Dispatch --dcc-name 7=Tower --tone-name D023N=Local", &forward, error,
+                                   sizeof(error))
+           == 0);
+    assert(dsd_receive_names_parse("--tone-name D023N=Local --dcc-name 7=Tower --slot-name 1=Dispatch", &reverse, error,
+                                   sizeof(error))
+           == 0);
+    assert(dsd_receive_names_equal(&forward, &reverse) && dsd_receive_names_equal(&reverse, &forward));
+    dsd_receive_policy a = {0};
+    dsd_receive_policy b = {0};
+    a.names = forward;
+    b.names = reverse;
+    assert(dsd_receive_policy_equal(&a, &b));
+
+    dsd_service_names other = {0};
+    assert(dsd_receive_names_parse("--tone-name D023N=Local --dcc-name 7=Mall --slot-name 1=Dispatch", &other, error,
+                                   sizeof(error))
+           == 0);
+    assert(!dsd_receive_names_equal(&forward, &other) && !dsd_receive_names_equal(&other, &forward));
+    assert(dsd_receive_names_parse("--tone-name D023N=Local --dcc-name 8=Tower --slot-name 1=Dispatch", &other, error,
+                                   sizeof(error))
+           == 0);
+    assert(!dsd_receive_names_equal(&forward, &other) && !dsd_receive_names_equal(&other, &forward));
+    other = reverse;
+    assert(dsd_receive_name_add(&other, DSD_RECEIVE_RAN, "12=Roads", error, sizeof(error)) == 0);
+    assert(!dsd_receive_names_equal(&forward, &other) && !dsd_receive_names_equal(&other, &forward));
+
+    /* A table with an identifier twice (none the parser makes): the access/tone lookup reads its first name, the slot
+       fallback its last, so a table that differs in either is another table. */
+    dsd_service_names twice = forward;
+    twice.rules[twice.count] = twice.rules[0];
+    DSD_SNPRINTF(twice.rules[twice.count].name, sizeof twice.rules[twice.count].name, "%s", "Other");
+    twice.count++;
+    assert(!dsd_receive_names_equal(&forward, &twice) && !dsd_receive_names_equal(&twice, &forward));
+    dsd_service_names twice_reordered = twice;
+    twice_reordered.rules[0] = twice.rules[1];
+    twice_reordered.rules[1] = twice.rules[0];
+    assert(dsd_receive_names_equal(&twice, &twice_reordered));
+    dsd_service_names swapped = twice;
+    swapped.rules[0] = twice.rules[twice.count - 1U];
+    swapped.rules[twice.count - 1U] = twice.rules[0];
+    assert(!dsd_receive_names_equal(&twice, &swapped));
+}
+
 /* A list is accepted only when its saved spelling fits as well: NACs 1..200 (512 of them, short hex spellings) save as
    exactly DSD_RECEIVE_LIST_MAX characters, and one more NAC would save longer than any list can load. */
 static void
@@ -217,6 +267,7 @@ main(void) {
     test_values();
     test_filters();
     test_names();
+    test_names_equal_ignores_order();
     test_list_fits_as_saved();
     test_unreachable_names();
     return 0;

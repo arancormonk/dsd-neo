@@ -37,7 +37,6 @@
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/squelch_floor.h>
-#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
@@ -98,6 +97,7 @@
 #include "rtl_view_rings.h"
 #include "rtl_wideband_spectrum.h"
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include "rtl_stream_test_support.h"
 #include "rtl_test_hook.h"
 #endif
@@ -3152,6 +3152,16 @@ rtl_stream_input_level_read(dsd_input_level_snapshot* out) {
     return 0;
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" int
+rtl_stream_test_input_level_read(struct dsd_input_level_snapshot* out) {
+    if (!out) {
+        return 0;
+    }
+    return rtl_stream_input_level_read(out);
+}
+#endif
+
 static void
 rtl_decode_health_reset(void) {
     g_decode_health_valid.store(0, std::memory_order_release);
@@ -5345,13 +5355,16 @@ demod_emit_output_block(struct demod_state* d, struct output_state* o, const Dem
     return written;
 }
 
+/* Feed the Signal search tap a block of the capture from @p device, which says when its samples clip. */
 static void
-demod_feed_signal_search(const demod_state* d) {
+demod_feed_signal_search(const demod_state* d, const struct rtl_device* device) {
     dsd_signal_capture search_capture{};
     search_capture.rate_hz = load_dongle_rate();
     search_capture.capture_hz = load_dongle_frequency();
     search_capture.generation = rtl_stream_output_generation();
-    search_capture.rotation_hz = capture_fs4_shift_active() ? (int32_t)(search_capture.rate_hz / 4U) : 0;
+    const int fs4_shift = capture_fs4_shift_active();
+    search_capture.rotation_hz = fs4_shift ? (int32_t)(search_capture.rate_hz / 4U) : 0;
+    search_capture.clip_level = rtl_device_signal_clip_level(device, fs4_shift);
     search_capture.capture_offset_hz =
         (int64_t)search_capture.capture_hz - controller.last_applied_freq_hz.load(std::memory_order_acquire);
     search_capture.drops = input_ring.producer_drops.load(std::memory_order_acquire);
@@ -5486,6 +5499,8 @@ demod_thread_fn(void* arg) {
     struct output_state* o = &output;
     maybe_set_thread_realtime_and_affinity("DEMOD");
     const int is_rtltcp_input = (g_stream && radio_source_is_rtltcp(g_stream->opts)) ? 1 : 0;
+    /* Opened before this thread starts and freed after it joins. */
+    const struct rtl_device* device = g_stream ? g_stream->device : nullptr;
     /* An I/Q replay is paced by its decoder (see "Replay decoder pacing"); a live source runs free. */
     const int replay_pull = stream_is_replay_active();
     while (!demod_should_exit_requested()) {
@@ -5510,7 +5525,7 @@ demod_thread_fn(void* arg) {
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? dsd_realtime_mono_ns() : 0ULL;
         demod_consume_pending_requests(d);
-        demod_feed_signal_search(d);
+        demod_feed_signal_search(d, device);
         if (demod_drop_signal_search_block(d, &span, replay_active)) {
             continue;
         }

@@ -617,8 +617,9 @@ test_previews_note_unreachable_names(void) {
     assert(dsd_test_remove_temp_dir(dir, files) == 0);
 }
 
-/* Issue #697: the lists of one session validate together: a target id is unique across them, and every error names
-   the file it is about by the name the caller gives it, a parser error and a cross-file repeat (both rows) alike. */
+/* Issue #697: the lists of one session validate together by the engine's rule: a row whose id an earlier list holds is
+   that target, shared and counted once, when its settings are the same, and refused naming both rows and the column
+   that differs otherwise; every error names the file it is about by the name the caller gives it. */
 static void
 test_target_lists_validate_together(void) {
     char a[DSD_TEST_PATH_MAX];
@@ -641,11 +642,28 @@ test_target_lists_validate_together(void) {
     assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 2, &count, err, sizeof err) == 0);
     assert(count == 4 && err[0] == '\0');
 
+    /* The same row in both lists is one target in both: the total counts it once. */
+    write_targets(b, "charlie,nxdn48-conventional,461556250,,1500,1200,,\n"
+                     "bravo,dmr-conventional,461000000,,1500,1200,,\n");
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 2, &count, err, sizeof err) == 0);
+    assert(count == 3 && err[0] == '\0');
+    /* One file as both lists: every target shared. */
+    const char* twice[] = {a, a};
+    assert(dsd_app_trunk_scan_validate_target_lists(twice, names, 2, &count, err, sizeof err) == 0);
+    assert(count == 2 && err[0] == '\0');
+
     write_targets(b, "charlie,nxdn48-conventional,461556250,,1500,1200,,\n"
                      "bravo,p25-conventional,852000000,,1500,1200,,\n");
     assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 2, &count, err, sizeof err) != 0);
     assert(count == 0);
-    assert(strstr(err, "hospital row 3: target id 'bravo' is also security row 3") != NULL);
+    assert(strcmp(err, "hospital row 3: target id 'bravo' is also security row 3, with another type; a target in two "
+                       "lists must have the same settings in both")
+           == 0);
+    write_targets(b, "bravo,dmr-conventional,461000000,,1500,1300,,\n");
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 2, &count, err, sizeof err) != 0);
+    assert(strcmp(err, "hospital row 2: target id 'bravo' is also security row 3, with another activity_hold_ms; a "
+                       "target in two lists must have the same settings in both")
+           == 0);
     /* Without names the paths name the files. */
     assert(dsd_app_trunk_scan_validate_target_lists(paths, NULL, 2, &count, err, sizeof err) != 0);
     assert(strstr(err, b) != NULL && strstr(err, a) != NULL);

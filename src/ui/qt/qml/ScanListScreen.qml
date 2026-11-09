@@ -14,6 +14,14 @@ Rectangle {
     property string validationText: ""
     property Item validationField: null
     property bool validationRevealPending: false
+    // The validation line reports a target CSV pick that went wrong (issue
+    // #829): a screen reader hears it once, as an alert.
+    property bool validationIsProblem: false
+    property string announced: ""
+    property int announcements: 0
+    // Bumped by every choice of target CSV or of target source, so a pick
+    // that comes back after a newer choice is dropped (issue #829).
+    property int targetsGeneration: 0
     readonly property bool csvMode: draft.targetSource === "csv"
     property var targetRows: []
     property bool advancedOpen: false
@@ -65,6 +73,7 @@ Rectangle {
         Theme.revealFocus(scroll, content, validationField || validationMessage);
     }
     function showValidation(text, field) {
+        validationIsProblem = false;
         validationField = field || null;
         validationText = text;
         validationRevealPending = text.length > 0;
@@ -81,7 +90,14 @@ Rectangle {
         }
     }
 
+    function showImportProblem(text) {
+        showValidation(text);
+        validationIsProblem = true;
+        Navigation.announce(screen, validationMessage, text);
+    }
+
     function selectTargets(path) {
+        targetsGeneration++;
         draft = Object.assign({}, draft, {
             "targetSource": "csv",
             "targetsCsvPath": path
@@ -93,16 +109,23 @@ Rectangle {
 
     // #832: which draft an import belongs to. Every openFor() and every close
     // takes the next, so a copy that answers late never lands in another list.
+    // The targets generation (issue #829) also drops a pick that comes back
+    // after a newer choice of target CSV or target source.
     property int importGeneration: 0
     function importContext() {
         return {
-            generation: importGeneration
+            generation: importGeneration,
+            targets: targetsGeneration
         };
+    }
+    function importWanted(context) {
+        return context.generation === importGeneration && context.targets === targetsGeneration;
     }
     function stopImport() {
         importGeneration++;
         targetImport.cancel();
     }
+    // Closing the editor, by any route, ends a pick still out.
     onVisibleChanged: {
         if (!visible)
             stopImport();
@@ -117,13 +140,16 @@ Rectangle {
         objectName: "targetCsvImport"
 
         overlayParent: screen
+        wanted: function (context) {
+            return screen.importWanted(context);
+        }
         onFinished: function (result, context) {
-            if (context.generation !== screen.importGeneration)
+            if (!screen.importWanted(context))
                 return;
             if (result.ok)
                 screen.selectTargets(result.path);
             else if (result.error !== "cancelled")
-                screen.showValidation(Util.importMessage(result, "csv"));
+                screen.showImportProblem(Util.importMessage(result, "csv"));
         }
     }
 
@@ -193,6 +219,7 @@ Rectangle {
     }
 
     function openFor(row) {
+        // A pick or copy from the list this editor showed before is not this one's.
         stopImport();
         editRow = row;
         draft = row >= 0 ? scanLists.get(row) : scanLists.newDraft();
@@ -525,6 +552,7 @@ Rectangle {
                 model: [qsTr("Saved systems & frequencies"), qsTr("Target CSV")]
                 currentIndex: screen.csvMode ? 1 : 0
                 onSelected: function (index) {
+                    screen.targetsGeneration++;
                     screen.setDraft("targetSource", index ? "csv" : "entries");
                 }
             }
@@ -1187,6 +1215,7 @@ Rectangle {
                 color: Theme.textPrimary
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
+                Accessible.role: screen.validationIsProblem ? Accessible.AlertMessage : Accessible.StaticText
                 onYChanged: Qt.callLater(screen.revealValidation)
                 onHeightChanged: Qt.callLater(screen.revealValidation)
             }

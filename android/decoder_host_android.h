@@ -15,6 +15,7 @@
 #define DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 
 #include <QByteArray>
+#include <QRect>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -100,6 +101,24 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void requestCurrentLocation(qint64 requestId) override;
     void requestSiteLocation(qint64 requestId) override;
     void cancelLocationRequest(qint64 requestId) override;
+
+    /*
+     * The app's own document picker (#829): DocumentPicker.kt asks Android on its main thread, and refresh() polls its
+     * records and answers the live request on the Qt thread, never inside the request call. A request made without an
+     * activity context, or one the platform could not take, is answered "failed", queued.
+     */
+    bool
+    documentPickerSupported() const override {
+        return true;
+    }
+
+    qint64 requestOpenDocument() override;
+    qint64 requestSaveDocument(const QString& suggestedName, const QString& mimeType) override;
+    void cancelDocumentRequest(qint64 requestId) override;
+    /** @brief DownloadsSave's name for a Download-folder row it published, from memory only. */
+    QString savedDocumentName(const QString& reference) const override;
+    /** @brief DownloadsSave deletes the row on its own thread, if it is still pending and no write took it. */
+    void discardPendingDownload(const QString& reference) override;
 
     bool isRunning() const override;
     QString statusText() const override;
@@ -266,6 +285,33 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     void abortDocumentTransfers() override;
 
+    /* Android has the Autofill Framework, so the relay samples the sign-in form here. */
+    bool
+    signInAutofillSupported() const override {
+        return true;
+    }
+
+    /*
+     * The RadioReference sign-in form for password managers: each call goes to SignInAutofill.kt, which posts it to
+     * the Android main thread and describes the form to the Autofill Framework there. JNI only, in
+     * decoder_host_android.cpp. A call that fails is dropped, its Java exception cleared.
+     */
+    void signInAutofillBegin(int token) override;
+    void signInAutofillField(int token, int field, const QRect& windowPixels, bool visible, bool focused,
+                             const QString& structureValue) override;
+    void signInAutofillRequest(int token, int field, const QRect& windowPixels) override;
+    void signInAutofillCommit(int token, const QString& username, const QString& password) override;
+    void signInAutofillEnd(int token) override;
+
+    /**
+     * @brief A password manager's fill from the Android main thread (DsdNative.nativeSignInFilled()).
+     *
+     * Takes both strings, leaving the caller's empty, and queues them to the newest live host, which hands them to
+     * deliverSignInFill() on the GUI thread; that drops a fill for any other token. With no host, or a host gone
+     * before the call runs, they are scrubbed and dropped. Any thread.
+     */
+    static void postSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password);
+
   protected:
     /** @brief Hand @p path to RecordingPlayback; a play the platform refuses fails as "failed". */
     void beginPlayback(const QString& path) override;
@@ -290,6 +336,21 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool shareRecordingFile(const QString& path, const QString& title) override;
 
   private:
+    /**
+     * @brief Makes its host one postSignInFill() can reach, from construction until it goes
+     * (decoder_host_android_sign_in.cpp).
+     */
+    class SignInFillLink {
+      public:
+        explicit SignInFillLink(DecoderHostAndroid* host);
+        ~SignInFillLink();
+        SignInFillLink(const SignInFillLink&) = delete;
+        SignInFillLink& operator=(const SignInFillLink&) = delete;
+
+      private:
+        DecoderHostAndroid* m_host;
+    };
+
     /** @brief Whether @p reference is a content URI, which only the platform's ContentResolver opens. */
     static bool isContentUri(const QString& reference);
     /** @brief Publish the open play's status record (#708); a play that ended is polled no more. */
@@ -316,6 +377,12 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     static void runRecordingTransfer(const std::shared_ptr<TransferLink>& link, qint64 id, const QStringList& paths,
                                      const QStringList& names, const QString& reference, bool zip);
+    /**
+     * @brief RecordingExport's transfer of @p paths into the platform document @p reference: its result, with the
+     * paths it found gone added to @p missing. A call that gave no answer discards a Download-folder row (#829).
+     */
+    static int transferToDocument(qint64 id, const QStringList& paths, const QStringList& names,
+                                  const QString& reference, bool zip, QStringList& missing);
     void noteRecordingTransferTotal(qint64 id, qint64 total);
     void endRecordingTransfer(qint64 id, int result, const QStringList& missing);
     /**
@@ -453,6 +520,32 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     void setStatus(const QString& text);
     void refreshLocation();
+    /**
+     * @brief Make @p id the live document request (#829). One it replaces is cancelled on the platform and answered
+     * documentPickCancelled(), queued; a record of its own that still comes is dropped.
+     */
+    void beginDocumentRequest(qint64 id);
+    /** @brief Answer @p id documentPickUnavailable(@p reason), queued, unless it is no longer the live request then. */
+    void refuseDocumentRequestLater(qint64 id, const QString& reason);
+    /** @brief Deliver every DocumentPicker record waiting, oldest first (android/document_pick_record.h). */
+    void refreshDocumentPicks();
+    /*
+     * DocumentPicker over JNI, from the Qt thread. open() and create() hand the activity over only when Qt's context
+     * is one; each is false when it was not, or when the call failed, so nothing will answer the request.
+     */
+    static bool platformOpenDocument(qint64 id);
+    static bool platformSaveDocument(qint64 id, const QString& suggestedName, const QString& mimeType);
+    static void platformCancelDocument(qint64 id);
+    /** @brief DocumentPicker.pollResult(): the oldest record not yet read, or empty. */
+    static QString platformPollDocumentPick();
+    /*
+     * DownloadsSave over JNI (#829), from any thread; none waits on a provider. start() hands it the held
+     * ContentResolver and releases the app's leftover persisted grants on its own thread.
+     */
+    static void platformStartDownloads();
+    /** @brief DownloadsSave.publishedName(); empty when the call failed. */
+    static QString platformSavedDocumentName(const QString& reference);
+    static void platformDiscardPendingDownload(const QString& reference);
     void refreshPresentation();
     void refreshNotificationPermission();
     void refreshLocalDevice();
@@ -522,10 +615,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     // The store holds of the shares queued on the transfer worker, released as each copy is made or fails, and at the
     // latest when this host goes.
     QSet<int> m_share_holds;
+    // #829: the document request a DocumentPicker record may answer (0: none).
+    qint64 m_document_request = 0;
     // The transfer jobs' way back to this host; cleared before it goes.
     std::shared_ptr<TransferLink> m_transfer_link = newTransferLink(this);
-    // One transfer at a time, off the GUI thread. Last, so it is destroyed first.
+    // One transfer at a time, off the GUI thread. After the link it reaches the host through, so it goes first.
     std::unique_ptr<QThreadPool> m_transfer_worker = newTransferWorker();
+    // Last, so it goes first: from then on no fill is queued to this host.
+    SignInFillLink m_sign_in_fill_link{this};
 };
 
 } // namespace dsd_android

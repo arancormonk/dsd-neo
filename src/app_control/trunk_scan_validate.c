@@ -51,7 +51,8 @@ validate_set_error(char* err, size_t err_sz, const char* text) {
     }
 }
 
-/* Load @p count lists, then hold them to the rules across them; every list loaded is reset (its keys erased). */
+/* Load @p count lists, then merge them by the engine's rule across lists, into @p total distinct targets; every list
+   loaded is reset (its keys erased). */
 static int
 validate_lists_together(const char* const* paths, const char* const* labels, size_t count, size_t* total, char* err,
                         size_t err_sz) {
@@ -61,12 +62,11 @@ validate_lists_together(const char* const* paths, const char* const* labels, siz
     for (; loaded < count && rc == 0; loaded++) {
         rc = validate_load_list(paths[loaded], labels[loaded], &lists[loaded], err, err_sz);
     }
-    if (rc == 0) {
-        rc = dsd_trunk_scan_check_target_lists(lists, labels, count, err, err_sz);
-    }
     *total = 0U;
+    if (rc == 0) {
+        rc = dsd_trunk_scan_check_target_lists(lists, labels, count, NULL, 0U, total, err, err_sz);
+    }
     for (size_t i = 0; i < loaded; i++) {
-        *total += lists[i].count;
         /* Reset owns the key erasure as well as the allocation. */
         dsd_trunk_scan_target_list_reset(&lists[i]);
     }

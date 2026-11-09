@@ -20,7 +20,8 @@
  *    by dsd_rr_available().
  * 2. The password lives in a plain member for the process lifetime and is never
  *    persisted, never logged, and never bound into a QML property. No credential
- *    may reach statusText, errorText, or any other user-visible string.
+ *    may reach statusText, errorText, or any other user-visible string, and no
+ *    signal carries one: the only way out is the C++ setVerifiedSink().
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_RADIO_REFERENCE_MODEL_H_
@@ -36,6 +37,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+
+#include <functional>
 
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
@@ -60,6 +63,16 @@ class RadioReferenceModel : public QObject {
      * because it is decided at compile time. */
     Q_PROPERTY(bool buildHasAppKey READ buildHasAppKey CONSTANT)
     Q_PROPERTY(bool credentialsReady READ credentialsReady NOTIFY credentialsChanged)
+    /* Whether a session password is held. Never the password itself. */
+    Q_PROPERTY(bool hasPassword READ hasPassword NOTIFY credentialsChanged)
+    /* The account check's verdict for the CURRENT credentials, as an AccountState
+     * int. Every credential edit resets it to AccountNone, so a verdict on screen
+     * always describes what the fields hold now. */
+    Q_PROPERTY(int accountState READ accountState NOTIFY accountStateChanged)
+    /* The failure text for AccountFailed; empty in every other state. */
+    Q_PROPERTY(QString accountMessage READ accountMessage NOTIFY accountStateChanged)
+    /* accountState == AccountChecking, for QML that cannot see the enum names. */
+    Q_PROPERTY(bool checkingAccount READ checkingAccount NOTIFY accountStateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
     Q_PROPERTY(QString errorText READ errorText NOTIFY statusChanged)
@@ -101,6 +114,20 @@ class RadioReferenceModel : public QObject {
     };
     Q_ENUM(ErrorKind)
 
+    /** @brief The account check's verdict for the current credentials. */
+    enum AccountState {
+        AccountNone = 0, /**< Not checked since the credentials last changed. */
+        AccountChecking, /**< A getUserData for the current credentials is in flight. */
+        AccountVerified, /**< RadioReference accepted them, subscription included. */
+        AccountRejected, /**< The username or password was refused. */
+        AccountExpired,  /**< Accepted, but the premium subscription is not active. */
+        AccountFailed    /**< Anything else; accountMessage says what. */
+    };
+    Q_ENUM(AccountState)
+
+    /** @brief Receives the credentials of a verified account check. */
+    using VerifiedSink = std::function<void(const QString& username, const QString& password)>;
+
     RadioReferenceModel(AppPrefs* prefs, ImportedFilesModel* importedFiles, DecoderHost* host,
                         QObject* parent = nullptr);
     ~RadioReferenceModel() override;
@@ -109,6 +136,26 @@ class RadioReferenceModel : public QObject {
     bool hasAppKey() const;
     bool buildHasAppKey() const;
     bool credentialsReady() const;
+
+    bool
+    hasPassword() const {
+        return !m_password.isEmpty();
+    }
+
+    int
+    accountState() const {
+        return m_accountState;
+    }
+
+    QString
+    accountMessage() const {
+        return m_accountMessage;
+    }
+
+    bool
+    checkingAccount() const {
+        return m_accountState == AccountChecking;
+    }
 
     /**
      * @brief Which application key a request carries, given the two candidates.
@@ -210,7 +257,13 @@ class RadioReferenceModel : public QObject {
     /** @brief Overwrite and drop the held password. */
     Q_INVOKABLE void clearPassword();
 
-    /** @brief Verify the credentials and the premium subscription via getUserData. */
+    /**
+     * @brief Verify the credentials and the premium subscription via getUserData.
+     *
+     * A no-op while a check is already in flight: every credential edit resets
+     * accountState, so a check still Checking is one for the current credentials
+     * and a second would only repeat it. A finished check can be run again.
+     */
     Q_INVOKABLE void checkAccount();
 
     /** @brief Resolve a ZIP to its county, then list that county's systems. */
@@ -306,9 +359,25 @@ class RadioReferenceModel : public QObject {
      */
     void setTransportForTests(const dsd_rr_transport* transport);
 
+    /**
+     * @brief Hand each verified account check's credentials to C++.
+     *
+     * Called synchronously on the GUI thread when a check succeeds, after
+     * accountState has become AccountVerified, with the username and password
+     * the request itself was sent with - never what the fields hold by then.
+     * The model scrubs its copies once the call returns, so a sink that needs
+     * them later must copy them. A check whose credentials have since changed
+     * never reaches it. An empty function clears the sink.
+     *
+     * Deliberately not a slot, not Q_INVOKABLE and not a signal: QML must never
+     * see a password.
+     */
+    void setVerifiedSink(VerifiedSink sink);
+
   Q_SIGNALS:
     void locationRequestAllocated(qint64 requestId);
     void credentialsChanged();
+    void accountStateChanged();
     void busyChanged();
     void statusChanged();
     void listsChanged();
@@ -334,6 +403,9 @@ class RadioReferenceModel : public QObject {
     /** @brief One completion, already converted off the worker thread. */
     struct Reply;
 
+    /** @brief A verified check's own credentials, scrubbed when dropped. */
+    struct VerifiedCredentials;
+
     /** @brief Per-request context handed to the C callback as its user pointer. */
     struct Request;
 
@@ -349,6 +421,17 @@ class RadioReferenceModel : public QObject {
     /** @brief Apply a browse-list completion. @return true when it was one. */
     bool applyListReply(const Reply& reply);
 
+    /** @brief Publish a successful account check and hand its credentials on. */
+    void applyAccountVerified(const Reply& reply);
+
+    /**
+     * @brief Set accountState from an account check's outcome.
+     *
+     * No-op for any other fetch, and for a check whose credentials have since
+     * changed. Runs before the reply settles busy.
+     */
+    void applyAccountVerdict(const Reply& reply);
+
     /** @brief Apply one of loadSystem()'s four completions. @return true when it was one. */
     bool applySystemReply(const Reply& reply);
 
@@ -361,6 +444,27 @@ class RadioReferenceModel : public QObject {
                        const QString& postal, const QString& country, const QString& error);
     void applyLocationCancelled(qint64 id);
     void startBatch(const QString& status);
+
+    /**
+     * @brief Retire the whole batch in flight: cancel it, drop its replies by
+     *        bumping the generation, settle busy, and answer a pending refresh.
+     *
+     * @param status What statusText becomes: "Cancelled." for cancel(), empty
+     *               for a check retired by a credential edit.
+     */
+    void retireBatch(const QString& status);
+
+    /**
+     * @brief The one handler every credential change goes through.
+     *
+     * Bumps the credential revision, quietly retires an account check still in
+     * flight (its verdict would describe credentials that no longer exist),
+     * resets accountState and emits credentialsChanged(). Other fetches are left
+     * alone: they do not report on the credentials.
+     */
+    void onCredentialEdited();
+
+    void setAccountState(int state, const QString& message = QString());
 
     /** @brief Build a request context, or report why one could not be made. */
     Request* beginFetch(Fetch kind);
@@ -420,6 +524,12 @@ class RadioReferenceModel : public QObject {
 
     /* Session-only, never persisted, never shown. */
     QString m_password;
+    /* Bumped by every credential edit. A request records the revision it was
+     * sent under, so a verdict for older credentials is recognisable as such. */
+    quint64 m_credRevision = 0;
+    int m_accountState = AccountNone;
+    QString m_accountMessage;
+    VerifiedSink m_verifiedSink;
 
     QString m_statusText;
     QString m_errorText;

@@ -15,7 +15,6 @@
 #include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_mle.h>
-#include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 
 #include <stdint.h>
@@ -26,6 +25,7 @@
 #include "tetra_calls.h"
 #include "tetra_log.h"
 #include "tetra_mle_pdu.h"
+#include "tetra_mm_pdu.h"
 #include "tetra_state.h"
 
 /* What every parser needs besides its bit reader. */
@@ -1850,7 +1850,8 @@ tetra_mle_decode(const uint8_t* bits, int nbits, tetra_mle_pdu* out) {
 static void
 mle_report_mm_sdu(const mle_ctx* ctx, const tetra_mle_pdu* pdu) {
     if (ctx->nbits - pdu->sdu_pos > 0) {
-        tetra_mm_dispatch(ctx->bits + pdu->sdu_pos, ctx->nbits - pdu->sdu_pos, ctx->cc, ctx->opts, ctx->state);
+        tetra_mm_dispatch_as(ctx->bits + pdu->sdu_pos, ctx->nbits - pdu->sdu_pos, ctx->cc,
+                             tetra_mac_sdu_other_cell(ctx->sdu), ctx->opts, ctx->state);
     }
 }
 
@@ -1932,7 +1933,9 @@ tetra_mle_dispatch_sdu(const uint8_t* bits, int nbits, int cc, tetra_mac_sdu* sd
         return;
     }
     switch (protocol) {
-        case TETRA_MLE_PD_MM: tetra_mm_dispatch(bits + 3, nbits - 3, cc, opts, state); break;
+        case TETRA_MLE_PD_MM:
+            tetra_mm_dispatch_as(bits + 3, nbits - 3, cc, tetra_mac_sdu_other_cell(sdu), opts, state);
+            break;
         case TETRA_MLE_PD_CMCE: parse_cmce(&r, &ctx); break;
         case TETRA_MLE_PD_SNDCP: parse_sndcp(&r, &ctx); break;
         case TETRA_MLE_PD_MLE: parse_mle(&ctx); break;

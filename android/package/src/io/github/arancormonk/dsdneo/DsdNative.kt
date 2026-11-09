@@ -144,4 +144,11 @@ object DsdNative {
      * down before Qt finished starting.
      */
     external fun nativeQuitUi()
+
+    /**
+     * A password manager filled the RadioReference sign-in form of session [token] ([SignInAutofill]): each field it
+     * filled, with [hasUser]/[hasPass] saying which. Copied into the Qt thread's sign-in relay, which drops a fill for
+     * any other token; the native copies are cleared once used. Main thread.
+     */
+    external fun nativeSignInFilled(token: Int, hasUser: Boolean, user: String?, hasPass: Boolean, pass: String?)
 }

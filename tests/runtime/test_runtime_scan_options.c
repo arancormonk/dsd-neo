@@ -213,6 +213,28 @@ check_unreachable_row_names(void) {
     DSD_SECURE_ZERO(&row, sizeof(row));
 }
 
+/* A row edit that only writes the same service names in another order, or the same filter list in another order,
+ * changes nothing the receiver judges calls by (issue #697): no receive-policy boundary. Another name does. */
+static void
+check_receive_differs_ignores_order(void) {
+    static dsd_scan_options before;
+    static dsd_scan_options after;
+    char error[192];
+    assert(dsd_scan_options_parse("--slot-name 1=Dispatch --dcc-name 7=Tower --dcc-allow 2/7/14", DSD_SCAN_MODE_DMR, 1,
+                                  &before, error, sizeof(error))
+           == 0);
+    assert(dsd_scan_options_parse("--dcc-allow 14/2/7 --dcc-name 7=Tower --slot-name 1=Dispatch", DSD_SCAN_MODE_DMR, 1,
+                                  &after, error, sizeof(error))
+           == 0);
+    assert(!dsd_scan_option_receive_differs(&before.values, &after.values));
+    assert(dsd_scan_options_parse("--dcc-allow 14/2/7 --dcc-name 7=Mall --slot-name 1=Dispatch", DSD_SCAN_MODE_DMR, 1,
+                                  &after, error, sizeof(error))
+           == 0);
+    assert(dsd_scan_option_receive_differs(&before.values, &after.values));
+    DSD_SECURE_ZERO(&before, sizeof(before));
+    DSD_SECURE_ZERO(&after, sizeof(after));
+}
+
 /* --- Issue #521: per-row and per-target squelch (--squelch-db) --- */
 
 static int
@@ -937,6 +959,7 @@ main(void) {
     check_file_spans();
     check_csv_quoted_cells();
     check_unreachable_row_names();
+    check_receive_differs_ignores_order();
     check_squelch_option();
     check_squelch_setting_option();
     check_nfm_row_accepts_analog_options();

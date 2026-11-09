@@ -752,6 +752,11 @@ Item {
                 outcome: backup.startupOutcome
             }
 
+            // Issue #828: a file this run couldn't read, and where it was kept.
+            StoreNoticeCard {
+                width: parent.width
+            }
+
             // WP-D5: keep the complete USB diagnostic next to the dongle pill.
             UiPanel {
                 objectName: "dongleDetailsPanel"

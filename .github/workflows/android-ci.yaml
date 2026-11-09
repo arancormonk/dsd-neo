@@ -359,6 +359,8 @@ jobs:
             dsd-neo_test_ui_qt_backup_archive \
             dsd-neo_test_ui_qt_backup_apply \
             dsd-neo_test_ui_qt_backup_model \
+            dsd-neo_test_ui_qt_settings_recovery \
+            dsd-neo_test_ui_qt_store_notices \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
             dsd-neo_test_ui_qt_auto_start_policy \
@@ -371,11 +373,13 @@ jobs:
             dsd-neo_test_ui_qt_p25_network_model \
             dsd-neo_test_ui_qt_controller \
             dsd-neo_test_ui_qt_spectrum_math \
+            dsd-neo_test_ui_qt_spectrum_trace_geometry \
             dsd-neo_test_ui_qt_spectrum_model \
             dsd-neo_test_ui_qt_signal_search \
             dsd-neo_test_ui_qt_metrics_model \
             dsd-neo_test_ui_qt_talkgroup_list_model \
-            dsd-neo_test_ui_qt_radio_reference_model
+            dsd-neo_test_ui_qt_radio_reference_model \
+            dsd-neo_test_ui_qt_sign_in_autofill
 
       # The QML test carries its own headless environment (offscreen platform,
       # software renderer) in the CTest registration, so there is nothing to set

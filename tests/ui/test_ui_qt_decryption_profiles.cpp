@@ -914,6 +914,29 @@ test_definitions_past_int_range() {
     }
 }
 
+/* Issue #828: a profiles file that could not be read loads empty and is logged, and the first save keeps it byte for
+   byte, logging the name it was kept as, instead of writing over every profile in it. */
+static void
+test_unreadable_store_is_kept() {
+    const QString path = dsd_qt::json_store_path("decryption_profiles.json");
+    const QByteArray junk("[{\"uid\":\"lost\",");
+    {
+        QFile broken(path);
+        check(broken.open(QIODevice::WriteOnly | QIODevice::Truncate) && broken.write(junk) == junk.size());
+    }
+    dsd_qt::DecryptionProfilesModel loaded;
+    check(loaded.get("lost").isEmpty() && storeBytes() == junk);
+    check(warningsContaining("decryption_profiles.json could not be read (") == 1);
+    check(loaded.saveProfile({{"uid", "after-loss"}, {"label", "New"}, {"protocol", "p25"}, {"mode", "automatic"}})
+              .value("ok")
+              .toBool());
+    QFile kept(path + ".unreadable-1");
+    check(kept.open(QIODevice::ReadOnly) && kept.readAll() == junk);
+    check(warningsContaining("It was kept as decryption_profiles.json.unreadable-1") == 1);
+    check(storedRow("after-loss").value("label").toString() == "New");
+    check(QFile::remove(path + ".unreadable-1"));
+}
+
 /* The P25 Simulcast preset (-mq) migrates a legacy key as a P25 profile, and a non-legacy profile of another
    protocol is refused at start for it. */
 static void
@@ -1058,5 +1081,6 @@ main(int argc, char** argv) {
     test_compile_refuses_linked_directories(secret);
     test_aes256_definition_compiles_at_load();
     test_definitions_past_int_range();
+    test_unreadable_store_is_kept();
     return 0;
 }

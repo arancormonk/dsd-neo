@@ -181,7 +181,17 @@ dsd_test_chdir(const char* path) {
 static inline int
 dsd_test_rmdir(const char* path) {
 #if DSD_PLATFORM_WIN_NATIVE
-    return _rmdir(path);
+    /* Wide or ANSI as dsd_win32_path_wide() chooses, like the platform helpers that made the folder. */
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : _rmdir(path);
+    }
+    const int rc = _wrmdir(wide);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return rc;
 #else
     return rmdir(path);
 #endif

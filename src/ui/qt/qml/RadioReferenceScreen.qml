@@ -358,32 +358,8 @@ Item {
     }
 
     // ---- Actions on the model ----
-
-    function verifyAccount() {
-        if (screen.rrLive() && radioReference.credentialsReady)
-            radioReference.checkAccount();
-    }
-
-    /**
-     * The "Check account" button, which is not the same gesture as finishing a
-     * field.
-     *
-     * Nothing on this screen takes keyboard focus — every control is a
-     * TapHandler — so a text field only emits editingFinished on Enter or when
-     * another field is tapped. Tapping the button leaves the field the user
-     * just filled uncommitted, and its answer never reaches prefs or the model.
-     * Move focus off first, which commits it, then check what the form holds.
-     */
-    function checkAccountTapped() {
-        credentialsColumn.forceActiveFocus();
-        if (screen.rrLive() && !radioReference.credentialsReady) {
-            screen.notice = qsTr("Fill in every field above first.");
-            screen.noticeIsProblem = true;
-            return;
-        }
-        screen.clearNotice();
-        screen.verifyAccount();
-    }
+    // The account check lives in RadioReferenceAccountEditor, shared with
+    // Settings: its fields and its Check button submit it.
 
     function findByZip() {
         screen.clearNotice();
@@ -700,8 +676,11 @@ Item {
 
             // ---- Credentials gate ----
             // Every user authenticates with their own RadioReference account and
-            // needs their own premium subscription; nothing is pooled, and the
-            // password is never written anywhere.
+            // needs their own premium subscription; nothing is pooled. DSD-neo
+            // writes the password nowhere: it lives in the model for the app
+            // session only. A password manager the user runs may offer to save
+            // it once RadioReference accepts it (signInAutofill), and that copy
+            // is the password manager's.
             DisclosureRow {
                 objectName: "radioReferenceChangeAccount"
                 width: parent.width
@@ -730,8 +709,11 @@ Item {
                 // so an account failure reopens the form, or the session-only
                 // password would have nowhere left to be retyped. Both account
                 // errors qualify: auth wants a correction, an expired
-                // subscription wants a different account.
-                visible: screen.accountEditorOpen || !radioReference.credentialsReady || radioReference.errorIsAuth || radioReference.errorIsSubscription
+                // subscription wants a different account. The form also stays
+                // up through the check itself, so a password manager watching
+                // the fields sees them until the verdict, and hides once
+                // RadioReference has accepted them.
+                visible: screen.accountEditorOpen || !radioReference.credentialsReady || radioReference.checkingAccount || radioReference.errorIsAuth || radioReference.errorIsSubscription
                 height: credentialsColumn.height + 2 * Theme.cardPadding
 
                 Column {
@@ -747,53 +729,15 @@ Item {
                         text: qsTr("RadioReference account")
                     }
 
+                    // The notice line above reports a failed check, so the
+                    // form's own result line says only checking and verified.
                     RadioReferenceAccountEditor {
                         width: parent.width
-                        nextUsernameField: passwordField
+                        active: screen.visible
+                        showsFailures: false
                         usernameLabel: qsTr("RadioReference username")
                         appKeyLabel: qsTr("RadioReference application key")
                         appKeyHeading: qsTr("Application key")
-                        passwordHint: qsTr("The password is kept only for this session and is never saved. A RadioReference premium subscription is required.")
-                        onAppKeyEdited: screen.verifyAccount()
-
-                        PlexTextField {
-                            id: passwordField
-                            label: qsTr("Password")
-
-                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                            objectName: "radioReferencePasswordField"
-
-                            width: parent.width
-                            // PlexTextField carries no echoMode of its own; reaching
-                            // through the `input` alias is how the wizard sets its
-                            // field validators too.
-                            input.echoMode: TextInput.Password
-                            placeholderText: qsTr("password")
-                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhSensitiveData
-                            // Commits on Enter or focus loss, never per keystroke,
-                            // and the password goes nowhere but memory.
-                            onEditingFinished: {
-                                if (screen.rrLive())
-                                    radioReference.setPassword(text);
-                                screen.verifyAccount();
-                            }
-                        }
-                    }
-
-                    OutlineButton {
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferenceCheckAccountButton"
-
-                        width: parent.width
-                        // Deliberately not gated on credentialsReady. The fields
-                        // commit on Enter or focus loss, and a TapHandler takes
-                        // no focus — so the field the user is still typing in
-                        // has not committed when they reach for this button, and
-                        // gating on the committed state greys it out exactly
-                        // when the last answer is the one still sitting in it.
-                        enabled: !radioReference.busy
-                        text: qsTr("Check account")
-                        onClicked: screen.checkAccountTapped()
                     }
                 }
             }

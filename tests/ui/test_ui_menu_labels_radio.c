@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/unicode.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,6 +44,13 @@ static int g_rtl_timing_bias;
 static int g_rtl_auto_ppm;
 static int g_rtl_tuner_autogain;
 static int g_rtl_output_kind;
+
+/* The text model (ui_text.c) reads the output preference for file names in labels; these cases show none. */
+const char*
+dsd_unicode_or_ascii(const char* unicode_str, const char* ascii_str) {
+    (void)unicode_str;
+    return ascii_str;
+}
 
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {

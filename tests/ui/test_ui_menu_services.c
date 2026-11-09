@@ -19,6 +19,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/iq_replay_checkpoint.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -179,6 +180,11 @@ int
 dsd_stat_is_regular(const dsd_stat_t* st) {
     (void)st;
     return 0;
+}
+
+int
+dsd_remove_file(const char* path) {
+    return remove(path);
 }
 
 int
@@ -465,10 +471,27 @@ dsd_source_alias_clear(dsd_state* state) {
 }
 
 int
-dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out) {
+dsd_tg_policy_load_group_file(const char* path, dsd_tg_policy_store** out, dsd_tg_policy_load_report* report) {
     (void)path;
     (void)out;
+    if (report) {
+        *report = (dsd_tg_policy_load_report){.not_found = 1};
+    }
     return -1;
+}
+
+size_t
+dsd_tg_policy_session_avoid_count(const dsd_state* state, uint32_t start, uint32_t end) {
+    (void)state;
+    (void)start;
+    (void)end;
+    return 0;
+}
+
+int
+dsd_tg_policy_call_skip_empty(const dsd_state* state) {
+    (void)state;
+    return 1;
 }
 
 void
@@ -481,12 +504,13 @@ dsd_tg_policy_adopt_group_file(dsd_state* state, dsd_tg_policy_store* loaded) {
  * owes the caller is that the policy was asked to empty itself, and the emptying
  * itself belongs to CORE_TALKGROUP_POLICY. */
 static int g_tg_policy_clear_calls = 0;
+static int g_tg_policy_clear_result = 0;
 
 int
 dsd_tg_policy_clear(dsd_state* state) {
     (void)state;
     g_tg_policy_clear_calls++;
-    return 0;
+    return g_tg_policy_clear_result;
 }
 
 int
@@ -2281,8 +2305,10 @@ test_file_network_and_import_failure_contracts(void) {
     g_chan_import_result = -1;
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);
     rc |= expect_str("failed channel import keeps path", opts.chan_in_file, "");
-    rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv"), -1);
+    svc_group_list_result group_result;
+    rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv", &group_result), -1);
     rc |= expect_str("failed group import keeps path", opts.group_in_file, "");
+    rc |= expect_int("group import failure names a missing file", (int)group_result.status, SVC_GROUP_LIST_NOT_FOUND);
     rc |= expect_int("keys dec import failure", svc_import_keys_dec(&opts, &state, "keys.csv"), -1);
     rc |= expect_str("keys dec import path stored", opts.key_in_file, "keys.csv");
     rc |= expect_int("keys hex import failure", svc_import_keys_hex(&opts, &state, "keys.hex"), -1);
@@ -2516,6 +2542,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_str("first import keeps row 0's name", dsd_state_trunk_lcn_name_get(&state, 0U), "Dispatch");
     rc |= expect_str("first import leaves row 1 unnamed", dsd_state_trunk_lcn_name_get(&state, 1U), "");
     rc |= expect_str("first import keeps row 2's name", dsd_state_trunk_lcn_name_get(&state, 2U), "Tac 3");
+    // An NXDN DFA site's resolver learns a row the next file will list at the same frequency.
+    dsd_nxdn_ca_apply(&state, (2U << 12) | 0x21U, 1U, 1U, 2U);
+    dsd_nxdn_dfa_learn(&state, 201U, 860000000L);
 
     g_chan_import_count = 2;
     g_chan_import_chan[0] = 201;
@@ -2535,6 +2564,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("reimport applies new chan", (int)state.trunk_chan_map[201], 860000000);
     rc |= expect_int("reimport replaces used count", (int)state.trunk_chan_map_used_count, 2);
     rc |= expect_int("reimport replaces lcn list", (int)state.trunk_lcn_freq[0], 860000000);
+    // That row is the file's now: a change of the DFA parameters must not drop it.
+    dsd_nxdn_ca_invalidate(&state);
+    rc |= expect_int("reimported row survives a DFA parameter change", (int)state.trunk_chan_map[201], 860000000);
 
     g_chan_import_result = -1;
     rc |= expect_int("failed reimport rc", svc_import_channel_map(&opts, &state, "bad.csv"), -1);
@@ -2668,6 +2700,8 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     state.lcn_scan_hold = 1;
     state.lcn_scan_entry_hold = 1;
     rc |= expect_int("clear: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 1U, 1), 0);
+    dsd_nxdn_ca_apply(&state, (2U << 12) | 0x21U, 1U, 1U, 2U);
+    dsd_nxdn_dfa_learn(&state, 150U, 100187500L);
     const unsigned int seq_before = state.trunk_chan_map_seq;
 
     rc |= expect_int("chan map clear ok", svc_clear_channel_map(&opts, &state), 0);
@@ -2686,6 +2720,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     // Provenance goes with the map for the same reason it does on an adopt: a
     // surviving trust byte authorizes an off-CC tune to a frequency now gone.
     rc |= expect_int("chan map clear drops lcn trust", (int)state.dmr_lcn_trust[101], 0);
+    rc |= expect_int("chan map clear empties the NXDN DFA record", (int)state.nxdn_dfa_learned.count, 0);
     rc |= expect_int("chan map clear advances the map seq", (int)(state.trunk_chan_map_seq != seq_before), 1);
 
     // Trunk scan owns per-target maps; emptying a global one is not this
@@ -2695,6 +2730,11 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     opts.trunk_scan_enabled = 0;
 
     DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "groups.csv");
+    // A clear that could not empty the list keeps the file it is saved to: the rows and their file go together.
+    g_tg_policy_clear_result = -1;
+    rc |= expect_int("group list clear failure", svc_clear_group_list(&opts, &state), -1);
+    rc |= expect_str("failed group list clear keeps the path", opts.group_in_file, "groups.csv");
+    g_tg_policy_clear_result = 0;
     const int clears_before = g_tg_policy_clear_calls;
     rc |= expect_int("group list clear ok", svc_clear_group_list(&opts, &state), 0);
     rc |= expect_str("group list clear forgets the path", opts.group_in_file, "");

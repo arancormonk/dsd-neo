@@ -12,6 +12,7 @@
 #include <QUuid>
 #include <QVariantList>
 #include <Qt>
+#include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/runtime/log.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
@@ -29,8 +30,41 @@ uuid() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
+/* @p input's entries, each with a uid of its own: a uid that is missing, repeats an earlier entry's, or is in @p taken
+ * (another list's) is replaced. A target id names one target in a session, so two lists of the app's never share one;
+ * only a person's own target CSVs can (issue #697). */
+QVariantList
+normalizeEntries(const QVariantList& input, const QSet<QString>& taken) {
+    QVariantList entries;
+    QSet<QString> ids;
+    for (const auto& value : input) {
+        const auto old = value.toMap();
+        QVariantMap entry{{"kind", "freq"}, {"enabled", true},  {"dwellMs", 0},
+                          {"holdMs", 0},    {"modulation", ""}, {"gainDb", -1}};
+        for (const auto& field : {"uid", "kind", "systemUid", "name", "protocol", "freqMhz", "enabled", "dwellMs",
+                                  "holdMs", "modulation", "gainDb", "decryptionMode", "decryptionProfileUid"}) {
+            if (old.contains(field)) {
+                entry[field] = old.value(field);
+            }
+        }
+        QString id = entry.value("uid").toString();
+        if (id.isEmpty() || ids.contains(id) || taken.contains(id)) {
+            id = uuid();
+        }
+        ids.insert(id);
+        entry["uid"] = id;
+        if (!entry.contains("enabled")) {
+            entry["enabled"] = true;
+        }
+        entries << entry;
+    }
+    return entries;
+}
+
+/* @p input over @p base (the defaults when empty), its entries' uids apart from @p taken: the uids of every other list's
+ * entries. */
 QVariantMap
-normalize(const QVariantMap& input, const QVariantMap& base = {}) {
+normalize(const QVariantMap& input, const QVariantMap& base = {}, const QSet<QString>& taken = {}) {
     QVariantMap result =
         base.isEmpty()
             ? QVariantMap{{"name", ""},         {"sourceType", "usb"}, {"host", ""},         {"port", 1234},
@@ -64,42 +98,56 @@ normalize(const QVariantMap& input, const QVariantMap& base = {}) {
     } else {
         result["targetsCsvPath"] = "";
     }
-    QVariantList entries;
-    QSet<QString> ids;
-    for (const auto& value : result.value("entries").toList()) {
-        const auto old = value.toMap();
-        QVariantMap entry{{"kind", "freq"}, {"enabled", true},  {"dwellMs", 0},
-                          {"holdMs", 0},    {"modulation", ""}, {"gainDb", -1}};
-        for (const auto& field : {"uid", "kind", "systemUid", "name", "protocol", "freqMhz", "enabled", "dwellMs",
-                                  "holdMs", "modulation", "gainDb", "decryptionMode", "decryptionProfileUid"}) {
-            if (old.contains(field)) {
-                entry[field] = old.value(field);
+    result["entries"] = normalizeEntries(result.value("entries").toList(), taken);
+    return result;
+}
+
+/* The uids of the entries of every list in @p rows but row @p skip. */
+QSet<QString>
+entryUids(const QList<QVariantMap>& rows, qsizetype skip = -1) {
+    QSet<QString> uids;
+    for (qsizetype i = 0; i < rows.size(); ++i) {
+        if (i != skip) {
+            for (const auto& entry : rows[i].value("entries").toList()) {
+                uids.insert(entry.toMap().value("uid").toString());
             }
         }
-        QString id = entry.value("uid").toString();
-        if (id.isEmpty() || ids.contains(id)) {
-            id = uuid();
-        }
-        ids.insert(id);
-        entry["uid"] = id;
-        if (!entry.contains("enabled")) {
-            entry["enabled"] = true;
-        }
-        entries << entry;
     }
-    result["entries"] = entries;
-    return result;
+    return uids;
+}
+
+/* Whether the load gave an entry of @p row a uid other than the one @p stored holds for it: none, a repeat, or one an
+ * earlier list holds. */
+bool
+entryUidsMinted(const QJsonObject& stored, const QVariantMap& row) {
+    const QJsonArray before = stored.value(QStringLiteral("entries")).toArray();
+    const QVariantList after = row.value("entries").toList();
+    for (qsizetype i = 0; i < after.size(); ++i) {
+        if (i >= before.size()
+            || after[i].toMap().value("uid").toString()
+                   != before.at(i).toObject().value(QStringLiteral("uid")).toString()) {
+            return true;
+        }
+    }
+    return false;
 }
 } // namespace
 
 ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
     QSet<QString> ids;
+    QSet<QString> entryIds;
+    bool entryUidsRepaired = false;
     for (const auto& value : json_store_load_array(QStringLiteral("scan_lists.json"))) {
         if (!value.isObject()) {
             continue;
         }
-        const QString stored = value.toObject().value(QStringLiteral("uid")).toString();
-        auto row = normalize(value.toObject().toVariantMap());
+        const QJsonObject object = value.toObject();
+        const QString stored = object.value(QStringLiteral("uid")).toString();
+        // Issue #697: an entry uid an earlier list holds (a hand-edited or older store) is given another, the first
+        // list keeping it, so no two of the app's lists share a target id.
+        auto row = normalize(object.toVariantMap(), {}, entryIds);
+        entryUidsRepaired = entryUidsRepaired || entryUidsMinted(object, row);
+        entryIds.unite(entryUids({row}));
         auto id = row.value("uid").toString();
         if (id.isEmpty() || ids.contains(id)) {
             id = uuid();
@@ -115,11 +163,12 @@ ScanListsModel::ScanListsModel(QObject* parent) : QAbstractListModel(parent) {
     // or none, so they are forgotten, as a restore forgets them.
     if (m_uidsRepaired) {
         (void)AppPrefs::forgetScanCompanions();
-        // Saved now (issue #801), or the next launch mints others and whatever named these (a pinned shortcut, the
-        // last started list) loses them. Unsaved, they still hold for this run.
-        if (!save(m_rows)) {
-            LOG_WARN("Scan-list identity repair could not be persisted; list identities may change on restart.\n");
-        }
+    }
+    // Saved now (issue #801), or the next launch mints others and whatever named these (a pinned shortcut, the last
+    // started list, a history row's entry) loses them. Unsaved, they still hold for this run. An entry's new uid names
+    // no list, so it leaves the remembered companions alone.
+    if ((m_uidsRepaired || entryUidsRepaired) && !save(m_rows)) {
+        LOG_WARN("Scan-list identity repair could not be persisted; identities may change on restart.\n");
     }
 }
 
@@ -162,12 +211,7 @@ ScanListsModel::newDraft() const {
 
 QString
 ScanListsModel::newEntryId() const {
-    QSet<QString> existing;
-    for (const auto& list : m_rows) {
-        for (const auto& entry : list.value("entries").toList()) {
-            existing.insert(entry.toMap().value("uid").toString());
-        }
-    }
+    const QSet<QString> existing = entryUids(m_rows);
     QString id;
     do {
         id = uuid();
@@ -177,7 +221,7 @@ ScanListsModel::newEntryId() const {
 
 bool
 ScanListsModel::add(const QVariantMap& list) {
-    auto row = normalize(list);
+    auto row = normalize(list, {}, entryUids(m_rows));
     if (rowForUid(row.value("uid").toString()) >= 0) {
         row["uid"] = uuid();
     }
@@ -200,7 +244,8 @@ ScanListsModel::update(int row, const QVariantMap& list) {
         return false;
     }
     auto next = m_rows;
-    next[row] = normalize(list, next[row]);
+    // The list's own entries keep their uids; one another list holds is given a new one, as at load and in add().
+    next[row] = normalize(list, next[row], entryUids(next, row));
     if (!save(next)) {
         return false;
     }

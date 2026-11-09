@@ -32,6 +32,7 @@
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/protocol/tetra/tetra_mm.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -46,6 +47,7 @@
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
 #include "tetra_state.h"
+#include "tetra_test_burst.h"
 #include "tetra_test_pdu.h"
 #include "tetra_ul.h"
 #include "tetra_voice_gate.h"
@@ -91,67 +93,6 @@ dibits_of(const char* text, uint8_t* dibits, size_t count) {
     for (size_t i = 0; i < count; i++) {
         dibits[i] = (uint8_t)(((text[2U * i] - '0') << 1) | (text[(2U * i) + 1U] - '0'));
     }
-}
-
-/* Signalling transmit chain (EN 300 392-2 clauses 8.2.3, 8.2.4 and 8.2.5) for @p ntype1 type-1 bits: CRC-16 and four
- * tail bits, the rate-1/4 mother code punctured to 2/3 into @p ncoded bits, block interleaving with @p a and scrambling
- * with @p seed, as the dibits the decoder reads. SCH/HD (clause 8.3.1.4.1) is 124 bits to 216 with a = 101, SCH/HU
- * (clause 8.3.1.4.3) 92 bits to 168 with a = 13, SCH/F (clause 8.3.1.2) 268 bits to 432 with a = 103. */
-static void
-encode_signalling(const uint8_t* type1, int ntype1, int ncoded, int a, uint32_t seed, uint8_t* dibits) {
-    enum { TYPE2_MAX = 288, CODED_MAX = 432 };
-
-    const int ntype2 = ntype1 + 16 + 4;
-    assert(ntype2 <= TYPE2_MAX && ncoded <= CODED_MAX);
-    uint8_t type2[TYPE2_MAX] = {0};
-    uint8_t mother[TYPE2_MAX * 4] = {0};
-    uint8_t type3[CODED_MAX];
-    uint8_t type4[CODED_MAX];
-    uint16_t pn[CODED_MAX];
-    DSD_MEMCPY(type2, type1, (size_t)ntype1);
-    unsigned crc = 0;
-    for (; crc < 65536U; crc++) {
-        for (int i = 0; i < 16; i++) {
-            type2[ntype1 + i] = (uint8_t)((crc >> (15 - i)) & 1U);
-        }
-        if (tetra_crc16_ccitt_bits(type2, ntype1 + 16) == TETRA_CRC16_OK) {
-            break;
-        }
-    }
-    assert(crc < 65536U);
-    /* G1 = 1 + D + D^4, G2 = 1 + D^2 + D^3 + D^4, G3 = 1 + D + D^2 + D^4, G4 = 1 + D + D^3 + D^4 (8.2.3.1.1). */
-    uint8_t d1 = 0;
-    uint8_t d2 = 0;
-    uint8_t d3 = 0;
-    uint8_t d4 = 0;
-    for (size_t i = 0; i < (size_t)ntype2; i++) {
-        const uint8_t b = type2[i];
-        mother[(i * 4U) + 0U] = (uint8_t)(b ^ d1 ^ d4);
-        mother[(i * 4U) + 1U] = (uint8_t)(b ^ d2 ^ d3 ^ d4);
-        mother[(i * 4U) + 2U] = (uint8_t)(b ^ d1 ^ d2 ^ d4);
-        mother[(i * 4U) + 3U] = (uint8_t)(b ^ d1 ^ d3 ^ d4);
-        d4 = d3;
-        d3 = d2;
-        d2 = d1;
-        d1 = b;
-    }
-    const int punctured = tetra_rcpc_puncture_by_id(TETRA_RCPC_PUNCT_2_3, mother, ntype2 * 4, type3, ncoded);
-    assert(punctured == ncoded);
-    tetra_block_interleave(type3, type4, ncoded, a);
-    /* The scrambling sequence is what descrambling flips in an all-zero block. */
-    const uint8_t zeros[CODED_MAX] = {0};
-    tetra_hard_bits_to_soft(zeros, pn, ncoded);
-    tetra_descramble_soft(pn, ncoded, seed);
-    for (size_t i = 0; i < (size_t)ncoded / 2U; i++) {
-        const uint8_t b0 = (uint8_t)(type4[2U * i] ^ (pn[2U * i] == 0xFFFFU ? 1U : 0U));
-        const uint8_t b1 = (uint8_t)(type4[(2U * i) + 1U] ^ (pn[(2U * i) + 1U] == 0xFFFFU ? 1U : 0U));
-        dibits[i] = (uint8_t)((b0 << 1) | b1);
-    }
-}
-
-static void
-encode_sch_hd(const uint8_t* type1, uint32_t seed, uint8_t* dibits) {
-    encode_signalling(type1, TTB_SCH_HD_BITS, 216, 101, seed, dibits);
 }
 
 static int g_tunes;
@@ -227,24 +168,36 @@ feed(session* s, const uint8_t* dibits, int count) {
     s->state->symbol_replay_header_checked = 0;
 }
 
-/* A synchronisation burst whose BSCH the frame sync captured as @p bsch, followed by block 2 @p block2. */
+/* A synchronisation burst whose BSCH the frame sync captured as @p bsch, followed by block 2 @p block2, received
+ * @p inverted: every dibit with its sign bit flipped, and the burst's polarity, which its training told, handed over
+ * with the capture as the frame sync hands it (dsd_frame_sync.c); the carrier's polarity is the decoder's to set. */
 static dsd_frame_verdict
-sync_burst(session* s, const uint8_t* bsch, const uint8_t* block2) {
-    uint8_t tail[SB_BB_DIBITS + BLOCK_DIBITS] = {0};
-    DSD_MEMCPY(tail + SB_BB_DIBITS, block2, BLOCK_DIBITS);
+sync_burst_as(session* s, const uint8_t* bsch, const uint8_t* block2, int inverted) {
+    const uint8_t flip = inverted ? 2U : 0U;
+    uint8_t tail[SB_BB_DIBITS + BLOCK_DIBITS];
+    for (size_t i = 0; i < sizeof tail; i++) {
+        tail[i] = (uint8_t)((i < SB_BB_DIBITS ? 0U : block2[i - SB_BB_DIBITS]) ^ flip);
+    }
     feed(s, tail, (int)sizeof tail);
-    DSD_MEMCPY(s->state->tetra_sync.sb1_dibuf, bsch, BSCH_DIBITS);
+    for (size_t i = 0; i < BSCH_DIBITS; i++) {
+        s->state->tetra_sync.sb1_dibuf[i] = (uint8_t)(bsch[i] ^ flip);
+    }
     s->state->tetra_sync.sb1_valid = 1;
     s->state->tetra_sync.sb1_soft_valid = 0;
     s->state->tetra_sync.phase_rot = 0;
-    s->state->tetra_sync.polarity = 0;
-    s->state->lastsynctype = DSD_SYNC_TETRA_SB_POS;
-    s->state->synctype = DSD_SYNC_TETRA_SB_POS;
+    s->state->tetra_sync.sb_polarity = (uint8_t)(inverted != 0);
+    s->state->lastsynctype = inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS;
+    s->state->synctype = s->state->lastsynctype;
     return dsd_dispatch_handle_tetra(s->opts, s->state);
 }
 
+static dsd_frame_verdict
+sync_burst(session* s, const uint8_t* bsch, const uint8_t* block2) {
+    return sync_burst_as(s, bsch, block2, 0);
+}
+
 /* A normal downlink burst, NTS2 with two half-slot blocks or NTS1 with one full-slot channel: block 1 and AACH half 1
- * as the frame sync captured them, then AACH half 2 and block 2. @p aach is the 15 AACH dibits (encode_aach()), or
+ * as the frame sync captured them, then AACH half 2 and block 2. @p aach is the 15 AACH dibits (ttb_encode_aach()), or
  * NULL for an AACH the frame sync did not capture. */
 static dsd_frame_verdict
 ndb_burst(session* s, int nts2, const uint8_t* aach, const uint8_t* block1, const uint8_t* block2) {
@@ -274,34 +227,6 @@ nts2_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
 static dsd_frame_verdict
 nts1_burst(session* s, const uint8_t* block1, const uint8_t* block2) {
     return ndb_burst(s, 0, NULL, block1, block2);
-}
-
-/* What @p count all-zero bits scrambled with @p seed send (EN 300 392-2 clause 8.2.5): the scrambling sequence, as
- * dibits. */
-static void
-scrambled_zeros(uint32_t seed, int count, uint8_t* dibits) {
-    enum { MAX_BITS = 432 };
-
-    assert(count <= MAX_BITS && count % 2 == 0);
-    const uint8_t zeros[MAX_BITS] = {0};
-    uint16_t pn[MAX_BITS];
-    tetra_hard_bits_to_soft(zeros, pn, count);
-    tetra_descramble_soft(pn, count, seed);
-    for (size_t i = 0; i < (size_t)count / 2U; i++) {
-        dibits[i] = (uint8_t)(((pn[2U * i] == 0xFFFFU ? 1U : 0U) << 1) | (pn[(2U * i) + 1U] == 0xFFFFU ? 1U : 0U));
-    }
-}
-
-/* The AACH carrying ACCESS-ASSIGN @p pdu (EN 300 392-2 clause 8.3.1.1): its (30,14) Reed-Muller codeword with the bits
- * of @p error flipped, scrambled with @p seed; 15 dibits, half 1's 7 then half 2's 8. */
-static void
-encode_aach(uint16_t pdu, uint32_t error, uint32_t seed, uint8_t* dibits) {
-    const uint32_t word = tetra_rm3014_encode(pdu) ^ error;
-    uint8_t pn[AACH1_DIBITS + NDB_AACH2_DIBITS];
-    scrambled_zeros(seed, 30, pn);
-    for (int i = 0; i < AACH1_DIBITS + NDB_AACH2_DIBITS; i++) {
-        dibits[i] = (uint8_t)(((word >> (28 - (2 * i))) & 3U) ^ pn[i]);
-    }
 }
 
 /* Noise: a synchronisation burst whose BSCH fails its CRC proves nothing, and with no network known its block 2 cannot
@@ -467,6 +392,91 @@ test_crc_passed_block_proves_the_cell(void) {
     session_close(&s);
 }
 
+/* A BSCH (SB1) for network 460/4242 and colour code @p colour: the synchronisation PDU of EN 300 392-2 table 21.75,
+ * which is scrambled with the all-zero vector whatever the cell (clause 8.2.5.2). */
+static void
+encode_bsch(uint8_t colour, uint8_t* dibits) {
+    ttb_block b = {0};
+    ttb_put(&b, 0, 4);      /* system code */
+    ttb_put(&b, colour, 6); /* colour code */
+    ttb_put(&b, 0, 2);      /* TN 1 */
+    ttb_put(&b, 1, 5);      /* FN 1 */
+    ttb_put(&b, 1, 6);      /* MN 1 */
+    ttb_put(&b, 0, 8);      /* sharing mode ... reserved */
+    ttb_put(&b, 460, 10);
+    ttb_put(&b, 4242, 14);
+    ttb_put(&b, 0, 5);
+    ttb_encode_bsch(b.bits, dibits);
+}
+
+/* Colour code 0 is predefined scrambling: every block of the cell is scrambled with all-zero e(1)..e(30), not with its
+ * MCC and MNC (EN 300 392-2 table 21.76 note 1). A BSCH of such a cell names it, and its block 2 decodes; a block
+ * that passed with the predefined vector proves nothing about the network, so a --tetra-net preset, right or wrong,
+ * names no MCC and MNC from it. */
+static void
+test_colour_zero_cell_scrambles_predefined(void) {
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t block2[BLOCK_DIBITS];
+    uint8_t mac[TTB_SCH_HD_BITS] = {0};
+    encode_bsch(0U, bsch);
+    /* Block 2 is scrambled by the test's own transmit chain (tetra_test_burst.h, whose scrambler is written out from
+       clause 8.2.5.2 and not taken from the decoder) with seed 3, the predefined all-zero e(1)..e(30): it decodes only
+       when the decoder's colour-0 seed is 3 too, which the lfsr_seed assertions below also check directly. */
+    ttb_encode_sch_hd(mac, 3u, block2);
+
+    session s = session_open();
+    assert(sync_burst(&s, bsch, block2) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->net_known && ts->colour == 0U && ts->lfsr_seed == 3u);
+    assert(rxid_names_cell(s.state, 0U));
+    assert(ts->decode_ok >= 2U); /* the BSCH and block 2 */
+    session_close(&s);
+
+    /* A preset naming the network, a wrong one, and the all-zero one: the block passes in each, the cell is not named. */
+    static const uint16_t k_mcc[] = {460U, 262U, 0U};
+    static const uint16_t k_mnc[] = {4242U, 1001U, 0U};
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    for (size_t i = 0; i < sizeof k_mcc / sizeof k_mcc[0]; i++) {
+        s = session_open();
+        s.opts->tetra_net_preset = 1;
+        s.opts->tetra_net_mcc = k_mcc[i];
+        s.opts->tetra_net_mnc = k_mnc[i];
+        s.opts->tetra_net_colour = 0U;
+        /* The first burst creates the TETRA state, which takes the preset (tetra_frame_enter()); its all-zero blocks
+           fail their CRC, so the seed is checked before any block could have passed and named the cell. */
+        assert(nts2_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+        assert(tetra_st_existing(s.state)->lfsr_seed == 3u);
+        assert(s.state->rx_id.valid == 0U);
+        assert(nts2_burst(&s, zeros, block2) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(s.state->rx_id.valid == 0U);
+        session_close(&s);
+    }
+}
+
+/* A colour code 0 cell's SYSINFO decodes end to end, scrambled with the predefined all-zero e(1)..e(30) of its network
+ * (ttb_seed(), which does not use the decoder's seed): in block 2 of its synchronisation burst, whose location area
+ * and main carrier are taken on, and again in a normal burst after it (regression: the cell's MCC and MNC were mixed
+ * into the seed, so nothing after its SYNC decoded). */
+static void
+test_colour_zero_sysinfo_decodes(void) {
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t block2[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    ttb_block si = {0};
+    ttb_sysinfo(&si, 1234U, 4U, 2U, 77U);
+    encode_bsch(0U, bsch);
+    ttb_encode_sch_hd(si.bits, ttb_seed(460U, 4242U, 0U), block2);
+
+    session s = session_open();
+    assert(sync_burst(&s, bsch, block2) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->colour == 0U && ts->frames_sysinfo == 1U && ts->sysinfo_known && ts->la == 77U);
+    assert(ts->sysinfo_main_carrier == 1234U && ts->dl_carrier_hz == tetra_carrier_to_dl_hz(1234U, 4U, 2U));
+    assert(nts2_burst(&s, zeros, block2) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(ts->frames_sysinfo == 2U);
+    session_close(&s);
+}
+
 enum { CB_HALF_DIBITS = 42, SCH_HU_BITS = 92 };
 
 /* A control uplink burst (--tetra-uplink, network 460/4242 colour code 17 preset) whose 84 coded dibits are @p coded,
@@ -500,7 +510,7 @@ test_control_burst_tells_the_polarity(void) {
     s.opts->tetra_net_colour = 17;
     const uint8_t mac[SCH_HU_BITS] = {0};
     uint8_t coded[2 * CB_HALF_DIBITS];
-    encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+    ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
     uint8_t inverted[2 * CB_HALF_DIBITS];
     for (size_t i = 0; i < sizeof inverted; i++) {
         inverted[i] = (uint8_t)(coded[i] ^ 2U);
@@ -537,7 +547,7 @@ test_control_burst_publishes_its_mode(void) {
     s.opts->tetra_net_colour = 17;
     const uint8_t mac[SCH_HU_BITS] = {0};
     uint8_t coded[2 * CB_HALF_DIBITS];
-    encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+    ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
     const dsd_frame_verdict verdict = control_burst(&s, coded, 0);
     assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN && s.state->tetra_pub.mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK);
     const uint8_t zeros[BLOCK_DIBITS] = {0};
@@ -612,11 +622,11 @@ test_control_burst_leaves_direct_mode(void) {
     const uint32_t seed = tetra_compute_scramb_seed(460, 4242, 17);
     const uint8_t mac[SCH_HU_BITS] = {0};
     uint8_t coded[2 * CB_HALF_DIBITS];
-    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, coded);
+    ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, coded);
     ttb_block b = {0};
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     uint8_t block2[BLOCK_DIBITS];
-    encode_sch_hd(b.bits, seed, block2);
+    ttb_encode_sch_hd(b.bits, seed, block2);
     const uint8_t zeros[BLOCK_DIBITS] = {0};
 
     /* A first control burst gives the session its network identity, then a DSB puts it in direct mode. */
@@ -656,11 +666,11 @@ test_uplink_signalling_proves_the_carrier(void) {
         const uint32_t seed = tetra_compute_scramb_seed(460, 4242, 17);
         const uint8_t mac[SCH_HU_BITS] = {0};
         uint8_t coded[2 * CB_HALF_DIBITS];
-        encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, coded);
+        ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, coded);
         ttb_block b = {0};
         ttb_finish(&b, TTB_SCH_HD_BITS, -1);
         uint8_t block2[BLOCK_DIBITS];
-        encode_sch_hd(b.bits, seed, block2);
+        ttb_encode_sch_hd(b.bits, seed, block2);
         const uint8_t zeros[BLOCK_DIBITS] = {0};
         assert(s.state->rx_id.valid == 0U); /* the preset alone names no cell */
         const dsd_frame_verdict verdict = nub ? uplink_nts2_burst(&s, zeros, block2) : control_burst(&s, coded, 0);
@@ -712,7 +722,7 @@ test_carrier_boundary_leaves_direct_mode(void) {
         ttb_block b = {0};
         ttb_finish(&b, TTB_SCH_HD_BITS, -1);
         uint8_t block2[BLOCK_DIBITS];
-        encode_sch_hd(b.bits, seed, block2);
+        ttb_encode_sch_hd(b.bits, seed, block2);
         const uint8_t zeros[BLOCK_DIBITS] = {0};
 
         enter_direct_mode(&s);
@@ -728,27 +738,49 @@ test_carrier_boundary_leaves_direct_mode(void) {
     }
 }
 
+/* The nominal level of dibit @p d (+1 00, +3 01, -1 10, -3 11), as a soft symbol. */
+static float
+level_of(uint8_t d) {
+    static const float k_levels[4] = {1.0F, 3.0F, -1.0F, -3.0F};
+    return k_levels[d & 3U];
+}
+
 /* A direct mode synchronisation burst (EN 300 396-2 clause 9.4.3.3) as the frame sync locks it: SCH/S, captured before
  * the training sequence like a BSCH, and SCH/H right after it, then 15 dibits, all scrambled with the all-zero colour
  * code (EN 300 396-3 clause 8.2.4). @p sch_h is the 124 type-1 bits of SCH/H, or NULL for a block that fails its
- * CRC. */
+ * CRC. Received @p inverted, its dibits have their sign bit flipped, and the frame sync hands over the burst's
+ * polarity with the capture. With @p soft_only the captured hard decisions of SCH/S are lost and only its soft values
+ * carry it, so it is a DSB only to the soft decision. */
 static dsd_frame_verdict
-dmo_sync_burst(session* s, const uint8_t* sch_s, const uint8_t* sch_h) {
+dmo_sync_burst_as(session* s, const uint8_t* sch_s, const uint8_t* sch_h, int inverted, int soft_only) {
+    const uint8_t flip = inverted ? 2U : 0U;
     uint8_t sch_s_dibits[BSCH_DIBITS];
-    encode_signalling(sch_s, 60, 120, 11, 3u, sch_s_dibits);
+    ttb_encode_bsch(sch_s, sch_s_dibits);
     uint8_t tail[BLOCK_DIBITS + SB_BB_DIBITS] = {0};
     if (sch_h) {
-        encode_sch_hd(sch_h, 3u, tail);
+        ttb_encode_sch_hd(sch_h, 3u, tail);
+    }
+    for (size_t i = 0; i < sizeof tail; i++) {
+        tail[i] ^= flip;
     }
     feed(s, tail, (int)sizeof tail);
-    DSD_MEMCPY(s->state->tetra_sync.sb1_dibuf, sch_s_dibits, BSCH_DIBITS);
+    for (size_t i = 0; i < BSCH_DIBITS; i++) {
+        const uint8_t d = (uint8_t)(sch_s_dibits[i] ^ flip);
+        s->state->tetra_sync.sb1_dibuf[i] = soft_only ? 0U : d;
+        s->state->tetra_sync.sb1_soft[i] = level_of(d);
+    }
     s->state->tetra_sync.sb1_valid = 1;
-    s->state->tetra_sync.sb1_soft_valid = 0;
+    s->state->tetra_sync.sb1_soft_valid = (uint8_t)(soft_only != 0);
     s->state->tetra_sync.phase_rot = 0;
-    s->state->tetra_sync.polarity = 0;
-    s->state->lastsynctype = DSD_SYNC_TETRA_SB_POS;
-    s->state->synctype = DSD_SYNC_TETRA_SB_POS;
+    s->state->tetra_sync.sb_polarity = (uint8_t)(inverted != 0);
+    s->state->lastsynctype = inverted ? DSD_SYNC_TETRA_SB_NEG : DSD_SYNC_TETRA_SB_POS;
+    s->state->synctype = s->state->lastsynctype;
     return dsd_dispatch_handle_tetra(s->opts, s->state);
+}
+
+static dsd_frame_verdict
+dmo_sync_burst(session* s, const uint8_t* sch_s, const uint8_t* sch_h) {
+    return dmo_sync_burst_as(s, sch_s, sch_h, 0, 0);
 }
 
 /* A DMAC-SYNC SCH/S (EN 300 396-3 table 21), direct, channel A, slot 1, frame 3, under security class @p enc. */
@@ -875,6 +907,85 @@ test_dsb_of_unread_layout(void) {
     }
 }
 
+/* Normal bursts cannot tell the carrier's polarity (NTS2 is NTS1 inverted), so a synchronisation burst sets it, but only
+ * one whose BSCH passed its CRC: a burst of the other polarity that fails -- noise that matched the training, or a
+ * burst of another carrier -- leaves the polarity the home cell's accepted burst set, and the home cell's normal bursts
+ * after it still decode. Each burst is read with its own polarity, so an accepted one of either polarity sets it. */
+static void
+test_sync_burst_polarity_needs_its_bsch(void) {
+    session s = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    uint8_t inverted_sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    uint8_t inverted_zeros[BLOCK_DIBITS];
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    for (size_t i = 0; i < BLOCK_DIBITS; i++) {
+        inverted_sysinfo[i] = (uint8_t)(sysinfo[i] ^ 2U);
+        inverted_zeros[i] = 2U;
+    }
+
+    /* The home cell, received inverted. */
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->net_known && ts->colour == 17U && ts->frames_sysinfo == 1U);
+    assert(s.state->tetra_sync.polarity == 1);
+
+    /* A synchronisation burst of normal polarity whose BSCH fails. */
+    assert(sync_burst_as(&s, zeros, zeros, 0) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(s.state->tetra_sync.polarity == 1);
+
+    /* The home cell's next normal burst, NTS2: its block 2 decodes with the home polarity. */
+    assert(nts2_burst(&s, inverted_zeros, inverted_sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(ts->frames_sysinfo == 2U);
+
+    /* Accepted bursts of either polarity set it, their block 2 decoded with it. */
+    assert(sync_burst_as(&s, bsch, sysinfo, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_sync.polarity == 0 && ts->frames_sysinfo == 3U);
+    /* One whose BSCH fails still has its block 2 read with its own polarity, and leaves the carrier's. */
+    assert(sync_burst_as(&s, zeros, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_sync.polarity == 0 && ts->frames_sysinfo == 4U);
+    assert(nts2_burst(&s, zeros, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN && ts->frames_sysinfo == 5U);
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->tetra_sync.polarity == 1 && ts->frames_sysinfo == 6U);
+    session_close(&s);
+}
+
+/* An inverted direct mode carrier: its DSB is read with the burst's own polarity, its SCH/H as well, and once accepted
+ * that polarity is the carrier's for the DNBs after it, whether the hard decisions decoded its SCH/S or only the soft
+ * ones did (its SCH/H then goes by unread). */
+static void
+test_inverted_dsb_sets_the_polarity(void) {
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    bits_of(k_dmo_sch_h, sch_h);
+
+    session s = session_open();
+    assert(dmo_sync_burst_as(&s, sch_s, sch_h, 1, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    assert(ts->dmo && ts->dmo_dcc_valid && ts->calls.dmo.active);
+    assert(s.state->tetra_sync.polarity == 1);
+    /* A DNB with two half-slot blocks, NTS2, scrambled with the call's DM colour code: the same layout as a NUB. */
+    const uint8_t mac[TTB_SCH_HD_BITS] = {0};
+    uint8_t block[BLOCK_DIBITS];
+    ttb_encode_sch_hd(mac, ts->dmo_dcc_seed, block);
+    for (size_t i = 0; i < BLOCK_DIBITS; i++) {
+        block[i] ^= 2U;
+    }
+    const uint32_t decoded = ts->decode_ok;
+    assert(uplink_nts2_burst(&s, block, block) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(ts->decode_ok == decoded + 2U);
+    session_close(&s);
+
+    s = session_open();
+    assert(dmo_sync_burst_as(&s, sch_s, NULL, 1, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    ts = tetra_st_existing(s.state);
+    assert(ts->dmo && s.state->tetra_sync.polarity == 1);
+    session_close(&s);
+}
+
 /* A normal burst whose signalling failed its CRC is tried as speech, full-slot on NTS1 and half-slot on NTS2, but not
  * in frame 18, which carries signalling only (EN 300 392-2 clause 19.4.3.1, the mapping of clause 9.5.1): the decoder
  * tries no speech frame of a burst the TDMA clock places there (no TCH line under -Z), so none plays and no speech CRC
@@ -929,8 +1040,8 @@ test_aach_tells_traffic_from_signalling(void) {
     assert(ts->tdma_valid && ts->net_known);
     uint8_t full[2 * BLOCK_DIBITS];
     uint8_t half[BLOCK_DIBITS];
-    scrambled_zeros(ts->lfsr_seed, 432, full);
-    scrambled_zeros(ts->lfsr_seed, 216, half);
+    ttb_scrambled_zeros(ts->lfsr_seed, 432, full);
+    ttb_scrambled_zeros(ts->lfsr_seed, 216, half);
 
     /* PDUs (header, field 1, field 2): traffic 51 as a call's timeslot sends it, assigned control as it sends between
      * the talkers (tests/protocol/tetra/test_tetra_aach.c). */
@@ -952,7 +1063,7 @@ test_aach_tells_traffic_from_signalling(void) {
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         for (int nts2 = 0; nts2 < 2; nts2++) {
             uint8_t aach[AACH1_DIBITS + NDB_AACH2_DIBITS];
-            encode_aach(cases[i].pdu, cases[i].error, ts->lfsr_seed, aach);
+            ttb_encode_aach(cases[i].pdu, cases[i].error, ts->lfsr_seed, aach);
             /* Frame 5: a frame that may carry traffic, read in the slot the clock is at. */
             ts->fn = 5;
             s.state->symbolcnt = ts->tdma_slot_start + TETRA_TDMA_NDB_SYNC_SYMBOL;
@@ -1000,7 +1111,7 @@ test_retune_leaves_the_rest_of_the_burst(void) {
     ttb_close_resource(&b, start);
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     uint8_t grant[BLOCK_DIBITS];
-    encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, grant);
+    ttb_encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, grant);
 
     const dsd_frame_verdict verdict = nts2_burst(&s, grant, sysinfo);
     assert(verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN);
@@ -1050,7 +1161,7 @@ test_burst_entry_settles(void) {
                 s.opts->tetra_net_mnc = 4242;
                 s.opts->tetra_net_colour = 17;
                 const uint8_t mac[SCH_HU_BITS] = {0};
-                encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+                ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
                 assert(control_burst(&s, coded, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
                 /* The uplink carries no grant: the state machine is handed one, on a control channel a downlink
                  * block proved, as the downlink's MAC would. */
@@ -1071,7 +1182,7 @@ test_burst_entry_settles(void) {
                 ttb_close_resource(&b, start);
                 ttb_finish(&b, TTB_SCH_HD_BITS, -1);
                 uint8_t grant[BLOCK_DIBITS];
-                encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, grant);
+                ttb_encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, grant);
                 (void)nts2_burst(&s, grant, sysinfo);
             }
             const uint64_t request = dsd_trunk_tuning_pending_request();
@@ -1121,7 +1232,7 @@ test_uplink_normal_burst_takes_the_lead(void) {
     ttb_block b = {0};
     ttb_finish(&b, TTB_SCH_HD_BITS, -1);
     uint8_t block2[BLOCK_DIBITS];
-    encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, block2);
+    ttb_encode_sch_hd(b.bits, tetra_st_existing(s.state)->lfsr_seed, block2);
     uint8_t tail[BLOCK_DIBITS] = {0};
     DSD_MEMCPY(tail, block2 + 2, BLOCK_DIBITS - 2);
     feed(&s, tail, (int)sizeof tail);
@@ -1215,26 +1326,26 @@ test_uplink_registration_proposes_its_algorithm(void) {
     uint8_t slot[2 * BLOCK_DIBITS];
 
     registration_pdu(mac, SCH_HU_BITS, 1, 0U, 0U);
-    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
+    ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
     assert(control_burst(&s, cb, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     const dsd_tetra_publication* pub = &s.state->tetra_pub;
     assert(pub->mode == DSD_TETRA_MODE_TMO_CONTROL_UPLINK && pub->ksg_requested_mask == 0x0001U);
     assert(pub->ksg_mask == 0U && pub->air_encryption == DSD_TETRA_AIR_ENC_CLEAR);
 
     registration_pdu(mac, SCH_F_BITS, 0, 0U, 1U);
-    encode_signalling(mac, SCH_F_BITS, 432, 103, seed, slot);
+    ttb_encode_signalling(mac, SCH_F_BITS, 432, 103, seed, slot);
     assert(uplink_nts1_burst(&s, slot) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     assert(pub->mode == DSD_TETRA_MODE_TMO_UPLINK && pub->ksg_requested_mask == 0x0003U);
 
     /* TEA3 proposed in blocks whose CRC fails: nothing changes. */
     registration_pdu(mac, SCH_HU_BITS, 1, 1U, 2U);
-    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
+    ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
     for (int i = 0; i < CB_HALF_DIBITS; i += 2) {
         cb[i] ^= 1U;
     }
     (void)control_burst(&s, cb, 0);
     registration_pdu(mac, SCH_F_BITS, 0, 1U, 2U);
-    encode_signalling(mac, SCH_F_BITS, 432, 103, seed, slot);
+    ttb_encode_signalling(mac, SCH_F_BITS, 432, 103, seed, slot);
     for (int i = 0; i < BLOCK_DIBITS; i += 2) {
         slot[i] ^= 1U;
     }
@@ -1244,14 +1355,14 @@ test_uplink_registration_proposes_its_algorithm(void) {
     /* A stealing channel half slot carrying a registration is not read. */
     uint8_t half[BLOCK_DIBITS];
     registration_pdu(mac, TTB_SCH_HD_BITS, 0, 0U, 2U);
-    encode_sch_hd(mac, seed, half);
+    ttb_encode_sch_hd(mac, seed, half);
     assert(uplink_nts2_burst(&s, half, half) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     assert(pub->ksg_requested_mask == 0x0003U);
 
     /* An encrypted registration: the encryption shows, nothing is proposed; a carrier boundary forgets the encryption
      * at once and keeps the network's proposals. */
     registration_pdu(mac, SCH_HU_BITS, 1, 1U, 2U);
-    encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
+    ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, seed, cb);
     assert(control_burst(&s, cb, 0) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     assert(pub->air_encryption == DSD_TETRA_AIR_ENC_ENCRYPTED && pub->ksg_requested_mask == 0x0003U);
     tetra_forget_carrier(s.state);
@@ -1277,7 +1388,7 @@ test_uplink_registration_proposes_its_algorithm(void) {
     dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
     d.opts->tetra_uplink = 1;
     registration_pdu(mac, TTB_SCH_HD_BITS, 0, 0U, 0U);
-    encode_sch_hd(mac, tetra_compute_scramb_seed(460, 4242, 17), half);
+    ttb_encode_sch_hd(mac, tetra_compute_scramb_seed(460, 4242, 17), half);
     assert(sync_burst(&d, bsch, half) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     assert(tetra_air_ksg_requested(d.state, 460, 4242) == 0U && d.state->tetra_pub.ksg_requested_mask == 0U);
     session_close(&d);
@@ -1305,7 +1416,7 @@ test_every_burst_ends_with_its_publication(void) {
     g_snapshots = 0;
     const uint8_t mac[SCH_HU_BITS] = {0};
     uint8_t coded[2 * CB_HALF_DIBITS];
-    encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
+    ttb_encode_signalling(mac, SCH_HU_BITS, 168, 13, tetra_compute_scramb_seed(460, 4242, 17), coded);
 
     /* No colour code to descramble with: nothing decodes, block 1 is consumed and the burst still ends. */
     (void)control_burst(&s, coded, 0);
@@ -1339,6 +1450,8 @@ main(void) {
     test_normal_burst_failure_and_colour();
     test_failed_bsch_runs_the_clock();
     test_crc_passed_block_proves_the_cell();
+    test_colour_zero_cell_scrambles_predefined();
+    test_colour_zero_sysinfo_decodes();
     test_control_burst_tells_the_polarity();
     test_control_burst_publishes_its_mode();
     test_control_burst_leaves_direct_mode();
@@ -1347,6 +1460,8 @@ main(void) {
     test_dmo_unread_sync_seals_the_traffic();
     test_dsb_leaves_trunked_mode();
     test_dsb_of_unread_layout();
+    test_sync_burst_polarity_needs_its_bsch();
+    test_inverted_dsb_sets_the_polarity();
     test_retune_leaves_the_rest_of_the_burst();
     test_burst_entry_settles();
     test_frame_18_tries_no_speech();

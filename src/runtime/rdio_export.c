@@ -123,7 +123,7 @@ dsd_rdio_remove_after_upload(const char* path, const char* kind) {
     if (!path || path[0] == '\0') {
         return;
     }
-    if (remove(path) != 0 && errno != ENOENT) {
+    if (dsd_remove_file(path) != 0 && errno != ENOENT) {
         LOG_WARN("Rdio API upload: failed to delete %s %s: %s\n", kind ? kind : "file", path, strerror(errno));
     }
 }
@@ -878,7 +878,7 @@ dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* ou
     if (fflush(fp) != 0) {
         LOG_ERROR("Rdio export: failed flushing %s: %s\n", temp_meta_path, strerror(errno));
         (void)fclose(fp);
-        (void)remove(temp_meta_path);
+        (void)dsd_remove_file(temp_meta_path);
         return -1;
     }
     int fd = dsd_fileno(fp);
@@ -887,19 +887,19 @@ dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* ou
         if (dsd_fsync(fd) != 0) {
             LOG_ERROR("Rdio export: failed syncing %s: %s\n", temp_meta_path, strerror(errno));
             (void)fclose(fp);
-            (void)remove(temp_meta_path);
+            (void)dsd_remove_file(temp_meta_path);
             return -1;
         }
     }
     if (fclose(fp) != 0) {
         LOG_ERROR("Rdio export: failed closing %s: %s\n", temp_meta_path, strerror(errno));
-        (void)remove(temp_meta_path);
+        (void)dsd_remove_file(temp_meta_path);
         return -1;
     }
 
     if (dsd_replace_file_with_temp(temp_meta_path, out_meta_path) != 0) {
         LOG_ERROR("Rdio export: failed renaming %s -> %s: %s\n", temp_meta_path, out_meta_path, strerror(errno));
-        (void)remove(temp_meta_path);
+        (void)dsd_remove_file(temp_meta_path);
         return -1;
     }
     return 0;

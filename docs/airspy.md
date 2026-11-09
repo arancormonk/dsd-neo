@@ -185,6 +185,12 @@ continues to report invalid values.
   a stream they reopen starts on the row's threshold.
 - **Unsupported controls:** libairspy has no PPM-correction API. Auto-PPM and
   RTL-specific direct sampling, oscillator, and tuner controls do not apply.
+- **Overload:** an Airspy's overload cannot be seen in the I/Q samples libairspy
+  delivers. libairspy turns the Airspy's real samples into I/Q itself, and that
+  conversion halves their amplitude and filters one of the two parts, so samples at
+  the Airspy's limits arrive near half scale and never reach a clipping threshold.
+  Neither [Signal search](signal-search.md) nor the input level meter shows Airspy
+  clipping. If strong signals are near, lower the gain.
 
 Device and rate changes reopen the receiver. Gain, AGC, and bias changes are
 serialized through the decoder's command path. Frequency changes flush the

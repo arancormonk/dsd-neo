@@ -103,10 +103,10 @@ typed_file_paths(bool* ok) {
     bool loaded = true;
     QStringList paths;
     for (const QString& store : stores) {
-        JsonStoreLoad status = JsonStoreLoad::Failed;
-        const QJsonArray rows = json_store_load_array(store, &status);
-        loaded = loaded && status != JsonStoreLoad::Failed;
-        for (const TypedPathValue& value : typed_path_values(store, rows)) {
+        // A backup only reads the stores, so nothing is marked.
+        const JsonStoreRead read = json_store_read(store);
+        loaded = loaded && read.status != JsonStoreLoad::Unreadable;
+        for (const TypedPathValue& value : typed_path_values(store, read.array)) {
             if (value.field.kind == PathKind::File && QDir::isAbsolutePath(value.value)) {
                 paths.append(QDir::cleanPath(value.value));
             }

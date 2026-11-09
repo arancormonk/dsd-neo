@@ -35,6 +35,7 @@
 #include <QList>
 #include <QMap>
 #include <QMetaMethod>
+#include <QMetaType>
 #include <QObject>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -224,6 +225,22 @@ class FakeHost : public dsd_qt::DecoderHost {
         return m_aborts;
     }
 
+    /** Keeps each reference the model hands back as never to be written (#829). */
+    void
+    discardPendingDownload(const QString& reference) override {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        m_discarded.append(reference);
+    }
+
+    /** The references discarded since the last call, which forgets them. */
+    QStringList
+    takeDiscarded() {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        QStringList taken;
+        taken.swap(m_discarded);
+        return taken;
+    }
+
     void
     closeGate() {
         const std::lock_guard<std::mutex> lock(m_mutex);
@@ -255,6 +272,7 @@ class FakeHost : public dsd_qt::DecoderHost {
     bool m_open = true;
     mutable int m_arrived = 0;
     int m_aborts = 0;
+    QStringList m_discarded;
 };
 
 /** A host with the base quitApp(), which cannot close the app. */
@@ -663,6 +681,8 @@ test_export(FakeHost& host, const QString& document) {
                && summary.value("recordingsToChoose").toInt() == 1 && summary.value("appExtraArgs").toBool());
     expect("the export lists what it left out",
            prepared.value("notIncluded").toStringList() == summary.value("notIncluded").toStringList());
+    expect("the export read every file",
+           prepared.contains("unreadable") && prepared.value("unreadable").toStringList().isEmpty());
     expect("idle once prepared", !model.busy() && model.restoreAllowed());
     expect("a prepared export is no card result", model.lastResult().isEmpty());
     const QStringList temp = cache_entries();
@@ -687,10 +707,13 @@ test_export(FakeHost& host, const QString& document) {
     expect("the cache file is gone", cache_entries().isEmpty());
     expect("the card shows the save",
            model.lastResult().value("action") == "saveExport" && model.lastResult().value("ok").toBool());
+    expect("a save that ran left its document to the host's write", host.takeDiscarded().isEmpty());
     model.saveExport(QUrl::fromLocalFile(document).toString());
     expect("nothing is left to save", pump_until([&]() { return results.finished.size() == 2; })
                                           && !results.finished.value(1).value("ok").toBool()
                                           && results.finished.value(1).value("error") == "Io");
+    expect("a save refused with nothing prepared hands its document back (#829)",
+           host.takeDiscarded() == QStringList{QUrl::fromLocalFile(document).toString()});
 }
 
 /* ---- restore ---- */
@@ -1037,7 +1060,10 @@ test_busy_refusals(FakeHost& host, const QString& document) {
     expect("the inspection holds at the copy", host.waitArrived(1));
     expect("busy: no restore allowed", model.busy() && !model.restoreAllowed());
     model.prepareExport(kPass);
+    (void)host.takeDiscarded();
     model.saveExport(QStringLiteral("/nonexistent"));
+    expect("a save refused while busy hands its document back (#829)",
+           host.takeDiscarded() == QStringList{QStringLiteral("/nonexistent")});
     model.inspectRestore(document, kPass);
     const QVariantMap commit = model.commitRestore();
     expect("commit refused while busy", !commit.value("ok").toBool() && commit.value("error") == "Busy");
@@ -1232,6 +1258,49 @@ test_short_real_passphrase(FakeHost& host, const QString& scratch) {
     const QVariantMap opened = inspect(model, results, document, "short7");
     expect("the backup's own short passphrase opens it", opened.value("ok").toBool());
     expect("clean up", model.discardRestore().value("ok").toBool());
+}
+
+/* Issue #828: a store that cannot be read refuses the export by name: at the check the screen runs before it asks for
+ * a passphrase, and again when the export reads the store, for a file that became unreadable in between. Nothing is
+ * sealed or left in the cache. */
+void
+test_unreadable_store_refuses(FakeHost& host) {
+    const QString lists = at("scan_lists.json");
+    const QByteArray good = read_file(lists);
+    BackupModel model(&host, {});
+    model.setKdfParams(fast_kdf());
+    Results results(model);
+    expect("unreadable lists: the check passes while it reads", model.checkExport().value("ok").toBool());
+    expect("unreadable lists: a passing check is no card result", model.lastResult().isEmpty());
+    expect("unreadable lists: damaged", !good.isEmpty() && write_file(lists, "[{\"torn"));
+    const QVariantMap checked = model.checkExport();
+    expect("unreadable lists: the check names it",
+           !checked.value("ok").toBool() && checked.value("error") == "Unreadable"
+               && checked.value("unreadable").userType() == QMetaType::QStringList
+               && checked.value("unreadable").toStringList() == QStringList{"scan_lists.json"});
+    expect("unreadable lists: the card shows the check's refusal",
+           model.lastResult().value("action") == "prepareExport" && model.lastResult().value("error") == "Unreadable");
+    expect("unreadable lists: the check starts nothing", !model.busy() && cache_entries().isEmpty());
+    // Damaged after the screen's check passed: the export reads it again.
+    model.prepareExport(kPass);
+    expect("unreadable lists: reported", pump_until([&]() { return results.prepared.size() == 1; }));
+    const QVariantMap refused = results.prepared.value(0);
+    expect("unreadable lists: refused by name",
+           !refused.value("ok").toBool() && refused.value("error") == "Unreadable"
+               && refused.value("unreadable").toStringList() == QStringList{"scan_lists.json"});
+    expect("unreadable lists: the names are a string list",
+           refused.value("unreadable").userType() == QMetaType::QStringList);
+    expect("unreadable lists: no summary", refused.value("summary").toMap().isEmpty());
+    expect("unreadable lists: nothing sealed", cache_entries().isEmpty() && !model.busy());
+    expect("unreadable lists: the card shows it",
+           model.lastResult().value("action") == "prepareExport" && model.lastResult().value("error") == "Unreadable");
+    expect("unreadable lists: readable again", write_file(lists, good));
+    expect("unreadable lists: the check passes again", model.checkExport().value("ok").toBool());
+    model.prepareExport(kPass);
+    expect("unreadable lists: then exported",
+           pump_until([&]() { return results.prepared.size() == 2; }) && results.prepared.value(1).value("ok").toBool()
+               && results.prepared.value(1).value("unreadable").toStringList().isEmpty());
+    model.discardExport();
 }
 
 /** Whoever reacts to busy turning false sees the job's outcome already in place. */
@@ -1718,6 +1787,7 @@ main(int argc, char** argv) {
         quietly([&]() { test_discard_failures(full); });
         quietly([&]() { test_errors(host, full, scratch.path()); });
         quietly([&]() { test_short_real_passphrase(host, scratch.path()); });
+        quietly([&]() { test_unreadable_store_refuses(host); });
         quietly([&]() { test_busy_refusals(host, full); });
         quietly([&]() { test_cancelled_export(host, full); });
         quietly([&]() { test_cancelled_inspect(host, older, full); });

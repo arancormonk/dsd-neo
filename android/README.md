@@ -107,7 +107,8 @@ call on another carrier for longer than 15 s lets the skipped call be followed
 again when next seen; tap **Skip** again. DMR, NXDN, EDACS and P25 private-call skips
 last 15 s from the tap in this version; ProVoice has no skip.
 
-**Avoid TG** blocks the talkgroup for the session, until stop or list reload/replacement.
+**Avoid TG** blocks the talkgroup for the session, until stop or a list reload or
+replacement that works (a refused one keeps the block).
 **Lock out** saves the block to the configured talkgroup list. **Settings → Listening
 → Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
 when off. Without a group file, or on a scan row's own list, lockouts stay in memory.
@@ -228,6 +229,26 @@ The Monitor keeps its hero fixed and scrolls the rows below it; recent calls hav
 a minimum pane height. Modal sheets constrain their height to the space above the
 keyboard, scroll their contents, and reveal the focused field.
 
+## Choosing files
+
+DSD-neo opens and saves files through Android's file picker. On a device without one (some car head units ship
+none), opening a file offers the apps that can pick documents instead, such as a file manager or Drive, and leaves out
+the photo pickers, which cannot open DSD-neo's files. With no such app, DSD-neo says **No compatible file picker on
+this device. Install a file manager app, then try again.** A file manager that hands back a plain file path rather
+than a document reads **That app gave DSD-neo a file it can't open. Pick the file from another app.** DSD-neo reads or
+writes a picked file while the app is open and keeps no lasting permission to it. A pick that comes back after Android
+closed DSD-neo in the background is ignored: open the screen again and pick the file.
+
+With no save picker, a save (Back up, Export as zip, Save to file) goes straight to the phone's **Download/DSD-neo**
+folder, which Files and other file managers show. The file appears there only once it is completely written; a save
+that fails or is cancelled leaves nothing behind. When a file of that name is already there, Android adds a number, as
+in `dsd-neo-backup-2026-11-08 (1).dsdbak`. When even the Download folder cannot
+be written, the save says **This device has no save picker, and DSD-neo could not save to the Download folder.** Files
+saved there stay after DSD-neo is uninstalled; a backup there stays encrypted with its passphrase.
+
+At start DSD-neo gives back any lasting file permissions an earlier version kept from picks, since it no longer uses
+them and Android limits how many an app may hold.
+
 ## Imported files (trunking CSVs)
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
@@ -262,6 +283,15 @@ Android. The companion selection flow copies referenced files into a private bun
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 
+Picks go through the app's document picker (issue #829), and the picked document is then copied by the import worker
+as above. A pick belongs to the screen that asked for it: leaving Imported files, the scan list editor or the wizard, or
+reopening the editor or the wizard for another item, cancels it, and so does a copy still running. A file or "None"
+chosen for the same field while the picker is out wins over the pick that comes back later, and "Update" replaces the
+file it was started on, or says "That file changed while you were picking. Try again." when that file was removed
+meanwhile. When no picker can open, the import ends with the reason; on the companion sheet the reason shows above the
+companions and the files already chosen stay. On the wizard's **File** source the reason shows under the Replay file
+row, where a failed replay copy says why too, and the earlier file stays.
+
 The library itself (one JSON-persisted
 row per stored file, with dry-run validation counts from
 `<dsd-neo/core/csv_validate.h>`) is `src/ui/qt/imported_files_model.{h,cpp}`,
@@ -272,7 +302,8 @@ ID lists use `id,name[,tags]` and supply labels; a list whose header is `id,name
 recording calls by radio (see [Source ID List CSV](../docs/csv-formats.md#source-id-list-csv---src-csv-file--trunking-src_csv)).
 They can be applied or cleared in a running session. A group
 list and a source ID list cannot be distinguished by content: validation uses the kind selected by the user.
-No storage permissions are involved; SAF needs none.
+No storage permissions are involved: the picker grants access to the one document picked, and DSD-neo copies it
+right away.
 
 ## Call recordings
 
@@ -377,9 +408,15 @@ Settings → **Manage call recordings** opens **Call recordings**: one row per s
 count, size and dates. A row's menu has **Export as zip** and **Delete all for this system** (for this scan list, or
 from Explore); **Export all** and **Delete all** sit below the rows. An export first asks for the range: **Today**,
 **Yesterday**, **Last 7 days**, **Last 30 days** or **All**, by the day each call started on the phone's calendar. Then
-Android's save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
+the save picker opens. The ZIP holds one folder per system with its WAV files, stored without compression (voice
 gains little from it, at a large CPU cost), so it is about as large as the recordings it holds; it has no size or count
-limit. A progress line with **Cancel export** shows while it runs, one export at a time. A recording deleted meanwhile
+limit. A progress line with **Cancel export** shows while it runs, one export at a time: **Export all** and a row's
+**Export as zip** wait from the moment the save picker opens. On a phone with no save picker, the export (and **Save to
+file**) goes to Download/DSD-neo ("Choosing files"), and the result names the file there: **Exported 12 recordings to
+Download/DSD-neo as** the file's name (for Save to file, **Saved to Download/DSD-neo as** its name); TalkBack reads
+that result out. Cancel still stops it until the file is finished, and a cancelled or failed export leaves nothing
+there. When the file can't be saved anywhere, the screen (or the call's sheet) says why and the recordings are free
+again, as they are when you back out of the picker or leave the screen while it is open. A recording deleted meanwhile
 is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
 rdio-scanner upload is deleted once it is free.
 
@@ -457,24 +494,36 @@ leaves that reference out and lists it under **Not included** on the Settings ca
 ### Exporting
 
 **Export backup** works while listening too. Type a passphrase of at least 8 characters twice (**Show passphrases**
-reveals both fields), then **Encrypt**. Android's save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak`;
-keep DSD-neo open until Settings reads **Backup saved.** The passphrase is the only way to open the backup. DSD-neo
-keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session keeps adding to its
-talkgroup lists; if a file changes while the backup is being made, the export stops with **Your setup changed while the
-backup was being made. Try again.**
+reveals both fields), then **Encrypt**. The save picker opens with the name `dsd-neo-backup-YYYY-MM-DD.dsdbak` (on a
+phone with none, the backup goes to Download/DSD-neo; see "Choosing files"); keep DSD-neo open until Settings reads
+**Backup saved.** (**Backup saved to Download/DSD-neo as** the file's name, when it went there). When the picker fails
+and the backup has nowhere to go, it is thrown away and the Settings card says why. The passphrase is the only way to
+open the backup. DSD-neo keeps no copy of it, and a forgotten passphrase cannot be recovered or reset. A running session
+keeps adding to its talkgroup lists; if a file changes while the backup is being made, the export stops with **Your
+setup changed while the backup was being made. Try again.**
+
+If one of the lists a backup carries, or your settings, can't be read, **Export backup** stops before asking for a
+passphrase and names each one, for example **Saved systems can't be read, so no backup was made. Save a change to
+Saved systems, then back up again. That backup holds only what DSD-neo shows now.** A backup would hold that list
+empty or cut short, and restoring it would replace what the phone has. Saving a change to the list writes it again
+(a file DSD-neo couldn't read when it opened is first kept aside, under a name ending in `.unreadable-1` or the next
+free number);
+for settings, restart DSD-neo instead. The backup made after that holds only what DSD-neo shows then, never the kept
+file, and a restore never touches kept files.
 
 ### Restoring
 
 **Restore from backup** replaces this phone's setup with the backup's, so stop listening first (the row reads **Stop
-listening to restore** until then). Pick the file in Android's file picker (DSD-neo checks the file's contents, not its
-name) and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or
-the file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
-damaged, or unreadable), **Choose another file** opens the picker again. DSD-neo checks the whole backup before it
-changes anything. An imported file this phone cannot read (a channel map whose companion files it refuses, say) is left
-out of the restore rather than refusing the whole backup; whatever named it loses that reference. Then it asks **Replace
-your setup?** with the backup's date, app version and counts, how many replay systems will need their recording chosen
-again, how many systems carry extra decoder options, and what is **Not included** (what the export could not carry, and
-files left out on this phone).
+listening to restore** until then). Pick the file in the file picker (DSD-neo checks the file's contents, not its name)
+and enter its passphrase. A wrong passphrase reads the same as a file damaged on the way (**Wrong passphrase, or the
+file is damaged.**). When the file itself is the problem (not a DSD-neo backup, made by a newer DSD-neo, too large,
+damaged, or unreadable), **Choose another file** opens the picker again and takes only the file picked there. When no
+picker can open, either time, the restore stops, the Settings card says why, and **Restore from backup** starts over.
+DSD-neo checks the whole backup before it changes anything. An imported file this phone cannot read (a channel map whose
+companion files it refuses, say) is left out of the restore rather than refusing the whole backup; whatever named it
+loses that reference. Then it asks **Replace your setup?** with the backup's date, app version and counts, how many
+replay systems will need their recording chosen again, how many systems carry extra decoder options, and what is **Not
+included** (what the export could not carry, and files left out on this phone).
 
 **Replace and close** closes DSD-neo. If DSD-neo is still stopping a session, the confirmation says so and stays open:
 confirm again in a moment, or **Cancel** to drop the restore. Open DSD-neo again: the restore is applied before
@@ -543,6 +592,18 @@ Limits:
 - A restore always fails, changing nothing, while one of DSD-neo's own list files is a symbolic link. DSD-neo never
   makes one; only something with access to its private storage (root, or `adb` on a debuggable build) can, and
   clearing DSD-neo's storage removes it.
+
+## Password managers
+
+The RadioReference sign-in forms (the import screen and Settings → Account) are offered to the phone's autofill
+service, as a username and a password field; what that looks like and its limits are in [RadioReference
+import](../docs/radioreference-import.md) "Password managers (Android)". Qt draws its own text fields and describes
+none of them to Android, so `SignInAutofill.kt` puts a host view of its own behind Qt's layout and describes the two
+fields as its virtual children, with `SignInAutofillState.kt` deciding what the Autofill Framework is told;
+`QtCursorHandle.kt` takes Qt's text cursor handle off the screen before each request, since some services refuse a
+request whose structure has that second window. The C++ side is `DecoderHostAndroid`'s `signInAutofill*` overrides,
+and a fill comes back through `DsdNative.nativeSignInFilled`. No value is logged on the way; `docs/code_map.md`
+"Sign-in autofill" has the contract.
 
 ## Build
 
@@ -1595,6 +1656,15 @@ module behind it, so androiddeployqt has nothing extra to package.
 
 ## Known limits
 
+- **A save to Download/DSD-neo cut off by a crash or a forced close** (#829) stays hidden from other apps and is deleted
+  by Android about a week later; it never shows as a finished file. On Android 10 the half-written file keeps its
+  normal name, and a file manager that reads the folder directly (rather than through Android's media store) can list
+  it until then.
+- **An empty file when Android closes DSD-neo during a save** (#829). If Android closes DSD-neo in the background while
+  a save picker (Back up, Export as zip, Save to file) is open, and a place is then chosen in that picker, the picker
+  makes an empty file there and DSD-neo, started again, ignores the pick. Delete that file and save again. While
+  DSD-neo runs, a save picker the app stops waiting for (the screen that asked for it closed) is closed too, so it
+  makes no file.
 - **arm64-v8a only.** armv7 would run scalar-only DSP and is out of scope.
 - **One decoder per process.** The service rejects a start unless it is idle.
 - **SoapySDR is not supported** and is not planned.
@@ -1679,7 +1749,7 @@ module behind it, so androiddeployqt has nothing extra to package.
   USB attachment, a tap on the launcher icon and a tap on the decoding notification
   all bring the running app forward, and each closes a file picker or a permission
   prompt open over it. The flow that opened it ends as if cancelled, quietly: a CSV
-  import, backup or recording picker ends with no error, and an interrupted location
+  import, backup, replay recording or call recording picker ends with no error, and an interrupted location
   prompt returns the site chooser to its idle text, with nothing reported as
   denied; Android asks again on the next tap. Share sheets open in their own task
   and are not affected.
@@ -2110,7 +2180,9 @@ are explained when background listening first becomes useful; denial leaves the
 foreground UI usable. Audio output reports the active device route and follows
 Android's routing controls.
 
-New replay picks are copied to durable app-private storage. Existing saved cache
+New replay picks are copied to durable app-private storage. When a copy fails, the wizard says **Could not copy that
+file.** under the file, adding **The previous file is still selected.** when one was; when no picker can open, it
+gives the reason there instead. Existing saved cache
 copies are migrated when available; missing files can be reselected through Edit.
 File details show the basename, size and modification time. Replay completion is
 retained with a Play again action. Progress is not invented when the input backend
@@ -2141,10 +2213,10 @@ of a saved system that scans its channel list) does not pause the scan: the scan
 to that entry and holds there, with the entry's own mode, keys and options (a paused
 scan resumes there). For a trunked system the scan goes to its control channel, which
 may not be the frequency you typed. **Hold** shows it held once the radio is there; tap
-**Hold** to let the scan go on. An entry that is avoided, or whose list is off, is not
-taken: **Go to** pauses the scan as usual and the message says why. Only **Go to** does
-this: on a paused scan, a tap, a drag or a step to the same frequency tunes it with your
-usual settings. The Go to sheet says so while a scan runs.
+**Hold** to let the scan go on. An entry that is avoided, or that no list switched on
+holds, is not taken: **Go to** pauses the scan as usual and the message says why. Only
+**Go to** does this: on a paused scan, a tap, a drag or a step to the same frequency
+tunes it with your usual settings. The Go to sheet says so while a scan runs.
 
 In Explore, when the frequency you are on is a scan list's entry or a saved system,
 Monitor (above Recent calls) and Spectrum (beside **Save**) offer to listen to it with
@@ -2241,7 +2313,7 @@ notification says **Private** or **Identity not decoded** beside the talker.
 
 ### Scan lists
 
-**Import target CSV** opens Android's document picker. Select the target CSV and
+**Import target CSV** opens the file picker. Select the target CSV and
 the companion files requested by the import flow, review the read-only target
 preview, choose the receiver settings, name the list and Save. Play uses the stored
 CSV directly, preserving its supported options and their precedence over session

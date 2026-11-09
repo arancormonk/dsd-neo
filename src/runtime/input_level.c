@@ -25,6 +25,8 @@ static const double DSD_INPUT_LEVEL_CLIP_PCT = 0.1;
 static const double DSD_INPUT_LEVEL_HOT_PEAK_DBFS = -1.0;
 static const double DSD_INPUT_LEVEL_SILENCE_FLOOR_DBFS = -120.0;
 static const double DSD_INPUT_LEVEL_SILENCE_EPSILON_DB = 0.1;
+/* A CS16 sample at or past this fraction of its full scale counts as clipped. */
+static const double DSD_INPUT_LEVEL_CS16_CLIP_FRACTION = 0.99;
 
 static double
 input_level_pwr_to_db(double mean_power) {
@@ -379,16 +381,22 @@ dsd_input_level_metrics_from_cu8(const uint8_t* samples, size_t count, dsd_input
 }
 
 int
-dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, dsd_input_level_source source,
-                                  dsd_input_level_snapshot* out) {
-    if (!out || !samples || count == 0U) {
+dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, double full_scale,
+                                  dsd_input_level_source source, dsd_input_level_snapshot* out) {
+    if (!out || !samples || count == 0U || !isfinite(full_scale) || full_scale < 1.0
+        || full_scale > (double)DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE) {
         return -1;
     }
     double p = 0.0;
     double t = 0.0;
     double peak = 0.0;
     uint64_t clipped = 0U;
-    const double scale = 1.0 / 32768.0;
+    const double scale = 1.0 / full_scale;
+    /* The first code at or past the clip fraction (2028 at 2048, 32441 at 32768): a sample is clear of it while
+       -(c - 1) <= s <= c - 1, which is (unsigned)(s + c - 1) <= 2(c - 1), one compare per sample. */
+    const uint32_t clip_code = (uint32_t)ceil(full_scale * DSD_INPUT_LEVEL_CS16_CLIP_FRACTION);
+    const uint32_t clear_offset = clip_code - 1U;
+    const uint32_t clear_span = 2U * clear_offset;
     for (size_t i = 0U; i < count; i++) {
         const int16_t sample = samples[i];
         const double s = (double)sample * scale;
@@ -396,7 +404,7 @@ dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, dsd_inpu
         if (a > peak) {
             peak = a;
         }
-        if (sample <= -32760 || sample >= 32760) {
+        if ((uint32_t)(int32_t)sample + clear_offset > clear_span) {
             clipped++;
         }
         t += s;
@@ -628,7 +636,7 @@ dsd_input_level_publish(dsd_opts* opts, dsd_state* state, const dsd_input_level_
     }
     LOG_WARN("WARNING: %s\n", msg);
     DSD_SNPRINTF(state->ui_msg, sizeof(state->ui_msg), "%s", msg);
-    state->ui_msg_expire = dsd_realtime_time() + DSD_INPUT_LEVEL_TOAST_TTL_SEC;
+    dsd_state_toast_publish(state, dsd_realtime_time() + DSD_INPUT_LEVEL_TOAST_TTL_SEC);
     state->input_level_last_toast_time = decode_now;
     state->input_level_last_toast_status = next.status;
     state->input_level_last_toast_source = next.source;

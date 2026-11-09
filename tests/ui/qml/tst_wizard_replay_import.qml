@@ -69,8 +69,8 @@ Item {
             verify(found !== null, name + " is missing");
             return found;
         }
-        // A provider's document, as Browse hands it on (the dialog itself only
-        // takes files that exist; test_browse_hands_on_the_pick covers it).
+        // A provider's document, as Browse hands it on (tst_wizard_browse
+        // drives Browse and the picker themselves).
         function pickReplay(reference) {
             tc.wizard.beginReplay(reference, reference.substring(reference.lastIndexOf('/') + 1));
         }
@@ -84,9 +84,8 @@ Item {
             var progress = item("wizardReplayProgress");
             var watch = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"visibleChanged\" }", root);
             watch.target = progress;
-            var picker = item("wizardReplayPicker");
-            picker.selectedFile = "file://" + path;
-            picker.accepted();
+            item("wizardReplayBrowse").clicked();
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, "file://" + path, "browse-capture.wav", false);
             compare(testContext.replayCalls().begins, 1);
             compare(testContext.replayCalls().reference, "file://" + path);
             verify(!progress.visible, "no copy shows for a local file");

@@ -59,6 +59,14 @@ nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
     return g_channel_freq;
 }
 
+long int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nxdn_channel_to_frequency_display(const dsd_state* state, uint16_t channel) {
+    (void)state;
+    (void)channel;
+    return g_channel_freq;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_gps_report(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src) {
@@ -405,6 +413,36 @@ test_nxdn_location_bounds_accepted(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* This site's SITE_INFO, then a CCH_INFO adding a control channel candidate to another site (Add, the only way another
+   site's control channel reaches this one's CCH_INFO): the site identity, its RAN, the received identity and the search
+   note stay this site's, in channel notation and in DFA. */
+static int
+test_cch_info_of_another_site_keeps_this_site(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    for (uint32_t rcn = 0U; rcn < 2U; ++rcn) {
+        clear_state(state);
+        state->nxdn_confirmed = 1;
+        uint8_t site[200];
+        DSD_MEMSET(site, 0, sizeof(site));
+        put_bits(site, 2, 0x18, 6);
+        put_bits(site, 8, LOCATION_SYS3_SITE12, 24);
+        put_bits(site, 88, rcn, 1);
+        NXDN_Elements_Content_decode(opts, state, site, sizeof(site));
+        g_notes = 0;
+        uint8_t cch[200];
+        DSD_MEMSET(cch, 0, sizeof(cch));
+        put_bits(cch, 2, 0x1A, 6);
+        put_bits(cch, 8, LOCATION_SYS5_SITE_ABC, 24);
+        put_bits(cch, 32, 0x0B, 6); // Add, channel 1 present
+        put_bits(cch, 38, rcn == 1U ? 1U : 0x123U, rcn == 1U ? 2 : 10);
+        NXDN_Elements_Content_decode(opts, state, cch, sizeof(cch));
+        const char* tag = rcn == 1U ? "other-site cch_info (dfa)" : "other-site cch_info (channel)";
+        rc |= expect_location_kept(tag, state, &k_categories[0], 3U, 12U);
+        rc |= expect_int(tag, g_notes, 0);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -417,8 +455,8 @@ main(void) {
     }
     dsd_signal_search_site_set(capture_site);
     int rc = 0;
-    static const uint8_t types[3] = {0x18, 0x19, 0x1A}; // SITE_INFO, SRV_INFO, CCH_INFO
-    for (int i = 0; i < 3; ++i) {
+    static const uint8_t types[2] = {0x18, 0x19}; // SITE_INFO, SRV_INFO: "for current site"
+    for (int i = 0; i < 2; ++i) {
         // A confirmed transmission's checked message names the site.
         clear_state(state);
         state->nxdn_confirmed = 1;
@@ -449,6 +487,16 @@ main(void) {
         rc |= expect_nothing_kept("unconfirmed location", state);
         rc |= expect_int("unconfirmed location notes nothing", g_notes, 0);
     }
+
+    // A CCH_INFO names "certain site" (TS 1-A 6.4.3.3), maybe another: printed, never this site's identity or a note.
+    clear_state(state);
+    state->nxdn_confirmed = 1;
+    g_notes = 0;
+    message(opts, state, 0x1A, LOCATION_SYS3_SITE12);
+    rc |= expect_int("cch_info notes nothing", g_notes, 0);
+    rc |= expect_nothing_kept("cch_info", state);
+    rc |= expect_int("cch_info records nothing", (long)state->rx_id.valid, 0);
+    rc |= test_cch_info_of_another_site_keeps_this_site(opts, state);
 
     // A reserved category names no site, and gives no RAN.
     clear_state(state);

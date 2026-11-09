@@ -61,11 +61,12 @@ make_private_dir(const QString& dir) {
 /* The journal's entries, or false when it cannot be read or holds anything but absolute paths. */
 bool
 load_journal(QStringList& entries) {
-    JsonStoreLoad status = JsonStoreLoad::Failed;
-    const QJsonArray array = json_store_load_array(journal_name(), &status);
-    if (status == JsonStoreLoad::Failed) {
+    // Read without marking: the journal is the worker's own record, not a store a person keeps.
+    const JsonStoreRead read = json_store_read(journal_name());
+    if (read.status == JsonStoreLoad::Unreadable) {
         return false;
     }
+    const QJsonArray& array = read.array;
     for (const auto& value : array) {
         const QString path = value.toString();
         if (!value.isString() || !QDir::isAbsolutePath(path)) {

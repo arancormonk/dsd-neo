@@ -53,7 +53,9 @@ void nxdn_confirm_begin_frame(dsd_state* state);
  * @brief Report a check this frame passed.
  *
  * Strong evidence confirms immediately. Weak evidence counts once per frame however many
- * short CRCs pass, and confirms on the NXDN_CONFIRM_WEAK_OBSERVES'th frame in a row.
+ * short CRCs pass, and confirms on the NXDN_CONFIRM_WEAK_OBSERVES'th frame in a row. A check of
+ * another channel's control traffic (dsd_state::nxdn_frame_foreign) confirms nothing: it stamps
+ * when that traffic was last heard (dsd_nxdn_foreign_control_last_m()).
  */
 void nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence);
 

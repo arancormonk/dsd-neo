@@ -410,7 +410,7 @@ manual_tune_rr_report(dsd_state* state, manual_tune_rr_outcome outcome) {
         } else {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: RR import -> tune to %s MHz failed", mhz);
         }
-        state->ui_msg_expire = now + MANUAL_TUNE_RR_FAILED_TOAST_S;
+        dsd_state_toast_publish(state, now + MANUAL_TUNE_RR_FAILED_TOAST_S);
         return;
     }
     if (!manual_tune_rr_line_is_ours(state)) {
@@ -422,12 +422,12 @@ manual_tune_rr_report(dsd_state* state, manual_tune_rr_outcome outcome) {
         } else {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Applied: RR import -> tuned to %s MHz", mhz);
         }
-        state->ui_msg_expire = now + MANUAL_TUNE_RR_LANDED_TOAST_S;
+        dsd_state_toast_publish(state, now + MANUAL_TUNE_RR_LANDED_TOAST_S);
         return;
     }
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Interrupted: RR import -> tune to %s MHz; %s", mhz,
                  outcome == MANUAL_TUNE_RR_STREAM_STOPPED ? "the radio input stopped" : "a newer tune took over");
-    state->ui_msg_expire = now + DSD_MANUAL_TUNE_FAILED_TOAST_S;
+    dsd_state_toast_publish(state, now + DSD_MANUAL_TUNE_FAILED_TOAST_S);
 }
 
 /* dsd_engine_manual_tune_poll() for a noted record, under the P25 SM tick guard: a watchdog retune (trunking on once
@@ -490,7 +490,7 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
         char mhz[16];
         (void)dsd_freq_hz_mhz_text(g_record.requested_hz, mhz, sizeof mhz);
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Failed: frequency -> %s MHz", mhz);
-        state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
+        dsd_state_toast_publish(state, dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S);
     }
     manual_tune_rr_report(state, MANUAL_TUNE_RR_FAILED);
     return DSD_MANUAL_TUNE_FAILED;

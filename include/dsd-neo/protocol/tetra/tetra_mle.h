@@ -60,10 +60,12 @@ extern "C" {
 /**
  * @brief Decode one downlink TM-SDU and publish what it carries to the TETRA state of @p state.
  *
- * Routes by protocol discriminator: MM PDUs go to tetra_mm_dispatch(), CMCE and SNDCP PDUs and the MLE protocol PDUs
- * (D-NWRK-BROADCAST and its extension, DA and remove forms, D-NEW-CELL, D-PREPARE-FAIL, D-RESTORE-ACK,
- * D-RESTORE-FAIL, D-CHANNEL RESPONSE) are decoded here. A PDU is published only when every element it declares
- * fitted in @p nbits; a truncated or malformed PDU leaves the state as it was. One summary line per decoded
+ * Routes by protocol discriminator: MM PDUs go to the MM decoder (tetra_mm_dispatch()), CMCE and SNDCP PDUs and the
+ * MLE protocol PDUs (D-NWRK-BROADCAST and its extension, DA and remove forms, D-NEW-CELL, D-PREPARE-FAIL,
+ * D-RESTORE-ACK, D-RESTORE-FAIL, D-CHANNEL RESPONSE) are decoded here. The MAC's entry (tetra_mle_dispatch_sdu())
+ * routes the same way, except that the MM PDUs of a TM-SDU that came with another cell's channel allocation are only
+ * printed (tetra_mm_dispatch_as()) and write none of this cell's MM state. A PDU is published only when every element
+ * it declares fitted in @p nbits; a truncated or malformed PDU leaves the state as it was. One summary line per decoded
  * signalling PDU goes to stderr; truncation notes need -Z and call-tracking narration -v.
  *
  * @param bits  TM-SDU, one bit per byte (0 or 1), MSB first, starting at the protocol discriminator.

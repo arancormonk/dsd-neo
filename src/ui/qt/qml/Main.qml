@@ -1334,7 +1334,8 @@ Window {
         return names;
     }
     // The names of every entry of @a lists, merged (issue #697: a session
-    // scans several). Target ids are unique across a session's lists.
+    // scans several). A target id names one target, however many of the
+    // session's lists hold it.
     function channelNamesOfLists(lists) {
         var names = {};
         for (var list of lists) {
@@ -1811,6 +1812,7 @@ Window {
             onOpenCallRecordings: mainRoot.callRecordingsOpen = true
             backupNotice: backupFlow.notice
             backupNoticeProblem: backupFlow.noticeProblem
+            backupNoticeAction: backupFlow.noticeAction
             onExportBackupRequested: backupFlow.beginExport()
             onRestoreBackupRequested: backupFlow.beginRestore()
             onCancelRestoreRequested: backupFlow.cancelPendingRestore()
@@ -2181,10 +2183,19 @@ Window {
                     else if ((was.chanCsvPath || "").length > 0)
                         commands.clearChannelMap();
                 }
+                // The import refuses a talkgroup list whose rows all fail to
+                // load (an Excel CSV saved with ';') or that cannot be read,
+                // which would leave the previous file's talkgroups live and that
+                // file taking this system's edits. Such a file, in the library
+                // or not, clears the list instead: the session decodes with no
+                // talkgroups and writes no file. A list with no rows at all
+                // imports as the empty list it is.
                 if (sys.groupCsvPath !== was.groupCsvPath) {
-                    if (sys.groupCsvPath.length > 0)
+                    var rows = sys.groupCsvPath.length > 0 ? importedFiles.groupListCounts(sys.groupCsvPath) : ({});
+                    var unusable = sys.groupCsvPath.length > 0 && (rows.ok !== true || (rows.accepted === 0 && rows.skipped > 0));
+                    if (sys.groupCsvPath.length > 0 && !unusable)
                         commands.importGroupList(sys.groupCsvPath);
-                    else if ((was.groupCsvPath || "").length > 0)
+                    else if (sys.groupCsvPath.length > 0 || (was.groupCsvPath || "").length > 0)
                         commands.clearGroupList();
                 }
                 if (sys.keyCsvPath !== was.keyCsvPath || sys.keyCsvHex !== was.keyCsvHex) {
@@ -2302,6 +2313,7 @@ Window {
             onOpenCallRecordings: mainRoot.callRecordingsOpen = true
             backupNotice: backupFlow.notice
             backupNoticeProblem: backupFlow.noticeProblem
+            backupNoticeAction: backupFlow.noticeAction
             onExportBackupRequested: backupFlow.beginExport()
             onRestoreBackupRequested: backupFlow.beginRestore()
             onCancelRestoreRequested: backupFlow.cancelPendingRestore()
@@ -2445,9 +2457,6 @@ Window {
         objectName: "importsScreen"
 
         anchors.fill: safeArea
-        // So a RadioReference refresh can tell whether the file it just replaced
-        // is one the running session is actually using.
-        sessionSystem: mainRoot.sessionSystem
         opacity: mainRoot.importsOpen && (!mainRoot.monitorMode || mainRoot.sessionDestination === "settings") ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9

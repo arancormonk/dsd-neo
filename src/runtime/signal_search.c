@@ -137,8 +137,7 @@ search_config_error(char* error, size_t capacity, const char* why) {
 
 int
 dsd_signal_search_validate_config(const dsd_signal_search_config* config, char* error, size_t capacity) {
-    if (!config || !config->range_count || config->range_count > DSD_SEARCH_MAX_RANGES
-        || config->avoid_count > DSD_SEARCH_MAX_AVOIDS) {
+    if (!config || !config->range_count || config->range_count > DSD_SEARCH_MAX_RANGES) {
         return search_config_error(error, capacity, "Invalid signal search configuration");
     }
     int enabled = 0;

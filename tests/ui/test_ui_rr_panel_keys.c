@@ -274,6 +274,11 @@ ui_statusf(const char* fmt, ...) {
     va_end(ap);
 }
 
+void
+ui_status_expire_by(time_t until) {
+    (void)until;
+}
+
 int
 ui_status_peek(char* buf, size_t n, time_t now) {
     (void)buf;

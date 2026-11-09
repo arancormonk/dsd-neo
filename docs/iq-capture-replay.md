@@ -634,8 +634,11 @@ dsd-neo -fM --iq-replay tests/fixtures/iq/am_airband_real.iq.json --iq-replay-ra
 - Soapy drivers that only provide `CS16` can be used for live decode, but are not currently accepted by the IQ capture
   CLI.
 - The metadata parser and public sample-format helpers recognize `cs16` metadata with 4-byte sample alignment. Replay
-  converts little-endian interleaved `cs16` captured at `post_mute_pre_widen` to the same normalized float IQ stream
-  the Soapy CS16 backend produces; `--iq-replay` refuses a `cs16` sidecar at any other capture stage at open
+  converts little-endian interleaved `cs16` captured at `post_mute_pre_widen` to normalized float IQ by dividing by
+  32768. That matches the live Soapy CS16 backend for a radio whose full scale is 32768 or 32767; the live backend
+  divides by the driver's own full scale instead (2048 on PlutoSDR and bladeRF, see
+  [SoapySDR guide](soapysdr.md#signal-levels-on-a-cs16-stream)), so a 12-bit capture replays 24 dB lower unless its
+  samples are shifted up to 16 bits first. `--iq-replay` refuses a `cs16` sidecar at any other capture stage at open
   (Operational Limits). Live IQ capture still writes only `cu8` and `cf32`, so a `cs16` sidecar is written by hand or
   by another tool, as `tests/fixtures/iq/tetra_scbs_real_air_50k.cs16.json` is for an unmodified upstream capture.
 - If requested capture format does not match the active backend stream format, startup fails with a clear error.

@@ -683,6 +683,45 @@ function notIncludedText(items) {
     return text
 }
 
+// Issue #828: the name the app gives each file a backup reads (the five stores,
+// the Signal search avoid file and the settings file) and each other file Home's
+// store notice card can name (call history's, the Signal search history), for
+// messages that name a file that couldn't be read. A name not listed is shown
+// as it is.
+function storeLabel(fileName) {
+    switch (String(fileName || "")) {
+    case "call_history.json":
+        return qsTr("Call history")
+    case "call-history-settings":
+        return qsTr("Call history settings")
+    case "signal-search-history.v2":
+        return qsTr("Signal search history")
+    case "saved_systems.json":
+        return qsTr("Saved systems")
+    case "scan_lists.json":
+        return qsTr("Scan lists")
+    case "imported_files.json":
+        return qsTr("Imported files")
+    case "decryption_profiles.json":
+        return qsTr("Decryption profiles")
+    case "signal-search-ranges.json":
+        return qsTr("Signal search ranges")
+    case "signal-search-history.v1.avoids.json":
+        return qsTr("Signal search permanent avoids")
+    case "dsd-neo-app.ini":
+        return qsTr("Settings")
+    }
+    return String(fileName || "")
+}
+
+// "A", "A and B", "A, B and C": names run into one sentence.
+function andList(names) {
+    var list = names || []
+    if (list.length < 2)
+        return list.length ? String(list[0]) : ""
+    return qsTr("%1 and %2").arg(list.slice(0, -1).join(", ")).arg(list[list.length - 1])
+}
+
 // Issue #580: a waiting restore whose apply has started (backup.restoreCancellable
 // false), which only the next start can finish or undo. Settings, the Home card
 // and a refused cancel all say it in these words.
@@ -780,9 +819,14 @@ function importMessage(result, context) {
         return result.detail || formatMessage(result.type, name)
     if (error === "stale")
         return qsTr("The imported file changed while the new copy was being made. Nothing was replaced.")
+    // The row an update was picked for went while the picker was up (issue #829).
+    if (error === "changed")
+        return result.detail || qsTr("That file changed while you were picking. Try again.")
+    // No picker could ask (issue #829): DocumentPicker's reason.
+    if (error === "unavailable")
+        return result.detail || qsTr("The file picker could not open. Try again.")
     if (error === "busy")
-        return result.detail || (result.type === "trunkTargets" ? qsTr("Stop the decoder before replacing target files.")
-                                                                : qsTr("Stop the decoder before replacing a talkgroup list."))
+        return result.detail || qsTr("Stop the decoder before replacing target files.")
     if (error === "save")
         return result.detail || qsTr("Could not save the list of imported files. Try again.")
     if (error === "path")

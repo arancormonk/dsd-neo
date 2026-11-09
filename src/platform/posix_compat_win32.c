@@ -140,7 +140,17 @@ getopt(int argc, char* const argv[], const char* optstring) {
 int
 dsd_mkdir(const char* path, int mode) {
     (void)mode; /* Windows ignores mode */
-    return _mkdir(path);
+    /* Wide or ANSI as dsd_win32_path_wide() chooses (file_compat.h's note), never both. */
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : _mkdir(path);
+    }
+    const int rc = _wmkdir(wide);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return rc;
 }
 
 int
@@ -178,21 +188,19 @@ dsd_win32_temp_name_fill(char* suffix) {
     }
 }
 
-/* Create @p path exclusively: through the wide call when it is UTF-8 (the app's own files, in any script), else, or
-   when the wide call finds no such folder, through the ANSI one, as before. */
+/* Create @p path exclusively, wide or ANSI as dsd_win32_path_wide() chooses. */
 static int
 dsd_win32_temp_create(const char* path, int flags) {
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(path);
-    if (wide) {
-        const int fd = _wopen(wide, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
-        const int saved_errno = errno;
-        free(wide);
-        if (fd >= 0 || saved_errno != ENOENT) {
-            errno = saved_errno;
-            return fd;
-        }
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(path, &wide);
+    if (kind <= 0) {
+        return kind < 0 ? -1 : _open(path, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
     }
-    return _open(path, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
+    const int fd = _wopen(wide, flags | _O_CREAT | _O_EXCL, _S_IREAD | _S_IWRITE);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return fd;
 }
 
 int
@@ -249,10 +257,10 @@ dsd_mkdtemp(char* tmpl) {
         return NULL;
     }
 
-    /* _mkdir fails with EEXIST on a name already taken; draw another one then. */
+    /* dsd_mkdir() fails with EEXIST on a name already taken; draw another one then. */
     for (int attempt = 0; attempt < DSD_WIN32_TEMP_NAME_ATTEMPTS; attempt++) {
         dsd_win32_temp_name_fill(tmpl + len - 6);
-        if (_mkdir(tmpl) == 0) {
+        if (dsd_mkdir(tmpl, 0700) == 0) {
             return tmpl;
         }
         if (errno != EEXIST) {

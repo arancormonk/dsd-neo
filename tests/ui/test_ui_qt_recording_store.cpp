@@ -50,6 +50,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/wav_journal.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <functional>
 #include <initializer_list>
@@ -67,6 +68,7 @@
 #include "call_history_model.h"
 #include "call_recording_provider.h"
 #include "decoder_host.h"
+#include "platform_path.h"
 #include "recording_journal.h"
 #include "recording_store.h"
 #include "wav_journal.h"
@@ -2966,6 +2968,31 @@ test_detection_from_c_writer(void) {
     s.store.endSession();
 }
 
+/* Issue #828: the store hands a path to the native dsd_* APIs (the upload hold, free space) in the bytes they read it
+   as: UTF-8 on Windows, where QFile::encodeName() gives the ANSI code page, which has no Hangul; QFile's own bytes
+   elsewhere. So a file QFile made under a name outside ASCII and outside any one ANSI code page is the file the
+   platform layer finds. */
+void
+test_platform_path_names_the_qt_file(void) {
+    const QString name = QString::fromUtf8("Caf\xC3\xA9 \xEB\xB0\x95.wav");
+#ifdef Q_OS_WIN
+    expect("a Windows path goes to the platform layer in UTF-8", dsd_qt::platform_path(name) == name.toUtf8());
+#else
+    expect("a path goes to the platform layer in QFile's own bytes",
+           dsd_qt::platform_path(name) == QFile::encodeName(name));
+#endif
+    const QTemporaryDir dir;
+    expect("a scratch folder", dir.isValid());
+    const QString path = dir.filePath(name);
+    QFile file(path);
+    expect("QFile makes the file", file.open(QIODevice::WriteOnly) && file.write("x", 1) == 1);
+    file.close();
+    dsd_stat_t st;
+    expect("the platform layer finds the file QFile made",
+           dsd_stat_path(dsd_qt::platform_path(path).constData(), &st) == 0 && st.st_size == 1);
+    expect("free space reads for its folder", dsd_path_free_bytes(dsd_qt::platform_path(dir.path()).constData()) >= 0);
+}
+
 } // namespace
 
 int
@@ -3027,6 +3054,7 @@ main(int argc, char** argv) {
     test_queries_between_rebuild_slices();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
+    test_platform_path_names_the_qt_file();
 
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

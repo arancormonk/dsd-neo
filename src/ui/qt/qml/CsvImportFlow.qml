@@ -1,35 +1,57 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
-import QtQuick.Dialogs
 
-// One CSV import, from the pick to its answer (#832). The copy and the checks
-// run on the import worker, so the flow waits for importFinished():
+// One CSV import, from the pick to its answer (#832). Every file is picked
+// through DocumentPicker (issue #829), and the copy and the checks run on the
+// import worker, so the flow waits for importFinished():
 //
 //   idle → picking → copying(id) → [companions sheet → copying(id′) …] → idle
 //
 // It finishes exactly once per start, handing back the host's context with the
 // result; a host that has moved on (closed, reseeded) ignores the answer by
-// that context.
+// that context, and `wanted` drops a pick that comes back after it did.
 Item {
     id: flow
     property var overlayParent: parent
     property string reference: ""
     property string fileName: ""
     property string type: ""
-    // The stored path of the library row this import replaces, or "" for a new
-    // row: a path, not a row index, since rows move while a copy runs.
+    // An update: the stored path of the library row it replaces, taken when
+    // the pick is asked for, never the row's index: rows move while a picker
+    // is up or a copy runs (issues #829, #832). An update whose row has no
+    // path is refused like one whose row went.
+    property bool replacing: false
     property string replacePath: ""
     // The host's, from start() to finished(), unchanged.
     property var context: ({})
     property var companions: ({})
+    // What each companion's "Selected:" line names: a picked file's own name
+    // (a content reference ends in a provider id), or the library file's.
+    property var companionNames: ({})
+    // Bumped by every choice for a slot, so a pick that comes back after a
+    // newer choice for the same slot is dropped (issue #829).
+    property var companionGenerations: ({})
     property var requiredFiles: []
     property var requiredLabels: ({})
     property var requiredDetails: ({})
     property string choosing: ""
+    // The chosen slot's generation when its picker was asked.
+    property int choosingGeneration: 0
+    // Why the last "Choose a file…" could not ask, shown on the sheet until
+    // the next try, a library choice or the end of the import.
+    property string companionNotice: ""
+    // The last problem read out and how many have been, so a test can tell
+    // each failure is read out once, and again when it happens again.
+    property string announced: ""
+    property int announcements: 0
     property bool active: false
     // Whether the user has chosen a companion on the sheet (a library file or a
     // picked one). Preselected matches are the app's guess, not a choice.
     property bool choiceMade: false
+    // The owner's say on a pick that comes back late: a function of the
+    // context, false when the owner's field took a newer choice meanwhile.
+    // The import then ends as cancelled, with nothing imported. Null: always.
+    property var wanted: null
     // The import in flight (0 when none), and whether it was asked to stop.
     property int request: 0
     property bool cancelling: false
@@ -61,7 +83,8 @@ Item {
     // that slot's choice; the enclosing import remains active on the sheet.
     // Refused (false) while a copy runs: that import keeps the flow until its
     // answer is in. @a context is the host's, handed back by finished(); its
-    // replacePath, when set, names the row to replace.
+    // replacePath names the row to replace, and `replacing: true` marks an
+    // update even when the row had no path to give.
     function start(kind, context) {
         if (copying)
             return false;
@@ -71,10 +94,14 @@ Item {
         type = kind;
         flow.context = context || ({});
         replacePath = flow.context.replacePath || "";
+        replacing = flow.context.replacing === true || replacePath.length > 0;
         companions = ({});
+        companionNames = ({});
+        companionGenerations = ({});
         requiredFiles = [];
         requiredLabels = ({});
         requiredDetails = ({});
+        companionNotice = "";
         choiceMade = false;
         active = true;
         return true;
@@ -105,13 +132,17 @@ Item {
         sheet.visible = false;
         reference = "";
         fileName = "";
+        replacing = false;
         replacePath = "";
         flow.context = ({});
         choosing = "";
         companions = ({});
+        companionNames = ({});
+        companionGenerations = ({});
         requiredFiles = [];
         requiredLabels = ({});
         requiredDetails = ({});
+        companionNotice = "";
         choiceMade = false;
         finished(result, context);
     }
@@ -129,6 +160,9 @@ Item {
         cancelling = true;
         importedFiles.cancelImport(request);
     }
+    function stillWanted() {
+        return !wanted || wanted(context);
+    }
     // The sheet's Cancel, Back and Escape (issue #718): once a companion was
     // chosen, ask before the choices go.
     function requestCancel() {
@@ -139,42 +173,107 @@ Item {
         else
             cancel();
     }
-    function selectCompanion(key, path) {
+    function generationOf(key) {
+        return companionGenerations[key] || 0;
+    }
+    // Every write to a slot: the choice, its name and a new generation.
+    function setCompanion(key, path, name) {
         var next = Object.assign({}, companions);
         next[key] = path;
         companions = next;
+        var names = Object.assign({}, companionNames);
+        names[key] = name || "";
+        companionNames = names;
+        var generations = Object.assign({}, companionGenerations);
+        generations[key] = generationOf(key) + 1;
+        companionGenerations = generations;
+    }
+    function selectCompanion(key, path, name) {
+        setCompanion(key, path, name);
+        companionNotice = "";
         choiceMade = true;
     }
     // The current companion stays until the picker hands back a replacement:
-    // a rejected picker leaves the earlier choice in place.
+    // a rejected picker leaves the earlier choice in place. A change would not
+    // reach a copy running now, so none is asked for then.
     function chooseFile(key) {
+        if (copying)
+            return;
+        companionNotice = "";
         choosing = key;
+        choosingGeneration = generationOf(key);
         picker.open();
+    }
+    function companionPicked(reference, displayName) {
+        var key = choosing;
+        choosing = "";
+        // A choice made for this slot since the picker was asked wins.
+        if (active && !copying && key && generationOf(key) === choosingGeneration)
+            selectCompanion(key, reference, displayName);
+    }
+    // No picker could ask: back to the sheet with every choice kept, and why.
+    function companionUnavailable(message) {
+        choosing = "";
+        if (!active)
+            return;
+        sheet.visible = true;
+        companionNotice = message;
+        Navigation.announce(flow, companionNoticeLine, message);
+    }
+    function primaryPicked(reference, displayName) {
+        if (!active || copying)
+            return;
+        flow.reference = reference;
+        flow.fileName = displayName || reference.substring(reference.lastIndexOf('/') + 1);
+        attempt();
+    }
+    function primaryUnavailable(message) {
+        if (!active || copying)
+            return;
+        if (stillWanted())
+            complete({ok: false, error: "unavailable", detail: message, type: type});
+        else
+            cancel();
+    }
+    function candidateName(detail, path) {
+        for (var candidate of detail.candidates || []) {
+            if (candidate.path === path)
+                return candidate.name;
+        }
+        return "";
     }
     function showRequirements(result) {
         var details = result.requiredDetails || ({});
         var names = requiredFiles.filter(function (key) { return !!details[key]; });
-        var next = Object.assign({}, companions);
         for (var key of result.required) {
             if (details[key] && details[key].selectionError)
-                next[key] = "";
+                setCompanion(key, "", "");
             if (names.indexOf(key) >= 0)
                 continue;
             names.push(key);
-            if (next[key] === undefined && details[key] && details[key].preselected)
-                next[key] = details[key].preselected;
+            if (companions[key] === undefined && details[key] && details[key].preselected)
+                setCompanion(key, details[key].preselected, candidateName(details[key], details[key].preselected));
         }
         requiredFiles = names;
-        companions = next;
         requiredLabels = result.requiredLabels || ({});
         requiredDetails = details;
         sheet.visible = true;
     }
     // The sheet shows at once, as it is (D5): a quick copy shows it only
-    // briefly, and nothing behind it takes input while a copy runs.
+    // briefly, and nothing behind it takes input while a copy runs. A pick the
+    // owner no longer wants ends as cancelled, and an update whose row gave no
+    // path is refused before anything is copied (issue #829).
     function attempt() {
         if (!active || copying)
             return;
+        if (!stillWanted()) {
+            cancel();
+            return;
+        }
+        if (replacing && !replacePath) {
+            complete({ok: false, error: "changed", detail: qsTr("That file changed while you were picking. Try again."), name: displayName, type: type});
+            return;
+        }
         request = importedFiles.beginImport(reference, fileName, type, companions, replacePath);
         sheet.visible = true;
     }
@@ -201,34 +300,36 @@ Item {
         }
     }
     // No MIME filter: Android providers index CSV under several MIME types.
-    FileDialog {
+    DocumentPicker {
         id: primaryPicker
         objectName: "csvPrimaryPicker"
-        onAccepted: {
-            if (!flow.active || flow.copying)
-                return;
-            flow.reference = selectedFile.toString();
-            flow.fileName = flow.reference.substring(flow.reference.lastIndexOf('/') + 1);
-            flow.attempt();
+        mode: "open"
+        onAccepted: function (reference, displayName) {
+            flow.primaryPicked(reference, displayName);
         }
-        // A dialog closing after it handed back a file is not a cancel.
+        // A picker answering after its file is copying is not a cancel.
         onRejected: {
             if (!flow.copying)
                 flow.cancel();
         }
+        onUnavailable: function (reason, message) {
+            flow.primaryUnavailable(message);
+        }
     }
-    FileDialog {
+    DocumentPicker {
         id: picker
         objectName: "csvCompanionPicker"
-        onAccepted: {
-            if (flow.active && flow.choosing)
-                flow.selectCompanion(flow.choosing, selectedFile.toString());
-            flow.choosing = "";
+        mode: "open"
+        onAccepted: function (reference, displayName) {
+            flow.companionPicked(reference, displayName);
         }
         onRejected: {
             flow.choosing = "";
             if (flow.active)
                 sheet.visible = true;
+        }
+        onUnavailable: function (reason, message) {
+            flow.companionUnavailable(message);
         }
     }
     // The flow's one sheet: "Copying <name>…" while the first copy runs, then
@@ -265,6 +366,19 @@ Item {
             wrapMode: Text.Wrap
             color: Theme.textPrimary
             font.pixelSize: Theme.fontSize(15)
+        }
+        // Issue #829: why "Choose a file…" could not ask. It is about the
+        // device, not one companion, so it sits above them all.
+        ReadableText {
+            id: companionNoticeLine
+            objectName: "csvCompanionNotice"
+            width: parent.width
+            text: flow.companionNotice
+            visible: text.length > 0
+            wrapMode: Text.Wrap
+            color: Theme.magenta
+            font.pixelSize: Theme.fontSize(13)
+            Accessible.role: Accessible.AlertMessage
         }
         Repeater {
             model: flow.requiredFiles
@@ -308,7 +422,7 @@ Item {
                         Accessible.checked: checked
                         // A change would not reach the copy running now.
                         enabled: !flow.copying
-                        onClicked: flow.selectCompanion(slot.modelData, modelData.path)
+                        onClicked: flow.selectCompanion(slot.modelData, modelData.path, modelData.name)
                     }
                 }
                 OutlineButton {
@@ -321,7 +435,7 @@ Item {
                 ReadableText {
                     objectName: "csvCompanionSelected_" + slot.index
                     width: parent.width
-                    text: flow.companions[slot.modelData] ? qsTr("Selected: %1").arg(flow.companionName(flow.companions[slot.modelData])) : qsTr("No file selected")
+                    text: flow.companions[slot.modelData] ? qsTr("Selected: %1").arg(flow.companionNames[slot.modelData] || flow.companionName(flow.companions[slot.modelData])) : qsTr("No file selected")
                     wrapMode: Text.Wrap
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSize(13)

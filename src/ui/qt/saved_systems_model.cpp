@@ -736,9 +736,9 @@ SavedSystemsModel::load() {
     QList<Row> rows;
     QSet<QString> seen;
     bool migrated = false;
-    JsonStoreLoad status = JsonStoreLoad::Failed;
+    JsonStoreLoad status = JsonStoreLoad::Unreadable;
     const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName), &status);
-    m_storeLoaded = status != JsonStoreLoad::Failed;
+    m_storeLoaded = status != JsonStoreLoad::Unreadable;
     // auto, not QJsonValue: iterating a QJsonArray yields a QJsonValueConstRef
     // proxy, and binding that to a QJsonValue reference converts — copying every
     // element into a temporary the loop then reads through.

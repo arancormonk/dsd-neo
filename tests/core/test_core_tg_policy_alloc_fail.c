@@ -217,8 +217,8 @@ test_append_reports_close_failure(void) {
     DSD_SNPRINTF(opts->group_in_file, sizeof(opts->group_in_file), "%s", path);
     init_entry(&e, 100, "D", "Alias", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     dsd_tg_policy_test_fail_next_append_close();
-    rc |= expect_true("append reports close failure", dsd_tg_policy_append_group_file_row(opts, &e, "") == -1);
-    rc |= expect_true("append succeeds once close works", dsd_tg_policy_append_group_file_row(opts, &e, "") == 0);
+    rc |= expect_true("append reports close failure", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "") == -1);
+    rc |= expect_true("append succeeds once close works", dsd_tg_policy_append_group_file_row(opts, NULL, &e, "") == 0);
     (void)remove(path);
     free(opts);
     return rc;

@@ -63,8 +63,18 @@ struct ViewBins {
 ViewBins
 view_bins(double center_hz, double span_hz, int bin_count, const spectrum_math::ViewWindow& win) {
     ViewBins out;
-    out.lo = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.low_hz);
-    out.hi = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.high_hz);
+    /* Inward, not to the nearest bin: with a window edge between two bin
+     * centers, rounding can admit the bin just outside it, and a tap or a hop
+     * would answer with a carrier the screen does not show (TunerMarker then
+     * puts it off screen). A window narrower than a bin has no such bin; it
+     * keeps the nearest ones rather than an empty range, which
+     * peak_search_bin() would widen to the whole capture. */
+    out.lo = spectrum_math::first_bin_at_or_above(center_hz, span_hz, bin_count, win.low_hz);
+    out.hi = spectrum_math::last_bin_at_or_below(center_hz, span_hz, bin_count, win.high_hz);
+    if (out.hi < out.lo) {
+        out.lo = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.low_hz);
+        out.hi = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.high_hz);
+    }
     out.snap = 1;
     /* Guarded here rather than only at the call sites, as every helper in
      * spectrum_math.h is: a zero bin count or span makes the division infinite,

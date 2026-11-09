@@ -23,6 +23,8 @@
  *    and no other row edits a width (issue #621)
  *  - the rigctl rows follow them in Input, and Trunking ends at twelve rows
  *    with Scan lists... after its Avoids submenu (issue #697)
+ *  - Reload group list follows Import group list CSV... in Channels & groups,
+ *    with its own predicate and no hotkey (discussion #748)
  *
  * Predicates are never evaluated: the audit covers the whole tree as written,
  * including rows a particular session would hide. UI_MENU_TREE_AUDIT audits the
@@ -669,6 +671,38 @@ audit_scan_lists_row(void) {
     }
 }
 
+/* Discussion #748: Reload group list sits in Trunking > Channels & groups right after Import group list CSV..., shown
+   only while a group list file is configured, with no hotkey (a stray key would clear temporary TG avoids and call
+   skips). */
+static void
+audit_group_reload_row(void) {
+    const NcMenuItem* lists = NULL;
+    for (size_t i = 0; i < TRUNK_MENU_ITEMS_LEN; i++) {
+        if (TRUNK_MENU_ITEMS[i].id && strcmp(TRUNK_MENU_ITEMS[i].id, "trunk.lists") == 0) {
+            lists = &TRUNK_MENU_ITEMS[i];
+        }
+    }
+    if (!lists || !lists->submenu) {
+        fail("root/trunk", "trunk.lists", "no Channels & groups submenu");
+        return;
+    }
+    size_t group = lists->submenu_len;
+    for (size_t i = 0; i < lists->submenu_len; i++) {
+        if (lists->submenu[i].on_select == act_import_group) {
+            group = i;
+        }
+    }
+    if (group + 1 >= lists->submenu_len) {
+        fail("root/trunk/trunk.lists", "lists.group", "no row after Import group list CSV...");
+        return;
+    }
+    const NcMenuItem* it = &lists->submenu[group + 1];
+    if (!it->id || strcmp(it->id, "lists.group_reload") != 0 || it->on_select != act_group_list_reload
+        || it->label_fn != lbl_group_list_reload || it->is_enabled != group_list_reload_offered || it->hotkey) {
+        fail("root/trunk/trunk.lists", it->id, "Reload group list does not follow Import group list CSV... as itself");
+    }
+}
+
 int
 main(void) {
     const NcMenuItem* root = NULL;
@@ -686,6 +720,7 @@ main(void) {
     audit_avoid_rows();
     audit_rigctl_rows(root, n);
     audit_scan_lists_row();
+    audit_group_reload_row();
     if (g_rc == 0) {
         printf(AUDIT_NAME ": OK (%d handlers, %d submenus, %d hotkey rows)\n", g_action_count, g_submenu_count,
                g_hotkey_count);

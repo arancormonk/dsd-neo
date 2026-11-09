@@ -13,6 +13,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -43,6 +44,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>
@@ -57,6 +59,7 @@
 #include "scan_lists_model.h"
 #include "session_args.h"
 #include "signal_search_model.h"
+#include "store_notices.h"
 #include "teardown_trace_capture.h"
 
 namespace {
@@ -359,6 +362,149 @@ testStoredMarginBelowMinimum(dsd_qt::KnownFrequencyIndex* index) {
     assert(dsd_qt::json_store_save_array(file, previous));
 }
 
+/* Issue #828: a ranges file that could not be read is kept at the first edit instead of being written over. */
+void
+testRangesKeptAside(dsd_qt::KnownFrequencyIndex* index) {
+    const QString file = QStringLiteral("signal-search-ranges.json");
+    const QString path = dsd_qt::json_store_path(file);
+    const QJsonArray previous = dsd_qt::json_store_load_array(file);
+    const QByteArray junk("[{\"name\":");
+    {
+        QFile broken(path);
+        assert(broken.open(QIODevice::WriteOnly | QIODevice::Truncate) && broken.write(junk) == junk.size());
+    }
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        assert(model.ranges().size() == 1); // the default, shown in place of the lost ones
+        QVariantMap range = model.defaultRange();
+        range[QStringLiteral("name")] = QStringLiteral("Edited");
+        assert(model.saveRange(0, range).isEmpty());
+        QFile kept(path + QStringLiteral(".unreadable-1"));
+        assert(kept.open(QIODevice::ReadOnly) && kept.readAll() == junk);
+    }
+    assert(QFile::remove(path + QStringLiteral(".unreadable-1")));
+    assert(dsd_qt::json_store_save_array(file, previous));
+}
+
+/* A range save that failed and then succeeded leaves no failure shown (issue #828). */
+void
+testRangeSaveFailureClears(dsd_qt::KnownFrequencyIndex* index) {
+    const QString file = QStringLiteral("signal-search-ranges.json");
+    const QString path = dsd_qt::json_store_path(file);
+    const QJsonArray previous = dsd_qt::json_store_load_array(file);
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        const QVariantMap range = model.ranges().front().toMap();
+        assert(QFile::remove(path) && QDir().mkpath(path));
+        const QString failed = model.saveRange(0, range);
+        assert(!failed.isEmpty() && model.error() == failed);
+        assert(QDir().rmdir(path));
+        assert(model.saveRange(0, range).isEmpty());
+        assert(model.error().isEmpty());
+    }
+    assert(dsd_qt::json_store_save_array(file, previous));
+}
+
+void
+writeBytes(const QString& path, const QByteArray& bytes) {
+    QFile file(path);
+    assert(file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size());
+}
+
+QVariantMap
+storeFile(const dsd_qt::SignalSearchModel& model, int which) {
+    return model.storeFiles().value(which).toMap();
+}
+
+bool
+noticeShown(const QString& file, const QString& state) {
+    for (const QVariant& value : dsd_qt::StoreNotices::instance()->notices()) {
+        const QVariantMap notice = value.toMap();
+        if (notice.value(QStringLiteral("file")).toString() == file) {
+            return notice.value(QStringLiteral("state")).toString() == state;
+        }
+    }
+    return false;
+}
+
+/* Issue #828: the store's files as the Signal search screen words them and as Home's card takes them. What the store
+   could not read or save is its own line, never the model's error as well. */
+void
+testStoreFilesWorded(dsd_qt::KnownFrequencyIndex* index) {
+    dsd_app_signal_search_store_close();
+    const QString v1 = dsd_qt::json_store_path(QStringLiteral("signal-search-history.v1"));
+    const QString v2 = dsd_qt::json_store_path(QStringLiteral("signal-search-history.v2"));
+    const QString avoids = v1 + QStringLiteral(".avoids.json");
+    const QString keptAvoids = QStringLiteral("signal-search-history.v1.avoids.json.unreadable-1");
+    assert(QDir().mkpath(QFileInfo(v1).absolutePath()));
+    writeBytes(v2, "not a journal\n");
+    writeBytes(avoids, "not a list");
+    const QString historyLine = QStringLiteral("Signal search history couldn't be read completely, so some entries may "
+                                               "be missing. The file won't be overwritten.");
+    const QString avoidsUnsaved = QStringLiteral("Signal search permanent avoids couldn't be saved. Check available "
+                                                 "storage. DSD-neo tries again with the next change.");
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        assert(model.storeFiles().size() == 3);
+        assert(storeFile(model, 0).value(QStringLiteral("state")) == QStringLiteral("unreadable"));
+        assert(storeFile(model, 1).value(QStringLiteral("state")) == QStringLiteral("unreadable"));
+        assert(storeFile(model, 2).value(QStringLiteral("state")).toString().isEmpty());
+        assert(model.storeMessage()
+               == historyLine
+                      + QStringLiteral(
+                          "\nSignal search permanent avoids couldn't be read completely, so some entries may be "
+                          "missing. The file won't be overwritten."));
+        assert(model.error().isEmpty());
+        assert(noticeShown(QStringLiteral("signal-search-history.v2"), QStringLiteral("unreadable")));
+        assert(noticeShown(QStringLiteral("signal-search-history.v1.avoids.json"), QStringLiteral("unreadable")));
+
+        // The first save keeps the file aside, and both surfaces name it.
+        assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+        dsd_app_signal_search_store_flush();
+        model.refresh();
+        assert(storeFile(model, 1).value(QStringLiteral("kept")) == keptAvoids);
+        assert(model.storeMessage()
+               == historyLine
+                      + QStringLiteral(
+                          "\nSignal search permanent avoids couldn't be read completely, so some entries may be "
+                          "missing. The file was kept as ")
+                      + keptAvoids + QStringLiteral("."));
+        assert(noticeShown(QStringLiteral("signal-search-history.v1.avoids.json"), QStringLiteral("kept")));
+
+        // A folder at the path: the save is owed, said once, on the store's line only.
+        assert(QFile::remove(avoids) && QDir().mkpath(avoids));
+        assert(dsd_app_signal_search_avoid_remove(451000000) == 0);
+        dsd_app_signal_search_store_flush();
+        model.refresh();
+        assert(storeFile(model, 1).value(QStringLiteral("writeFailed")).toBool());
+        assert(model.storeMessage().endsWith(QStringLiteral("\n") + avoidsUnsaved));
+        assert(model.storeMessage().count(avoidsUnsaved) == 1);
+        assert(model.error().isEmpty());
+        assert(QDir().rmdir(avoids));
+        assert(dsd_app_signal_search_permanent_avoid(451000000) == DSD_APP_SEARCH_AVOID_ADDED);
+        dsd_app_signal_search_store_flush();
+        model.refresh();
+        assert(!model.storeMessage().contains(avoidsUnsaved));
+        assert(dsd_app_signal_search_avoid_remove(451000000) == 0);
+        dsd_app_signal_search_store_flush();
+    }
+    // No version 2 journal and none kept: the version 1 journal is read, and one that can't be is left in place.
+    dsd_app_signal_search_store_close();
+    assert(QFile::remove(v2) && QFile::remove(dsd_qt::json_store_path(keptAvoids)));
+    writeBytes(v1, "not a journal\n");
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        assert(storeFile(model, 2).value(QStringLiteral("state")) == QStringLiteral("leftInPlace"));
+        assert(
+            model.storeMessage()
+            == QStringLiteral("Signal search history from an older version couldn't be read. It was left in place."));
+        assert(noticeShown(QStringLiteral("signal-search-history.v1"), QStringLiteral("leftInPlace")));
+    }
+    dsd_app_signal_search_store_close();
+    assert(QFile::remove(v1));
+    QFile::remove(avoids);
+}
+
 /* A Resume refused while the session winds down (admission already closed) is kept until that session ends, and
    ends with it. */
 void
@@ -442,6 +588,35 @@ assertIdentity(const QVariantMap& match, const char* source, const QString& list
     assert(match.value(QStringLiteral("selectable")).toBool() == selectable);
 }
 
+/* Issue #828: the overload warning reaches the screen as its own fields, never in the message: whether a span was
+   skipped because it kept clipping, and the range named at the pass's first skip. A clean pass clears both. */
+static void
+testOverloadMapped() {
+    dsd_qt::SignalSearchModel search(nullptr, nullptr);
+    dsd_signal_search_status status{};
+    status.session_id = 41;
+    status.revision = 9300;
+    status.phase = DSD_SEARCH_SEARCHING;
+    status.owned = 1;
+    status.overloaded = 1;
+    DSD_SNPRINTF(status.overload_range, sizeof(status.overload_range), "%s", "Marine");
+    DSD_SNPRINTF(status.range_name, sizeof(status.range_name), "%s", "Air band");
+    dsd_app_signal_search_publish(&status, nullptr, nullptr);
+    search.refresh();
+    assert(search.status().value(QStringLiteral("overloaded")).toBool());
+    assert(search.status().value(QStringLiteral("overloadRange")).toString() == QStringLiteral("Marine"));
+    assert(search.status().value(QStringLiteral("rangeName")).toString() == QStringLiteral("Air band"));
+    assert(search.status().value(QStringLiteral("message")).toString().isEmpty());
+    status.revision = 9301;
+    status.overloaded = 0;
+    status.overload_range[0] = '\0';
+    dsd_app_signal_search_publish(&status, nullptr, nullptr);
+    search.refresh();
+    assert(search.status().contains(QStringLiteral("overloaded")));
+    assert(!search.status().value(QStringLiteral("overloaded")).toBool());
+    assert(search.status().value(QStringLiteral("overloadRange")).toString().isEmpty());
+}
+
 /* Issue #809: a detection names its recordings by "<session>:<hit>", the key the recording journal stores, written
    from the integers: a session id above 2^53 (a JS number's exact range) keeps every digit, live and in history. A
    zero id, which the journal never names (the live hit with no detection current), gives no key. */
@@ -493,10 +668,12 @@ testRecordingKey() {
                .isEmpty());
 }
 
-/* Issue #644: two lists under one name, each with an entry of one uid on one frequency, are two Listen choices, each
-   starting its own list: the matches stay apart by list as well as by id. */
+/* Issue #644: two lists under one name, each with a target on one frequency, are two Listen choices, each starting its
+   own list: the matches stay apart by list. Issue #697: a manual list given another's entry uid is saved with another
+   (the app's lists never share an id), so each match names its own list's entry; two imported lists whose files hold
+   one target id stay two matches, one per list, under that one id. */
 static void
-testKnownFrequencyListsApart() {
+testKnownFrequencyListsApart(const QString& dir) {
     dsd_qt::SavedSystemsModel systems;
     dsd_qt::ScanListsModel lists;
     const QVariantMap desk{
@@ -504,24 +681,62 @@ testKnownFrequencyListsApart() {
         {QStringLiteral("name"), QStringLiteral("Desk")},        {QStringLiteral("protocol"), QStringLiteral("dmr")},
         {QStringLiteral("freqMhz"), QStringLiteral("450.1250")}, {QStringLiteral("enabled"), true}};
     QStringList uids;
+    QStringList entryUids;
     for (int i = 0; i < 2; ++i) {
         assert(lists.add(
             {{QStringLiteral("name"), QStringLiteral("Gate")}, {QStringLiteral("entries"), QVariantList{desk}}}));
-        uids << lists.get(lists.count() - 1).value(QStringLiteral("uid")).toString();
+        const QVariantMap list = lists.get(lists.count() - 1);
+        uids << list.value(QStringLiteral("uid")).toString();
+        entryUids
+            << list.value(QStringLiteral("entries")).toList().value(0).toMap().value(QStringLiteral("uid")).toString();
     }
     assert(uids[0] != uids[1]);
+    assert(entryUids[0] == QStringLiteral("entry") && !entryUids[1].isEmpty() && entryUids[1] != entryUids[0]);
     dsd_qt::KnownFrequencyIndex index(&systems, &lists);
     const QVariantList matches = index.tunedMatches(450125000, 12500);
     assert(matches.size() == 2);
-    QStringList listUids;
+    QStringList pairs;
     for (const QVariant& match : matches) {
+        assert(match.toMap().value(QStringLiteral("selectable")).toBool());
+        pairs << match.toMap().value(QStringLiteral("listUid")).toString() + QLatin1Char('/')
+                     + match.toMap().value(QStringLiteral("targetId")).toString();
+    }
+    pairs.sort();
+    QStringList expected{uids[0] + QLatin1Char('/') + entryUids[0], uids[1] + QLatin1Char('/') + entryUids[1]};
+    expected.sort();
+    assert(pairs == expected);
+    // Every model reads the one saved store, so the manual lists go before the imported ones are indexed.
+    for (const QString& uid : uids) {
+        assert(lists.remove(lists.rowForUid(uid)));
+    }
+
+    dsd_qt::ScanListsModel csvLists;
+    QStringList csvUids;
+    for (const char* file : {"apart-a.csv", "apart-b.csv"}) {
+        const QString targets = QDir(dir).filePath(QString::fromLatin1(file));
+        writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                           "entry,dmr-conventional,450125000,,,,,Desk\n");
+        assert(csvLists.add({{QStringLiteral("name"), QStringLiteral("Gate")},
+                             {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                             {QStringLiteral("targetsCsvPath"), targets}}));
+        csvUids << csvLists.get(csvLists.count() - 1).value(QStringLiteral("uid")).toString();
+    }
+    assert(csvUids[0] != csvUids[1]);
+    dsd_qt::KnownFrequencyIndex csvIndex(&systems, &csvLists);
+    const QVariantList csvMatches = csvIndex.tunedMatches(450125000, 12500);
+    assert(csvMatches.size() == 2);
+    QStringList csvListUids;
+    for (const QVariant& match : csvMatches) {
         assert(match.toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("entry"));
         assert(match.toMap().value(QStringLiteral("selectable")).toBool());
-        listUids << match.toMap().value(QStringLiteral("listUid")).toString();
+        csvListUids << match.toMap().value(QStringLiteral("listUid")).toString();
     }
-    listUids.sort();
-    uids.sort();
-    assert(listUids == uids);
+    csvListUids.sort();
+    csvUids.sort();
+    assert(csvListUids == csvUids);
+    for (const QString& uid : csvUids) {
+        assert(csvLists.remove(csvLists.rowForUid(uid)));
+    }
 }
 
 /* Issue #644: a target CSV row's id is what the engine loads, so a held start or an in-place go-to names a target the
@@ -557,6 +772,64 @@ testKnownFrequencyEngineIds(const QString& dir) {
     assert(session.at(0).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / Fire"));
     assert(session.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral(" pump"));
     assert(session.at(1).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Spaced / pump"));
+}
+
+/* Issue #697: a target id a later list of the session also holds is one engine target, at its first list's place, so
+   a session's own targets hold it once, in the engine's order (every new row in list order, then row order): [ROK, A]
+   then [B, ROK] is ROK, A, B, each where the engine published its eligibility. One file run as two lists is its
+   targets once. */
+static void
+testKnownFrequencySessionTargetsShared(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const QString conv = QDir(dir).filePath(QStringLiteral("shared-conv.csv"));
+    writeFile(conv, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                    "ROK,dmr-conventional,460100000,,,,,Rock\n"
+                    "A,dmr-conventional,460200000,,,,,Alpha\n");
+    const QString low = QDir(dir).filePath(QStringLiteral("shared-low.csv"));
+    writeFile(low, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                   "B,dmr-conventional,460300000,,,,,Bravo\n"
+                   "ROK,dmr-conventional,460100000,,,,,Rock\n");
+    const dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    const QVariantMap first{{"uid", QStringLiteral("conv-uid")}, {"name", QStringLiteral("Conv")}, {"path", conv}};
+    const QVariantMap second{{"uid", QStringLiteral("low-uid")}, {"name", QStringLiteral("Low")}, {"path", low}};
+    const QVariantList session = index.sessionTargets({first, second});
+
+    struct Want {
+        const char* id;
+        qint64 hz;
+        int list;
+        const char* name;
+    };
+
+    const Want want[] = {
+        {"ROK", 460100000, 1, "Conv / Rock"},
+        {"A", 460200000, 1, "Conv / Alpha"},
+        {"B", 460300000, 2, "Low / Bravo"},
+    };
+    if (session.size() != 3) {
+        DSD_FPRINTF(stderr, "a shared target: %lld session targets, want 3\n", static_cast<long long>(session.size()));
+        assert(0);
+    }
+    for (int i = 0; i < 3; ++i) {
+        const QVariantMap target = session.at(i).toMap();
+        assert(target.value(QStringLiteral("targetId")).toString() == QLatin1String(want[i].id));
+        assert(target.value(QStringLiteral("frequencyHz")).toLongLong() == want[i].hz);
+        assert(target.value(QStringLiteral("listNumber")).toInt() == want[i].list);
+        assert(target.value(QStringLiteral("name")).toString() == QLatin1String(want[i].name));
+    }
+    // The other order: the low list's rows first, then the conv list's new one.
+    const QVariantList reversed = index.sessionTargets({second, first});
+    assert(reversed.size() == 3);
+    assert(reversed.at(0).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("B"));
+    assert(reversed.at(1).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("ROK"));
+    assert(reversed.at(1).toMap().value(QStringLiteral("listNumber")).toInt() == 1);
+    assert(reversed.at(2).toMap().value(QStringLiteral("targetId")).toString() == QStringLiteral("A"));
+    assert(reversed.at(2).toMap().value(QStringLiteral("listNumber")).toInt() == 2);
+    // One file as two lists: every target is the first list's.
+    const QVariantList twice = index.sessionTargets(
+        {first, QVariantMap{{"uid", QStringLiteral("again")}, {"name", QStringLiteral("Again")}, {"path", conv}}});
+    assert(twice.size() == 2 && twice.at(1).toMap().value(QStringLiteral("listNumber")).toInt() == 1);
 }
 
 /* Issue #644: Qt reads a target CSV and a channel map as the engine's loaders do, so a session's own targets and the
@@ -1010,9 +1283,14 @@ main(int argc, char** argv) {
     assert(fwrite("DSS", 1, 3, f) == 3);
     fclose(f);
     assert(dsd_app_signal_search_store_open(journal.toUtf8().constData()) == 0);
+    // A torn tail is the journal's own load state (issue #828), for the frontend to word; the store's message is only
+    // ever a write failure.
+    dsd_app_search_file_load load = DSD_APP_SEARCH_FILE_OK;
+    assert(dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_HISTORY, &load, nullptr, nullptr, 0) == 0);
+    assert(load == DSD_APP_SEARCH_FILE_UNREADABLE);
     char error[256];
     dsd_app_signal_search_status_get(nullptr, error, sizeof(error));
-    assert(error[0]);
+    assert(!error[0]);
     assert(dsd_app_signal_search_history_get(hits.data(), hits.size()) == 1000);
     dsd_app_signal_search_store_close();
     // Failed storage retains the hit, surfaces a failure and retries on an explicit flush.
@@ -1368,59 +1646,107 @@ main(int argc, char** argv) {
     assert(dsd_app_signal_search_history_snapshot(newest.data(), newest.size(), &snapshotRevision) == 2);
     assert(newest[0].hit_id == 79 && snapshotRevision == dsd_app_signal_search_history_revision());
 
-    // Session avoids are mirrored per session, listed apart from permanent ones and cleared when the session stops.
-    dsd_app_signal_search_session_avoid_add(17, 463550000);
-    dsd_app_signal_search_session_avoid_add(17, 463550000);
-    dsd_app_signal_search_session_avoid_add(17, 463575000);
+    // Issue #828: a session's own avoids are the engine's runtime list, shown through the store only for the store's
+    // running session and apart from the permanent ones. The status published above is session 17's, listening.
+    const uint32_t sessionList[] = {463550000, 463575000};
+    dsd_signal_search_avoids_session_set(17, sessionList, 2);
+    const int avoidSignalsBefore = avoidSignals;
     model.refresh();
-    assert(avoidSignals == 1 && model.sessionAvoids().size() == 2 && model.avoids().isEmpty());
-    dsd_app_signal_search_session_avoid_remove(463550000);
+    assert(avoidSignals == avoidSignalsBefore + 1 && model.sessionAvoids().size() == 2 && model.avoids().isEmpty());
+    model.refresh();
+    assert(avoidSignals == avoidSignalsBefore + 1); // nothing changed, nothing copied
+    dsd_signal_search_avoids_session_set(17, sessionList + 1, 1);
     model.refresh();
     assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463575000);
-    dsd_app_signal_search_session_avoid_add(18, 463600000); // another session starts its own list
+    const uint32_t nextList[] = {463600000};
+    dsd_signal_search_avoids_session_set(18, nextList, 1); // another session's list is not this search's
     model.refresh();
-    assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463600000);
-    dsd_signal_search_status stopped{};
-    stopped.session_id = 18;
-    stopped.revision = 6000;
-    stopped.phase = DSD_SEARCH_STOPPED;
-    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
-    model.refresh();
-    assert(model.sessionAvoids().isEmpty() && !model.status().value(QStringLiteral("owned")).toBool());
-
-    // While a search owns the tuner, both history avoids go to the decoder thread, which checks the session first:
-    // nothing changes here until it has.
-    dsd_signal_search_status running = stopped;
-    running.revision = 6001;
+    assert(model.sessionAvoids().isEmpty());
+    dsd_signal_search_status running{};
+    running.session_id = 18;
+    running.revision = 5990;
     running.phase = DSD_SEARCH_LISTENING;
     running.owned = 1;
     dsd_app_signal_search_publish(&running, nullptr, nullptr);
     model.refresh();
+    assert(model.sessionAvoids().size() == 1 && model.sessionAvoids().front().toUInt() == 463600000);
+    // A failed or stopped search shows no session list, even before the engine's clearing reaches the runtime.
+    dsd_signal_search_status failed = running;
+    failed.revision = 5991;
+    failed.phase = DSD_SEARCH_ERROR;
+    dsd_app_signal_search_publish(&failed, nullptr, nullptr);
+    model.refresh();
+    assert(model.sessionAvoids().isEmpty());
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    model.refresh();
+    assert(model.sessionAvoids().size() == 1);
+    dsd_signal_search_status stopped = running;
+    stopped.revision = 6000;
+    stopped.phase = DSD_SEARCH_STOPPED;
+    stopped.owned = 0;
+    dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    model.refresh();
+    assert(model.sessionAvoids().isEmpty() && !model.status().value(QStringLiteral("owned")).toBool());
+    dsd_signal_search_avoids_session_set(0, nullptr, 0);
+
+    // A history row's permanent avoid and its removal change the store alone, here, whether or not a search runs: the
+    // store sets the runtime's permanent list, which a running search takes at its next tick. Nothing is queued for
+    // the decoder, so a model a tick behind the decoder at the Stop edge (command admission already closed) still
+    // saves the avoid and shows no error (issue #828). An avoid for this session only still goes to the decoder thread.
+    uint32_t permanent[4];
+    uint64_t permanentRevision = 0;
+    running.revision = 6001;
+    dsd_app_signal_search_publish(&running, nullptr, nullptr);
+    model.refresh();
     dsd_app_frontend_runtime_start(nullptr, nullptr);
-    assert(model.avoidPermanently(QStringLiteral("18"), 451000000) && startQueued());
-    assert(model.avoids().isEmpty());
-    reopenAdmission();
+    assert(model.avoidPermanently(451000000) && !startQueued() && model.error().isEmpty());
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000);
+    assert(dsd_signal_search_avoids_permanent_snapshot(permanent, 4, &permanentRevision) == 1
+           && permanent[0] == 451000000);
+    model.removeAvoid(451000000);
+    assert(!startQueued() && model.avoids().isEmpty() && model.error().isEmpty());
+    assert(dsd_signal_search_avoids_permanent_snapshot(permanent, 4, &permanentRevision) == 0);
     assert(!model.avoidFrequency(QStringLiteral("17"), 451000000)); // not the running session
     assert(model.avoidFrequency(QStringLiteral("18"), 451000000) && startQueued());
     reopenAdmission();
     dsd_app_frontend_runtime_stop();
+    assert(model.avoidPermanently(451000000) && model.error().isEmpty());
+    assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000);
+    model.removeAvoid(451000000);
+    assert(model.avoids().isEmpty() && model.error().isEmpty());
+    // After Stop, a row's permanent avoid leaves the session list alone: the engine is its only writer. A list the
+    // runtime still holds for the stopped session, the row's frequency included, keeps every entry and stays hidden.
     stopped.revision = 6002;
     dsd_app_signal_search_publish(&stopped, nullptr, nullptr);
+    const uint32_t leftover[] = {463600000, 451000000};
+    dsd_signal_search_avoids_session_set(18, leftover, 2);
+    const uint64_t sessionRevision = dsd_signal_search_avoids_session_revision();
+    model.refresh();
+    assert(model.sessionAvoids().isEmpty());
+    assert(model.avoidPermanently(451000000));
+    uint64_t sessionOwner = 0;
+    assert(dsd_signal_search_avoids_session_get(&sessionOwner, permanent, 4) == 2 && sessionOwner == 18);
+    assert(permanent[0] == 463600000 && permanent[1] == 451000000);
+    assert(dsd_signal_search_avoids_session_revision() == sessionRevision);
+    assert(dsd_app_signal_search_session_avoids_get(permanent, 4) == 0);
+    assert(model.sessionAvoids().isEmpty() && model.avoids().size() == 1);
+    assert(dsd_app_signal_search_avoid_remove(451000000) == 0);
+    dsd_signal_search_avoids_session_set(0, nullptr, 0);
     model.refresh();
     assert(model.avoids().isEmpty() && model.sessionAvoids().isEmpty());
 
     // With no search running, a history row's permanent avoid changes the permanent list alone, at once; a full
     // list is refused with a message, and an avoid for this session only needs a session.
     assert(!model.avoidFrequency(QStringLiteral("18"), 451000000));
-    assert(model.avoidPermanently(QStringLiteral("18"), 451000000));
+    assert(model.avoidPermanently(451000000));
     assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 451000000 && model.error().isEmpty());
-    assert(model.avoidPermanently(QString(), 451000000)); // already avoided: as asked
+    assert(model.avoidPermanently(451000000)); // already avoided: as asked
     assert(model.avoids().size() == 1 && model.error().isEmpty());
-    assert(!model.avoidPermanently(QString(), 0) && !model.avoidPermanently(QString(), -5));
+    assert(!model.avoidPermanently(0) && !model.avoidPermanently(-5));
     for (uint32_t i = 1; i < DSD_SEARCH_MAX_AVOIDS; ++i) {
         assert(dsd_app_signal_search_permanent_avoid(451000000U + i * 12500U) == DSD_APP_SEARCH_AVOID_ADDED);
     }
-    assert(!model.avoidPermanently(QString(), 470000000));
+    assert(!model.avoidPermanently(470000000));
     assert(model.error() == QStringLiteral("The permanent avoid list is full"));
     assert((uint32_t)model.avoids().size() == DSD_SEARCH_MAX_AVOIDS);
     // Lifting one through the model makes room, and the refusal goes with it.
@@ -1429,12 +1755,12 @@ main(int argc, char** argv) {
     for (const auto& avoided : model.avoids()) {
         assert(dsd_app_signal_search_avoid_remove(avoided.toUInt()) == 0);
     }
-    assert(model.avoidPermanently(QString(), 470000000) && model.error().isEmpty());
+    assert(model.avoidPermanently(470000000) && model.error().isEmpty());
     assert(dsd_app_signal_search_avoid_remove(470000000) == 0);
     model.refresh();
     assert(model.avoids().isEmpty());
     // A frequency above 2^31 Hz (2.4 GHz) is avoided as itself on every platform, including those whose long is 32 bits.
-    assert(model.avoidPermanently(QString(), 2400000000.0) && model.error().isEmpty());
+    assert(model.avoidPermanently(2400000000.0) && model.error().isEmpty());
     assert(model.avoids().size() == 1 && model.avoids().front().toUInt() == 2400000000U);
     assert(dsd_app_signal_search_avoid_remove(2400000000U) == 0);
     model.refresh();
@@ -1494,10 +1820,14 @@ main(int argc, char** argv) {
     testResumeWhileWindingDown(&index);
     testRestartAfterPausedStop(&index);
     testStoredMarginBelowMinimum(&index);
+    testRangesKeptAside(&index);
+    testRangeSaveFailureClears(&index);
+    testStoreFilesWorded(&index);
     testKnownFrequencyIdentity(temp.path());
-    testKnownFrequencyListsApart();
+    testKnownFrequencyListsApart(temp.path());
     testKnownFrequencyEngineIds(temp.path());
     testKnownFrequencyEngineGrammar(temp.path());
+    testKnownFrequencySessionTargetsShared(temp.path());
     testKnownFrequencyQuotedCells(temp.path());
     testKnownFrequencyRowCap(temp.path());
     testKnownFrequencyWatchesUnparsedFiles(temp.path());
@@ -1505,6 +1835,7 @@ main(int argc, char** argv) {
     testKnownFrequencyChannelParity(temp.path());
     testKnownFrequencyNonAsciiPaths(temp.path());
     testRecordingKey();
+    testOverloadMapped();
     return 0;
 }
 

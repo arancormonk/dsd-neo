@@ -125,28 +125,27 @@ path_reject_windows_attributes(DWORD attrs) {
     return 0;
 }
 
-/* A UTF-8 path (the app's own files, named after lists in any script) opens through the wide calls, whatever the
-   ANSI code page; one the wide calls do not find, or one that is not UTF-8, through the ANSI calls as before, so a
-   command line's path in the ANSI code page still opens. */
+/* A UTF-8 path (the app's own files, named after lists in any script) opens through the wide calls only, whatever the
+   ANSI code page; one that is not UTF-8 (a command line's, in the ANSI code page) through the ANSI calls only, as
+   dsd_win32_path_wide() chooses. */
 static int
 path_open_read_fd_windows(const char* resolved) {
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(resolved);
-    if (wide) {
-        int fd = -1;
-        if (path_reject_windows_attributes(GetFileAttributesW(wide)) == 0) {
-            fd = _wopen(wide, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(resolved, &wide);
+    if (kind <= 0) {
+        if (kind < 0 || path_reject_windows_attributes(GetFileAttributesA(resolved)) != 0) {
+            return -1;
         }
-        const int saved_errno = errno;
-        free(wide);
-        if (fd >= 0 || saved_errno != ENOENT) {
-            errno = saved_errno;
-            return fd;
-        }
+        return _open(resolved, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
     }
-    if (path_reject_windows_attributes(GetFileAttributesA(resolved)) != 0) {
-        return -1;
+    int fd = -1;
+    if (path_reject_windows_attributes(GetFileAttributesW(wide)) == 0) {
+        fd = _wopen(wide, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
     }
-    return _open(resolved, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+    const int saved_errno = errno;
+    free(wide);
+    errno = saved_errno;
+    return fd;
 }
 #endif
 

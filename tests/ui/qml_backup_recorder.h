@@ -19,6 +19,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -107,6 +108,19 @@ class BackupRecorder : public QObject {
     prepareExport(const QString& passphrase) {
         record(QStringLiteral("prepareExport"), {passphrase});
         setBusy(true);
+    }
+
+    /* The model's answer for the files setState("unreadableFiles", …) set: `unreadable` a C++ QStringList, as the
+       model's is. */
+    Q_INVOKABLE QVariantMap
+    checkExport() {
+        record(QStringLiteral("checkExport"), {});
+        const bool ok = m_unreadable_files.isEmpty();
+        return {{QStringLiteral("ok"), ok},
+                {QStringLiteral("error"), ok ? QString() : QStringLiteral("Unreadable")},
+                {QStringLiteral("summary"), QVariantMap()},
+                {QStringLiteral("notIncluded"), QStringList()},
+                {QStringLiteral("unreadable"), m_unreadable_files}};
     }
 
     Q_INVOKABLE void
@@ -201,12 +215,13 @@ class BackupRecorder : public QObject {
         setState(QStringLiteral("restorePending"), false);
         setState(QStringLiteral("startupOutcome"), QVariantMap{{QStringLiteral("kind"), QString()}});
         setState(QStringLiteral("lastResult"), QVariantMap());
+        m_unreadable_files.clear();
     }
 
     /**
      * @brief Set one property by name, announcing a change: busy, flowActive, restorePending (restoreCancellable
-     * alike), restoreCancellable, startupOutcome or lastResult. False for any other name; restoreAllowed follows busy
-     * and the host's session.
+     * alike), restoreCancellable, startupOutcome or lastResult; or unreadableFiles, the file names checkExport()
+     * refuses over. False for any other name; restoreAllowed follows busy and the host's session.
      */
     bool
     setState(const QString& key, const QVariant& value) {
@@ -246,6 +261,10 @@ class BackupRecorder : public QObject {
             Q_EMIT lastResultChanged();
             return true;
         }
+        if (key == QStringLiteral("unreadableFiles")) {
+            m_unreadable_files = value.toStringList();
+            return true;
+        }
         return false;
     }
 
@@ -255,9 +274,15 @@ class BackupRecorder : public QObject {
         m_replies.insert(call, reply);
     }
 
-    /** @brief Deliver one result signal the way the model does: idle first, then the signal. */
+    /**
+     * @brief Deliver one result signal the way the model does: idle first, then the signal. An `unreadable` list goes
+     * out as a QStringList, the type the model's export maps hold.
+     */
     bool
-    emitResult(const QString& signal, const QVariantMap& result) {
+    emitResult(const QString& signal, QVariantMap result) {
+        if (result.contains(QStringLiteral("unreadable"))) {
+            result.insert(QStringLiteral("unreadable"), result.value(QStringLiteral("unreadable")).toStringList());
+        }
         setBusy(false);
         if (signal == QStringLiteral("exportPrepared")) {
             Q_EMIT exportPrepared(result);
@@ -335,6 +360,7 @@ class BackupRecorder : public QObject {
     QMetaObject::Connection m_session;
     QVariantMap m_startup_outcome;
     QVariantMap m_last_result;
+    QStringList m_unreadable_files;
     QVariantMap m_replies;
     QVariantList m_calls;
 };

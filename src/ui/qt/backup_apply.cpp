@@ -41,6 +41,8 @@
 #include "backup_apply_fs.h"
 #include "backup_archive.h"
 #include "backup_archive_rules.h"
+#include "platform_path.h"
+#include "settings_recovery.h"
 
 namespace dsd_qt {
 namespace backup {
@@ -67,6 +69,12 @@ stuck_reason() {
 QString
 busy_reason() {
     return QCoreApplication::translate("BackupApply", "The decoder was busy, so the restore waits for the next start");
+}
+
+QString
+settings_reason() {
+    return QCoreApplication::translate("BackupApply",
+                                       "Settings couldn't be read or kept, so the restore waits for the next start");
 }
 
 QString
@@ -318,14 +326,21 @@ class StagingReader {
 
     bool
     readAvoids(const QJsonArray& list) {
-        if (list.size() > DSD_SEARCH_MAX_AVOIDS) {
-            return false;
-        }
+        /* A repeat is kept once, and only more than DSD_SEARCH_MAX_AVOIDS different frequencies is refused, as the
+           avoid store loads its file (issue #828). */
+        QSet<quint32> seen;
         for (const auto& value : list) {
             const qint64 frequency = value.isDouble() ? value.toInteger(-1) : -1;
             if (frequency < 1 || frequency > static_cast<qint64>(UINT32_MAX)) {
                 return false;
             }
+            if (seen.contains(static_cast<quint32>(frequency))) {
+                continue;
+            }
+            if (seen.size() == DSD_SEARCH_MAX_AVOIDS) {
+                return false;
+            }
+            seen.insert(static_cast<quint32>(frequency));
             m_staging->avoids.append(static_cast<quint32>(frequency));
         }
         return true;
@@ -773,6 +788,12 @@ class Applier {
         if (busy()) {
             return result(ApplyOutcome::Deferred, busy_reason());
         }
+        // AppPrefs' settings on their scratch copy this run (issue #828) would take the restored ones and lose them at
+        // the next start, while every other store kept its restore. Nothing is touched, the stage stays committed, and
+        // the first start whose settings can be written applies it. Call history's settings are not restored.
+        if (settings_recovery_scratch(settings_recovery_prefs_file_name())) {
+            return result(ApplyOutcome::Deferred, settings_reason());
+        }
         if (!entry_exists(m_journalDir + QStringLiteral("/COMPLETE"))) {
             return startFresh(verified);
         }
@@ -879,7 +900,7 @@ class Applier {
         const qint64 oldBytes = LiveScan(m_root, &m_journal).run();
         const qint64 free = m_env.freeBytes
                                 ? m_env.freeBytes(m_root.path())
-                                : static_cast<qint64>(dsd_path_free_bytes(m_root.path().toUtf8().constData()));
+                                : static_cast<qint64>(dsd_path_free_bytes(platform_path(m_root.path()).constData()));
         if (free >= 0 && free < m_staging.bytes + oldBytes + kSpaceMargin) {
             return result(ApplyOutcome::Deferred, space_reason());
         }

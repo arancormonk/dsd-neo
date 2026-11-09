@@ -681,13 +681,13 @@ metadata_write_file(const dsd_iq_capture_config* cfg, const char* capture_starte
     }
     int close_rc = fclose(fp);
     if (close_rc != 0 || write_rc != 0) {
-        (void)remove(tmp_path);
+        (void)dsd_remove_file(tmp_path);
         set_error(err_buf, err_buf_size, "failed to write metadata '%s': %s", metadata_path, strerror(errno));
         return DSD_IQ_ERR_IO;
     }
 
     if (dsd_replace_file_with_temp(tmp_path, metadata_path) != 0) {
-        (void)remove(tmp_path);
+        (void)dsd_remove_file(tmp_path);
         set_error(err_buf, err_buf_size, "failed to replace metadata '%s': %s", metadata_path, strerror(errno));
         return DSD_IQ_ERR_IO;
     }
@@ -1027,10 +1027,10 @@ capture_open_cleanup(struct dsd_iq_capture_writer* w, int remove_data, int remov
         w->data_fp = NULL;
     }
     if (remove_data && w->cfg.data_path[0] != '\0') {
-        (void)remove(w->cfg.data_path);
+        (void)dsd_remove_file(w->cfg.data_path);
     }
     if (remove_meta && w->cfg.metadata_path[0] != '\0') {
-        (void)remove(w->cfg.metadata_path);
+        (void)dsd_remove_file(w->cfg.metadata_path);
     }
     writer_event_destroy(w);
     writer_queue_destroy(w);
@@ -1979,7 +1979,7 @@ dsd_iq_capture_abort(dsd_iq_capture_writer* writer) {
         (void)fclose(writer->data_fp);
         writer->data_fp = NULL;
     }
-    (void)remove(writer->cfg.metadata_path);
+    (void)dsd_remove_file(writer->cfg.metadata_path);
 
     writer_queue_destroy(writer);
     writer_event_destroy(writer);

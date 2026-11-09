@@ -737,20 +737,24 @@ KnownFrequencyIndex::addListEntry(const QVariantMap& entry, const QString& listN
 
 namespace {
 /* The target rows of the session CSV at @p path, list @p number (@p listUid, named @p listName), appended to @p out: as
-   the engine loaded them (readEngineCsv()), so every target the session runs, and none it refused. */
+   the engine loaded them (readEngineCsv()), so every target the session runs, and none it refused. A row whose id an
+   earlier list gave (@p earlierIds) is that list's target, which the engine loaded there (issue #697): it is left out,
+   and this list's ids join @p earlierIds for the lists after it. */
 void
 appendSessionTargets(const QString& path, int number, const QString& listUid, const QString& listName,
-                     QVariantList* out) {
+                     QSet<QString>* earlierIds, QVariantList* out) {
     EngineCsv csv;
     if (path.isEmpty() || !readEngineCsv(path, EngineCsvGrammar::Targets, &csv)) {
         return;
     }
     const CsvColumns& columns = csv.columns;
+    QSet<QString> ids;
     for (const EngineCsvRow& row : csv.rows) {
         const QString id = engineTargetId(row.line, columns.id);
-        if (id.isEmpty()) {
+        if (id.isEmpty() || earlierIds->contains(id)) {
             continue;
         }
+        ids.insert(id);
         const QString mode = row.fields.value(columns.mode);
         out->append(QVariantMap{
             {QStringLiteral("listNumber"), number},
@@ -763,17 +767,19 @@ appendSessionTargets(const QString& path, int number, const QString& listUid, co
              scan_entry_protocol_label(mode.section(QLatin1Char('-'), 0, 0).toLower())},
         });
     }
+    earlierIds->unite(ids);
 }
 } // namespace
 
 QVariantList
 KnownFrequencyIndex::sessionTargets(const QVariantList& lists) const {
     QVariantList out;
+    QSet<QString> ids;
     for (qsizetype i = 0; i < lists.size(); ++i) {
         const QVariantMap list = lists.at(i).toMap();
         appendSessionTargets(list.value(QStringLiteral("path")).toString(), static_cast<int>(i) + 1,
                              list.value(QStringLiteral("uid")).toString(),
-                             list.value(QStringLiteral("name")).toString(), &out);
+                             list.value(QStringLiteral("name")).toString(), &ids, &out);
     }
     return out;
 }
@@ -836,7 +842,7 @@ KnownFrequencyIndex::lookup(double frequency, double width) const {
         }
         if (std::abs(distance - nearest) < 0.5) {
             // Two rows of one list on one frequency under one name are two targets, each its own id; rows of two
-            // lists stay apart too, even under one name with one entry uid.
+            // lists stay apart too, even under one name with one target id (two of a person's target CSVs).
             QString key = entry.value.value(QStringLiteral("listUid")).toString() + QLatin1Char('/')
                           + entry.value.value(QStringLiteral("systemUid")).toString() + QLatin1Char('/')
                           + entry.value.value(QStringLiteral("name")).toString() + QString::number(entry.hz)

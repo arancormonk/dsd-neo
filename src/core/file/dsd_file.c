@@ -1049,7 +1049,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
         /* An open that created the file and then failed (a full disk) leaves it empty: nothing to keep. No file holds
            the name after that, so no later close may try to publish it. */
         if (wav_file_get_size_or_negative(temp_filename) == 0) {
-            (void)remove(temp_filename);
+            (void)dsd_remove_file(temp_filename);
         }
         wav_journal_segment_error("open", temp_filename, dir);
         temp_filename[0] = '\0';
@@ -1398,7 +1398,7 @@ wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* d
 /* An empty segment (the header alone) at @p path: removed, and journaled as discarded. */
 static void
 wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
-    (void)remove(path);
+    (void)dsd_remove_file(path);
     if (journal->on) {
         wav_journal_discard(wav_close_journal_id(journal));
     }
@@ -1517,7 +1517,7 @@ discard_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename) {
     /* Through the segment table, so a short write's latch goes with the handle. A close that fails still removes the
        file: none of it was to be kept. Nothing is journaled; what its open or a write reported stays. */
     (void)wav_segment_close(wav_file, NULL);
-    if (wav_out_filename != NULL && wav_out_filename[0] != '\0' && remove(wav_out_filename) != 0
+    if (wav_out_filename != NULL && wav_out_filename[0] != '\0' && dsd_remove_file(wav_out_filename) != 0
         && wav_file_get_size_or_negative(wav_out_filename) >= 0) {
         LOG_WARN("Unused call recording %s could not be removed\n", wav_out_filename);
     }

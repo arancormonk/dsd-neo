@@ -384,6 +384,20 @@ class CommandBridge : public QObject {
     /** @brief Import a talkgroup list CSV into the running session (atomic swap). */
     Q_INVOKABLE bool importGroupList(const QString& path) const;
 
+    /**
+     * @brief Ask the running session to re-read its group list file.
+     *
+     * With an empty @p path, the configured group file. With a path, only when
+     * that is the file the session uses: the decoder decides when it applies
+     * the command, so a caller that replaced a file posts it without knowing
+     * whether the session still uses it (another file is a no-op it logs).
+     * True means queued, not reloaded; the decoder's toast says what happened.
+     */
+    Q_INVOKABLE bool reloadGroupList(const QString& path) const;
+
+    /** @brief As reloadGroupList() for the channel map; @p path is required. */
+    Q_INVOKABLE bool reloadChannelMap(const QString& path) const;
+
     // WP-D2: secret input is only copied into an erased queue payload.
     Q_INVOKABLE bool applyEncryptionKey(const QString& type, const QString& value) const;
     Q_INVOKABLE bool setForceKeyMode(int mode) const;

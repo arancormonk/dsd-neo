@@ -220,22 +220,28 @@ typedef struct {
 } cipher_span;
 
 /* An encrypted (mode @p enc) MAC-RESOURCE to address @p addr (type SSI + usage marker 42) carrying the D-SETUP of call
- * @p call_id with an allocation of timeslots @p slots on carrier @p carrier, alone in an SCH/F; its ciphertext span
- * not yet encrypted. */
+ * @p call_id with an allocation of timeslots @p slots on carrier @p carrier, of another cell with @p cell_change, alone
+ * in an SCH/F; its ciphertext span not yet encrypted. */
 static cipher_span
-build_setup(ttb_block* b, uint32_t enc, uint32_t addr, uint16_t call_id, uint32_t slots, uint32_t carrier) {
+build_setup_cell(ttb_block* b, uint32_t enc, uint32_t addr, uint16_t call_id, uint32_t slots, uint32_t carrier,
+                 uint32_t cell_change) {
     DSD_MEMSET(b, 0, sizeof(*b));
     cipher_span span;
     const int start = ttb_resource(b, enc, TETRA_MAC_ADDR_SSI_USAGE, addr);
     ttb_put(b, 42, 6);
     ttb_resource_flags(b, 1);
     span.body = b->n;
-    ttb_allocation(b, slots, 1, carrier);
+    ttb_allocation_cell(b, slots, 1, carrier, cell_change);
     put_setup_sdu(b, call_id);
     span.end = b->n;
     ttb_close_resource(b, start);
     ttb_finish(b, TTB_SCH_F_BITS, -1);
     return span;
+}
+
+static cipher_span
+build_setup(ttb_block* b, uint32_t enc, uint32_t addr, uint16_t call_id, uint32_t slots, uint32_t carrier) {
+    return build_setup_cell(b, enc, addr, call_id, slots, carrier, 0U);
 }
 
 /* The block @p b decoded as a CRC-passed SCH/F (or half slot block, @p ks_offset 216 for block 2) of the slot the
@@ -947,6 +953,41 @@ test_key_version_of_the_call(void) {
     session_close(&s);
 }
 
+/* A channel allocation the key decrypts is read whole, its cell change flag included: one for another cell (EN 300
+ * 392-2 clause 23.5.4.1) makes the D-SETUP it came with, proved by its repeat, one that is printed only: no record, no
+ * tune, though the repeat proved the key (regression: main followed it). Without a key the allocation stays
+ * ciphertext and its flag unknown, and the PDU is handled as any encrypted one, flag or not: the timeslot's signalling
+ * encryption noted, no record, no tune. The key streams are TETRA_crypto's own (k_ks_fn3, k_ks_fn4). */
+static void
+test_cell_change_allocation_decrypted(void) {
+    session s = session_open();
+    load_key(&s, 0, k_sck, 2);
+    ttb_block b;
+    cipher_span span = build_setup_cell(&b, 2, GESI, 0x0A, 4, 120, 1U);
+    encrypt_span(&b, span.body, span.end, k_ks_fn3, 0);
+    in_slot(&s, 1, 3);
+    decode(&s, &b, 0);
+    span = build_setup_cell(&b, 2, GESI, 0x0A, 4, 120, 1U);
+    encrypt_span(&b, span.body, span.end, k_ks_fn4, 0);
+    in_slot(&s, 1, 4);
+    decode(&s, &b, 0);
+    assert((tetra_air_ksg_seen(s.state, NET_MCC, NET_MNC) & 0x2u) != 0u);
+    assert(record(&s, 0x0A) == NULL && g_tunes == 0 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
+    session_close(&s);
+
+    for (uint32_t cell_change = 0U; cell_change <= 1U; cell_change++) {
+        s = session_open();
+        span = build_setup_cell(&b, 2, GESI, 0x0A, 4, 120, cell_change);
+        encrypt_span(&b, span.body, span.end, k_ks_fn3, 0);
+        in_slot(&s, 1, 3);
+        decode(&s, &b, 0);
+        const tetra_state_t* const ts = session_ts(s.state);
+        assert(ts->enc_mode == 2U && ts->calls.slot_enc[1] == 3U);
+        assert(record(&s, 0x0A) == NULL && g_tunes == 0);
+        session_close(&s);
+    }
+}
+
 int
 main(void) {
     test_repeat_proves_the_setup();
@@ -964,6 +1005,7 @@ main(void) {
     test_longest_fragmented_tm_sdu();
     test_clear_reallocation_after_a_key_change();
     test_key_version_of_the_call();
+    test_cell_change_allocation_decrypted();
     DSD_FPRINTF(stdout, "TETRA air signalling: all checks passed\n");
     return 0;
 }

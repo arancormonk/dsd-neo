@@ -21,7 +21,7 @@ typedef struct {
 /* Append @p width bits of @p value, MSB first. */
 static inline void
 ttb_put(ttb_block* b, uint32_t value, int width) {
-    assert(width >= 0 && width <= 32 && b->n + width <= TTB_SCH_F_BITS);
+    assert(width >= 0 && width <= 32 && b->n >= 0 && b->n <= TTB_SCH_F_BITS - width);
     for (int i = width - 1; i >= 0; i--) {
         b->bits[b->n++] = (uint8_t)((value >> i) & 1u);
     }
@@ -37,6 +37,7 @@ ttb_put_bits(ttb_block* b, const uint8_t* bits, int nbits) {
 /* Overwrite @p width bits at @p pos. */
 static inline void
 ttb_set(ttb_block* b, int pos, uint32_t value, int width) {
+    assert(width >= 0 && width <= 32 && pos >= 0 && pos <= TTB_SCH_F_BITS - width);
     for (int i = width - 1; i >= 0; i--) {
         b->bits[pos++] = (uint8_t)((value >> i) & 1u);
     }
@@ -70,17 +71,24 @@ ttb_resource_flags(ttb_block* b, uint32_t channel_allocation) {
     ttb_put(b, channel_allocation, 1);
 }
 
-/* Basic channel allocation element (table 21.87): no extended carrier numbering, one monitoring pattern. */
+/* Basic channel allocation element (table 21.87) with cell change flag @p cell_change (1: a channel of another cell,
+ * clause 23.5.4.1): no extended carrier numbering, one monitoring pattern. */
+static inline void
+ttb_allocation_cell(ttb_block* b, uint32_t timeslots, uint32_t up_down, uint32_t carrier, uint32_t cell_change) {
+    ttb_put(b, 0, 2);           /* allocation type: replace current channel */
+    ttb_put(b, timeslots, 4);   /* timeslot assigned */
+    ttb_put(b, up_down, 2);     /* up/downlink assigned */
+    ttb_put(b, 0, 1);           /* CLCH permission */
+    ttb_put(b, cell_change, 1); /* cell change flag */
+    ttb_put(b, carrier, 12);    /* carrier number */
+    ttb_put(b, 0, 1);           /* extended carrier numbering flag */
+    ttb_put(b, 1, 2);           /* monitoring pattern: one */
+}
+
+/* ttb_allocation_cell() of a channel of this cell. */
 static inline void
 ttb_allocation(ttb_block* b, uint32_t timeslots, uint32_t up_down, uint32_t carrier) {
-    ttb_put(b, 0, 2);         /* allocation type: replace current channel */
-    ttb_put(b, timeslots, 4); /* timeslot assigned */
-    ttb_put(b, up_down, 2);   /* up/downlink assigned */
-    ttb_put(b, 0, 1);         /* CLCH permission */
-    ttb_put(b, 0, 1);         /* cell change flag */
-    ttb_put(b, carrier, 12);  /* carrier number */
-    ttb_put(b, 0, 1);         /* extended carrier numbering flag */
-    ttb_put(b, 1, 2);         /* monitoring pattern: one */
+    ttb_allocation_cell(b, timeslots, up_down, carrier, 0);
 }
 
 /* Fill bit addition (clause 23.4.2.2) up to the next octet, then the PDU length in octets into the length indication

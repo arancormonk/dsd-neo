@@ -79,6 +79,10 @@ object RecordingExport {
      * Write [paths] into the document [uriText] names: one ZIP whose entries are named [names] when [zip], else the
      * one file as it is.
      *
+     * A Download-folder row ([DownloadsSave]) is published once written, and deleted at every other exit. Its
+     * publication still answers [cancel] until it begins; a row that could not be published fails the transfer, and so
+     * does one a discard took before this transfer began (never written).
+     *
      * @return the result code, then the paths found gone (a ZIP leaves them out; all gone is [MISSING]), as text.
      */
     @JvmStatic
@@ -90,18 +94,43 @@ object RecordingExport {
         uriText: String,
         zip: Boolean,
     ): Array<String> {
+        if (!DownloadsSave.take(uriText)) {
+            return arrayOf(FAILED.toString()) // a Download-folder row a discard already took
+        }
         val missing = ArrayList<String>()
         val transfer = synchronized(lock) {
             if (id <= cancelledThrough) null else Transfer(id, CancellationSignal()).also { current = it }
-        } ?: return arrayOf(CANCELLED.toString())
-        val result = try {
-            write(resolver, transfer, paths, names, uriText, zip, missing)
+        }
+        if (transfer == null) {
+            // Already cancelled: the row's delete is queued and nothing waits for it, since no Cancel can reach a
+            // transfer that never became the current one.
+            DownloadsSave.settle(resolver, uriText, false, CancellationSignal().apply { cancel() })
+            return arrayOf(CANCELLED.toString())
+        }
+        var result = FAILED
+        try {
+            try {
+                result = write(resolver, transfer, paths, names, uriText, zip, missing)
+            } finally {
+                // Still the current transfer, so a cancel reaches the publication.
+                result = settled(resolver, uriText, result, transfer.signal)
+            }
         } finally {
             synchronized(lock) {
                 if (current === transfer) current = null
             }
         }
         return arrayOf(result.toString(), *missing.toTypedArray())
+    }
+
+    /** [result] once the document was settled: a written row that does not stand is cancelled or failed. */
+    private fun settled(resolver: ContentResolver, uriText: String, result: Int, signal: CancellationSignal): Int {
+        val stands = DownloadsSave.settle(resolver, uriText, result == DONE, signal)
+        return when {
+            result != DONE || stands -> result
+            signal.isCanceled -> CANCELLED
+            else -> FAILED
+        }
     }
 
     private fun write(

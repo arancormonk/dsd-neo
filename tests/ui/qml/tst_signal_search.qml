@@ -23,13 +23,14 @@ Item {
         property var sessionAvoids: []
         property var status: ({phase: 0})
         property string error: ""
+        property string storeMessage: ""
         property var actions: []
         property var lifted: []
         property int arms: 0
         property string armError: ""
         function control(action, session, hit) { actions = [action, session, hit]; return true; }
         function avoidFrequency(session, frequency) { actions = ["session", session, frequency]; return true; }
-        function avoidPermanently(session, frequency) { actions = ["permanent", session, frequency]; return true; }
+        function avoidPermanently(frequency) { actions = ["permanent", frequency]; return true; }
         function removeSessionAvoid(frequency) { lifted = lifted.concat(["session:" + frequency]); return true; }
         function removeAvoid(frequency) { lifted = lifted.concat(["permanent:" + frequency]); }
         function arm() { arms++; return armError; }
@@ -85,6 +86,12 @@ Item {
             loader.item.sessionSource = {};
             loader.item.sourceType = "usb";
             loader.item.resetView();
+            // What a case left on the message line, even one that failed part way.
+            model.error = "";
+            model.storeMessage = "";
+            root.hostFailure = "";
+            model.armError = "";
+            loader.item.localFailure = "";
             // A test that renames the range restores it even when it fails.
             if (model.ranges.length > 0 && model.ranges[0].name !== "Local UHF")
                 model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
@@ -98,6 +105,7 @@ Item {
             model.avoids = [];
             model.status = {phase: 4, session: "17", owned: true, pass: 2, range: 0, channel: 80, count: 801,
                 rangeName: "Local UHF", rangeStartMHz: "450.000", rangeEndMHz: "460.000",
+                overloaded: false, overloadRange: "",
                 hit: {id: "42", session: "17", freqMHz: "463.552100", frequency: 463552100, power: -32.1,
                     noise: -63.2, range: "Local UHF", width: 12500, unresolved: true, ended: false,
                     knownLabel: "Warehouse · 463.5500 MHz", confirmed: false, am: false}};
@@ -496,10 +504,12 @@ Item {
             compare(snapshot.freqMHz, "463.552100");
         }
         function test_unresolved_is_not_analog_confirmation() {
-            // The panel's short form; the full phrase is the accessible description.
+            // The panel's short form; the full phrase is the accessible name,
+            // read once (issue #828: a description repeating it read it twice).
             var identification = findChild(loader.item, "searchIdentification");
             compare(identification.text, "NFM · digital unresolved");
-            compare(identification.Accessible.description, "NFM monitoring · digital identification unresolved");
+            compare(identification.Accessible.name, "NFM monitoring · digital identification unresolved");
+            compare(identification.Accessible.description, "");
             model.status = Object.assign({}, model.status, {phase: 3});
             compare(findChild(loader.item, "searchIdentification").text, "Trying digital identification…");
             model.status = Object.assign({}, model.status, {phase: 5, identifying: true});
@@ -508,10 +518,14 @@ Item {
         function test_live_strength_is_shown_beside_detection_power() {
             var strength = findChild(loader.item, "searchStrength");
             compare(strength.text, "-32.1 dBFS");
-            tryCompare(strength.Accessible, "description", "-32.1 dBFS · Local UHF");
+            // The levels are the name; the description adds only the range
+            // (issue #828: Android reads the name, then the description).
+            tryCompare(strength.Accessible, "name", "-32.1 dBFS");
+            compare(strength.Accessible.description, "Local UHF");
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -47.25});
             compare(strength.text, "Now -47.3 · detected -32.1 dBFS");
-            tryCompare(strength.Accessible, "description", "Now -47.3 · detected -32.1 dBFS · Local UHF");
+            tryCompare(strength.Accessible, "name", "Now -47.3 · detected -32.1 dBFS");
+            compare(strength.Accessible.description, "Local UHF");
             // Readings that round to zero carry no minus sign (issue #669).
             model.status = Object.assign({}, model.status, {livePowerValid: true, livePower: -0.04,
                 hit: Object.assign({}, model.status.hit, {power: -0.04})});
@@ -537,7 +551,16 @@ Item {
             verify(permanent && permanent.enabled);
             permanent.clicked();
             compare(model.lifted.join(","), "session:463550000,permanent:154430000");
+            // A failed search has no session list and refuses to lift from it
+            // (issue #828): nothing to offer, while permanent avoids stay listed.
+            model.status = Object.assign({}, model.status, {phase: 7, hit: {}});
+            wait(0);
+            verify(!findChild(loader.item, "searchSessionAvoid"));
+            verify(findChild(loader.item, "searchPermanentAvoid"));
             // Session avoids end with the session: nothing to list once it stopped.
+            model.status = Object.assign({}, model.status, {phase: 4});
+            wait(0);
+            verify(findChild(loader.item, "searchSessionAvoid"));
             loader.item.sessionActive = false;
             wait(0);
             verify(!findChild(loader.item, "searchSessionAvoid"));
@@ -584,6 +607,32 @@ Item {
             button.clicked();
             compare(started.count, 1);
             compare(message.text, "Device detached: RTL-SDR");
+        }
+        // Issue #828: one line each, in a fixed order: the screen's refusal, the
+        // host's failure or else the search's message, the model's own error,
+        // then the store's lines. The store's text is its own line, never the
+        // model's error as well, and it stays under the Now panel while a
+        // search runs.
+        function test_message_lines_in_order() {
+            var message = findChild(loader.item, "searchMessage");
+            var store = "Signal search history couldn't be read completely, so some entries may be missing. The file won't be overwritten.\n"
+                + "Signal search permanent avoids couldn't be saved. Check available storage. DSD-neo tries again with the next change.";
+            model.storeMessage = store;
+            compare(message.text, store, "the store's lines alone");
+            verify(message.visible);
+            compare(message.parent.objectName, "searchSessionMessageSlot", "under the Now panel while the search runs");
+            model.error = "The decoder did not accept this action.";
+            model.status = Object.assign({}, model.status, {message: "The avoid list is full"});
+            compare(message.text, "The avoid list is full\nThe decoder did not accept this action.\n" + store);
+            root.hostFailure = "Device detached: RTL-SDR";
+            compare(message.text, "Device detached: RTL-SDR\nThe decoder did not accept this action.\n" + store,
+                    "the host's failure stands in for the search's message");
+            loader.item.sessionActive = false;
+            model.armError = "Enable at least one range.";
+            findChild(loader.item, "searchStartPause").clicked();
+            compare(message.text, "Enable at least one range.\nDevice detached: RTL-SDR\nThe decoder did not accept this action.\n" + store);
+            compare(message.parent.objectName, "searchIdleMessageSlot");
+            compare(message.text.split(store).length, 2, "the store's text once");
         }
         // A refused Resume is shown; it belongs to that attempt, so leaving the
         // screen discards it while the host's failure stays bound.
@@ -856,7 +905,7 @@ Item {
         // ones that fit followed by "· …", never a value cut short.
         function verifyWholeValues(detail, tag) {
             var shown = detail.text.replace(/\u00a0/g, " ");
-            var full = detail.Accessible.description;
+            var full = detail.Accessible.name;
             verify(!detail.truncated, "nothing is cut by elision in " + tag);
             verify(detail.lineCount <= 2, "two lines at most in " + tag);
             if (shown !== full) {
@@ -868,8 +917,7 @@ Item {
         }
         // The detail reads site, access code, the call with its slot, then
         // its encryption; what the two lines cannot hold is left off whole
-        // values at a time, and the whole text is the accessible
-        // description.
+        // values at a time, and the whole text is the accessible name.
         function test_detail_reads_site_call_then_encryption_data() {
             return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
         }
@@ -883,33 +931,33 @@ Item {
             var hit = model.status.hit;
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "P25 Phase 1", unresolved: false,
                 site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", targetText: "", target: 2401, sourceText: "", source: 1234567})});
-            tryCompare(detail.Accessible, "description", "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567");
-            compare(detail.Accessible.name, detail.Accessible.description);
+            tryCompare(detail.Accessible, "name", "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2 · NAC 293 · Target 2401 · Source 1234567");
+            compare(detail.Accessible.description, "", "read once (issue #828)");
             // Shown, it breaks only after a separator: every other space is non-breaking.
             var p25 = verifyWholeValues(detail, "P25");
             if (data.scale === 1.0)
-                compare(p25, detail.Accessible.description, "the P25 detail fits whole at default text");
+                compare(p25, detail.Accessible.name, "the P25 detail fits whole at default text");
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "DMR", unresolved: false,
                 site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100, source: 2001, crypt: "Encrypted"})});
-            tryCompare(detail.Accessible, "description", "TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 · Encrypted");
+            tryCompare(detail.Accessible, "name", "TIII Small · Net 12 · Site 3 · SYS 1183 · CC 1 · Slot 2 · Target 100 · Source 2001 · Encrypted");
             var dmr = verifyWholeValues(detail, "DMR");
             if (data.scale === 1.0)
-                compare(dmr, detail.Accessible.description, "the DMR detail fits whole at default text");
+                compare(dmr, detail.Accessible.name, "the DMR detail fits whole at default text");
             // The longest: the values that fit and "· …", whole for a screen reader.
             var longest = {confirmed: true, protocol: "DMR", unresolved: false, site: longestSite, access: "CC 15", slot: 1,
                 targetText: "Regional interoperability talkgroup band with a very long name", sourceText: "Unit 7 portable", crypt: "ALG 84 · KID 0001"};
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, longest)});
             waitForRendering(panel);
-            tryVerify(function () { return detail.Accessible.description.indexOf("KID 0001") >= 0; });
+            tryVerify(function () { return detail.Accessible.name.indexOf("KID 0001") >= 0; });
             var shown = verifyWholeValues(detail, "the longest detail");
             verify(shown.endsWith(" · …"), "the longest detail leaves values off");
             verify(detail.height <= detail.parent.height + 0.5, "inside its two lines");
-            verify(detail.Accessible.description.endsWith("Slot 1 · Regional interoperability talkgroup band with a very long name · Unit 7 portable · ALG 84 · KID 0001"));
-            verify(detail.Accessible.description.startsWith(longestSite + " · CC 15"));
+            verify(detail.Accessible.name.endsWith("Slot 1 · Regional interoperability talkgroup band with a very long name · Unit 7 portable · ALG 84 · KID 0001"));
+            verify(detail.Accessible.name.startsWith(longestSite + " · CC 15"));
             compare(panel.height, height, "the panel keeps its height");
             // A clear call on a one-slot protocol names no slot and no encryption.
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {confirmed: true, protocol: "NXDN48", unresolved: false, site: "Site 12 · Sys 3", slot: 0, crypt: "", target: 5, source: 6})});
-            tryCompare(detail.Accessible, "description", "Site 12 · Sys 3 · Target 5 · Source 6");
+            tryCompare(detail.Accessible, "name", "Site 12 · Sys 3 · Target 5 · Source 6");
         }
         // A history row keeps the site and encryption it was checked with.
         function test_history_row_shows_site_and_encryption() {
@@ -1036,7 +1084,7 @@ Item {
             model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {confirmed: true, protocol: "D-STAR", unresolved: false,
                 targetText: "<b>CQCQCQ", sourceText: "N0CALL", knownNames: ["<b>Warehouse</b>", "Dock"]})});
             var detail = findChild(screen, "searchDetail");
-            tryCompare(detail.Accessible, "description", "<b>CQCQCQ · N0CALL");
+            tryCompare(detail.Accessible, "name", "<b>CQCQCQ · N0CALL");
             verifyPlain(detail, "the Now detail");
             var saved = findChild(screen, "searchSaved");
             verifyPlain(saved, "the saved names");
@@ -1052,7 +1100,7 @@ Item {
             root.hostFailure = "Cannot open <b>/dev/rtl0</b>";
             var message = findChild(screen, "searchMessage");
             verifyPlain(message, "the message");
-            compare(message.Accessible.name, "Cannot open <b>/dev/rtl0</b>");
+            tryCompare(message.Accessible, "name", "Cannot open <b>/dev/rtl0</b>");
             root.hostFailure = "";
             // A saved name on a history row. Its first line is the fixed
             // verdict, which AutoText alone would read, so the row drew the
@@ -1208,7 +1256,8 @@ Item {
             model.status = Object.assign({}, model.status, {livePowerValid: false});
             verify(!cue.visible, "a withdrawn level hides the cue");
             compare(strength.text, "-32.1 dBFS");
-            tryCompare(strength.Accessible, "description", "-32.1 dBFS · Local UHF");
+            tryCompare(strength.Accessible, "name", "-32.1 dBFS");
+            compare(strength.Accessible.description, "Local UHF");
             model.status = Object.assign({}, model.status, {liveSeq: 3});
             compare(cue.marks, marks + 1);
         }
@@ -1281,7 +1330,9 @@ Item {
         }
         // Each detection row offers what can be done with it, by state: saved
         // systems it matched (an avoided one disabled, saying why), avoiding it
-        // this session only while one runs, and the permanent avoid both ways.
+        // this session only while one runs and the frequency is no permanent
+        // avoid (issue #828: it is excluded already), never in a failed search,
+        // and the permanent avoid both ways.
         // With Record calls off (the app's default) and no recordings kept, a
         // disabled Recordings comes last (issue #809).
         function test_history_menu_per_state_data() {
@@ -1294,7 +1345,11 @@ Item {
                 {tag: "no session", hit: {}, session: false, avoided: false,
                     want: ["Explore here", "Save as system", "Avoid permanently", "Recordings (disabled)"]},
                 {tag: "permanently avoided", hit: {}, session: true, avoided: true,
-                    want: ["Explore here", "Save as system", "Avoid this session", "Remove permanent avoid", "Recordings (disabled)"]},
+                    want: ["Explore here", "Save as system", "Remove permanent avoid", "Recordings (disabled)"]},
+                {tag: "search failed", hit: {}, session: true, avoided: false, phase: 7,
+                    want: ["Explore here", "Save as system", "Avoid permanently", "Recordings (disabled)"]},
+                {tag: "paused", hit: {}, session: true, avoided: false, phase: 6,
+                    want: ["Explore here", "Save as system", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]},
                 {tag: "permanently avoided, no session", hit: {matches: matched}, session: false, avoided: true,
                     want: ["Explore here", "Start “Warehouse”", "Start “Dock” (disabled)", "Save as system", "Remove permanent avoid", "Recordings (disabled)"]},
                 // Issue #809: with Record calls on, a detection that kept no recordings offers none.
@@ -1307,6 +1362,8 @@ Item {
             screen.sessionActive = data.session;
             if (!data.session)
                 model.status = {phase: 0, session: "17", owned: false};
+            else if (data.phase)
+                model.status = Object.assign({}, model.status, {phase: data.phase, hit: {}});
             model.avoids = data.avoided ? [462575000] : [];
             testContext.setPrefs("recordCalls", data.record === true);
             model.history = [historyHit(data.hit)];
@@ -1351,7 +1408,7 @@ Item {
             compare(model.actions.join(","), "session,17,462575000");
             open();
             menuItem("searchActionAvoidPermanent").activate();
-            compare(model.actions.join(","), "permanent,17,462575000");
+            compare(model.actions.join(","), "permanent,462575000");
             model.avoids = [462575000];
             open();
             menuItem("searchActionRemovePermanent").activate();
@@ -1384,13 +1441,14 @@ Item {
             model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
             verify(!more.visible);
         }
-        // An avoid the decoder refuses (either list full, from the Now panel or
-        // a row) is the status message, which the screen shows; with no session
-        // a refused permanent avoid is the model's error.
+        // An avoid the decoder refuses (either list full, from the Now panel) is
+        // the status message, which the screen shows; a refused row permanent
+        // avoid is the model's error. A permanent avoid takes no room in the
+        // session's list, so no "saved, but" message exists (issue #828).
         function test_avoid_refusals_are_shown_data() {
             return [{tag: "session list full", message: "The avoid list is full"},
                 {tag: "permanent list full", message: "The permanent avoid list is full"},
-                {tag: "permanent saved, session full", message: "Saved as a permanent avoid; this session's avoid list is full"}];
+                {tag: "no channel", message: "This frequency cannot be avoided"}];
         }
         function test_avoid_refusals_are_shown(data) {
             var message = findChild(loader.item, "searchMessage");
@@ -1442,6 +1500,188 @@ Item {
             verify(message.visible);
             compare(message.mapToItem(scroll, 0, 0).y, panelY);
             model.error = "";
+        }
+
+        // Issue #828: the overload warning as the screen words it, for the
+        // phase (searching, or paused) and for the gain controls the range
+        // editor offers the radio.
+        function overloadText(range, paused, airspy) {
+            var fix = paused ? (airspy ? "Set a lower Airspy gain for the range, then Resume." : "Lower the range's receiver gain, then Resume.")
+                : (airspy ? "Pause, then set a lower Airspy gain for the range." : "Pause, then lower the range's receiver gain.");
+            return (range.length > 0 ? "Part of “" + range + "”" : "Part of a range") + " was skipped because the receiver is overloaded. " + fix;
+        }
+        function overload(range, extra) {
+            model.status = Object.assign({}, model.status, {overloaded: true, overloadRange: range}, extra || {});
+        }
+        // The warning is the message's last line: after the screen's refusal,
+        // the host's failure, the model's error and the store's lines.
+        function test_overload_line_comes_last() {
+            var message = findChild(loader.item, "searchMessage");
+            var store = "Signal search history couldn't be read completely, so some entries may be missing. The file won't be overwritten.";
+            overload("Marine", {phase: 6, hit: {}});
+            compare(message.text, overloadText("Marine", true, false), "the warning alone");
+            verify(message.visible);
+            model.storeMessage = store;
+            model.error = "The decoder did not accept this action.";
+            root.hostFailure = "Device detached: RTL-SDR";
+            model.armError = "Check the numeric range settings.";
+            findChild(loader.item, "searchStartPause").clicked();
+            compare(message.text, ["Check the numeric range settings.", "Device detached: RTL-SDR",
+                "The decoder did not accept this action.", store, overloadText("Marine", true, false)].join("\n"));
+            root.hostFailure = "";
+            model.status = Object.assign({}, model.status, {message: "The avoid list is full"});
+            compare(message.text, ["Check the numeric range settings.", "The avoid list is full",
+                "The decoder did not accept this action.", store, overloadText("Marine", true, false)].join("\n"),
+                "the search's message stands where the host's failure was");
+            compare(message.text.split("overloaded").length, 2, "the warning once");
+        }
+        function test_overload_text_per_phase_and_radio_data() {
+            return [{tag: "searching, USB", phase: 1, source: "usb", paused: false},
+                {tag: "listening, USB", phase: 4, source: "usb", paused: false},
+                {tag: "held, rtl_tcp", phase: 5, source: "rtltcp", paused: false},
+                {tag: "tuning, Airspy", phase: 2, source: "airspy", paused: false},
+                {tag: "identifying, USB", phase: 3, source: "usb", paused: false},
+                {tag: "paused, USB", phase: 6, source: "usb", paused: true},
+                {tag: "paused, rtl_tcp", phase: 6, source: "rtltcp", paused: true},
+                {tag: "paused, Airspy", phase: 6, source: "airspy", paused: true}];
+        }
+        function test_overload_text_per_phase_and_radio(data) {
+            loader.item.sourceType = data.source;
+            overload("Air band", {phase: data.phase});
+            var message = findChild(loader.item, "searchMessage");
+            compare(message.text, overloadText("Air band", data.paused, data.source === "airspy"));
+            verify(message.visible);
+            tryCompare(message.Accessible, "name", message.text);
+            verify(!message.Accessible.ignored);
+            // A range name is typed: shown as written.
+            overload("<b>North</b>");
+            compare(message.textFormat, Text.PlainText);
+            compare(message.text, overloadText("<b>North</b>", data.paused, data.source === "airspy"));
+        }
+        // A range with no name (the model refuses one; the engine copies what
+        // it is given) reads as "a range", never as empty quotes.
+        function test_overload_without_a_range_name_data() {
+            return [{tag: "searching", phase: 1, source: "usb", paused: false},
+                {tag: "paused, Airspy", phase: 6, source: "airspy", paused: true}];
+        }
+        function test_overload_without_a_range_name(data) {
+            loader.item.sourceType = data.source;
+            var message = findChild(loader.item, "searchMessage");
+            overload("", {phase: data.phase});
+            compare(message.text, "Part of a range was skipped because the receiver is overloaded. "
+                + (data.paused ? "Set a lower Airspy gain for the range, then Resume." : "Pause, then lower the range's receiver gain."));
+            compare(message.text, overloadText("", data.paused, data.source === "airspy"));
+            verify(message.text.indexOf("“”") < 0);
+            tryCompare(message.Accessible, "name", message.text);
+        }
+        // The status keeps the warning after the search fails or stops: the
+        // screen drops it then, as it does with no session.
+        function test_overload_hidden_once_the_search_ends_data() {
+            return [{tag: "failed", phase: 7, active: true, message: "No uninterrupted samples for a measurement"},
+                {tag: "stopped", phase: 0, active: true, message: ""},
+                {tag: "no session", phase: 1, active: false, message: ""}];
+        }
+        function test_overload_hidden_once_the_search_ends(data) {
+            var message = findChild(loader.item, "searchMessage");
+            overload("Marine", {phase: 1, hit: {}});
+            verify(message.visible);
+            loader.item.sessionActive = data.active;
+            model.status = Object.assign({}, model.status, {phase: data.phase, message: data.message});
+            verify(model.status.overloaded, "the status still carries the warning");
+            compare(message.text, data.message);
+            compare(message.visible, data.message.length > 0);
+            tryCompare(message.Accessible, "name", data.message);
+            model.storeMessage = "Signal search permanent avoids couldn't be saved. Check available storage. DSD-neo tries again with the next change.";
+            compare(message.text, [data.message, model.storeMessage].filter(function (s) { return s.length > 0; }).join("\n"));
+        }
+        // The warning appearing and clearing never moves the Now panel: it
+        // sits under it with the rest of the message, and wraps there at a
+        // phone's width with the largest text.
+        function test_overload_never_moves_the_now_panel_data() {
+            return [{tag: "default text", scale: 1.0, width: 411}, {tag: "large text at 360 px", scale: 1.6, width: 360}];
+        }
+        function test_overload_never_moves_the_now_panel(data) {
+            var screen = loader.item;
+            var scroll = findChild(screen, "searchScroll");
+            var panel = findChild(screen, "searchNowPanel");
+            var message = findChild(screen, "searchMessage");
+            Ui.Theme.fontScale = data.scale;
+            root.width = data.width;
+            model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
+            waitForRendering(screen);
+            verify(!message.visible);
+            var panelY = panel.mapToItem(scroll, 0, 0).y;
+            overload("Marine");
+            waitForRendering(screen);
+            verify(message.visible);
+            compare(message.parent.objectName, "searchSessionMessageSlot");
+            compare(panel.mapToItem(scroll, 0, 0).y, panelY);
+            verify(message.mapToItem(scroll, 0, 0).y >= panelY + panel.height, "the warning must sit under the Now panel");
+            verify(message.lineCount > 1 && message.contentWidth <= message.width, "it wraps inside the column");
+            verify(message.mapToItem(screen, message.width, 0).x <= screen.width, "and inside the screen");
+            model.status = Object.assign({}, model.status, {overloaded: false, overloadRange: ""});
+            waitForRendering(screen);
+            verify(!message.visible);
+            compare(panel.mapToItem(scroll, 0, 0).y, panelY);
+        }
+        // Two ranges that take turns clipping rename the warning every pass.
+        // Its name keeps the screen reader's pace (SpeechPacer, at most every
+        // period), while the warning appearing or clearing is heard at once,
+        // and the text on screen stays live.
+        function test_overload_name_is_paced() {
+            var message = findChild(loader.item, "searchMessage");
+            var store = "Signal search history couldn't be read completely, so some entries may be missing. The file won't be overwritten.";
+            model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
+            model.storeMessage = store;
+            tryCompare(message.Accessible, "name", store);
+            Ui.Navigation.speechPeriodMs = 60000;
+            try {
+                overload("Marine");
+                tryCompare(message.Accessible, "name", store + "\n" + overloadText("Marine", false, false), 1000,
+                           "the warning appearing is heard at once");
+                for (var pass = 0; pass < 6; ++pass) {
+                    var range = pass % 2 === 0 ? "Air band" : "Marine";
+                    overload(range, {pass: 3 + pass});
+                    compare(message.text, store + "\n" + overloadText(range, false, false), "the screen is live");
+                    wait(30);
+                    compare(message.Accessible.name, store + "\n" + overloadText("Marine", false, false),
+                            "a range's new name waits for the period, pass " + (3 + pass));
+                }
+                model.status = Object.assign({}, model.status, {overloaded: false, overloadRange: ""});
+                tryCompare(message.Accessible, "name", store, 1000, "the warning clearing is heard at once");
+                overload("Air band");
+                tryCompare(message.Accessible, "name", store + "\n" + overloadText("Air band", false, false), 1000);
+                overload("Marine");
+                Ui.Navigation.speechPeriodMs = 50;
+                tryCompare(message.Accessible, "name", store + "\n" + overloadText("Marine", false, false), 1000,
+                           "and the name catches up at the next period");
+            } finally {
+                Ui.Navigation.speechPeriodMs = 50;
+            }
+        }
+        // Behind an open sheet the message leaves the accessibility tree and
+        // holds no name, as every node a screen reader reaches does; it is
+        // named again once the sheet closes. A warning renamed under the sheet
+        // names nothing there.
+        function test_message_nameless_behind_sheet() {
+            var message = findChild(loader.item, "searchMessage");
+            model.history = [historyHit({confirmed: true, protocol: "DMR"})];
+            root.hostFailure = "Device detached: RTL-SDR";
+            tryCompare(message.Accessible, "name", root.hostFailure);
+            verify(!message.Accessible.ignored);
+            findChild(loader.item, "searchHistoryActions").activate();
+            verify(findChild(loader.item, "searchDetectionMenu").visible);
+            verify(message.visible, "still drawn under the sheet");
+            verify(message.Accessible.ignored, "behind the menu, out of the tree");
+            compare(message.Accessible.name, "");
+            overload("Marine");
+            overload("Air band");
+            wait(100);
+            compare(message.Accessible.name, "", "a warning under the sheet names nothing");
+            findChild(loader.item, "searchDetectionMenu").cancel();
+            verify(!message.Accessible.ignored);
+            tryCompare(message.Accessible, "name", root.hostFailure + "\n" + overloadText("Air band", false, false));
+            model.history = [];
         }
 
         // Issue #809: a detection's recordings, from its Recent detections row.

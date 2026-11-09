@@ -206,6 +206,7 @@ Main Menu
 │   ├── Channels & groups
 │   │   ├── Import channel map CSV...
 │   │   ├── Import group list CSV...
+│   │   ├── Reload group list [groups.csv]           (while a group list file is set)
 │   │   ├── Import source ID list CSV...
 │   │   ├── Import P25 band plan CSV...
 │   │   ├── Export learned P25 band plan...
@@ -426,8 +427,8 @@ A frequency in the scan's own list is the exception (issue #644): a running or p
 row only holds it. Until the tune lands the toast reads `Going to Marion: waiting for the tune`. A trunked target parks
 on its control channel, as at any visit, so the receiver may go to another frequency than the one typed, and the toast
 names that channel (`Holding: #1 county-p25, trunked: following its control channel 851.012500 MHz`). The scan row reads
-`HOLD (y continues)`, and `y` continues the scan from that row; `Y` releases the hold too. A row that is avoided, whose
-list is off or whose width the input cannot run is not taken: the entry tunes as above, and its toast ends with the
+`HOLD (y continues)`, and `y` continues the scan from that row; `Y` releases the hold too. A row that is avoided, in no
+list that is on, or whose width the input cannot run is not taken: the entry tunes as above, and its toast ends with the
 reason (`; Marion is avoided`). To hear a row's frequency with the configured settings, pause a trunk scan in place on
 it with `y` (after a first `y` lets an entry's hold go), or stop `-Y` with `y`, after which an entry matches no row.
 After the radio stream restarts (a reconnect, a config that reopens the input) the scan is not sure of the row on air
@@ -496,8 +497,26 @@ it governs.
 
 Group policy reload:
 
-- Importing a group list (`-G` CSV) from **Trunking -> Channels & groups** performs a full policy reload. On parse
-  failure, the currently loaded list remains active.
+- Importing a group list (`-G` CSV) from **Trunking -> Channels & groups** performs a full policy reload. A file
+  that fails to load (not found, not readable, or no usable rows, such as a CSV saved with `;` separators) keeps
+  the current list, and the toast says why: `Failed: Group list import -> no usable rows (2 skipped); list
+  unchanged`. A load that works says what it read: `Applied: Group list imported -> 42 rows, 1 skipped`. A file
+  with no rows at all (a header only, or no bytes) is a list emptied on purpose and loads as one, as `-G` does at
+  startup: `Applied: Group list imported -> empty list`, and later changes save to that file.
+- **Reload group list [groups.csv]**, right after the import row, reads the group list file again, so edits made
+  in another program (a text editor, a spreadsheet) take effect without typing the path. The brackets name the file:
+  the global group list, the one `-G` or the last import set, even while a `-Y` row or trunk-scan target with its own
+  list is on air (that list is left as it is). The row shows while a group list file is set, even one that is now
+  missing (the reload then says `file not found`). Like an import, a reload that works clears temporary TG avoids and
+  call skips; one that fails changes nothing. The row has no hotkey, so a stray key cannot clear them.
+- The **Import group list CSV...** path prompt starts at the group list file's path, so importing it again or a file
+  beside it is an edit of the path rather than a retype.
+- The outcome of an import or reload, as of any command a row posts, also shows on the menu's status line, where
+  an open menu cannot cover it.
+- A saved lockout (`!`/`@`), like any talkgroup change the decoder saves, is not written over a group list file
+  that was edited outside dsd-neo and not reloaded yet, or that loaded incomplete at startup: the change lasts for the
+  session and the toast says `... group list changed on disk, reload it` or `... group list incomplete, reload it`.
+  Reload the list, then make the change again. `docs/csv-formats.md` (Group List CSV) has the rules and limits.
 
 Config profiles:
 
@@ -896,8 +915,8 @@ expires independently of **Save user TG lockouts**. See [Skip lifetimes](cli.md#
 
 A `--trunk-scan` session can load several target lists (`--trunk-scan FILE` once per list, `--trunk-scan-off FILE`
 for one that starts off; see `docs/trunk-scan.md`). `#`, or Trunking > **Scan lists... [2 of 3 on]**, opens them, one
-row per list with its number, name (the file name), state and size, `on air` beside the list of the target on air,
-then **All lists on**:
+row per list with its number, name (the file name), state and size, `on air` beside every list holding the target on
+air, then **All lists on**:
 
 ```
 Scan lists (2 of 3 on, 13 targets)
@@ -908,6 +927,10 @@ Scan lists (2 of 3 on, 13 targets)
 All lists on
 ```
 
+A row's size is the targets its file holds. A target id found in several lists is one target that all of them hold
+(see `docs/trunk-scan.md`), so it counts in each of those rows, and the title counts it once among the lists that are
+on; the rows can then add up to more than the title.
+
 Enter switches the highlighted list the other way, or every list on. The row says `Switching off…` until the decoder
 answers, then shows the new state, or why it did not switch beside the list (`Nothing else to scan` when it is the last
 list with a target left to scan, `Scan paused: resume it first` while the scan is paused); the main screen's toast line
@@ -916,13 +939,15 @@ from another frontend), and the paused one when the scan resumes. A pause and re
 updates go unseen, so that paused reason stays until the row is asked again, the lists change or the lists close (a
 decided limit). A "try again" note (`Busy; try again`, `Not sent; try again`, `Not applied; try again`) stays until that
 row is asked again or the lists change; it has no timeout, and Enter on another row leaves it. Several rows can wait at
-once, and Enter on a row that is waiting does nothing. Switching off the list on air moves the receiver to a target of
-another list at once, as `L` would, and any switch takes effect at once while the target on air is waiting to leave (its
-list is off, or it is an avoided target the scan fell back onto). On a DMR repeater carrier any other switch waits for
-the carrier to end, so its row says `Switching off…` or `Switching on…` until then and the call goes on undisturbed; an
-attempt to switch off the list on air when it is the last list to scan, which is refused, interrupts that carrier for a
-moment. The lists stay open until Esc or Left, and close by themselves when the scan stops or restarts. A switch lasts
-for the session: Config save and the exit autosave keep the lists as configured.
+once, and Enter on a row that is waiting does nothing. Switching off the last list that is on and holds the target on
+air moves the receiver to a target of another list at once, as `L` would, and any switch takes effect at once while the
+target on air is waiting to leave (every list holding it is off, or it is an avoided target the scan fell back onto).
+Switching off one of its lists while another of them stays on keeps the target on air, and the Trunk Scan row names that
+other list. On a DMR repeater carrier any other switch waits for the carrier to end, so its row says `Switching off…` or
+`Switching on…` until then and the call goes on undisturbed; an attempt to switch off the target's last list that is on
+when it is the last list to scan, which is refused, interrupts that carrier for a moment. The lists stay open until Esc
+or Left, and close by themselves when the scan stops or restarts. A switch lasts for the session: Config save and the
+exit autosave keep the lists as configured.
 
 The menu row is offered while a trunk scan with two or more lists runs. `#` also opens the lists while the scan is
 paused, where every switch is refused at once with `Scan paused: resume it first` beside the row, nothing is sent to
@@ -979,11 +1004,12 @@ the list's `Avoids: N`. A hold a typed frequency set reads `HOLD (y continues)` 
 ```
 
 `county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation (right
-aligned to the count's digits, `( 3/12)`): among the targets of the lists that are on, avoided ones included. With two
-or more target lists the row also names the list of the target on air after its id. While the target on air belongs to
-a list that was just switched off, the position reads `(-/m)` until the receiver leaves it, and `[list off]` shows in
-the room `[avoided]` takes (one cell wider then, so an 80-column row keeps room for the list's name); a target that is
-both shows `[avoided]`, since `(-/m)` already says its list is off:
+aligned to the count's digits, `( 3/12)`): among the targets of the lists that are on, avoided ones included, a target
+several of them hold counted once. With two or more target lists the row also names the list of the target on air after
+its id: for a target several lists hold, the lowest-numbered one holding it that is on. Once every list holding the
+target on air is switched off, the row names the lowest-numbered of them, the position reads `(-/m)` until the
+receiver leaves it, and `[list off]` shows in the room `[avoided]` takes (one cell wider then, so an 80-column row keeps
+room for the list's name); a target that is both shows `[avoided]`, since `(-/m)` already says its lists are off:
 
 ```
 | Trunk Scan: (2/3)                 Target: gate-b List: security

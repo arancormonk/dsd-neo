@@ -54,8 +54,11 @@ void dsd_engine_release_outputs(dsd_opts* opts, dsd_state* state);
  * on. */
 void dsd_engine_receive_policy_boundary(dsd_opts* opts, dsd_state* state, int filters_were_enabled);
 /** Whether a followed trunk voice channel is held only by traffic the receive policy rejects (issue #637): a filter is
- * on and no admitted traffic has refreshed the channel's activity within the trunk hangtime. Continuous sync never
- * reaches noCarrier(), whose control-channel return then lets the channel go, so the frame loops yield on this. */
+ * on and no admitted traffic has refreshed the channel's activity within the trunk hangtime. Or, filters or not, a
+ * followed NXDN voice channel is held only by another channel's control traffic (discussion #748): another site's
+ * control channel on the same frequency, heard since the call's last voice, and nothing of the call within the
+ * hangtime. Continuous sync never reaches noCarrier(), whose control-channel return then lets the channel go, so the
+ * frame loops yield on this. */
 int dsd_engine_trunk_receive_release_due(const dsd_opts* opts, const dsd_state* state);
 
 /**

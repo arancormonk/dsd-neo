@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
@@ -221,6 +222,42 @@ test_stream_format_selection(void) {
 }
 
 static int
+expect_full_scale(const char* label, const char* stream_format, const char* native_format, double reported,
+                  double want) {
+    const double got = dsdneo::soapy_cs16_full_scale(stream_format, native_format, reported);
+    if (std::fabs(got - want) > 1e-9) {
+        DSD_FPRINTF(stderr, "%s: got %.6f want %.6f\n", label, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* Native CS16 is read against the driver's own full scale; anything else at 32768. */
+static int
+test_cs16_full_scale(void) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    int rc = 0;
+    rc |= expect_full_scale("pluto/bladerf native 2048", "CS16", "CS16", 2048.0, 2048.0);
+    rc |= expect_full_scale("12-bit 2047 convention", "CS16", "CS16", 2047.0, 2047.0);
+    rc |= expect_full_scale("airspy/lms7 native 32767", "CS16", "CS16", 32767.0, 32767.0);
+    rc |= expect_full_scale("uhd native 32768", "CS16", "CS16", 32768.0, 32768.0);
+    rc |= expect_full_scale("smallest accepted", "CS16", "CS16", 1.0, 1.0);
+    rc |= expect_full_scale("cs16 not native (rtlsdr cs8)", "CS16", "CS8", 128.0, 32768.0);
+    rc |= expect_full_scale("cs16 native unknown", "CS16", "", 2048.0, 32768.0);
+    rc |= expect_full_scale("cf32 stream", "CF32", "CS16", 2048.0, 32768.0);
+    rc |= expect_full_scale("cf32 native", "CS16", "CF32", 1.0, 32768.0);
+    rc |= expect_full_scale("zero", "CS16", "CS16", 0.0, 32768.0);
+    rc |= expect_full_scale("below one", "CS16", "CS16", 0.5, 32768.0);
+    rc |= expect_full_scale("negative", "CS16", "CS16", -1.0, 32768.0);
+    rc |= expect_full_scale("nan", "CS16", "CS16", nan, 32768.0);
+    rc |= expect_full_scale("inf", "CS16", "CS16", inf, 32768.0);
+    rc |= expect_full_scale("past 16 bits", "CS16", "CS16", 65536.0, 32768.0);
+    rc |= expect_full_scale("just past 32768", "CS16", "CS16", 32768.5, 32768.0);
+    return rc;
+}
+
+static int
 test_range_selection(void) {
     int rc = 0;
     bool supported = false;
@@ -373,6 +410,7 @@ main(void) {
     rc |= test_sddc_rate_grid();
     rc |= test_bandwidth_selection();
     rc |= test_stream_format_selection();
+    rc |= test_cs16_full_scale();
     rc |= test_range_selection();
     rc |= test_join_and_scope_names();
     rc |= test_settings_parser_accepts_device_and_rx_scopes();

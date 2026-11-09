@@ -300,6 +300,42 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     return fp;
 }
 
+FILE*
+dsd_fopen_private_append_regular(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    /* As dsd_fopen_existing_regular_file(): O_NONBLOCK keeps open(2) from waiting on a FIFO, which with no reader
+       fails at once (ENXIO, reported as EINVAL); it is cleared once the target is known regular. */
+    int flags = O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open(path, flags, (mode_t)0600);
+    if (fd < 0) {
+        if (errno == ENXIO) {
+            errno = EINVAL;
+        }
+        return NULL;
+    }
+    if (dsd_existing_regular_fd_ready(fd) != 0) {
+        return NULL;
+    }
+
+    FILE* fp = fdopen(fd, "ab");
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        errno = saved_errno;
+    }
+    return fp;
+}
+
 static void
 dsd_set_cloexec_best_effort(int fd) {
 #ifdef FD_CLOEXEC
@@ -496,6 +532,30 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     return dsd_rename_noreplace_by_link(from, to, out_source_left);
 }
 
+int
+dsd_path_type_nofollow(const char* path, dsd_path_type* out_type) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
+    }
+    if (out_type) {
+        *out_type = S_ISLNK(st.st_mode)   ? DSD_PATH_TYPE_LINK
+                    : S_ISREG(st.st_mode) ? DSD_PATH_TYPE_FILE
+                    : S_ISDIR(st.st_mode) ? DSD_PATH_TYPE_DIR
+                                          : DSD_PATH_TYPE_OTHER;
+    }
+    return 1;
+}
+
+int
+dsd_path_exists_nofollow(const char* path) {
+    return dsd_path_type_nofollow(path, NULL);
+}
+
 static int
 dsd_local_file_name_is_unsafe(const char* requested) {
     return requested == NULL || requested[0] == '\0' || requested[0] == '/' || strchr(requested, '/') != NULL
@@ -519,6 +579,24 @@ dsd_path_canonical(const char* path, char* out, size_t out_size) {
         errno = ENAMETOOLONG;
         return -1;
     }
+    return 0;
+}
+
+int
+dsd_path_same_file(const char* a, const char* b, int* same) {
+    if (same) {
+        *same = 0;
+    }
+    if (!a || a[0] == '\0' || !b || b[0] == '\0' || !same) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct stat st_a;
+    struct stat st_b;
+    if (stat(a, &st_a) != 0 || stat(b, &st_b) != 0) {
+        return -1;
+    }
+    *same = st_a.st_dev == st_b.st_dev && st_a.st_ino == st_b.st_ino;
     return 0;
 }
 

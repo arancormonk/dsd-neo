@@ -151,10 +151,18 @@ tetra_expand_dibits_as(const dsd_state* state, int inverted, const uint8_t* dibi
     }
 }
 
-/* tetra_expand_dibits_as() with the carrier's polarity, which a synchronisation burst or a control uplink burst set. */
+/* tetra_expand_dibits_as() with the carrier's polarity, which an accepted synchronisation burst or a control uplink
+   burst set. */
 static void
 tetra_expand_dibits(const dsd_state* state, const uint8_t* dibits, const float* soft_in, int count, uint16_t* out) {
     tetra_expand_dibits_as(state, state->tetra_sync.polarity != 0, dibits, soft_in, count, out);
+}
+
+/* tetra_expand_dibits_as() with the polarity of the synchronisation burst in hand, which its training sequence told
+   (dsd_tetra_sync_capture::sb_polarity): the burst is read with it whether or not it is accepted. */
+static void
+tetra_expand_sb_dibits(const dsd_state* state, const uint8_t* dibits, const float* soft_in, int count, uint16_t* out) {
+    tetra_expand_dibits_as(state, state->tetra_sync.sb_polarity != 0, dibits, soft_in, count, out);
 }
 
 /* Block 1 of the burst, as the frame sync captured it. */
@@ -301,11 +309,13 @@ tetra_nb_subtype(dsd_state* state, const tetra_nb_ctx* ctx, const char* what) {
    them (EN 300 392-2 clause 8.2.5.2), and the seed names all three. So a followed traffic carrier, whose access code the
    trunk tune dropped, names its colour code again, an uplink carrier, which has no BSCH, names its cell at all, and a
    --tetra-net preset is received identity once a block descrambled with it passed (never before). Noted before the MAC
-   acts on the block, which may move the receiver. */
+   acts on the block, which may move the receiver. Colour code 0 scrambles with the predefined all-zero vector whatever
+   the network (EN 300 392-2 table 21.76 note 1), so a block that passed with it proves nothing about the MCC and MNC;
+   only a BSCH names such a cell. */
 static void
 tetra_note_proven_cell(dsd_state* state, uint32_t seed) {
     const tetra_state_t* const ts = tetra_st_peek(state);
-    if (ts == NULL || ts->dmo || !ts->net_known || ts->lfsr_seed != seed) {
+    if (ts == NULL || ts->dmo || !ts->net_known || ts->colour == 0u || ts->lfsr_seed != seed) {
         return;
     }
     dsd_rxid_note_tetra_cell(state, ts->mcc, ts->mnc, ts->colour);
@@ -314,8 +324,9 @@ tetra_note_proven_cell(dsd_state* state, uint32_t seed) {
 /* A CRC-passed signalling block: the MAC in trunked mode, the DMAC logger in direct mode. It counts as evidence about
    the carrier once it has been acted on, so a grant it carries is judged by the blocks before it. A trunked downlink MAC
    block proves a control channel, an uplink one the carrier for publication only (tetra_confirm.h), and a direct mode
-   one the burst. A normal uplink burst's full slot goes to the uplink reader (tetra_ul.h), never the downlink MAC; its
-   stealing channel half slots are not read. */
+   one the burst. A trunked downlink block is the home cell's evidence on a followed carrier too
+   (tetra_sm_note_home_crc()), unless it carried another cell's SYSINFO. A normal uplink burst's full slot goes to the
+   uplink reader (tetra_ul.h), never the downlink MAC; its stealing channel half slots are not read. */
 static void
 tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const uint8_t* decoded, int len,
                     const char* kind, int ks_offset) {
@@ -325,16 +336,30 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
         return;
     }
     tetra_note_proven_cell(state, ctx->seed);
+    int own = 1; /* the block was the cell's (tetra_mac_parse_block()) */
     if (ctx->uplink && len == SCHF_TYPE1) {
         tetra_ul_block(state, TETRA_UL_SCH_F, decoded, len, ctx->cc);
     } else {
-        tetra_mac_parse_block(decoded, len, ctx->cc, ks_offset, opts, state);
+        own = tetra_mac_parse_block(decoded, len, ctx->cc, ks_offset, opts, state);
     }
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (ts && ts->uplink) {
         tetra_confirm_note_uplink_signalling(state);
-    } else {
-        tetra_confirm_note_signalling(state);
+        return;
+    }
+    tetra_confirm_note_signalling(state);
+    if (own) {
+        tetra_sm_note_home_crc(state);
+    }
+}
+
+/* Speech whose CRC passed in a trunked downlink burst: the home cell's evidence on a followed carrier
+   (tetra_sm_note_home_crc()), as its signalling is. */
+static void
+tetra_nb_speech_decoded(dsd_state* state, const tetra_nb_ctx* ctx) {
+    tetra_confirm_note_block(state);
+    if (!ctx->direct && !ctx->uplink) {
+        tetra_sm_note_home_crc(state);
     }
 }
 
@@ -386,7 +411,7 @@ tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     if (!tetra_nb_half(opts, state, ctx, block, "STCH-2", TETRA_AIR_KSS_SECOND_HALF_BLOCK)
         && !tetra_tdma_control_frame(tetra_st_peek(state)) && !ctx->no_traffic
         && tetra_decode_tch_half(block, opts, state)) {
-        tetra_confirm_note_block(state);
+        tetra_nb_speech_decoded(state, ctx);
     }
 }
 
@@ -408,7 +433,7 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     if (!tetra_schf_decode_bits(type4, decoded)) {
         tetra_nb_block_failed(state, ctx);
         if (!tetra_tdma_control_frame(ts) && !ctx->no_traffic && tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
-            tetra_confirm_note_block(state);
+            tetra_nb_speech_decoded(state, ctx);
         }
         return;
     }
@@ -750,7 +775,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     skipDibit(opts, state, SB_BB_DIBITS);
     (void)tetra_dmo_parse_sync_s(sch_s, &s);
 
-    tetra_expand_dibits(state, b2_dibits, b2_soft, SB_BKN2_DIBITS, b2_costs);
+    tetra_expand_sb_dibits(state, b2_dibits, b2_soft, SB_BKN2_DIBITS, b2_costs);
     tetra_descramble_soft(b2_costs, NB_BLOCK_BITS, TETRA_SB_SCRAMB_SEED);
     const int h_ok = tetra_hd_decode_bits(b2_costs, sch_h);
     if (h_ok) {
@@ -787,7 +812,7 @@ tetra_sb_decode_block(const dsd_state* state, int use_soft, uint8_t* decoded) {
     uint16_t deint[SB_BSCH_BITS];
     uint16_t depunc[SB_TYPE2 * 4];
     const float* soft = (use_soft && state->tetra_sync.sb1_soft_valid) ? state->tetra_sync.sb1_soft : NULL;
-    tetra_expand_dibits(state, state->tetra_sync.sb1_dibuf, soft, SB_BSCH_DIBITS, costs);
+    tetra_expand_sb_dibits(state, state->tetra_sync.sb1_dibuf, soft, SB_BSCH_DIBITS, costs);
     tetra_descramble_soft(costs, SB_BSCH_BITS, TETRA_SB_SCRAMB_SEED);
     tetra_block_deinterleave_soft(costs, deint, SB_BSCH_BITS, SB_BSCH_A);
     (void)tetra_rcpc_depuncture_by_id(TETRA_RCPC_PUNCT_2_3, deint, SB_BSCH_BITS, depunc, SB_TYPE2 * 4);
@@ -809,9 +834,44 @@ tetra_sb_log_bits(const dsd_state* state, const tetra_state_t* ts, const uint8_t
     TETRA_LOG_PAYLOAD(ts, " [TETRA SB  rot=%d first12=%s]", (int)(state->tetra_sync.phase_rot & 3), first);
 }
 
+/* A trunked synchronisation burst whose BSCH passed its CRC is accepted: its polarity becomes the carrier's, for the
+   normal bursts after it, whose training cannot tell it (NTS2 is NTS1 inverted). One that fails, or a false training
+   match, leaves the carrier's polarity as it was. */
+static void
+tetra_tmo_sb_commit_polarity(dsd_state* state) {
+    state->tetra_sync.polarity = state->tetra_sync.sb_polarity;
+}
+
+/* A DSB whose SCH/S passed its CRC is accepted, whichever decision decoded it: its polarity becomes the carrier's, for
+   the direct mode normal bursts after it. */
+static void
+tetra_dmo_dsb_commit_polarity(dsd_state* state) {
+    state->tetra_sync.polarity = state->tetra_sync.sb_polarity;
+}
+
+/* A DSB whose SCH/S (@p sch_s, CRC passed) came while the state machine guards a follow (tetra_sm_guarding()): a
+   trunked call's carrier is no direct mode channel, so the burst is consumed and logged and nothing more. It does not
+   enter direct mode, forget what the trunked carrier proved or publish, and its polarity is not the carrier's. Outside
+   a guarded follow direct mode is taken on as ever. 1 when the burst was such a one. */
+static int
+tetra_dmo_guarded(const dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
+    if (!tetra_sm_guarding(opts, state)) {
+        return 0;
+    }
+    tetra_dmo_sync_s_t s;
+    (void)tetra_dmo_parse_sync_s(sch_s, &s);
+    TETRA_LOG_VERBOSE(tetra_st_peek(state), 1,
+                      "[TETRA DMO DSB] sys=%u comm=%u: direct mode on the followed carrier; not taken on\n",
+                      s.system_code, s.comm_type);
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");
+    return 1;
+}
+
 /* A direct-mode synchronisation burst is told from a trunked one by its SCH/S system code (EN 300 396-3 clause
    9.3.29), decoded from the hard decisions first: they do not consume symbols or depend on the slicer, so a trunked
-   burst then takes exactly the path it would have taken. 1 when the burst was a DSB and is done. */
+   burst then takes exactly the path it would have taken. 1 when the burst was a DSB and is done; a guarded one
+   (tetra_dmo_guarded()) is read past undecoded, as many dibits as any synchronisation burst. */
 static int
 tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -826,14 +886,41 @@ tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
     ts->decode_ok++;
     tetra_confirm_note_block(state);
     tetra_sb_log_bits(state, ts, pre);
+    if (tetra_dmo_guarded(opts, state, pre)) {
+        skipDibit(opts, state, SB_BKN2_DIBITS + SB_BB_DIBITS);
+        return 1;
+    }
     tetra_dmo_process_dsb(opts, state, pre);
+    tetra_dmo_dsb_commit_polarity(state);
     return 1;
 }
 
-/* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when its CRC passed. A DMO
-   system code that only the soft decision decoded is a DSB whose SCH/H went by unread; timing and mode come from its
-   SCH/S. A BSCH that failed its CRC still sits in the slot after the last burst's: the TDMA clock runs to it on the
-   symbol count, as for a normal burst, so block 2 is decoded in its own timeslot rather than the last burst's. */
+/* A DSB that only the soft decision decoded (@p sch_s, its SCH/S): its SCH/H went by unread, and timing and mode come
+   from its SCH/S. */
+static void
+tetra_sb_soft_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
+    tetra_confirm_note_block(state);
+    if (tetra_dmo_guarded(opts, state, sch_s)) {
+        return;
+    }
+    tetra_dmo_sync_s_t s;
+    (void)tetra_dmo_parse_sync_s(sch_s, &s);
+    tetra_dmo_dsb_commit_polarity(state);
+    tetra_enter_dmo(opts, state);
+    tetra_dmo_apply_sync(state, &s, NULL);
+    tetra_calls_dmo_protection(opts, state);
+    DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n", s.system_code,
+                s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
+}
+
+/* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when block 2 is to be
+   decoded as the cell's, 0 when block 2 is not a trunked block of the cell (a DSB, or another cell's burst). A DMO
+   system code that only the soft decision decoded is a DSB (tetra_sb_soft_dsb()). A BSCH that failed its CRC still sits
+   in the slot after the last burst's: the TDMA clock runs to it on the symbol count, as for a normal burst, so block 2
+   is decoded in its own timeslot rather than the last burst's. So does one of another cell on the followed carrier
+   (TETRA_BSCH_FOREIGN), whose burst is that cell's: its block 2 is scrambled with another colour code and is not
+   decoded, and the BSCH is no evidence about the carrier nor sets its polarity. One taken on is the home cell's
+   evidence on a followed carrier (tetra_sm_note_home_crc()). */
 static int
 tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     uint8_t decoded[SB_TYPE2];
@@ -842,23 +929,22 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     tetra_sb_log_bits(state, ts, decoded);
     if (!crc_ok) {
         tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
-        return 0;
+        return 1;
     }
     ts->decode_ok++;
     if (tetra_dmo_system_code_is_dmo(decoded)) {
-        tetra_dmo_sync_s_t s;
-        (void)tetra_dmo_parse_sync_s(decoded, &s);
-        tetra_enter_dmo(opts, state);
-        tetra_dmo_apply_sync(state, &s, NULL);
-        tetra_calls_dmo_protection(opts, state);
-        tetra_confirm_note_block(state);
-        DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n",
-                    s.system_code, s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
-        return 1;
+        tetra_sb_soft_dsb(opts, state, decoded);
+        return 0;
     }
     tetra_dmo_leave(opts, state);
-    (void)tetra_bsch_parse(decoded, SB_TYPE1, opts, state);
+    if (tetra_bsch_parse(decoded, SB_TYPE1, opts, state) == TETRA_BSCH_FOREIGN) {
+        tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
+        tetra_confirm_note_block(state);
+        return 0;
+    }
+    tetra_tmo_sb_commit_polarity(state);
     tetra_confirm_note_signalling(state);
+    tetra_sm_note_home_crc(state);
     return 1;
 }
 
@@ -873,7 +959,7 @@ tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const f
     }
     uint16_t block[NB_BLOCK_BITS];
     const tetra_nb_ctx ctx = {tetra_lfsr_seed_for(state), tetra_burst_colour(state), 0, "", 0, 0};
-    tetra_expand_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
+    tetra_expand_sb_dibits(state, dibits, soft, SB_BKN2_DIBITS, block);
     /* Block 2 of the slot: an SCH/HD there takes key stream bits 216.. (EN 300 392-7 table 6.4, BSCH+SCH/HD). */
     (void)tetra_nb_half(opts, state, &ctx, block, "BNCH", TETRA_AIR_KSS_SECOND_HALF_BLOCK);
 }
@@ -912,8 +998,9 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     }
     skipDibit(opts, state, SB_BB_DIBITS);
     tetra_read_dibits(opts, state, b2_dibits, b2_soft, SB_BKN2_DIBITS);
-    (void)tetra_sb_bsch(opts, state, ts);
-    tetra_sb_block2(opts, state, b2_dibits, b2_soft);
+    if (tetra_sb_bsch(opts, state, ts)) {
+        tetra_sb_block2(opts, state, b2_dibits, b2_soft);
+    }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "BSCH");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA");

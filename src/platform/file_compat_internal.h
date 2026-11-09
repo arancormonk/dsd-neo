@@ -23,4 +23,23 @@ int dsd_rename_noreplace_by_link(const char* from, const char* to, int* out_sour
 int dsd_rename_noreplace_by_reservation(const char* from, const char* to);
 #endif
 
+#if DSD_PLATFORM_WIN_NATIVE
+#include <stddef.h>
+#include <wchar.h>
+
+/*
+ * dsd_dir_list()'s search patterns: "<dir>\*", with no second separator when @p dir already ends in one, as a drive
+ * root ("C:\") does. Module-private; their own entry points so tests check the pattern, which Windows would otherwise
+ * hide by folding a doubled separator.
+ */
+
+/* The pattern for a folder named in UTF-16; NULL when memory runs out. The caller frees it. */
+wchar_t* dsd_dir_list_wide_pattern(const wchar_t* wide_dir);
+
+/* The pattern for a folder named in the ANSI code page, whose last character is told apart from a double-byte one's
+   trail byte (0x5C, the backslash, is one in code page 932). 0, or -1 with errno ENAMETOOLONG when @p out is too
+   small. */
+int dsd_dir_list_ansi_pattern(const char* dir, char* out, size_t out_size);
+#endif
+
 #endif /* DSD_NEO_SRC_PLATFORM_FILE_COMPAT_INTERNAL_H */

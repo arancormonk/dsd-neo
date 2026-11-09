@@ -2,7 +2,6 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Dialogs
 import QtQuick.Window
 import "Util.js" as Util
 
@@ -112,10 +111,11 @@ Item {
     readonly property bool encryptionValid: encryptionEditor.valid
     property string p25BandplanCsvPath: ""
     property string srcCsvPath: ""
-    // Which trunking-data field the picker sheet is serving: "chan", "group",
-    // "keys", "p25Bandplan" or "src" ("source" or empty: none). An import
-    // captures it when it starts (csvContext()), so a later change cannot
-    // redirect a copy in flight.
+    // Which field the picker sheet serves: "chan"/"group"/"keys"/
+    // "p25Bandplan"/"src" are the trunking-data fields ("source", the resting
+    // value, opens no sheet; the step-1 Browse never sets it). An import
+    // carries its own field in its context (issue #829), so changing this
+    // never redirects a pick still out.
     property string pickerTarget: "source"
     // Dec/hex choice for a new key-file import from the picker sheet.
     property bool pickerKeyHex: false
@@ -124,15 +124,24 @@ Item {
     // leaves the row reading "None" with no explanation.
     property string csvNotice: ""
     property bool csvNoticeIsProblem: false
+    // The last problem read out (an import's or the replay file's) and how
+    // many have been, for tests.
+    property string announced: ""
+    property int announcements: 0
+    // Issue #829: one generation per trunking-data field, bumped by every
+    // choice for it (a library file, None, an import, RadioReference). A pick
+    // that comes back after a newer choice for its field is dropped.
+    property var csvGenerations: ({})
     // #832: which opening of the wizard an import belongs to. Every open and
     // every close takes the next, so the answer to an import started before
     // is dropped rather than written into another system.
     property int generation: 0
     // The replay pick waiting for its answer (0 when none), and why the last
-    // one failed, shown under the Replay file row. Only a provider's document
-    // is copied: a local file is answered at once, on the next turn, so the
-    // row shows a copy only while the store says one runs, and never flashes
-    // for a desktop pick.
+    // Browse left the replay file as it was (issue #829 B8: the copy failed,
+    // or no picker could open), shown under the Replay file row. Only a
+    // provider's document is copied: a local file is answered at once, on the
+    // next turn, so the row shows a copy only while the store says one runs,
+    // and never flashes for a desktop pick.
     property int replayRequest: 0
     property string replayNotice: ""
     readonly property bool replayPending: replayRequest > 0
@@ -196,6 +205,125 @@ Item {
     function generatedByRadioReference(path) {
         var row = path.length > 0 ? importedFiles.rowForPath(path) : -1;
         return row >= 0 && importedFiles.get(row).origin === "radioreference";
+    }
+
+    // Issues #829, #832: a pick or copy still out belongs to the session it
+    // was asked in; closing the wizard by any route (Save clears wizardOpen in
+    // Main directly) or reopening it for another system ends it. A copy in
+    // flight is cancelled, and whatever it still answers belongs to an earlier
+    // generation, so it is dropped.
+    onVisibleChanged: {
+        if (!visible)
+            stopImports();
+    }
+    function stopImports() {
+        generation++;
+        csvImport.cancel();
+        sourcePicker.cancel();
+        dropReplay();
+    }
+    // Cancel the replay copy, if any, and forget its answer and its notice.
+    function dropReplay() {
+        if (replayPending)
+            replayFiles.cancelReplayImport();
+        replayRequest = 0;
+        replayNotice = "";
+    }
+
+    function csvGeneration(target) {
+        return csvGenerations[target] || 0;
+    }
+    function bumpCsvGeneration(target) {
+        var next = Object.assign({}, csvGenerations);
+        next[target] = csvGeneration(target) + 1;
+        csvGenerations = next;
+    }
+    // Whether an import asked for with @p context may still fill its field:
+    // this opening of the wizard, and no newer choice for the field since.
+    function csvPickCurrent(context) {
+        return context.generation === generation && !!context.target && context.fieldGeneration === csvGeneration(context.target);
+    }
+    // What a CSV import must remember from the moment it is asked for: the
+    // field it fills, the key format it was picked as, this opening of the
+    // wizard and the field's generation, so nothing changed afterwards
+    // (another field's sheet, Browse, the key format) can redirect it.
+    function csvContext() {
+        var target = pickerTarget;
+        return {
+            target: target,
+            keyFormat: target === "keys" ? (pickerKeyHex ? "hex" : "dec") : "",
+            generation: generation,
+            fieldGeneration: csvGeneration(target)
+        };
+    }
+    // "Import new file" on the picker sheet.
+    function importCsvFile() {
+        var context = csvContext();
+        var type = context.target === "keys" ? (context.keyFormat === "hex" ? "keysHex" : "keysDec") : context.target;
+        csvImport.pick(type, context);
+    }
+    function showCsvProblem(text) {
+        csvNotice = text;
+        csvNoticeIsProblem = true;
+        announceProblem(csvNoticeLine, text);
+    }
+    // Read out once per failure, a repeat included, while @p line is reachable.
+    function announceProblem(line, text) {
+        Navigation.announce(wizard, line, text);
+    }
+
+    // Browse for the replay file. A local file is used where it is; a
+    // provider's document is copied into the app's own storage (replayFiles),
+    // and until a copy lands the previous file stays.
+    function browseReplayFile() {
+        replayNotice = "";
+        sourcePicker.open();
+    }
+    function replayFilePicked(reference, displayName) {
+        beginReplay(reference, displayName.length > 0 ? displayName : reference.substring(reference.lastIndexOf('/') + 1));
+    }
+    function showReplayProblem(text) {
+        replayNotice = text;
+        announceProblem(replayNoticeLine, text);
+    }
+    // Copy a picked replay where the decoder can read it; the Replay file row
+    // shows the copy until replayFiles answers. The earlier file stays until
+    // then, and stays if the copy fails.
+    function beginReplay(reference, hint) {
+        replayNotice = "";
+        replayRequest = replayFiles.beginReplayImport(reference, hint);
+    }
+    // The store answers a cancel at once (on the next turn) and stops
+    // copying, so the row leaves with no "Cancelling…" step.
+    function cancelReplay() {
+        if (replayPending)
+            replayFiles.cancelReplayImport();
+    }
+    Connections {
+        target: replayFiles
+        function onReplayImportFinished(id, result) {
+            if (wizard.replayRequest === 0 || id !== wizard.replayRequest)
+                return;
+            wizard.replayRequest = 0;
+            if (result.ok) {
+                wizard.fileText = result.path;
+                wizard.replayNotice = "";
+            } else {
+                // A cancel the user asked for reads as nothing.
+                wizard.showReplayProblem(Util.importMessage(result, "replay"));
+            }
+        }
+        // The startup migration moved a cached replay to its own copy while
+        // this draft was open. A draft still naming the cached file follows
+        // it, and the draft's clean or changed state stays as it was.
+        function onReplaysMigrated() {
+            var uid = wizard.editRow >= 0 ? savedSystems.get(wizard.editRow).uid : "";
+            var moved = replayFiles.migratedPath(uid, wizard.fileText);
+            if (wizard.fileText.length === 0 || moved === wizard.fileText)
+                return;
+            wizard.initialDraft = wizard.initialDraft.split(JSON.stringify(wizard.fileText)).join(JSON.stringify(moved));
+            wizard.fileText = moved;
+        }
     }
 
     function openForAdd(preferNetwork) {
@@ -348,71 +476,6 @@ Item {
         csvNoticeIsProblem = false;
         wizardAirspy.resetText();
         initialDraft = draftFingerprint();
-    }
-
-    // #832: a wizard that closes or opens again leaves its imports behind. A
-    // copy in flight is cancelled, and whatever it still answers belongs to an
-    // earlier generation, so it is dropped.
-    function stopImports() {
-        generation++;
-        csvImport.cancel();
-        dropReplay();
-    }
-    // Cancel the replay copy, if any, and forget its answer.
-    function dropReplay() {
-        if (replayPending)
-            replayFiles.cancelReplayImport();
-        replayRequest = 0;
-        replayNotice = "";
-    }
-    onVisibleChanged: {
-        if (!visible)
-            stopImports();
-    }
-    // What a CSV import must remember from the moment it starts: the field it
-    // fills, the key format it was picked as, and this opening of the wizard.
-    function csvContext() {
-        return {
-            target: pickerTarget,
-            keyHex: pickerKeyHex,
-            generation: generation
-        };
-    }
-    // Copy a picked replay where the decoder can read it; the Replay file row
-    // shows the copy until replayFiles answers. The earlier file stays until
-    // then, and stays if the copy fails.
-    function beginReplay(reference, hint) {
-        replayNotice = "";
-        replayRequest = replayFiles.beginReplayImport(reference, hint);
-    }
-    // The store answers a cancel at once (on the next turn) and stops
-    // copying, so the row leaves with no "Cancelling…" step.
-    function cancelReplay() {
-        if (replayPending)
-            replayFiles.cancelReplayImport();
-    }
-    Connections {
-        target: replayFiles
-        function onReplayImportFinished(id, result) {
-            if (wizard.replayRequest === 0 || id !== wizard.replayRequest)
-                return;
-            wizard.replayRequest = 0;
-            if (result.ok)
-                wizard.fileText = result.path;
-            else
-                wizard.replayNotice = Util.importMessage(result, "replay");
-        }
-        // The startup migration moved a cached replay to its own copy while
-        // this draft was open. A draft still naming the cached file follows
-        // it, and the draft's clean or changed state stays as it was.
-        function onReplaysMigrated() {
-            var uid = wizard.editRow >= 0 ? savedSystems.get(wizard.editRow).uid : "";
-            var moved = replayFiles.migratedPath(uid, wizard.fileText);
-            if (wizard.fileText.length === 0 || moved === wizard.fileText)
-                return;
-            wizard.initialDraft = wizard.initialDraft.split(JSON.stringify(wizard.fileText)).join(JSON.stringify(moved));
-            wizard.fileText = moved;
-        }
     }
 
     // Display line for a picker row: the file's name, or "None".
@@ -650,6 +713,7 @@ Item {
     function assignCsvPath(target, path, hex) {
         csvNotice = "";
         csvNoticeIsProblem = false;
+        bumpCsvGeneration(target);
         if (target === "chan") {
             chanCsvPath = path;
             chanCsvGenerated = false;
@@ -701,11 +765,13 @@ Item {
         var keepPicked = editRow >= 0;
         var chan = result.chanCsvPath || "";
         if (chan.length > 0 || chanCsvGenerated || !keepPicked) {
+            bumpCsvGeneration("chan");
             chanCsvPath = chan;
             chanCsvGenerated = chan.length > 0;
         }
         var group = result.groupCsvPath || "";
         if (group.length > 0 || groupCsvGenerated || !keepPicked) {
+            bumpCsvGeneration("group");
             groupCsvPath = group;
             groupCsvGenerated = group.length > 0;
         }
@@ -731,14 +797,17 @@ Item {
             wizard.step = 1;
     }
 
-    // The audio or capture to replay. A local file is used where it is; a
-    // document from a provider is copied first (replayFiles).
-    FileDialog {
-        id: fileDialog
+    // The replay file's Browse (issue #829): the host's own picker where it
+    // has one. Backing out changes nothing.
+    DocumentPicker {
+        id: sourcePicker
         objectName: "wizardReplayPicker"
-        onAccepted: {
-            var reference = selectedFile.toString();
-            wizard.beginReplay(reference, reference.substring(reference.lastIndexOf('/') + 1));
+        mode: "open"
+        onAccepted: function (reference, displayName) {
+            wizard.replayFilePicked(reference, displayName);
+        }
+        onUnavailable: function (reason, message) {
+            wizard.showReplayProblem(message);
         }
     }
 
@@ -751,29 +820,31 @@ Item {
         id: csvImport
         objectName: "wizardCsvImport"
         overlayParent: wizard
-        // The field and the key format come from the import's own context: the
-        // picker may serve another field by the time the copy answers.
+        wanted: function (context) {
+            return wizard.csvPickCurrent(context);
+        }
+        // The field and the key format come from the import's own context,
+        // never pickerTarget, which the next sheet or Browse rewrites while a
+        // pick is out or a copy runs.
         onFinished: function (result, context) {
             if (context.generation !== wizard.generation)
                 return;
-            wizard.pickerTarget = "";
-            wizard.csvNotice = "";
-            wizard.csvNoticeIsProblem = false;
-            if (result.error === "cancelled")
+            if (result.error === "cancelled") {
+                // The user backed out of this field's pick; a pick dropped
+                // for a newer choice leaves that choice's notice alone.
+                if (wizard.csvPickCurrent(context)) {
+                    wizard.csvNotice = "";
+                    wizard.csvNoticeIsProblem = false;
+                }
                 return;
+            }
             if (!result.ok) {
-                wizard.csvNotice = Util.importMessage(result, "csv");
-                wizard.csvNoticeIsProblem = true;
+                wizard.showCsvProblem(Util.importMessage(result, "csv"));
                 return;
             }
-            wizard.assignCsvPath(context.target, result.path, context.keyHex);
-            if (result.error === "empty") {
-                wizard.csvNotice = qsTr("%1 has no usable rows — check the file format.").arg(result.name);
-                wizard.csvNoticeIsProblem = true;
-            } else {
-                wizard.csvNotice = "";
-                wizard.csvNoticeIsProblem = false;
-            }
+            wizard.assignCsvPath(context.target, result.path, context.keyFormat === "hex");
+            if (result.error === "empty")
+                wizard.showCsvProblem(qsTr("%1 has no usable rows — check the file format.").arg(result.name));
         }
     }
 
@@ -1009,7 +1080,7 @@ Item {
                             width: 96
                             text: qsTr("Browse")
                             enabled: !wizard.replayCopying
-                            onClicked: fileDialog.open()
+                            onClicked: wizard.browseReplayFile()
                         }
                     }
 
@@ -1093,11 +1164,14 @@ Item {
                         }
                     }
 
-                    // Why the last copy failed; the file above is still the one in use.
+                    // Why the last Browse kept the file above: the copy failed
+                    // or no picker could open (B8). Only a problem ever shows
+                    // here.
                     ReadableText {
+                        id: replayNoticeLine
                         objectName: "wizardReplayNotice"
                         width: parent.width
-                        visible: text.length > 0
+                        visible: wizard.replayNotice.length > 0
                         text: wizard.replayNotice
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(13)
@@ -1105,7 +1179,6 @@ Item {
                         wrapMode: Text.Wrap
                         Accessible.role: Accessible.AlertMessage
                     }
-
                     DisclosureRow {
                         width: parent.width
                         visible: wizard.fileText.length > 0
@@ -1351,6 +1424,7 @@ Item {
                 }
 
                 DecryptionProfileSelector {
+                    objectName: "wizardDecryptionProfile"
                     width: parent.width
                     overlayParent: wizard
                     profileUid: wizard.decryptionProfileUid
@@ -1358,6 +1432,9 @@ Item {
                     onSelected: function (uid) {
                         wizard.decryptionProfileUid = uid;
                         encryptionEditor.reset();
+                        // A profile replaces the key file: a choice for that
+                        // field like any other (issue #829).
+                        wizard.bumpCsvGeneration("keys");
                         wizard.keyCsvPath = "";
                     }
                 }
@@ -1436,6 +1513,8 @@ Item {
                         }
 
                         ReadableText {
+                            id: csvNoticeLine
+                            objectName: "wizardCsvNotice"
                             width: parent.width
                             leftPadding: Theme.cardPadding
                             rightPadding: Theme.cardPadding
@@ -1446,6 +1525,7 @@ Item {
                             font.pixelSize: Theme.fontSize(12)
                             color: wizard.csvNoticeIsProblem ? Theme.magenta : Theme.textSubdued
                             wrapMode: Text.Wrap
+                            Accessible.role: wizard.csvNoticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText
                         }
 
                         ReadableText {
@@ -1994,12 +2074,12 @@ Item {
         }
 
         GradientButton {
+            objectName: "wizardCsvImportNew"
             width: parent.width
             text: qsTr("Import new file")
             onClicked: {
                 csvSheet.visible = false;
-                var type = wizard.pickerTarget === "keys" ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget;
-                csvImport.pick(type, wizard.csvContext());
+                wizard.importCsvFile();
             }
         }
 

@@ -603,6 +603,13 @@ dsd_rxid_note_nxdn_typed_system(dsd_state* state, uint32_t sys, uint8_t site) {
     rxid_set(id, DSD_RXID_NXDN_TYPED_SYSTEM);
 }
 
+void
+dsd_rxid_forget_nxdn_typed_system(dsd_state* state) {
+    if (state != NULL) {
+        rxid_invalidate(&state->rx_id, DSD_RXID_NXDN_TYPED_SYSTEM);
+    }
+}
+
 /* The EDACS parts, which every EDACS message carries. */
 #define RXID_EDACS_PARTS (DSD_RXID_EDACS_SITE | DSD_RXID_EDACS_AREA | DSD_RXID_EDACS_SYSTEM | DSD_RXID_EDACS_CC_LCN)
 

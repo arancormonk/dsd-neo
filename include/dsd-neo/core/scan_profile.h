@@ -92,6 +92,11 @@ void dsd_scan_groups_leave(dsd_state* state);
 int dsd_scan_groups_suspend(dsd_state* state);
 /** A scan row's own group list is the effective policy (edits must not be written to the global group file). */
 int dsd_scan_groups_row_active(const dsd_state* state);
+/** The policy store held aside while a -Y row's or trunk-scan target's own list is in place (no reference taken):
+ * returns 1 while the row's list is in effect, with @p held the global list's store (NULL when the global list is
+ * empty); 2 while the row's list is suspended (dsd_scan_groups_suspend()), with @p held the row's store and the
+ * effective store the global list; 0 when no row list is in place (@p held NULL). */
+int dsd_scan_groups_held_store(const dsd_state* state, dsd_tg_policy_store** held);
 /** Adopt the edited global baseline and restore the parked policy with active calls intact.
  * Non-acquiring; caller holds the P25 SM tick guard when observable by a running watchdog. */
 void dsd_scan_groups_resume(dsd_state* state);
