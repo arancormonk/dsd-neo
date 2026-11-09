@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <limits>
@@ -20,6 +21,7 @@
 #include <stdlib.h>
 #include <thread>
 #include <vector>
+#include "rtl_stream_test_support.h"
 
 static std::vector<float>
 samples(const dsd_signal_measure_request& r, double frequency, double amplitude, size_t count) {
@@ -548,21 +550,21 @@ test_tap_schedules(const dsd_signal_measure_request& r, const std::vector<float>
     dsd_signal_measure_request first = r, second = r;
     first.request_id = 101;
     second.request_id = 102;
-    assert(rtl_signal_measure_request(&first) == 0);
+    assert(rtl_signal_measure_request(&first, nullptr) == 0);
     rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
-    assert(rtl_signal_measure_request(&second) == 0);
+    assert(rtl_signal_measure_request(&second, nullptr) == 0);
     assert(rtl_signal_measure_get(&report) == 0);
     rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
     assert(rtl_signal_measure_get(&report) == 1 && report.request_id == 102);
     assert(rtl_signal_measure_get(&report) == 0);
     // A cancel retires the request: the rest of its samples publish nothing.
-    assert(rtl_signal_measure_request(&first) == 0);
+    assert(rtl_signal_measure_request(&first, nullptr) == 0);
     rtl_signal_measure_feed(iq.data(), pairs / 4, &r.capture);
     rtl_signal_measure_cancel();
     rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
     assert(rtl_signal_measure_get(&report) == 0);
     // A completed report taken before a capture change is still delivered; one left waiting is invalidated.
-    assert(rtl_signal_measure_request(&first) == 0);
+    assert(rtl_signal_measure_request(&first, nullptr) == 0);
     rtl_signal_measure_feed(iq.data(), pairs, &r.capture);
     assert(rtl_signal_measure_get(&report) == 1 && report.request_id == 101);
     auto moved = r.capture;
@@ -572,10 +574,18 @@ test_tap_schedules(const dsd_signal_measure_request& r, const std::vector<float>
     rtl_signal_measure_cancel();
 }
 
-/* The demod thread feeding while the decoder thread requests, polls and cancels: every report delivered is for the
-   request outstanding, a cancel leaves nothing to deliver, and polling the capture never waits for analysis. */
+/* The demod thread feeding while the decoder thread requests, polls and cancels: every report delivered, complete or
+   failed, is for the request outstanding, a cancel leaves nothing to deliver, and polling the capture never waits for
+   analysis. The demod loops over three passes of clean samples and one that clips, so requests both complete and
+   fail. */
 static void
-test_tap_threads(const dsd_signal_measure_request& r, const std::vector<float>& iq) {
+test_tap_threads(const dsd_signal_measure_request& r, const std::vector<float>& clean) {
+    std::vector<float> iq;
+    for (int pass = 0; pass < 3; ++pass) {
+        iq.insert(iq.end(), clean.begin(), clean.end());
+    }
+    const auto clipping = samples(r, r.frequencies[0], 1.2, clean.size() / 2);
+    iq.insert(iq.end(), clipping.begin(), clipping.end());
     std::atomic<bool> stop{false};
     std::thread demod([&] {
         const size_t block = 4096;
@@ -584,10 +594,10 @@ test_tap_threads(const dsd_signal_measure_request& r, const std::vector<float>& 
         }
     });
     dsd_signal_measure_request request = r;
-    int delivered = 0;
+    int delivered = 0, failed = 0;
     for (uint64_t id = 1; id <= 60; ++id) {
         request.request_id = 1000 + id;
-        assert(rtl_signal_measure_request(&request) == 0);
+        assert(rtl_signal_measure_request(&request, nullptr) == 0);
         if (id % 4 == 0) {
             rtl_signal_measure_cancel();
             dsd_signal_measure_report none{};
@@ -599,19 +609,214 @@ test_tap_threads(const dsd_signal_measure_request& r, const std::vector<float>& 
             dsd_signal_capture capture{};
             assert(rtl_signal_capture_get(&capture) == 1 && capture.rate_hz == r.capture.rate_hz);
             const int rc = rtl_signal_measure_get(&report);
-            if (rc == 1) {
-                assert(report.request_id == request.request_id);
-                ++delivered;
+            if (rc != 0) {
+                assert(report.session_id == request.session_id && report.request_id == request.request_id);
+                assert(rc == 1 ? report.failure == DSD_SIGNAL_MEASURE_OK
+                               : rc == -1 && report.failure == DSD_SIGNAL_MEASURE_CLIPPED && report.count == 0);
+                ++(rc == 1 ? delivered : failed);
                 break;
             }
-            assert(rc == 0);
             std::this_thread::yield();
         }
     }
     stop.store(true, std::memory_order_release);
     demod.join();
     rtl_signal_measure_cancel();
-    assert(delivered > 0);
+    assert(delivered > 0 && failed > 0);
+}
+
+/* A refused request says why: no detector could be allocated, or the plan is one it does not support. */
+static void
+test_request_failures(const dsd_signal_measure_request& r) {
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+    rtl_signal_measure_test_fail_allocation(1);
+    assert(rtl_signal_measure_request(&r, &failure) == -1 && failure == DSD_SIGNAL_REQUEST_NO_MEMORY);
+    rtl_signal_measure_test_fail_allocation(0);
+    auto unsupported = r;
+    unsupported.capture.rate_hz = 0;
+    assert(rtl_signal_measure_request(&unsupported, &failure) == -1 && failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    assert(rtl_signal_measure_request(&r, &failure) == 0 && failure == DSD_SIGNAL_REQUEST_OK);
+    assert(rtl_signal_measure_request(&r, nullptr) == 0);
+    rtl_signal_measure_cancel();
+}
+
+/* A failed measurement names its request and says why, with no candidates. */
+static void
+assert_failure(const dsd_signal_measure_report& report, const dsd_signal_measure_request& r,
+               dsd_signal_measure_failure reason) {
+    assert(report.failure == reason);
+    assert(report.session_id == r.session_id && report.request_id == r.request_id);
+    assert(report.generation == r.capture.generation && report.count == 0);
+}
+
+/* The detector's failures, each with its reason and its request's ids. */
+static void
+test_failure_reasons(dsd_signal_detector* d, const dsd_signal_measure_request& r) {
+    const size_t window = request_samples(r) / 2;
+    dsd_signal_measure_report report{};
+    // Clipped from the start: the first window's check fails it.
+    const auto clipping = samples(r, r.frequencies[0], 1.2, 30000);
+    assert(dsd_signal_detector_begin(d, &r) == 0);
+    assert(dsd_signal_detector_feed(d, clipping.data(), 30000, &r.capture, &report) == -1);
+    assert_failure(report, r, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(report.sample_count == window);
+    // A clean first window, then a second clipped enough to take the total over 1%: the second window's check.
+    auto late = samples(r, r.frequencies[0], 0.1, 2 * window);
+    for (size_t i = window; i < 2 * window; i += 25) {
+        late[2 * i] = 1.0f;
+    }
+    assert(dsd_signal_detector_begin(d, &r) == 0);
+    assert(dsd_signal_detector_feed(d, late.data(), window, &r.capture, &report) == 0);
+    assert(dsd_signal_detector_feed(d, late.data() + 2 * window, window, &r.capture, &report) == -1);
+    assert_failure(report, r, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(report.sample_count == 2 * window);
+    // A non-finite sample.
+    auto poisoned = samples(r, r.frequencies[0], 0.1, 3000);
+    poisoned[2 * 1500 + 1] = std::numeric_limits<float>::quiet_NaN();
+    assert(dsd_signal_detector_begin(d, &r) == 0);
+    assert(dsd_signal_detector_feed(d, poisoned.data(), 3000, &r.capture, &report) == -1);
+    assert_failure(report, r, DSD_SIGNAL_MEASURE_NONFINITE);
+    // Dropped samples alone, and dropped samples with another change, which is a changed capture.
+    for (int retune = 0; retune < 2; ++retune) {
+        auto capture = r.capture;
+        ++capture.drops;
+        capture.capture_hz += (uint32_t)retune;
+        assert(dsd_signal_detector_begin(d, &r) == 0);
+        assert(dsd_signal_detector_feed(d, poisoned.data(), 1000, &r.capture, &report) == 0);
+        assert(dsd_signal_detector_feed(d, poisoned.data(), 1000, &capture, &report) == -1);
+        assert_failure(report, r, retune ? DSD_SIGNAL_MEASURE_CAPTURE_CHANGED : DSD_SIGNAL_MEASURE_DROPPED);
+        assert(report.sample_count == 1000);
+    }
+    // A complete report says it is one.
+    assert(run(d, r, samples(r, r.frequencies[0], 0.1, 30000), 4096).failure == DSD_SIGNAL_MEASURE_OK);
+}
+
+/* The shared tap hands a failed request's report over with its reason and ids, and keeps the first reason. */
+static void
+test_tap_failures(const dsd_signal_measure_request& r, const std::vector<float>& clean) {
+    const auto clipping = samples(r, r.frequencies[0], 1.2, 30000);
+    dsd_signal_measure_report report{};
+    rtl_signal_measure_feed(clean.data(), 1, &r.capture);
+    assert(rtl_signal_measure_request(&r, nullptr) == 0);
+    rtl_signal_measure_feed(clipping.data(), 30000, &r.capture);
+    // A capture change after the failure does not replace its reason.
+    auto moved = r.capture;
+    ++moved.gain;
+    rtl_signal_measure_feed(clean.data(), 1, &moved);
+    assert(rtl_signal_measure_get(&report) == -1);
+    assert_failure(report, r, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(report.received_realtime_ns != 0);
+    assert(rtl_signal_measure_get(&report) == 0);
+    // A completed report left waiting through a capture change is that request's failure, with its ids.
+    rtl_signal_measure_feed(clean.data(), 1, &r.capture);
+    assert(rtl_signal_measure_request(&r, nullptr) == 0);
+    rtl_signal_measure_feed(clean.data(), 30000, &r.capture);
+    ++moved.gain;
+    rtl_signal_measure_feed(clean.data(), 1, &moved);
+    assert(rtl_signal_measure_get(&report) == -1);
+    assert_failure(report, r, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+    assert(report.sample_count == request_samples(r));
+    rtl_signal_measure_cancel();
+}
+
+/* @p code as each component of a pair of the cu8 conversion @p c (Fs/4 phase 0, so neither is rotated) when the
+   capture carries the Fs/4 shift @p fs4. */
+static void
+widen_code(const rtl_device_test_conversion& c, int fs4, unsigned char code, int component, float* out) {
+    unsigned char pair[2] = {128U, 128U};
+    pair[component] = code;
+    assert(rtl_device_test_widen_cu8(&c, fs4, pair, sizeof(pair), out) == 0);
+}
+
+/* The clip level each source sets: a cu8 conversion's rails count and the codes next to them do not, except byte 1 of
+   the two-pass widening, as far from centre as byte 255 there, which counts with byte 0. A clean tone just under a
+   level measures; one over it clips. */
+static void
+test_clip_levels(dsd_signal_detector* d, const dsd_signal_measure_request& r) {
+    using conversion = rtl_device_test_conversion;
+    const conversion usb{RTL_DEVICE_TEST_BACKEND_USB, 1, 0, 0, 0};
+    const conversion tcp{RTL_DEVICE_TEST_BACKEND_TCP, 1, 0, 0, 0};
+    const conversion usb_two_pass{RTL_DEVICE_TEST_BACKEND_USB, 0, 0, 0, 0};
+    const conversion tcp_two_pass{RTL_DEVICE_TEST_BACKEND_TCP, 0, 0, 0, 0};
+    const conversion replay{RTL_DEVICE_TEST_BACKEND_IQ_REPLAY, 1, DSD_IQ_FORMAT_CU8, 1, 0};
+    const conversion replay_two_pass{RTL_DEVICE_TEST_BACKEND_IQ_REPLAY, 1, DSD_IQ_FORMAT_CU8, 1, 1};
+    const conversion replay_cf32{RTL_DEVICE_TEST_BACKEND_IQ_REPLAY, 1, DSD_IQ_FORMAT_CF32, 1, 0};
+    const conversion replay_cs16{RTL_DEVICE_TEST_BACKEND_IQ_REPLAY, 1, DSD_IQ_FORMAT_CS16, 1, 0};
+    const conversion airspy{RTL_DEVICE_TEST_BACKEND_AIRSPY, 1, 0, 0, 0};
+    const conversion soapy{RTL_DEVICE_TEST_BACKEND_SOAPY, 1, 0, 0, 0};
+
+    const struct {
+        const conversion* c;
+        int fs4;
+        float level;
+    } levels[] = {
+        {&usb, 1, 0.996f},
+        {&usb, 0, 0.996f},
+        {&tcp, 1, 0.996f},
+        {&usb_two_pass, 1, 0.992f},
+        {&tcp_two_pass, 1, 0.992f},
+        {&usb_two_pass, 0, 0.996f}, // without the shift nothing rotates: the bias-127.5 widening
+        {&replay, 0, 0.996f},
+        {&replay_two_pass, 0, 0.992f}, // a replay keeps its recorded shift
+        {&replay_cf32, 1, DSD_SIGNAL_CLIP_LEVEL_DEFAULT},
+        {&replay_cs16, 1, DSD_SIGNAL_CLIP_LEVEL_DEFAULT},
+        {&airspy, 1, DSD_SIGNAL_CLIP_LEVEL_DEFAULT},
+        {&soapy, 1, DSD_SIGNAL_CLIP_LEVEL_DEFAULT},
+        {nullptr, 1, DSD_SIGNAL_CLIP_LEVEL_DEFAULT},
+    };
+
+    for (const auto& l : levels) {
+        assert(std::abs(rtl_device_test_signal_clip_level(l.c, l.fs4) - l.level) < 1e-6f);
+    }
+
+    // Each cu8 conversion's rails and their neighbours, in either component, at 2% of the pairs: counted fails.
+    const struct {
+        const conversion* c;
+        int fs4;
+        bool counted[4]; // bytes 0, 1, 254, 255
+    } conversions[] = {
+        {&usb, 1, {true, false, false, true}},
+        {&usb, 0, {true, false, false, true}},
+        {&tcp, 1, {true, false, false, true}},
+        {&usb_two_pass, 1, {true, true, false, true}},
+        {&replay_two_pass, 0, {true, true, false, true}},
+    };
+
+    const unsigned char codes[4] = {0U, 1U, 254U, 255U};
+    for (const auto& k : conversions) {
+        dsd_signal_measure_request q = r;
+        q.capture.clip_level = rtl_device_test_signal_clip_level(k.c, k.fs4);
+        for (int code = 0; code < 4; ++code) {
+            for (int component = 0; component < 2; ++component) {
+                float pair[2];
+                widen_code(*k.c, k.fs4, codes[code], component, pair);
+                auto peaks = samples(q, q.frequencies[0], 0.1, 30000);
+                for (size_t i = 0; i < peaks.size() / 2; i += 50) {
+                    peaks[2 * i] = pair[0];
+                    peaks[2 * i + 1] = pair[1];
+                }
+                dsd_signal_measure_report report{};
+                assert(dsd_signal_detector_begin(d, &q) == 0);
+                const int rc = dsd_signal_detector_feed(d, peaks.data(), 30000, &q.capture, &report);
+                assert(rc == (k.counted[code] ? -1 : 1));
+                assert(report.failure == (k.counted[code] ? DSD_SIGNAL_MEASURE_CLIPPED : DSD_SIGNAL_MEASURE_OK));
+            }
+        }
+    }
+    // A clean tone peaking just under each level measures and is detected; a level just under its peak clips it. A
+    // capture that sets no level (0) has the default one.
+    for (float level : {0.0f, DSD_SIGNAL_CLIP_LEVEL_DEFAULT, 0.996f, 0.992f}) {
+        const float effective = level > 0.0f ? level : DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
+        dsd_signal_measure_request q = r;
+        q.capture.clip_level = level;
+        const auto tone = samples(q, q.frequencies[0], effective - 0.0025, 30000);
+        assert(run(d, q, tone, 4096).candidates[0].detected);
+        q.capture.clip_level = effective - 0.004f;
+        dsd_signal_measure_report report{};
+        assert(dsd_signal_detector_begin(d, &q) == 0);
+        assert(dsd_signal_detector_feed(d, tone.data(), 30000, &q.capture, &report) == -1);
+        assert_failure(report, q, DSD_SIGNAL_MEASURE_CLIPPED);
+    }
 }
 
 int
@@ -746,6 +951,7 @@ main() {
     dsd_signal_measure_report invalid{};
     assert(dsd_signal_detector_begin(d, &r) == 0);
     assert(dsd_signal_detector_feed(d, clipping.data(), 30000, &r.capture, &invalid) == -1);
+    assert_failure(invalid, r, DSD_SIGNAL_MEASURE_CLIPPED);
     // A sample clips when either component reaches full scale: under 1% of them still measures, over it does not.
     for (int component = 0; component < 2; ++component) {
         for (size_t every : {size_t{200}, size_t{50}}) {
@@ -766,20 +972,26 @@ main() {
             assert(dsd_signal_detector_begin(d, &r) == 0);
             assert(dsd_signal_detector_feed(d, poisoned.data(), 1000, &r.capture, &invalid) == 0);
             assert(dsd_signal_detector_feed(d, poisoned.data() + 2000, 2000, &r.capture, &invalid) == -1);
+            assert_failure(invalid, r, DSD_SIGNAL_MEASURE_NONFINITE);
             assert(dsd_signal_detector_feed(d, poisoned.data(), 1000, &r.capture, &invalid) == 0);
         }
     }
     // A completed report is invalidated too: a gain change must not publish old power.
     rtl_signal_measure_feed(off_grid.data(), 1, &r.capture);
-    assert(rtl_signal_measure_request(&r) == 0);
+    assert(rtl_signal_measure_request(&r, nullptr) == 0);
     rtl_signal_measure_feed(off_grid.data(), 30000, &r.capture);
     auto moved = r.capture;
     ++moved.gain;
     rtl_signal_measure_feed(off_grid.data(), 1, &moved);
     assert(rtl_signal_measure_get(&invalid) == -1);
+    assert(invalid.failure == DSD_SIGNAL_MEASURE_CAPTURE_CHANGED && invalid.request_id == r.request_id);
     rtl_signal_measure_cancel();
     test_tap_schedules(r, off_grid);
     test_tap_threads(r, off_grid);
+    test_tap_failures(r, off_grid);
+    test_request_failures(r);
+    test_failure_reasons(d, r);
+    test_clip_levels(d, r);
     // A burst shorter than the first 10 ms cannot pass two windows.
     for (size_t i = size_t{5000} * 2; i < iq.size(); ++i) {
         iq[i] = noise[i];
@@ -811,6 +1023,7 @@ main() {
             ++capture.rate_hz;
         }
         assert(dsd_signal_detector_feed(d, iq.data(), 1024, &capture, &out) == -1);
+        assert_failure(out, r, change == 1 ? DSD_SIGNAL_MEASURE_DROPPED : DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
     }
     r.capture.rotation_hz = 0;
     assert(run(d, r, samples(r, r.frequencies[0], 0.1, 30000), 509).candidates[0].detected);

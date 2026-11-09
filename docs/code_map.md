@@ -6869,8 +6869,28 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   PFFFT/Hann cache at the capture-rate I/Q boundary. Linear channel power and neighboring
   noise are energy-normalized over two sample-count windows (local noise: the mean of the
   sideband blocks within 6 dB of the third lowest of eight). Session/request IDs and
-  applied generation accompany every report; gain, rate, drops, tuning and input changes
-  invalidate partial and ready reports. Leakage rejection runs once per request on both
+  applied generation accompany every report, a failed one included; gain, rate, drops,
+  tuning and input changes invalidate partial and ready reports. A failure (`feed()` and
+  `rtl_signal_measure_get()` still return -1) carries its reason in
+  `dsd_signal_measure_report.failure`: `CLIPPED` (more than 1% of pairs so far, checked at
+  each window's end), `DROPPED` (only `drops` moved), `CAPTURE_CHANGED` (any other capture
+  field, and a ready report invalidated before it was read, which keeps its ids),
+  `NONFINITE`, `FAILED` (transform); a failed report has count 0. The tap keeps the first
+  reason until the next request, and `get()` copies the report for any nonzero result.
+  `rtl_signal_measure_request()` names a refusal in its out-parameter: `NO_MEMORY` when no
+  tap detector could be allocated, else `UNSUPPORTED` (plan); the coordinator words them
+  "Not enough memory for a measurement" and "Unsupported FFT measurement plan". A pair is
+  clipped when either component's magnitude is at or above `dsd_signal_capture.clip_level`
+  (0 means `DSD_SIGNAL_CLIP_LEVEL_DEFAULT`, 0.999), read once per feed into a register.
+  The source sets it from its conversion (`rtl_device_signal_clip_level()`, from the same
+  cu8 transform policy the reader uses, with the demod's Fs/4 view as for `rotation_hz`):
+  RTL USB, rtl_tcp and cu8 replay widen with (x - 127.5) / 127.5 → 0.996 (rails count, the
+  next codes at 0.992 do not); the two-pass (x - 128) / 127.5 (combined transform off with
+  the Fs/4 shift) → 0.992 (byte 1 counts with byte 0); Airspy, SoapySDR and CF32/CS16
+  replay → 0.999. Airspy overload is not detectable: libairspy's real-to-I/Q conversion
+  halves the amplitude and filters one branch, so ADC rails arrive near 0.5 (a documented
+  limit, issue #828; the input-level meter cannot see it either). The level is a property of the conversion, so
+  `same_capture()` ignores it. Leakage rejection runs once per request on both
   windows' power: transmitters are located in the spectrum (not just the requested
   channels), each from the anchor its channels' windows climb to, centred where its
   segment best overlaps its own mirror image, with segments cut and merged at valleys and

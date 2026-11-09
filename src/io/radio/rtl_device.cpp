@@ -33,6 +33,7 @@
 #include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/io/tcp_quality_metrics.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -766,16 +767,17 @@ fs4_shift_capture_active(const struct rtl_device* s) {
     return (s && !s->offset_took && !disable_fs4_shift) ? 1 : 0;
 }
 
+/* The cu8 transform of @p s while a live capture's Fs/4 shift is @p live_fs4_active; a replay keeps its recorded one. */
 static inline void
-rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int* out_combine_active,
-                            int* out_use_two_pass) {
+rtl_u8_transform_policy_for(const struct rtl_device* s, int live_fs4_active, int* out_fs4_active,
+                            int* out_combine_active, int* out_use_two_pass) {
     int fs4_active = 0;
     int combine_active = 0;
     if (s && s->backend == RTL_BACKEND_IQ_REPLAY) {
         fs4_active = s->replay_fs4_shift_enabled ? 1 : 0;
         combine_active = s->replay_historical_cu8_two_pass ? 0 : 1;
     } else {
-        fs4_active = fs4_shift_capture_active(s);
+        fs4_active = live_fs4_active ? 1 : 0;
         combine_active = (s && s->live_combine_rotate_enabled) ? 1 : 0;
     }
     if (out_fs4_active) {
@@ -787,6 +789,29 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
     if (out_use_two_pass) {
         *out_use_two_pass = (fs4_active && !combine_active) ? 1 : 0;
     }
+}
+
+static inline void
+rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int* out_combine_active,
+                            int* out_use_two_pass) {
+    rtl_u8_transform_policy_for(s, fs4_shift_capture_active(s), out_fs4_active, out_combine_active, out_use_two_pass);
+}
+
+/* Clip levels between each cu8 widening's rails and the codes next to them (rtl_device_signal_clip_level()). */
+static const float kCu8ClipLevel = 0.996f;
+static const float kCu8TwoPassClipLevel = 0.992f;
+
+float
+rtl_device_signal_clip_level(const struct rtl_device* dev, int fs4_shift_active) {
+    const int cu8 = dev
+                    && (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP
+                        || (dev->backend == RTL_BACKEND_IQ_REPLAY && dev->replay_cfg.format == DSD_IQ_FORMAT_CU8));
+    if (!cu8) {
+        return DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
+    }
+    int use_two_pass = 0;
+    rtl_u8_transform_policy_for(dev, fs4_shift_active, NULL, NULL, &use_two_pass);
+    return use_two_pass ? kCu8TwoPassClipLevel : kCu8ClipLevel;
 }
 
 /* Persisted IQ metadata and the live transform policy may select the two-pass
@@ -3058,6 +3083,51 @@ rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_
     *out_have_carry = have_carry;
     *out_carry_byte = carry_byte;
     return rc;
+}
+
+static_assert((int)RTL_DEVICE_TEST_BACKEND_USB == (int)RTL_BACKEND_USB
+                  && (int)RTL_DEVICE_TEST_BACKEND_TCP == (int)RTL_BACKEND_TCP
+                  && (int)RTL_DEVICE_TEST_BACKEND_SOAPY == (int)RTL_BACKEND_SOAPY
+                  && (int)RTL_DEVICE_TEST_BACKEND_IQ_REPLAY == (int)RTL_BACKEND_IQ_REPLAY
+                  && (int)RTL_DEVICE_TEST_BACKEND_AIRSPY == (int)RTL_BACKEND_AIRSPY,
+              "test backend numbers follow the device's");
+
+static void
+rtl_device_test_conversion_apply(const rtl_device_test_conversion* conversion, struct rtl_device* dev) {
+    dev->backend = conversion->backend;
+    dev->live_combine_rotate_enabled = conversion->live_combine_rotate_enabled ? 1 : 0;
+    dev->replay_cfg.format = (dsd_iq_sample_format)conversion->replay_format;
+    dev->replay_fs4_shift_enabled = conversion->replay_fs4_shift_enabled ? 1 : 0;
+    dev->replay_historical_cu8_two_pass = conversion->replay_historical_cu8_two_pass ? 1 : 0;
+}
+
+extern "C" float
+rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conversion, int fs4_shift_active) {
+    if (!conversion) {
+        return rtl_device_signal_clip_level(NULL, fs4_shift_active);
+    }
+    rtl_device dev{};
+    rtl_device_test_conversion_apply(conversion, &dev);
+    return rtl_device_signal_clip_level(&dev, fs4_shift_active);
+}
+
+extern "C" int
+rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
+                          const unsigned char* bytes, size_t len, float* out) {
+    unsigned char copy[64];
+    if (!conversion || !bytes || !out || len == 0U || len > sizeof(copy) || (len & 1U) != 0U) {
+        return -1;
+    }
+    rtl_device dev{};
+    rtl_device_test_conversion_apply(conversion, &dev);
+    DSD_MEMCPY(copy, bytes, len);
+    int fs4_active = 0;
+    int combine_active = 0;
+    int use_two_pass = 0;
+    rtl_u8_transform_policy_for(&dev, fs4_shift_active, &fs4_active, &combine_active, &use_two_pass);
+    int phase = 0;
+    (void)rtl_process_u8_chunk(&dev, copy, out, len, fs4_active, combine_active, use_two_pass, &phase, NULL);
+    return 0;
 }
 #endif
 

@@ -40,7 +40,7 @@
 #include <string.h>
 
 static dsd_signal_search_status status;
-static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0};
+static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
 static dsd_signal_measure_request request;
 static uint32_t ticket, target, generation = 1;
 static int tune_pending, buffered, defer, failed, live = 1, ready, cancelled, bypassed, carrier, boundary;
@@ -167,8 +167,17 @@ rtl_signal_capture_last_ms(void) {
     return dsd_realtime_mono_ms() + capture_ahead_ms - stalled_ms;
 }
 
+/* The reason the next span or live request is refused for, or DSD_SIGNAL_REQUEST_OK to take it. */
+static dsd_signal_request_failure request_failure = DSD_SIGNAL_REQUEST_OK;
+
 int
-rtl_signal_measure_request(const dsd_signal_measure_request* r) {
+rtl_signal_measure_request(const dsd_signal_measure_request* r, dsd_signal_request_failure* out_failure) {
+    if (out_failure) {
+        *out_failure = request_failure;
+    }
+    if (request_failure != DSD_SIGNAL_REQUEST_OK) {
+        return -1;
+    }
     request = *r;
     return 0;
 }
@@ -697,6 +706,37 @@ test_capture_freshness(dsd_opts* o, dsd_state* s, dsd_signal_search_config* conf
     act(o, s, DSD_SEARCH_ACTION_STOP);
     land(o, s);
     assert(status.phase == DSD_SEARCH_STOPPED);
+}
+
+/* A span measurement the tap refuses fails the search, saying why: the detector could not be allocated, or the plan is
+   one it does not support. */
+static void
+test_request_failure_messages(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    static const struct {
+        dsd_signal_request_failure failure;
+        const char* message;
+    } cases[] = {
+        {DSD_SIGNAL_REQUEST_NO_MEMORY, "Not enough memory for a measurement"},
+        {DSD_SIGNAL_REQUEST_UNSUPPORTED, "Unsupported FFT measurement plan"},
+    };
+
+    char error[192];
+    live = 1;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        config->session_id = 90 + i;
+        assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_TUNING);
+        request_failure = cases[i].failure;
+        land(o, s);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_ERROR);
+        assert(strcmp(status.message, cases[i].message) == 0);
+        request_failure = DSD_SIGNAL_REQUEST_OK;
+        act(o, s, DSD_SEARCH_ACTION_STOP);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_STOPPED);
+    }
 }
 
 /* The status names the range being searched, from the coordinator's own configuration: a detection in range A keeps
@@ -3526,6 +3566,7 @@ main(void) {
     test_auto_baseline_dispatches_dmr(o, s, &config);
     test_restore_retune_carries_family(o, s, &config);
     test_capture_freshness(o, s, &config);
+    test_request_failure_messages(o, s, &config);
     test_status_names_running_range(o, s, &config);
     test_avoid_by_frequency(o, s, &config);
     test_site_record_binding();

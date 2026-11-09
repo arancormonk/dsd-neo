@@ -544,8 +544,24 @@ one it raises by less still counts, so with up to five raised blocks the estimat
 reads at most 2.875 times the third lowest block: over a flat floor about 4.6 dB high
 (five blocks 4.8 dB above three quiet ones read 3.5 dB high), more where the
 uncontaminated blocks themselves differ. Clipping and capture discontinuities invalidate the measurement.
-Allocations, FFT size, candidates and total channels are bounded; unsupported plans
-report an error.
+More than 1% of the samples clipped fails it. A sample counts as clipped when either
+of its two parts reaches the receiver's clip level. On an RTL-SDR or an rtl_tcp server
+that is the dongle's lowest or highest value, and the values one step inside them do
+not count. With `DSD_NEO_COMBINE_ROT=0`, while the capture is shifted by a quarter of
+its rate, the value one step above the lowest counts too, since that conversion puts it
+as far from the centre as the highest. Other receivers count 0.999 of full scale. A
+failed measurement keeps the request it belonged to and says why it failed: clipped
+samples, dropped samples, a changed capture (retune, rate, gain or offset), a sample
+that is not a number, or a transform that could not run.
+Allocations, FFT size, candidates and total channels are bounded. An unsupported plan
+reports "Unsupported FFT measurement plan", and a detector that cannot be allocated
+reports "Not enough memory for a measurement".
+
+An Airspy's overload cannot be seen in the I/Q samples libairspy delivers. libairspy
+turns the Airspy's real samples into I/Q itself, and that conversion halves their
+amplitude and filters one of the two parts, so samples at the Airspy's limits arrive
+near half scale and never reach the clip level. Neither Signal search nor the input
+level meter shows Airspy clipping. If strong signals are near, lower the Airspy gain.
 
 A strong transmitter's skirt and the window's leakage reach neighbouring channels'
 windows, particularly with the default 16 kHz width on a 12.5 kHz grid or on any
@@ -681,8 +697,13 @@ The detector tests cover calibrated power, noise, carriers, modulated signals,
 bursts, off-grid signals, nearby transmitters, adjacent-channel leakage from a
 single strong NFM transmitter (narrow, wide, off-grid, at a range boundary and on a
 6.25 kHz grid), weaker separate neighbours (including two either side of a strong
-transmitter), clipping (more than 1% of samples at full scale in either component
-fails the measurement, fewer does not), non-finite samples mid-frame,
+transmitter), clipping (more than 1% of samples at the clip level in either component
+fails the measurement, fewer does not, whether the first window or only both together
+pass 1%), each RTL conversion's clip level (both rails and the codes next to them,
+through the production widening, and a clean tone just under each level measured),
+each failure's reason and request ids (from the detector, from the shared tap when a
+waiting report is invalidated, the first reason kept, and from a demod thread racing
+the requests), non-finite samples mid-frame,
 gain/rate/drop boundaries, DC, rotation, edges and fragmented input. They also
 cover a neighbour 6 dB down beside 5 kHz deviation on both sides at four bin
 alignments; single transmitters on 5 and 6.25 kHz grids at five FFT resolutions

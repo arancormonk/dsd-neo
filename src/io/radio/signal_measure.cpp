@@ -16,6 +16,9 @@
 #include <new>
 #include <stdint.h>
 #include "rtl_fft_cache.h"
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include "rtl_stream_test_support.h"
+#endif
 
 namespace {
 /* A located transmitter: its centre in FFT bins, the analysis bins of its own channel width (where a transmitter
@@ -145,6 +148,30 @@ same_capture(const dsd_signal_capture& a, const dsd_signal_capture& b) {
     return a.rate_hz == b.rate_hz && a.capture_hz == b.capture_hz && a.generation == b.generation
            && a.rotation_hz == b.rotation_hz && a.drops == b.drops && a.gain == b.gain
            && a.capture_offset_hz == b.capture_offset_hz;
+}
+
+/* Why the capture @p now is not the request's @p asked: dropped samples alone, any other change, or neither. */
+static dsd_signal_measure_failure
+capture_difference(const dsd_signal_capture& asked, const dsd_signal_capture& now) {
+    dsd_signal_capture without_drops = now;
+    without_drops.drops = asked.drops;
+    if (!same_capture(asked, without_drops)) {
+        return DSD_SIGNAL_MEASURE_CAPTURE_CHANGED;
+    }
+    return asked.drops != now.drops ? DSD_SIGNAL_MEASURE_DROPPED : DSD_SIGNAL_MEASURE_OK;
+}
+
+/* Retire the request for @p reason: the report names the request and says why, with no candidates. */
+static int
+fail_request(dsd_signal_detector* detector, dsd_signal_measure_report* report, dsd_signal_measure_failure reason) {
+    detector->armed = false;
+    DSD_MEMSET(report, 0, sizeof(*report));
+    report->session_id = detector->request.session_id;
+    report->request_id = detector->request.request_id;
+    report->generation = detector->request.capture.generation;
+    report->sample_count = detector->total_samples;
+    report->failure = reason;
+    return -1;
 }
 
 namespace {
@@ -1186,8 +1213,7 @@ measure_window(dsd_signal_detector* detector, dsd_signal_measure_report* report,
 static int
 finish_window(dsd_signal_detector* detector, dsd_signal_measure_report* report) {
     if (detector->clipped * 100 > detector->total_samples) {
-        detector->armed = false;
-        return -1;
+        return fail_request(detector, report, DSD_SIGNAL_MEASURE_CLIPPED);
     }
     DSD_MEMSET(report, 0, sizeof(*report));
     report->session_id = detector->request.session_id;
@@ -1207,10 +1233,10 @@ finish_window(dsd_signal_detector* detector, dsd_signal_measure_report* report) 
     return 0;
 }
 
-/* Windows as many of the @p pairs samples at @p iq as the frame has room for into it, in one pass: how many it took, or
-   -1 on a non-finite sample. */
+/* Windows as many of the @p pairs samples at @p iq as the frame has room for into it, in one pass, counting a pair
+   clipped when either component reaches @p clip_level: how many it took, or -1 on a non-finite sample. */
 static long long
-fill_frame(dsd_signal_detector* detector, const float* iq, size_t pairs, const float* window) {
+fill_frame(dsd_signal_detector* detector, const float* iq, size_t pairs, const float* window, float clip_level) {
     const size_t start = detector->filled;
     const size_t take = std::min(pairs, (size_t)detector->n - start);
     float* out = detector->samples + 2 * start;
@@ -1221,13 +1247,12 @@ fill_frame(dsd_signal_detector* detector, const float* iq, size_t pairs, const f
         const float i = iq[2 * p], q = iq[2 * p + 1];
         out[2 * p] = i * weights[p];
         out[2 * p + 1] = q * weights[p];
-        if (!(std::abs(i) < 0.999f) || !(std::abs(q) < 0.999f)) {
+        if (!(std::abs(i) < clip_level) || !(std::abs(q) < clip_level)) {
             ++clipped;
             wild += (size_t)(!std::isfinite(i) || !std::isfinite(q));
         }
     }
     if (wild) {
-        detector->armed = false;
         return -1;
     }
     detector->clipped += clipped;
@@ -1242,23 +1267,24 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
     if (!detector || !detector->armed || !iq || !capture || !report) {
         return 0;
     }
-    if (!same_capture(*capture, detector->request.capture)) {
-        detector->armed = false;
-        return -1;
+    const dsd_signal_measure_failure changed = capture_difference(detector->request.capture, *capture);
+    if (changed != DSD_SIGNAL_MEASURE_OK) {
+        return fail_request(detector, report, changed);
     }
+    /* The source's level, read once for the block: the per-sample test compares against a register. */
+    const float clip_level = capture->clip_level > 0.0f ? capture->clip_level : DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
     const float* window = detector->hann.get(detector->n);
     for (size_t p = 0; p < pairs;) {
-        const long long took = fill_frame(detector, iq + 2 * p, pairs - p, window);
+        const long long took = fill_frame(detector, iq + 2 * p, pairs - p, window, clip_level);
         if (took < 0) {
-            return -1;
+            return fail_request(detector, report, DSD_SIGNAL_MEASURE_NONFINITE);
         }
         p += (size_t)took;
         if (detector->filled != (size_t)detector->n) {
             continue;
         }
         if (!detector->fft.forward(detector->n, detector->samples)) {
-            detector->armed = false;
-            return -1;
+            return fail_request(detector, report, DSD_SIGNAL_MEASURE_FAILED);
         }
         for (int b = 0; b < detector->n; ++b) {
             double re = detector->samples[2 * (size_t)b], im = detector->samples[2 * (size_t)b + 1];
@@ -1293,15 +1319,47 @@ int tap_ready = 0;
 uint64_t tap_last_ms = 0;
 std::atomic<int> bypass{0};
 std::atomic<uint64_t> search_owner{0};
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+int test_fail_allocation = 0; /* under feed_mutex */
+#endif
+
+dsd_signal_detector*
+tap_detector_create() {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (test_fail_allocation) {
+        return nullptr;
+    }
+#endif
+    return dsd_signal_detector_create();
+}
 } // namespace
 
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+extern "C" void
+rtl_signal_measure_test_fail_allocation(int fail) {
+    std::lock_guard<std::mutex> feed(feed_mutex);
+    test_fail_allocation = fail;
+    if (fail) {
+        dsd_signal_detector_destroy(tap_detector);
+        tap_detector = nullptr;
+    }
+}
+#endif
+
 extern "C" int
-rtl_signal_measure_request(const dsd_signal_measure_request* request) {
+rtl_signal_measure_request(const dsd_signal_measure_request* request, dsd_signal_request_failure* out_failure) {
     std::lock_guard<std::mutex> feed(feed_mutex);
     if (!tap_detector) {
-        tap_detector = dsd_signal_detector_create();
+        tap_detector = tap_detector_create();
     }
     const int rc = dsd_signal_detector_begin(tap_detector, request);
+    if (out_failure) {
+        *out_failure = DSD_SIGNAL_REQUEST_OK;
+        if (rc != 0) {
+            /* Without a detector the plan was never checked: the failure is the allocation's. */
+            *out_failure = tap_detector ? DSD_SIGNAL_REQUEST_UNSUPPORTED : DSD_SIGNAL_REQUEST_NO_MEMORY;
+        }
+    }
     std::lock_guard<std::mutex> lock(tap_mutex);
     tap_ready = 0;
     return rc;
@@ -1313,8 +1371,13 @@ rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture*
     std::lock_guard<std::mutex> feed(feed_mutex);
     {
         std::lock_guard<std::mutex> lock(tap_mutex);
-        if (!same_capture(tap_capture, *capture) && tap_ready) {
+        /* A completed report must not publish power measured on a capture that has since changed: it keeps its ids
+           and becomes that request's failure. */
+        if (!same_capture(tap_capture, *capture) && tap_ready == 1) {
             tap_ready = -1;
+            tap_report.count = 0;
+            DSD_MEMSET(tap_report.candidates, 0, sizeof(tap_report.candidates));
+            tap_report.failure = DSD_SIGNAL_MEASURE_CAPTURE_CHANGED;
         }
         tap_capture = *capture;
         tap_last_ms = dsd_realtime_mono_ms();
@@ -1322,11 +1385,12 @@ rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture*
     const int rc = dsd_signal_detector_feed(tap_detector, iq, pairs, capture, &feed_report);
     if (rc) {
         std::lock_guard<std::mutex> lock(tap_mutex);
-        if (rc == 1) {
+        /* A failure already waiting keeps its reason: the first one is why the request failed. */
+        if (tap_ready != -1) {
             tap_report = feed_report;
             tap_report.received_realtime_ns = received;
+            tap_ready = rc;
         }
-        tap_ready = rc;
     }
 }
 
@@ -1337,7 +1401,7 @@ rtl_signal_measure_get(dsd_signal_measure_report* report) {
     }
     std::lock_guard<std::mutex> lock(tap_mutex);
     int rc = tap_ready;
-    if (rc == 1) {
+    if (rc != 0) {
         *report = tap_report;
     }
     tap_ready = 0;

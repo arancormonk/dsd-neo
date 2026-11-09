@@ -42,7 +42,7 @@ uint64_t dsd_realtime_mono_ms(void);
 
 enum { RATE = 1536000, BLOCK = 8192, TRANSMITTER = 163012500 };
 
-static dsd_signal_capture capture = {RATE, 0, 1, RATE / 4, RATE / 4, 0, 0};
+static dsd_signal_capture capture = {RATE, 0, 1, RATE / 4, RATE / 4, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
 static dsd_signal_search_status status;
 static uint32_t ticket, target, generation = 1;
 static int tune_pending, gain_value = 123, gain_auto, autogain = 1;

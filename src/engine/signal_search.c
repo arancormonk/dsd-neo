@@ -477,8 +477,10 @@ search_begin_measurement(search_coord* c, const dsd_signal_capture* capture) {
     r.range = c->config.ranges[c->status.range_index];
     r.count = c->span.count;
     DSD_MEMCPY(r.frequencies, c->span.frequencies, r.count * sizeof(r.frequencies[0]));
-    if (rtl_signal_measure_request(&r)) {
-        search_error(c, "Unsupported FFT measurement plan");
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+    if (rtl_signal_measure_request(&r, &failure)) {
+        search_error(c, failure == DSD_SIGNAL_REQUEST_NO_MEMORY ? "Not enough memory for a measurement"
+                                                                : "Unsupported FFT measurement plan");
         return -1;
     }
     c->measuring = 1;
@@ -1096,7 +1098,7 @@ search_live_strength(search_coord* c) {
     r.range = c->config.ranges[c->status.range_index];
     r.count = 1;
     r.frequencies[0] = c->status.hit.frequency_hz;
-    if (rtl_signal_measure_request(&r) == 0) {
+    if (rtl_signal_measure_request(&r, NULL) == 0) {
         c->live_measuring = 1;
     } else {
         c->live_next = now + SEARCH_LIVE_RETRY_MS;

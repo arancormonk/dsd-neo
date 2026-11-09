@@ -23576,9 +23576,17 @@ add_test(
 # Signal discovery works on capture-rate samples, independently of any UI FFT.
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_signal_measure io/test_io_signal_measure.cpp)
+    target_include_directories(
+        dsd-neo_test_io_signal_measure
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
     target_link_libraries(
         dsd-neo_test_io_signal_measure
-        PRIVATE dsd-neo_io_radio dsd-neo_runtime
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_runtime
+            ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
