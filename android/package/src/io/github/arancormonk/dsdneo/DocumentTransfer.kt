@@ -60,15 +60,15 @@ object DocumentTransfer {
         /** Throw to stop the copy; called before every chunk is read. */
         fun check()
 
-        /** [bytes] more were written. */
-        fun copied(bytes: Int)
+        /** [count] more bytes were written. */
+        fun copied(count: Int)
     }
 
     /** The steps of a copy with no stop of its own and nobody counting: the backup's. */
     object NoSteps : Steps {
         override fun check() {}
 
-        override fun copied(bytes: Int) {}
+        override fun copied(count: Int) {}
     }
 
     @Volatile

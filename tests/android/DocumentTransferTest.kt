@@ -147,8 +147,8 @@ private class CountingSteps(private val stopAfter: Long = Long.MAX_VALUE) : Docu
         if (reported >= stopAfter) throw IOException("this transfer was cancelled")
     }
 
-    override fun copied(bytes: Int) {
-        reported += bytes
+    override fun copied(count: Int) {
+        reported += count
     }
 }
 

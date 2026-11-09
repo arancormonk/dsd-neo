@@ -81,8 +81,8 @@ object DocumentCopies {
 
         override fun check() = signal.throwIfCanceled()
 
-        override fun copied(bytes: Int) {
-            this.bytes += bytes // Only the copying thread writes it.
+        override fun copied(count: Int) {
+            bytes += count // Only the copying thread writes it.
         }
     }
 
