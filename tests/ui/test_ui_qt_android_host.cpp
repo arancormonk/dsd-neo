@@ -212,10 +212,16 @@ static QString startDispatchFailure;
 static QList<uint64_t> retirements;
 static int lifecycleReadsAtRetire;
 static bool serviceTookAttempt;
+
 // When not empty, the record the service publishes once the retirement returns (gate r5 L1): what happened to the
 // service between the host's lifecycle read and its retirement. Its answer is then the service's own rule, taken when
-// the record's attempt is the bound and was not cancelled, and the hook is used once.
-static QJsonObject recordAtRetire;
+// the record's attempt is the bound and was not cancelled, and the hook is used once. Made on first use, as
+// usb_record(): a QJsonObject's constructor may throw.
+static QJsonObject&
+record_at_retire() {
+    static QJsonObject value;
+    return value;
+}
 
 // UsbSourceManager.deviceStatus(), which the host's local-device refresh applies.
 static QJsonObject&
@@ -319,9 +325,9 @@ bool
 DecoderHostAndroid::platformRetireAttempts(uint64_t through) {
     retirements.append(through);
     lifecycleReadsAtRetire = lifecycleReads;
-    if (!recordAtRetire.isEmpty()) {
-        retained_record() = recordAtRetire;
-        recordAtRetire = QJsonObject();
+    if (!record_at_retire().isEmpty()) {
+        retained_record() = record_at_retire();
+        record_at_retire() = QJsonObject();
         /* DecoderService.retireAttempts(): one still STARTING is cancelled, one past it (RUNNING) is taken. */
         return static_cast<uint64_t>(retained_record().value(QStringLiteral("attemptId")).toInteger()) == through
                && retained_record().value(QStringLiteral("state")).toString() != QStringLiteral("STARTING");
@@ -1847,7 +1853,7 @@ check_claim_error_connection() {
     run.insert("usbDevice", kA);
     run.insert("usbEpoch", 1);
     run.insert("usbConnection", 3);
-    retained_record() = run;
+    retained_record() = std::move(run);
     running = true;
     host.refresh();
     usb_record() = rtl_connection(kA, 1, 4, "00000001");
@@ -1872,20 +1878,20 @@ check_receiver_take_failures() {
 
     struct Case {
         const char* wire;
-        int kind;
         const char* text;
         const char* broker_kind;
+        int kind;
         int pill;
     };
 
     const Case cases[] = {
-        {"usb_gone", kAttemptUsbGone, "The USB receiver is no longer connected", "detached",
+        {"usb_gone", "The USB receiver is no longer connected", "detached", kAttemptUsbGone,
          DecoderHost::DeviceDetached},
-        {"usb_permission", kAttemptUsbPermission, "The USB receiver needs permission again", "permission",
+        {"usb_permission", "The USB receiver needs permission again", "permission", kAttemptUsbPermission,
          DecoderHost::DevicePermission},
-        {"usb_open_failed", kAttemptUsbOpenFailed, "The USB receiver could not be reopened", "open_failed",
+        {"usb_open_failed", "The USB receiver could not be reopened", "open_failed", kAttemptUsbOpenFailed,
          DecoderHost::DeviceOpenFailed},
-        {"previous_stopping", kAttemptPreviousStopping, "A previous session is still stopping", "", -1},
+        {"previous_stopping", "A previous session is still stopping", "", kAttemptPreviousStopping, -1},
     };
     for (const Case& c : cases) {
         DecoderHostAndroid host;
@@ -2114,7 +2120,7 @@ check_attempt_identity() {
     QJsonObject other = gone;
     other.insert(QStringLiteral("attemptId"), static_cast<qint64>(second + 7));
     other.insert(QStringLiteral("failureKind"), QStringLiteral("usb_permission"));
-    retained_record() = other;
+    retained_record() = std::move(other);
     host.refresh();
     check(host.inputFailureKind() == kAttemptUsbGone, "another attempt's failure kind replaces nothing");
     retained_record() = gone;
@@ -2325,7 +2331,7 @@ check_superseded_attempt_never_drives_the_phase() {
         check(host.sessionState() == DecoderHost::Starting, "the first start is on its way");
 
         retirements.clear();
-        recordAtRetire = {
+        record_at_retire() = {
             {"sessionId", 151}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
         nowMs = 700500;
         check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
@@ -2495,7 +2501,8 @@ check_superseded_attempt_that_ran_keeps_the_screen() {
     nowMs = 900250;
     host.refresh();
     retirements.clear();
-    recordAtRetire = {{"sessionId", 171}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
+    record_at_retire() = {
+        {"sessionId", 171}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
     running = true;
     check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
           "a start whose predecessor ran meanwhile is refused");
