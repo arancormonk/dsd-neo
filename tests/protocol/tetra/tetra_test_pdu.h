@@ -21,7 +21,7 @@ typedef struct {
 /* Append @p width bits of @p value, MSB first. */
 static inline void
 ttb_put(ttb_block* b, uint32_t value, int width) {
-    assert(width >= 0 && width <= 32 && b->n + width <= TTB_SCH_F_BITS);
+    assert(width >= 0 && width <= 32 && b->n >= 0 && b->n <= TTB_SCH_F_BITS - width);
     for (int i = width - 1; i >= 0; i--) {
         b->bits[b->n++] = (uint8_t)((value >> i) & 1u);
     }
@@ -37,6 +37,7 @@ ttb_put_bits(ttb_block* b, const uint8_t* bits, int nbits) {
 /* Overwrite @p width bits at @p pos. */
 static inline void
 ttb_set(ttb_block* b, int pos, uint32_t value, int width) {
+    assert(width >= 0 && width <= 32 && pos >= 0 && pos <= TTB_SCH_F_BITS - width);
     for (int i = width - 1; i >= 0; i--) {
         b->bits[pos++] = (uint8_t)((value >> i) & 1u);
     }

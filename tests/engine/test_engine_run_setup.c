@@ -1288,7 +1288,8 @@ test_configured_group_list_loads_with_trunking_off(int kind) {
     char text[128] = {0};
     FILE* fp = dsd_fopen_existing_regular_file(path, "r");
     if (fp) {
-        (void)fread(text, 1U, sizeof text - 1U, fp);
+        const size_t n = fread(text, 1U, sizeof text - 1U, fp);
+        text[n] = '\0';
         (void)fclose(fp);
     }
     rc |= expect_true("the file after the edit", strcmp(text, group_config_after(kind, k_unusable)) == 0);
