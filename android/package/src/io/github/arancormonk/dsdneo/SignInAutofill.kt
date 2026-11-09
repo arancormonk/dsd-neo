@@ -82,14 +82,22 @@ object SignInAutofill {
     }
 
     /**
-     * While the fill UI is shown: every traversal of the host's window reads its place on screen. A window move reaches
+     * While the fill UI is shown: every traversal of the host's window reads its place on screen, and only a change of
+     * it goes on to the state ([hostMoved], then [refreshOrigin]). A window move reaches
      * the app as a resize or an insets change, each of which requests a layout, so a traversal follows; see
      * docs/code_map.md "Sign-in autofill". Never cancels the draw.
      */
     private val hostPreDraw = ViewTreeObserver.OnPreDrawListener {
-        guarded { refreshOrigin() }
+        guarded {
+            if (hostMoved()) {
+                refreshOrigin()
+            }
+        }
         true
     }
+
+    /** The host's place on screen as last reported to the state; null when none was. */
+    private var reportedScreen: SignInAutofillState.Offset? = null
     private var preDrawWatched: View? = null
 
     private val settle = Runnable {
@@ -269,6 +277,20 @@ object SignInAutofill {
         }
     }
 
+    /**
+     * Whether the host is laid out at another place on screen than the one last reported. A pre-draw pass with the host
+     * where it was does no more, so the frequent redraws while a dropdown is shown cost one location read each.
+     */
+    private fun hostMoved(): Boolean {
+        val view = host ?: return false
+        if (!view.isLaidOut) {
+            return false
+        }
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        return reportedScreen != SignInAutofillState.Offset(location[0], location[1])
+    }
+
     /** The Qt window's origin relative to the host, or none while either is not laid out. */
     private fun refreshOrigin() {
         val view = host
@@ -277,7 +299,9 @@ object SignInAutofill {
         if (view != null && view.isLaidOut) {
             view.getLocationOnScreen(hostLocation)
             // The host's own place on screen, which a window move changes with nothing inside Qt's window moving.
-            execute { state.screen(SignInAutofillState.Offset(hostLocation[0], hostLocation[1])) }
+            val place = SignInAutofillState.Offset(hostLocation[0], hostLocation[1])
+            reportedScreen = place
+            execute { state.screen(place) }
         }
         if (view == null || window == null || !view.isLaidOut || !window.isLaidOut) {
             state.origin(null)
@@ -325,6 +349,7 @@ object SignInAutofill {
         main.removeCallbacks(settle)
         preDrawWatched?.let { if (it.viewTreeObserver.isAlive) it.viewTreeObserver.removeOnPreDrawListener(hostPreDraw) }
         preDrawWatched = null
+        reportedScreen = null
         callbackManager?.unregisterCallback(fillUiEvents)
         callbackManager = null
         host?.let { view ->
