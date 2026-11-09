@@ -40,6 +40,7 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_labels.h"
+#include "ui_text.h"
 
 static dsdneoRuntimeConfig g_cfg;
 static int g_cfg_valid = 1;
@@ -1246,8 +1247,9 @@ test_group_list_reload_row(void) {
     rc |= expect_int("reload hidden when only a row has a list", group_list_reload_offered(&ctx) ? 1 : 0, 0);
     dsd_test_scan_labels_configured(NULL);
 
-    if (use_utf8_locale()) {
-        g_unicode_wanted = 1;
+    g_unicode_wanted = 1;
+    // The label draws UTF-8 only where the library does: never under a narrow PDCurses (ui_text_unicode_output()).
+    if (use_utf8_locale() && ui_text_unicode_output()) {
         DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "/home/u/Z\xC3\xBCrich.csv");
         rc |= expect_str("reload keeps a drawable name", lbl_group_list_reload(&ctx, b, sizeof b),
                          "Reload group list [Z\xC3\xBCrich.csv]");
@@ -1255,14 +1257,23 @@ test_group_list_reload_row(void) {
                      "/imports/Washington OSCCR Kittitas group.csv");
         rc |= expect_str("reload cuts with the ellipsis", lbl_group_list_reload(&ctx, b, sizeof b),
                          "Reload group list [Washington OSCCR Kittit\xE2\x80\xA6]");
-        /* Thirteen two-cell characters (26 cells): eleven and the marker fit 24. */
         DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s",
                      "/x/\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
                      "\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1");
+#if defined(DSD_USE_PDCURSES)
+        /* PDCurses draws every character in one cell (ui_text.c): thirteen characters, 13 cells and 39 bytes, fit. */
+        rc |= expect_str("reload keeps wide characters PDCurses draws in one cell",
+                         lbl_group_list_reload(&ctx, b, sizeof b),
+                         "Reload group list [\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
+                         "\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
+                         "\xE6\x9D\xB1\xE6\x9D\xB1]");
+#else
+        /* Thirteen two-cell characters (26 cells): eleven and the marker fit 24. */
         rc |= expect_str("reload cuts wide characters by cells", lbl_group_list_reload(&ctx, b, sizeof b),
                          "Reload group list [\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
                          "\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1\xE6\x9D\xB1"
                          "\xE2\x80\xA6]");
+#endif
         /* Twenty one-cell, three-byte characters fit 24 cells but not 48 bytes: fifteen and the marker do. */
         char thai[128] = "/x/";
         for (int i = 0; i < 20; i++) {
@@ -1275,11 +1286,11 @@ test_group_list_reload_row(void) {
         }
         DSD_SNPRINTF(want + strlen(want), sizeof want - strlen(want), "%s", "\xE2\x80\xA6]");
         rc |= expect_str("reload keeps a name within 48 bytes", lbl_group_list_reload(&ctx, b, sizeof b), want);
-        g_unicode_wanted = 0;
-        (void)setlocale(LC_CTYPE, "C");
     } else {
-        DSD_FPRINTF(stderr, "no UTF-8 locale installed; skipping the UTF-8 reload label cases\n");
+        DSD_FPRINTF(stderr, "no UTF-8 locale or UTF-8 output; skipping the UTF-8 reload label cases\n");
     }
+    g_unicode_wanted = 0;
+    (void)setlocale(LC_CTYPE, "C");
     return rc;
 }
 
