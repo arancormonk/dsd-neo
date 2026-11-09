@@ -266,16 +266,17 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     void abortDocumentTransfers() override;
 
-    /*
-     * The RadioReference sign-in form for password managers: each call goes to SignInAutofill.kt, which posts it to
-     * the Android main thread and describes the form to the Autofill Framework there. JNI only, in
-     * decoder_host_android.cpp. A call that fails is dropped, its Java exception cleared.
-     */
+    /* Android has the Autofill Framework, so the relay samples the sign-in form here. */
     bool
     signInAutofillSupported() const override {
         return true;
     }
 
+    /*
+     * The RadioReference sign-in form for password managers: each call goes to SignInAutofill.kt, which posts it to
+     * the Android main thread and describes the form to the Autofill Framework there. JNI only, in
+     * decoder_host_android.cpp. A call that fails is dropped, its Java exception cleared.
+     */
     void signInAutofillBegin(int token) override;
     void signInAutofillField(int token, int field, const QRect& windowPixels, bool visible, bool focused,
                              const QString& structureValue) override;
