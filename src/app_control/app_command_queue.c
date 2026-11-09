@@ -10001,6 +10001,10 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
  */
 static void
 cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, uint32_t msg_seq_before) {
+    /* A plain config apply carries no autosave: only a load's payload has the fields after the config. */
+    if (!state || !c || c->n < sizeof(dsd_app_config_load_payload)) {
+        return;
+    }
     /* The fields after the config, read field by field: the payload bytes carry no alignment. */
     dsd_app_config_metadata_payload autosave;
     char profile[sizeof(((dsd_app_config_load_payload*)0)->profile)];
@@ -10131,7 +10135,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         cfg_keep_next_start_startable(opts, state, &saves[0], &saves[1]);
         free(saves);
     }
-    if (kept && c->n >= sizeof(dsd_app_config_load_payload)) {
+    if (kept) {
         cfg_adopt_loaded_autosave(state, c, msg_seq_before);
     }
     free(next_before);
