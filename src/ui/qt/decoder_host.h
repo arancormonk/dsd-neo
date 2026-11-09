@@ -536,6 +536,73 @@ class DecoderHost : public QObject {
         return {};
     }
 
+    /**
+     * @name Sign-in autofill
+     *
+     * Describes the RadioReference sign-in form to the platform's password manager support, from SignInAutofill.
+     * A form session runs from begin to end under a token, positive and only growing, that every call carries.
+     * Field 1 is the username, field 2 the password; rects are in window pixels. Hosts with no such support (the
+     * desktop) do nothing. Kept out of the slots section below, and no signal carries a credential: QML reaches every
+     * slot and signal here.
+     * @{
+     */
+
+    /** @brief A sign-in form was shown: session @p token starts, and any older one is over. */
+    virtual void
+    signInAutofillBegin(int token) {
+        (void)token;
+    }
+
+    /**
+     * @brief Field @p field as it is now: its rect, whether any of it is on screen, whether it has focus, and
+     *        @p structureValue, the username's text for field 1 and always empty for field 2.
+     */
+    virtual void
+    signInAutofillField(int token, int field, const QRect& windowPixels, bool visible, bool focused,
+                        const QString& structureValue) {
+        (void)token;
+        (void)field;
+        (void)windowPixels;
+        (void)visible;
+        (void)focused;
+        (void)structureValue;
+    }
+
+    /** @brief Field @p field gained focus and has been still since: ask the password manager to fill it. */
+    virtual void
+    signInAutofillRequest(int token, int field, const QRect& windowPixels) {
+        (void)token;
+        (void)field;
+        (void)windowPixels;
+    }
+
+    /**
+     * @brief RadioReference accepted @p username and @p password, the credentials the check itself sent: the password
+     *        manager may offer to save them. Scrubbed by the caller once this returns, so an override copies what it
+     *        keeps.
+     */
+    virtual void
+    signInAutofillCommit(int token, const QString& username, const QString& password) {
+        (void)token;
+        (void)username;
+        (void)password;
+    }
+
+    /** @brief The form of session @p token left the screen. */
+    virtual void
+    signInAutofillEnd(int token) {
+        (void)token;
+    }
+
+    /** @brief Receives a password manager's fill: the token it was made for, and each field it filled. */
+    using SignInFillSink = std::function<void(int token, bool hasUsername, const QString& username, bool hasPassword,
+                                              const QString& password)>;
+
+    /** @brief Where deliverSignInFill() hands a fill (SignInAutofill). A plain C++ callback, never a signal. */
+    void setSignInFillSink(SignInFillSink sink);
+
+    /** @} */
+
   public Q_SLOTS:
 
     /** Unsupported hosts still answer, so a caller cannot wait forever for a fix. */
@@ -736,74 +803,6 @@ class DecoderHost : public QObject {
         (void)delaySeconds;
     }
 
-  public:
-    /**
-     * @name Sign-in autofill
-     *
-     * Describes the RadioReference sign-in form to the platform's password manager support, from SignInAutofill.
-     * A form session runs from begin to end under a token, positive and only growing, that every call carries.
-     * Field 1 is the username, field 2 the password; rects are in window pixels. Hosts with no such support (the
-     * desktop) do nothing. Plain members, not slots, and no signal carries a credential: QML reaches every slot and
-     * signal here.
-     * @{
-     */
-
-    /** @brief A sign-in form was shown: session @p token starts, and any older one is over. */
-    virtual void
-    signInAutofillBegin(int token) {
-        (void)token;
-    }
-
-    /**
-     * @brief Field @p field as it is now: its rect, whether any of it is on screen, whether it has focus, and
-     *        @p structureValue, the username's text for field 1 and always empty for field 2.
-     */
-    virtual void
-    signInAutofillField(int token, int field, const QRect& windowPixels, bool visible, bool focused,
-                        const QString& structureValue) {
-        (void)token;
-        (void)field;
-        (void)windowPixels;
-        (void)visible;
-        (void)focused;
-        (void)structureValue;
-    }
-
-    /** @brief Field @p field gained focus and has been still since: ask the password manager to fill it. */
-    virtual void
-    signInAutofillRequest(int token, int field, const QRect& windowPixels) {
-        (void)token;
-        (void)field;
-        (void)windowPixels;
-    }
-
-    /**
-     * @brief RadioReference accepted @p username and @p password, the credentials the check itself sent: the password
-     *        manager may offer to save them. Scrubbed by the caller once this returns, so an override copies what it
-     *        keeps.
-     */
-    virtual void
-    signInAutofillCommit(int token, const QString& username, const QString& password) {
-        (void)token;
-        (void)username;
-        (void)password;
-    }
-
-    /** @brief The form of session @p token left the screen. */
-    virtual void
-    signInAutofillEnd(int token) {
-        (void)token;
-    }
-
-    /** @brief Receives a password manager's fill: the token it was made for, and each field it filled. */
-    using SignInFillSink = std::function<void(int token, bool hasUsername, const QString& username, bool hasPassword,
-                                              const QString& password)>;
-
-    /** @brief Where deliverSignInFill() hands a fill (SignInAutofill). A plain C++ callback, never a signal. */
-    void setSignInFillSink(SignInFillSink sink);
-
-    /** @} */
-
   Q_SIGNALS:
     void backRequested();
     void typographyChanged();
@@ -889,7 +888,7 @@ class DecoderHost : public QObject {
      * Both strings are scrubbed once the sink returns, and dropped scrubbed when no sink is set, so a platform passes
      * the copies it made and keeps none.
      */
-    void deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password);
+    void deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password) const;
 
     /**
      * @brief The base host's copyFileToDocument(), stopped before any chunk once @p aborted is set; it touches no host

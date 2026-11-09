@@ -50,6 +50,7 @@ SignInAutofill::SignInAutofill(DecoderHost* host, RadioReferenceModel* model, Ap
     connect(&m_settle, &QTimer::timeout, this, &SignInAutofill::settled);
 
     if (m_model) {
+        connect(m_model, &RadioReferenceModel::accountStateChanged, this, &SignInAutofill::onAccountStateChanged);
         /* Used during the call only: the model scrubs these once it returns. */
         m_model->setVerifiedSink(
             [this](const QString& username, const QString& password) { onVerified(username, password); });
@@ -157,6 +158,7 @@ SignInAutofill::retire() {
     const int old = m_token;
     m_token = 0;
     m_formShown = false;
+    m_checkToken = 0;
     m_sampler.stop();
     m_settle.stop();
     m_settleField = 0;
@@ -274,9 +276,22 @@ SignInAutofill::settled() {
     }
 }
 
+/*
+ * A check starting records the session it was submitted under. Only one check is in flight at a time, and an edit
+ * retires it, so the latest start is the one a verdict answers. The record is left alone when the check ends: the
+ * verified sink runs after the state has become Verified.
+ */
+void
+SignInAutofill::onAccountStateChanged() {
+    if (m_model && m_model->checkingAccount()) {
+        m_checkToken = m_token;
+    }
+}
+
 void
 SignInAutofill::onVerified(const QString& username, const QString& password) {
-    if (m_token == 0 || !m_formShown || !m_host) {
+    /* A check submitted under another form's session (left and come back, or another screen) is not this form's. */
+    if (m_token == 0 || m_checkToken != m_token || !m_formShown || !m_host) {
         return;
     }
     m_host->signInAutofillCommit(m_token, username, password);

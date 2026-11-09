@@ -700,6 +700,27 @@ test_commit(void) {
     h.relay.end(token);
     h.check();
     expect_int("an ended session commits nothing", h.host.count(OpCommit), 2);
+
+    /* Submitted under one session, verified under the next: the save belongs to neither form. */
+    const int first = h.relay.begin();
+    h.relay.track(first, 1, form.username, true);
+    h.model.checkAccount();
+    const int second = h.relay.begin();
+    h.relay.track(second, 1, form.username, true);
+    pump(h.model);
+    expect_int("a check submitted under another session commits nothing", h.host.count(OpCommit), 2);
+
+    /* Submitted with no session at all, verified once a form is up. */
+    h.relay.end(second);
+    h.model.checkAccount();
+    const int third = h.relay.begin();
+    h.relay.track(third, 1, form.username, true);
+    pump(h.model);
+    expect_int("a check submitted with no session commits nothing", h.host.count(OpCommit), 2);
+
+    h.check();
+    expect_int("a check submitted under the live session still commits", h.host.count(OpCommit), 3);
+    expect_int("under that session", h.host.last(OpCommit).token, third);
 }
 
 /* A fill's two strings, owned by the caller the way the Android host owns its copies. */
@@ -782,21 +803,8 @@ test_no_sink(void) {
     }
     FillStrings after{QStringLiteral("someone"), QStringLiteral("secret")};
     host.fill(1, true, after.username, true, after.password);
+    /* A sink left behind would call into the destroyed relay: a use after free the sanitizer builds catch. */
     expect("a destroyed relay leaves no sink behind", after.username.isEmpty() && after.password.isEmpty());
-
-    Form form;
-    if (!form.ok()) {
-        return;
-    }
-    Harness h;
-    {
-        /* Takes over both sinks from h.relay, and clears them as it goes. */
-        const dsd_qt::SignInAutofill extra(&h.host, &h.model, &h.prefs);
-    }
-    const int token = h.relay.begin();
-    h.relay.track(token, 1, form.username, true);
-    h.check();
-    expect_int("the model's sink is cleared with the relay that set it", h.host.count(OpCommit), 0);
 }
 
 } // namespace

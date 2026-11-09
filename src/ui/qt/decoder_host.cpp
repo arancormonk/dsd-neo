@@ -461,9 +461,12 @@ DecoderHost::setSignInFillSink(SignInFillSink sink) {
 }
 
 void
-DecoderHost::deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password) {
-    if (m_signInFill) {
-        m_signInFill(token, hasUsername, username, hasPassword, password);
+DecoderHost::deliverSignInFill(int token, bool hasUsername, QString& username, bool hasPassword,
+                               QString& password) const {
+    /* A copy: a sink that replaces or clears itself mid-call must not destroy the function running. */
+    const SignInFillSink sink = m_signInFill;
+    if (sink) {
+        sink(token, hasUsername, username, hasPassword, password);
     }
     scrub_credential(username);
     scrub_credential(password);

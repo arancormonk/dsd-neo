@@ -59,7 +59,7 @@ class SignInAutofill : public QObject {
 
     /**
      * Installs itself as @p model's verified sink and as @p host's fill sink; the destructor clears both. None of
-     * the three is owned.
+     * the three is owned. Each holds one sink, so the app makes exactly one relay.
      */
     SignInAutofill(DecoderHost* host, RadioReferenceModel* model, AppPrefs* prefs, QObject* parent = nullptr);
     ~SignInAutofill() override;
@@ -135,6 +135,7 @@ class SignInAutofill : public QObject {
     void updateSampler();
     void sample();
     void settled();
+    void onAccountStateChanged();
     void onVerified(const QString& username, const QString& password);
     void onFill(int token, bool hasUsername, const QString& username, bool hasPassword, const QString& password);
 
@@ -150,6 +151,9 @@ class SignInAutofill : public QObject {
     int m_token = 0;
     /* The live session's form showed a field: only then is a verified sign-in committed. */
     bool m_formShown = false;
+    /* The token live when the account check in flight was submitted; 0 with none or once that session ended. A
+     * verified check commits only under it. */
+    int m_checkToken = 0;
     Slot m_username;
     Slot m_password;
 };
