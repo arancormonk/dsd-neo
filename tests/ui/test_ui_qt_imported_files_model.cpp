@@ -745,6 +745,29 @@ test_export_registration_in_place() {
     model.remove(model.rowForPath(path));
 }
 
+/* Issue #748: usableRows() reads the file as it is now, where the row's counts are from its import. */
+void
+test_usable_rows_read_the_file_now() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString path = model.newTalkgroupListPath();
+    expect("write the list", write_file(path, QByteArray("id,mode,name\n1001,A,Dispatch\n1002,A,Fire\n")));
+    expect("register the list", model.registerTalkgroupList(path));
+    expect("rows counted", model.usableRows(path) == 2);
+    expect("emptied in place", write_file(path, QByteArray("id,mode,name\n")));
+    expect("an emptied list has none, whatever its import counted",
+           model.usableRows(path) == 0 && model.get(model.rowForPath(path)).value("accepted").toInt() == 2);
+    expect("a ';' list", write_file(path, QByteArray("id;mode;name\n1001;A;Dispatch\n")));
+    expect("rows it cannot use do not count", model.usableRows(path) == 0);
+    const QTemporaryDir outside;
+    const QString external = outside.filePath("external.csv");
+    expect("write outside fixture", write_file(external, QByteArray("id,mode,name\n1001,A,Dispatch\n")));
+    expect("a file outside the library is unknown", model.usableRows(external) == -1);
+    expect("file removed", QFile::remove(path));
+    expect("a missing file is unknown", model.usableRows(path) == -1);
+    model.remove(model.rowForPath(path));
+}
+
 /* The decoder's side of a session using a row's group file: its own list, loaded from that file. */
 struct DecoderList {
     dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
@@ -1929,6 +1952,7 @@ main(int argc, char** argv) {
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();
+    test_usable_rows_read_the_file_now();
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

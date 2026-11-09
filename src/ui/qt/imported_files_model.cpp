@@ -866,6 +866,17 @@ ImportedFilesModel::rowForPath(const QString& path) const {
     return -1;
 }
 
+int
+ImportedFilesModel::usableRows(const QString& path) const {
+    const int row = rowForPath(path);
+    int accepted = 0;
+    int skipped = 0;
+    if (row < 0 || !validate(path, m_rows.at(row).type, &accepted, &skipped)) {
+        return -1;
+    }
+    return accepted;
+}
+
 ImportedFilesModel::Row
 ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     Row row;

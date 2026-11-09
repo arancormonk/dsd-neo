@@ -84,5 +84,77 @@ Item {
             compare(commands.srcClearCalls(), 0)
             compare(mainRoot.sessionSystem.name, "Renamed live system")
         }
+
+        // Issue #748: the import refuses a talkgroup list with no usable rows, so switching the running system to
+        // one posted an import that left the previous list live, and the previous file then took this system's
+        // edits. Such a list clears the session's list instead. Whether it has rows is read from the file now, not
+        // from its import: the decoder rewrites a list in place as the user edits it.
+        function test_group_list_switch_data() {
+            return [
+                {tag: "rows", imported: "id,mode,name\n1001,A,Dispatch\n", now: "", want: "importGroupList"},
+                {tag: "header only", imported: "id,mode,name\n", now: "", want: "clearGroupList"},
+                {tag: "emptied since its import", imported: "id,mode,name\n1001,A,Dispatch\n",
+                 now: "id,mode,name\n", want: "clearGroupList"},
+                {tag: "rows added since its import", imported: "id,mode,name\n",
+                 now: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"},
+                {tag: "no usable rows", imported: "id;mode;name\n1001;A;Dispatch\n", now: "", want: "clearGroupList"}
+            ]
+        }
+        function test_group_list_switch(data) {
+            var mainRoot = appLoader.item
+            var wizard = findChild(mainRoot, "wizardScreen")
+            var source = testContext.writeFixtureCsv("switch-" + data.tag.replace(/ /g, "-") + ".csv", data.imported)
+            var imported = importedFiles.importFile(source, "switch.csv", "group")
+            verify(imported.ok, "the talkgroup fixture did not import")
+            var path = imported.path
+            try {
+                if (data.now.length > 0)
+                    verify(testContext.rewriteFile(path, data.now), "could not rewrite the library file")
+                wizard.openForAdd(false)
+                wizard.nameText = "Live talkgroups"
+                wizard.commit()
+                savedRow = savedSystems.count - 1
+                mainRoot.sessionRow = savedRow
+                mainRoot.sessionSystem = savedSystems.get(savedRow)
+                testContext.setHostRunning(true)
+                testContext.resetCommands()
+
+                wizard.openForEdit(savedRow)
+                wizard.assignCsvPath("group", path, false)
+                wizard.commit()
+                compare(commands.listCommands(), [data.want === "clearGroupList" ? data.want : data.want + " " + path])
+                compare(mainRoot.sessionSystem.groupCsvPath, path)
+
+                // Back to None clears, whatever the file held.
+                testContext.resetCommands()
+                wizard.openForEdit(savedRow)
+                wizard.assignCsvPath("group", "", false)
+                wizard.commit()
+                compare(commands.listCommands(), ["clearGroupList"])
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(path))
+            }
+        }
+
+        // A path the library does not hold cannot be read here; the import goes ahead and the decoder says why it
+        // refuses, if it does.
+        function test_group_list_switch_to_a_file_outside_the_library() {
+            var mainRoot = appLoader.item
+            var wizard = findChild(mainRoot, "wizardScreen")
+            wizard.openForAdd(false)
+            wizard.nameText = "Outside talkgroups"
+            wizard.commit()
+            savedRow = savedSystems.count - 1
+            mainRoot.sessionRow = savedRow
+            mainRoot.sessionSystem = savedSystems.get(savedRow)
+            testContext.setHostRunning(true)
+            testContext.resetCommands()
+
+            var path = "/data/imports/not in the library.csv"
+            wizard.openForEdit(savedRow)
+            wizard.assignCsvPath("group", path, false)
+            wizard.commit()
+            compare(commands.listCommands(), ["importGroupList " + path])
+        }
     }
 }

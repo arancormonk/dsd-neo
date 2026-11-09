@@ -694,6 +694,49 @@ class CommandRecorder : public QObject {
         return m_last_src_path;
     }
 
+    /* The talkgroup list and channel map commands, as "<method> <path>" in the order the screens posted them, so a
+     * case can tell a reload from an import and see a clear posted alongside one. */
+    Q_INVOKABLE bool
+    importGroupList(const QString& path) {
+        return recordListCommand(QStringLiteral("importGroupList"), path);
+    }
+
+    Q_INVOKABLE bool
+    clearGroupList() {
+        return recordListCommand(QStringLiteral("clearGroupList"), QString());
+    }
+
+    Q_INVOKABLE bool
+    reloadGroupList(const QString& path) {
+        return recordListCommand(QStringLiteral("reloadGroupList"), path);
+    }
+
+    Q_INVOKABLE bool
+    importChannelMap(const QString& path) {
+        return recordListCommand(QStringLiteral("importChannelMap"), path);
+    }
+
+    Q_INVOKABLE bool
+    clearChannelMap() {
+        return recordListCommand(QStringLiteral("clearChannelMap"), QString());
+    }
+
+    Q_INVOKABLE bool
+    reloadChannelMap(const QString& path) {
+        return recordListCommand(QStringLiteral("reloadChannelMap"), path);
+    }
+
+    Q_INVOKABLE QStringList
+    listCommands() const {
+        return m_list_commands;
+    }
+
+    /* Whether the queue takes the commands above (CommandBridge's "queued"); a refused one is still recorded. */
+    Q_INVOKABLE void
+    setListCommandsAccepted(bool accepted) {
+        m_list_commands_accepted = accepted;
+    }
+
     Q_INVOKABLE bool
     manualTuneHz(unsigned int hz) {
         m_manual_tune_calls++;
@@ -1129,6 +1172,8 @@ class CommandRecorder : public QObject {
         m_src_import_calls = 0;
         m_src_clear_calls = 0;
         m_last_src_path.clear();
+        m_list_commands.clear();
+        m_list_commands_accepted = true;
         m_manual_tune_calls = 0;
         m_last_manual_tune_hz = 0U;
         m_release_tuner_calls = 0;
@@ -1439,6 +1484,15 @@ class CommandRecorder : public QObject {
     int m_src_import_calls = 0;
     int m_src_clear_calls = 0;
     QString m_last_src_path;
+    QStringList m_list_commands;
+    bool m_list_commands_accepted = true;
+
+    bool
+    recordListCommand(const QString& method, const QString& path) {
+        m_list_commands.append(path.isEmpty() ? method : method + QLatin1Char(' ') + path);
+        return m_list_commands_accepted;
+    }
+
     int m_manual_tune_calls = 0;
     unsigned int m_last_manual_tune_hz = 0U;
     int m_release_tuner_calls = 0;
@@ -3692,6 +3746,20 @@ class Setup : public QObject {
             return QFile::rename(path, path + QStringLiteral(".held")) && QDir().mkpath(path + QStringLiteral("/held"));
         }
         return QDir(path).removeRecursively() && QFile::rename(path + QStringLiteral(".held"), path);
+    }
+
+    /**
+     * @brief Replace the contents of the existing file @p path behind the library's back, as the decoder's in-place
+     *        rewrite of a talkgroup list does: the library row keeps the counts of its import.
+     */
+    Q_INVOKABLE bool
+    rewriteFile(const QString& path, const QString& contents) const {
+        QFile file(path);
+        if (!QFileInfo(path).isFile() || !file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            return false;
+        }
+        const QByteArray bytes = contents.toUtf8();
+        return file.write(bytes) == bytes.size();
     }
 
     /** @brief The absolute path of app store @p name, for blockPath(). */

@@ -32,11 +32,6 @@ Item {
     // Transient outcome line under the header; magenta when it reports a problem.
     property string notice: ""
     property bool noticeIsProblem: false
-    // The saved system the running session was started from, or null. Bound by
-    // Main.qml, which owns it. A refresh only pushes a file into the live
-    // session when that session is actually using it: re-importing a channel map
-    // replaces the live one wholesale and clears what the protocol had learned.
-    property var sessionSystem: null
 
     function nounFor(type, count) {
         if (type === "trunkTargets")
@@ -82,6 +77,21 @@ Item {
         screen.noticeIsProblem = false;
     }
 
+    // Issue #748: a talkgroup list or channel map just replaced in place may be
+    // the file the running session uses, and the session would otherwise keep
+    // the old table (and write it back over the new file at the next in-app
+    // edit). Only the decoder knows which file it uses now: a manual Apply, a
+    // restart or a scan row can each change it after the saved system this
+    // session started from. So it is asked whenever a session runs, and it
+    // reloads the file only if the file is its own. Call after resultNotice().
+    function reloadIfInUse(verb, result) {
+        if (!decoderHost.running || (result.type !== "group" && result.type !== "chan"))
+            return;
+        var sent = result.type === "chan" ? commands.reloadChannelMap(result.path) : commands.reloadGroupList(result.path);
+        screen.notice = sent ? qsTr("%1 · sent to the running session").arg(screen.notice) : qsTr("%1, but the decoder is not accepting commands").arg(verb);
+        screen.noticeIsProblem = !sent;
+    }
+
     // A refresh is asynchronous — it re-fetches the whole system first — so the
     // outcome arrives here rather than from the tap that asked for it.
     Connections {
@@ -105,23 +115,11 @@ Item {
                 return;
             }
             screen.resultNotice(qsTr("Refreshed"), result);
-            if (result.error === "empty")
-                return;
-            // Live-apply only the file the running session is actually using;
-            // pushing another system's channel map would retune the session onto
-            // frequencies it never asked for.
-            var sys = screen.sessionSystem;
-            if (!decoderHost.running || !sys)
-                return;
-            var sent = false;
-            if (result.type === "chan" && sys.chanCsvPath === result.path)
-                sent = commands.importChannelMap(result.path);
-            else if (result.type === "group" && sys.groupCsvPath === result.path)
-                sent = commands.importGroupList(result.path);
-            else
-                return;
-            screen.notice = sent ? qsTr("Refreshed · sent to the decoder") : qsTr("Refreshed, but the decoder is not accepting commands");
-            screen.noticeIsProblem = !sent;
+            // A reload, never an import: the decoder takes it only for the file
+            // it uses, so another system's channel map cannot retune the session
+            // onto frequencies it never asked for.
+            if (result.error !== "empty")
+                screen.reloadIfInUse(qsTr("Refreshed"), result);
         }
     }
 
@@ -135,11 +133,16 @@ Item {
         objectName: "importsCsvImport"
         overlayParent: screen
         onFinished: function (result) {
+            var updated = screen.pendingRow >= 0;
             screen.pendingRow = -1;
             screen.notice = "";
             screen.noticeIsProblem = false;
-            if (result.error !== "cancelled")
-                screen.resultNotice(qsTr("Imported"), result);
+            if (result.error === "cancelled")
+                return;
+            screen.resultNotice(updated ? qsTr("Updated") : qsTr("Imported"), result);
+            // A new import lands at a new path no session uses yet.
+            if (updated && result.ok && result.error !== "empty")
+                screen.reloadIfInUse(qsTr("Updated"), result);
         }
     }
     DecryptionApplyFlow {
@@ -451,6 +454,9 @@ Item {
             }
         }
         OutlineButton {
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "updateFromFileButton"
+
             width: parent.width
             text: qsTr("Update from file")
             onClicked: {

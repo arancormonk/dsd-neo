@@ -2181,10 +2181,18 @@ Window {
                     else if ((was.chanCsvPath || "").length > 0)
                         commands.clearChannelMap();
                 }
+                // The import refuses a talkgroup list with no usable rows (far
+                // more often a wrong file than an empty list), which would leave
+                // the previous file's talkgroups live and that file taking this
+                // system's edits. Such a list clears instead, so the session
+                // decodes with no talkgroups as a fresh start would; until that
+                // start, in-app edits stay in the session (Talkgroups says so).
+                // A file that cannot be read here still goes to the import,
+                // which says why it refuses.
                 if (sys.groupCsvPath !== was.groupCsvPath) {
-                    if (sys.groupCsvPath.length > 0)
+                    if (sys.groupCsvPath.length > 0 && importedFiles.usableRows(sys.groupCsvPath) !== 0)
                         commands.importGroupList(sys.groupCsvPath);
-                    else if ((was.groupCsvPath || "").length > 0)
+                    else if (sys.groupCsvPath.length > 0 || (was.groupCsvPath || "").length > 0)
                         commands.clearGroupList();
                 }
                 if (sys.keyCsvPath !== was.keyCsvPath || sys.keyCsvHex !== was.keyCsvHex) {
@@ -2445,9 +2453,6 @@ Window {
         objectName: "importsScreen"
 
         anchors.fill: safeArea
-        // So a RadioReference refresh can tell whether the file it just replaced
-        // is one the running session is actually using.
-        sessionSystem: mainRoot.sessionSystem
         opacity: mainRoot.importsOpen && (!mainRoot.monitorMode || mainRoot.sessionDestination === "settings") ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
