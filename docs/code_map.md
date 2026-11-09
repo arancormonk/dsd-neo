@@ -2235,7 +2235,8 @@ suite runs under this compiler.
     (`dsd_tg_policy_rows_hash_line()`) under the header it wrote, so sanitised commas, header-dependent columns and
     pattern canonicalisation hash as the next load reads them; an export moves it to the export path.
   - Rewrite check (`tg_policy_baseline_check()`), only when the baseline names the destination: the file on disk is
-    hashed with a quiet importer pass (`dsd_tg_policy_rows_hash_file()`, no row warnings) and compared. Equal:
+    hashed with a quiet importer pass (`dsd_tg_policy_rows_hash_file()`, no row warnings and no open error, so a
+    deleted file the rewrite recreates logs nothing) and compared. Equal:
     replaced. Different: nothing written, return 2 (app-control's `Talkgroup change kept for this session only; group
     list changed on disk, reload it`, and `Talkgroup export refused: group list changed on disk; reload it` for an
     export over the list's own file). Missing: written, since nothing on disk is lost. Unreadable: -1. No baseline (a
@@ -2244,8 +2245,13 @@ suite runs under this compiler.
     check, since an append destroys nothing. The line is folded into every list whose baseline names the file: the
     effective store and, while a `-Y` row's or trunk-scan target's own list is in effect or suspended, the list held
     aside (`dsd_scan_groups_held_store()`), which also takes the learned row unless it has a row for that ID, as a
-    reload would. An append that creates the file starts the global list's baseline. An edit made outside dsd-neo
-    before an append still differs at the next rewrite, because the hash covers the whole row sequence.
+    reload would. The file is `opts->group_in_file`, which names the effective list's file (a row's own `-G` path
+    while its list is in effect, `scan_option_apply_group()`), so the effective list owns it: an append that creates
+    the file starts the effective list's baseline, and a list held aside for another file is left alone. Only when
+    the held list's baseline already names the file (a row naming the global file) does it own it too. An append is
+    refused (1) when a list that stands for the file was loaded incomplete; an incomplete list for another file does
+    not block it. An edit made outside dsd-neo before an append still differs at the next rewrite, because the hash
+    covers the whole row sequence.
   - Managed-file lock (`<dsd-neo/core/managed_file.h>`, `src/core/file/managed_file.c`, one lazily created
     process-wide mutex): taken by the decoder's check and replace (rewrite, export) and its append, by app-control's
     `dsd_app_import_write()` and `dsd_app_import_replace_checked()` around the replace only (the terminal
