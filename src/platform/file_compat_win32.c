@@ -20,6 +20,7 @@
 #include <wchar.h>
 #include <windows.h>
 
+#include "file_compat_internal.h"
 #include "win32_temp_name_internal.h"
 #include "write_frames_internal.h"
 
@@ -949,17 +950,44 @@ dsd_dir_report_wide_entry(const WIN32_FIND_DATAW* data, dsd_dir_list_cb cb, void
     return cb(name, user);
 }
 
-// The "<dir>\*" search pattern for a wide folder name; NULL when memory runs out.
-static wchar_t*
+wchar_t*
 dsd_dir_list_wide_pattern(const wchar_t* wide_dir) {
     const size_t len = wcslen(wide_dir);
+    const int ends_in_separator = len > 0U && (wide_dir[len - 1U] == L'\\' || wide_dir[len - 1U] == L'/');
     wchar_t* pattern = (wchar_t*)calloc(len + 3U, sizeof(wchar_t));
     if (pattern) {
         DSD_MEMCPY(pattern, wide_dir, len * sizeof(wchar_t));
-        pattern[len] = L'\\';
-        pattern[len + 1U] = L'*';
+        size_t at = len;
+        if (!ends_in_separator) {
+            pattern[at++] = L'\\';
+        }
+        pattern[at] = L'*';
     }
     return pattern;
+}
+
+// Whether @p dir, in the ANSI code page, ends in a separator: its last character, found by stepping over each lead
+// byte with its trail byte from the start, is a single backslash or slash.
+static int
+dsd_ansi_path_ends_in_separator(const char* dir) {
+    const char* last = NULL;
+    for (const char* p = dir; *p != '\0';) {
+        last = p;
+        p += (IsDBCSLeadByteEx(CP_ACP, (BYTE)*p) && p[1] != '\0') ? 2 : 1;
+    }
+    return last != NULL && last[1] == '\0' && (*last == '\\' || *last == '/');
+}
+
+int
+dsd_dir_list_ansi_pattern(const char* dir, char* out, size_t out_size) {
+    // "\\*" in the source is one backslash and a star at runtime.
+    const char* tail = dsd_ansi_path_ends_in_separator(dir) ? "*" : "\\*";
+    const int n = DSD_SNPRINTF(out, out_size, "%s%s", dir, tail);
+    if (n < 0 || (size_t)n >= out_size) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    return 0;
 }
 
 // A UTF-8 folder (the app's own, named in any script) is walked with the wide
@@ -1002,12 +1030,8 @@ dsd_dir_list_wide(const wchar_t* wide_dir, dsd_dir_list_cb cb, void* user) {
 // A folder named in the ANSI code page (a command line's): ANSI names.
 static int
 dsd_dir_list_ansi(const char* dir, dsd_dir_list_cb cb, void* user) {
-    // The C source text is "%s\\*": two backslashes here produce one at runtime,
-    // so _findfirst() receives <dir>\* .
     char pattern[1024];
-    int n = DSD_SNPRINTF(pattern, sizeof pattern, "%s\\*", dir);
-    if (n < 0 || (size_t)n >= sizeof pattern) {
-        errno = ENAMETOOLONG;
+    if (dsd_dir_list_ansi_pattern(dir, pattern, sizeof pattern) != 0) {
         return -1;
     }
 

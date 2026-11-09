@@ -284,9 +284,10 @@ int dsd_path_type_nofollow(const char* path, dsd_path_type* out_type);
 /**
  * @brief The absolute, canonical path of an existing file or folder.
  *
- * POSIX resolves symbolic links and "." and ".." (realpath()); Windows makes the path absolute and folds "." and ".."
- * (_fullpath()). Two paths that name one folder the same way compare equal, which is what a check whether a file lies
- * inside a folder needs.
+ * POSIX resolves symbolic links and "." and ".." (realpath()); Windows makes the path absolute and folds "." and "..",
+ * through the wide or the ANSI call as the file note says, and gives the result in the encoding @p path came in (a
+ * UTF-8 path's in UTF-8). Two paths in one encoding that name one folder the same way compare equal, which is what a
+ * check whether a file lies inside a folder needs; a UTF-8 and an ANSI path to one folder need not.
  *
  * @param path      Existing path.
  * @param out       Output buffer.
@@ -319,7 +320,8 @@ int dsd_remove_file(const char* path);
 /**
  * @brief @p path as UTF-16 for the wide Windows file calls when it is well-formed UTF-8, as the app's own paths are in
  * any script; NULL when it is not (a path in the ANSI code page, as a command line gives it) or memory runs out. The
- * caller frees it. Windows only: every file call that takes a path the app wrote decides wide or ANSI by it.
+ * caller frees it. Windows only, and only a conversion: NULL does not tell those two answers apart, so the path helpers
+ * decide wide or ANSI by dsd_win32_path_wide(), never by this.
  */
 wchar_t* dsd_win32_utf8_path_to_wide(const char* path);
 

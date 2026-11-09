@@ -1250,6 +1250,78 @@ expect_utf8_path_never_read_as_ansi(void) {
 }
 #endif
 
+#if DSD_PLATFORM_WIN_NATIVE
+static int
+count_dir_entry(const char* name, void* user) {
+    (void)name;
+    ++*(int*)user;
+    return 0;
+}
+
+/* Issue #828: a folder that already ends in a separator, as a drive root (C:\) does, gets no second one in its search
+   pattern (C:\*, not C:\\*). Windows folds a doubled separator, so the listing alone cannot show it. In code page 932 a
+   backslash byte can be a double-byte character's trail byte, which ends no folder name. */
+static int
+expect_dir_list_patterns(void) {
+    static const struct {
+        const wchar_t* dir;
+        const wchar_t* pattern;
+    } wide[] = {
+        {L"C:\\", L"C:\\*"},           {L"C:/", L"C:/*"},   {L"C:\\dsd", L"C:\\dsd\\*"},
+        {L"C:\\dsd\\", L"C:\\dsd\\*"}, {L"dsd", L"dsd\\*"},
+    };
+
+    static const struct {
+        const char* dir;
+        const char* pattern;
+    } ansi[] = {
+        {"C:\\", "C:\\*"},
+        {"C:/", "C:/*"},
+        {"C:\\dsd", "C:\\dsd\\*"},
+        {"C:\\dsd\\", "C:\\dsd\\*"},
+    };
+
+    int ok = 1;
+    for (size_t i = 0; i < sizeof wide / sizeof wide[0]; ++i) {
+        wchar_t* pattern = dsd_dir_list_wide_pattern(wide[i].dir);
+        if (!pattern || wcscmp(pattern, wide[i].pattern) != 0) {
+            DSD_FPRINTF(stderr, "wide pattern %u is wrong\n", (unsigned)i);
+            ok = 0;
+        }
+        free(pattern);
+    }
+    char out[64];
+    for (size_t i = 0; i < sizeof ansi / sizeof ansi[0]; ++i) {
+        if (dsd_dir_list_ansi_pattern(ansi[i].dir, out, sizeof out) != 0 || strcmp(out, ansi[i].pattern) != 0) {
+            DSD_FPRINTF(stderr, "ANSI pattern of %s: %s\n", ansi[i].dir, out);
+            ok = 0;
+        }
+    }
+    errno = 0;
+    ok = ok && dsd_dir_list_ansi_pattern("C:\\dsd", out, 8) == -1 && errno == ENAMETOOLONG;
+    if (GetACP() == 932U) {
+        // "dsd" and the kanji 0x95 0x5C: its trail byte is no separator.
+        ok = ok && dsd_dir_list_ansi_pattern("dsd\x95\x5C", out, sizeof out) == 0 && strcmp(out, "dsd\x95\x5C\\*") == 0;
+        ok = ok && dsd_dir_list_ansi_pattern("dsd\x95\x5C\\", out, sizeof out) == 0
+             && strcmp(out, "dsd\x95\x5C\\*") == 0;
+    }
+    // The drive root of the working folder lists.
+    char root[4] = {0};
+    char cwd[DSD_TEST_PATH_MAX];
+    int entries = 0;
+    ok = ok && _getcwd(cwd, (int)sizeof cwd) != NULL && cwd[1] == ':';
+    if (ok) {
+        DSD_MEMCPY(root, cwd, 2);
+        root[2] = '\\';
+        ok = dsd_dir_list(root, count_dir_entry, &entries) == 0;
+    }
+    if (!ok) {
+        DSD_FPRINTF(stderr, "dir list pattern or drive root listing failed\n");
+    }
+    return ok ? 0 : 1;
+}
+#endif
+
 /* Spec 2a.5: the existence probe answers for the name itself, never a link's target: 1 for a file, a folder or a
    dangling link, 0 only for a confirmed absence (ENOENT, ENOTDIR), -1 with errno when it cannot tell. */
 static int
@@ -1476,6 +1548,7 @@ main(void) {
     rc |= expect_path_type_reparse_point();
     rc |= expect_ansi_dir_helpers();
     rc |= expect_utf8_path_never_read_as_ansi();
+    rc |= expect_dir_list_patterns();
 #else
     rc |= expect_path_exists_nofollow_links_and_unknown();
     rc |= expect_rejects_symlink();
