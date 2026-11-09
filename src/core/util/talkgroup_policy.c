@@ -2580,7 +2580,8 @@ typedef struct {
 static void
 tg_policy_row_sink_fold(tg_policy_row_sink* sink, const char* line, size_t len) {
     char scratch[640];
-    for (size_t i = 0; i < sink->hash_count && len < sizeof scratch; i++) {
+    const size_t count = sink->hash_count < TG_POLICY_SINK_HASHES ? sink->hash_count : TG_POLICY_SINK_HASHES;
+    for (size_t i = 0; i < count && len < sizeof scratch; i++) {
         // The importer's reading splits the line in place.
         DSD_MEMCPY(scratch, line, len + 1U);
         (void)dsd_tg_policy_rows_hash_line(&sink->hashes[i], &sink->header, scratch);
@@ -2838,8 +2839,10 @@ tg_policy_append_row(FILE* wf, const tg_policy_append_lists* lists, const char* 
     DSD_MEMSET(&sink, 0, sizeof sink);
     sink.wf = wf;
     dsd_tg_policy_group_header_parse(probe->header_line, &sink.header);
-    sink.hash_count = lists->count;
-    for (size_t i = 0; i < lists->count; i++) {
+    // stores[] and hashes[] are both TG_POLICY_SINK_HASHES long; tg_policy_append_lists_add() keeps count within it.
+    const size_t count = lists->count < TG_POLICY_SINK_HASHES ? lists->count : TG_POLICY_SINK_HASHES;
+    sink.hash_count = count;
+    for (size_t i = 0; i < count; i++) {
         const dsd_tg_policy_context* ctx = lists->stores[i];
         sink.hashes[i] = tg_policy_baseline_for(ctx, path) ? ctx->baseline.rows_hash : DSD_TG_POLICY_ROWS_HASH_INIT;
     }
@@ -2850,7 +2853,7 @@ tg_policy_append_row(FILE* wf, const tg_policy_append_lists* lists, const char* 
     if (tg_policy_close_append(wf) != 0) {
         return -2;
     }
-    for (size_t i = 0; i < lists->count; i++) {
+    for (size_t i = 0; i < count; i++) {
         dsd_tg_policy_store_set_baseline(lists->stores[i], path, sink.hashes[i]);
         if (lists->stores[i] != lists->effective) {
             tg_policy_store_mirror_learned(lists->stores[i], entry);
