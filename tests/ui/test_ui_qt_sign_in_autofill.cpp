@@ -16,8 +16,9 @@
  *
  * House style, as test_ui_qt_radio_reference_model.cpp: no Qt6::Test, failures
  * counted with expect(). The timers are real, so every "it happened" wait has a
- * generous deadline, and every "not yet" check sits well inside the interval
- * that rules it out: a timer never fires early. */
+ * generous deadline, a "not yet" right after a timer starts is checked at once
+ * with the timer seen running, and a "not before" is a lower bound on when it
+ * happened: a timer never fires early. */
 
 #include <QByteArray>
 #include <QByteArrayView>
@@ -601,8 +602,9 @@ test_settle(void) {
     qint64 focusAt = host.clock.elapsed();
     form.username->forceActiveFocus();
     expect("focus is sent at once", host.last(OpField, 1).focused);
-    wait_ms(200);
-    expect_int("no request before the field has been still 300 ms", host.count(OpRequest), 0);
+    /* Checked at once: the wait has only just started, so nothing can have fired. The lower bound below proves it
+     * lasts. */
+    expect("focus starts the settle wait", host.count(OpRequest) == 0 && settle_active(relay));
     expect("then one", wait_until([&host] { return host.count(OpRequest) == 1; }));
     Op op = host.last(OpRequest);
     expect_int("for the username", op.field, 1);
@@ -625,11 +627,16 @@ test_settle(void) {
     expect("focus loss is sent", !host.last(OpField, 1).focused);
     focusAt = host.clock.elapsed();
     form.password->forceActiveFocus();
-    wait_ms(100);
+    /* A short gap, so a stall here cannot outlast the first wait: a wait not restarted would end 250 ms after the
+     * move at most, which the lower bound below tells apart. */
+    wait_ms(50);
     const qint64 movedAt = host.clock.elapsed();
     form.content->setY(-5.0);
-    wait_ms(250);
-    expect("a move restarts the wait", request_after(host, focusAt) < 0);
+    /* The sample that reports the move restarts the wait (or the first wait, ending first, finds the move and
+     * restarts itself); right after that nothing can have fired. */
+    expect("the move is sampled",
+           wait_until([&host] { return host.last(OpField, 2).rect == QRect(15, 157, 300, 46); }));
+    expect("a move restarts the wait", request_after(host, focusAt) < 0 && settle_active(relay));
     expect("the request comes once the field is still", wait_until([&host] { return host.count(OpRequest) == 2; }));
     op = host.last(OpRequest);
     expect_int("for the password", op.field, 2);
@@ -638,8 +645,9 @@ test_settle(void) {
 
     /* Focus lost before the wait ends: no request. */
     form.username->forceActiveFocus();
-    wait_ms(100);
+    expect("the focus starts a wait", settle_active(relay));
     form.elsewhere->forceActiveFocus();
+    expect("leaving the field stops it", !settle_active(relay));
     wait_ms(600);
     expect_int("leaving the field cancels its request", host.count(OpRequest), 2);
 
