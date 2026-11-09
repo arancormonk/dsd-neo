@@ -29,6 +29,7 @@
 
 #ifndef _WIN32
 #include <cerrno>
+#include <csignal>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -264,6 +265,8 @@ stop_mid_copy(Stop stop) {
     const QString fifo = src.filePath(QStringLiteral("feed.csv"));
     CHECK(mkfifo(QFile::encodeName(fifo).constData(), 0600) == 0, "a FIFO is made");
     const QString dest = dst.filePath(QStringLiteral("dest.csv"));
+    /* A write after the copy closed its end must fail with EPIPE, not kill the test. */
+    std::signal(SIGPIPE, SIG_IGN);
     DocumentImportTransport transport;
     int result = -1;
     std::thread worker([&transport, &fifo, &dest, &result]() { result = transport.copy(4, fifo, dest, 1 << 20); });
@@ -285,7 +288,11 @@ stop_mid_copy(Stop stop) {
     } else {
         transport.abort();
     }
-    CHECK(feed.write("y", 1) == 1 && feed.flush(), "one more byte is fed");
+    /* The copy is either still blocked in its read, which one more byte wakes, or it has already seen the stop and
+       closed the FIFO, in which case this write meets EPIPE. Both are the expected end, so the result is not checked;
+       what the case asserts is the copy's outcome below. */
+    (void)feed.write("y", 1);
+    (void)feed.flush();
     feed.close();
     worker.join();
     if (stop == Stop::Cancel) {
