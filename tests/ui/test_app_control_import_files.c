@@ -11,12 +11,16 @@
 #include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <stdio.h>
 #include <string.h>
 #include "test_env.h"
 #include "test_support.h"
+#if DSD_PLATFORM_WIN_NATIVE
+#include <windows.h>
+#endif
 
 static int
 expect_int(const char* tag, int got, int want) {
@@ -172,6 +176,83 @@ test_remove(const char* dir) {
     return rc;
 }
 
+/* dsd_dir_list() callback: count every file. */
+static int
+count_entry(const char* name, void* user) {
+    (void)name;
+    (*(int*)user)++;
+    return 0;
+}
+
+#if DSD_PLATFORM_WIN_NATIVE
+/* A file named by @p path read in the ANSI code page, as a command line names it: the decoy a UTF-8 path's bytes name
+   there. */
+static int
+ansi_file_make(const char* path) {
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    return CloseHandle(h) ? 0 : -1;
+}
+
+static int
+ansi_file_exists(const char* path) {
+    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+#endif
+
+/* An import named outside ASCII: the listing reports it by its UTF-8 name, and a refused replace and the delete reach
+   the same file the writes made, wide on Windows, leaving no temp behind. On code page 1252 the same bytes read in the
+   ANSI code page name another file (an A-tilde and a copyright sign for the e-acute), which must survive. */
+static int
+test_remove_non_ascii(const char* dir) {
+    int rc = 0;
+    static const char k_name[] = "Caf\xC3\xA9 group.csv";
+    char csv[DSD_TEST_PATH_MAX];
+    char side[DSD_TEST_PATH_MAX + 4];
+    (void)dsd_test_path_join(csv, sizeof csv, dir, k_name);
+    DSD_SNPRINTF(side, sizeof side, "%s.rr", csv);
+    rc |= expect_int("non-ASCII: CSV written", write_file(csv, "1,A,One,T\n"), 0);
+    dsd_rr_provenance prov;
+    fill_prov(&prov, "group", 6673, "11");
+    rc |= expect_int("non-ASCII: sidecar written", dsd_app_import_provenance_write(csv, &prov), 0);
+    static const char k_header_only[] = "DEC,Mode,Name,Tag\n";
+    rc |= expect_int("non-ASCII: a list with no rows is refused",
+                     dsd_app_import_replace_checked(csv, k_header_only, strlen(k_header_only), 0), -2);
+
+    list_seen seen;
+    DSD_MEMSET(&seen, 0, sizeof seen);
+    rc |= expect_int("non-ASCII: walked", dsd_app_imports_list(dir, record_visit, &seen), 0);
+    rc |= expect_int("non-ASCII: listed alone", seen.visits, 1);
+    rc |= expect_str("non-ASCII: listed by its UTF-8 name", seen.names[0], k_name);
+    rc |= expect_str("non-ASCII: listed path", seen.paths[0], csv);
+
+#if DSD_PLATFORM_WIN_NATIVE
+    const int decoys = GetACP() == 1252U;
+    if (decoys) {
+        rc |= expect_int("non-ASCII: ANSI decoys made", ansi_file_make(csv) | ansi_file_make(side), 0);
+    }
+#endif
+
+    rc |= expect_int("non-ASCII: the CSV went", dsd_app_import_remove(seen.paths[0]), 1);
+    rc |= expect_int("non-ASCII: CSV gone", exists(csv), 0);
+    rc |= expect_int("non-ASCII: sidecar gone", exists(side), 0);
+
+#if DSD_PLATFORM_WIN_NATIVE
+    if (decoys) {
+        rc |= expect_int("non-ASCII: ANSI CSV kept", ansi_file_exists(csv), 1);
+        rc |= expect_int("non-ASCII: ANSI sidecar kept", ansi_file_exists(side), 1);
+        (void)DeleteFileA(csv);
+        (void)DeleteFileA(side);
+    }
+#endif
+    int left = 0;
+    rc |= expect_int("non-ASCII: folder walked", dsd_dir_list(dir, count_entry, &left), 0);
+    rc |= expect_int("non-ASCII: nothing left, no temp", left, 0);
+    return rc;
+}
+
 /* A write lands the exact bytes, replaces a file there and leaves no temp; a checked replace keeps the stored file when
    the new text is not a valid list, and swaps it in when it is. */
 static int
@@ -275,6 +356,7 @@ main(void) {
     int rc = 0;
     rc |= test_list(dir);
     rc |= test_remove(dir);
+    rc |= test_remove_non_ascii(dir);
     rc |= test_write_and_replace(dir);
     rc |= test_provenance_and_conflicts(dir);
     rc |= test_dir_create(dir);

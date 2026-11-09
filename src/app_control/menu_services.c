@@ -108,7 +108,7 @@ static void
 svc_discard_new_wav(SNDFILE* wav, const char* path) {
     if (wav != NULL) {
         (void)close_wav_file(wav);
-        (void)remove(path);
+        (void)dsd_remove_file(path);
     }
 }
 
@@ -148,7 +148,7 @@ svc_recording_discard(svc_recording_opened* o, const svc_recording_target* targe
     if (o->static_wav != NULL) {
         (void)close_wav_file(o->static_wav);
         if (o->static_created) {
-            (void)remove(target->static_path);
+            (void)dsd_remove_file(target->static_path);
         }
     }
     (void)close_wav_file(o->raw);

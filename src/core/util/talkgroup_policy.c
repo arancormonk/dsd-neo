@@ -2579,7 +2579,7 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, const dsd_state* state) {
         failed = 1;
     }
     if (failed || dsd_replace_file_with_temp(tmp, path) != 0) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
     return 0;

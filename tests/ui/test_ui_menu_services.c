@@ -182,6 +182,11 @@ dsd_stat_is_regular(const dsd_stat_t* st) {
 }
 
 int
+dsd_remove_file(const char* path) {
+    return remove(path);
+}
+
+int
 dsd_mkdir(const char* path, int mode) {
     (void)path;
     (void)mode;

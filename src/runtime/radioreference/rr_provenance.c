@@ -115,15 +115,15 @@ dsd_rr_provenance_write(const char* csv_path, const dsd_rr_provenance* p) {
     }
 
     if (rr_provenance_emit(fp, p) != 0) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
 
     /* dsd_replace_file_with_temp is rename()+dir fsync on POSIX and
-       MoveFileExA(MOVEFILE_REPLACE_EXISTING) on Win32; a bare rename() would fail
+       MoveFileEx(MOVEFILE_REPLACE_EXISTING) on Win32; a bare rename() would fail
        on Windows every time the sidecar already exists. */
     if (dsd_replace_file_with_temp(tmp, rr_path) != 0) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
     return 0;
