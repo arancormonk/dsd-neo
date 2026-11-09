@@ -20,7 +20,6 @@
 #include <QTemporaryDir>
 #include <cerrno>
 #include <cstdio>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <qsystemdetection.h>
@@ -191,48 +190,33 @@ write_whole(const QString& path, const QByteArray& bytes) {
     return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
 }
 
-/* Where a parse's work folders go, each named for this code: the app cache, else the system temp folder, where the
-   name also carries the app's, since other programs share that folder. */
-struct WorkPlace {
-    QString dir;
-    QString prefix;
-};
-
-QList<WorkPlace>
-work_places() {
-    QList<WorkPlace> places;
-    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (!cache.isEmpty()) {
-        places.append({cache, QStringLiteral("settings-check-")});
-    }
-    const QString temp = QDir::tempPath(); // empty when TMPDIR names nothing
-    if (!temp.isEmpty()) {
-        places.append({temp, QStringLiteral("dsd-neo-settings-check-")});
-    }
-    return places;
+/* The app's private cache folder: the only place a copy of a settings file is ever written (a parse's work folder, a
+   scratch copy). Never a shared temp folder, where another process could remove a live copy, or Qt re-create its
+   folder with default permissions; Android lets an app write no system temp folder anyway (QDir::tempPath() is /tmp,
+   EACCES). Empty when the platform gives none. */
+QString
+app_cache() {
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
 }
 
-/* A private folder for a parse's files (0700, a random name, removed with what is in it): in the app cache, else in
-   the system temp folder. The app cache comes first because Android has no system temp folder an app may write:
-   QDir::tempPath() is /tmp there, which refuses it (EACCES). Null when neither can be had. */
+/* What a parse's work folder in the app cache is named, before its random part. */
+constexpr char kWorkPrefix[] = "settings-check-";
+
+/* A private folder for a parse's files in the app cache (0700, a random name, removed with what is in it). Null when
+   the cache cannot take one. */
 std::unique_ptr<QTemporaryDir>
 make_work_folder() {
-    const QList<WorkPlace> places = work_places();
-    for (const WorkPlace& place : places) {
-        if (!QDir().mkpath(place.dir)) {
-            continue;
-        }
-        auto work =
-            std::make_unique<QTemporaryDir>(place.dir + QLatin1Char('/') + place.prefix + QStringLiteral("XXXXXX"));
-        if (work->isValid()) {
-            return work;
-        }
+    const QString cache = app_cache();
+    if (cache.isEmpty() || !QDir().mkpath(cache)) {
+        return nullptr;
     }
-    return nullptr;
+    auto work = std::make_unique<QTemporaryDir>(cache + QLatin1Char('/') + QLatin1String(kWorkPrefix)
+                                                + QStringLiteral("XXXXXX"));
+    if (!work->isValid()) {
+        return nullptr;
+    }
+    return work;
 }
-
-/* The private temporary folder a scratch copy goes to where the app cache cannot take it, named for this code. */
-constexpr char kTempScratchPrefix[] = "dsd-neo-settings-scratch-";
 
 #ifndef Q_OS_WIN
 /* The names in the folder open as @p fd, "." and ".." left out; @p fd stays open. */
@@ -258,41 +242,75 @@ entries_at(int fd) {
     return names;
 }
 
-/* Removes @p name in the folder open as @p parent, never following a link at any step. A regular file or a link (the
-   link itself) is unlinked. A folder goes only when this user owns it and it lies at most @p depth folders down: it is
-   opened no-follow and checked to be the folder looked at, and its entries are removed through that descriptor, so a
-   name swapped for a link meanwhile reaches nothing else. Anything else is left. True when @p name is gone. */
+/* Opens the folder @p name in @p parent that @p seen describes, never following a link: -1 unless it is that very
+   folder (a name swapped meanwhile is refused). */
+int
+open_folder_at(int parent, const char* name, const struct stat& seen) {
+    const int folder = ::openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (folder < 0) {
+        return -1;
+    }
+    struct stat opened{};
+    if (::fstat(folder, &opened) != 0 || opened.st_dev != seen.st_dev || opened.st_ino != seen.st_ino) {
+        (void)::close(folder);
+        return -1;
+    }
+    return folder;
+}
+
+/* Whether all of @p name in the folder open as @p parent may go, never following a link: a regular file, a link (the
+   link itself), or a folder this user owns, at most @p depth folders down, holding nothing else. */
+bool
+removable_at(int parent, const char* name, int depth) {
+    struct stat seen{};
+    if (::fstatat(parent, name, &seen, AT_SYMLINK_NOFOLLOW) != 0) {
+        return false;
+    }
+    if (S_ISREG(seen.st_mode) || S_ISLNK(seen.st_mode)) {
+        return true;
+    }
+    if (!S_ISDIR(seen.st_mode) || seen.st_uid != ::geteuid() || depth < 0) {
+        return false;
+    }
+    const int folder = open_folder_at(parent, name, seen);
+    if (folder < 0) {
+        return false;
+    }
+    bool all = true;
+    const QList<QByteArray> names = entries_at(folder);
+    for (const QByteArray& entry : names) {
+        all = all && removable_at(folder, entry.constData(), depth - 1);
+    }
+    (void)::close(folder);
+    return all;
+}
+
+/* Removes @p name in the folder open as @p parent, which removable_at() allowed, never following a link: a file or a
+   link is unlinked, a folder opened no-follow, checked to be the same folder, and emptied through its descriptor. */
 bool
 remove_at(int parent, const char* name, int depth) {
     struct stat seen{};
     if (::fstatat(parent, name, &seen, AT_SYMLINK_NOFOLLOW) != 0) {
         return errno == ENOENT;
     }
-    if (S_ISREG(seen.st_mode) || S_ISLNK(seen.st_mode)) {
+    if (!S_ISDIR(seen.st_mode)) {
         return ::unlinkat(parent, name, 0) == 0;
     }
-    if (!S_ISDIR(seen.st_mode) || seen.st_uid != ::geteuid() || depth < 0) {
-        return false;
-    }
-    const int folder = ::openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    const int folder = open_folder_at(parent, name, seen);
     if (folder < 0) {
         return false;
     }
-    struct stat opened{};
-    bool emptied = ::fstat(folder, &opened) == 0 && opened.st_dev == seen.st_dev && opened.st_ino == seen.st_ino;
-    if (emptied) {
-        const QList<QByteArray> names = entries_at(folder);
-        for (const QByteArray& entry : names) {
-            emptied = remove_at(folder, entry.constData(), depth - 1) && emptied;
-        }
+    bool emptied = true;
+    const QList<QByteArray> names = entries_at(folder);
+    for (const QByteArray& entry : names) {
+        emptied = remove_at(folder, entry.constData(), depth - 1) && emptied;
     }
     (void)::close(folder);
     return emptied && ::unlinkat(parent, name, AT_REMOVEDIR) == 0;
 }
 
-/* Removes the folder @p name in @p dir as remove_at() does, when it is a folder and not a link to one (a file or a link
-   of that name is no folder of this code's and is left). @p dir itself may be reached through a link: macOS's /tmp is
-   one. */
+/* Removes the folder @p name in @p dir, all of it or nothing: only a real folder (a file or a link of that name is no
+   folder of this code's), and only when everything in it may go (removable_at()). */
 void
 remove_folder(const QString& dir, const QString& name, int depth) {
     const int parent = ::openat(AT_FDCWD, QFile::encodeName(dir).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -301,7 +319,8 @@ remove_folder(const QString& dir, const QString& name, int depth) {
     }
     const QByteArray native = QFile::encodeName(name);
     struct stat seen{};
-    if (::fstatat(parent, native.constData(), &seen, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(seen.st_mode)) {
+    if (::fstatat(parent, native.constData(), &seen, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(seen.st_mode)
+        && removable_at(parent, native.constData(), depth)) {
         (void)remove_at(parent, native.constData(), depth);
     }
     (void)::close(parent);
@@ -322,34 +341,44 @@ names_in(const QString& dir) {
     return names;
 }
 #else
-/* Windows: the temp folder is the user's own, so who owns a folder is not asked. A link or junction is removed itself,
-   never followed; a folder at most @p depth folders down is emptied and removed. */
+/* Windows, in the user's own cache: who owns a folder is not asked. A link or junction counts as itself, never
+   followed. Whether all of @p path may go, as removable_at() asks. */
 bool
-remove_entry(const QString& path, int depth) {
-    const QFileInfo info(path);
-    if (info.isSymLink() || info.isJunction()) {
-        return QFile::remove(path) || QDir().rmdir(path);
-    }
-    if (info.isFile()) {
-        return QFile::remove(path);
+removable_entry(const QFileInfo& info, int depth) {
+    if (info.isSymLink() || info.isJunction() || info.isFile()) {
+        return true;
     }
     if (!info.isDir() || depth < 0) {
-        return !info.exists();
+        return false;
+    }
+    const QFileInfoList entries =
+        QDir(info.filePath()).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+    return std::all_of(entries.cbegin(), entries.cend(),
+                       [depth](const QFileInfo& entry) { return removable_entry(entry, depth - 1); });
+}
+
+bool
+remove_entry(const QFileInfo& info) {
+    if (info.isSymLink() || info.isJunction()) {
+        return QFile::remove(info.filePath()) || QDir().rmdir(info.filePath());
+    }
+    if (!info.isDir()) {
+        return QFile::remove(info.filePath());
     }
     bool emptied = true;
     const QFileInfoList entries =
-        QDir(path).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        QDir(info.filePath()).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
     for (const QFileInfo& entry : entries) {
-        emptied = remove_entry(entry.absoluteFilePath(), depth - 1) && emptied;
+        emptied = remove_entry(entry) && emptied;
     }
-    return emptied && QDir().rmdir(path);
+    return emptied && QDir().rmdir(info.filePath());
 }
 
 void
 remove_folder(const QString& dir, const QString& name, int depth) {
     const QFileInfo info(dir + QLatin1Char('/') + name);
-    if (info.isDir() && !info.isSymLink() && !info.isJunction()) {
-        (void)remove_entry(info.filePath(), depth);
+    if (info.isDir() && !info.isSymLink() && !info.isJunction() && removable_entry(info, depth)) {
+        (void)remove_entry(info);
     }
 }
 
@@ -359,34 +388,19 @@ names_in(const QString& dir) {
 }
 #endif
 
-/* What a crash can leave of this code's: a check's work folder (its copy and clean file, so no folder in it), or a
-   scratch copy's private temporary folder (<folder>/<ini|native>/<organization>/<file>). */
-struct Leftover {
-    QString dir;
-    QString prefix;
-    int depth = 0;
-};
-
-/* A check or a run on scratch that never finished (a crash) left a copy of a settings file, which can hold
-   credentials. Removed at the next start: only folders named as this code names them, in the folders it makes them
-   in, owned by this user, and never through a link (see remove_at()). */
+/* A check that never finished (a crash between making its work folder and removing it) left a copy of a settings
+   file, which can hold credentials, in the app cache. Removed at the next start: only folders named as this code names
+   them, holding nothing but their files, and never through a link (see remove_folder()). */
 void
 sweep_work_folders() {
-    QList<Leftover> leftovers;
-    const QList<WorkPlace> places = work_places();
-    for (const WorkPlace& place : places) {
-        leftovers.append({place.dir, place.prefix, 0});
+    const QString cache = app_cache();
+    if (cache.isEmpty()) {
+        return;
     }
-    const QString temp = QDir::tempPath();
-    if (!temp.isEmpty()) {
-        leftovers.append({temp, QLatin1String(kTempScratchPrefix), 2});
-    }
-    for (const Leftover& leftover : leftovers) {
-        const QStringList names = names_in(leftover.dir);
-        for (const QString& name : names) {
-            if (name.startsWith(leftover.prefix)) {
-                remove_folder(leftover.dir, name, leftover.depth);
-            }
+    const QStringList names = names_in(cache);
+    for (const QString& name : names) {
+        if (name.startsWith(QLatin1String(kWorkPrefix))) {
+            remove_folder(cache, name, 0);
         }
     }
 }
@@ -434,29 +448,69 @@ parse_settings(const QByteArray& bytes) {
     return out;
 }
 
-/* With no work folder, a file read whole is parsed by an explicit-file QSettings that only reads: enough to leave a
-   healthy file alone, so a folder that cannot be had never makes one "could not be checked". One that is not clean
-   gets no clean file. On POSIX Qt reads the file the check opened and read, through its descriptor, never the name
-   again, so a FIFO swapped in meanwhile cannot hold the start; Windows has no FIFO at a file path. */
-SettingsParse
-parse_in_place(const QString& path, const SettingsRead& read) {
-    SettingsParse out;
+#ifndef Q_OS_WIN
+/* Back to the start of the file the check read, so a path that duplicates its descriptor (/dev/fd) reads it whole. */
+bool
+rewind_read(const SettingsRead& read) {
+    return read.file != nullptr && std::fseek(read.file.get(), 0, SEEK_SET) == 0;
+}
+#endif
+
+/* The path Qt reads the checked file through: on POSIX the file the check opened and read, by its descriptor, never
+   the name again, so a FIFO swapped in meanwhile cannot hold the start; by name on Windows, which has no FIFO at a
+   file path. Empty when there is none. */
+QString
+in_place_source(const QString& path, const SettingsRead& read, const SettingsRecoveryEnv& env) {
 #ifdef Q_OS_WIN
-    const QString source = path;
+    QString source = path;
 #else
     (void)path;
     if (read.file == nullptr) {
-        return out;
-    }
-    if (std::fseek(read.file.get(), 0, SEEK_SET) != 0) { // /dev/fd duplicates the descriptor, read position included
-        return out;
+        return QString();
     }
 #ifdef Q_OS_LINUX
-    const QString source = QStringLiteral("/proc/self/fd/%1").arg(dsd_fileno(read.file.get()));
+    QString source = QStringLiteral("/proc/self/fd/%1").arg(dsd_fileno(read.file.get()));
 #else
-    const QString source = QStringLiteral("/dev/fd/%1").arg(dsd_fileno(read.file.get()));
+    QString source = QStringLiteral("/dev/fd/%1").arg(dsd_fileno(read.file.get()));
 #endif
 #endif
+    return env.inPlaceSource ? env.inPlaceSource(source) : source;
+}
+
+/* Whether Qt reads @p source as exactly the bytes the check read. QSettings takes a path it cannot open, or one that
+   reads short, as an empty file, which would pass as clean. */
+bool
+reads_back(const QString& source, const SettingsRead& read) {
+#ifndef Q_OS_WIN
+    if (!rewind_read(read)) {
+        return false;
+    }
+#endif
+    QFile file(source);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    const QByteArray bytes = file.readAll();
+    if (file.error() != QFileDevice::NoError || bytes != read.bytes) {
+        return false;
+    }
+#ifndef Q_OS_WIN
+    return rewind_read(read); // where QSettings duplicates the descriptor again
+#else
+    return true;
+#endif
+}
+
+/* With no work folder, a file read whole is parsed by an explicit-file QSettings that only reads: enough to leave a
+   healthy file alone, so a cache that cannot be had never makes one "could not be checked". One that is not clean gets
+   no clean file. Not checked when Qt cannot read the very bytes the check read (reads_back()). */
+SettingsParse
+parse_in_place(const QString& path, const SettingsRead& read, const SettingsRecoveryEnv& env) {
+    SettingsParse out;
+    const QString source = in_place_source(path, read, env);
+    if (source.isEmpty() || !reads_back(source, read)) {
+        return out;
+    }
     const QSettings parsed(source, QSettings::IniFormat);
     (void)parsed.allKeys();
     out.checked = true;
@@ -466,10 +520,10 @@ parse_in_place(const QString& path, const SettingsRead& read) {
 
 /* What @p read's bytes parse to: through a work folder, else, for a file read whole, in place. */
 SettingsParse
-check_settings(const QString& path, const SettingsRead& read) {
+check_settings(const QString& path, const SettingsRead& read, const SettingsRecoveryEnv& env) {
     SettingsParse parsed = parse_settings(read.bytes);
     if (!parsed.checked && read.status == FileRead::Ok) {
-        parsed = parse_in_place(path, read);
+        parsed = parse_in_place(path, read, env);
     }
     return parsed;
 }
@@ -648,28 +702,6 @@ keep_unclean(const QString& path, const SettingsRead& read, const SettingsParse&
     return read.regular ? rename_aside_and_write(path, parsed.rewritten, env, keptPath) : SettingsRecovery::Scratch;
 }
 
-/* The private temporary folders (0700, a random name) holding a scratch copy for the rest of the process, by format:
-   settings hold credentials, so never a predictable name in a shared folder. */
-std::map<QString, std::unique_ptr<QTemporaryDir>> g_tempScratch;
-
-/* A new private temporary folder for @p leaf's scratch copy, held for the process and named for this code, so a start
-   after a crash removes it (sweep_work_folders()); empty when none can be made. */
-QString
-temp_scratch_folder(const QString& leaf) {
-    const QString temp = QDir::tempPath();
-    if (temp.isEmpty()) {
-        return QString();
-    }
-    auto folder = std::make_unique<QTemporaryDir>(temp + QLatin1Char('/') + QLatin1String(kTempScratchPrefix)
-                                                  + QStringLiteral("XXXXXX"));
-    if (!folder->isValid()) {
-        return QString();
-    }
-    QString dir = folder->path() + QLatin1Char('/') + leaf;
-    g_tempScratch[leaf] = std::move(folder);
-    return dir;
-}
-
 /* A folder no process can create, root included, so a QSettings there reads nothing and every write it makes fails:
    one under the null device on POSIX (ENOTDIR), and one whose name holds a character Windows refuses in any name. */
 QString
@@ -696,11 +728,6 @@ seed_scratch(QSettings::Format format, const QString& organization, const QStrin
     return false;
 }
 
-/* Every QSettings of @p format made from now on reads and writes a scratch copy, so nothing this run writes the
-   settings file: constructor writes, deferred flushes, static helpers and destruction alike. The copy starts as
-   @p seed, the keys that parsed, in the app cache, else in a private temporary folder. Where neither takes it, the
-   format is pointed where nothing can be written: its settings are defaults held in memory this run, and nothing is
-   written anywhere. False then. */
 QString
 scratch_leaf(QSettings::Format format) {
     return format == QSettings::IniFormat ? QStringLiteral("ini") : QStringLiteral("native");
@@ -710,28 +737,26 @@ scratch_leaf(QSettings::Format format) {
    it, which can hold credentials, unless this start put the format on scratch (another file of it may run there). */
 void
 forget_cache_scratch(QSettings::Format format) {
-    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString cache = app_cache();
     if (!cache.isEmpty() && !g_scratchFormats.contains(format)) {
         remove_folder(cache + QStringLiteral("/settings-scratch"), scratch_leaf(format), 1);
     }
 }
 
+/* Every QSettings of @p format made from now on reads and writes a scratch copy, so nothing this run writes the
+   settings file: constructor writes, deferred flushes, static helpers and destruction alike. The copy starts as
+   @p seed, the keys that parsed, in the app cache and nowhere else (app_cache()). Where the cache does not take it,
+   the format is pointed where nothing can be written: its settings are defaults held in memory this run, and nothing
+   is written anywhere. False then. */
 bool
 use_scratch(QSettings::Format format, const QString& organization, const QString& application, const QByteArray& seed,
             const SettingsRecoveryEnv& env) {
     g_scratchFormats.append(format);
-    const QString leaf = scratch_leaf(format);
-    if (!env.noScratchFolder || !env.noScratchFolder()) {
-        const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-        if (!cache.isEmpty()
-            && seed_scratch(format, organization, application, cache + QStringLiteral("/settings-scratch/") + leaf,
-                            seed)) {
-            return true;
-        }
-        const QString temp = temp_scratch_folder(leaf);
-        if (!temp.isEmpty() && seed_scratch(format, organization, application, temp, seed)) {
-            return true;
-        }
+    const QString cache = app_cache();
+    if ((!env.noScratchFolder || !env.noScratchFolder()) && !cache.isEmpty()
+        && seed_scratch(format, organization, application,
+                        cache + QStringLiteral("/settings-scratch/") + scratch_leaf(format), seed)) {
+        return true;
     }
     QSettings::setPath(format, QSettings::UserScope, uncreatable_folder());
     return false;
@@ -800,7 +825,7 @@ recover_file(const QString& path, QSettings::Format format, const QString& organ
         note_scratch(name, false);
         return SettingsRecovery::Missing;
     }
-    const SettingsParse parsed = check_settings(path, read);
+    const SettingsParse parsed = check_settings(path, read, env);
     if (read.status == FileRead::Ok && parsed.checked && parsed.clean) {
         note_scratch(name, false);
         return SettingsRecovery::Clean;

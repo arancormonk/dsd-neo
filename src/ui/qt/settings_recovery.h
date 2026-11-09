@@ -12,11 +12,11 @@
  * (IniFormat) and call history's default QSettings (NativeFormat, an INI file on Linux and Android; the Windows
  * registry and Apple plists are left alone). recover_settings_files() checks both before anything else opens them:
  *  - It reads the exact file, checking the read, and parses that copy apart from QSettings' fallback files, in a private
- *    work folder in the app cache (else the system temp folder, which Android does not let an app write). With neither,
- *    the file read whole is parsed through the open file it was read from (never the name again), which tells a clean
- *    file but cannot write a clean one. A work or temporary scratch folder a crash left (a copy of the settings, which
- *    can hold credentials) is removed at the next start, as is the app cache's scratch copy once its format runs on
- *    the real file again.
+ *    work folder in the app cache. A copy of the settings is never written anywhere but the app cache, never a shared
+ *    temp folder. With no cache, the file read whole is parsed through the open file it was read from (never the name
+ *    again), which tells a clean file but cannot write a clean one. A work folder a crash left (a copy of the
+ *    settings, which can hold credentials) is removed at the next start, as is the app cache's scratch copy once its
+ *    format runs on the real file again.
  *  - A file read whole that parses cleanly is left alone, as is a missing one.
  *  - Otherwise, a file read whole is copied to "<file>.unreadable-N" (N = 1..99, the first free one; created, never
  *    replacing anything, and synced) while it stays in place, and a clean file holding what Qt could parse replaces it,
@@ -26,10 +26,10 @@
  *    and synced beside it, and that file then takes its place. A crash between the rename and the replacement leaves
  *    no settings file at the next start (defaults), with the original kept.
  *  - When that cannot be done (an unknown or special path, no free name, a failed write), nothing may write the file:
- *    every QSettings of that format writes a scratch copy for the rest of the run, seeded with the keys that parsed, in
- *    the app cache or, where that cannot take it, a private temporary folder. The file stays as it was, and the next
- *    start tries again. Where neither takes the copy, the format is pointed at a folder nothing can create: its
- *    settings are defaults held in memory this run, and nothing is written anywhere.
+ *    every QSettings of that format writes a scratch copy in the app cache for the rest of the run, seeded with the
+ *    keys that parsed. The file stays as it was, and the next start tries again. Where the cache does not take the
+ *    copy, the format is pointed at a folder nothing can create: its settings are defaults held in memory this run,
+ *    and nothing is written anywhere.
  *  - A file confirmed gone after it was read (removed meanwhile) counts as missing: nothing is kept or written.
  * Each such file gets a JsonStoreNotice (json_store_post_notice()): its fileName is the settings file's own name
  * ("dsd-neo-app.ini" for AppPrefs, "<application>.conf" for call history, "DSD-neo.conf" in the app) and its keptName
@@ -55,8 +55,11 @@ struct SettingsRecoveryEnv {
     /** @brief Whether writing @p path's kept copy ("keep") or its clean file ("rewrite") fails, or, once the file was
         renamed aside, putting the clean file in its place ("replace"). Called as each step starts. */
     std::function<bool(const char* step, const QString& path)> writeFails;
-    /** @brief Whether no folder can take a scratch copy: neither the app cache nor a private temporary folder. */
+    /** @brief Whether the app cache cannot take a scratch copy (settings then run on defaults in memory). */
     std::function<bool()> noScratchFolder;
+    /** @brief The path a check with no work folder parses instead of @p source, the open file's own (a test gives one
+        Qt cannot read, which must leave the file not checked). */
+    std::function<QString(const QString& source)> inPlaceSource;
 };
 
 /** @brief What checking one settings file found. */

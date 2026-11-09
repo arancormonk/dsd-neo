@@ -10,11 +10,12 @@
  * (AppPrefs' constructor write, a deferred flush, the static helpers and destruction all leave the original alone); a
  * folder or FIFO at the path; a file gone before it is kept (missing: nothing kept or written, no notice); a failed
  * replacement after the rename; no folder for a scratch copy (defaults in memory, nothing written anywhere); no
- * system temp folder (Android's /tmp) and no app cache for the check; an app cache that cannot take the scratch copy,
- * which a private temporary folder then takes; a later check forgetting an earlier scratch; the first call-history save
- * after a malformed file; replacePortable() after a recovery; and a pending restore that waits while the settings run
- * on the scratch copy, then applies after a later start recovers them. Registered only when the Qt frontend is enabled
- * (DSD_ENABLE_QT_UI). */
+ * system temp folder (Android's /tmp) and no app cache for the check, parsed in place through the file read (a FIFO
+ * swapped in, a path Qt cannot read); an app cache that cannot take the scratch copy (defaults in memory, nothing
+ * written outside the cache); leftover work folders and cache scratch copies; a later check forgetting an earlier
+ * scratch; the first call-history save after a malformed file; replacePortable() after a recovery; and a pending
+ * restore that waits while the settings run on the scratch copy, then applies after a later start recovers them.
+ * Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QByteArrayView>
@@ -38,6 +39,7 @@
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <functional>
+#include <qflags.h>
 #include <qsystemdetection.h>
 #include <qtenvironmentvariables.h>
 #include <stdio.h>
@@ -658,6 +660,19 @@ test_no_system_temp_folder() {
                QFileInfo::exists(g_paths.prefs) && !QFileInfo(g_paths.prefs).isFile());
         QFile::remove(g_paths.prefs);
         relaunch();
+        // A parse in place Qt cannot read reads as an empty file, which would pass as clean: the file is not checked.
+        reset();
+        expect("in place unreadable: written", write_file(g_paths.prefs, kUnreadSection));
+        SettingsRecoveryEnv unreachable;
+        unreachable.inPlaceSource = [&blocker](const QString&) { return blocker + QStringLiteral("/no-such-file"); };
+        post_sentinel_notice();
+        expect("in place unreadable: not Clean", recover_prefs(unreachable) == SettingsRecovery::Scratch);
+        const dsd_qt::JsonStoreNotice* notice =
+            notice_for(dsd_qt::json_store_notices(), dsd_qt::settings_recovery_prefs_file_name());
+        expect("in place unreadable: could not be checked",
+               notice != nullptr && notice->reason.startsWith(QLatin1String("could not be checked")));
+        expect("in place unreadable: the original is untouched", read_file(g_paths.prefs) == kUnreadSection);
+        relaunch();
 #endif
     }
     reset();
@@ -665,67 +680,52 @@ test_no_system_temp_folder() {
 }
 #endif
 
-/* The app cache cannot take the scratch copy (a file stands where its folder would go): a private temporary folder
-   takes it, seeded with what parsed, and the run says it is on scratch; with no temporary folder either, the run holds
-   defaults in memory and says so. Never "on scratch" with nothing in the copy. */
+/* The app cache cannot take the scratch copy (a file stands where its folder would go): the run holds defaults in
+   memory and says so, and no copy of the settings is written anywhere else, the system temp folder included. Never
+   "on scratch" with nothing in the copy. */
 void
 test_scratch_copy_not_in_cache() {
     const QString prefsName = dsd_qt::settings_recovery_prefs_file_name();
     const QString cacheScratch =
         QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/settings-scratch");
+    const QString temp =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/tmp-empty");
     QDir(cacheScratch).removeRecursively();
     expect("scratch not in cache: a file where the folder goes", write_file(cacheScratch, "not a folder"));
+    expect("scratch not in cache: an empty temp folder", QDir().mkpath(temp));
     reset();
     expect("scratch not in cache: written", write_file(g_paths.prefs, kUnreadSection));
     take_every_kept_name("scratch not in cache", g_paths.prefs);
-
-#ifndef Q_OS_WIN
-    const QString blocker = not_a_folder();
     {
-        const ScopedEnv tmp("TMPDIR", QFile::encodeName(blocker));
+        const ScopedEnv tmp("TMPDIR", QFile::encodeName(temp));
         post_sentinel_notice();
-        expect("no scratch copy anywhere: Scratch", recover_prefs() == SettingsRecovery::Scratch);
-        expect("no scratch copy anywhere: in memory", dsd_qt::settings_recovery_in_memory(prefsName));
+        expect("scratch not in cache: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+        expect("scratch not in cache: in memory", dsd_qt::settings_recovery_in_memory(prefsName));
         const dsd_qt::JsonStoreNotice* notice = notice_for(dsd_qt::json_store_notices(), prefsName);
-        expect("no scratch copy anywhere: the notice says so",
+        expect("scratch not in cache: the notice says so",
                notice != nullptr && notice->reason.endsWith(QLatin1String("; no scratch copy could be written")));
-        expect("no scratch copy anywhere: the settings are defaults",
+        expect("scratch not in cache: the settings are defaults",
                !AppPrefs::readPortable().contains("decode/extraArgs"));
-        expect("no scratch copy anywhere: the original is untouched", read_file(g_paths.prefs) == kUnreadSection);
+        {
+            AppPrefs prefs;
+            prefs.setAutoStartOnAttach(!prefs.autoStartOnAttach());
+            QCoreApplication::processEvents();
+        }
+        expect("scratch not in cache: the original is untouched", read_file(g_paths.prefs) == kUnreadSection);
+        expect("scratch not in cache: nothing written in the temp folder",
+               QDir(temp).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot).isEmpty());
+        expect("scratch not in cache: the taken names are untouched", kept_names_untouched(g_paths.prefs));
     }
-    QFile::remove(blocker);
-    relaunch();
-#endif
-
-    expect("scratch in a temporary folder: Scratch", recover_prefs() == SettingsRecovery::Scratch);
-    expect("scratch in a temporary folder: on scratch, not in memory",
-           dsd_qt::settings_recovery_scratch(prefsName) && !dsd_qt::settings_recovery_in_memory(prefsName));
-    const QString scratch = prefs_file_now();
-    expect("scratch in a temporary folder: named so a later start can remove it",
-           scratch.contains(QStringLiteral("/dsd-neo-settings-scratch-")));
-    expect("scratch in a temporary folder: outside the app cache and the settings folder",
-           scratch != g_paths.prefs
-               && !scratch.startsWith(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)));
-    expect("scratch in a temporary folder: seeded with what parsed",
-           AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
-    {
-        AppPrefs prefs;
-        prefs.setAutoStartOnAttach(!prefs.autoStartOnAttach());
-        QCoreApplication::processEvents();
-    }
-    expect("scratch in a temporary folder: writes go to the copy",
-           read_file(g_paths.prefs) == kUnreadSection && read_file(scratch).contains("autoStart"));
-    expect("scratch in a temporary folder: the taken names are untouched", kept_names_untouched(g_paths.prefs));
-
     QFile::remove(cacheScratch);
+    QDir(temp).removeRecursively();
     relaunch();
     reset();
 }
 
-/* A check that never finished (a crash) left its work folder, with a copy of the settings, which can hold
-   credentials: the next start removes it, in the app cache and in the system temp folder, and nothing else there. A
-   link inside goes, never what it points to; a link with a work folder's name and a folder holding a folder are not
-   this code's and stay. */
+/* A check that never finished (a crash) left its work folder in the app cache, with a copy of the settings, which can
+   hold credentials: the next start removes it, and nothing else. A link inside goes, never what it points to. A link
+   with a work folder's name stays, and so does all of a work folder holding a folder: nothing in it goes. The shared
+   temp folder is never touched, whatever is in it. */
 void
 test_leftover_work_folders() {
     const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
@@ -733,57 +733,39 @@ test_leftover_work_folders() {
     const QString temp = data + QStringLiteral("/tmp-for-sweep");
     const QString outside = data + QStringLiteral("/outside");
     expect("leftovers: the outside file", write_file(outside + QStringLiteral("/target.ini"), "secret"));
-    const QStringList leftovers{cache + QStringLiteral("/settings-check-AbC123"),
-                                temp + QStringLiteral("/dsd-neo-settings-check-Xy9Z01")};
-    // A scratch copy's temporary folder, as a crash leaves it: <folder>/<ini|native>/<organization>/<file>.
-    const QString tempScratch = temp + QStringLiteral("/dsd-neo-settings-scratch-Sc1234");
-    expect("leftovers: a temporary scratch copy",
-           write_file(tempScratch + QStringLiteral("/ini/dsd-neo/dsd-neo-app.ini"), "secret"));
-    for (const QString& leftover : leftovers) {
-        expect("leftovers: a work folder's copy", write_file(leftover + QStringLiteral("/snapshot.ini"), "secret"));
-        expect("leftovers: its clean file", write_file(leftover + QStringLiteral("/rewritten.ini"), "secret"));
-    }
+    const QString leftover = cache + QStringLiteral("/settings-check-AbC123");
+    expect("leftovers: a work folder's copy", write_file(leftover + QStringLiteral("/snapshot.ini"), "secret"));
+    expect("leftovers: its clean file", write_file(leftover + QStringLiteral("/rewritten.ini"), "secret"));
     const QStringList kept{cache + QStringLiteral("/settings-checkup/file"),
                            cache + QStringLiteral("/other/file"),
+                           cache + QStringLiteral("/settings-check-Nested/snapshot.ini"),
+                           cache + QStringLiteral("/settings-check-Nested/inner/file"),
                            temp + QStringLiteral("/settings-check-Q1w2E3/file"),
-                           temp + QStringLiteral("/other-app-settings-check-R4t5Y6/file"),
-                           temp + QStringLiteral("/other-settings-scratch-Ab12Cd/ini/file"),
-                           cache + QStringLiteral("/settings-check-Nested/inner/file")};
+                           temp + QStringLiteral("/dsd-neo-settings-check-Xy9Z01/snapshot.ini"),
+                           temp + QStringLiteral("/dsd-neo-settings-scratch-Sc1234/ini/dsd-neo/dsd-neo-app.ini")};
     for (const QString& file : kept) {
         expect("leftovers: an unrelated file", write_file(file, "keep"));
     }
 #ifndef Q_OS_WIN
     expect("leftovers: a link inside a work folder",
-           QFile::link(outside + QStringLiteral("/target.ini"), leftovers[0] + QStringLiteral("/link.ini")));
+           QFile::link(outside + QStringLiteral("/target.ini"), leftover + QStringLiteral("/link.ini")));
     expect("leftovers: a link named as a work folder",
            QFile::link(outside, cache + QStringLiteral("/settings-check-Link00")));
-    // In the shared temp folder too, and one named as a scratch folder: never followed into what they point to.
-    expect("leftovers: a temp link named as a work folder",
-           QFile::link(outside, temp + QStringLiteral("/dsd-neo-settings-check-Link01")));
-    expect("leftovers: a temp link named as a scratch folder",
-           QFile::link(outside, temp + QStringLiteral("/dsd-neo-settings-scratch-Link02")));
 #endif
     {
         const ScopedEnv tmp("TMPDIR", QFile::encodeName(temp));
         reset();
         dsd_qt::recover_settings_files();
     }
-    for (const QString& leftover : leftovers) {
-        expect(QStringLiteral("leftovers: %1 is gone").arg(QFileInfo(leftover).fileName()),
-               !QFileInfo::exists(leftover));
-    }
+    expect("leftovers: the work folder is gone", !QFileInfo::exists(leftover));
     for (const QString& file : kept) {
         expect(QStringLiteral("leftovers: %1 is untouched").arg(file.mid(data.size())), read_file(file) == "keep");
     }
-    expect("leftovers: the temporary scratch copy is gone", !QFileInfo::exists(tempScratch));
     expect("leftovers: what a link pointed to is untouched",
            read_file(outside + QStringLiteral("/target.ini")) == "secret");
 #ifndef Q_OS_WIN
     expect("leftovers: a link named as a work folder stays",
            QFileInfo(cache + QStringLiteral("/settings-check-Link00")).isSymLink());
-    expect("leftovers: temp links named as this code's folders stay",
-           QFileInfo(temp + QStringLiteral("/dsd-neo-settings-check-Link01")).isSymLink()
-               && QFileInfo(temp + QStringLiteral("/dsd-neo-settings-scratch-Link02")).isSymLink());
     QFile::remove(cache + QStringLiteral("/settings-check-Link00"));
 #endif
     QDir(temp).removeRecursively();
