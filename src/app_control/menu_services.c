@@ -1050,13 +1050,9 @@ svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path, svc_gr
     svc_group_list_result local;
     svc_group_list_result* r = result ? result : &local;
     dsd_tg_policy_store* loaded = NULL;
+    // The load already refuses data rows none of which loaded; a file with no data rows at all is a list emptied on
+    // purpose, taken as startup takes it.
     if (svc_load_group_list(state ? opts : NULL, path, &loaded, r) != 0) {
-        return -1;
-    }
-    // A file with nothing to load is a wrong file far more often than an empty list; Clear empties the list.
-    if (r->rows.accepted == 0u) {
-        r->status = SVC_GROUP_LIST_NO_USABLE_ROWS;
-        dsd_tg_policy_release(loaded);
         return -1;
     }
     r->cleared_temporary =

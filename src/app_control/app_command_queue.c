@@ -3108,6 +3108,13 @@ group_list_load_feedback(dsd_state* state, const char* verb, const char* done, c
     if (r->rows.skipped > 0u) {
         DSD_SNPRINTF(skipped, sizeof skipped, "%u skipped", r->rows.skipped);
     }
+    if (r->status == SVC_GROUP_LIST_LOADED && r->rows.accepted == 0u) {
+        // A file with no data rows at all: an empty list on purpose, which "0 rows" would read as a failed load.
+        ui_set_toast(state, 3, "Applied: Group list %s -> empty list", done);
+        LOG_INFO("NOTICE: Group list %s from %s: the file has no rows, so the list is empty%s.\n", done, path,
+                 r->cleared_temporary ? "; temporary TG avoids and call skips cleared" : "");
+        return;
+    }
     if (r->status == SVC_GROUP_LIST_LOADED) {
         ui_set_toast(state, 3, "Applied: Group list %s -> %u %s%s%s", done, r->rows.accepted,
                      r->rows.accepted == 1u ? "row" : "rows", skipped[0] ? ", " : "", skipped);

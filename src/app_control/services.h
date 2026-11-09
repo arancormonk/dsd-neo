@@ -302,7 +302,7 @@ typedef enum {
     SVC_GROUP_LIST_NOT_FOUND,      /**< no such file */
     SVC_GROUP_LIST_UNREADABLE,     /**< the file could not be opened, or a read failed part way */
     SVC_GROUP_LIST_NO_MEMORY,      /**< a row, or the list, could not be stored */
-    SVC_GROUP_LIST_NO_USABLE_ROWS, /**< data rows none of which loaded; for an import, also a file with none at all */
+    SVC_GROUP_LIST_NO_USABLE_ROWS, /**< data rows none of which loaded */
 } svc_group_list_status;
 
 /** What a live group list load did: its status, what the read found, and whether taking the file cleared temporary TG
@@ -317,15 +317,16 @@ typedef struct {
  * @brief Import a group list CSV into runtime state; a failure keeps the live list and its path.
  *
  * Refuses, changing nothing (rows, path, generations, temporary avoids and call skips), a file that cannot be read in
- * full, a row that cannot be stored, and a file with no usable rows: Clear is how a list is emptied. @p result (may be
- * NULL) says what happened either way. Returns 0 when the file became the live list, -1 otherwise.
+ * full, a row that cannot be stored, and data rows none of which loaded (an Excel CSV saved with ';'). A file with no
+ * data rows at all (a header only, or no bytes) is a list emptied on purpose: it becomes the live list, empty and
+ * saved to that file, as at startup. @p result (may be NULL) says what happened either way. Returns 0 when the file
+ * became the live list, -1 otherwise.
  */
 int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path, svc_group_list_result* result);
 /** svc_import_group_list() in two steps, for a caller that must know the file loads before it changes anything: the
  * load changes nothing (0 with a new reference in @p out to release, -1 untouched); the install makes @p loaded the
  * live list, saved to @p path, and cannot fail (dsd_tg_policy_load_group_file(), dsd_tg_policy_adopt_group_file()).
- * The load refuses a file it cannot read in full or store, as an import does, but takes one with no data rows at all
- * (a list emptied on purpose): refusing that is the import's call. @p result may be NULL. */
+ * The load refuses what an import refuses and takes what it takes. @p result may be NULL. */
 int svc_load_group_list(const dsd_opts* opts, const char* path, dsd_tg_policy_store** out,
                         svc_group_list_result* result);
 void svc_install_group_list(dsd_opts* opts, dsd_state* state, const char* path, dsd_tg_policy_store* loaded);

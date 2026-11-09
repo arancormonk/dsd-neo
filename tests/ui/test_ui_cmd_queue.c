@@ -23739,19 +23739,18 @@ make_group_file(char* path, size_t size, const char* prefix, const char* content
 
 /* A live import replaces the whole list, so a file that does not hold one is refused with its reason, keeping the
    rows, their file, the table version and the temporary avoids (spec R1): an Excel CSV saved with ';' separators, a
-   header with no rows, a missing file. The toasts lead with the outcome and the counts (R5). */
+   missing file. The toasts lead with the outcome and the counts (R5). A header with no rows is an empty list on
+   purpose (test_group_import_takes_an_empty_file()). */
 static int
 test_group_import_refuses_unusable_files(void) {
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);
-    char good[DSD_TEST_PATH_MAX], excel[DSD_TEST_PATH_MAX], header[DSD_TEST_PATH_MAX], missing[DSD_TEST_PATH_MAX];
+    char good[DSD_TEST_PATH_MAX], excel[DSD_TEST_PATH_MAX], missing[DSD_TEST_PATH_MAX];
     const char* good_csv = "id,mode,name\n100,A,Dispatch\n200,A,Fire\nnot a row\n";
     const char* excel_csv = "id;mode;name\n100;B;Dispatch\n200;B;Fire\n";
-    const char* header_csv = "id,mode,name\n";
     int rc = make_group_file(good, sizeof good, "dsd_r1_good", good_csv);
     rc |= make_group_file(excel, sizeof excel, "dsd_r1_excel", excel_csv);
-    rc |= make_group_file(header, sizeof header, "dsd_r1_header", header_csv);
     rc |= make_group_file(missing, sizeof missing, "dsd_r1_missing", NULL);
     if (rc != 0) {
         freeState(&state);
@@ -23774,12 +23773,6 @@ test_group_import_refuses_unusable_files(void) {
                      "Failed: Group list import -> no usable rows (2 skipped); list unchanged");
     rc |= expect_group_list_kept("R1 ';' import keeps the list", &opts, &state, &mark);
 
-    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, header);
-    rc |= expect_int("R1 header-only import drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_str("R1 header-only import toast", state.ui_msg,
-                     "Failed: Group list import -> no usable rows; list unchanged");
-    rc |= expect_group_list_kept("R1 header-only import keeps the list", &opts, &state, &mark);
-
     post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, missing);
     rc |= expect_int("R1 missing import drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_str("R1 missing import toast", state.ui_msg,
@@ -23792,11 +23785,75 @@ test_group_import_refuses_unusable_files(void) {
     rc |= expect_int("R1 edit after refusals drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_file_bytes(good, "id,mode,name\n100,A,Dispatch\n200,B,Fire\n");
     rc |= expect_file_bytes(excel, excel_csv);
-    rc |= expect_file_bytes(header, header_csv);
     freeState(&state);
     (void)remove(good);
     (void)remove(excel);
+    return rc;
+}
+
+/* A file with no data rows at all (a header only, or no bytes) is a list emptied on purpose, as at startup: a live
+   import or reload takes it as the empty list, saved to that file, with its baseline, so the next saved change goes
+   there and an outside edit is still caught. Without this, switching a session to such a list kept the previous
+   list and its file taking the edits. */
+static int
+test_group_import_takes_an_empty_file(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char good[DSD_TEST_PATH_MAX], header[DSD_TEST_PATH_MAX], empty[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(good, sizeof good, "dsd_empty_good", "id,mode,name\n100,A,Dispatch\n200,A,Fire\n");
+    rc |= make_group_file(header, sizeof header, "dsd_empty_header", "id,mode,name\n");
+    rc |= make_group_file(empty, sizeof empty, "dsd_empty_bytes", "");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, good);
+    rc |= expect_int("empty: seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("empty: seed temporary avoid", dsd_tg_policy_session_avoid_add(&state, 300), 0);
+    group_list_mark mark;
+    group_list_mark_take(&opts, &state, &mark);
+
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, header);
+    rc |= expect_int("empty: header-only import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("empty: header-only import toast", state.ui_msg, "Applied: Group list imported -> empty list");
+    rc |= expect_str("empty: header-only import takes the path", opts.group_in_file, header);
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    rc |= expect_true("empty: the table moved on", generation != mark.generation);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("empty: lookup", dsd_tg_policy_lookup_id(&state, 100, &lookup), 0);
+    rc |= expect_true("empty: the old rows are gone", lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    rc |= expect_true("empty: temporary avoids cleared", !dsd_tg_policy_session_avoid_contains(&state, 300));
+    rc |= expect_true("empty: the list is complete", !dsd_tg_policy_incomplete(&state));
+
+    // A reload of it says the same, and the next saved change goes into that file, not the previous list's.
+    rc |= expect_true("empty: reload queued", dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD) > 0);
+    rc |= expect_int("empty: reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("empty: reload toast", state.ui_msg, "Applied: Group list reloaded -> empty list");
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    rc |= expect_true("empty: edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("empty: edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_file_bytes(header, "id,mode,name\n100,B,\n");
+    rc |= expect_file_bytes(good, "id,mode,name\n100,A,Dispatch\n200,A,Fire\n");
+
+    // A zero-byte file is the same empty list; its baseline (no rows) catches an edit made outside dsd-neo.
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, empty);
+    rc |= expect_int("empty: zero-byte import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("empty: zero-byte import toast", state.ui_msg, "Applied: Group list imported -> empty list");
+    rc |= expect_str("empty: zero-byte import takes the path", opts.group_in_file, empty);
+    const char* outside_csv = "id,mode,name\n500,A,Five\n";
+    rc |= expect_int("empty: outside edit", write_file_bytes(empty, outside_csv, strlen(outside_csv)), 0);
+    rc |= expect_true("empty: edit after the outside edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("empty: edit after the outside edit drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("empty: outside edit refused", state.ui_msg,
+                     "Talkgroup change kept for this session only; group list changed on disk, reload it");
+    rc |= expect_file_bytes(empty, outside_csv);
+    freeState(&state);
+    (void)remove(good);
     (void)remove(header);
+    (void)remove(empty);
     return rc;
 }
 
@@ -29463,6 +29520,7 @@ main(void) {
     rc |= test_config_group_path_reloads_before_persist(0);
     rc |= test_config_group_path_reloads_before_persist(1);
     rc |= test_group_import_refuses_unusable_files();
+    rc |= test_group_import_takes_an_empty_file();
     rc |= test_group_startup_unusable_file_is_not_saved();
     rc |= test_group_outside_edit_is_not_overwritten();
     rc |= test_group_replaced_file_waits_for_its_reload();

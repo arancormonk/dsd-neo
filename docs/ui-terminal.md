@@ -500,7 +500,9 @@ Group policy reload:
 - Importing a group list (`-G` CSV) from **Trunking -> Channels & groups** performs a full policy reload. A file
   that fails to load (not found, not readable, or no usable rows, such as a CSV saved with `;` separators) keeps
   the current list, and the toast says why: `Failed: Group list import -> no usable rows (2 skipped); list
-  unchanged`. A load that works says what it read: `Applied: Group list imported -> 42 rows, 1 skipped`.
+  unchanged`. A load that works says what it read: `Applied: Group list imported -> 42 rows, 1 skipped`. A file
+  with no rows at all (a header only, or no bytes) is a list emptied on purpose and loads as one, as `-G` does at
+  startup: `Applied: Group list imported -> empty list`, and later changes save to that file.
 - **Reload group list [groups.csv]**, right after the import row, reads the group list file again, so edits made
   in another program (a text editor, a spreadsheet) take effect without typing the path. The brackets name the file:
   the global group list, the one `-G` or the last import set, even while a `-Y` row or trunk-scan target with its own
