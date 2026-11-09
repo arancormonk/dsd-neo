@@ -271,6 +271,19 @@ Item {
             compare(tc.wizard.fileText, "/data/other.wav", "a draft naming another file keeps it");
         }
 
+        // The Cancel copy button has one label: the cancel answers at once.
+        function test_cancel_copy_has_one_label() {
+            pickReplay("content://provider/document/cap.wav");
+            var cancel = item("wizardReplayCancel");
+            compare(cancel.text, "Cancel copy");
+            verify(cancel.enabled);
+            tc.wizard.cancelReplay();
+            tc.wizard.cancelReplay();
+            compare(testContext.replayCalls().cancels, 1, "a second tap asks nothing more");
+            compare(cancel.text, "Cancel copy");
+            verify(!item("wizardReplayProgress").visible);
+        }
+
         // A second pick replaces the first copy; only its own answer counts.
         function test_a_second_pick_supersedes_the_first() {
             pickReplay("content://provider/document/first.wav");

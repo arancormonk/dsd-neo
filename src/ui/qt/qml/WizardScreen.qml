@@ -128,13 +128,12 @@ Item {
     // every close takes the next, so the answer to an import started before
     // is dropped rather than written into another system.
     property int generation: 0
-    // The replay pick waiting for its answer (0 when none), whether it was
-    // asked to stop, and why the last one failed, shown under the Replay file
-    // row. Only a provider's document is copied: a local file is answered at
-    // once, on the next turn, so the row shows a copy only while the store
-    // says one runs, and never flashes for a desktop pick.
+    // The replay pick waiting for its answer (0 when none), and why the last
+    // one failed, shown under the Replay file row. Only a provider's document
+    // is copied: a local file is answered at once, on the next turn, so the
+    // row shows a copy only while the store says one runs, and never flashes
+    // for a desktop pick.
     property int replayRequest: 0
-    property bool replayCancelling: false
     property string replayNotice: ""
     readonly property bool replayPending: replayRequest > 0
     readonly property bool replayCopying: replayPending && replayFiles.copying
@@ -364,7 +363,6 @@ Item {
         if (replayPending)
             replayFiles.cancelReplayImport();
         replayRequest = 0;
-        replayCancelling = false;
         replayNotice = "";
     }
     onVisibleChanged: {
@@ -385,14 +383,13 @@ Item {
     // then, and stays if the copy fails.
     function beginReplay(reference, hint) {
         replayNotice = "";
-        replayCancelling = false;
         replayRequest = replayFiles.beginReplayImport(reference, hint);
     }
+    // The store answers a cancel at once (on the next turn) and stops
+    // copying, so the row leaves with no "Cancelling…" step.
     function cancelReplay() {
-        if (!replayPending || replayCancelling)
-            return;
-        replayCancelling = true;
-        replayFiles.cancelReplayImport();
+        if (replayPending)
+            replayFiles.cancelReplayImport();
     }
     Connections {
         target: replayFiles
@@ -400,7 +397,6 @@ Item {
             if (wizard.replayRequest === 0 || id !== wizard.replayRequest)
                 return;
             wizard.replayRequest = 0;
-            wizard.replayCancelling = false;
             if (result.ok)
                 wizard.fileText = result.path;
             else
@@ -1091,8 +1087,7 @@ Item {
                             OutlineButton {
                                 objectName: "wizardReplayCancel"
                                 width: parent.width
-                                text: wizard.replayCancelling ? qsTr("Cancelling…") : qsTr("Cancel copy")
-                                enabled: !wizard.replayCancelling
+                                text: qsTr("Cancel copy")
                                 onClicked: wizard.cancelReplay()
                             }
                         }
