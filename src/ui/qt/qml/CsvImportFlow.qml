@@ -50,6 +50,12 @@ Item {
         }
         return decoded.substring(decoded.lastIndexOf('/') + 1);
     }
+    // A chosen companion's name as a person reads it. Only a picked file's
+    // reference (a content: or file: URI) is URL-encoded; a library file's
+    // stored path carries its real name, shown as it is ("keys%20old.csv").
+    function companionName(reference) {
+        return /^(content|file):/i.test(reference) ? readableName(reference) : reference.substring(reference.lastIndexOf('/') + 1);
+    }
 
     // One completion per pick()/begin(). A companion rejection only abandons
     // that slot's choice; the enclosing import remains active on the sheet.
@@ -315,7 +321,7 @@ Item {
                 ReadableText {
                     objectName: "csvCompanionSelected_" + slot.index
                     width: parent.width
-                    text: flow.companions[slot.modelData] ? qsTr("Selected: %1").arg(flow.readableName(flow.companions[slot.modelData])) : qsTr("No file selected")
+                    text: flow.companions[slot.modelData] ? qsTr("Selected: %1").arg(flow.companionName(flow.companions[slot.modelData])) : qsTr("No file selected")
                     wrapMode: Text.Wrap
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSize(13)

@@ -217,6 +217,17 @@ Item {
             flow.selectCompanion(flow.requiredFiles[0], "file:///data/keys/plain%zz.csv");
             compare(item("csvCompanionSelected_0").text, "Selected: plain%zz.csv", "a name that does not decode shows as it came");
         }
+        // A library file's stored path is not a URI: its real name shows as
+        // it is, never decoded.
+        function test_selected_names_a_library_path_as_stored() {
+            openSheet();
+            flow.selectCompanion(flow.requiredFiles[0], "/data/imports/keys%20old.csv");
+            compare(item("csvCompanionSelected_0").text, "Selected: keys%20old.csv");
+            flow.selectCompanion(flow.requiredFiles[0], "/data/imports/bundles/r1/a%2Fb.csv");
+            compare(item("csvCompanionSelected_0").text, "Selected: a%2Fb.csv", "an encoded slash in a real name is not a folder");
+            flow.selectCompanion(flow.requiredFiles[0], "file:///data/keys/keys%20old.csv");
+            compare(item("csvCompanionSelected_0").text, "Selected: keys old.csv", "a file: URI still decodes");
+        }
         function test_companion_picker_cancel_resumes_unresolved() {
             openSheet();
             item("csvChooseFile_0").clicked();
