@@ -58,6 +58,11 @@ class ReplayStore : public QObject {
 
     /** The bytes free on the volume holding @p folder, or -1 when unknown; called on the import worker. */
     using FreeSpace = std::function<qint64(const QString& folder)>;
+    /**
+     * Move the staged copy @p staged to @p destination, never over an existing file: 0 when moved, else an errno value
+     * (EEXIST when @p destination exists). Called on the Qt thread at a commit.
+     */
+    using Move = std::function<int(const QString& staged, const QString& destination)>;
 
     /** @p imports runs the copies; it is destroyed before this store, which never calls it from its destructor. */
     ReplayStore(DecoderHost* host, ImportService* imports, QObject* parent = nullptr);
@@ -149,6 +154,8 @@ class ReplayStore : public QObject {
 
     /** @brief Replace how free space is read (tests). */
     void setFreeSpace(FreeSpace freeSpace);
+    /** @brief Replace how a copy moves out of staging (tests: what a crash at the move leaves on disk). */
+    void setMove(Move move);
 
   Q_SIGNALS:
     /**
@@ -172,6 +179,7 @@ class ReplayStore : public QObject {
     DecoderHost* m_host = nullptr;
     QPointer<ImportService> m_imports;
     FreeSpace m_freeSpace;
+    Move m_move;
     QTimer m_progressTimer;
     qint64 m_current = 0;
     QString m_copyName;

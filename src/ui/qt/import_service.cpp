@@ -41,10 +41,6 @@ journal_name() {
 
 std::atomic<qint64> g_next_request{0};
 
-/* How many names a publish tries before it gives up: a free name can still be taken (by another process) before the
- * rename claims it. */
-constexpr int kPublishAttempts = 16;
-
 /* Workers a teardown stopped waiting for. Deleting one would wait for its job, so each stays, unreachable from any
    service, until its job ends and the process exits. */
 QList<QThreadPool*>&

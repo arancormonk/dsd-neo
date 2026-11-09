@@ -34,6 +34,7 @@
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <cerrno>
 #include <condition_variable>
 #include <cstdio>
 #include <functional>
@@ -43,6 +44,8 @@
 #include <qflags.h>
 #include <qsystemdetection.h>
 #include <utility>
+
+#include <dsd-neo/platform/file_compat.h>
 
 #include "../test_support/qt_test_paths.h"
 #include "../test_support/test_support.h"
@@ -946,6 +949,116 @@ test_draft_opened_during_migration_keeps_the_copy() {
     CHECK(read_file(durable) == "legacy", "the copy survives the next reclaim");
 }
 
+/* A move that records what a crash at that moment leaves on disk: the manifest and the saved systems store as they
+   are then. With @p moves false it moves nothing and fails, as a crash before the move would leave it. */
+struct CrashAtMove {
+    QByteArray manifest;
+    QByteArray systems;
+    QString destination;
+
+    ReplayStore::Move
+    move(bool moves) {
+        return [this, moves](const QString& staged, const QString& destination) {
+            int sourceLeft = 0;
+            const int error =
+                !moves ? EIO
+                : dsd_rename_noreplace(staged.toUtf8().constData(), destination.toUtf8().constData(), &sourceLeft) == 0
+                    ? 0
+                    : errno;
+            this->destination = destination;
+            manifest = read_file(ReplayStore::manifestPath());
+            systems = read_file(dsd_qt::json_store_path(QStringLiteral("saved_systems.json")));
+            return error;
+        };
+    }
+
+    /* Put the stores back as the crash left them. */
+    void
+    restore() const {
+        write_file(ReplayStore::manifestPath(), manifest);
+        const QString store = dsd_qt::json_store_path(QStringLiteral("saved_systems.json"));
+        if (systems.isEmpty()) {
+            QFile::remove(store);
+        } else {
+            write_file(store, systems);
+        }
+    }
+};
+
+/* Gate r3: a copy is listed pending before it leaves staging. A crash right after the move (before anything adopts
+   it) leaves a pending copy the next start reclaims; a crash before the move leaves a pending entry for a file that
+   is not there, which the next start drops, deleting nothing the store does not own. A move that fails drops the
+   entry at once. */
+void
+test_crash_at_publish() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/capture.wav"), QByteArray("replay bytes"));
+    write_file(sources_dir() + QStringLiteral("/kept.wav"), QByteArray("kept"));
+    Rig rig;
+    SavedSystemsModel systems;
+    systems.setReplayStore(rig.store.get());
+    const QString kept = rig.import(QStringLiteral("content://test/kept.wav"), QString()).value("path").toString();
+    CHECK(systems.add(replay_system(QStringLiteral("Kept"), kept)), "a system keeps one copy");
+    const QString stranger = ReplayStore::replaysRoot() + QStringLiteral("/stranger.wav");
+    write_file(stranger, QByteArray("not the store's"));
+
+    CrashAtMove after;
+    rig.store->setMove(after.move(true));
+    const QString copied = rig.import(QStringLiteral("content://test/capture.wav"), QString()).value("path").toString();
+    CHECK(copied == after.destination && read_file(copied) == "replay bytes", "the copy is published");
+    after.restore();
+    CHECK(manifest().value(copied) == QStringLiteral("pending"), "the copy is listed pending before it moves");
+    {
+        SavedSystemsModel restarted;
+        rig.store->reclaim(restarted, restarted.storeLoaded());
+    }
+    CHECK(!QFileInfo::exists(copied) && !manifest().contains(copied), "the next start reclaims the copy");
+
+    CrashAtMove before;
+    rig.store->setMove(before.move(false));
+    const QVariantMap failed = rig.import(QStringLiteral("content://test/capture.wav"), QString());
+    CHECK(failed.value(QStringLiteral("error")).toString() == QStringLiteral("local"), "a failed move is local");
+    CHECK(!manifest().contains(before.destination), "a failed move drops its entry");
+    before.restore();
+    CHECK(manifest().value(before.destination) == QStringLiteral("pending"), "the entry was recorded before the move");
+    {
+        SavedSystemsModel restarted;
+        rig.store->reclaim(restarted, restarted.storeLoaded());
+    }
+    CHECK(!manifest().contains(before.destination), "the next start drops an entry whose file never moved");
+    CHECK(read_file(kept) == "kept" && manifest().value(kept) == QStringLiteral("kept"), "a kept copy stays");
+    CHECK(read_file(stranger) == "not the store's", "a file the store never listed stays");
+    CHECK(wait_until(staging_empty), "the staged copy goes with its staging folder");
+}
+
+/* Gate r3: the migration publishes through the same order. A crash right after its move leaves the rows on the cached
+   file and the copy pending, and the next start reclaims it. */
+void
+test_migration_crash_at_publish() {
+    reset_data();
+    const QString legacy = cache_file(QStringLiteral("legacy.wav"), QByteArray("legacy"));
+    Rig rig;
+    {
+        SavedSystemsModel systems;
+        CHECK(systems.add(replay_system(QStringLiteral("A"), legacy)), "a system keeps a cached replay");
+    }
+    CrashAtMove after;
+    rig.store->setMove(after.move(true));
+    {
+        SavedSystemsModel systems;
+        systems.setReplayStore(rig.store.get());
+        rig.store->migrateCachedReplays(&systems);
+        CHECK(wait_until([&rig]() { return !rig.service->busy(); }), "the migration finishes");
+    }
+    CHECK(read_file(after.destination) == "legacy", "the migration published its copy");
+    after.restore();
+    SavedSystemsModel restarted;
+    CHECK(restarted.get(0).value(QStringLiteral("filePath")).toString() == legacy, "the crash left the row cached");
+    CHECK(manifest().value(after.destination) == QStringLiteral("pending"), "its copy is listed before it moves");
+    rig.store->reclaim(restarted, restarted.storeLoaded());
+    CHECK(!QFileInfo::exists(after.destination) && manifest().isEmpty(), "the next start reclaims the copy");
+}
+
 void
 test_names() {
     const QString root = ReplayStore::replaysRoot();
@@ -977,6 +1090,8 @@ main(int argc, char** argv) {
     test_migration_runs_off_the_qt_thread();
     test_migration_save_failure_releases_its_copy();
     test_migration_crash_before_adopt();
+    test_crash_at_publish();
+    test_migration_crash_at_publish();
     test_draft_opened_during_migration_keeps_the_copy();
     test_every_answer_has_a_name();
     test_reclaim_guards();

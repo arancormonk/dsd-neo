@@ -12518,14 +12518,18 @@ Qt Quick frontend (`src/ui/qt`):
   removed; a missing one is empty). A journal that cannot be read, or holds anything but absolute paths, gives
   `ok = false` and takes no change, and callers then delete nothing. `ImportService::publish()` moves a staged file
   into a folder under a free name (`unique_import_destination`, then `dsd_rename_noreplace`, the next name on `EEXIST`)
-  for the library's and the replay store's commits. Test: `UI_QT_IMPORT_SERVICE`.
+  for the library's commits (the replay store records its entry first, then moves the same way). Test:
+  `UI_QT_IMPORT_SERVICE`.
   `replay_store.{h,cpp}` (`replayFiles`) owns the replay captures picked in the wizard (#832).
   `beginReplayImport(reference, fileName)` answers `replayImportFinished(id, result)` once, queued: a local reference
   (file URL or absolute path) with its plain path, never copied; anything else is copied by the import service into its
   staging folder, at most the free space of `<AppData>/replays/` (`dsd_path_free_bytes`) less `kReserveBytes` (512 MiB;
   no cap when free space cannot be read; with less than the reserve free the answer is `too_large` before the document
-  is opened), then published into `replays/` (`ImportService::publish`) and recorded pending before the answer (an entry
-  the list still holds for that name is stale, since the no-replace move proved the name free, and is replaced). Every
+  is opened), then recorded pending under the free name it will take (`unique_import_destination`) and only then moved
+  into `replays/` (`dsd_rename_noreplace`, `ImportService::kPublishAttempts` names); a move that fails drops the entry
+  again, so a crash between the two leaves a pending entry the next reclaim settles (the copy deleted, or the entry
+  dropped when nothing moved), never an unlisted copy. The migration publishes the same way. An entry the list still
+  holds for the free name is stale and is replaced. Every
   answer carries `name`. Errors: `too_large` (`neededBytes` = size + reserve or -1, `freeBytes`, `reserveBytes`),
   `local` (`noSpace`),
   `read`, `cancelled`. One copy runs at a time (a new one cancels it; `cancelReplayImport()`, which answers `cancelled`

@@ -59,6 +59,9 @@ class ImportService : public QObject {
 
     /** How long the destructor waits for the request in progress before it leaves it behind. */
     static constexpr int kStopWaitMs = 2000;
+    /** How many names a publish tries before it gives up: a free name can still be taken (by another process)
+     * before the rename claims it. */
+    static constexpr int kPublishAttempts = 16;
 
     explicit ImportService(std::shared_ptr<DocumentImportTransport> transport, QObject* parent = nullptr);
     /**

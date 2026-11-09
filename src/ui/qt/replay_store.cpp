@@ -22,6 +22,7 @@
 #include <QVariantList>
 #include <Qt>
 #include <algorithm>
+#include <cerrno>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -120,29 +121,64 @@ set_state(const QString& path, bool kept) {
     return save_manifest(entries);
 }
 
+/* The no-replace move out of staging that ReplayStore::Move describes. */
+int
+move_noreplace(const QString& staged, const QString& destination) {
+    int sourceLeft = 0;
+    if (dsd_rename_noreplace(staged.toUtf8().constData(), destination.toUtf8().constData(), &sourceLeft) == 0) {
+        return 0;
+    }
+    return errno != 0 ? errno : EIO;
+}
+
 /*
- * Publish the staged copy @p staged into replaysRoot() under a free form of @p name and record it pending. A copy that
- * cannot be recorded is removed again: the store never leaves a copy the manifest does not list.
+ * Publish the staged copy @p staged into replaysRoot() under a free form of @p name, through @p moveCopy, and record it
+ * pending. The entry is saved before the move: a crash between the two leaves a pending entry the startup reclaim
+ * settles (deleting the copy, or dropping the entry when nothing was moved), never a copy the manifest does not list.
+ * A move that fails drops the entry again.
  */
 bool
-publish_copy(const QString& staged, const QString& name, QString* published) {
+publish_copy(const QString& staged, const QString& name, const ReplayStore::Move& moveCopy, QString* published) {
     QList<ManifestEntry> entries;
-    if (!load_manifest(&entries)
-        || !ImportService::publish(staged, QDir(ReplayStore::replaysRoot()), name, {}, published)) {
+    if (!load_manifest(&entries)) {
         return false;
     }
-    // The no-replace move proved the name was free, so an entry still naming it is stale (a reclaim deleted the file
-    // and could not save the list): keeping it would let adopt() mark the stale entry instead of this one.
-    entries.erase(std::remove_if(
-                      entries.begin(), entries.end(),
-                      [published](const ManifestEntry& entry) { return ReplayStore::names({entry.path}, *published); }),
-                  entries.end());
-    entries.append({QDir::cleanPath(*published), false});
-    if (!save_manifest(entries)) {
-        QFile::remove(*published);
-        return false;
+    const QDir root(ReplayStore::replaysRoot());
+    QSet<QString> skipped;
+    for (int attempt = 0; attempt < ImportService::kPublishAttempts; attempt++) {
+        const QString free = unique_import_destination(root, name, skipped);
+        if (free.isEmpty()) {
+            break;
+        }
+        const QString destination = QDir::cleanPath(free);
+        // The name is free, so an entry still naming it is stale (a reclaim deleted the file and could not save the
+        // list): keeping it would let adopt() mark the stale entry instead of this one.
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [&destination](const ManifestEntry& entry) {
+                                         return ReplayStore::names({entry.path}, destination);
+                                     }),
+                      entries.end());
+        QList<ManifestEntry> recorded = entries;
+        recorded.append({destination, false});
+        if (!save_manifest(recorded)) {
+            return false;
+        }
+        const int error = moveCopy(staged, destination);
+        if (error == 0) {
+            *published = destination;
+            return true;
+        }
+        if (!save_manifest(entries)) {
+            // The entry names a file the store did not move; the next reclaim drops it while the name stays free.
+            LOG_WARN("The replay copies list could not be saved after a failed copy.\n");
+            return false;
+        }
+        if (error != EEXIST) {
+            break;
+        }
+        skipped.insert(root.absoluteFilePath(QFileInfo(destination).fileName()));
     }
-    return true;
+    return false;
 }
 
 /*
@@ -259,14 +295,15 @@ stage_migration(const ImportJob& job, const QStringList& sources, const ReplaySt
  * a pending copy nothing names, which the next start reclaims before it copies again.
  */
 QList<SavedSystemsModel::FilePathMove>
-commit_migration(SavedSystemsModel* systems, const QList<CachedReplay>& found, const QVariantMap& staged) {
+commit_migration(SavedSystemsModel* systems, const QList<CachedReplay>& found, const QVariantMap& staged,
+                 const ReplayStore::Move& moveCopy) {
     QMap<QString, QString> published; // cached file → its copy
     for (const QVariant& value : staged.value(QStringLiteral("copies")).toList()) {
         const QVariantMap copy = value.toMap();
         const QString source = copy.value(QStringLiteral("source")).toString();
         QString path;
         if (publish_copy(copy.value(QStringLiteral("staged")).toString(),
-                         sanitized_import_name(QFileInfo(source).fileName(), {}), &path)) {
+                         sanitized_import_name(QFileInfo(source).fileName(), {}), moveCopy, &path)) {
             published.insert(source, path);
         }
     }
@@ -301,7 +338,7 @@ commit_migration(SavedSystemsModel* systems, const QList<CachedReplay>& found, c
 } // namespace
 
 ReplayStore::ReplayStore(DecoderHost* host, ImportService* imports, QObject* parent)
-    : QObject(parent), m_host(host), m_imports(imports), m_freeSpace(&volume_free_bytes) {
+    : QObject(parent), m_host(host), m_imports(imports), m_freeSpace(&volume_free_bytes), m_move(&move_noreplace) {
     m_progressTimer.setInterval(kProgressIntervalMs);
     connect(&m_progressTimer, &QTimer::timeout, this, &ReplayStore::pollProgress);
 }
@@ -466,14 +503,15 @@ ReplayStore::migrateCachedReplays(SavedSystemsModel* systems) {
         return;
     }
     const FreeSpace freeSpace = m_freeSpace;
+    const Move moveCopy = m_move;
     const QPointer<SavedSystemsModel> model(systems);
     const QPointer<ReplayStore> self(this);
     (void)m_imports->submit(
         [sources, freeSpace](const ImportJob& job) { return stage_migration(job, sources, freeSpace); },
-        [model, self, found](qint64, const QVariantMap& staged, bool cancelled) {
+        [model, self, found, moveCopy](qint64, const QVariantMap& staged, bool cancelled) {
             // Cancelled (the app is closing) or gone: nothing is published, and the next start tries again.
             if (!cancelled && !model.isNull()) {
-                const auto moves = commit_migration(model.data(), found, staged);
+                const auto moves = commit_migration(model.data(), found, staged, moveCopy);
                 if (!self.isNull()) {
                     self->recordMigration(moves);
                 }
@@ -521,6 +559,11 @@ ReplayStore::setFreeSpace(FreeSpace freeSpace) {
 }
 
 void
+ReplayStore::setMove(Move move) {
+    m_move = std::move(move);
+}
+
+void
 ReplayStore::commitImport(qint64 id, const QVariantMap& staged, bool cancelled) {
     if (m_dropped.remove(id)) {
         // Answered at its cancel: the staged copy is let go with its staging folder.
@@ -534,7 +577,7 @@ ReplayStore::commitImport(qint64 id, const QVariantMap& staged, bool cancelled) 
     } else if (staged.value(QStringLiteral("ok")).toBool()) {
         // Recorded pending before QML sees it: a copy is never left unlisted, so a later start can reclaim it.
         QString path;
-        result = publish_copy(staged.value(QStringLiteral("staged")).toString(), name, &path)
+        result = publish_copy(staged.value(QStringLiteral("staged")).toString(), name, m_move, &path)
                      ? QVariantMap{{QStringLiteral("ok"), true}, {QStringLiteral("path"), path}}
                      : failure(QStringLiteral("local"));
         result.insert(QStringLiteral("name"), name);
