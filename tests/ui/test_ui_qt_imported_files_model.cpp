@@ -32,6 +32,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <stdio.h>
@@ -91,6 +93,12 @@ struct TestDocuments {
     /* Fault injection: before the copy of this reference, a folder is put where each target list's primary goes in
        the request's mirror, so its rewrite cannot write the destination. */
     QString blockPrimary;
+    /* Fault injection: a copy of this reference ignores its cancel, as a provider blocked in a read would: it waits
+       until stuckReleased, then copies the whole document. */
+    QString stuck;
+    bool stuckRunning = false;
+    bool stuckReleased = false;
+    std::condition_variable stuckChanged;
 };
 
 /* A content provider's documents for the import copies: a reference the test names maps to a local file. */
@@ -103,18 +111,25 @@ class TestTransport : public dsd_qt::DocumentImportTransport {
         QString mapped;
         bool refused = false;
         bool halfway = false;
+        bool stuck = false;
         {
             const std::lock_guard<std::mutex> guard(m_documents->lock);
             m_documents->references.append(reference);
             refused = m_documents->urisOnly && QUrl(reference).scheme().isEmpty();
             mapped = m_documents->files.value(reference, reference);
             halfway = !m_documents->failHalfway.isEmpty() && reference == m_documents->failHalfway;
+            stuck = !m_documents->stuck.isEmpty() && reference == m_documents->stuck;
             if (!m_documents->blockPrimary.isEmpty() && reference == m_documents->blockPrimary) {
                 blockPrimaries(destPath);
             }
         }
         if (refused) {
             return dsd_qt::DecoderHost::DocumentFailed;
+        }
+        if (stuck) {
+            waitUntilReleased();
+            return QFile::copy(dsd_qt::local_document_path(mapped), destPath) ? dsd_qt::DecoderHost::DocumentCopied
+                                                                              : dsd_qt::DecoderHost::DocumentFailed;
         }
         if (halfway) {
             // The valid first half lands where the copy goes, then the read fails.
@@ -129,6 +144,15 @@ class TestTransport : public dsd_qt::DocumentImportTransport {
     }
 
   private:
+    void
+    waitUntilReleased() {
+        std::unique_lock<std::mutex> guard(m_documents->lock);
+        m_documents->stuckRunning = true;
+        m_documents->stuckChanged.notify_all();
+        m_documents->stuckChanged.wait(guard, [this]() { return m_documents->stuckReleased; });
+        m_documents->stuckRunning = false;
+    }
+
     /* destPath is <staging>/in/<n>; the mirror is <staging>/lib. */
     static void
     blockPrimaries(const QString& destPath) {
@@ -150,6 +174,51 @@ class DocumentMap {
     insert(const QString& reference, const QString& file) {
         const std::lock_guard<std::mutex> guard(m_documents->lock);
         m_documents->files.insert(reference, file);
+    }
+
+  private:
+    std::shared_ptr<TestDocuments> m_documents;
+};
+
+/* The copy that ignores its cancel, as the tests set it, wait for it and let it go. */
+class StuckCopy {
+  public:
+    explicit StuckCopy(std::shared_ptr<TestDocuments> documents) : m_documents(std::move(documents)) {}
+
+    StuckCopy(const StuckCopy&) = delete;
+    StuckCopy& operator=(const StuckCopy&) = delete;
+
+    /* A copy left stuck goes on, so the import worker can end. */
+    ~StuckCopy() { release(); }
+
+    void
+    set(const QString& reference) {
+        const std::lock_guard<std::mutex> guard(m_documents->lock);
+        m_documents->stuck = reference;
+        m_documents->stuckReleased = false;
+    }
+
+    /* Whether the copy is stuck now, once it has started (waiting up to 5 s for it). */
+    bool
+    waitRunning() {
+        std::unique_lock<std::mutex> guard(m_documents->lock);
+        return m_documents->stuckChanged.wait_for(guard, std::chrono::seconds(5),
+                                                  [this]() { return m_documents->stuckRunning; });
+    }
+
+    bool
+    running() const {
+        const std::lock_guard<std::mutex> guard(m_documents->lock);
+        return m_documents->stuckRunning;
+    }
+
+    void
+    release() {
+        {
+            const std::lock_guard<std::mutex> guard(m_documents->lock);
+            m_documents->stuckReleased = true;
+        }
+        m_documents->stuckChanged.notify_all();
     }
 
   private:
@@ -1417,6 +1486,55 @@ test_async_channel_bundles() {
     }
 }
 
+/* A copy that ignores its cancel (a provider blocked in a read): Cancel is answered at once, exactly once; the copy
+ * publishes nothing when it returns, and the next import waits behind it, then runs. */
+void
+test_cancel_does_not_wait_for_the_copy() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportService service(host.importTransport());
+    dsd_qt::ImportedFilesModel model(&host, &service);
+    QTemporaryDir source;
+    const QString groups = source.filePath("county.csv");
+    expect("stuck copy fixture", write_file(groups, "TG,Mode,Name\n101,D,Dispatch\n"));
+    const QString reference = QStringLiteral("content://stuck/document/county.csv");
+    host.documents.insert(reference, groups);
+    StuckCopy stuck(host.shared);
+    stuck.set(reference);
+
+    QSignalSpy finished(&model, &dsd_qt::ImportedFilesModel::importFinished);
+    const auto answers = [&finished](int id) {
+        int count = 0;
+        for (const auto& arguments : finished) {
+            count += arguments.at(0).toInt() == id ? 1 : 0;
+        }
+        return count;
+    };
+    const int id = model.beginImport(reference, "county.csv", "group", {}, QString());
+    expect("the copy is stuck", stuck.waitRunning());
+    model.cancelImport(id);
+    expect("a cancel is answered later, never inside the call", finished.isEmpty());
+    expect("a cancelled import is no longer pending", !model.importing());
+    const QVariantMap cancel = waitForImport(finished, id);
+    expect("a stuck copy's cancel is answered at once", cancel.value("error") == "cancelled"
+                                                            && cancel.value("type") == "group"
+                                                            && cancel.value("name") == "county.csv");
+    expect("while the copy is still stuck", stuck.running() && service.busy());
+    model.cancelImport(id);
+
+    const int next = model.beginImport(QUrl::fromLocalFile(groups).toString(), "county.csv", "group", {}, QString());
+    finished.wait(200);
+    expect("the next import waits behind the stuck copy", answers(next) == 0 && model.importing());
+    stuck.release();
+    const QVariantMap after = waitForImport(finished, next);
+    expect("the next import runs once the copy returns", after.value("ok").toBool());
+    waitForWorker(service);
+    expect("the cancelled import is answered exactly once", answers(id) == 1);
+    expect("the stuck copy publishes nothing when it returns", model.count() == 1 && storedFileCount() == 1);
+    expect("its staging goes", stagingEmpty());
+    model.remove(0);
+}
+
 /* A companion the map names only after the first answer: the import asks for it, and a retry with it succeeds. */
 void
 test_async_companion_retry() {
@@ -2623,6 +2741,7 @@ main(int argc, char** argv) {
     test_async_replace_stale();
     test_group_replace_busy();
     test_replace_failures();
+    test_cancel_does_not_wait_for_the_copy();
     test_register_unsaved_export();
     test_entries_changed_on_replace();
     test_stored_names_kept();

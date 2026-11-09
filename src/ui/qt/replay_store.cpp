@@ -359,9 +359,19 @@ ReplayStore::beginReplayImport(const QString& reference, const QString& fileName
 
 void
 ReplayStore::cancelReplayImport() {
-    if (m_current != 0 && !m_imports.isNull()) {
-        m_imports->cancel(m_current);
+    if (m_current == 0 || m_imports.isNull()) {
+        return;
     }
+    // The commit runs on this thread and has not run yet, so the outcome is settled now: the answer goes at once
+    // rather than after a copy a provider may never let go of. The copy is still stopped where it can be.
+    const qint64 id = m_current;
+    pollProgress(); // the provider's name for the document, once the copy has it
+    m_imports->cancel(id);
+    m_dropped.insert(id);
+    QVariantMap result = failure(QStringLiteral("cancelled"));
+    result.insert(QStringLiteral("name"), m_copyName);
+    endCopy(id);
+    answerQueued(id, result);
 }
 
 bool
@@ -481,6 +491,10 @@ ReplayStore::setFreeSpace(FreeSpace freeSpace) {
 
 void
 ReplayStore::commitImport(qint64 id, const QVariantMap& staged, bool cancelled) {
+    if (m_dropped.remove(id)) {
+        // Answered at its cancel: the staged copy is let go with its staging folder.
+        return;
+    }
     QVariantMap result = staged;
     const QString name = staged.value(QStringLiteral("name")).toString();
     if (cancelled) {

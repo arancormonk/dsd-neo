@@ -371,13 +371,15 @@ Item {
             flow.begin(standaloneMap(), "primary%3ADownload%2FCounty%20map.csv", "chan");
             compare(item("csvCopyingText").text, "Copying County map.csv…");
         }
-        // Cancel, Back and Escape ask the import to stop; the sheet stays,
-        // saying so, until the import's answer comes back.
+        // Cancel, Back and Escape ask the import to stop. The flow finishes at
+        // once with "cancelled", even when the copy ignores its cancel (a
+        // provider that never lets go): nothing waits on the copy, the copy
+        // adds nothing when it returns, and the next import runs after it.
         function test_busy_cancel_data() {
-            return [{tag: "button"}, {tag: "back"}, {tag: "escape"}];
+            return [{tag: "direct"}, {tag: "button"}, {tag: "back"}, {tag: "escape"}];
         }
         function test_busy_cancel(data) {
-            // The cancelled copy waits too: the flow is seen waiting for its answer.
+            // The cancelled copy stays held: a copy that ignores its cancel.
             testContext.holdImports(true, true);
             flow.begin(standaloneMap(), "Map.csv", "chan");
             var sheet = item("csvCompanionSheet");
@@ -385,29 +387,39 @@ Item {
             // A request cancelled before its copy starts answers at once; this
             // case cancels one that is copying.
             tryVerify(function () { return testContext.heldImports() === 1; }, 5000, "the copy is running");
-            if (data.tag === "button")
+            if (data.tag === "direct") {
+                // Until the queued answer is in, Cancel says so and a second
+                // dismiss changes nothing.
+                flow.requestCancel();
+                verify(flow.cancelling, "the cancel was asked for");
+                compare(item("csvCancel").text, "Cancelling…");
+                verify(!item("csvCancel").enabled);
+                sheet.requestDismiss();
+                compare(completion.count, 0, "the answer is queued");
+            } else if (data.tag === "button")
                 mouseClick(item("csvCancel"));
             else {
                 sheet.forceActiveFocus();
                 keyClick(data.tag === "back" ? Qt.Key_Back : Qt.Key_Escape);
             }
-            verify(flow.cancelling, "the cancel was asked for");
-            compare(item("csvCancel").text, "Cancelling…");
-            verify(!item("csvCancel").enabled);
-            verify(sheet.visible, "the sheet stays until the answer comes back");
-            compare(completion.count, 0, "the flow waits for the import's answer");
-            // A second dismiss while cancelling changes nothing.
-            sheet.requestDismiss();
-            wait(50);
-            verify(flow.copying && flow.cancelling && sheet.visible);
-            compare(completion.count, 0);
-            testContext.holdImports(false);
-            tryCompare(completion, "count", 1);
+            tryCompare(completion, "count", 1, 1000, "the flow finishes while the copy is still held");
             compare(completion.signalArguments[0][0].error, "cancelled");
+            compare(completion.signalArguments[0][0].type, "chan");
             verify(!sheet.visible);
-            compare(importedFiles.count, 0, "a cancelled import adds nothing");
+            verify(!flow.active && !flow.copying && !flow.cancelling);
+            compare(testContext.heldImports(), 1, "the copy is still stuck");
+            // The next import waits behind the stuck copy, then runs.
+            verify(flow.begin(standaloneMap(), "Next.csv", "chan", {tag: "next"}), "a new import starts");
+            wait(100);
+            compare(completion.count, 1, "the next import waits for the stuck copy");
+            compare(testContext.heldImports(), 1, "its copy has not started");
+            testContext.holdImports(false);
+            tryCompare(completion, "count", 2);
+            verify(completion.signalArguments[1][0].ok, "the next import completes");
+            compare(completion.signalArguments[1][1].tag, "next");
+            compare(importedFiles.count, 1, "the cancelled copy added nothing when it returned");
             wait(50);
-            compare(completion.count, 1);
+            compare(completion.count, 2, "one answer each");
         }
         // Cancelling wins only before the commit: once the file is in the
         // library, the flow reports that, not a cancel.
@@ -454,10 +466,13 @@ Item {
             compare(item("csvCancel").text, "Cancelling…");
             compare(item("csvCompleteBundle").text, "Importing…");
             compare(completion.count, 0);
-            testContext.holdImports(false);
-            tryCompare(completion, "count", 1);
+            tryCompare(completion, "count", 1, 1000, "the cancel is answered while the copy is still held");
             compare(completion.signalArguments[0][0].error, "cancelled");
-            compare(importedFiles.count, 1);
+            testContext.holdImports(false);
+            tryVerify(function () { return testContext.heldImports() === 0; }, 5000, "the held copy returns");
+            wait(50);
+            compare(completion.count, 1);
+            compare(importedFiles.count, 1, "the cancelled retry added nothing");
         }
         // A new start while a copy runs is refused: the running one keeps the
         // flow and finishes it once.

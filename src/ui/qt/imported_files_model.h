@@ -19,6 +19,7 @@
 #define DSD_NEO_SRC_UI_QT_IMPORTED_FILES_MODEL_H_
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QPointer>
@@ -134,7 +135,12 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     Q_INVOKABLE int beginImport(const QString& reference, const QString& fileName, const QString& type,
                                 const QVariantMap& companions, const QString& replacePath);
-    /** @brief Cancel import @p id; it answers "cancelled" unless its commit already ran. */
+    /**
+     * @brief Cancel import @p id. One whose commit has not run is answered "cancelled" at once (queued), without
+     * waiting for its copy to stop: a provider that ignores the cancel cannot hold the caller. The copy is still told
+     * to stop, and its commit, whenever the copy returns, publishes nothing and is not answered again. Once the commit
+     * ran, or for an unknown id, it does nothing.
+     */
     Q_INVOKABLE void cancelImport(int id);
 
     /**
@@ -235,6 +241,8 @@ class ImportedFilesModel : public QAbstractListModel {
     QVariantMap importRefusal(const QString& type, const QString& replacePath, ImportTarget* target) const;
     /** Answer a request at once, through a queued importFinished(), under a fresh id. */
     int answerLater(const QVariantMap& result);
+    /** Emit importFinished(@p id, @p result) later, from the event loop. */
+    void answerQueued(int id, const QVariantMap& result);
     /** Run a single-file stage and its commit at once on the calling thread; the commit's result. */
     QVariantMap importNow(const QString& reference, const QString& providerName, const QString& hint,
                           const QString& type, const ImportTarget& target, const QVariantMap& origin);
@@ -329,8 +337,17 @@ class ImportedFilesModel : public QAbstractListModel {
     QStringList m_pruned_paths;
     /* The library revision: every change takes the next one. */
     quint64 m_revision = 0;
-    /* Imports begun through the worker whose commit has not run yet. */
-    QSet<qint64> m_inFlight;
+
+    /* What a request in flight answers when it is cancelled. */
+    struct InFlight {
+        QString name;
+        QString type;
+    };
+
+    /* Imports begun through the worker that are not answered yet. */
+    QHash<qint64, InFlight> m_inFlight;
+    /* Imports answered at their cancel whose commit has not run yet: it publishes nothing and answers nothing. */
+    QSet<qint64> m_dropped;
 };
 
 } // namespace dsd_qt

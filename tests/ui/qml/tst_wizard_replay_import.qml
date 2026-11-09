@@ -108,7 +108,8 @@ Item {
             compare(testContext.replayCalls().cancels, 1);
             verify(!tc.wizard.replayPending);
             verify(item("wizardContinue").inputValid, "Continue is back for the USB source");
-            verify(testContext.finishReplay({ok: true, path: "/data/replays/late.wav"}));
+            verify(!testContext.finishReplay({ok: true, path: "/data/replays/late.wav"}), "the copy was answered at its cancel");
+            wait(20); // the dropped copy's "cancelled", queued
             compare(tc.wizard.fileText, "/data/before.wav", "the dropped copy's answer is ignored");
             tc.wizard.sourceType = "file";
             verify(!item("wizardReplayProgress").visible);
@@ -169,11 +170,13 @@ Item {
             compare(cancel.text, "Cancel copy");
             cancel.clicked();
             compare(testContext.replayCalls().cancels, 1);
-            compare(cancel.text, "Cancelling…");
-            verify(!cancel.enabled);
-            verify(item("wizardReplayProgress").visible, "the copy shows until it answers");
-            verify(testContext.finishReplay({ok: false, error: "cancelled"}));
+            // The store stops the copy at once and answers on the next turn,
+            // whether or not the provider lets go of the copy.
+            verify(!item("wizardReplayProgress").visible, "the copy row goes at once");
+            tryVerify(function () { return !tc.wizard.replayPending; }, 1000, "the cancel is answered at once");
+            verify(!testContext.finishReplay({ok: true, path: "/data/replays/cap.wav"}), "no copy is left to answer");
             compare(tc.wizard.fileText, "/data/before.wav");
+            verify(item("wizardReplayBrowse").enabled, "Browse is back");
             verify(!item("wizardReplayNotice").visible, "a cancel the user asked for is not a failure");
             verify(!item("wizardReplayProgress").visible);
         }
@@ -206,7 +209,8 @@ Item {
             tc.wizard.visible = false;
             compare(testContext.replayCalls().cancels, 1);
             verify(!tc.wizard.replayCopying);
-            verify(testContext.finishReplay({ok: true, path: "/data/replays/late.wav"}));
+            verify(!testContext.finishReplay({ok: true, path: "/data/replays/late.wav"}), "the copy was answered at its cancel");
+            wait(20); // the copy's "cancelled", queued
             compare(tc.wizard.fileText, "/data/before.wav", "a closed wizard takes no late file");
         }
 
@@ -214,8 +218,9 @@ Item {
             pickReplay("content://provider/document/cap.wav");
             tc.wizard.openForAdd(false);
             compare(testContext.replayCalls().cancels, 1);
-            verify(testContext.finishReplay({ok: false, error: "read"}));
-            compare(tc.wizard.replayNotice, "", "the earlier opening's failure is not this one's");
+            verify(!testContext.finishReplay({ok: false, error: "read"}), "the copy was answered at its cancel");
+            wait(20); // the copy's "cancelled", queued
+            compare(tc.wizard.replayNotice, "", "the earlier opening's answer is not this one's");
             compare(tc.wizard.fileText, "");
         }
 

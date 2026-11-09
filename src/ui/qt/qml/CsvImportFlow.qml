@@ -106,9 +106,10 @@ Item {
         choiceMade = false;
         finished(result, context);
     }
-    // With a copy running, ask it to stop and wait for its answer: it may have
-    // committed already, and then that is the outcome. Otherwise the flow ends
-    // here.
+    // With a copy running, ask it to stop. The library answers "cancelled" on
+    // the next turn, without waiting for the copy (a provider may never let
+    // go of it), so Cancel stays disabled only until then. Otherwise the flow
+    // ends here.
     function cancel() {
         if (!copying) {
             complete({ok: false, error: "cancelled"});

@@ -663,8 +663,13 @@ ImportedFilesModel::importRefusal(const QString& type, const QString& replacePat
 int
 ImportedFilesModel::answerLater(const QVariantMap& result) {
     const auto id = static_cast<int>(ImportService::newRequestId());
-    QMetaObject::invokeMethod(this, [this, id, result]() { Q_EMIT importFinished(id, result); }, Qt::QueuedConnection);
+    answerQueued(id, result);
     return id;
+}
+
+void
+ImportedFilesModel::answerQueued(int id, const QVariantMap& result) {
+    QMetaObject::invokeMethod(this, [this, id, result]() { Q_EMIT importFinished(id, result); }, Qt::QueuedConnection);
 }
 
 int
@@ -698,24 +703,40 @@ ImportedFilesModel::beginImport(const QString& reference, const QString& fileNam
                 self->finishImport(request, staged, cancelled, target);
             }
         });
-    m_inFlight.insert(id);
+    m_inFlight.insert(id, InFlight{sanitized_import_name(QString(), fileName), type});
     updateImporting(before);
     return static_cast<int>(id);
 }
 
 void
 ImportedFilesModel::cancelImport(int id) {
-    if (m_imports && m_inFlight.contains(id)) {
-        m_imports->cancel(id);
+    const auto it = m_inFlight.constFind(id);
+    if (!m_imports || it == m_inFlight.cend()) {
+        return;
     }
+    // The commit runs on this thread and has not run yet, so the outcome is settled now: the answer goes at once
+    // rather than after a copy a provider may never let go of. The copy is still stopped where it can be.
+    m_imports->cancel(id);
+    QVariantMap result = failure(QStringLiteral("cancelled"));
+    result.insert(QStringLiteral("name"), it->name);
+    result.insert(QStringLiteral("type"), it->type);
+    const bool before = importing();
+    m_inFlight.erase(it);
+    m_dropped.insert(id);
+    answerQueued(id, result);
+    updateImporting(before);
 }
 
 void
 ImportedFilesModel::finishImport(qint64 id, const QVariantMap& staged, bool cancelled, const ImportTarget& target) {
     const bool before = importing();
     m_inFlight.remove(id);
-    const QVariantMap result = commitStaged(staged, cancelled, target, QVariantMap());
-    Q_EMIT importFinished(static_cast<int>(id), result);
+    // Answered at its cancel: the commit only lets the staged files go.
+    const bool dropped = m_dropped.remove(id);
+    const QVariantMap result = commitStaged(staged, cancelled || dropped, target, QVariantMap());
+    if (!dropped) {
+        Q_EMIT importFinished(static_cast<int>(id), result);
+    }
     updateImporting(before);
 }
 

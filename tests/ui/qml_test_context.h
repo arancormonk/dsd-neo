@@ -500,18 +500,12 @@ class ReplayFilesFake : public QObject {
   public:
     using QObject::QObject;
 
-    /* As the store's: a copy still running is cancelled first, and answers "cancelled" later. A local file (a file://
-     * URL or an absolute path) is never copied: it is answered later with its own path, and no copy runs meanwhile. */
+    /* As the store's: a copy still running is cancelled first. A local file (a file:// URL or an absolute path) is
+     * never copied: it is answered later with its own path, and no copy runs meanwhile. */
     Q_INVOKABLE int
     beginReplayImport(const QString& reference, const QString& fileName) {
         if (m_current != 0) {
-            const int previous = m_current;
-            const QVariantMap cancelled{{QStringLiteral("ok"), false},
-                                        {QStringLiteral("error"), QStringLiteral("cancelled")},
-                                        {QStringLiteral("name"), m_name}};
-            QMetaObject::invokeMethod(
-                this, [this, previous, cancelled]() { Q_EMIT replayImportFinished(previous, cancelled); },
-                Qt::QueuedConnection);
+            dropCurrent();
         }
         ++begins;
         lastReference = reference;
@@ -533,10 +527,13 @@ class ReplayFilesFake : public QObject {
         return m_current;
     }
 
+    /* As the store's: the running copy stops copying and answers "cancelled" later, from the event loop, and never
+     * again; finishReplay() then has no copy to answer. */
     Q_INVOKABLE void
     cancelReplayImport() {
         if (m_current != 0) {
             ++cancels;
+            dropCurrent();
         }
     }
 
@@ -604,6 +601,20 @@ class ReplayFilesFake : public QObject {
     void progressChanged();
 
   private:
+    /* The running copy answers "cancelled", queued, and no copy runs from here on. */
+    void
+    dropCurrent() {
+        const int previous = m_current;
+        const QVariantMap cancelled{{QStringLiteral("ok"), false},
+                                    {QStringLiteral("error"), QStringLiteral("cancelled")},
+                                    {QStringLiteral("name"), m_name}};
+        QMetaObject::invokeMethod(
+            this, [this, previous, cancelled]() { Q_EMIT replayImportFinished(previous, cancelled); },
+            Qt::QueuedConnection);
+        m_current = 0;
+        Q_EMIT progressChanged();
+    }
+
     int m_current = 0;
     int m_next = 0;
     QString m_name;

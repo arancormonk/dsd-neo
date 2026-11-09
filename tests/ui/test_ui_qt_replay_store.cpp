@@ -89,10 +89,10 @@ read_file(const QString& path) {
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
 }
 
-/* Run the event loop until @p done holds; false after about five seconds. */
+/* Run the event loop until @p done holds; false after about @p ms milliseconds. */
 bool
-wait_until(const std::function<bool()>& done) {
-    for (int i = 0; i < 2500; ++i) {
+wait_until(const std::function<bool()>& done, int ms = 5000) {
+    for (int i = 0; i < ms / 2; ++i) {
         QCoreApplication::processEvents(QEventLoop::AllEvents);
         if (done()) {
             return true;
@@ -195,8 +195,9 @@ class TestHost : public DecoderHost {
 /*
  * The provider stand-in. content://test/<name> copies sources_dir()/<name> as a provider would (name and size
  * first); content://full/<name> writes part of a copy and fails for want of space; content://hold/<name> reports
- * progress and waits for its cancel. A local path copies as the base transport does, held first while holdLocal is
- * set.
+ * progress and waits for its cancel; content://stuck/<name> ignores its cancel, as a provider blocked in a read
+ * would: it waits for releaseStuck(), then copies sources_dir()/<name> whole. A local path copies as the base
+ * transport does, held first while holdLocal is set.
  */
 class FakeTransport : public DocumentImportTransport {
   public:
@@ -218,11 +219,38 @@ class FakeTransport : public DocumentImportTransport {
             m_wake.wait(guard, [this, request]() { return m_cancelled.contains(request); });
             return DecoderHost::DocumentCancelled;
         }
+        if (reference.startsWith(QStringLiteral("content://stuck/"))) {
+            setFake(request, {reference.mid(16), 10, 100, false});
+            std::unique_lock<std::mutex> guard(m_lock);
+            m_stuck = true;
+            m_wake.wait(guard, [this]() { return m_stuckReleased; });
+            m_stuck = false;
+            guard.unlock();
+            return QFile::copy(sources_dir() + QLatin1Char('/') + reference.mid(16), destPath)
+                       ? DecoderHost::DocumentCopied
+                       : DecoderHost::DocumentFailed;
+        }
         {
             std::unique_lock<std::mutex> guard(m_lock);
             m_wake.wait(guard, [this, request]() { return !m_holdLocal || m_cancelled.contains(request); });
         }
         return DocumentImportTransport::copy(request, reference, destPath, maxBytes);
+    }
+
+    /* Let a content://stuck/ copy go on; one started later goes on at once. */
+    void
+    releaseStuck() {
+        {
+            const std::lock_guard<std::mutex> guard(m_lock);
+            m_stuckReleased = true;
+        }
+        m_wake.notify_all();
+    }
+
+    bool
+    stuck() const {
+        const std::lock_guard<std::mutex> guard(m_lock);
+        return m_stuck;
     }
 
     void
@@ -308,6 +336,8 @@ class FakeTransport : public DocumentImportTransport {
     bool m_holdLocal = false;                 // guarded by m_lock
     bool m_offMain = true;                    // guarded by m_lock
     int m_holding = 0;                        // guarded by m_lock
+    bool m_stuck = false;                     // guarded by m_lock
+    bool m_stuckReleased = false;             // guarded by m_lock
 };
 
 /* One store over one service, with what it answered. */
@@ -723,6 +753,38 @@ test_cancel_and_progress() {
           "and copies");
 }
 
+/* A copy that ignores its cancel: Cancel is answered at once, exactly once, and copying() turns false; the copy
+   publishes nothing when it returns, and the next copy waits behind it, then runs. */
+void
+test_cancel_does_not_wait_for_the_copy() {
+    reset_data();
+    write_file(sources_dir() + QStringLiteral("/stuck.wav"), QByteArray("stuck"));
+    write_file(sources_dir() + QStringLiteral("/next.wav"), QByteArray("next"));
+    Rig rig;
+    int answered = 0;
+    QObject::connect(rig.store.get(), &ReplayStore::replayImportFinished, [&answered]() { ++answered; });
+    const int id = rig.store->beginReplayImport(QStringLiteral("content://stuck/stuck.wav"), QString());
+    CHECK(wait_until([&rig]() { return rig.transport->stuck(); }), "the copy is stuck");
+    rig.store->cancelReplayImport();
+    CHECK(!rig.answers.contains(id), "a cancel is answered later, never inside the call");
+    CHECK(!rig.store->copying(), "no copy shows from the cancel on");
+    CHECK(wait_until([&rig, id]() { return rig.answers.contains(id); }), "the cancel is answered");
+    CHECK(rig.answers.value(id).value(QStringLiteral("error")).toString() == QStringLiteral("cancelled")
+              && rig.answers.value(id).value(QStringLiteral("name")).toString() == QStringLiteral("stuck.wav"),
+          "cancelled, with its name");
+    CHECK(rig.transport->stuck(), "while the copy is still stuck");
+    const int next = rig.store->beginReplayImport(QStringLiteral("content://test/next.wav"), QString());
+    CHECK(!wait_until([&rig, next]() { return rig.answers.contains(next); }, 200),
+          "the next copy waits behind the stuck one");
+    rig.transport->releaseStuck();
+    CHECK(wait_until([&rig, next]() { return rig.answers.contains(next); }), "the next copy runs once it returns");
+    CHECK(rig.answers.value(next).value(QStringLiteral("ok")).toBool(), "and is copied");
+    CHECK(wait_until(staging_empty), "the stuck copy's staging goes");
+    CHECK(answered == 2, "the cancelled copy is answered exactly once");
+    CHECK(replay_files() == QStringList{QStringLiteral("next.wav")} && manifest().size() == 1,
+          "the stuck copy publishes nothing when it returns");
+}
+
 /* The service goes first at teardown (it is the engine's first child): a store left with a copy running is fine. */
 void
 test_teardown_service_first() {
@@ -865,6 +927,7 @@ main(int argc, char** argv) {
     test_not_enough_space();
     test_no_space_during_copy();
     test_cancel_and_progress();
+    test_cancel_does_not_wait_for_the_copy();
     test_teardown_service_first();
     test_migration_runs_off_the_qt_thread();
     test_migration_save_failure_releases_its_copy();

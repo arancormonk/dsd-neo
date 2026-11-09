@@ -23,6 +23,7 @@
 #include <QMap> // IWYU pragma: keep -- QVariantMap is a QMap; replayImportFinished() carries it.
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -84,7 +85,11 @@ class ReplayStore : public QObject {
      * @return The request id, positive.
      */
     Q_INVOKABLE int beginReplayImport(const QString& reference, const QString& fileName);
-    /** @brief Cancel the running copy; it answers "cancelled" unless its commit already ran. */
+    /**
+     * @brief Cancel the running copy: it is answered "cancelled" at once (queued), without waiting for the copy to
+     * stop, and copying() turns false. The copy is still told to stop; when it returns, nothing is published and it
+     * is not answered again. With no copy running it does nothing.
+     */
     Q_INVOKABLE void cancelReplayImport();
 
     bool copying() const;
@@ -157,6 +162,8 @@ class ReplayStore : public QObject {
     QString m_copyName;
     qint64 m_copyBytes = 0;
     qint64 m_copyTotal = -1;
+    /* Copies answered at their cancel whose commit has not run yet: it publishes nothing and answers nothing. */
+    QSet<qint64> m_dropped;
 };
 
 } // namespace dsd_qt
