@@ -5,8 +5,8 @@
  * stand-in driver (the stream seam): its setup, locked read loop, input-level meter and ring writer, the fs/4 rotation
  * included. The samples are a real off-air capture (the P25 control channel fixture, argv[1]) as 12-bit codes, as
  * recorded and overdriven 6 dB into the rails, delivered once as CS16 and once as CF32: the input ring must hold the
- * same floats bit for bit, and the input-level meter must read the same level. Everything the decoder does starts from that ring, so the decode is the
- * same too.
+ * same floats bit for bit, and the input-level meter must read the same level. Everything the decoder does starts
+ * from that ring, so the decode is the same too.
  */
 
 #include <algorithm>

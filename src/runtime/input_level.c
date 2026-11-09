@@ -383,7 +383,8 @@ dsd_input_level_metrics_from_cu8(const uint8_t* samples, size_t count, dsd_input
 int
 dsd_input_level_metrics_from_cs16(const int16_t* samples, size_t count, double full_scale,
                                   dsd_input_level_source source, dsd_input_level_snapshot* out) {
-    if (!out || !samples || count == 0U || !isfinite(full_scale) || full_scale < 1.0 || full_scale > 32768.0) {
+    if (!out || !samples || count == 0U || !isfinite(full_scale) || full_scale < 1.0
+        || full_scale > (double)DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE) {
         return -1;
     }
     double p = 0.0;

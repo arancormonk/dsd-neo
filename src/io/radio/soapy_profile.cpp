@@ -5,6 +5,7 @@
 
 #include "soapy_profile.h"
 
+#include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/parse.h>
 
 #include <algorithm>
@@ -393,6 +394,10 @@ soapy_choose_stream_format(const std::vector<std::string>& supported_formats, co
     }
     return std::string();
 }
+
+/* The meter reads CS16 against the same full scale the reader divides by, so its upper bound is the default here. */
+static_assert((long)kSoapyCs16DefaultFullScale == DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE,
+              "the SoapySDR CS16 default full scale and the input meter's largest CS16 full scale differ");
 
 double
 soapy_cs16_full_scale(const std::string& stream_format, const std::string& native_format, double native_full_scale) {

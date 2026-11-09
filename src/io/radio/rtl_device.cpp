@@ -4668,13 +4668,17 @@ soapy_log_capability_summary_locked(struct rtl_device* dev) {
     }
 
     const dsdneo::SoapyProfile& profile = dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+    /* The full scale only when the driver reported one: a native format read that threw, or reported none, leaves 0. */
+    char native_full_scale[40] = "";
+    if (dev->soapy_native_full_scale > 0.0) {
+        DSD_SNPRINTF(native_full_scale, sizeof native_full_scale, " [full-scale=%g]", dev->soapy_native_full_scale);
+    }
     DSD_FPRINTF(
         stderr,
-        "SoapySDR: driver=%s hardware=%s profile=%s native=%s [full-scale=%g] formats=[%s] gains=[%s] antennas=[%s] "
-        "clocks=[%s].\n",
+        "SoapySDR: driver=%s hardware=%s profile=%s native=%s%s formats=[%s] gains=[%s] antennas=[%s] clocks=[%s].\n",
         dev->soapy_driver_key[0] ? dev->soapy_driver_key : "-",
         dev->soapy_hardware_key[0] ? dev->soapy_hardware_key : "-", profile.name,
-        dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-", dev->soapy_native_full_scale,
+        dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-", native_full_scale,
         dsdneo::soapy_join_names(formats, 120).c_str(), dsdneo::soapy_join_names(gains, 120).c_str(),
         dsdneo::soapy_join_names(antennas, 80).c_str(), dsdneo::soapy_join_names(clocks, 80).c_str());
 }

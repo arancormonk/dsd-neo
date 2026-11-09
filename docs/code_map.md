@@ -6961,8 +6961,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   variance calculation. `IO_INPUT_LEVEL_METRICS` checks exact output bits against a scalar double reference across
   threshold neighbors, non-finite inputs, DC and mixed-exponent blocks.
 - CS16 input levels (`runtime/input_level.c`, `dsd_input_level_metrics_from_cs16()`): samples are read against the
-  full scale the caller passes (finite, in [1, 32768]; the live SoapySDR reader's `soapy_cs16_full_scale`, 32768 for
-  a cs16 replay). A sample clips at or past 0.99 of it, a clip policy separate from the scale (fullScale alone does
+  full scale the caller passes (finite, in [1, `DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE`] = 32768; the live SoapySDR
+  reader's `soapy_cs16_full_scale`, 32768 for a cs16 replay). A sample clips at or past 0.99 of it, a clip policy separate from the scale (fullScale alone does
   not give the converter step): at 32768 +32752 (12-bit left aligned, step 16: SoapyAirspy, LMS7) and -32760 count,
   at 2048 |s| >= 2028. The first clipping code is computed once per call, and the per-sample test is one unsigned
   compare against the clear range.
@@ -7226,8 +7226,10 @@ Key public headers:
     sample pays for it. The meter reads the same full scale (`rtl_publish_cs16_input_level()`). Before, every CS16
     stream was read at 1/32768, so PlutoSDR and bladeRF read 24.08 dB low and never showed HOT or CLIPPING; they now
     deliver what their CF32 (code / 2048) does. A cs16 replay still reads at 32768 (`replay_convert_cs16_to_f32()`).
-    The capability log line shows `native=<format> [full-scale=N]`. Tests: `IO_SOAPY_PROFILE` (the helper's table),
-    `IO_SOAPY_CS16_COPY` (`rtl_device_test_soapy_cs16_ingest()`: the submit path at each full scale, with and
+    The upper bound is the meter's `DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE` (`core/input_level.h`), which a
+    `static_assert` in `soapy_profile.cpp` ties to `kSoapyCs16DefaultFullScale`. The capability log line shows
+    `native=<format> [full-scale=N]`, the bracket only when the driver reported one. Tests: `IO_SOAPY_PROFILE` (the
+    helper's table), `IO_SOAPY_CS16_COPY` (`rtl_device_test_soapy_cs16_ingest()`: the submit path at each full scale, with and
     without the rotation, and the meter it publishes, read by `rtl_stream_test_input_level_read()`),
     `IO_SOAPY_CS16_FULL_SCALE` (a real capture as 12-bit codes through the reader against the stand-in driver, whose
     `full_scale` field reports a native CS16 full scale, as CS16 at 2048 and as CF32: the ring bit for bit and the

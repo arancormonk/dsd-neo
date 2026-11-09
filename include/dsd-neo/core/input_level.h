@@ -112,8 +112,12 @@ int dsd_input_level_metrics_from_cu8_moments(const dsd_input_level_cu8_moments* 
                                              dsd_input_level_snapshot* out);
 int dsd_input_level_metrics_from_cu8(const uint8_t* samples, size_t count, dsd_input_level_source source,
                                      dsd_input_level_snapshot* out);
+/** @brief The largest full scale a CS16 stream is read against: 16-bit samples, and SoapySDR's CS16 convention. */
+#define DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE 32768
+
 /**
- * @brief Level of interleaved CS16 I/Q read against @p full_scale (finite, in [1, 32768]; else -1).
+ * @brief Level of interleaved CS16 I/Q read against @p full_scale (finite, in [1, DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE];
+ * else -1).
  *
  * Samples scale by 1/@p full_scale, and a sample counts as clipped at or past 0.99 of it, whatever the driver's
  * converter step: the rails and the codes next to them of a 12-bit source (2048: |s| >= 2028), and of 12-bit samples
