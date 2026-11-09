@@ -525,10 +525,13 @@ During scanning:
   The protocol's hangtime and release rules decide when call following ends; audio silence alone does not start
   the idle dwell. Once call following ends and no control-channel retune is pending, a fresh `dwell_ms` interval
   starts. The Scan Timing row can show a nonzero `hang` budget during `Following call`; idle targets show dwell.
-- `nxdn-trunk` and `nxdn48-trunk` targets follow the site-broadcast outbound control channel: when a DFA site announces a control
-  channel that differs from the target's `frequency_hz`, DSD-neo adopts it (logging
-  `NOTICE: NXDN trunking: site control channel is X MHz; following it`) and re-parks that target there from then on.
-  A per-target `chan_csv` containing LCN rows pins the control channel instead, so an operator list always wins.
+- `nxdn-trunk` and `nxdn48-trunk` targets follow the site-broadcast outbound control channel: when a DFA site's own
+  CCH_INFO names its control channel current or new on a frequency that differs from the target's `frequency_hz`,
+  DSD-neo adopts it (logging `NOTICE: NXDN trunking: site control channel is X MHz; following it`) and re-parks that
+  target there from then on. The site is the one whose site information the target heard on its control channel, and
+  its SITE_INFO must have been heard first, since it carries the base and step the channel is counted from. A CCH_INFO
+  naming another site, or a candidate channel added or removed, never moves it. A per-target `chan_csv` containing LCN
+  rows pins the control channel instead, so an operator list always wins.
 - Conventional DMR and conventional NXDN targets (both `nxdn-conventional` and `nxdn48-conventional`) stay parked
   only after allowed activity is decoded: a DMR voice header or data header, or an NXDN VCALL, DCALL or SDCALL header.
   NXDN48 and NXDN96 share a sync word and every decoded element, so one NXDN reporting path serves both. The allow/block list, private-call tuning,

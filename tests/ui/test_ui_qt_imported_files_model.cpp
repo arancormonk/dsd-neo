@@ -32,7 +32,10 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <atomic>
+#include <memory>
 #include <stdio.h>
+#include <thread>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 
@@ -50,7 +53,11 @@
 #include <qflags.h>
 #include <stdint.h>
 extern "C" {
+#include <dsd-neo/core/managed_file.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/platform/timing.h>
+#include "managed_file_test_support.h"
 }
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -737,6 +744,236 @@ test_export_registration_in_place() {
     expect("outside path refused without deleting it",
            !model.registerTalkgroupList(external) && QFile::exists(external));
     model.remove(model.rowForPath(path));
+}
+
+/* Issue #748: groupListCounts() reads the file as it is now, where a library row's counts are from its import, and
+ * reads a file outside the library the same way. */
+void
+test_group_list_counts_read_the_file_now() {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    const QString path = model.newTalkgroupListPath();
+    const auto counts = [&model](const QString& file) {
+        const QVariantMap map = model.groupListCounts(file);
+        return QStringLiteral("%1 %2 %3")
+            .arg(map.value("ok").toBool() ? QStringLiteral("ok") : QStringLiteral("unread"))
+            .arg(map.value("accepted").toInt())
+            .arg(map.value("skipped").toInt());
+    };
+    expect("write the list", write_file(path, QByteArray("id,mode,name\n1001,A,Dispatch\n1002,A,Fire\n")));
+    expect("register the list", model.registerTalkgroupList(path));
+    expect("rows counted", counts(path) == QStringLiteral("ok 2 0"));
+    expect("emptied in place", write_file(path, QByteArray("id,mode,name\n")));
+    expect("an emptied list has none, whatever its import counted",
+           counts(path) == QStringLiteral("ok 0 0")
+               && model.get(model.rowForPath(path)).value("accepted").toInt() == 2);
+    expect("a ';' list", write_file(path, QByteArray("id;mode;name\n1001;A;Dispatch\n")));
+    expect("rows it cannot use are skipped", counts(path) == QStringLiteral("ok 0 1"));
+    const QTemporaryDir outside;
+    const QString external = outside.filePath("external.csv");
+    expect("write outside fixture", write_file(external, QByteArray("id,mode,name\n1001,A,Dispatch\n")));
+    expect("a file outside the library is read too", counts(external) == QStringLiteral("ok 1 0"));
+    expect("an outside ';' list", write_file(external, QByteArray("id;mode;name\n1001;A;Dispatch\n")));
+    expect("an outside list's unusable rows are skipped", counts(external) == QStringLiteral("ok 0 1"));
+    expect("file removed", QFile::remove(path));
+    expect("a missing file is not read", counts(path) == QStringLiteral("unread 0 0"));
+    expect("no path is not read", counts(QString()) == QStringLiteral("unread 0 0"));
+    model.remove(model.rowForPath(path));
+}
+
+/* The decoder's side of a session using a row's group file: its own list, loaded from that file. */
+struct DecoderList {
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+    dsd_state* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
+
+    explicit DecoderList(const QString& path) {
+        if (opts != nullptr && state != nullptr) {
+            DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path.toUtf8().constData());
+            loaded = dsd_tg_policy_reload_group_file(opts, state) == 0;
+        }
+    }
+
+    ~DecoderList() {
+        if (state != nullptr) {
+            dsd_state_ext_free_all(state);
+        }
+        free(state);
+        free(opts);
+    }
+
+    DecoderList(const DecoderList&) = delete;
+    DecoderList& operator=(const DecoderList&) = delete;
+
+    int
+    save() {
+        return dsd_tg_policy_write_group_file(opts, state);
+    }
+
+    int
+    appendAlias(uint32_t id) {
+        dsd_tg_policy_entry alias;
+        if (dsd_tg_policy_make_exact_entry(id, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias) != 0
+            || dsd_tg_policy_learn_exact(state, &alias) != DSD_TG_POLICY_LEARN_ADDED) {
+            return -100;
+        }
+        return dsd_tg_policy_append_group_file_row(opts, state, &alias, "");
+    }
+
+    bool loaded = false;
+};
+
+/* Wait, two seconds at most, until another thread is blocked on the managed-file lock or @p done is set. */
+void
+wait_for_lock_waiter(const std::atomic<bool>& done) {
+    for (int i = 0; i < 2000 && dsd_managed_file_test_waiters() < 1 && !done.load(); i++) {
+        dsd_sleep_ms(1);
+    }
+}
+
+struct CheckedRace {
+    std::atomic<bool> atChecked{false};
+    std::atomic<bool> qtDone{false};
+};
+
+// The races the managed-file hook drives (the hook takes no context pointer).
+std::unique_ptr<CheckedRace> g_checked_race;
+
+void
+race_at_checked(dsd_managed_file_step step) {
+    CheckedRace* race = g_checked_race.get();
+    if (race != nullptr && step == DSD_MANAGED_FILE_STEP_CHECKED && !race->atChecked.exchange(true)) {
+        wait_for_lock_waiter(race->qtDone);
+    }
+}
+
+/* Discussion #748 follow-up R4: an "Update from file" (and a RadioReference refresh) of the session's group file
+ * cannot land between the decoder's check of the file and its rewrite. The decoder saves on a worker and stops at
+ * its checked point; the update starts then, must wait for the save, and lands on top. The decoder's next save
+ * then refuses to write over the update until the list is reloaded. */
+void
+test_update_waits_for_decoder_rewrite(bool viaRefresh) {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir fixtures;
+    const auto original = fixtures.filePath("original.csv");
+    const auto replacement = fixtures.filePath("replacement.csv");
+    const QByteArray update("id,mode,name\n123,A,Original\n456,A,Added\n");
+    expect("race fixture", write_file(original, "id,mode,name\n123,A,Original\n") && write_file(replacement, update));
+    const auto path = model.importFile(original, "race.csv", "group").value("path").toString();
+    const int row = model.rowForPath(path);
+    DecoderList decoder(path);
+    expect("race decoder load", row >= 0 && decoder.loaded);
+    if (row < 0 || !decoder.loaded) {
+        return;
+    }
+    expect("race decoder lockout", dsd_tg_policy_set_mode(decoder.state, 123, 123, "B") == 0);
+
+    g_checked_race = std::make_unique<CheckedRace>();
+    CheckedRace& race = *g_checked_race;
+    int saved = -100;
+    dsd_managed_file_test_set_hook(race_at_checked);
+    std::thread saver([&decoder, &saved] { saved = decoder.save(); });
+    for (int i = 0; i < 2000 && !race.atChecked.load(); i++) {
+        dsd_sleep_ms(1);
+    }
+    const QVariantMap result = viaRefresh
+                                   ? model.refreshGeneratedFile(row, replacement)
+                                   : model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "update.csv");
+    race.qtDone = true;
+    saver.join();
+    dsd_managed_file_test_set_hook(nullptr);
+    expect("race decoder reached its checked point", race.atChecked.load());
+    expect("race decoder saved", saved == 0);
+    expect(viaRefresh ? "race refresh applied" : "race update applied", result.value("ok").toBool());
+    expect(viaRefresh ? "race refresh is on disk" : "race update is on disk", read_file(path) == update);
+    expect("race next save refuses the unreloaded update", decoder.save() == 2);
+    expect("race update stays", read_file(path) == update);
+    model.remove(model.rowForPath(path));
+    g_checked_race.reset();
+}
+
+struct InstalledRace {
+    DecoderList* decoder = nullptr;
+    QString path;
+    QByteArray outsideEdit; // empty: a decoder append races the rollback instead
+    std::atomic<bool> started{false};
+    std::atomic<bool> appended{false};
+    int appendRc = -100;
+    std::thread appender;
+};
+
+std::unique_ptr<InstalledRace> g_installed_race;
+
+void
+race_at_installed(dsd_managed_file_step step) {
+    InstalledRace* race = g_installed_race.get();
+    if (race == nullptr || step != DSD_MANAGED_FILE_STEP_INSTALLED || race->started.exchange(true)) {
+        return;
+    }
+    if (!race->outsideEdit.isEmpty()) {
+        // An editor outside the app saves while the update is in flight.
+        (void)write_file(race->path, race->outsideEdit);
+        return;
+    }
+    race->appender = std::thread([race] {
+        race->appendRc = race->decoder->appendAlias(789);
+        race->appended = true;
+    });
+    wait_for_lock_waiter(race->appended);
+}
+
+/* The rollback of a failed update or RadioReference refresh restores its backup only over the bytes it installed (R4). A decoder alias append
+ * that arrives while the update is in flight waits for the rollback and lands on the restored file, so neither is
+ * lost and the decoder's next save goes through; a file an outside editor changed meanwhile is kept, and the update
+ * still reports failure. */
+void
+test_rollback_keeps_newer_files(bool outsideEdit, bool viaRefresh) {
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir fixtures;
+    const auto original = fixtures.filePath("original.csv");
+    const auto replacement = fixtures.filePath("replacement.csv");
+    const QByteArray before("id,mode,name\n123,A,Original\n");
+    expect("rollback fixture",
+           write_file(original, before) && write_file(replacement, "id,mode,name\n321,B,Replacement\n"));
+    const auto path = model.importFile(original, "rollback.csv", "group").value("path").toString();
+    const int row = model.rowForPath(path);
+    // On the heap: the race the hook reads at file scope points at it.
+    auto decoderOwner = std::make_unique<DecoderList>(path);
+    DecoderList& decoder = *decoderOwner;
+    expect("rollback decoder load", row >= 0 && decoder.loaded);
+    if (row < 0 || !decoder.loaded) {
+        return;
+    }
+    const auto store = dsd_qt::json_store_path("imported_files.json");
+    expect("rollback move metadata store", QFile::rename(store, store + ".held"));
+    expect("rollback block metadata write", QDir().mkdir(store));
+
+    g_installed_race = std::make_unique<InstalledRace>();
+    InstalledRace& race = *g_installed_race;
+    race.decoder = decoderOwner.get();
+    race.path = path;
+    race.outsideEdit = outsideEdit ? QByteArray("id,mode,name\n123,A,Edited outside\n") : QByteArray();
+    dsd_managed_file_test_set_hook(race_at_installed);
+    const QVariantMap result =
+        viaRefresh ? model.refreshGeneratedFile(row, replacement)
+                   : model.updateFile(row, QUrl::fromLocalFile(replacement).toString(), "replacement.csv");
+    if (race.appender.joinable()) {
+        race.appender.join();
+    }
+    dsd_managed_file_test_set_hook(nullptr);
+    expect("rollback unblock metadata write", QDir().rmdir(store) && QFile::rename(store + ".held", store));
+    expect("rollback reached the installed point", race.started.load());
+    expect("rollback update reports failure", !result.value("ok").toBool());
+    if (outsideEdit) {
+        expect("rollback keeps the outside edit", read_file(path) == race.outsideEdit);
+    } else {
+        expect("rollback alias appended", race.appendRc == 0);
+        expect("rollback restored, then the alias landed", read_file(path) == before + "789,D,Learned\n");
+        expect("rollback decoder save after both", decoder.save() == 0);
+    }
+    model.remove(model.rowForPath(path));
+    g_installed_race.reset();
 }
 
 void
@@ -1714,6 +1951,12 @@ main(int argc, char** argv) {
         expect("initialization signal is available", host.metaObject()->indexOfSignal("sessionInitialized()") >= 0);
     }
     test_metadata_failure_keeps_file();
+    test_update_waits_for_decoder_rewrite(false);
+    test_update_waits_for_decoder_rewrite(true);
+    test_rollback_keeps_newer_files(false, false);
+    test_rollback_keeps_newer_files(false, true);
+    test_rollback_keeps_newer_files(true, false);
+    test_rollback_keeps_newer_files(true, true);
     test_remove_finishes_on_retry();
     test_channel_bundle();
     test_channel_bundle_quoted_options();
@@ -1733,6 +1976,7 @@ main(int argc, char** argv) {
     test_target_errors_and_opaque_columns();
     test_example_targets();
     test_export_registration_in_place();
+    test_group_list_counts_read_the_file_now();
     test_import_document();
     test_imported_files_model();
     test_update_rejects_invalid_pick();

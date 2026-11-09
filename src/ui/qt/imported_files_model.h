@@ -160,6 +160,15 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE int rowForPath(const QString& path) const;
 
     /**
+     * @brief The rows the file at @p path holds now, read as a talkgroup list: {ok, accepted, skipped}, with ok false
+     *        when @p path is empty or its file cannot be read. Any path, in the library or not.
+     *
+     * Read from the file, not a library row's import counts: the decoder rewrites a talkgroup list in place as the
+     * user edits it, and a file can be updated, so what it held at its import says little about it now.
+     */
+    Q_INVOKABLE QVariantMap groupListCounts(const QString& path) const;
+
+    /**
      * @brief Stored paths dropped by load() because the file was gone, then forgets them.
      *
      * Pruning a ghost row is only half the repair: saved systems reference stored
@@ -243,6 +252,19 @@ class ImportedFilesModel : public QAbstractListModel {
      *        offering a refresh that would silently overwrite their file.
      */
     QVariantMap commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance = true);
+
+    /**
+     * @brief Replace a row's file with the validated @p source and commit the
+     *        row, or roll the file back when the commit fails.
+     *
+     * The backup, install and commit-or-rollback run under the managed-file
+     * lock (<dsd-neo/core/managed_file.h>), which the decoder's group list
+     * writer takes too. The rollback restores the backup only over the bytes
+     * this replacement installed: a file changed since is kept, and the
+     * update reports failure either way.
+     */
+    QVariantMap replaceRowFile(int row, const Row& snapshot, const QString& source, int accepted, int skipped,
+                               bool keepProvenance);
 
     void load();
     bool save() const;

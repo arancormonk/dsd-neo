@@ -855,7 +855,7 @@ dsd_engine_scan_note_skipped_rows(dsd_state* state, const dsd_engine_scan_skippe
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Skipped at every visit: %s and %d more: %s", skipped->label,
                      skipped->count - 1, skipped->brief);
     }
-    state->ui_msg_expire = dsd_realtime_time() + 5;
+    dsd_state_toast_publish(state, dsd_realtime_time() + 5);
 }
 
 /* A row without a width of its own runs the configured width of its kind @p kind. The width commands hold that width to
@@ -1693,7 +1693,7 @@ dsd_engine_channel_scan_end_running_calls(dsd_opts* opts, dsd_state* state) {
 static void
 channel_scan_toast_resume(dsd_state* state, const char* text) {
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
-    state->ui_msg_expire = dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S;
+    dsd_state_toast_publish(state, dsd_realtime_time() + DSD_MANUAL_TUNE_FAILED_TOAST_S);
 }
 
 /* The receiver's centre as the decoder knows it: the RTL front end's cached centre, else the frequency last sent to a

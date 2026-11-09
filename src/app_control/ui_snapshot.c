@@ -218,6 +218,10 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(trunk_scan_entry_reason_capacity) <= offset
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
                    && UI_SNAPSHOT_FIELD_END(scan_row_scope_seq) <= UI_SNAPSHOT_FIELD_END(ui_msg),
                "trunk_scan_active_id..scan_row_scope_seq must ride the vertex_ks_count..ui_msg range");
+/* The toast's sequence (discussion #748) rides it beside the toast. */
+_Static_assert(offsetof(dsd_state, ui_msg_seq) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(ui_msg_seq) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "ui_msg_seq must ride the vertex_ks_count..ui_msg range");
 /* The avoid stores' identities, revisions and exact count (issue #672) ride the same range: a frontend keys its avoid
  * list on them. */
 _Static_assert(offsetof(dsd_state, state_instance) >= offsetof(dsd_state, vertex_ks_count)

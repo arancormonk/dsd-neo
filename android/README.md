@@ -107,7 +107,8 @@ call on another carrier for longer than 15 s lets the skipped call be followed
 again when next seen; tap **Skip** again. DMR, NXDN, EDACS and P25 private-call skips
 last 15 s from the tap in this version; ProVoice has no skip.
 
-**Avoid TG** blocks the talkgroup for the session, until stop or list reload/replacement.
+**Avoid TG** blocks the talkgroup for the session, until stop or a list reload or
+replacement that works (a refused one keeps the block).
 **Lock out** saves the block to the configured talkgroup list. **Settings → Listening
 → Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
 when off. Without a group file, or on a scan row's own list, lockouts stay in memory.

@@ -2147,34 +2147,40 @@ test_network_change_drops_calls(void) {
     session_close(&s);
 }
 
-/* The call the state machine follows when a BSCH names another network ends with the network's other calls: its
- * canonical call ends, and the receiver follows its channel but no call record, so a D-SETUP of the new network that
- * reuses the identifier for a blocked talkgroup is judged by the policy and not followed; the grant timeout then
- * returns. */
+/* The call the state machine follows when a BSCH names another network. While trunking guards the follow, that BSCH
+ * is another cell's on the followed carrier and is not taken on (tetra_bsch_parse()): the followed call, its record,
+ * canonical call and proof stay the home network's. With trunking turned off since, the follow is not guarded and
+ * the BSCH ends the network's calls, the followed one's record with them. */
 static void
-test_network_change_retires_the_followed_call(void) {
-    session s = session_open();
-    session_history(&s);
-    dsd_tg_policy_entry row;
-    assert(dsd_tg_policy_make_exact_entry(0x200u, "B", "blocked", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
-    assert(dsd_tg_policy_upsert_exact(s.state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
-    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
-    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_CONNECT, 0x0A, 4 + 1 + 1 + 2 + 1 + 1);
-    assert(followed_call(s.state) == 0x0A && g_tunes == 1 && publishes_call_to(s.state, 0x100u));
-
-    ttb_block other = {0};
-    ttb_sync_pdu(&other, 262, 1002, 25);
-    assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
-    assert(!publishes_call_to(s.state, 0x100u) && canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
-    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && tetra_calls_followed(s.state) == NULL);
-    assert(!tetra_confirm_followed_call_proven(s.state) && g_returns == 0);
-    send_setup(&s, 0x200u, 0x0A, TTB_SPEECH_GROUP, 2, 150);
-    assert(g_tunes == 1 && !publishes_call_to(s.state, 0x200u) && !tetra_confirm_followed_call_proven(s.state));
-
-    at_seconds(1000.0 + TETRA_SM_GRANT_TIMEOUT_S);
-    tetra_sm_tick(s.opts, s.state);
-    assert(g_returns == 1 && tetra_sm_get_state(s.state) == TETRA_SM_ON_CC);
-    session_close(&s);
+test_network_change_on_the_followed_carrier(void) {
+    for (int guarded = 1; guarded >= 0; guarded--) {
+        session s = session_open();
+        session_history(&s);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        send_call_pdu(&s, 0x100u, TETRA_CMCE_D_CONNECT, 0x0A, 4 + 1 + 1 + 2 + 1 + 1);
+        tetra_confirm_note_followed_call(s.state);
+        assert(followed_call(s.state) == 0x0A && g_tunes == 1 && publishes_call_to(s.state, 0x100u));
+        if (!guarded) {
+            s.opts->trunk_enable = 0;
+            tetra_sm_tick(s.opts, s.state);
+        }
+        ttb_block other = {0};
+        ttb_sync_pdu(&other, 262, 1002, 25);
+        assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state)
+               == (guarded ? TETRA_BSCH_FOREIGN : TETRA_BSCH_TAKEN));
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+        assert(tetra_st_peek(s.state)->mnc == (guarded ? 1001u : 1002u));
+        assert((tetra_calls_peek(s.state, 0x0A) != NULL) == guarded);
+        assert(tetra_confirm_followed_call_proven(s.state) == guarded);
+        if (guarded) {
+            assert(publishes_call_to(s.state, 0x100u) && canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+            assert(tetra_calls_followed(s.state) != NULL);
+        } else {
+            assert(!publishes_call_to(s.state, 0x100u) && canonical(s.state).phase == DSD_CALL_PHASE_ENDED);
+            assert(tetra_calls_followed(s.state) == NULL);
+        }
+        session_close(&s);
+    }
 }
 
 /* The SwMI's call identifiers may differ from one location area to the next (EN 300 392-2 clause 14.2.3): the records
@@ -2439,20 +2445,38 @@ test_cell_change_forgets_the_carrier(void) {
     assert(!ts->voice.bound && ts->voice.carry_len == 0U && !ts->voice.confirmed);
     assert(s.state->tetra_pub.air_encryption == DSD_TETRA_AIR_ENC_UNKNOWN);
     session_close(&s);
+}
 
-    /* Trunking, the followed call's proof on the carrier was the last cell's carrier's; its canonical call and its
-     * following are the state machine's. */
-    s = session_open();
-    session_history(&s);
-    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
-    tetra_confirm_note_followed_call(s.state);
-    assert(followed_call(s.state) == 0x0A && tetra_confirm_followed_call_proven(s.state));
-    assert(tetra_bsch_parse(same.bits, same.n, s.opts, s.state) == 1);
-    assert(tetra_confirm_followed_call_proven(s.state));
-    assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state) == 1);
-    assert(!tetra_confirm_followed_call_proven(s.state) && followed_call(s.state) == 0x0A);
-    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
-    session_close(&s);
+/* Trunking, the followed call's proof on the carrier was the last cell's carrier's; its canonical call and its
+ * following are the state machine's. While trunking guards the follow, another cell's BSCH on the followed carrier is
+ * not taken on at all (tetra_bsch_parse()), so the proof and the canonical call stay; with trunking turned off since,
+ * which let go of the call, it is taken on and the proof goes. */
+static void
+test_cell_change_on_the_followed_carrier(void) {
+    ttb_block same = {0};
+    ttb_block other = {0};
+    bsch_of(&same, 25u);
+    bsch_of(&other, 30u);
+    for (int guarded = 1; guarded >= 0; guarded--) {
+        session s = session_open();
+        session_history(&s);
+        send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+        tetra_confirm_note_followed_call(s.state);
+        assert(followed_call(s.state) == 0x0A && tetra_confirm_followed_call_proven(s.state));
+        assert(tetra_bsch_parse(same.bits, same.n, s.opts, s.state) == TETRA_BSCH_TAKEN);
+        assert(tetra_confirm_followed_call_proven(s.state));
+        if (!guarded) {
+            s.opts->trunk_enable = 0;
+            tetra_sm_tick(s.opts, s.state);
+        }
+        assert(tetra_sm_guarding(s.opts, s.state) == guarded);
+        assert(tetra_bsch_parse(other.bits, other.n, s.opts, s.state)
+               == (guarded ? TETRA_BSCH_FOREIGN : TETRA_BSCH_TAKEN));
+        assert(tetra_confirm_followed_call_proven(s.state) == guarded && followed_call(s.state) == 0x0A);
+        assert(tetra_st_peek(s.state)->colour == (guarded ? 25u : 30u));
+        assert(!guarded || canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+        session_close(&s);
+    }
 }
 
 /* A channel allocation names a traffic channel of the cell that made it (EN 300 392-2 clause 21.5.2: the carrier
@@ -3995,6 +4019,14 @@ aach_burst(session* s, uint8_t tn, uint8_t fn, uint8_t mn, int read, unsigned he
     tetra_calls_on_aach(s->opts, s->state, read, (uint16_t)((header << 12) | (f1 << 6) | f2));
 }
 
+/* The followed carrier's SYNC in frame 18, which on air sets the TDMA clock aach_burst() puts straight: the home cell's
+ * CRC evidence there, which an AACH counts only alongside (tetra_sm_aach_corroborated(),
+ * tetra_sm_note_aach_maintenance()). */
+static void
+carrier_sync(session* s) {
+    tetra_sm_note_home_crc(s->state);
+}
+
 /* Followed speech played: the state machine took it as the followed call's (tetra_sm_note_voice()). */
 static int
 followed_speech_plays(session* s, uint8_t tn, double at) {
@@ -4016,6 +4048,7 @@ followed_on_another_carrier(void) {
     assert(followed_call(s.state) == 0x0A && g_tunes == 1 && c != NULL);
     assert((c->flags & TETRA_CALL_F_USAGE_MARKER) != 0u && c->usage_marker == TEST_USAGE_MARKER);
     assert(!tetra_confirm_followed_call_proven(s.state) && !tetra_confirm_followed_rx(s.state));
+    carrier_sync(&s);
     return s;
 }
 
@@ -4191,38 +4224,50 @@ test_n208_leaves_a_lost_channel(void) {
  * the downlink marker, the uplink marker in frames 1 to 17 (frame 18's field 2 is an access field, table 21.83) or
  * frame 18's marker, or a PDU addressed to its party there; before the fix the grant timeout left it every 4 s. A
  * PDU on another timeslot of the carrier or one to all does not maintain it, and once nothing does, the grant timeout
- * runs out. */
+ * runs out. An AACH has no CRC, so it maintains the channel no later than the home cell's last CRC-passed block there,
+ * the carrier's SYNC in frame 18 (tetra_sm_note_aach_maintenance()): the grant timeout runs out
+ * TETRA_SM_GRANT_TIMEOUT_S after the last SYNC, the AACHs after it notwithstanding. */
 static void
 test_maintenance_keeps_a_silent_channel(void) {
     const unsigned um = TEST_USAGE_MARKER;
     session s = followed_on_another_carrier();
     const double frame_s = 0.0567;
     double t = 1000.0;
+    double t_sync = 1000.0;
     uint8_t fn = 1;
     uint8_t mn = 1;
     for (int i = 0; i < 110; i++) { /* 6.2 s of STCH under the call's marker, as call 121's channel */
         t += frame_s;
         at_seconds(t);
+        if (fn == 18) {
+            carrier_sync(&s);
+            t_sync = t;
+        }
         aach_burst(&s, 2, fn, mn, 1, 3, fn == 18 ? 6u : um, um);
         tetra_sm_tick(s.opts, s.state);
         fn = (uint8_t)(fn % 18u + 1u);
         mn = (uint8_t)(fn == 1 ? mn + 1u : mn);
     }
     assert(followed_call(s.state) == 0x0A && g_returns == 0);
-    at_seconds(t + TETRA_SM_GRANT_TIMEOUT_S - 0.1);
+    const double maint_m = tetra_st(s.state)->sm.t_maint_m;
+    assert(t - t_sync > 0.1 && maint_m > t_sync - 1e-6 && maint_m < t_sync + 1e-6);
+    at_seconds(t_sync + TETRA_SM_GRANT_TIMEOUT_S - 0.01);
     tetra_sm_tick(s.opts, s.state);
     assert(followed_call(s.state) == 0x0A);
-    at_seconds(t + TETRA_SM_GRANT_TIMEOUT_S);
+    at_seconds(t_sync + TETRA_SM_GRANT_TIMEOUT_S);
     tetra_sm_tick(s.opts, s.state);
     assert(followed_call(s.state) != 0x0A && g_returns == 1);
     session_close(&s);
 
-    /* The uplink marker in frames 1 to 17 maintains; in frame 18 field 2 is an access field. */
+    /* The uplink marker in frames 1 to 17 maintains; in frame 18 field 2 is an access field. Each AACH comes with the
+     * carrier's SYNC. */
     s = followed_on_another_carrier();
     at_seconds(1003.0);
+    carrier_sync(&s);
     aach_burst(&s, 2, 5, 1, 1, 3, 1, um);
     assert(tetra_st(s.state)->sm.t_maint_m >= 1003.0);
     at_seconds(1003.5);
+    carrier_sync(&s);
     aach_burst(&s, 2, 18, 1, 1, 3, 6, um);
     assert(tetra_st(s.state)->sm.t_maint_m < 1003.5);
     aach_burst(&s, 2, 18, 1, 1, 3, um, 6);
@@ -4239,6 +4284,7 @@ test_maintenance_keeps_a_silent_channel(void) {
     tetra_st(s.state)->fn = 7; /* the last burst was frame 18's, which carries no speech */
     assert(followed_speech_plays(&s, 2, 1004.5));
     at_seconds(1005.0);
+    carrier_sync(&s);
     aach_burst(&s, 2, 6, 1, 1, 3, um, um);
     assert(tetra_st(s.state)->sm.t_maint_m < 1005.0);
     session_close(&s);
@@ -4475,6 +4521,7 @@ test_receive_permission_record_moves(void) {
     tetra_confirm_burst_begin(s.state);
     send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 6, 120);
     (void)tetra_confirm_burst_end(s.state);
+    carrier_sync(&s);
     send_allocation(&s, 4, 1, (int)um);
     for (uint8_t fn = 1; fn <= 3; fn++) {
         aach_burst(&s, 2, fn, 1, 1, 3, um, um);
@@ -4785,6 +4832,7 @@ main(void) {
     test_events_read_the_new_carrier();
     test_cell_change_forgets_sysinfo();
     test_cell_change_forgets_the_carrier();
+    test_cell_change_on_the_followed_carrier();
     test_cell_change_forgets_allocations();
     test_sysinfo_tells_another_cell();
     test_event_label_assignment();
@@ -4795,7 +4843,7 @@ main(void) {
     test_event_label_reallocation_and_ageing();
     test_event_label_channel();
     test_network_change_drops_calls();
-    test_network_change_retires_the_followed_call();
+    test_network_change_on_the_followed_carrier();
     test_location_area_change_drops_calls();
     test_followed_call_speech();
     test_heard_call_speech();

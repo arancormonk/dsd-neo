@@ -1773,10 +1773,25 @@ call_takes_allocation(tetra_mac_sdu* sdu, const tetra_call_t* c) {
     return 1;
 }
 
+/* A call PDU the records act on: one of a known kind, not in a PDU whose allocation is another cell's
+ * (tetra_mac_sdu_other_cell()), which is printed only. */
+static int
+calls_event_acts(const tetra_state_t* ts, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+    if (!ts || !ev || ev->kind > TETRA_CALL_EV_RELEASE) {
+        return 0;
+    }
+    if (tetra_mac_sdu_other_cell(sdu)) {
+        TETRA_LOG_VERBOSE(ts, 2, "[TETRA CALL] %s for call %u came with another cell's channel; not acted on\n",
+                          k_event_names[ev->kind], (unsigned)ev->call_id);
+        return 0;
+    }
+    return 1;
+}
+
 void
 tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* ev, tetra_mac_sdu* sdu) {
     tetra_state_t* const ts = tetra_st(state);
-    if (!ts || !ev || ev->kind > TETRA_CALL_EV_RELEASE) {
+    if (!calls_event_acts(ts, ev, sdu)) {
         return;
     }
     tetra_call_t* c = calls_find(ts, (uint16_t)(ev->call_id & 0x3FFFu));
@@ -2245,10 +2260,13 @@ calls_leave_lost_channel(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
 }
 
 /* N.213 / N.212 / T.212 on an ACCESS-ASSIGN PDU of the followed channel in frames 1 to 17 (clause 23.8.2.3.2), with the
- * call's downlink usage marker @p um. */
+ * call's downlink usage marker @p um. One with the marker that the home cell's CRC evidence does not @p corroborate
+ * (tetra_sm_aach_corroborated()) counts for nothing positive: it breaks the run, and neither restarts T.212 nor
+ * clears the N.212 count, so it keeps no permission alive. The AACH has no CRC, and another cell's can correct into
+ * the call's marker. */
 static void
 aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_grant* g, unsigned header, unsigned f1,
-                        const tetra_call_t* c) {
+                        const tetra_call_t* c, int corroborated) {
     const uint8_t um = c->usage_marker;
     /* The channel is the record's timeslots of the follow: an allocation may have narrowed it since. */
     const uint8_t slots = (uint8_t)(c->alloc.timeslots & g->timeslots);
@@ -2264,10 +2282,18 @@ aach_receive_permission(dsd_state* state, tetra_state_t* ts, const tetra_sm_gran
         }
         return;
     }
+    if (!corroborated) {
+        cf->rx_run = 0;
+        return;
+    }
     const int successive = cf->rx_run > 0u
                            && slots_between(cf->rx_run_start, ts->tdma_slot_start)
                                   == next_channel_slot(cf->rx_run_tn, cf->rx_run_fn, slots);
-    cf->rx_run = (uint8_t)(successive ? (cf->rx_run < UINT8_MAX ? cf->rx_run + 1u : cf->rx_run) : 1u);
+    if (!successive) {
+        cf->rx_run = 1;
+    } else if (cf->rx_run < UINT8_MAX) {
+        cf->rx_run++;
+    }
     cf->rx_run_tn = ts->tn;
     cf->rx_run_fn = ts->fn;
     cf->rx_run_start = ts->tdma_slot_start;
@@ -2369,14 +2395,14 @@ tetra_calls_on_aach(dsd_opts* opts, dsd_state* state, int read, uint16_t pdu) {
     const unsigned fields[3] = {(pdu >> 12) & 3u, (pdu >> 6) & 0x3Fu, pdu & 0x3Fu};
     const int control_frame = tetra_tdma_control_frame(ts);
     if (c && aach_maintains(control_frame, fields[0], fields[1], fields[2], c->usage_marker)) {
-        tetra_sm_note_maintenance(state);
+        tetra_sm_note_aach_maintenance(opts, state);
     }
     /* Frame 18 counts for channel maintenance only. */
     if (control_frame || aach_n208(opts, state, ts, &g, fields, c)) {
         return;
     }
     if (c) {
-        aach_receive_permission(state, ts, &g, fields[0], fields[1], c);
+        aach_receive_permission(state, ts, &g, fields[0], fields[1], c, tetra_sm_aach_corroborated(opts, state));
     }
 }
 

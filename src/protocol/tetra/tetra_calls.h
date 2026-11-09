@@ -87,6 +87,17 @@ typedef struct {
     tetra_air_cand air_key; /**< the key that decrypted it (tetra_air_sig.c), when it was ciphertext */
 } tetra_mac_sdu;
 
+/**
+ * 1 when the TM-SDU came with a channel allocation read as one of another cell (its cell change flag, EN 300 392-2
+ * clause 23.5.4.1): it moves an MS to another cell, which this decoder does not follow, so the PDU is decoded and
+ * printed only and no call record takes it (tetra_calls_on_event()). An allocation left unread (ciphertext) has no
+ * flag the decoder knows.
+ */
+static inline int
+tetra_mac_sdu_other_cell(const tetra_mac_sdu* sdu) {
+    return sdu && sdu->has_alloc && !sdu->alloc_unread && sdu->alloc.cell_change;
+}
+
 /** CMCE PDUs that act on a call (EN 300 392-2 clause 14.7.1). */
 typedef enum {
     TETRA_CALL_EV_SETUP = 0,
@@ -144,8 +155,9 @@ typedef struct {
  * there is none. A release frees the record (ending its canonical call and, when it is the followed call, telling the
  * trunking state machine). An allocation in the same MAC PDU attaches to the named call, takes its downlink from any
  * other call that held it and, while trunking, may be followed. Nothing here settles the trunking state machine: the
- * burst's entry did (tetra_sm_settle() from tetra.c), so every PDU of a burst sees the same follow. @p sdu may be
- * NULL (a TM-SDU decoded without its MAC PDU); @p opts may be NULL.
+ * burst's entry did (tetra_sm_settle() from tetra.c), so every PDU of a burst sees the same follow. A PDU that came
+ * with another cell's channel allocation (tetra_mac_sdu_other_cell()) changes nothing. @p sdu may be NULL (a TM-SDU
+ * decoded without its MAC PDU); @p opts may be NULL.
  */
 void tetra_calls_on_event(dsd_opts* opts, dsd_state* state, const tetra_call_event* ev, tetra_mac_sdu* sdu);
 

@@ -215,7 +215,7 @@ other_prompt_done(void* user, const char* text) {
 static void
 open_chan_picker(void) {
     reset_done();
-    ui_csv_import_picker_open("chan", "Channel map CSV", 64, caller_done, &g_caller_token);
+    ui_csv_import_picker_open("chan", "Channel map CSV", NULL, 64, caller_done, &g_caller_token);
     expect("chooser open", ui_chooser_active() == 1);
     expect("chooser lists the files and the path row", ui_chooser_test_snapshot().count == 3);
     expect("one live context", ui_csv_picker_live_contexts_for_test() == 1);
@@ -283,7 +283,7 @@ test_flow(const char* chan_b) {
     /* No imports of a kind: the prompt opens directly, and its allocation failure answers at once too. */
     reset_done();
     ui_prompt_test_fail_next_alloc();
-    ui_csv_import_picker_open("src", "Source ID list CSV", 64, caller_done, &g_caller_token);
+    ui_csv_import_picker_open("src", "Source ID list CSV", NULL, 64, caller_done, &g_caller_token);
     expect_answered("direct prompt allocation failure", 1, "");
 
     /* Replaced by another chooser: disposed, no answer (a chooser closed without one says nothing). */
@@ -313,6 +313,32 @@ test_flow(const char* chan_b) {
     expect_answered("prompt closed at exit", 1, "");
 }
 
+/* The path prompt starts at the caller's text (the group import's configured file, discussion #748), whether it opens
+   at once or from the chooser's "Enter a path..." row frames later, after the caller's copy is gone. */
+static void
+test_prefill(void) {
+    char prefill[64];
+    (void)DSD_SNPRINTF(prefill, sizeof prefill, "%s", "C:\\lists\\groups.csv");
+    reset_done();
+    ui_csv_import_picker_open("src", "Source ID list CSV", prefill, 64, caller_done, &g_caller_token);
+    prefill[0] = '\0';
+    expect("prefilled prompt open", ui_prompt_active() == 1);
+    expect("submit the prefill", ui_prompt_handle_key('\n') == 1);
+    expect_answered("direct prompt starts at the prefill", 0, "C:\\lists\\groups.csv");
+
+    (void)DSD_SNPRINTF(prefill, sizeof prefill, "%s", "/home/u/groups.csv");
+    reset_done();
+    ui_csv_import_picker_open("chan", "Channel map CSV", prefill, 64, caller_done, &g_caller_token);
+    prefill[0] = '\0';
+    expect("chooser open", ui_chooser_active() == 1);
+    expect("End key", ui_chooser_handle_key(KEY_END) == 1);
+    expect("Enter on the path row", ui_chooser_handle_key('\n') == 1);
+    expect("prompt open", ui_prompt_active() == 1);
+    expect("edit the prefill", ui_prompt_handle_key(KEY_BACKSPACE) == 1 && ui_prompt_handle_key('x') == 1);
+    expect("submit", ui_prompt_handle_key('\n') == 1);
+    expect_answered("path row prompt starts at the prefill", 0, "/home/u/groups.csx");
+}
+
 /* The imports directory is resolved from XDG_CONFIG_HOME (APPDATA on Windows), here a scratch directory. */
 static void
 test_flow_through_the_widgets(void) {
@@ -335,6 +361,7 @@ test_flow_through_the_widgets(void) {
     (void)write_csv_with_sidecar(dir, "B chan.csv", "chan", 2, "B", chan_b, sizeof chan_b);
 
     test_flow(chan_b);
+    test_prefill();
 
     rm_with_sidecar(chan_a);
     rm_with_sidecar(chan_b);

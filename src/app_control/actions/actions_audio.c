@@ -34,7 +34,7 @@ ui_handle_toggle_mute(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     }
     if (state) {
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", msg);
-        state->ui_msg_expire = dsd_realtime_time() + 3;
+        dsd_state_toast_publish(state, dsd_realtime_time() + 3);
     }
     return 1;
 }
@@ -163,7 +163,7 @@ ui_handle_input_monitor_toggle(dsd_opts* opts, dsd_state* state, const struct ds
         opts->monitor_input_audio = 0;
         if (state) {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "Input Monitor: output open failed");
-            state->ui_msg_expire = dsd_realtime_time() + 3;
+            dsd_state_toast_publish(state, dsd_realtime_time() + 3);
         }
     }
     return 1;
@@ -188,7 +188,7 @@ ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app
         }
         if (state) {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "RTL Monitor Gain: %dX", opts->rtl_volume_multiplier);
-            state->ui_msg_expire = dsd_realtime_time() + 2;
+            dsd_state_toast_publish(state, dsd_realtime_time() + 2);
         }
     } else {
         if (opts->input_volume_multiplier == 1 || opts->input_volume_multiplier == 2) {
@@ -198,7 +198,7 @@ ui_handle_input_vol_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app
         }
         if (state) {
             DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Input Volume: %dX", opts->input_volume_multiplier);
-            state->ui_msg_expire = dsd_realtime_time() + 2;
+            dsd_state_toast_publish(state, dsd_realtime_time() + 2);
         }
     }
     return 1;

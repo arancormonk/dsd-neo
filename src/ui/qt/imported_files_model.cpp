@@ -10,6 +10,7 @@
 
 #include <QByteArray>
 #include <QChar>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileDevice> // IWYU pragma: keep
@@ -26,6 +27,7 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/managed_file.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -549,9 +551,34 @@ ImportedFilesModel::commitReplacedRow(int row, int accepted, int skipped, bool k
 }
 
 namespace {
+/* The managed-file lock (<dsd-neo/core/managed_file.h>) for one replacement of a row's file: the decoder rewrites and
+   appends to the session's group list under the same lock, so its check and write never interleave with a backup,
+   install and rollback here. Holds file operations only; nothing in it waits for the decoder. */
+struct ManagedFileLock {
+    ManagedFileLock() { dsd_managed_file_lock(); }
+
+    ~ManagedFileLock() { dsd_managed_file_unlock(); }
+
+    ManagedFileLock(const ManagedFileLock&) = delete;
+    ManagedFileLock& operator=(const ManagedFileLock&) = delete;
+};
+
+/* A digest of the file at @p path, empty when it cannot be read: enough to tell whether the bytes changed without
+   keeping a second copy of a file that may hold keys. */
+QByteArray
+fileDigest(const QString& path) {
+    QFile file(path);
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    if (!file.open(QIODevice::ReadOnly) || !hash.addData(&file) || file.error() != QFileDevice::NoError) {
+        return {};
+    }
+    return hash.result();
+}
+
 struct CsvReplacementBackup {
     QString path;
     QByteArray bytes;
+    QByteArray installed; // digest of the replacement this update put in place
     bool existed, valid = true;
 
     explicit CsvReplacementBackup(const QString& destination) : path(destination), existed(QFile::exists(path)) {
@@ -567,7 +594,18 @@ struct CsvReplacementBackup {
     }
 
     void
+    noteInstalled() {
+        installed = fileDigest(path);
+        dsd_managed_file_step_reached(DSD_MANAGED_FILE_STEP_INSTALLED);
+    }
+
+    /* Put the old file back, but only over the bytes this update installed: a file that changed since (an editor
+       outside the app) is newer than both, so it stays, and the update has failed either way. */
+    void
     restore() const {
+        if (installed.isEmpty() || fileDigest(path) != installed) {
+            return;
+        }
         if (existed) {
             (void)writePrivateCsv(path, bytes);
         } else {
@@ -613,13 +651,24 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
         return commitReplacedRow(row, accepted, skipped, false);
     }
 
+    result = replaceRowFile(row, snapshot, staged, accepted, skipped, false);
+    QFile::remove(staged);
+    return result;
+}
+
+QVariantMap
+ImportedFilesModel::replaceRowFile(int row, const Row& snapshot, const QString& source, int accepted, int skipped,
+                                   bool keepProvenance) {
+    QVariantMap result;
+    result.insert(QStringLiteral("ok"), false);
+    result.insert(QStringLiteral("error"), QStringLiteral("open"));
+    // Backup, install and commit-or-rollback are one step for the decoder's group list writer.
+    const ManagedFileLock lock;
     CsvReplacementBackup backup(snapshot.path);
     if (!backup.valid) {
-        QFile::remove(staged);
         return result;
     }
-    const QString path = m_host->importLocalFile(staged, snapshot.name, snapshot.path);
-    QFile::remove(staged);
+    const QString path = m_host->importLocalFile(source, snapshot.name, snapshot.path);
     if (path != snapshot.path || path.isEmpty()) {
         // The host wrote somewhere other than the row's file (its replace target
         // was not usable), so the copy that just landed belongs to no row and
@@ -629,7 +678,8 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
         }
         return result;
     }
-    result = commitReplacedRow(row, accepted, skipped, false);
+    backup.noteInstalled();
+    result = commitReplacedRow(row, accepted, skipped, keepProvenance);
     if (!result.value("ok").toBool()) {
         backup.restore();
     }
@@ -655,22 +705,7 @@ ImportedFilesModel::refreshGeneratedFile(int row, const QString& sourcePath) {
     }
 
     // The path is preserved so saved systems referencing it stay valid.
-    CsvReplacementBackup backup(snapshot.path);
-    if (!backup.valid) {
-        return result;
-    }
-    const QString path = m_host->importLocalFile(sourcePath, snapshot.name, snapshot.path);
-    if (path != snapshot.path || path.isEmpty()) {
-        if (!path.isEmpty()) {
-            QFile::remove(path);
-        }
-        return result;
-    }
-    result = commitReplacedRow(row, accepted, skipped);
-    if (!result.value("ok").toBool()) {
-        backup.restore();
-    }
-    return result;
+    return replaceRowFile(row, snapshot, sourcePath, accepted, skipped, true);
 }
 
 static void
@@ -829,6 +864,14 @@ ImportedFilesModel::rowForPath(const QString& path) const {
         }
     }
     return -1;
+}
+
+QVariantMap
+ImportedFilesModel::groupListCounts(const QString& path) const {
+    int accepted = 0;
+    int skipped = 0;
+    const bool ok = !path.isEmpty() && validate(path, QStringLiteral("group"), &accepted, &skipped);
+    return {{"ok", ok}, {"accepted", ok ? accepted : 0}, {"skipped", ok ? skipped : 0}};
 }
 
 ImportedFilesModel::Row

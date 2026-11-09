@@ -205,6 +205,11 @@ tetra_crc16_ccitt_bits(const uint8_t* bits, int len) {
 
 uint32_t
 tetra_compute_scramb_seed(uint16_t mcc, uint16_t mnc, uint8_t colour) {
+    /* Colour code 0 is "predefined scrambling": all 30 bits e(1)..e(30) are zero whatever the MCC and MNC (EN 300 392-2
+       table 21.76 note 1), a cell that sends no network identity in its scrambling. */
+    if ((colour & 0x3fu) == 0u) {
+        return 3u;
+    }
     /* e(1)..e(30) = MCC || MNC || colour code, preceded by p(-31) = p(-30) = 1. */
     const uint32_t s = (uint32_t)(colour & 0x3fu) | ((uint32_t)(mnc & 0x3fffu) << 6) | ((uint32_t)(mcc & 0x3ffu) << 20);
     return (s << 2) | 3u;

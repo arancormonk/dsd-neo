@@ -23,6 +23,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/received_identity_site.h>
@@ -97,9 +98,9 @@ static void nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state,
                                          size_t elements_bits);
 static void nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                          size_t elements_bits);
-static void nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+static void nxdn_element_handle_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                           size_t elements_bits);
-static void nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
+static void nxdn_element_handle_adj_site(const dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                          size_t elements_bits);
 static void nxdn_element_handle_tx_release(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                            size_t elements_bits);
@@ -121,22 +122,20 @@ static void nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id
                                           uint16_t channel1, uint16_t channel2);
 static int nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits,
                                      uint32_t location_id, uint8_t channel1sts);
-static void nxdn_adj_site_channel_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint16_t chan);
-static void nxdn_adj_site_dfa_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw,
-                                    uint16_t chan);
-static void NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static void nxdn_adj_site_channel_entry(const dsd_state* state, uint32_t site, uint8_t opt, uint16_t chan);
+static void nxdn_adj_site_dfa_entry(const dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw, uint16_t chan);
+static int NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, int control_channel);
 static void NXDN_decode_srv_info_type_d(dsd_state* state, const uint8_t* Message);
 static void NXDN_decode_adj_site_type_d(const uint8_t* Message);
-static void NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
-static void NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static int NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static void NXDN_decode_adj_site(const dsd_state* state, const uint8_t* Message, size_t message_bits);
 static char* NXDN_Call_Type_To_Str(uint8_t CallType);
 static void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode);
 static char* NXDN_Cipher_Type_To_Str(uint8_t CipherType);
-static void nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type);
 static void nxdn_srv_info_handler(dsd_state* state, uint16_t svc_info);
 static void nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info);
-static void nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info);
+static void nxdn_ca_info_handler(dsd_state* state, uint32_t location_id, uint32_t ca_info);
 
 /* The label of a call's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
@@ -407,6 +406,9 @@ nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* el
 
 static void
 nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
+    if (state->nxdn_frame_foreign) {
+        return; // another control channel's broadcast: this one's sync is not refreshed by it
+    }
     state->last_cc_sync_time_m = dsd_decode_now_mono_s();
     nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
 }
@@ -415,8 +417,8 @@ nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
  * SRV_INFO (0x19) has one layout per system type, chosen by the channel this frame's own LICH names
  * (dsd_state::nxdn_frame_channel), never by the "Type-D" category an earlier SCCH left behind: on a Type-D (IDAS)
  * RTCH2 it is NXDN TS 1-E §6.4.3.1's 80-element System ID / Site Code form, elsewhere the Type-C location ID form of
- * 72 elements. A Type-C SRV_INFO also reaches a traffic channel's SACCH; only a control channel's says the control
- * channel is here.
+ * 72 elements. A Type-C SRV_INFO also reaches a traffic channel's SACCH; only a control channel's, a composite one's
+ * included (TS 1-C §5.1.2: handled as RCCH), says the control channel is here.
  */
 static void
 nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
@@ -429,27 +431,38 @@ nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8
     if (!nxdn_element_has_bits("SRV_INFO", elements_bits, 72U)) {
         return;
     }
-    const int control_channel = state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_CONTROL;
+    const int control_channel = state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_CONTROL
+                                || state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
     NXDN_decode_srv_info(opts, state, elements, control_channel);
     if (control_channel) {
         nxdn_element_mark_control_sync(opts, state);
     }
 }
 
+/* CCH_INFO and SITE_INFO are Type-C messages a Type-D system does not send (NXDN TS 1-E; independently, SDRTrunk's
+ * NXDNMessageType lists no Type-D 0x18 or 0x1A): decoded whole, they say the session decodes Type-C trunking. A FACCH1 is
+ * laid out alike in both readings of a composite control channel's LICH, so a CCH_INFO says it whichever reading the
+ * frame took; a SITE_INFO, too long for a FACCH1, on a frame read as Type-D came through a layout of Type-D's own. */
 static void
 nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    NXDN_decode_cch_info(opts, state, elements, elements_bits);
+    // Only a whole message says it: a short one (a non-superframe SACCH's 26 elements) passed a short CRC at most.
+    if (NXDN_decode_cch_info(opts, state, elements, elements_bits) && !state->nxdn_frame_foreign) {
+        dsd_nxdn_note_type_c(state);
+    }
     nxdn_element_mark_control_sync(opts, state);
 }
 
 static void
-nxdn_element_handle_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    NXDN_decode_site_info(opts, state, elements, elements_bits);
+nxdn_element_handle_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+    if (NXDN_decode_site_info(opts, state, elements, elements_bits)
+        && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign) {
+        dsd_nxdn_note_type_c(state);
+    }
     nxdn_element_mark_control_sync(opts, state);
 }
 
 static void
-nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
+nxdn_element_handle_adj_site(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     /* On a Type-D (IDAS) RTCH2 the same type code is a traffic channel's ADJ_SITE_INFO (NXDN TS 1-E §6.4.3.2), with
      * a layout of its own, and says nothing of where a control channel is. */
     if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
@@ -458,7 +471,7 @@ nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* el
         }
         return;
     }
-    NXDN_decode_adj_site(opts, state, elements, elements_bits);
+    NXDN_decode_adj_site(state, elements, elements_bits);
     nxdn_element_mark_control_sync(opts, state);
 }
 
@@ -529,9 +542,6 @@ nxdn_element_dispatch_handler(uint8_t message_type) {
         {0x04, nxdn_element_handle_call_assignment},
         {0x0E, nxdn_element_handle_call_assignment},
         {0x17, nxdn_element_handle_dst_info},
-        {0x1A, nxdn_element_handle_cch_info},
-        {0x18, nxdn_element_handle_site_info},
-        {0x1B, nxdn_element_handle_adj_site},
         {0x07, nxdn_element_handle_tx_release},
         {0x08, nxdn_element_handle_tx_release},
         {0x01, nxdn_element_handle_vcall},
@@ -547,6 +557,24 @@ nxdn_element_dispatch_handler(uint8_t message_type) {
     }
 
     return NULL;
+}
+
+/* SITE_INFO, SRV_INFO, CCH_INFO and ADJ_SITE_INFO: decoded for the log whoever sent them, their handlers keep only
+ * what this site's own say (nxdn_site_broadcast_is_this_site()). */
+static int
+nxdn_element_is_site_broadcast(uint8_t message_type) {
+    return message_type >= 0x18U && message_type <= 0x1BU;
+}
+
+static void
+nxdn_element_handle_site_broadcast(dsd_opts* opts, dsd_state* state, uint8_t message_type, const uint8_t* elements,
+                                   size_t elements_bits) {
+    switch (message_type) {
+        case 0x18U: nxdn_element_handle_site_info(opts, state, elements, elements_bits); break;
+        case 0x19U: nxdn_element_handle_srv_info(opts, state, elements, elements_bits); break;
+        case 0x1AU: nxdn_element_handle_cch_info(opts, state, elements, elements_bits); break;
+        default: nxdn_element_handle_adj_site(opts, state, elements, elements_bits); break;
+    }
 }
 
 void
@@ -585,6 +613,13 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
 
     nxdn_message_type(opts, state, MessageTypeExt);
 
+    if (state->nxdn_frame_foreign && !nxdn_element_is_site_broadcast(MessageTypeDispatch)) {
+        /* Another control channel's message on the followed traffic channel: its grants, calls and releases are that
+           channel's, so none is followed or recorded here. */
+        DSD_FPRINTF(stderr, " (other channel's control; log only)");
+        return;
+    }
+
     if (MessageTypeExt == 0xE7U) {
         /* Six characters from element 24. */
         if (nxdn_element_has_bits("ARIB ALIAS", elements_bits, 72U)) {
@@ -600,8 +635,8 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
         return;
     }
 
-    if (MessageTypeDispatch == 0x19U) {
-        nxdn_element_handle_srv_info(opts, state, ElementsContent, elements_bits);
+    if (nxdn_element_is_site_broadcast(MessageTypeDispatch)) {
+        nxdn_element_handle_site_broadcast(opts, state, MessageTypeDispatch, ElementsContent, elements_bits);
         return;
     }
 
@@ -1235,66 +1270,116 @@ nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Messa
 }
 
 //externalize multiple sub-element handlers
-static void
-nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
-    //6.5.2 Location ID (NXDN TS 1-A): a 2-bit category, then the system and site codes it splits the other 22 bits into
-    uint8_t category_bit = location_id >> 22;
-    uint32_t sys_code = 0;
-    uint16_t site_code = 0;
 
-    char category[14]; //G, R, or L
+/* A Location ID's parts (NXDN TS 1-A 6.5.2): a 2-bit category, then the system and site codes it splits the other 22
+ * bits into. */
+typedef struct {
+    uint8_t category_bit; /**< 0 Global, 2 Regional, 1 Local, 3 reserved */
+    uint32_t sys_code;
+    uint16_t site_code;
+    char category[14];
+} nxdn_location;
 
-    if (category_bit == 0) {
-        sys_code = ((location_id & 0x3FFFFF) >> 12); //10 bits
-        site_code = location_id & 0xFFF;             //12 bits
-        DSD_SNPRINTF(category, sizeof(category), "%s", "Global");
-    } else if (category_bit == 2) {
-        sys_code = ((location_id & 0x3FFFFF) >> 8); //14 bits
-        site_code = location_id & 0xFF;             //8 bits
-        DSD_SNPRINTF(category, sizeof(category), "%s", "Regional");
-    } else if (category_bit == 1) {
-        sys_code = ((location_id & 0x3FFFFF) >> 5); //17 bits
-        site_code = location_id & 0x1F;             //5 bits
-        DSD_SNPRINTF(category, sizeof(category), "%s", "Local");
+static nxdn_location
+nxdn_location_parse(uint32_t location_id) {
+    nxdn_location loc;
+    DSD_MEMSET(&loc, 0, sizeof(loc));
+    loc.category_bit = (uint8_t)(location_id >> 22);
+    if (loc.category_bit == 0) {
+        loc.sys_code = ((location_id & 0x3FFFFF) >> 12); //10 bits
+        loc.site_code = location_id & 0xFFF;             //12 bits
+        DSD_SNPRINTF(loc.category, sizeof(loc.category), "%s", "Global");
+    } else if (loc.category_bit == 2) {
+        loc.sys_code = ((location_id & 0x3FFFFF) >> 8); //14 bits
+        loc.site_code = location_id & 0xFF;             //8 bits
+        DSD_SNPRINTF(loc.category, sizeof(loc.category), "%s", "Regional");
+    } else if (loc.category_bit == 1) {
+        loc.sys_code = ((location_id & 0x3FFFFF) >> 5); //17 bits
+        loc.site_code = location_id & 0x1F;             //5 bits
+        DSD_SNPRINTF(loc.category, sizeof(loc.category), "%s", "Local");
     } else {
         //err, or we shouldn't ever get here
-        DSD_SNPRINTF(category, sizeof(category), "%s", "Reserved/Err");
+        DSD_SNPRINTF(loc.category, sizeof(loc.category), "%s", "Reserved/Err");
     }
+    return loc;
+}
 
-    //type 0 is for current site, type 1 is for adjacent sites
-    if (type != 0) {
-        DSD_FPRINTF(stderr, "\n Adjacent Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
-                    site_code);
-        return;
-    }
+/* The received identity's category for a Location ID's category bits: 0 Global, 1 Regional, 2 Local (00, 10, 01). */
+static uint8_t
+nxdn_location_rxid_category(const nxdn_location* loc) {
+    static const uint8_t k_rxid_category[3] = {0U, 2U, 1U};
+    return k_rxid_category[loc->category_bit];
+}
 
-    DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", category, sys_code,
-                site_code);
+/* Whether a Location ID names a site: a reserved category, or a system or site code the standard reserves (all zeros
+ * or all ones, Table 6.5-1), names none. */
+static int
+nxdn_location_names_site(const nxdn_location* loc) {
+    return loc->category_bit != 3U
+           && dsd_nxdn_location_valid(nxdn_location_rxid_category(loc), loc->sys_code, loc->site_code);
+}
+
+/* An adjacent site's Location ID (ADJ_SITE_INFO): printed as one. */
+static void
+nxdn_location_print_adjacent(uint32_t location_id) {
+    const nxdn_location loc = nxdn_location_parse(location_id);
+    DSD_FPRINTF(stderr, "\n Adjacent Information - Cat: %s - Sys Code: %d - Site Code %d ", loc.category, loc.sys_code,
+                loc.site_code);
+}
+
+/* How a message's Location ID is taken (nxdn_location_id_handler()). */
+enum {
+    NXDN_LOCATION_THIS_SITE = 0, /* this site's SITE_INFO or SRV_INFO: printed and kept as the site identity */
+    NXDN_LOCATION_NAMED = 1,     /* a site a message names (CCH_INFO, another site's broadcast): printed only */
+};
+
+static void
+nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
+    const nxdn_location loc = nxdn_location_parse(location_id);
+
+    DSD_FPRINTF(stderr, "\n Location Information - Cat: %s - Sys Code: %d - Site Code %d ", loc.category, loc.sys_code,
+                loc.site_code);
     /* Every caller holds a message its channel's CRC passed (NXDN_Elements_Content_decode()); a short SACCH CRC counts
        once the transmission is confirmed, as the SACCH's own RAN does (nxdn_handle_sacch()). Until then the location is
-       decoded and printed, not kept. A reserved category, or a system or site code the standard reserves (all zeros or
-       all ones, Table 6.5-1), names no site and gives no RAN: it is printed, not kept. */
-    if (category_bit == 3U || !nxdn_confirm_is_confirmed(state)) {
+       decoded and printed, not kept. A Location ID that names no site gives no RAN: it is printed, not kept. Only this
+       site's SITE_INFO and SRV_INFO ("for current site", TS 1-A 6.4.3.1-2) are kept: a CCH_INFO names "certain site"
+       (6.4.3.3), and a broadcast heard on a followed channel may be another site's. */
+    if (type != NXDN_LOCATION_THIS_SITE || !nxdn_location_names_site(&loc) || !nxdn_confirm_is_confirmed(state)) {
         return;
     }
-    /* The record's category: 0 Global, 1 Regional, 2 Local (the location ID's category bits are 00, 10 and 01). */
-    static const uint8_t k_rxid_category[3] = {0U, 2U, 1U};
-    const uint8_t rxid_category = k_rxid_category[category_bit];
-    if (!dsd_nxdn_location_valid(rxid_category, sys_code, site_code)) {
-        return;
-    }
-    state->nxdn_last_ran = site_code % 64; //Table 6.3-4 RAN for Trunked Radio Systems
+    const uint8_t rxid_category = nxdn_location_rxid_category(&loc);
+    state->nxdn_last_ran = loc.site_code % 64; //Table 6.3-4 RAN for Trunked Radio Systems
     state->nxdn_last_ran_stand_in = 0U;
-    state->nxdn_location_site_code = site_code;
-    state->nxdn_location_sys_code = sys_code;
-    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", category);
-    dsd_rxid_note_nxdn_location(state, rxid_category, sys_code, site_code);
+    state->nxdn_location_site_code = loc.site_code;
+    state->nxdn_location_sys_code = loc.sys_code;
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", loc.category);
+    dsd_rxid_note_nxdn_location(state, rxid_category, loc.sys_code, loc.site_code);
     dsd_signal_search_site_note note;
     DSD_MEMSET(&note, 0, sizeof(note));
     note.kind = DSD_SEARCH_SITE_NOTE_NXDN;
-    note.nxdn_sys = sys_code;
-    note.nxdn_site = site_code;
+    note.nxdn_sys = loc.sys_code;
+    note.nxdn_site = loc.site_code;
     dsd_signal_search_note_site(state, &note);
+}
+
+/*
+ * Whether a Type-C SITE_INFO or SRV_INFO naming @p location_id speaks for this site. While no traffic channel is
+ * followed (dsd_opts_trunk_vc_followed(): trunking on and tuned) the receiver is on the control channel it chose, a composite one included, so its broadcast latches this
+ * site (dsd_nxdn_site_latch()); while one is followed, only this site's own broadcast on the traffic channel counts.
+ * A SITE_INFO on a frame read as Type-D is not a Type-C site's (nxdn_element_handle_site_info()), and another
+ * control channel's broadcast heard on the followed channel (dsd_state::nxdn_frame_foreign) is that channel's.
+ */
+static int
+nxdn_site_broadcast_is_this_site(const dsd_opts* opts, dsd_state* state, uint32_t location_id) {
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D || state->nxdn_frame_foreign) {
+        return 0;
+    }
+    const nxdn_location loc = nxdn_location_parse(location_id);
+    // Trunking switched off mid-follow leaves the tuned flag set with nothing followed (ui_handle_trunk_toggle()).
+    if (!dsd_opts_trunk_vc_followed(opts) && nxdn_location_names_site(&loc)) {
+        dsd_nxdn_site_latch(state, location_id);
+    }
+    return dsd_nxdn_site_is(state, location_id);
 }
 
 static void
@@ -1419,23 +1504,20 @@ nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info) {
 }
 
 static void
-nxdn_ca_info_handler(dsd_state* state, uint32_t ca_info) {
+nxdn_ca_info_handler(dsd_state* state, uint32_t location_id, uint32_t ca_info) {
     //handle the channel access info for channel or dfa
     //Part 1-A Common Air Interface Ver.2.0
     //6.5.36. Channel Access Information
     //this element only seems to appear in the SITE_INFO message
-    uint32_t RCN = ca_info >> 23;          //Radio Channel Notation
+    uint32_t RCN = (ca_info >> 23) & 0x1;  //Radio Channel Notation
     uint32_t step = (ca_info >> 21) & 0x3; //Stepping
     uint32_t base = (ca_info >> 18) & 0x7; //Base Frequency
     uint32_t spare = ca_info & 0x3FF;
     UNUSED(spare);
 
-    //set state variable here to tell us to use DFA or Channel Versions
-    if (RCN == 1) {
-        state->nxdn_rcn = RCN;
-        state->nxdn_step = step;
-        state->nxdn_base_freq = base;
-    }
+    /* Both notations are the site's: a channel-notation SITE_INFO after a DFA one switches the layouts back and
+       clears the DFA base and step, and a change drops the frequencies the old parameters computed. */
+    dsd_nxdn_ca_apply(state, location_id, (uint8_t)RCN, (uint8_t)base, (uint8_t)step);
 }
 
 //end sub-element handlers
@@ -1734,14 +1816,6 @@ nxdn_call_identity_end(const dsd_opts* opts, dsd_state* state) {
     }
     DSD_MEMSET(&state->nxdn_call, 0, sizeof(state->nxdn_call));
     (void)dsd_tg_policy_clear_active_call(state, -1);
-}
-
-/* Whether the receiver is on a Type-D (IDAS) channel: the frame being decoded is an RTCH2's, or the route it followed
- * is a Type-D repeater's. */
-static int
-nxdn_receiver_on_type_d(const dsd_opts* opts, const dsd_state* state) {
-    return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D
-           || (nxdn_follow_valid(opts, state) && state->nxdn_follow.repeater != 0U);
 }
 
 /* The held call when its identity is known here: one heard or followed on another frequency than the receiver's is
@@ -2225,11 +2299,12 @@ nxdn_print_dfa_bandwidth(uint8_t bw) {
     }
 }
 
+/*
+ * CCH_INFO's status flags (TS 1-A §6.4.3.3): the top four bits of the 6-bit field, Curr, New, Add and Del, in both
+ * notations. The DFA layout's low two bits say which channel fields are present; they are not a status.
+ */
 static void
-nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t channel1sts, uint16_t channel1,
-                              uint16_t channel2) {
-    DSD_FPRINTF(stderr, "  Location ID [%06X] CC1 [%03X][%04d] CC2 [%03X][%04d] Status: ", location_id, channel1,
-                channel1, channel2, channel2);
+nxdn_cch_info_print_status(uint8_t channel1sts) {
     if (channel1sts & 0x20U) {
         DSD_FPRINTF(stderr, "Current ");
     }
@@ -2242,6 +2317,14 @@ nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t ch
     if (channel1sts & 0x04U) {
         DSD_FPRINTF(stderr, "Candidate Deleted ");
     }
+}
+
+static void
+nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t channel1sts, uint16_t channel1,
+                              uint16_t channel2) {
+    DSD_FPRINTF(stderr, "  Location ID [%06X] CC1 [%03X][%04d] CC2 [%03X][%04d] Status: ", location_id, channel1,
+                channel1, channel2, channel2);
+    nxdn_cch_info_print_status(channel1sts);
     UNUSED(state);
 }
 
@@ -2281,11 +2364,34 @@ nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /*
- * Follow the control channel a CCH_INFO element announces, unless the operator pinned it.
+ * Whether a CCH_INFO names this site's control channel as it is or is about to be (TS 1-A §6.4.3.3): this site's
+ * Location ID with Curr or New alone, as the standard asserts one flag at a time. Add and Del edit a site's hunt list
+ * (Del names a channel that is no longer a candidate), and another site's control channel is never announced by Curr or
+ * New: its switch reaches this site by ADJ_SITE_INFO (TS 1-C §16.5).
+ */
+static int
+nxdn_cch_info_names_this_control_channel(const dsd_state* state, uint32_t location_id, uint8_t channel1sts) {
+    const uint8_t flags = channel1sts & 0x3CU;
+    return !state->nxdn_frame_foreign && dsd_nxdn_site_is(state, location_id) && (flags == 0x20U || flags == 0x10U);
+}
+
+/* A channel a CCH_INFO names: this site's control channel is resolved and kept in the channel map; any other is
+   resolved for the log only. */
+static long int
+nxdn_cch_info_resolve(dsd_opts* opts, dsd_state* state, int this_control_channel, uint16_t channel) {
+    if (this_control_channel) {
+        return nxdn_channel_to_frequency(opts, state, channel);
+    }
+    return nxdn_channel_to_frequency_display(state, channel);
+}
+
+/*
+ * Follow this site's control channel a CCH_INFO element announces (nxdn_cch_info_names_this_control_channel()), under
+ * this site's channel access parameters, unless the operator pinned it.
  */
 static void
 nxdn_cch_info_adopt_control_channel(const dsd_opts* opts, dsd_state* state, long int freq1) {
-    if (freq1 == 0 || nxdn_cc_is_operator_pinned(opts, state)) {
+    if (freq1 == 0 || !dsd_nxdn_ca_valid(state) || nxdn_cc_is_operator_pinned(opts, state)) {
         return;
     }
     const long int previous_cc = state->trunk_cc_freq;
@@ -2322,6 +2428,7 @@ nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Messa
     DSD_FPRINTF(stderr, "  Location ID [%06X] OFN1 [%04X][%05d] IFN1 [%04X][%05d] ", location_id, OFN1, OFN1, IFN1,
                 IFN1);
 
+    const int this_cc = nxdn_cch_info_names_this_control_channel(state, location_id, channel1sts);
     if (message_bits >= NXDN_CCH_INFO_DFA_SECONDARY_MIN_BITS) {
         const uint16_t OFN2 = (uint16_t)convert_bits_into_output(&Message[80], 16);
         const uint16_t IFN2 = (uint16_t)convert_bits_into_output(&Message[96], 16);
@@ -2329,55 +2436,53 @@ nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Messa
             DSD_FPRINTF(stderr, "OFN2 [%04X][%05d] IFN2 [%04X][%05d]", OFN2, OFN2, IFN2, IFN2);
         }
         if (OFN2 && IFN2 && OFN2 != OFN1) {
-            nxdn_channel_to_frequency(opts, state, OFN2);
-            nxdn_channel_to_frequency(opts, state, IFN2);
+            (void)nxdn_cch_info_resolve(opts, state, this_cc, OFN2);
+            (void)nxdn_cch_info_resolve(opts, state, this_cc, IFN2);
         }
     }
 
     DSD_FPRINTF(stderr, "Status: ");
-    if (channel1sts & 0x10U) {
-        DSD_FPRINTF(stderr, "New ");
-    }
-    if (channel1sts & 0x02U) {
-        DSD_FPRINTF(stderr, "Current 1 ");
-    }
-    if (channel1sts & 0x01U) {
-        DSD_FPRINTF(stderr, "Current 2 ");
-    }
+    nxdn_cch_info_print_status(channel1sts);
 
     nxdn_print_dfa_bandwidth(bw1);
 
-    const long int freq1 = nxdn_channel_to_frequency(opts, state, OFN1);
-    nxdn_channel_to_frequency(opts, state, IFN1);
-    nxdn_cch_info_adopt_control_channel(opts, state, freq1);
+    const long int freq1 = nxdn_cch_info_resolve(opts, state, this_cc, OFN1);
+    (void)nxdn_cch_info_resolve(opts, state, this_cc, IFN1);
+    if (this_cc) {
+        nxdn_cch_info_adopt_control_channel(opts, state, freq1);
+    }
 
     return 1;
 }
 
 static void
-nxdn_adj_site_channel_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint16_t chan) {
+nxdn_adj_site_channel_entry(const dsd_state* state, uint32_t site, uint8_t opt, uint16_t chan) {
     if ((opt & 0x0FU) == 0U) {
         return;
     }
     DSD_FPRINTF(stderr, "\n Adjacent Site %d ", opt & 0x0F);
     DSD_FPRINTF(stderr, "Channel [%03X] [%04d]", chan, chan);
-    nxdn_location_id_handler(state, site, 1);
-    nxdn_channel_to_frequency(opts, state, chan);
+    nxdn_location_print_adjacent(site);
+    // Another site's channel: printed, never learned as one of this site's.
+    (void)nxdn_channel_to_frequency_display(state, chan);
 }
 
 static void
-nxdn_adj_site_dfa_entry(dsd_opts* opts, dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw, uint16_t chan) {
+nxdn_adj_site_dfa_entry(const dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw, uint16_t chan) {
     if ((opt & 0x0FU) == 0U) {
         return;
     }
     DSD_FPRINTF(stderr, "\n Adjacent Site %d ", opt & 0x0F);
     DSD_FPRINTF(stderr, "Channel [%04X] [%05d] ", chan, chan);
     nxdn_print_dfa_bandwidth(bw);
-    nxdn_location_id_handler(state, site, 1);
-    nxdn_channel_to_frequency(opts, state, chan);
+    nxdn_location_print_adjacent(site);
+    /* Another site's channel, counted from this site's base and step only for the log (the adjacent site's own may
+       differ): printed, never learned as one of this site's. */
+    (void)nxdn_channel_to_frequency_display(state, chan);
 }
 
-static void
+/* Returns 1 when the message was long enough for its notation's layout and decoded, 0 when it was refused. */
+static int
 NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     enum {
         NXDN_CCH_INFO_MIN_BITS = 64U,
@@ -2385,7 +2490,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
 
     if (message_bits < NXDN_CCH_INFO_MIN_BITS) {
         DSD_FPRINTF(stderr, " CCH_INFO Too Short (%zu bits); ", message_bits);
-        return;
+        return 0;
     }
 
     //6.4.3.3. Control Channel Information (CCH_INFO) for more information
@@ -2400,7 +2505,8 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
     channel2 = (uint16_t)convert_bits_into_output(&Message[54], 10);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
-    nxdn_location_id_handler(state, location_id, 0);
+    // The site it names, which need not be this one: printed, never kept as the site identity.
+    nxdn_location_id_handler(state, location_id, NXDN_LOCATION_NAMED);
 
     DSD_FPRINTF(stderr, "\n Control Channel Information \n");
 
@@ -2411,10 +2517,11 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
     if (state->nxdn_rcn == 1
         && !nxdn_cch_info_dfa_version(opts, state, Message, message_bits, location_id, channel1sts)) {
         DSD_FPRINTF(stderr, "%s", KNRM);
-        return;
+        return 0;
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+    return 1;
 }
 
 static void
@@ -2430,7 +2537,9 @@ NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Mess
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Service Information - ");
     DSD_FPRINTF(stderr, "Location ID [%06X] SVC [%04X] RST [%06X] ", location_id, svc_info, rst_info);
-    nxdn_location_id_handler(state, location_id, 0);
+    nxdn_location_id_handler(state, location_id,
+                             nxdn_site_broadcast_is_this_site(opts, state, location_id) ? NXDN_LOCATION_THIS_SITE
+                                                                                        : NXDN_LOCATION_NAMED);
 
     //run the srv info
     nxdn_srv_info_handler(state, svc_info);
@@ -2447,7 +2556,7 @@ NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Mess
     }
 
     //clear stale active channel listing -- consider best placement for this (NXDN Type C Trunking -- inside SRV_INFO)
-    if (dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
+    if (!state->nxdn_frame_foreign && dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS) > 0) {
         state->nxdn_grant_chan = 0;
         state->nxdn_grant_freq = 0;
     }
@@ -2520,17 +2629,16 @@ NXDN_decode_adj_site_type_d(const uint8_t* Message) {
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-static void
-NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
-    UNUSED(opts);
-
+/* Returns 1 when the message was long enough to decode, 0 when it was refused. */
+static int
+NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     enum {
         NXDN_SITE_INFO_MIN_BITS = 144U,
     };
 
     if (message_bits < NXDN_SITE_INFO_MIN_BITS) {
         DSD_FPRINTF(stderr, " SITE_INFO Too Short (%zu bits); ", message_bits);
-        return;
+        return 0;
     }
 
     uint32_t location_id = 0;
@@ -2557,14 +2665,18 @@ NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, 
     channel1 = (uint16_t)convert_bits_into_output(&Message[124], 10);
     channel2 = (uint16_t)convert_bits_into_output(&Message[134], 10);
 
-    //check the channel access information first
-    nxdn_ca_info_handler(state, ca_info);
+    /* The channel access information first: only this site's parameters are taken, so another site's SITE_INFO heard on
+       a followed traffic channel never changes how this site's channels resolve. */
+    const int this_site = nxdn_site_broadcast_is_this_site(opts, state, location_id);
+    if (this_site) {
+        nxdn_ca_info_handler(state, location_id, ca_info);
+    }
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr,
                 "\n Location ID [%06X] CSC [%04X] SVC [%04X] RST [%06X] \n          CA [%06X] V[%X] ADJ [%01X] ",
                 location_id, cs_info, svc_info, rst_info, ca_info, version_num, adj_alloc);
-    nxdn_location_id_handler(state, location_id, 0);
+    nxdn_location_id_handler(state, location_id, this_site ? NXDN_LOCATION_THIS_SITE : NXDN_LOCATION_NAMED);
 
     //run the srv info
     nxdn_srv_info_handler(state, svc_info);
@@ -2589,10 +2701,11 @@ NXDN_decode_site_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, 
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+    return 1;
 }
 
 static void
-NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
+NXDN_decode_adj_site(const dsd_state* state, const uint8_t* Message, size_t message_bits) {
     enum {
         NXDN_ADJ_SITE_CH_MIN_BITS = 128U,
         NXDN_ADJ_SITE_DFA_MIN_BITS = 104U,
@@ -2624,9 +2737,9 @@ NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
         const uint8_t adj3_opt = (uint8_t)convert_bits_into_output(&Message[112], 6);
         const uint16_t adj3_chan = (uint16_t)convert_bits_into_output(&Message[118], 10);
 
-        nxdn_adj_site_channel_entry(opts, state, adj1_site, adj1_opt, adj1_chan);
-        nxdn_adj_site_channel_entry(opts, state, adj2_site, adj2_opt, adj2_chan);
-        nxdn_adj_site_channel_entry(opts, state, adj3_site, adj3_opt, adj3_chan);
+        nxdn_adj_site_channel_entry(state, adj1_site, adj1_opt, adj1_chan);
+        nxdn_adj_site_channel_entry(state, adj2_site, adj2_opt, adj2_chan);
+        nxdn_adj_site_channel_entry(state, adj3_site, adj3_opt, adj3_chan);
     }
 
     //DFA Version
@@ -2647,8 +2760,8 @@ NXDN_decode_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
         const uint8_t adj2_bw = (uint8_t)convert_bits_into_output(&Message[86], 2);
         const uint16_t adj2_chan = (uint16_t)convert_bits_into_output(&Message[88], 16);
 
-        nxdn_adj_site_dfa_entry(opts, state, adj1_site, adj1_opt, adj1_bw, adj1_chan);
-        nxdn_adj_site_dfa_entry(opts, state, adj2_site, adj2_opt, adj2_bw, adj2_chan);
+        nxdn_adj_site_dfa_entry(state, adj1_site, adj1_opt, adj1_bw, adj1_chan);
+        nxdn_adj_site_dfa_entry(state, adj2_site, adj2_opt, adj2_bw, adj2_chan);
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

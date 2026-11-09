@@ -911,6 +911,21 @@ dsd_scan_groups_row_active(const dsd_state* state) {
 }
 
 int
+dsd_scan_groups_held_store(const dsd_state* state, dsd_tg_policy_store** held) {
+    const channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
+    if (held) {
+        *held = NULL;
+    }
+    if (!modes || !modes->group_active) {
+        return 0;
+    }
+    if (held) {
+        *held = modes->group_suspended ? modes->group_suspended_row : modes->group_baseline;
+    }
+    return modes->group_suspended ? 2 : 1;
+}
+
+int
 dsd_scan_groups_suspend(dsd_state* state) {
     channel_modes* modes = DSD_STATE_EXT_GET_AS(channel_modes, state, DSD_STATE_EXT_CORE_CHANNEL_MODES);
     if (!modes || !modes->group_active || modes->group_suspended) {

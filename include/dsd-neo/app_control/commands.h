@@ -310,6 +310,13 @@ enum dsd_app_command_id {
     DSD_APP_CMD_IMPORT_P25_BANDPLAN = 567, // payload: char path[]
     DSD_APP_CMD_EXPORT_P25_BANDPLAN = 568, // payload: char path[]
 
+    // Re-read the group list file the session uses, on the decoder thread after a scan row's own list is set aside, so
+    // a -Y row's or trunk-scan target's file never becomes the global list. No payload (or an empty string): the
+    // configured group file, failing when there is none. A path: only when it is the configured group file (an exact
+    // match), else nothing happens beyond a log line, so a frontend that replaced a file can post it without knowing
+    // whether the session still uses it. Applies as DSD_APP_CMD_IMPORT_GROUP_LIST does, refusals included.
+    DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD = 569, // payload: none, or char path[] (the file expected in use)
+
     // RadioReference import (docs/radioreference-import.md)
     DSD_APP_CMD_RR_APPLY_IMPORT = 570, // payload: dsd_app_rr_apply_payload
     DSD_APP_CMD_RR_ACCOUNT_SET = 571,  // payload: dsd_app_rr_account_payload
@@ -317,6 +324,10 @@ enum dsd_app_command_id {
     // Source radio ID aliases (labels only)
     DSD_APP_CMD_IMPORT_SRC_LIST = 572,       // payload: char path[]
     DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR = 573, // no payload
+
+    // Re-read the channel map, only when the path is the session's channel map file (an exact match); else nothing
+    // happens beyond a log line. Applies as DSD_APP_CMD_IMPORT_CHANNEL_MAP does, refusals included.
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD = 574, // payload: char path[] (the file expected in use)
 
     // P25 helpers
     DSD_APP_CMD_P25_P2_PARAMS_SET = 580, // payload: struct { uint64_t wacn, sysid, cc; }

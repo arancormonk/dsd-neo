@@ -81,7 +81,7 @@ entry_name(const dsd_scan_entry_match_t* m, char* out, size_t size) {
 static void
 entry_toast_set(dsd_state* state, int seconds, const char* text) {
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", text);
-    state->ui_msg_expire = dsd_realtime_time() + seconds;
+    dsd_state_toast_publish(state, dsd_realtime_time() + seconds);
 }
 
 /* @p m's "(1 of 2)" among the rows on its frequency, "" with one. */

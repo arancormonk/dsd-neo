@@ -635,6 +635,21 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - M17: `-fz` (radio); `-fU` (M17 UDP/IP frame)
 - NXDN48: `-fi` (6.25 kHz)
 - NXDN96: `-fn` (12.5 kHz)
+  With `-T` on an NXDN Type-C system (NXDN48 or NXDN96), the decoder keeps to the site whose control channel it chose:
+  the site information (SITE_INFO or SRV_INFO) heard while no call is followed names it, and only that site's messages
+  set the site shown and, on a DFA site, the base and step channel frequencies are counted from. Messages naming other
+  sites (a CCH_INFO, the adjacent sites, another site's broadcasts heard on a traffic channel) are printed only. A DFA
+  site moves the control channel only when its own CCH_INFO names one current or new, never for a candidate added or
+  removed; under plain `-T` the first such move is then kept like a channel map row. A composite control channel, one
+  that carries calls itself, is read as one once the session has decoded Type-C trunking there (a CAC, a CCH_INFO or a
+  SITE_INFO); until then its frames read as Type-D, so a session started on one during a call shows Type-D details until
+  that call ends or one of those messages arrives. A voice channel can also be another site's control channel: while a
+  call is followed there, that control channel's traffic is printed only (`(other channel's control; log only)`) and
+  none of its calls is followed, and when the call's end is missed the decoder goes back to its own control channel once
+  the hangtime (`-t`) has passed since the call's last voice, though the other control channel keeps the frequency busy.
+  Known limits: the site is taken from any site information whose CRC passes while no call is followed, so a noise frame
+  naming another site can leave DFA channels unknown until the site's next SITE_INFO, and a call followed before any
+  site information was heard shows no site until the decoder is back on the control channel.
 - ProVoice: `-fp`
 - EDACS/ProVoice: `-fh` (standard), `-fH` (with ESK 0xA0)
   - Custom AFS bit splits: `-fh344`, `-fH434`
@@ -743,6 +758,32 @@ Android session whose saved extra arguments carry one refuses to start the same 
   timeslot of the carrier is heard at a time, until its speech stops for a second. TETRA is not a `--trunk-scan` target
   type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
   one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.
+  After a call the decoder goes back to the control channel it left. TETRA cells reuse frequencies, so a traffic channel
+  can carry another cell's bursts too, and while the decoder follows a call it does not take them on there: another
+  cell's SYNC (another network or colour code), its SYSINFO (another main carrier or location area) and direct mode
+  bursts are ignored (`-v 1` logs `another cell on the followed carrier; not taken on`, `...; not applied` or
+  `direct mode on the followed carrier; not taken on`), the control channel stays the one the call left, and Return to
+  CC, skip and lockout go back to it. Turning trunking off and on during a call returns to it at once, since what was
+  heard meanwhile cannot be trusted. Known limits: a cell with the same network and colour code on the same frequency
+  cannot be told apart, by the decoder or by a radio, so its messages and speech count as the followed cell's and can
+  keep or move the call (only its SYSINFO is ignored, and the return still goes to the control channel the call left). A
+  call moved to another cell (a channel allocation with its cell change flag set, logged with
+  `cell change: for another cell; logged only`) is not followed, nor are umbrella channels shared by cells (EN 300 392-2
+  Annex S); such a message changes nothing, though its short data and status messages still reach the event history.
+  When such a message is sent in pieces, the first piece is acted on as any other, because the cell change flag only
+  arrives with the last piece. The registration (MM) messages in a cell-change message change nothing that is shown, but
+  an encryption algorithm a repeated decryption proved in it is still remembered. Speech counts as the followed cell's
+  when its own checks pass, and no test drives this with encoded speech. A direct mode channel taken on while trunking
+  was off ends at another cell's SYNC, which is harmless because the decoder then returns to the control channel the
+  call left. If the cell moves its control channel to another frequency during a call, the decoder still returns to the
+  old one and moves on when that carrier's SYSINFO names the new one; if the old frequency has gone silent it stays
+  there until you retune, since TETRA has no control channel hunt. When neither a SYNC nor `--tetra-net` gave the
+  network before the call was followed, another cell's SYNC cannot be told apart for that call; with colour code 0 and a
+  `--tetra-net` network that is not the cell's, a call followed before the cell's first SYNC ignores the cell's own SYNC
+  for that call. ACCESS-ASSIGN PDUs carry no checksum, so they keep a silent call's channel, or give it receive
+  permission, only while the followed cell's own checked blocks were heard on the channel in the last 4 seconds (a live
+  cell sends its SYNC about once a second); three saying the channel is no longer the call's can still end a call early,
+  as noise can, and the decoder then returns to the control channel.
   `--tetra-uplink` decodes a trunked mode uplink carrier, the radios' transmissions, instead of a downlink: its control
   uplink bursts (random access) and its normal uplink bursts. The uplink does not run the downlink's receive chain,
   which lost bursts the generic CQPSK path decodes: it runs that path with the TETRA channel filter (at the same DSP
@@ -2067,9 +2108,9 @@ The Qt/Android button reads **Lock out** when saving is on and **Avoid TG** when
 Temporary avoids block tuning, audio, recording and streaming without modifying the saved list. Explicit list
 edits still save, and exports omit temporary avoids. Use Qt/Android **Clear temporary avoids and call skips — current
 list** or terminal **Clear temporary TG avoids - current list** to undo them in the current scope. They also clear
-on list reload/replacement or decoder stop; ordinary retunes and scan visits preserve them. Scan rows with their
-own lists stay isolated; rows using the global list share its avoids. Changing the persistence setting does not
-change the lifetime of existing blocks.
+when a list reload or replacement works (one the decoder refuses keeps them) and at decoder stop; ordinary retunes
+and scan visits preserve them. Scan rows with their own lists stay isolated; rows using the global list share its
+avoids. Changing the persistence setting does not change the lifetime of existing blocks.
 
 Qt/Android **Skip** leaves the call without touching the talkgroup list, blocking tuning and all media for its
 target. On P25 a group-call skip lasts while the receiver keeps seeing the talkgroup's call (control-channel
@@ -2084,7 +2125,7 @@ skip (and no quick lockout), while a P25, DMR or NXDN call is skipped or locked 
 enables ProVoice too).
 Skips never persist, are unaffected by `persist_tg_lockouts`, and survive scan-target revisits like session avoids,
 subject to their expiry. **Clear temporary avoids and call skips — current list** clears both in the active scope;
-list reload/replacement or decoder stop also clears them.
+a list reload or replacement that works, or decoder stop, also clears them.
 
 On P25, a lockout (`B`/`DE` row), avoid or skip of a patched supergroup blocks the whole patch: a member talkgroup
 that is allowed, listed or held does not readmit the supergroup's grants. A member still selects the patch when

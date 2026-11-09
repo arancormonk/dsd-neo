@@ -2388,6 +2388,43 @@ add_test(
     COMMAND dsd-neo_test_nxdn_search_site_notes
 )
 
+# NXDN channel access parameters: SITE_INFO in either notation, learned DFA rows dropped on change, CCH_INFO status
+add_executable(
+    dsd-neo_test_nxdn_channel_access
+    protocol/nxdn/test_nxdn_channel_access.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_channel_access
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_channel_access
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME NXDN_CHANNEL_ACCESS COMMAND dsd-neo_test_nxdn_channel_access)
+
+# NXDN composite control channels through the whole decoder: real LICH reading, channel decoders and elements
+add_executable(
+    dsd-neo_test_nxdn_composite_control
+    protocol/nxdn/test_nxdn_composite_control.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_profile.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_composite_control
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_composite_control
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(
+    NAME NXDN_COMPOSITE_CONTROL
+    COMMAND dsd-neo_test_nxdn_composite_control
+)
+
 add_executable(
     dsd-neo_test_nxdn_enc_class
     protocol/nxdn/test_nxdn_enc_class.c
@@ -2901,6 +2938,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_labels
         ui/test_ui_menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
@@ -2943,6 +2981,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_labels_radio
         ui/test_ui_menu_labels_radio.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
@@ -3538,6 +3577,10 @@ add_executable(
     dsd-neo_test_app_control_import_files
     ui/test_app_control_import_files.c
     ${PROJECT_SOURCE_DIR}/src/app_control/import_files.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_import_files
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/core/file
 )
 target_link_libraries(
     dsd-neo_test_app_control_import_files
@@ -4224,6 +4267,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_navigation
         ui/test_ui_menu_navigation.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_navigation
@@ -4248,6 +4292,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_paging_viewport
         ui/test_ui_menu_paging_viewport.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_core.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_text.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_paging_viewport
@@ -5022,7 +5067,10 @@ if(DSD_ENABLE_QT_UI)
     )
     target_include_directories(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/qt
+            ${PROJECT_SOURCE_DIR}/src/core/file
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
@@ -5599,6 +5647,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
@@ -5650,6 +5699,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
 )
 target_include_directories(
@@ -6933,6 +6983,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
     dsd-neo_test_core_source_alias_fail
@@ -6967,6 +7019,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_compile_definitions(
     dsd-neo_test_core_tg_policy_alloc_fail
@@ -8206,6 +8260,32 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_EDACS_FAILED_GRANT_STALL
         COMMAND dsd-neo_test_engine_edacs_failed_grant_stall
     )
+    # Discussion #748: an NXDN voice channel that is also another site's
+    # control channel must not keep the receiver after the call's end is missed.
+    add_executable(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        engine/test_engine_nxdn_foreign_control_return.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_nxdn_foreign_control_return
+        PRIVATE
+            "-Wl,--wrap=getFrameSync"
+            "-Wl,--wrap=getDibitSoft"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_NXDN_FOREIGN_CONTROL_RETURN
+        COMMAND dsd-neo_test_engine_nxdn_foreign_control_return
+    )
     add_executable(
         dsd-neo_test_engine_cold_start_hunt
         engine/test_engine_cold_start_hunt.c
@@ -9208,7 +9288,10 @@ endif()
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_app_command_queue
-        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+        PRIVATE
+            DSD_NEO_TEST_IO_CONTROL_WRAP
+            DSD_NEO_TEST_AUDIO_ENSURE_WRAP
+            DSD_NEO_TEST_TG_POLICY_WRAP
     )
     target_link_options(
         dsd-neo_test_app_command_queue
@@ -9225,6 +9308,9 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "LINKER:--wrap=dsd_audio_output_health_get"
             "LINKER:--wrap=dsd_tg_policy_call_skip_arm"
             "LINKER:--wrap=dsd_tg_policy_clear_active_call"
+            "LINKER:--wrap=dsd_tg_policy_store_append"
+            "LINKER:--wrap=dsd_tg_policy_append_exact"
+            "LINKER:--wrap=dsd_tg_policy_clear"
             "LINKER:--wrap=dsd_audio_ensure_analog_output"
             "LINKER:--wrap=dsd_audio_ensure_digital_output"
             "LINKER:--wrap=svc_tcp_connect_audio"
@@ -11430,6 +11516,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_clamp
@@ -11463,6 +11550,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_release
@@ -11496,6 +11584,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
@@ -11533,6 +11622,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_shim
@@ -11566,6 +11656,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11614,6 +11705,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11657,6 +11749,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -11704,6 +11797,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
@@ -13745,6 +13839,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_dmr_talker_alias_header_len
@@ -13769,6 +13865,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_dmr_talker_alias_utf16
@@ -13793,6 +13891,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
 )
 target_include_directories(
     dsd-neo_test_core_apx_embedded_alias_utf16
@@ -14140,6 +14240,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/id_pattern.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/scan_groups_stub.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/managed_file.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
 target_include_directories(
@@ -14361,6 +14463,37 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+
+# A followed call returns to the control channel it left when another cell is decoded on its traffic carrier
+# (discussion #748), and nothing of that cell is taken on meanwhile: the real BSCH parser, MAC, call records and
+# trunking state machine, with real bursts from the test transmit chain through the burst entry.
+add_executable(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    protocol/tetra/test_tetra_foreign_cell.c
+)
+target_include_directories(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_test_protocol_tetra_foreign_cell
+    PRIVATE
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_fec
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(
+    NAME PROTOCOL_TETRA_FOREIGN_CELL
+    COMMAND dsd-neo_test_protocol_tetra_foreign_cell
+)
+set_tests_properties(
+    PROTOCOL_TETRA_FOREIGN_CELL
+    PROPERTIES LABELS "protocol;tetra"
+)
 
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
 # the hooks on, ahead of the library's.

@@ -258,6 +258,18 @@ submit_string(const api_command_desc* d, const dsd_json_node* params, uint64_t* 
     return dsd_app_command_set_string(d->cmd_id, s);
 }
 
+/* A string command whose value may be left out: without one it goes as the action (the group list reload's configured
+   file). */
+static int
+submit_string_opt(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
+    const dsd_json_node* value = dsd_json_obj_get(params, "value");
+    if (value == NULL) {
+        (void)request_id;
+        return dsd_app_command_action(d->cmd_id);
+    }
+    return submit_string(d, params, request_id);
+}
+
 static int
 submit_endpoint(const api_command_desc* d, const dsd_json_node* params, uint64_t* request_id) {
     (void)request_id;
@@ -940,6 +952,8 @@ submit_config_meta(const api_command_desc* d, const dsd_json_node* params, uint6
 #define API_KIND(name, id, fn, doc)          {name, id, fn, 0, 0, doc}
 /* A string command: max is the longest value its handler stores without cutting it, in bytes. */
 #define API_STR(name, id, max_len, doc)      {name, id, submit_string, 0, max_len, doc}
+/* The same with the value optional (submit_string_opt()). */
+#define API_STR_OPT(name, id, max_len, doc)  {name, id, submit_string_opt, 0, max_len, doc}
 
 /* Ordered to follow include/dsd-neo/app_control/commands.h. */
 static const api_command_desc k_commands[] = {
@@ -1126,6 +1140,8 @@ static const api_command_desc k_commands[] = {
     API_ACTION("import_keys_clear", DSD_APP_CMD_IMPORT_KEYS_CLEAR),
     API_STR("import_p25_bandplan", DSD_APP_CMD_IMPORT_P25_BANDPLAN, 1023, "{value:path, <=1023 bytes}"),
     API_STR("export_p25_bandplan", DSD_APP_CMD_EXPORT_P25_BANDPLAN, 1023, "{value:path, <=1023 bytes}"),
+    API_STR_OPT("reload_group_list", DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, 1023,
+                "{value?:path expected in use, <=1023 bytes; none = the configured file}"),
 
     API_KIND("rr_apply_import", DSD_APP_CMD_RR_APPLY_IMPORT, submit_rr_apply,
              "{decode_mode,edacs_ea,edacs_esk,simulcast_qpsk,p25_prefer_candidates,trunking,scanner,chan_path,"
@@ -1134,6 +1150,8 @@ static const api_command_desc k_commands[] = {
 
     API_STR("import_src_list", DSD_APP_CMD_IMPORT_SRC_LIST, 1023, "{value:path, <=1023 bytes}"),
     API_ACTION("import_src_list_clear", DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR),
+    API_STR("reload_channel_map", DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, 1023,
+            "{value:path expected in use, <=1023 bytes}"),
 
     API_KIND("p25_p2_params_set", DSD_APP_CMD_P25_P2_PARAMS_SET, submit_p25p2, "{wacn,sysid,cc}"),
 
