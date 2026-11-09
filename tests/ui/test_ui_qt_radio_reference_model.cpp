@@ -1467,6 +1467,26 @@ test_nearby() {
 /* Account check                                                              */
 /* ------------------------------------------------------------------------- */
 
+/** @brief What a verified sink saw. */
+struct SinkLog {
+    int calls = 0;
+    int stateAtCall = -1;
+    QString username;
+    QString password;
+};
+
+void
+install_sink(Harness& h, SinkLog* log) {
+    dsd_qt::RadioReferenceModel* model = &h.model;
+    h.model.setVerifiedSink([log, model](const QString& username, const QString& password) {
+        log->calls++;
+        log->stateAtCall = model->accountState();
+        /* Deep copies: the model scrubs its own once this returns. */
+        log->username = QString(username.constData(), username.size());
+        log->password = QString(password.constData(), password.size());
+    });
+}
+
 /** @brief One way to change a credential while a check is in flight. */
 struct CredentialEdit {
     const char* name;
@@ -1510,6 +1530,8 @@ test_edit_retires_the_check_in_flight(void) {
         expect_str(edit_label(edit, "the late success is not shown").constData(), h.model.statusText(), QString());
         expect_int(edit_label(edit, "and leaves no error").constData(), h.model.errorKind(),
                    dsd_qt::RadioReferenceModel::NoError);
+        expect_int(edit_label(edit, "or any verdict").constData(), h.model.accountState(),
+                   dsd_qt::RadioReferenceModel::AccountNone);
     }
 }
 
@@ -1598,18 +1620,24 @@ test_account_state_for_each_failure(void) {
         /* RadioReference answers a lapsed subscription with a past date, not a fault. */
         h.fake.replaceFrom = QByteArrayLiteral("11-24-2026");
         h.fake.replaceTo = QByteArrayLiteral("01-01-2000");
+        SinkLog log;
+        install_sink(h, &log);
         h.model.checkAccount();
         pump(h.model);
         expect_int("a lapsed subscription is Expired", h.model.accountState(), M::AccountExpired);
         expect_str("Expired carries no message", h.model.accountMessage(), QString());
         expect("errorIsSubscription as before", h.model.errorIsSubscription());
+        expect_int("an Expired check reaches no sink", log.calls, 0);
     }
     {
         Harness h;
         h.fake.failWith = DSD_RR_ERR_NETWORK;
+        SinkLog log;
+        install_sink(h, &log);
         h.model.checkAccount();
         pump(h.model);
         expect_int("a network failure is Failed", h.model.accountState(), M::AccountFailed);
+        expect_int("a failed check reaches no sink", log.calls, 0);
         expect_int("errorKind as before", h.model.errorKind(), M::NetworkError);
         expect("Failed says why", !h.model.accountMessage().isEmpty());
         expect_str("in the error's own words", h.model.accountMessage(), h.model.errorText());
@@ -1657,6 +1685,74 @@ test_account_state_when_the_check_is_retired(void) {
     }
 }
 
+/* A finished verdict is about the credentials, and only an edit changes them:
+ * cancelling some other work, or leaving a system mid-load, must not blank the
+ * account line Settings shows. */
+void
+test_finished_verdict_survives_other_work(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    {
+        Harness h;
+        h.model.checkAccount();
+        pump(h.model);
+        h.model.loadCountries();
+        h.model.cancel();
+        expect_int("Verified survives cancel()", h.model.accountState(), M::AccountVerified);
+        h.model.loadSystem(6673);
+        h.model.closeSystem();
+        expect_int("Verified survives closeSystem() mid-load", h.model.accountState(), M::AccountVerified);
+        h.model.cancel();
+        expect_int("and a cancel with nothing in flight", h.model.accountState(), M::AccountVerified);
+    }
+    {
+        Harness h;
+        h.fake.serveFault = true;
+        h.model.checkAccount();
+        pump(h.model);
+        h.fake.serveFault = false;
+        h.model.loadCountries();
+        pump(h.model);
+        expect_int("Rejected survives a later browse", h.model.accountState(), M::AccountRejected);
+        h.model.loadCountries();
+        h.model.cancel();
+        expect_int("and a cancel", h.model.accountState(), M::AccountRejected);
+    }
+    {
+        Harness h;
+        h.fake.failWith = DSD_RR_ERR_HTTP;
+        h.model.checkAccount();
+        pump(h.model);
+        const QString message = h.model.accountMessage();
+        h.fake.failWith = DSD_RR_OK;
+        h.model.loadSystem(6673);
+        h.model.closeSystem();
+        expect_int("Failed survives closeSystem() mid-load", h.model.accountState(), M::AccountFailed);
+        expect_str("with its message", h.model.accountMessage(), message);
+    }
+}
+
+/* The verdict lands before busy settles, so a handler reacting to busy going
+ * false never finds the check still Checking. */
+void
+test_verdict_is_set_before_busy_settles(void) {
+    using M = dsd_qt::RadioReferenceModel;
+    for (const bool fault : {false, true}) {
+        Harness h;
+        h.fake.serveFault = fault;
+        QList<int> statesAtIdle;
+        QObject::connect(&h.model, &M::busyChanged, &h.model, [&h, &statesAtIdle]() {
+            if (!h.model.busy()) {
+                statesAtIdle.append(h.model.accountState());
+            }
+        });
+        h.model.checkAccount();
+        pump(h.model);
+        expect_int(fault ? "a refusal settles busy once" : "a success settles busy once", statesAtIdle.size(), 1);
+        expect_int(fault ? "Rejected already when busy goes false" : "Verified already when busy goes false",
+                   statesAtIdle.value(0, -1), fault ? M::AccountRejected : M::AccountVerified);
+    }
+}
+
 /* A credential edit retires only the account check: a list fetch says nothing
  * about the account and must still land. */
 void
@@ -1690,26 +1786,6 @@ test_has_password(void) {
     h.model.setPassword(QStringLiteral("another_password"));
     expect("a new one is", h.model.hasPassword());
     expect_int("setting signals once", credentialSignals, 2);
-}
-
-/** @brief What a verified sink saw. */
-struct SinkLog {
-    int calls = 0;
-    int stateAtCall = -1;
-    QString username;
-    QString password;
-};
-
-void
-install_sink(Harness& h, SinkLog* log) {
-    dsd_qt::RadioReferenceModel* model = &h.model;
-    h.model.setVerifiedSink([log, model](const QString& username, const QString& password) {
-        log->calls++;
-        log->stateAtCall = model->accountState();
-        /* Deep copies: the model scrubs its own once this returns. */
-        log->username = QString(username.constData(), username.size());
-        log->password = QString(password.constData(), password.size());
-    });
 }
 
 void
@@ -1836,6 +1912,8 @@ main(int argc, char** argv) {
     test_account_state_follows_the_check();
     test_account_state_for_each_failure();
     test_account_state_when_the_check_is_retired();
+    test_finished_verdict_survives_other_work();
+    test_verdict_is_set_before_busy_settles();
     test_edit_leaves_other_fetches_alone();
     test_has_password();
     test_verified_sink_gets_the_checked_credentials();

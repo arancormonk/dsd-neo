@@ -814,7 +814,12 @@ RadioReferenceModel::retireBatch(const QString& status) {
     if (wasBusy) {
         Q_EMIT busyChanged();
     }
-    setAccountState(AccountNone);
+    /* Only a check in flight is retired with the batch. A finished verdict is
+     * about the credentials, which a cancel does not change; an edit resets it
+     * in onCredentialEdited() instead. */
+    if (m_accountState == AccountChecking) {
+        setAccountState(AccountNone);
+    }
     /* A cancel is an action like any other: the bumped generation drops every
      * reply, so finishSystemLoad() - and with it completeRefresh() - can never
      * run for this batch. Without this the library caller waits forever. */
@@ -1156,7 +1161,7 @@ RadioReferenceModel::applyAccountVerified(const Reply& reply) {
         return;
     }
     setStatus(tr("Account verified."));
-    setAccountState(AccountVerified);
+    /* applyAccountVerdict() has already made the state Verified. */
     if (reply.credentials) {
         /* A copy, so a sink that replaces or clears itself mid-call does not
          * destroy the function it is running in. */
@@ -1169,8 +1174,12 @@ RadioReferenceModel::applyAccountVerified(const Reply& reply) {
 }
 
 void
-RadioReferenceModel::applyAccountError(const Reply& reply) {
+RadioReferenceModel::applyAccountVerdict(const Reply& reply) {
+    if (reply.kind != FetchUserData || reply.credRevision != m_credRevision) {
+        return;
+    }
     switch (reply.errorKind) {
+        case NoError: setAccountState(AccountVerified); break;
         case AuthError: setAccountState(AccountRejected); break;
         case SubscriptionError: setAccountState(AccountExpired); break;
         default: setAccountState(AccountFailed, reply.errorText); break;
@@ -1183,6 +1192,10 @@ RadioReferenceModel::applyReply(const Reply& reply) {
         /* The user moved on; a stale reply must not overwrite fresh state. */
         return;
     }
+
+    /* Before busy settles, so nothing that reacts to busy going false ever
+     * finds the check still Checking. */
+    applyAccountVerdict(reply);
 
     if (m_outstanding > 0) {
         m_outstanding--;
@@ -1212,9 +1225,6 @@ RadioReferenceModel::applyReply(const Reply& reply) {
         }
         setError(reply.errorKind, reply.errorText);
         setStatus(QString());
-        if (reply.kind == FetchUserData) {
-            applyAccountError(reply);
-        }
         if (m_refreshRow >= 0) {
             /* finishSystemLoad() will never run for this batch, so the caller
              * would otherwise wait for an answer that never comes. */

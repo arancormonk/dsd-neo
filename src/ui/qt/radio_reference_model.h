@@ -424,8 +424,13 @@ class RadioReferenceModel : public QObject {
     /** @brief Publish a successful account check and hand its credentials on. */
     void applyAccountVerified(const Reply& reply);
 
-    /** @brief Map a failed account check onto its AccountState. */
-    void applyAccountError(const Reply& reply);
+    /**
+     * @brief Set accountState from an account check's outcome.
+     *
+     * No-op for any other fetch, and for a check whose credentials have since
+     * changed. Runs before the reply settles busy.
+     */
+    void applyAccountVerdict(const Reply& reply);
 
     /** @brief Apply one of loadSystem()'s four completions. @return true when it was one. */
     bool applySystemReply(const Reply& reply);
