@@ -118,7 +118,9 @@ enum RtlUsbRecoveryRequest : int {
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
 #include <exception>
-#include <stdexcept>
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include <stdexcept> /* the SoapySDR test drivers throw */
+#endif
 
 namespace SoapySDR {
 class Stream;

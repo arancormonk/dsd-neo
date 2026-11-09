@@ -92,7 +92,7 @@ qt_add_resources(
         qml/FailureCard.qml
         qml/BackupFlow.qml
         qml/BackupResultCard.qml
-        qml/StoreNoticeCard.qml # Issue #828
+        qml/StoreNoticeCard.qml
         qml/CsvImportFlow.qml
         qml/HistoryDetailSheet.qml
         qml/CallRecordingPlayer.qml

@@ -37,7 +37,6 @@
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/squelch_floor.h>
-#include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
@@ -98,6 +97,7 @@
 #include "rtl_view_rings.h"
 #include "rtl_wideband_spectrum.h"
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+#include <dsd-neo/dsp/squelch_step_model.h>
 #include "rtl_stream_test_support.h"
 #include "rtl_test_hook.h"
 #endif
