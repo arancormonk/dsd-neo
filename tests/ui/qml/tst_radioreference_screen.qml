@@ -1462,7 +1462,10 @@ Item {
                     // the field kept the draft, which then overwrote the fill.
                     {tag: "the stored username over a typed draft", username: true, password: false, stored: true},
                     // ...and over a word still composing, which must not land after the fill.
-                    {tag: "the stored username over a composing word", username: true, password: false, stored: true, composing: true}];
+                    {tag: "the stored username over a composing word", username: true, password: false, stored: true, composing: true},
+                    // Regression: a password-only fill while the typed username
+                    // still has a word composing checks the whole username.
+                    {tag: "password only, username still composing", username: false, password: true, composing: true}];
         }
         function test_41_a_fill_applies_and_checks_once(data) {
             useFakeAccount();
@@ -1471,8 +1474,12 @@ Item {
             prefs.rrUsername = data.stored ? "filled-user" : "";
             var username = findChild(tc.screen, "radioReferenceUsernameField");
             var password = findChild(tc.screen, "radioReferencePasswordField");
-            if (!data.username)
+            var typedUser = data.composing && !data.username ? "typed-user-end" : "typed-user";
+            if (!data.username) {
                 typeInto(username, "typed-user");
+                if (data.composing)
+                    verify(testContext.composeText("-end"), "the username field took no composing word");
+            }
             if (data.stored) {
                 // Typed but not committed: the username field keeps the focus.
                 password.text = "typed-secret";
@@ -1493,7 +1500,7 @@ Item {
             var commits = fakeAccount.passwordCommits;
             signInAutofill.fill(token, data.username, data.password);
             compare(fakeAccount.accountChecks, 1, "a fill checks the account once");
-            compare(prefs.rrUsername, data.username ? "filled-user" : "typed-user");
+            compare(prefs.rrUsername, data.username ? "filled-user" : typedUser);
             compare(username.text, prefs.rrUsername);
             compare(username.input.preeditText, "", "a composing word outlived the fill");
             compare(fakeAccount.sessionPassword, data.password ? "filled-secret" : "typed-secret");
@@ -1508,7 +1515,7 @@ Item {
             username.input.forceActiveFocus();
             username.input.focus = false;
             compare(fakeAccount.accountChecks, 1, "the fill's fields checked again");
-            compare(prefs.rrUsername, data.username ? "filled-user" : "typed-user", "leaving the field changed the username");
+            compare(prefs.rrUsername, data.username ? "filled-user" : typedUser, "leaving the field changed the username");
             compare(username.text, prefs.rrUsername);
             // The binding still follows prefs.
             prefs.rrUsername = "later-user";

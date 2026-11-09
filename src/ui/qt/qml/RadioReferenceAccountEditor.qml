@@ -197,13 +197,15 @@ Column {
      * A filled username equal to the stored one changes nothing in prefs, so
      * the binding alone would leave a different draft in the field, committed
      * over the fill once the field loses focus. So the field is pointed at
-     * prefs again first, before the check's busy sheet can take the focus,
-     * with any word still composing finished so it cannot land afterwards.
+     * prefs again first, before the check's busy sheet can take the focus.
+     * Any word still composing is finished before either field is read.
      */
     function applyFill(hasUsername, hasPassword) {
         editor.fillApplying = true;
+        // A word still composing in a field the fill left alone belongs to
+        // what is checked, and one in a filled field must not land after it.
+        Navigation.commitComposing(false);
         if (hasUsername) {
-            Navigation.commitComposing(false);
             usernameField.text = Qt.binding(function () {
                 return prefs.rrUsername;
             });
