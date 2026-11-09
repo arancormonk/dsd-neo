@@ -588,6 +588,35 @@ assertIdentity(const QVariantMap& match, const char* source, const QString& list
     assert(match.value(QStringLiteral("selectable")).toBool() == selectable);
 }
 
+/* Issue #828: the overload warning reaches the screen as its own fields, never in the message: whether a span was
+   skipped because it kept clipping, and the range named at the pass's first skip. A clean pass clears both. */
+static void
+testOverloadMapped() {
+    dsd_qt::SignalSearchModel search(nullptr, nullptr);
+    dsd_signal_search_status status{};
+    status.session_id = 41;
+    status.revision = 9300;
+    status.phase = DSD_SEARCH_SEARCHING;
+    status.owned = 1;
+    status.overloaded = 1;
+    DSD_SNPRINTF(status.overload_range, sizeof(status.overload_range), "%s", "Marine");
+    DSD_SNPRINTF(status.range_name, sizeof(status.range_name), "%s", "Air band");
+    dsd_app_signal_search_publish(&status, nullptr, nullptr);
+    search.refresh();
+    assert(search.status().value(QStringLiteral("overloaded")).toBool());
+    assert(search.status().value(QStringLiteral("overloadRange")).toString() == QStringLiteral("Marine"));
+    assert(search.status().value(QStringLiteral("rangeName")).toString() == QStringLiteral("Air band"));
+    assert(search.status().value(QStringLiteral("message")).toString().isEmpty());
+    status.revision = 9301;
+    status.overloaded = 0;
+    status.overload_range[0] = '\0';
+    dsd_app_signal_search_publish(&status, nullptr, nullptr);
+    search.refresh();
+    assert(search.status().contains(QStringLiteral("overloaded")));
+    assert(!search.status().value(QStringLiteral("overloaded")).toBool());
+    assert(search.status().value(QStringLiteral("overloadRange")).toString().isEmpty());
+}
+
 /* Issue #809: a detection names its recordings by "<session>:<hit>", the key the recording journal stores, written
    from the integers: a session id above 2^53 (a JS number's exact range) keeps every digit, live and in history. A
    zero id, which the journal never names (the live hit with no detection current), gives no key. */
@@ -1707,6 +1736,7 @@ main(int argc, char** argv) {
     testKnownFrequencyChannelParity(temp.path());
     testKnownFrequencyNonAsciiPaths(temp.path());
     testRecordingKey();
+    testOverloadMapped();
     return 0;
 }
 

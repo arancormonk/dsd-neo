@@ -105,6 +105,7 @@ Item {
             model.avoids = [];
             model.status = {phase: 4, session: "17", owned: true, pass: 2, range: 0, channel: 80, count: 801,
                 rangeName: "Local UHF", rangeStartMHz: "450.000", rangeEndMHz: "460.000",
+                overloaded: false, overloadRange: "",
                 hit: {id: "42", session: "17", freqMHz: "463.552100", frequency: 463552100, power: -32.1,
                     noise: -63.2, range: "Local UHF", width: 12500, unresolved: true, ended: false,
                     knownLabel: "Warehouse · 463.5500 MHz", confirmed: false, am: false}};
@@ -1094,7 +1095,7 @@ Item {
             root.hostFailure = "Cannot open <b>/dev/rtl0</b>";
             var message = findChild(screen, "searchMessage");
             verifyPlain(message, "the message");
-            compare(message.Accessible.name, "Cannot open <b>/dev/rtl0</b>");
+            tryCompare(message.Accessible, "name", "Cannot open <b>/dev/rtl0</b>");
             root.hostFailure = "";
             // A saved name on a history row. Its first line is the fixed
             // verdict, which AutoText alone would read, so the row drew the
@@ -1493,6 +1494,171 @@ Item {
             verify(message.visible);
             compare(message.mapToItem(scroll, 0, 0).y, panelY);
             model.error = "";
+        }
+
+        // Issue #828: the overload warning as the screen words it, for the
+        // phase (searching, or paused) and for the gain controls the range
+        // editor offers the radio.
+        function overloadText(range, paused, airspy) {
+            var fix = paused ? (airspy ? "Set a lower Airspy gain for the range, then Resume." : "Lower the range's receiver gain, then Resume.")
+                : (airspy ? "Pause, then set a lower Airspy gain for the range." : "Pause, then lower the range's receiver gain.");
+            return "Part of “" + range + "” was skipped because the receiver is overloaded. " + fix;
+        }
+        function overload(range, extra) {
+            model.status = Object.assign({}, model.status, {overloaded: true, overloadRange: range}, extra || {});
+        }
+        // The warning is the message's last line: after the screen's refusal,
+        // the host's failure, the model's error and the store's lines.
+        function test_overload_line_comes_last() {
+            var message = findChild(loader.item, "searchMessage");
+            var store = "Signal search history couldn't be read completely, so some entries may be missing. The file won't be overwritten.";
+            overload("Marine", {phase: 6, hit: {}});
+            compare(message.text, overloadText("Marine", true, false), "the warning alone");
+            verify(message.visible);
+            model.storeMessage = store;
+            model.error = "The decoder did not accept this action.";
+            root.hostFailure = "Device detached: RTL-SDR";
+            model.armError = "Check the numeric range settings.";
+            findChild(loader.item, "searchStartPause").clicked();
+            compare(message.text, ["Check the numeric range settings.", "Device detached: RTL-SDR",
+                "The decoder did not accept this action.", store, overloadText("Marine", true, false)].join("\n"));
+            root.hostFailure = "";
+            model.status = Object.assign({}, model.status, {message: "The avoid list is full"});
+            compare(message.text, ["Check the numeric range settings.", "The avoid list is full",
+                "The decoder did not accept this action.", store, overloadText("Marine", true, false)].join("\n"),
+                "the search's message stands where the host's failure was");
+            compare(message.text.split("overloaded").length, 2, "the warning once");
+        }
+        function test_overload_text_per_phase_and_radio_data() {
+            return [{tag: "searching, USB", phase: 1, source: "usb", paused: false},
+                {tag: "listening, USB", phase: 4, source: "usb", paused: false},
+                {tag: "held, rtl_tcp", phase: 5, source: "rtltcp", paused: false},
+                {tag: "tuning, Airspy", phase: 2, source: "airspy", paused: false},
+                {tag: "paused, USB", phase: 6, source: "usb", paused: true},
+                {tag: "paused, rtl_tcp", phase: 6, source: "rtltcp", paused: true},
+                {tag: "paused, Airspy", phase: 6, source: "airspy", paused: true}];
+        }
+        function test_overload_text_per_phase_and_radio(data) {
+            loader.item.sourceType = data.source;
+            overload("Air band", {phase: data.phase});
+            var message = findChild(loader.item, "searchMessage");
+            compare(message.text, overloadText("Air band", data.paused, data.source === "airspy"));
+            verify(message.visible);
+            tryCompare(message.Accessible, "name", message.text);
+            verify(!message.Accessible.ignored);
+            // A range name is typed: shown as written.
+            overload("<b>North</b>");
+            compare(message.textFormat, Text.PlainText);
+            compare(message.text, overloadText("<b>North</b>", data.paused, data.source === "airspy"));
+        }
+        // The status keeps the warning after the search fails or stops: the
+        // screen drops it then, as it does with no session.
+        function test_overload_hidden_once_the_search_ends_data() {
+            return [{tag: "failed", phase: 7, active: true, message: "No uninterrupted samples for a measurement"},
+                {tag: "stopped", phase: 0, active: true, message: ""},
+                {tag: "no session", phase: 1, active: false, message: ""}];
+        }
+        function test_overload_hidden_once_the_search_ends(data) {
+            var message = findChild(loader.item, "searchMessage");
+            overload("Marine", {phase: 1, hit: {}});
+            verify(message.visible);
+            loader.item.sessionActive = data.active;
+            model.status = Object.assign({}, model.status, {phase: data.phase, message: data.message});
+            verify(model.status.overloaded, "the status still carries the warning");
+            compare(message.text, data.message);
+            compare(message.visible, data.message.length > 0);
+            tryCompare(message.Accessible, "name", data.message);
+            model.storeMessage = "Signal search permanent avoids couldn't be saved. Check available storage. DSD-neo tries again with the next change.";
+            compare(message.text, [data.message, model.storeMessage].filter(function (s) { return s.length > 0; }).join("\n"));
+        }
+        // The warning appearing and clearing never moves the Now panel: it
+        // sits under it with the rest of the message, and wraps there at a
+        // phone's width with the largest text.
+        function test_overload_never_moves_the_now_panel_data() {
+            return [{tag: "default text", scale: 1.0, width: 411}, {tag: "large text at 360 px", scale: 1.6, width: 360}];
+        }
+        function test_overload_never_moves_the_now_panel(data) {
+            var screen = loader.item;
+            var scroll = findChild(screen, "searchScroll");
+            var panel = findChild(screen, "searchNowPanel");
+            var message = findChild(screen, "searchMessage");
+            Ui.Theme.fontScale = data.scale;
+            root.width = data.width;
+            model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
+            waitForRendering(screen);
+            verify(!message.visible);
+            var panelY = panel.mapToItem(scroll, 0, 0).y;
+            overload("Marine");
+            waitForRendering(screen);
+            verify(message.visible);
+            compare(message.parent.objectName, "searchSessionMessageSlot");
+            compare(panel.mapToItem(scroll, 0, 0).y, panelY);
+            verify(message.mapToItem(scroll, 0, 0).y >= panelY + panel.height, "the warning must sit under the Now panel");
+            verify(message.lineCount > 1 && message.contentWidth <= message.width, "it wraps inside the column");
+            verify(message.mapToItem(screen, message.width, 0).x <= screen.width, "and inside the screen");
+            model.status = Object.assign({}, model.status, {overloaded: false, overloadRange: ""});
+            waitForRendering(screen);
+            verify(!message.visible);
+            compare(panel.mapToItem(scroll, 0, 0).y, panelY);
+        }
+        // Two ranges that take turns clipping rename the warning every pass.
+        // Its name keeps the screen reader's pace (SpeechPacer, at most every
+        // period), while the warning appearing or clearing is heard at once,
+        // and the text on screen stays live.
+        function test_overload_name_is_paced() {
+            var message = findChild(loader.item, "searchMessage");
+            var store = "Signal search history couldn't be read completely, so some entries may be missing. The file won't be overwritten.";
+            model.status = Object.assign({}, model.status, {phase: 1, hit: {}});
+            model.storeMessage = store;
+            tryCompare(message.Accessible, "name", store);
+            Ui.Navigation.speechPeriodMs = 60000;
+            try {
+                overload("Marine");
+                tryCompare(message.Accessible, "name", store + "\n" + overloadText("Marine", false, false), 1000,
+                           "the warning appearing is heard at once");
+                for (var pass = 0; pass < 6; ++pass) {
+                    var range = pass % 2 === 0 ? "Air band" : "Marine";
+                    overload(range, {pass: 3 + pass});
+                    compare(message.text, store + "\n" + overloadText(range, false, false), "the screen is live");
+                    wait(30);
+                    compare(message.Accessible.name, store + "\n" + overloadText("Marine", false, false),
+                            "a range's new name waits for the period, pass " + (3 + pass));
+                }
+                model.status = Object.assign({}, model.status, {overloaded: false, overloadRange: ""});
+                tryCompare(message.Accessible, "name", store, 1000, "the warning clearing is heard at once");
+                overload("Air band");
+                tryCompare(message.Accessible, "name", store + "\n" + overloadText("Air band", false, false), 1000);
+                overload("Marine");
+                Ui.Navigation.speechPeriodMs = 50;
+                tryCompare(message.Accessible, "name", store + "\n" + overloadText("Marine", false, false), 1000,
+                           "and the name catches up at the next period");
+            } finally {
+                Ui.Navigation.speechPeriodMs = 50;
+            }
+        }
+        // Behind an open sheet the message leaves the accessibility tree and
+        // holds no name, as every node a screen reader reaches does; it is
+        // named again once the sheet closes. A warning renamed under the sheet
+        // names nothing there.
+        function test_message_nameless_behind_sheet() {
+            var message = findChild(loader.item, "searchMessage");
+            model.history = [historyHit({confirmed: true, protocol: "DMR"})];
+            root.hostFailure = "Device detached: RTL-SDR";
+            tryCompare(message.Accessible, "name", root.hostFailure);
+            verify(!message.Accessible.ignored);
+            findChild(loader.item, "searchHistoryActions").activate();
+            verify(findChild(loader.item, "searchDetectionMenu").visible);
+            verify(message.visible, "still drawn under the sheet");
+            verify(message.Accessible.ignored, "behind the menu, out of the tree");
+            compare(message.Accessible.name, "");
+            overload("Marine");
+            overload("Air band");
+            wait(100);
+            compare(message.Accessible.name, "", "a warning under the sheet names nothing");
+            findChild(loader.item, "searchDetectionMenu").cancel();
+            verify(!message.Accessible.ignored);
+            tryCompare(message.Accessible, "name", root.hostFailure + "\n" + overloadText("Air band", false, false));
+            model.history = [];
         }
 
         // Issue #809: a detection's recordings, from its Recent detections row.

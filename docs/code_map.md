@@ -10694,7 +10694,18 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   `dsd_app_signal_search_store_file_state()`, the history and permanent avoids read
   incompletely, not yet overwritten or kept as their kept name, the version 1 journal left in
   place, and each write owed; `test_message_lines_in_order`, `testStoreFilesWorded`). The
-  model forwards the same files (`storeFiles()`) to `StoreNotices` for Home's card. It is
+  model forwards the same files (`storeFiles()`) to `StoreNotices` for Home's card. The
+  overload warning comes last (`overloadLine`, from the model's `overloaded` and
+  `overloadRange`, issue #828): shown only while a session runs and its phase is neither
+  STOPPED nor ERROR, since the engine keeps the warning in a failed or stopped status;
+  worded per phase (paused: lower the gain, then Resume; otherwise Pause first) and per
+  radio (`sourceType`: the range's receiver gain, or an Airspy gain for the range, as the
+  range editor labels them). The message is gated (`navigationAllowed` read first) and
+  named through a `SpeechPacer` whose `shown` is that gate and its visibility, and whose
+  step is the other lines plus `overloadTemplate`, the warning without its range: the
+  warning appearing, clearing or changing phase is heard at once, a range renamed every
+  pass at the period, never the screen's `speechStep` (pass and range change it)
+  (`test_overload_*`, `test_message_nameless_behind_sheet`). It is
   reparented by `sessionActive`: under the Now panel while a session runs, so it never moves
   the panel, and above the setup while idle (`test_message_never_moves_the_now_panel`).
   Leaving for another session is one Main operation,
@@ -14381,7 +14392,8 @@ shown children are a step only when they settle unlike the ones last read, since
 rows and a scan's hops would otherwise be heard at the step floor), a
 recording's position (the time's name and the seek bar's description; steps: play, pause, stop, the end of the part, a
 seek once the host reports a position near where it was asked to land), Signal Search's status line, live level and call
-detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), the Monitor's scan target header (steps: a
+detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), its message (steps: any line but
+the overload warning's range name), the Monitor's scan target header (steps: a
 scan starting or stopping, held or released; a hop is not one, as a 300 ms dwell hops three times a second), two
 headings a scan renames on its hops (the Spectrum's title, which names what is tuned, and the site sheet's, which names
 the protocol; no steps), and the squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate

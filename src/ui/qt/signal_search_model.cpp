@@ -748,6 +748,8 @@ SignalSearchModel::refresh() {
                 {QStringLiteral("livePower"), s.live_power_dbfs},
                 {QStringLiteral("liveSeq"), (qulonglong)s.live_seq},
                 {QStringLiteral("message"), QString::fromUtf8(s.message)},
+                {QStringLiteral("overloaded"), s.overloaded != 0},
+                {QStringLiteral("overloadRange"), QString::fromUtf8(s.overload_range)},
                 {QStringLiteral("hit"), hitMap(s.hit)}};
     Q_EMIT changed();
 }

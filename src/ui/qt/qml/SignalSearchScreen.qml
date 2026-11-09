@@ -68,6 +68,19 @@ Item {
     // Issue #828: the session's own avoid list exists while a search runs or
     // is paused; a failed search (phase 7) has none, and refuses avoids.
     readonly property bool sessionAvoidsLive: sessionActive && phase !== 7
+    // Issue #828: a span skipped because its measurements kept clipping. The
+    // status keeps the warning after the search fails or stops, so it shows
+    // only while the search runs or is paused, with the next step for that
+    // phase and for the gain controls the range editor offers this radio.
+    // The range is filled in apart (overloadLine): the message's speech step
+    // holds the line without it, so a name that changes each pass is heard
+    // at the message's pace while the warning appearing or clearing is heard
+    // at once.
+    readonly property bool overloadShown: sessionActive && !!status.overloaded && phase !== 0 && phase !== 7
+    readonly property string overloadTemplate: !overloadShown ? "" : phase === 6
+        ? (sourceType === "airspy" ? qsTr("Part of “%1” was skipped because the receiver is overloaded. Set a lower Airspy gain for the range, then Resume.") : qsTr("Part of “%1” was skipped because the receiver is overloaded. Lower the range's receiver gain, then Resume."))
+        : (sourceType === "airspy" ? qsTr("Part of “%1” was skipped because the receiver is overloaded. Pause, then set a lower Airspy gain for the range.") : qsTr("Part of “%1” was skipped because the receiver is overloaded. Pause, then lower the range's receiver gain."))
+    readonly property string overloadLine: overloadTemplate.length > 0 ? overloadTemplate.arg(status.overloadRange || "") : ""
     signal closed
     signal backRequested
     signal start(string sourceType, string host, int port, string frequency)
@@ -808,17 +821,34 @@ Item {
                     // One line each, in this order: this screen's own refusal,
                     // which never hides what the search says now; the host's
                     // failure, else the search's message; the model's own error;
-                    // then what the store couldn't read or save (issue #828).
-                    text: [screen.localFailure, screen.failure || screen.status.message, searchModel ? searchModel.error : "", searchModel ? searchModel.storeMessage || "" : ""].filter(function (s) { return !!s && s.length > 0; }).join("\n")
+                    // what the store couldn't read or save; then the overload
+                    // warning (issue #828).
+                    readonly property var lines: [screen.localFailure, screen.failure || screen.status.message, searchModel ? searchModel.error : "", searchModel ? searchModel.storeMessage || "" : ""]
+                    text: lines.concat([screen.overloadLine]).filter(function (s) { return !!s && s.length > 0; }).join("\n")
                     // A failure can name a device, host or path.
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(14)
+                    // Gated as every node a screen reader reaches is: behind
+                    // an open sheet it leaves the tree, and holds no name.
+                    readonly property bool navigationAllowed: Navigation.allows(searchMessage)
                     Accessible.role: Accessible.AlertMessage
-                    // A role alone reads nothing (issue #782): the message is its name.
-                    Accessible.name: text
+                    Accessible.ignored: !navigationAllowed || !visible
+                    // A role alone reads nothing (issue #782): the message is its
+                    // name, paced, since two ranges that take turns clipping
+                    // rename the warning every pass. Every other line changes on
+                    // an action or a failure, and is heard at once.
+                    Accessible.name: messageSpeech.spoken
+                    SpeechPacer {
+                        id: messageSpeech
+                        shown: searchMessage.navigationAllowed && searchMessage.visible && searchMessage.text.length > 0
+                        step: searchMessage.lines.concat([screen.overloadTemplate]).join("\n")
+                        read: function () {
+                            return searchMessage.text;
+                        }
+                    }
                 }
             }
             Loader {

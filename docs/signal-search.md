@@ -132,7 +132,16 @@ While a search runs, the screen is laid out for what is on the air now:
   each saved system the detection matched.
 - A refusal or error (**The avoid list is full**, a radio failure) shows under
   the **Now** panel, so it never moves the panel as it appears or clears; with
-  no search running it shows above the setup instead.
+  no search running it shows above the setup instead. The overload warning is
+  the last line there while the search runs or is paused, for example
+  **Part of “Marine” was skipped because the receiver is overloaded. Pause, then
+  lower the range's receiver gain.** Paused, it ends **Lower the range's receiver
+  gain, then Resume.** With an Airspy it asks for a lower Airspy gain for the
+  range instead (**Use Airspy gain settings for this range** in the range
+  editor). It is not shown once the search fails or stops. A screen reader hears
+  the warning at once as it appears or clears; a new range name in it is read at
+  most every five seconds, so two ranges that take turns clipping do not
+  interrupt every pass.
 - **Recent detections** shows the five newest; **Show more** adds 25. Under its
   verdict a row shows the site, access code, tone and encryption the detection
   last had, in the Now panel's order without the call
@@ -839,6 +848,11 @@ session starts no search. A screen reopened over a running search after recreati
 receiver (USB, Airspy or rtl_tcp server) from the session's options snapshot, whether
 that snapshot arrives before or after the screen, offers that receiver's gain
 controls in a paused range edit, and keeps it through Stop and a restart.
+The overload warning reaches the screen as its own fields, never in the message; the
+screen words it per phase and radio as the message's last line, drops it once the
+search fails or stops, keeps the Now panel still as it comes and goes (also at 360 px
+with large text), and names it at a screen reader's pace: at once as it appears or
+clears, a new range name at most every period, and nothing while a sheet covers it.
 The app-control provenance regression also checks that a later false sync or
 unvalidated code change cannot enrich an already confirmed detection during a
 periodic refresh, and that a new detection starts without the preceding details.
