@@ -615,8 +615,10 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
             rc = -1;
         }
     }
-    // The file's rows as just read: the list's baseline for it (a header-only file too).
-    if (rc == 0 && dsd_tg_policy_set_baseline(state, group_file_path, rows_hash) != 0) {
+    // The file's rows as just read: the list's baseline for it (a header-only file too). A file not there yet holds no
+    // rows: that is its baseline, so a file that appears later with rows written outside dsd-neo (or by a scan row's
+    // list naming it) is not overwritten unchecked; one still missing, or empty, is written as before.
+    if ((rc == 0 || counts.not_found) && dsd_tg_policy_set_baseline(state, group_file_path, rows_hash) != 0) {
         rc = -1;
     }
     return rc;

@@ -24220,8 +24220,10 @@ test_group_startup_list_guards_its_file(void) {
    outside dsd-neo still stops the next save, and the alias never reaches the global file. That holds when the append
    creates the row's file (0 bytes, or deleted after the row's list loaded). A row naming the global file is the one
    case where the held list stands for the file too: both lists take the row and keep their baselines in step, also
-   while the row's list is suspended (a group import edits the global list beneath it). An incomplete list stops an
-   append only to its own file (R1). */
+   while the row's list is suspended (a group import edits the global list beneath it), and when the global file was
+   missing at startup and appeared before the row's list loaded: the missing file's empty baseline makes the global list
+   stand for it. Rows written there outside dsd-neo then stop the global list's next save, so the aliases stay in the
+   file. An incomplete list stops an append only to its own file (R1). */
 enum {
     ROW_ALIAS_OWN_FILE,
     ROW_ALIAS_SAME_FILE,
@@ -24231,8 +24233,16 @@ enum {
     ROW_ALIAS_NO_GLOBAL_LIST,
     ROW_ALIAS_GLOBAL_INCOMPLETE,
     ROW_ALIAS_ROW_INCOMPLETE,
+    ROW_ALIAS_GLOBAL_APPEARS_EMPTY,
+    ROW_ALIAS_GLOBAL_APPEARS_ROWS,
     ROW_ALIAS_SUSPENDED
 };
+
+static int
+row_alias_same_file(int mode) {
+    return mode == ROW_ALIAS_SAME_FILE || mode == ROW_ALIAS_SUSPENDED || mode == ROW_ALIAS_GLOBAL_APPEARS_EMPTY
+           || mode == ROW_ALIAS_GLOBAL_APPEARS_ROWS;
+}
 
 static const char* const k_row_alias_excel = "id;mode;name\n100;A;Dispatch\n";
 
@@ -24241,7 +24251,14 @@ static const char* const k_row_alias_excel = "id;mode;name\n100;A;Dispatch\n";
 static int
 row_alias_global_setup(int mode, dsd_opts* opts, dsd_state* state, const char* global) {
     int rc = 0;
-    if (mode == ROW_ALIAS_GLOBAL_MISSING || mode == ROW_ALIAS_NO_GLOBAL_LIST) {
+    if (mode == ROW_ALIAS_GLOBAL_APPEARS_EMPTY || mode == ROW_ALIAS_GLOBAL_APPEARS_ROWS) {
+        // Missing at startup; the file then appears, created outside dsd-neo, before the row's list loads it.
+        rc |= remove(global) != 0;
+        DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", global);
+        rc |= expect_true("R4 row startup import of a missing global file", csvGroupImport(opts, state) != 0);
+        const char* appears = mode == ROW_ALIAS_GLOBAL_APPEARS_ROWS ? "id,mode,name\n500,A,Row\n" : "id,mode,name\n";
+        rc |= write_file_bytes(global, appears, strlen(appears));
+    } else if (mode == ROW_ALIAS_GLOBAL_MISSING || mode == ROW_ALIAS_NO_GLOBAL_LIST) {
         rc |= remove(global) != 0;
         DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", global);
         if (mode == ROW_ALIAS_GLOBAL_MISSING) {
@@ -24285,6 +24302,8 @@ row_alias_global_after(int mode) {
         case ROW_ALIAS_SAME_FILE:
         case ROW_ALIAS_SUSPENDED: return "id,mode,name\n100,B,Dispatch\n300,D,Learned\n";
         case ROW_ALIAS_NO_GLOBAL_LIST: return "id,mode,name\n100,B,\n";
+        case ROW_ALIAS_GLOBAL_APPEARS_EMPTY: return "id,mode,name\n300,D,Learned\n100,B,\n";
+        case ROW_ALIAS_GLOBAL_APPEARS_ROWS: return "id,mode,name\n500,A,Row\n300,D,Learned\n";
         case ROW_ALIAS_GLOBAL_INCOMPLETE: return k_row_alias_excel;
         default: return "id,mode,name\n100,B,Dispatch\n";
     }
@@ -24320,7 +24339,7 @@ row_alias_learn(int mode, dsd_opts* opts, dsd_state* state) {
    another file, an edit made to the global file outside dsd-neo still stops the save, so its baseline stayed. */
 static int
 row_alias_check_global(int mode, dsd_opts* opts, dsd_state* state, const char* global) {
-    const int same_file = mode == ROW_ALIAS_SAME_FILE || mode == ROW_ALIAS_SUSPENDED;
+    const int same_file = row_alias_same_file(mode);
     dsd_tg_policy_lookup lookup;
     int rc = expect_str("R4 row left: global file in use", opts->group_in_file, global);
     rc |= expect_int("R4 row left: global list lookup", dsd_tg_policy_lookup_id(state, 300, &lookup), 0);
@@ -24337,15 +24356,15 @@ row_alias_check_global(int mode, dsd_opts* opts, dsd_state* state, const char* g
     }
     rc |= expect_true("R4 row edit after leave queued", dsd_app_command_set_tg_listen(&edit) > 0);
     rc |= expect_int("R4 row edit after leave drained", dsd_app_drain_cmds(opts, state), 1);
-    rc |=
-        expect_true("R4 row edit after leave not refused as changed", strstr(state->ui_msg, "changed on disk") == NULL);
+    rc |= expect_int("R4 row edit after leave refused as changed only over rows written outside",
+                     strstr(state->ui_msg, "changed on disk") != NULL, mode == ROW_ALIAS_GLOBAL_APPEARS_ROWS);
     rc |= expect_file_bytes(global, row_alias_global_after(mode));
     return rc;
 }
 
 static int
 test_group_alias_learned_on_a_row_list_is_kept(int mode) {
-    const int same_file = mode == ROW_ALIAS_SAME_FILE || mode == ROW_ALIAS_SUSPENDED;
+    const int same_file = row_alias_same_file(mode);
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);

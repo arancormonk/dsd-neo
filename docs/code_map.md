@@ -2231,7 +2231,12 @@ suite runs under this compiler.
     snapshots never write): a 64-bit FNV-1a over the rows the importer accepted, in file order, each in the canonical
     form the store keeps (`tg_policy_canonical_entry()`), without the source or line number, so line endings, blank
     lines, unmodelled columns and malformed rows never enter it. Every load sets it from the rows just read (no extra
-    read). A write sets it from the lines it wrote, read back through the importer's own row parser
+    read). A startup load (`csvGroupImportPath()`) that finds its file missing sets the zero-row hash, so a file that
+    appears there later with rows (written outside dsd-neo, or by a `-Y` row's list naming the same file) refuses the
+    next rewrite instead of being overwritten unchecked, and in the row case the global list stands for the file and
+    takes the row's aliases; a file still missing, or appearing empty or header-only, is written as before. A rewrite
+    with no baseline at all is not refused, since an export moves the baseline to its own path.
+    A write sets it from the lines it wrote, read back through the importer's own row parser
     (`dsd_tg_policy_rows_hash_line()`) under the header it wrote, so sanitised commas, header-dependent columns and
     pattern canonicalisation hash as the next load reads them; an export moves it to the export path.
   - Rewrite check (`tg_policy_baseline_check()`), only when the baseline names the destination: the file on disk is

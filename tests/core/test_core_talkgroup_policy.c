@@ -3962,6 +3962,48 @@ test_group_check_is_quiet(void) {
     return rc;
 }
 
+/* A startup file that is not there yet holds no rows, and that is the list's baseline for it: a file created there
+ * later outside dsd-neo, with rows, is not overwritten by the next save (2, the file untouched), while one still
+ * missing, or appearing empty or header-only, is written as before. */
+static int
+test_group_startup_missing_file_baseline(void) {
+    char path[64];
+    int rc = load_report_file(path, sizeof path, NULL);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (rc != 0 || !opts) {
+        free(opts);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+    static const char* const k_appears[] = {NULL, "", "id,mode,name\n", "id,mode,name\n500,A,Outside\n"};
+    for (size_t i = 0; i < sizeof k_appears / sizeof k_appears[0]; i++) {
+        dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+        (void)remove(path);
+        rc |= expect_true("missing fixture", st != NULL);
+        if (!st) {
+            continue;
+        }
+        rc |= expect_true("startup import of a missing file fails", csvGroupImport(opts, st) != 0);
+        if (k_appears[i]) {
+            rc |= expect_true("the file appears", write_group_bytes(path, k_appears[i]) == 0);
+        }
+        dsd_tg_policy_entry e;
+        init_entry(&e, 100, "B", "", DSD_TG_POLICY_SOURCE_USER_LOCKOUT);
+        rc |= expect_true("lockout", dsd_tg_policy_append_exact(st, &e) == 0);
+        const int with_rows = k_appears[i] && strstr(k_appears[i], "500") != NULL;
+        rc |= expect_true(with_rows ? "rows written outside refuse the save" : "no rows on disk: the save writes",
+                          dsd_tg_policy_write_group_file(opts, st) == (with_rows ? 2 : 0));
+        char text[256];
+        rc |= expect_true("file read", read_group_text(path, text, sizeof text) == 0);
+        rc |= expect_true(with_rows ? "file untouched" : "file written",
+                          strcmp(text, with_rows ? k_appears[i] : "id,mode,name\n100,B,\n") == 0);
+        free_test_state(st);
+    }
+    free(opts);
+    (void)remove(path);
+    return rc;
+}
+
 /* Every way a list comes to stand for a file sets the baseline: a startup import (a header-only file too) and an
  * export, which moves it to the export path. A path the list never read or wrote has none and is written as before. */
 static int
@@ -4068,6 +4110,7 @@ main(void) {
     rc |= test_group_rewrite_guard();
     rc |= test_group_append_tracks_baseline();
     rc |= test_group_startup_and_export_baseline();
+    rc |= test_group_startup_missing_file_baseline();
     rc |= test_group_check_is_quiet();
     return rc;
 }
