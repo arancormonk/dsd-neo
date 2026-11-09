@@ -936,14 +936,28 @@ bool
 kept_library_files(const QList<LibraryFile>& library, QStringList* kept) {
     bool ok = false;
     QStringList files = backup::typed_file_paths(&ok);
-    const auto add = [&files](const LibraryFile& file) { return addReachedFiles(file, &files); };
-    if (!ok || !std::all_of(library.cbegin(), library.cend(), add)) {
+    QStringList reached;
+    if (!ok || !library_reached_files(library, &reached)) {
         return false;
     }
     // Compared as the file system resolves them, so a reference through a link still keeps its file.
     std::transform(files.begin(), files.end(), files.begin(), resolvedPath);
+    files += reached;
     files.removeDuplicates();
     *kept = std::move(files);
+    return true;
+}
+
+bool
+library_reached_files(const QList<LibraryFile>& library, QStringList* reached) {
+    QStringList files;
+    const auto add = [&files](const LibraryFile& file) { return addReachedFiles(file, &files); };
+    if (!std::all_of(library.cbegin(), library.cend(), add)) {
+        return false;
+    }
+    std::transform(files.begin(), files.end(), files.begin(), resolvedPath);
+    files.removeDuplicates();
+    *reached = std::move(files);
     return true;
 }
 

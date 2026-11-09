@@ -136,6 +136,12 @@ struct LibraryFile {
  */
 bool kept_library_files(const QList<LibraryFile>& library, QStringList* kept);
 
+/**
+ * The files the stored files of @p library reach, as kept_library_files() resolves them, without the typed path
+ * fields. False, with @p reached untouched, when a stored file cannot be read or parsed.
+ */
+bool library_reached_files(const QList<LibraryFile>& library, QStringList* reached);
+
 /** One registered bundle whose old revisions a cleanup may reclaim. */
 struct BundleRevisions {
     QString path;

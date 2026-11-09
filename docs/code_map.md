@@ -12832,7 +12832,9 @@ Qt Quick frontend (`src/ui/qt`):
     and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/`, whatever they are
     called (#832), clears any other reference and lists it in `notIncluded`, then parses its own output as a
     self-check. An owned bundle carries first every file its row's file reaches (`bundle_reached_files()`, the revision
-    cleanup's parse) or a typed value names, then every other file except an unreferenced exact leftover of an import's
+    cleanup's parse), a typed value names or any library row's stored CSV reaches (`library_reached_files()`, canonical;
+    another row's map may name a file in an older revision its own primary left; a CSV that does not parse reaches
+    nothing there), then every other file except an unreferenced exact leftover of an import's
     own temp files (`detail::leftover_name()`: `.staged-<uuid>.csv`, `.bundle-check-XXXXXX.csv`, `<name>.tmp.XXXXXX`;
     an export filter, never proof the app made the file); a primary that does not parse carries everything. A
     carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with

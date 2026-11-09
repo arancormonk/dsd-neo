@@ -1049,6 +1049,58 @@ test_carry_by_reference(TestHost& host, const Fixture& f) {
     remove_tree(setup.opaque);
 }
 
+/*
+ * Gate r3: bundle B's stored map names a file in bundle A's older revision, shaped like the helper's temp file, that
+ * A's own primary no longer reaches. The export carries it, and B's map validates once the archive's files are
+ * written out as a restore stages them.
+ */
+void
+test_carry_cross_bundle_reference() {
+    const QJsonArray before = dsd_qt::json_store_load_array("imported_files.json");
+    const QString root = dsd_qt::json_store_root();
+    const QString a = root + "/imports/bundles/cross-a";
+    const QString b = root + "/imports/bundles/cross-b";
+    const QString aMap = a + "/map.csv";
+    const QString aKeys = a + "/new/keys.csv";
+    const QString oldKeys = a + "/old/keys.tmp.Ab12Cd";
+    const QString bMap = b + "/map.csv";
+    expect("write the cross-bundle files",
+           write_file(aMap, "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr,new/keys.csv\n")
+               && write_file(aKeys, "keyid,value\n02,ABCDE\n") && write_file(oldKeys, "keyid,value\n03,BCDEF\n")
+               && write_file(bMap, "channel,frequency_hz,mode,keys_hex_csv\n2,462000000,dmr,"
+                                   "../cross-a/old/keys.tmp.Ab12Cd\n"));
+    auto snapshot = dsd_qt::backup::backup_take_snapshot();
+    QJsonArray library = snapshot.stores.value("imported_files.json");
+    library.append(QJsonObject{{"name", "a.csv"}, {"path", aMap}, {"type", "chan"}, {"bundleRoot", a}});
+    library.append(QJsonObject{{"name", "b.csv"}, {"path", bMap}, {"type", "chan"}, {"bundleRoot", b}});
+    snapshot.stores.insert("imported_files.json", library);
+
+    const auto built = build(snapshot);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, snapshot.root);
+    expect("the cross-bundle export builds and parses",
+           built.error == BackupError::None && parsed.error == BackupError::None);
+    expect("nothing is left out of the cross-bundle export", built.summary.notIncluded.isEmpty());
+    expect("a file another bundle's map reaches is carried", carried_paths(parsed).contains(oldKeys));
+    const QJsonArray out = parsed.stores.value("imported_files.json");
+    const int bRow = row_where(out, "path", bMap);
+    expect("bundle B keeps its row and root", bRow >= 0 && out.at(bRow).toObject().value("bundleRoot") == b);
+
+    QTemporaryDir staged;
+    for (const auto& file : parsed.files) {
+        expect("stage a carried file",
+               write_file(staged.filePath(file.path), built.archive.mid(file.offset, file.size)));
+    }
+    const QString stagedMap = staged.filePath("imports/bundles/cross-b/map.csv");
+    int accepted = 0;
+    int skipped = 0;
+    expect("bundle B's map restores with the key list it names",
+           dsd_qt::ImportedFilesModel::validate(stagedMap, "chan", &accepted, &skipped) && accepted == 1);
+
+    expect("restore the library store", dsd_qt::json_store_save_array("imported_files.json", before));
+    remove_tree(a);
+    remove_tree(b);
+}
+
 /* Stores a model would repair or prune as it loads them: the export repairs and prunes the same way, so the backup
  * still passes its own validation instead of refusing to export. */
 void
@@ -2005,6 +2057,7 @@ main(int argc, char** argv) {
         test_build_caps_and_cancel();
         test_sanitize();
         test_carry_by_reference(host, fixture);
+        test_carry_cross_bundle_reference();
     }
     dsd_app_signal_search_store_close();
 

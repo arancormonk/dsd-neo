@@ -173,7 +173,12 @@ class Builder {
                && info.canonicalFilePath() == m_canonicalRoot + QLatin1Char('/') + relative;
     }
 
-    /** Every file a typed File value names, by its real path: a bundle carries these whatever they are called. */
+    /**
+     * Every file a typed File value names or a stored library CSV reaches (another row's map may name a file in this
+     * bundle that its own primary no longer reaches), by its real path: a bundle carries these whatever they are
+     * called. A library CSV that cannot be parsed reaches nothing here; its own bundle carries every file
+     * (bundleFilesToCarry()).
+     */
     void
     collectNamedFiles() {
         for (auto it = m_stores.cbegin(); it != m_stores.cend(); ++it) {
@@ -182,6 +187,17 @@ class Builder {
                     value.field.kind == PathKind::File ? QFileInfo(value.value).canonicalFilePath() : QString();
                 if (!canonical.isEmpty()) {
                     m_namedFiles.insert(canonical);
+                }
+            }
+        }
+        for (const auto& value : m_stores.value(QLatin1String(kImportedFilesStore))) {
+            const QJsonObject row = value.toObject();
+            QStringList reached;
+            if (library_reached_files({LibraryFile{variant_string(row.value(QLatin1String("path"))),
+                                                   row.value(QLatin1String("type")).toString()}},
+                                      &reached)) {
+                for (const QString& file : reached) {
+                    m_namedFiles.insert(file);
                 }
             }
         }
@@ -204,8 +220,8 @@ class Builder {
 
     /**
      * @p directory's files, those a reference reaches first: the files @p primary (a row's file of @p type) reaches and
-     * those a typed value names, whatever they are called, then every other file whose name is not an import's own
-     * leftover (leftover_name()). A primary that cannot be parsed reaches everything: nothing is left out then.
+     * those collectNamedFiles() lists, whatever they are called, then every other file whose name is not an import's
+     * own leftover (leftover_name()). A primary that cannot be parsed reaches everything: nothing is left out then.
      */
     QStringList
     bundleFilesToCarry(const QString& directory, const QString& primary, const QString& type) const {
@@ -545,7 +561,7 @@ class Builder {
     QMap<QString, QString> m_sources;      // archive path → canonical source path
     QMap<QString, QString> m_claimedRoots; // carried bundle root's folded key → its archive path
     QMap<QString, QString> m_channelMaps;  // archive path of a carried, unbundled channel map → its row's label
-    QSet<QString> m_namedFiles;            // real path of every file a typed File value names
+    QSet<QString> m_namedFiles;            // real path of every file a typed File value or a library CSV names
     QStringList m_notIncluded;
     QJsonArray m_fileTable;
     qint64 m_fileBytes = 0;
