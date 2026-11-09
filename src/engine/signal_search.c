@@ -30,6 +30,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
@@ -54,7 +55,14 @@ enum {
     /* A live strength no accepted measurement has refreshed for three intervals and a retry is no current level. */
     SEARCH_LIVE_STALE_MS = 3 * SEARCH_LIVE_INTERVAL_MS + SEARCH_LIVE_RETRY_MS,
     /* The P25 Phase 2 scrambling codes a session keeps (issue #804). */
-    SEARCH_P2_CODES = 16
+    SEARCH_P2_CODES = 16,
+    /* A span whose measurements keep clipping this long is skipped (issue #828): long enough that one or two clipped
+       attempts (a nearby key-up) skip nothing, short enough that the spans around one strong transmitter cost a few
+       seconds a pass. */
+    SEARCH_CLIP_SKIP_MS = 1000,
+    /* A span tune whose measurements have not completed this long after the first request is skipped when any of them
+       clipped, and otherwise ends the search. */
+    SEARCH_MEASURE_MAX_MS = 5000
 };
 
 /* The call tuple: what one checked canonical call record says, copied whole when its call is noted. */
@@ -84,6 +92,15 @@ typedef struct {
     dsd_airspy_config saved_airspy;
     uint32_t suppressed[DSD_SEARCH_MAX_CHANNELS];
     size_t suppressed_count;
+    /* The store's permanent avoids as of permanent_revision (the runtime list), taken at each tick, action and in-frame
+       yield check when the revision moved (search_refresh_permanent()); issue #828. */
+    uint32_t permanent[DSD_SEARCH_MAX_AVOIDS];
+    size_t permanent_count;
+    uint64_t permanent_revision;
+    /* This session's own avoids, never a permanent one, so each list has its full room; published to the runtime
+       session list at every change and cleared there when the session stops or fails. */
+    uint32_t session_avoids[DSD_SEARCH_MAX_AVOIDS];
+    size_t session_avoid_count;
     uint64_t request, next_hit, acquired, probe_started, activity, tune_started, last_publish;
     uint64_t measurement_started;
     /* Decode-clock landing of the current visit; quiet timing of an analog visit starts at the monitor's first verdict. */
@@ -112,6 +129,13 @@ typedef struct {
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
     int report_pending;
+    /* The span tune's measurement deadlines (issue #828), reset with measurement_started at every tune: the realtime of
+       its first clipped measurement since the tune or the last complete report (0 for none), and its latest failure's
+       reason. */
+    uint64_t clip_since;
+    dsd_signal_measure_failure last_failure;
+    /* Spans this pass skipped for clipping: a pass that skipped none clears the overload warning at its end. */
+    uint32_t pass_skipped;
     int live_measuring;
     uint64_t live_request, live_next;
     /* When the shown live strength was measured. */
@@ -147,6 +171,73 @@ dsd_engine_signal_search_active(const dsd_state* state) {
     return c && c->status.phase != DSD_SEARCH_STOPPED;
 }
 
+static int
+search_contains(const uint32_t* values, size_t n, uint32_t value) {
+    for (size_t i = 0; i < n; ++i) {
+        if (values[i] == value) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The screens read this session's avoids from the runtime list, which only the coordinator writes. */
+static void
+search_publish_session_avoids(const search_coord* c) {
+    dsd_signal_search_avoids_session_set(c->status.session_id, c->session_avoids, c->session_avoid_count);
+}
+
+/* A session that stops or fails takes its avoids with it, and nothing is published for it after that. */
+static void
+search_clear_session_avoids(search_coord* c) {
+    c->session_avoid_count = 0;
+    dsd_signal_search_avoids_session_set(0, NULL, 0);
+}
+
+/* The visit to @p frequency, if one is under way, is left at the next tick. */
+static void
+search_leave_visit_to(search_coord* c, uint32_t frequency) {
+    if (c->visit && !c->status.hit.ended && c->status.hit.frequency_hz == frequency) {
+        c->skip = 1;
+    }
+}
+
+/* A frequency now permanent leaves the session list, the others keeping their order; published when it changed. */
+static void
+search_drop_permanent_session_avoids(search_coord* c) {
+    size_t kept = 0;
+    for (size_t i = 0; i < c->session_avoid_count; ++i) {
+        if (!search_contains(c->permanent, c->permanent_count, c->session_avoids[i])) {
+            c->session_avoids[kept++] = c->session_avoids[i];
+        }
+    }
+    if (kept != c->session_avoid_count) {
+        c->session_avoid_count = kept;
+        search_publish_session_avoids(c);
+    }
+}
+
+/* Take the store's permanent avoids when they changed (one atomic load when they did not): a frequency now permanent
+   leaves the session list, so it is in one list only, and a visit to one is left at the next tick, which retires the
+   hit. Runs on the decoder thread at each tick, action and in-frame yield check, in every phase the coordinator is
+   in; a failed or paused search has no visit and, failed, no session list. */
+static void
+search_refresh_permanent(search_coord* c) {
+    if (dsd_signal_search_avoids_permanent_revision() == c->permanent_revision) {
+        return;
+    }
+    c->permanent_count =
+        dsd_signal_search_avoids_permanent_snapshot(c->permanent, DSD_SEARCH_MAX_AVOIDS, &c->permanent_revision);
+    /* The prune compares every pair of the two lists, inside a decode frame on the yield path: an empty list on either
+       side (no session avoids is the usual case) skips it. */
+    if (c->session_avoid_count && c->permanent_count) {
+        search_drop_permanent_session_avoids(c);
+    }
+    if (search_contains(c->permanent, c->permanent_count, c->status.hit.frequency_hz)) {
+        search_leave_visit_to(c, c->status.hit.frequency_hz);
+    }
+}
+
 static void
 search_end_hit(search_coord* c) {
     if (c->status.hit.hit_id && !c->status.hit.ended) {
@@ -173,6 +264,7 @@ static void
 search_error(search_coord* c, const char* message) {
     search_end_hit(c);
     search_cancel_measurements(c);
+    search_clear_session_avoids(c);
     c->stopping = 0;
     rtl_signal_search_bypass(1);
     c->status.phase = DSD_SEARCH_ERROR;
@@ -181,18 +273,9 @@ search_error(search_coord* c, const char* message) {
 }
 
 static int
-search_contains(const uint32_t* values, size_t n, uint32_t value) {
-    for (size_t i = 0; i < n; ++i) {
-        if (values[i] == value) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int
 search_excluded(const search_coord* c, uint32_t f) {
-    return search_contains(c->config.avoids, c->config.avoid_count, f)
+    return search_contains(c->permanent, c->permanent_count, f)
+           || search_contains(c->session_avoids, c->session_avoid_count, f)
            || search_contains(c->suppressed, c->suppressed_count, f);
 }
 
@@ -203,6 +286,14 @@ search_suppress(search_coord* c, uint32_t f) {
     }
 }
 
+/* The overload warning goes, and the next skip names its range again. */
+static void
+search_clear_overload(search_coord* c) {
+    c->status.overloaded = 0;
+    c->status.overload_range[0] = '\0';
+    c->pass_skipped = 0;
+}
+
 static int
 search_select_range(search_coord* c) {
     for (uint32_t tries = 0; tries <= c->config.range_count; ++tries) {
@@ -210,6 +301,12 @@ search_select_range(search_coord* c) {
             c->status.range_index = 0;
             ++c->status.pass;
             c->suppressed_count = 0;
+            /* The warning stays through the next pass after one that skipped a span, so it is up long enough to read
+               while the spans around a strong transmitter keep clipping; a pass that skipped none clears it. */
+            if (!c->pass_skipped) {
+                search_clear_overload(c);
+            }
+            c->pass_skipped = 0;
         }
         const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
         if (r->enabled && c->status.channel_index < dsd_signal_search_channel_count(r)) {
@@ -354,6 +451,8 @@ static int
 search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int visit, int analog) {
     search_cancel_measurements(c);
     c->measurement_started = 0;
+    c->clip_since = 0;
+    c->last_failure = DSD_SIGNAL_MEASURE_OK;
     rtl_signal_search_bypass(1);
     c->visit = visit;
     c->target = target;
@@ -408,8 +507,10 @@ search_begin_measurement(search_coord* c, const dsd_signal_capture* capture) {
     r.range = c->config.ranges[c->status.range_index];
     r.count = c->span.count;
     DSD_MEMCPY(r.frequencies, c->span.frequencies, r.count * sizeof(r.frequencies[0]));
-    if (rtl_signal_measure_request(&r)) {
-        search_error(c, "Unsupported FFT measurement plan");
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+    if (rtl_signal_measure_request(&r, &failure)) {
+        search_error(c, failure == DSD_SIGNAL_REQUEST_NO_MEMORY ? "Not enough memory for a measurement"
+                                                                : "Unsupported FFT measurement plan");
         return -1;
     }
     c->measuring = 1;
@@ -442,8 +543,7 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
 
 static int
 search_valid_config(const dsd_signal_search_config* config) {
-    return config && config->session_id && config->range_count && config->range_count <= DSD_SEARCH_MAX_RANGES
-           && config->avoid_count <= DSD_SEARCH_MAX_AVOIDS;
+    return config && config->session_id && config->range_count && config->range_count <= DSD_SEARCH_MAX_RANGES;
 }
 
 static int
@@ -556,7 +656,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     }
     search_coord* previous = search_get(state);
     if (previous && previous->status.phase == DSD_SEARCH_PAUSED) {
-        /* Keep the native session's avoids, including those made before an Activity recreation. */
+        /* Keep the native session's avoids, including those made before an Activity recreation: both lists live in the
+           coordinator and the runtime, never in a start. */
         previous->config.range_count = config->range_count;
         DSD_MEMCPY(previous->config.ranges, config->ranges, sizeof(config->ranges));
         previous->status.range_index = previous->status.channel_index = 0;
@@ -565,6 +666,8 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
         previous->need_span = 1;
         previous->visit = previous->skip = previous->hold = 0;
         previous->status.phase = DSD_SEARCH_SEARCHING;
+        /* Edited ranges (a lower gain) are measured afresh: a span that still clips warns again at its skip. */
+        search_clear_overload(previous);
         /* The edited ranges show from this Resume on, not while they were being edited. */
         (void)search_select_range(previous);
         search_publish(previous, 0);
@@ -1027,7 +1130,7 @@ search_live_strength(search_coord* c) {
     r.range = c->config.ranges[c->status.range_index];
     r.count = 1;
     r.frequencies[0] = c->status.hit.frequency_hz;
-    if (rtl_signal_measure_request(&r) == 0) {
+    if (rtl_signal_measure_request(&r, NULL) == 0) {
         c->live_measuring = 1;
     } else {
         c->live_next = now + SEARCH_LIVE_RETRY_MS;
@@ -1081,6 +1184,9 @@ dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state) {
     if (!c || c->status.phase == DSD_SEARCH_STOPPED) {
         return 0;
     }
+    /* A held visit decoding without a break never reaches the main loop: a permanent avoid made for it is found here,
+       and the tick this returns to leaves it. A change that names no visit cuts no frame. */
+    search_refresh_permanent(c);
     if (dsd_runtime_controls_pending() || c->skip || c->stopping) {
         return 1;
     }
@@ -1132,19 +1238,35 @@ dsd_engine_signal_search_target(const dsd_state* state, const dsd_signal_search_
 }
 
 #ifdef USE_RADIO
-/* Avoid @p frequency for the rest of the session, leaving it if it is being visited; -1 when the avoid list is full.
-   Avoiding a frequency already avoided succeeds. */
+/* Lift @p frequency from the session list, if it is there, keeping the others in order. */
+static void
+search_session_remove(search_coord* c, uint32_t frequency) {
+    for (size_t i = 0; i < c->session_avoid_count; ++i) {
+        if (c->session_avoids[i] == frequency) {
+            DSD_MEMMOVE(&c->session_avoids[i], &c->session_avoids[i + 1],
+                        (c->session_avoid_count - i - 1) * sizeof(c->session_avoids[0]));
+            --c->session_avoid_count;
+            search_publish_session_avoids(c);
+            return;
+        }
+    }
+}
+
+/* Avoid @p frequency for the rest of the session, leaving it if it is being visited; -1 when the session's avoid list
+   is full. A permanent avoid takes no room: it is excluded already, and a session copy goes, so a frequency is in one
+   list at most. Avoiding a frequency already avoided succeeds. */
 static int
 search_avoid(search_coord* c, uint32_t frequency) {
-    if (!search_contains(c->config.avoids, c->config.avoid_count, frequency)) {
-        if (c->config.avoid_count == DSD_SEARCH_MAX_AVOIDS) {
+    if (search_contains(c->permanent, c->permanent_count, frequency)) {
+        search_session_remove(c, frequency);
+    } else if (!search_contains(c->session_avoids, c->session_avoid_count, frequency)) {
+        if (c->session_avoid_count == DSD_SEARCH_MAX_AVOIDS) {
             return -1;
         }
-        c->config.avoids[c->config.avoid_count++] = frequency;
+        c->session_avoids[c->session_avoid_count++] = frequency;
+        search_publish_session_avoids(c);
     }
-    if (c->visit && !c->status.hit.ended && c->status.hit.frequency_hz == frequency) {
-        c->skip = 1;
-    }
+    search_leave_visit_to(c, frequency);
     return 0;
 }
 
@@ -1158,28 +1280,29 @@ search_pause(search_coord* c) {
     c->status.phase = DSD_SEARCH_PAUSED;
 }
 
-/* Lifting an avoid that is not there is not an error: the caller's list and the session's agree afterwards. */
-static void
+/* Lift a session avoid; a permanent one stays excluded. Lifting an avoid that is not there is not an error: the
+   caller's list and the session's agree afterwards. A failed search has no session list and refuses. */
+static int
 search_unavoid(search_coord* c, uint32_t frequency) {
-    for (uint32_t i = 0; i < c->config.avoid_count; ++i) {
-        if (c->config.avoids[i] == frequency) {
-            c->config.avoids[i] = c->config.avoids[--c->config.avoid_count];
-            return;
-        }
+    if (c->status.phase == DSD_SEARCH_ERROR) {
+        return -1;
     }
+    search_session_remove(c, frequency);
+    return 0;
 }
 
 /* Avoid the hit being visited, or the action's frequency; a refusal is the frontends' to show: the queue only said the
-   command was taken. A failed search keeps its error, which says more. */
+   command was taken. A failed search refuses and keeps its error, which says more: its session list went with it. */
 static int
 search_avoid_action(search_coord* c, const dsd_signal_search_control* action) {
+    if (c->status.phase == DSD_SEARCH_ERROR) {
+        return -1;
+    }
     /* A valid AVOID names the hit being visited, so it is left as well. */
     if (search_avoid(c, action->action == DSD_SEARCH_ACTION_AVOID_FREQUENCY ? action->frequency_hz
                                                                             : c->status.hit.frequency_hz)) {
-        if (c->status.phase != DSD_SEARCH_ERROR) {
-            DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
-            search_publish(c, 0);
-        }
+        DSD_SNPRINTF(c->status.message, sizeof(c->status.message), "%s", "The avoid list is full");
+        search_publish(c, 0);
         return -1;
     }
     return 0;
@@ -1193,6 +1316,8 @@ search_resume(search_coord* c) {
     c->need_span = 1;
     c->visit = 0;
     c->status.phase = DSD_SEARCH_SEARCHING;
+    /* A gain lowered while paused shows its effect: a span that still clips warns again at its skip. */
+    search_clear_overload(c);
     return 0;
 }
 
@@ -1219,7 +1344,7 @@ search_apply_action(search_coord* c, const dsd_signal_search_control* action) {
         case DSD_SEARCH_ACTION_AVOID_PERMANENT:
         case DSD_SEARCH_ACTION_AVOID_FREQUENCY: return search_avoid_action(c, action);
         case DSD_SEARCH_ACTION_SKIP: c->skip = 1; return 0;
-        case DSD_SEARCH_ACTION_UNAVOID: search_unavoid(c, action->frequency_hz); return 0;
+        case DSD_SEARCH_ACTION_UNAVOID: return search_unavoid(c, action->frequency_hz);
         default: return -1;
     }
 }
@@ -1235,6 +1360,8 @@ dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_sig
     }
     (void)opts;
 #ifdef USE_RADIO
+    /* Each action is judged against the lists as they stand when the decoder runs it. */
+    search_refresh_permanent(c);
     if (search_apply_action(c, action) != 0) {
         return -1;
     }
@@ -1483,41 +1610,105 @@ search_strongest_candidate(search_coord* c) {
     return best;
 }
 
+/* The span is done with no detection: the next span follows, the pass wrapping after the range's last. */
+static void
+search_leave_span(search_coord* c) {
+    c->status.channel_index = c->span.next;
+    c->need_span = 1;
+    search_publish(c, 0);
+}
+
+/* The span's measurements kept clipping: it is left as one with nothing detected, and the next pass measures it again,
+   since suppression is per pass and names visited frequencies only. Nothing comes from a clipped measurement. The
+   warning names the range of the pass's first skip, so its text changes at most once a pass. */
+static void
+search_skip_clipped_span(search_coord* c) {
+    if (!c->pass_skipped) {
+        DSD_SNPRINTF(c->status.overload_range, sizeof(c->status.overload_range), "%s", c->status.range_name);
+    }
+    ++c->pass_skipped;
+    c->status.overloaded = 1;
+    search_leave_span(c);
+}
+
+/* A complete report for the span request: visit its strongest eligible candidate, or move on with none. */
+static void
+search_use_report(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    c->report_pending = 1;
+    int best = search_strongest_candidate(c);
+    if (best == -2) {
+        return;
+    }
+    if (best < 0) {
+        search_leave_span(c);
+        return;
+    }
+    search_visit_candidate(c, opts, state, &c->report.candidates[best]);
+}
+
+/* Read the span request's answer. 1 when a complete report for it was used; 0 otherwise: nothing yet, a failure of the
+   request noted (a clipped one starts the clip run if none is under way, any other keeps it), or an answer to an
+   earlier request or capture ignored. */
+static int
+search_take_report(search_coord* c, dsd_opts* opts, dsd_state* state, const dsd_signal_capture* capture, uint64_t now) {
+    const int rc = rtl_signal_measure_get(&c->report);
+    if (rc == 0) {
+        return 0;
+    }
+    c->measuring = 0;
+    if (c->report.session_id != c->status.session_id || c->report.request_id != c->request) {
+        return 0;
+    }
+    if (rc < 0) {
+        if (c->report.failure == DSD_SIGNAL_MEASURE_CLIPPED && !c->clip_since) {
+            c->clip_since = now;
+        }
+        c->last_failure = c->report.failure;
+        return 0;
+    }
+    if (c->report.generation != capture->generation) {
+        return 0;
+    }
+    c->clip_since = 0;
+    c->last_failure = DSD_SIGNAL_MEASURE_OK;
+    search_use_report(c, opts, state);
+    return 1;
+}
+
+/* The span tune's deadlines, checked at every tick whether or not an answer came; 1 when the span was skipped or the
+   search failed. Clipping that lasts SEARCH_CLIP_SKIP_MS skips the span, a clip and then no answer included. So does
+   any clipping on a tune that has not completed a measurement in SEARCH_MEASURE_MAX_MS: a first clip late in that
+   time, or clipping mixed with drops. Without any, the search fails as the receiver cannot be measured. */
+static int
+search_measure_deadline(search_coord* c, uint64_t now) {
+    if (c->last_failure == DSD_SIGNAL_MEASURE_CLIPPED && now - c->clip_since >= SEARCH_CLIP_SKIP_MS) {
+        search_skip_clipped_span(c);
+        return 1;
+    }
+    if (!c->measurement_started || now - c->measurement_started <= SEARCH_MEASURE_MAX_MS) {
+        return 0;
+    }
+    if (c->clip_since) {
+        search_skip_clipped_span(c);
+    } else {
+        search_error(c, "No uninterrupted samples for a measurement");
+    }
+    return 1;
+}
+
 static int
 search_measure_tick(search_coord* c, dsd_opts* opts, dsd_state* state, const dsd_signal_capture* capture) {
-    if (c->measurement_started && dsd_realtime_mono_ms() - c->measurement_started > 5000) {
-        search_error(c, "No uninterrupted samples for a measurement");
+    const uint64_t now = dsd_realtime_mono_ms();
+    /* A report that completed is used before any deadline is judged, however late the tick that reads it. */
+    if (c->measuring && search_take_report(c, opts, state, capture, now)) {
+        return 1;
+    }
+    if (search_measure_deadline(c, now)) {
         return 1;
     }
     if (!c->measuring) {
         (void)search_begin_measurement(c, capture);
-        return 1;
     }
-    int rc = rtl_signal_measure_get(&c->report);
-    if (rc < 0) {
-        c->measuring = 0;
-        return 1;
-    }
-    if (!rc) {
-        return 1;
-    }
-    c->measuring = 0;
-    if (c->report.session_id != c->status.session_id || c->report.request_id != c->request
-        || c->report.generation != capture->generation) {
-        return 1;
-    }
-    c->report_pending = 1;
-    int best = search_strongest_candidate(c);
-    if (best == -2) {
-        return 1;
-    }
-    if (best < 0) {
-        c->status.channel_index = c->span.next;
-        c->need_span = 1;
-        search_publish(c, 0);
-        return 1;
-    }
-    search_visit_candidate(c, opts, state, &c->report.candidates[best]);
     return 1;
 }
 
@@ -1627,6 +1818,7 @@ dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     return 0;
 #else
+    search_refresh_permanent(c);
     const int rc = search_tick(c, opts, state);
     if (c->status.phase == DSD_SEARCH_PAUSED || c->status.phase == DSD_SEARCH_ERROR) {
         search_end_reception(c, opts, state);
@@ -1647,6 +1839,7 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
         return;
     }
     search_end_hit(c);
+    search_clear_session_avoids(c);
 #ifdef USE_RADIO
     search_cancel_measurements(c);
     search_restore(c, opts, state);

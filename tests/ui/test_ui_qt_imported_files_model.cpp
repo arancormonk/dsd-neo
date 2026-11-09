@@ -38,6 +38,10 @@
 #include <thread>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <cstdlib>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
@@ -784,6 +788,65 @@ test_store_past_int_range(void) {
     expect("an oversized sid reads as none", row.value(QStringLiteral("rrSid")).toInt() == 0);
     expect("an oversized policy reads as the default", row.value(QStringLiteral("rrEncryptionPolicy")).toInt() == 3);
 }
+
+/* Issue #828: a library index that could not be read loads empty, and the next import keeps it byte for byte instead
+ * of writing over it. */
+void
+test_unreadable_index_is_kept() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    const QTemporaryDir sourceDir;
+    const QString source = sourceDir.filePath(QStringLiteral("county.csv"));
+    expect("unreadable index: source written", write_file(source, "TG,Mode,Name\n101,D,Dispatch\n"));
+    const QString index = dsd_qt::json_store_path(QStringLiteral("imported_files.json"));
+    const QByteArray junk("[{\"name\":\"county.csv\"");
+    expect("unreadable index: fixture", QDir().mkpath(QFileInfo(index).absolutePath()) && write_file(index, junk));
+    dsd_qt::ImportedFilesModel model(&host);
+    expect("unreadable index: loads empty", model.rowCount() == 0 && model.takePrunedPaths().isEmpty());
+    expect("unreadable index: nothing moves at load", read_file(index) == junk);
+    const QVariantMap imported =
+        model.importFile(QUrl::fromLocalFile(source).toString(), QStringLiteral("county.csv"), QStringLiteral("group"));
+    expect("unreadable index: the import saves", imported.value(QStringLiteral("ok")).toBool());
+    expect("unreadable index: kept byte for byte", read_file(index + QStringLiteral(".unreadable-1")) == junk);
+    expect("unreadable index: the new index has the import",
+           dsd_qt::json_store_load_array(QStringLiteral("imported_files.json")).size() == 1);
+}
+
+#ifndef _WIN32
+/* Issue #828: a stored copy in a folder that cannot be searched is not known to be gone. Its row stays and is not
+ * handed on for its references to be cleared; only a confirmed absence prunes it. */
+void
+test_unsearchable_copy_is_not_pruned() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    const QString folder =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/locked");
+    const QString path = folder + QStringLiteral("/county.csv");
+    expect("unsearchable: folder", QDir().mkpath(folder) && write_file(path, "TG,Mode,Name\n1,D,One\n"));
+    QJsonObject row;
+    row.insert(QStringLiteral("name"), QStringLiteral("county.csv"));
+    row.insert(QStringLiteral("path"), path);
+    row.insert(QStringLiteral("type"), QStringLiteral("group"));
+    expect("unsearchable: index", dsd_qt::json_store_save_array(QStringLiteral("imported_files.json"), {row}));
+    const QString index = dsd_qt::json_store_path(QStringLiteral("imported_files.json"));
+    const QByteArray stored = read_file(index);
+    if (geteuid() == 0) {
+        DSD_FPRINTF(stderr, "note: running as root, the unsearchable-folder case is skipped\n");
+    } else {
+        expect("unsearchable: locked", chmod(QFile::encodeName(folder).constData(), 0000) == 0);
+        {
+            dsd_qt::ImportedFilesModel model(&host);
+            expect("unsearchable: the row stays", model.rowCount() == 1 && model.takePrunedPaths().isEmpty());
+        }
+        expect("unsearchable: unlocked", chmod(QFile::encodeName(folder).constData(), 0700) == 0);
+        expect("unsearchable: the index is not rewritten", read_file(index) == stored);
+    }
+    expect("unsearchable: the copy is removed", QFile::remove(path));
+    dsd_qt::ImportedFilesModel model(&host);
+    expect("unsearchable: a confirmed absence prunes",
+           model.rowCount() == 0 && model.takePrunedPaths() == QStringList{path});
+}
+#endif
 
 void
 test_export_registration_in_place() {
@@ -2102,6 +2165,10 @@ main(int argc, char** argv) {
     test_src_kind();
     test_legacy_store_without_provenance();
     test_store_past_int_range();
+    test_unreadable_index_is_kept();
+#ifndef _WIN32
+    test_unsearchable_copy_is_not_pruned();
+#endif
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

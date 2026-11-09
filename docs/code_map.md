@@ -60,7 +60,7 @@ Generated (do not edit/commit):
     capture measurement, tagged asynchronous tuning, identification and listening on
     the decoder thread. Its private owner shares the stable trunk-scan extension slot
     through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
-    owners, suppresses visited frequencies per pass and retains native session avoids.
+    owners, suppresses visited frequencies per pass and keeps two avoid lists (below).
     Its decoder baseline is the CONFIG-profile Auto preset, which leaves the DMR dispatch
     flags as the session had them; when a mono preset (`-f1`) has turned both off, the
     baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
@@ -109,13 +109,50 @@ Generated (do not edit/commit):
     guards under `dsd_engine_carrier_boundary()` in Protocols): nothing of it plays,
     publishes, captures or reports evidence. An analog visit's
     500 ms quiet timing starts only at the monitor's first verdict on the landed channel
-    (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s. `DSD_SEARCH_ACTION_UNAVOID`
-    lifts a session avoid by frequency; `DSD_SEARCH_ACTION_AVOID_FREQUENCY` (appended, hit ID
-    may be 0) adds one, a duplicate succeeding and the frequency being visited being left as
-    `AVOID` leaves it. A full session list refuses either avoid and publishes "The avoid list
-    is full" in `status.message` (in the ERROR phase the search error stays instead); any
-    action that takes effect, or the next visit's tune (`search_queue_tune()`), clears an
-    earlier refusal, and an ERROR phase keeps its message. `dsd_engine_signal_search_target()` validates an action
+    (`dsd_analog_rx_carrier_observed_now()`), bounded at 3 s.
+    Span measurement deadlines (issue #828, `search_measure_tick()`): each span tune keeps `measurement_started`
+    (first request), `clip_since` (first `CLIPPED` failure since the tune or the last complete report) and
+    `last_failure`, all reset in `search_queue_tune()`, which Resume and a paused restart reach through `need_span`.
+    Each tick reads the tap first, so a report that completed is used whatever the time (a late tick used to fail it);
+    an answer is the outstanding request's by session and request id (a complete report also by generation), and
+    any other is ignored. A `CLIPPED` failure starts `clip_since` if unset, any other keeps it, and either is requested
+    again in the same tick. The deadlines are judged on every tick, answered or not, on the realtime clock: the latest
+    failure `CLIPPED` with `clip_since` 1 s old (`SEARCH_CLIP_SKIP_MS`; a clip then no answer included), or more than
+    5 s since the first request (`SEARCH_MEASURE_MAX_MS`) with `clip_since` set (a first clip late in that time, or
+    clips mixed with drops), skips the span; more than 5 s with no clip fails the search, "No uninterrupted samples for
+    a measurement". A skip takes the no-detection branch (`channel_index = span.next`, `need_span`), so a single
+    clipping span, or every span clipping, keeps searching with `pass` climbing; the skipped channels were never
+    suppressed, so the next pass measures them again, and nothing is detected from a clipped measurement. It sets
+    `status.overloaded`, names `status.overload_range` from the running range only at the pass's first skip
+    (`pass_skipped` 0), so the name changes at most once a pass, and publishes. `search_select_range()` clears both at
+    a pass wrap when the pass just finished skipped nothing (`search_clear_overload()`); so do Resume and the paused
+    restart with edited ranges, so a lowered gain shows its effect. The warning is not in `message`: visits and actions
+    that clear a refusal leave it, and a frontend can word it per radio. A live-strength measurement that clips during
+    a visit only withdraws the level as above; it sets no warning and never ends the visit (`ENGINE_SIGNAL_SEARCH`,
+    `ENGINE_SIGNAL_SEARCH_SCENE`).
+    Avoids (issue #828): a start carries none. The coordinator excludes the union of the store's permanent avoids,
+    this session's avoids and the per-pass suppressed frequencies (`search_excluded()`), and a frequency is in one
+    avoid list at most, each with room for 1,024 (`DSD_SEARCH_MAX_AVOIDS`). Both lists are the runtime's
+    (`signal_search_avoids.h`, Runtime): the coordinator caches the permanent one with its revision and refreshes it
+    (`search_refresh_permanent()`) at the start of every tick, every control action and every in-frame yield check, in
+    any phase but STOPPED; unchanged, that is one atomic load. On a change it takes a snapshot, drops now-permanent
+    frequencies from the session list (publishing it) and, when the un-ended visited hit's frequency is now permanent,
+    sets `skip`, so the tick retires the hit and leaves; through the yield check this leaves a held visit that decodes
+    without a break, with no command queued (`test_permanent_leaves_held_visit`). A change that names no visit cuts no
+    frame. `AVOID`, `AVOID_PERMANENT` and `DSD_SEARCH_ACTION_AVOID_FREQUENCY` (appended, hit ID may be 0) on a
+    frequency that is now permanent succeed, add nothing and drop a session copy, leaving the visit they name; any other
+    frequency joins the session list (a duplicate succeeding), and the visit to it is left. `AVOID_PERMANENT` adds
+    nothing to the permanent list itself: the store has added it before the action runs. `DSD_SEARCH_ACTION_UNAVOID`
+    (Stop avoiding) lifts a session avoid by frequency, so a permanent one stays excluded. Each action is judged against
+    the lists as they stand when the decoder runs it, which the screens read too. The coordinator alone writes the
+    runtime session list, at every change of its own (`search_publish_session_avoids()`), and clears it (session 0)
+    when the session fails (`search_error()`) or stops (`dsd_engine_signal_search_shutdown()`); in ERROR it refuses
+    every session avoid action and keeps its error, so nothing is published for a failed or stopped session. Pause,
+    Resume and a paused restart with edited ranges keep both lists. A full session list refuses an avoid and publishes
+    "The avoid list is full" in `status.message`; any action that takes effect, or the next visit's tune
+    (`search_queue_tune()`), clears an earlier refusal, never the overload warning, and an ERROR phase keeps its
+    message (`ENGINE_SIGNAL_SEARCH`).
+    `dsd_engine_signal_search_target()` validates an action
     against the live coordinator without acting and gives the frequency it acts on;
     `dsd_engine_signal_search_notice()` shows a refusal decided outside the coordinator in
     the running session's status. The coordinator keeps the visit's checked site record
@@ -1240,6 +1277,11 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     CRT's `_O_EXCL` follows dangling symlinks. The final name is claimed without following a link, and
     `out_opened` records creation even if attaching the CRT descriptor or stream fails. Tests:
     `PLATFORM_FILE_COMPAT`, `DMR_SYNTH_OUTPUT_PATHS` (existing and dangling symlinks for both generator outputs)
+  - Appending to a regular file (issue #828): `dsd_fopen_private_append_regular()` is `dsd_fopen_private(path, "ab")`
+    that never waits and opens only a regular file: POSIX opens `O_NONBLOCK | O_NOFOLLOW` (a FIFO nobody reads fails
+    at once, ENXIO reported as EINVAL; a link fails with ELOOP), refuses with EINVAL anything opened that is not
+    regular, and then clears `O_NONBLOCK`; Windows refuses a folder or reparse point at the name before the open and a
+    device after it. A missing file is created 0600. Tests: `PLATFORM_FILE_COMPAT`, `PLATFORM_FILE_COMPAT_FIFO`
   - Binary descriptors: `dsd_set_binary_mode()` disables Windows text translation on an existing descriptor (a
     validated no-op on POSIX). Engine setup uses it for `-o -` before emitting audio, so an inherited text-mode
     stdout cannot expand sample bytes containing LF into CRLF. Tests: `ENGINE_RUN_SETUP`, `PLATFORM_FILE_COMPAT`
@@ -1248,8 +1290,35 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     fallback, `dsd_rename_noreplace_by_link()` in `src/platform/file_compat_internal.h`, tests reach directly), and on
     a filesystem with neither an exclusive create that claims the name, then a rename onto that empty claim
     (`dsd_rename_noreplace_by_reservation()`, also tested directly), which only a process deleting the claim can
-    race (never a check then a rename); Windows keeps the CRT's `rename()`, which refuses an existing name, and reports
-    that refusal (`_doserrno` exists) as EEXIST (issue #661: per-call WAV publication)
+    race (never a check then a rename); Windows uses `MoveFileExW()` without `MOVEFILE_REPLACE_EXISTING`, mapping
+    `ERROR_ALREADY_EXISTS`/`ERROR_FILE_EXISTS` to EEXIST; a pair that is not both UTF-8 goes through the CRT's
+    `rename()`, whose refusal `_doserrno` tells apart (issue #661: per-call WAV publication; issue #828: a store file
+    kept aside)
+  - No-follow existence probe (issue #828): `dsd_path_exists_nofollow()` answers for the name itself (`lstat()`,
+    `GetFileAttributes()`): 1 for any type, a dangling link included; 0 only for a confirmed absence (ENOENT,
+    ENOTDIR); -1 with errno when it cannot tell (EACCES on an unsearchable parent), which a caller that must not lose
+    a file reads as "may exist". `dsd_path_type_nofollow()` gives the same answer plus what the name is (file, folder,
+    link, other): a link, dangling or not, whatever it names (on Windows any reparse point: symbolic link or
+    junction), is a link, never its target's type, so a caller moving a file aside moves a link itself and leaves
+    only a real folder or FIFO alone
+  - Windows paths (issue #828): the app's own files sit under the user's profile, named in any script. One rule,
+    `dsd_win32_path_wide()` (`file_compat.h`'s file note), picks one call per path: well-formed UTF-8 goes through the
+    wide call only, whatever the ANSI code page and CRT locale; anything else (a command line's path in the ANSI code
+    page) through the ANSI call only. A path never goes through both: read again in the ANSI code page, a UTF-8 path
+    the wide call found nothing at can name another file, or on a double-byte code page (932, 936, 949, 950) be an
+    invalid name or split at a different separator. Every Windows path helper follows it: `dsd_stat_path()`,
+    `dsd_fopen_private()` (every mode), `dsd_fopen_existing_regular_file()`, `dsd_fopen_private_append_regular()`,
+    `dsd_fopen_existing_local_file()`,
+    `dsd_rename_noreplace()` and `dsd_replace_file_with_temp()` (UTF-8 only when both names are), `dsd_dir_list()`
+    (names come back in the folder's encoding), `dsd_path_exists_nofollow()`, `dsd_path_canonical()`,
+    `dsd_remove_file()`, `dsd_path_free_bytes()`, `dsd_mkdir()`, `dsd_mkdtemp()`, `dsd_mkstemp()`, the runtime's
+    `dsd_path_fopen_user_read_file()` and the tests' `dsd_test_rmdir()`. `PLATFORM_FILE_COMPAT` runs Latin, CJK and
+    Hangul names under the default C locale (on Windows at code pages 1252 and 949 locally, under Wine), and at code
+    page 1252 an ANSI name and a UTF-8 name that must not reach the ANSI folder its bytes spell
+    - A file a helper made is deleted with `dsd_remove_file()`, never the CRT's `remove()`, which reads the path in the
+      ANSI code page (`APP_CONTROL_IMPORT_FILES` deletes an import named outside ASCII). The Qt app hands these
+      helpers, and the decoder's own path APIs such as `dsd_rdio_upload_holds()`, a path through `platform_path()`
+      (`src/ui/qt/platform_path.h`): UTF-8 on Windows, never `QFile::encodeName()`, the ANSI code page there
   - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
     thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
     has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files
@@ -3002,6 +3071,15 @@ suite runs under this compiler.
     not control channel activity, named by the current Phase 2 synctype and the MAC's slot), never from a NID, an
     ISCH/DUID structure or a voice Reed-Solomon word alone, which the list and soft decoders accept on a large share
     of random input (`P25_P1_TSBK_SEQUENCE`, `P25_P2_ACCH_VERDICT`; limit in docs/signal-search.md).
+    The Signal search avoid lists (issue #828, `signal_search_avoids.h/.c`): one permanent list, written only by the
+    app-control store (`dsd_signal_search_avoids_permanent_set()`), and one session list, written only by the engine
+    coordinator (`dsd_signal_search_avoids_session_set()`, session 0 clears it). Each holds at most
+    `DSD_SEARCH_MAX_AVOIDS` frequencies, normalised on every set (0 and repeats dropped, order kept, linear time), and
+    has its own revision, which moves only when the list (or the session list's session) changes. Readers take a list
+    whole with its revision under one lazily initialised mutex (`_permanent_snapshot()`, `_session_get()`); the
+    revision getters are one atomic load, so a decoder tick that finds nothing changed costs one load. Both start
+    empty at revision 0; a lock that fails to initialise leaves both reading empty. No Qt or `USE_RADIO` dependency
+    (`RUNTIME_SIGNAL_SEARCH_AVOIDS`, also under TSan).
     It does not own radio I/O, persistence or Qt state.
   - Readout text (`include/dsd-neo/runtime/number_text.h`, issue #669): `dsd_number_text()` formats with the platform
     printf and drops the sign of a text whose digits are all zero (`-0.0` → `0.0`, any radix; `nan`/`inf` untouched),
@@ -4217,29 +4295,75 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     no version 2 journal exists, the version 1 journal's rows load with those details empty
     and the first write after opening (always a compaction) creates the version 2 journal
     from them; once it exists, even empty or damaged, it alone is read. The version 1
-    journal is never written, replaced or removed, so an earlier release keeps its own
-    history (rows it adds later are not migrated). Each file accepts only its own
+    journal is never written, replaced, moved or removed, so an earlier release keeps its
+    own history (rows it adds later are not migrated). Each file accepts only its own
     version's magic; another magic, a size that does not match or a bad checksum stops
-    the load with an error, keeping the records before it. Loaded texts are cut at their
+    the load, keeping the records before it. Loaded texts are cut at their
     last byte and an out-of-range slot loads as 0. Texts are encoded up to their NUL and
     zero-padded, and a republished hit whose encoding is unchanged neither advances the
     history revision nor queues a write, so only new checked content does. Detection
-    history (either file) is not part of a backup. History
+    history (either file) is not part of a backup.
+    Unreadable files (issue #828): all three loads open through
+    `dsd_fopen_existing_regular_file()` (regular files only, no symlink followed, no FIFO
+    wait) and read through `Reader`, which tells a read error (`ferror()`) from the end of
+    the file. Each file has a `StoreFile` state under the mutex: `load`
+    (`dsd_app_search_file_load`: OK, MISSING only on ENOENT/ENOTDIR, UNREADABLE, KEPT),
+    `marked`, `kept` and `write_failed`, read with
+    `dsd_app_signal_search_store_file_state()` (Qt words it: `SignalSearchModel::storeMessage()`
+    and `storeFiles()`; the `dsd_app_signal_search_status_get()` string is only the write
+    failure, and Qt words that from `write_failed` too). A load that
+    did not read the whole file (open or read error, damaged or torn journal, invalid,
+    oversized or NUL-holding avoid list) marks it; the rows before the failure stay shown
+    and an avoid list loads empty (and is pushed to the runtime as such). The first
+    replacement of a marked file (`replace_file()`, worker, unlocked) writes and syncs the
+    temp, then `keep_aside()` renames the path, never followed, with
+    `dsd_rename_noreplace()` to `<name>.unreadable-N` (first free N of 1..99; a source
+    left behind counts as kept), then replaces it. A failed temp or move changes nothing
+    (the write stays owed and the mark stays); the path confirmed absent at the move
+    clears the mark (state MISSING); a link there is moved itself, whatever it names
+    (`dsd_path_type_nofollow()`); a real folder, FIFO, socket or device and an unknown
+    existence are never moved or replaced; a failed replacement after the move
+    leaves the state KEPT and its retry only writes. Every replacement (`replaceable()`)
+    takes only nothing, a file or a link at the path, never followed, so a FIFO or folder
+    put there before the retry is left and the write stays owed. Lazy: a run that writes
+    nothing moves nothing. A marked history is always compacted, never appended to. An append opens through
+    `dsd_fopen_private_append_regular()` (non-blocking, no link followed, regular files only), so a FIFO or anything
+    else that took a cleanly loaded journal's name fails the write, owed and reported, and the compacting retry it
+    leaves does not replace it either (`expect_append_finds_fifo`). A missing version 2
+    journal reads the version 1 rows only when none of `<v2>.unreadable-1..99` exists
+    (`dsd_path_exists_nofollow()`, all 99 probed, a dangling link counts, an unknown
+    blocks): a crash between the move and the replacement then leaves an empty history
+    reporting the newest kept name, not the old rows. The avoid list has no such probe: the
+    same crash loads it empty with the original kept (documented limit). A version 1
+    journal that cannot be read whole is only reported (its rows before the failure
+    migrate). `dsd_app_signal_search_store_open()` first removes its own
+    `<v2 or avoids>.tmp.XXXXXX` leftovers (`sweep_temps()`, exact names only; it lists
+    `folder_of()`, which keeps a root's separator, `C:\` not `C:`). History
     and permanent avoids are separate files with separate write state: one whose write
-    failed stays owed, with its error, until its own write succeeds, so saving the other
-    neither retires it nor clears the error. Each later worker pass, flush and close
+    failed stays owed until its own write succeeds, so saving the other neither retires
+    it nor clears the message. Each later worker pass, flush and close
     retries it; a history retry compacts every retained record, so nothing is appended
     twice. The worker survives QML teardown; it never reads live decoder state. History
-    and avoid revisions let frontends copy history only when it changed. The control
-    actions mirror the session's own avoid list (cleared when it stops), only after the
-    coordinator accepted the avoid, and with the frequency `dsd_engine_signal_search_target()`
-    resolved on the decoder thread, never an older published hit; a stale session or hit
-    changes neither list. `dsd_app_signal_search_permanent_avoid()` returns
-    `DSD_APP_SEARCH_AVOID_ADDED`/`DUPLICATE`/`FULL`/`INVALID`. `AVOID_PERMANENT` is
-    permanent-first: validate, save (a full list refuses with a notice and no skip or session
-    avoid), then the session's avoid (the current hit, or by frequency for a history row's
-    hit ID 0); a full session list after the save is reported as "Saved as a permanent
-    avoid; this session's avoid list is full" (`APP_SIGNAL_SEARCH_PROVENANCE`,
+    and avoid revisions let frontends copy history only when it changed. Avoids (issue
+    #828): the store is the only writer of the runtime's permanent avoid list
+    (`signal_search_avoids.h`, Runtime) and sets it under its mutex, in the order it
+    changes, at the load (a repeated frequency loads once, `parse_avoids()`), at every
+    add and remove, and empty at `dsd_app_signal_search_store_close()`, which also drops
+    its own copy until the next open; a running search takes it at its next tick. The
+    store keeps no session list: `dsd_app_signal_search_session_avoids_get()` returns the
+    engine's runtime session list only while it belongs to the session the store's
+    status names and that phase is neither STOPPED nor ERROR, so no stale or failed
+    session's list is ever shown. `dsd_app_signal_search_avoids_revision()` is the
+    store's own avoid revision (permanent changes, and status changes that switch which
+    session is shown, `status_set_locked()`) plus the runtime session revision. The
+    session avoid actions (`AVOID`, `AVOID_FREQUENCY`, `UNAVOID`) go to the coordinator
+    alone, which validates them on the decoder thread. `dsd_app_signal_search_permanent_avoid()`
+    returns `DSD_APP_SEARCH_AVOID_ADDED`/`DUPLICATE`/`FULL`/`INVALID`. `AVOID_PERMANENT`
+    (the Now panel, hit-tied; a hit ID 0 is refused) is permanent-first: validate the hit
+    with `dsd_engine_signal_search_target()` (never an older published hit; a stale
+    session or hit changes nothing), save (a full list refuses with a notice and no skip),
+    then the coordinator's `AVOID_PERMANENT`, which finds the frequency permanent, takes
+    no session room and leaves the visit (`APP_SIGNAL_SEARCH_PROVENANCE`,
     `APP_SIGNAL_SEARCH_STORE`). A rejected start
     with no coordinator left publishes an unowned error, and
     `dsd_app_frontend_runtime_stop()` retires any status left behind
@@ -6964,8 +7088,32 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   PFFFT/Hann cache at the capture-rate I/Q boundary. Linear channel power and neighboring
   noise are energy-normalized over two sample-count windows (local noise: the mean of the
   sideband blocks within 6 dB of the third lowest of eight). Session/request IDs and
-  applied generation accompany every report; gain, rate, drops, tuning and input changes
-  invalidate partial and ready reports. Leakage rejection runs once per request on both
+  applied generation accompany every report, a failed one included; gain, rate, drops,
+  tuning and input changes invalidate partial and ready reports. A failure (`feed()` and
+  `rtl_signal_measure_get()` still return -1) carries its reason in
+  `dsd_signal_measure_report.failure`: `CLIPPED` (more than 1% of pairs so far, checked at
+  each window's end), `DROPPED` (only `drops` moved), `CAPTURE_CHANGED` (any other capture
+  field, and a ready report invalidated before it was read, which keeps its ids),
+  `NONFINITE`, `FAILED` (transform); a failed report has count 0. The tap keeps the first
+  reason until the next request, and `get()` copies the report for any nonzero result.
+  `rtl_signal_measure_request()` names a refusal in its out-parameter: `NO_MEMORY` when no
+  tap detector could be allocated, else `UNSUPPORTED` (plan); the coordinator words them
+  "Not enough memory for a measurement" and "Unsupported FFT measurement plan", and skips a span whose failures keep
+  being `CLIPPED` (Engine, Signal search). A pair is
+  clipped when either component's magnitude is at or above `dsd_signal_capture.clip_level`
+  (0 means `DSD_SIGNAL_CLIP_LEVEL_DEFAULT`, 0.999), read once per feed into a register.
+  The source sets it from its conversion (`rtl_device_signal_clip_level()`, from the same
+  cu8 transform policy the reader uses, with the demod's Fs/4 view as for `rotation_hz`):
+  RTL USB, rtl_tcp and cu8 replay widen with (x - 127.5) / 127.5 → 0.996 (rails count, the
+  next codes at 0.992 do not); the two-pass (x - 128) / 127.5 (combined transform off with
+  the Fs/4 shift, or a cu8 replay recorded with it) → 0.992 (byte 1 after the byte-domain
+  rotation counts with byte 0; the rotation's 255 - x mirrors raw 1 and 254 on phases 1-3,
+  so which raw near-rail code counts depends on phase and component; both rails always
+  do); Airspy, SoapySDR and CF32/CS16 replay → 0.999. Airspy overload is not detectable:
+  libairspy's real-to-I/Q conversion halves the amplitude and filters one branch, so ADC
+  rails arrive near 0.5 (a documented limit, issue #828; the input-level meter cannot see
+  it either). The level is a property of the conversion, so `same_capture()` ignores it.
+  Leakage rejection runs once per request on both
   windows' power: transmitters are located in the spectrum (not just the requested
   channels), each from the anchor its channels' windows climb to, centred where its
   segment best overlaps its own mirror image, with segments cut and merged at valleys and
@@ -7010,6 +7158,12 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `0.98f` is the first float at or above the double clipping threshold. Ordered double sums retain the original
   variance calculation. `IO_INPUT_LEVEL_METRICS` checks exact output bits against a scalar double reference across
   threshold neighbors, non-finite inputs, DC and mixed-exponent blocks.
+- CS16 input levels (`runtime/input_level.c`, `dsd_input_level_metrics_from_cs16()`): samples are read against the
+  full scale the caller passes (finite, in [1, `DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE`] = 32768; the live SoapySDR
+  reader's `soapy_cs16_full_scale`, 32768 for a cs16 replay). A sample clips at or past 0.99 of it, a clip policy
+  separate from the scale (fullScale alone does not give the converter step): at 32768 +32752 (12-bit left aligned,
+  step 16: SoapyAirspy, LMS7) and -32760 count, at 2048 |s| >= 2028. The first clipping code is computed once per
+  call, and the per-sample test is one unsigned compare against the clear range.
 - Automatic PPM (`radio/rtl_sdr_fm.cpp`, `radio/rtl_auto_ppm.cpp`): each live read synchronizes the applied PPM and
   frequency. While disabled, the controller only clears training and publishes its status; the reader skips the
   unused clock, signal estimates, configuration and request-lock snapshots. Enabled updates gather the full inputs.
@@ -7259,6 +7413,25 @@ Key public headers:
     `rtl_device_test_soapy_device()`; internal failures, restart counters, refused reader creation and competing
     grace verdicts included). Timeout, overflow and diagnostic counters reset before every reader start. Bench:
     `dsd-neo_bench_soapy_ingest`.
+  - SoapySDR CS16 full scale (issue #828): SoapySDR hands CS16 over as the driver's integers. A driver whose native
+    format is CS16 reports their full scale (`getNativeStreamFormat()`: PlutoSDR and bladeRF 2048, 12-bit LSB
+    aligned; Airspy, LMS7 and SDRplay 32767; UHD 32768); CS16 that is not native is converted at 32768, as SoapySDR's
+    converters and SoapyRemote do. `soapy_cache_identity_locked()` keeps the reported value
+    (`soapy_native_full_scale`), and `soapy_set_cached_format()`, run with every stream format choice (stream setup,
+    configure), sets `soapy_cs16_full_scale` from `dsdneo::soapy_cs16_full_scale()` (`soapy_profile.cpp`: the
+    driver's value when the stream and the native format are both CS16 and it is finite and in [1, 32768], else
+    32768) and its float inverse `soapy_cs16_scale`, which `soapy_write_cs16_to_ring()` passes to the copy, so no
+    sample pays for it. The meter reads the same full scale (`rtl_publish_cs16_input_level()`). Before, every CS16
+    stream was read at 1/32768, so PlutoSDR and bladeRF read 24.08 dB low and never showed HOT or CLIPPING; they now
+    deliver what their CF32 (code / 2048) does. A cs16 replay still reads at 32768 (`replay_convert_cs16_to_f32()`).
+    The upper bound is the meter's `DSD_INPUT_LEVEL_CS16_MAX_FULL_SCALE` (`core/input_level.h`), which a
+    `static_assert` in `soapy_profile.cpp` ties to `kSoapyCs16DefaultFullScale`. The capability log line shows
+    `native=<format> [full-scale=N]`, the bracket only when the driver reported one. Tests: `IO_SOAPY_PROFILE` (the
+    helper's table), `IO_SOAPY_CS16_COPY` (`rtl_device_test_soapy_cs16_ingest()`: the submit path at each full scale,
+    with and without the rotation, and the meter it publishes, read by `rtl_stream_test_input_level_read()`),
+    `IO_SOAPY_CS16_FULL_SCALE` (a real capture as 12-bit codes through the reader against the stand-in driver, whose
+    `full_scale` field reports a native CS16 full scale, as CS16 at 2048 and as CF32: the ring bit for bit and the
+    meter's level the same).
   - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and librtlsdr's
     setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test mode while on,
     else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC and test-mode
@@ -10868,10 +11041,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   detection menu (`tst_signal_search.qml`). `hitMap()` passes the hit's checked `site`,
   `slot` and `crypt`, its `access` code and its received `tone` through; the panel's
   two-line detail (`detailText()`) reads site, access, tone, `Slot N`, target, source,
-  then crypt, eliding within the two lines with the whole text as its accessible name and
-  description, and a history row shows site, access, tone and crypt under its verdict
+  then crypt, eliding within the two lines with the whole text as its accessible name, and a
+  history row shows site, access, tone and crypt under its verdict
   (`detailText()`'s order without the call, empty values left out; issue #802). The tone
-  is what the analog monitor heard, not checked signalling. Text that can hold over-the-air,
+  is what the analog monitor heard, not checked signalling. Each Now line is named once:
+  Android reads a node's name, then its description (`descriptionForInterface()`), so no
+  description repeats its name (the identification's name is its full phrase, the level's
+  description only the range), and each line, the status line above too, has its own
+  navigation gate, so a detection's menu leaves none of them in the tree (issue #828;
+  `tst_a11y_text_reach.qml` `test_3c_signal_search_now_panel`). Text that can hold over-the-air,
   imported or typed words (the Now detail, saved names, the phase and status lines, the
   message, history rows, `PlexCheckBox` labels) is `Text.PlainText`, so a `<b>` in a
   callsign or name is drawn and measured as written (issue #802 B4). `hitMap()` also
@@ -10922,10 +11100,33 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   opening one `ActionMenu` (`searchDetectionMenu`, acting on the snapshot it opened with):
   Explore here, Start for each distinct saved system its `matches[].systemUid` resolves to
   (an avoided site's row disabled with its reason), Save as system, Avoid this session
-  while a search owns the tuner (`SignalSearchModel::avoidFrequency()`), and Avoid
-  permanently or Remove permanent avoid (`avoidPermanently()`: through the decoder thread
-  while a search runs, the store directly when none does). The verdicts arrive as the
-  status message or the model's error. That message (`searchMessage`, an `AlertMessage`) is
+  while a search owns the tuner and has not failed (`sessionAvoidsLive`), unless the
+  frequency is a permanent avoid (`SignalSearchModel::avoidFrequency()`), and Avoid
+  permanently or Remove permanent avoid (`avoidPermanently()`/`removeAvoid()`: the store
+  alone on the GUI thread, search or not, with no decoder action and no `owned` gate, so
+  nothing is lost or refused at the Stop edge; the running search follows at its next
+  tick, issue #828). The verdicts arrive as the status message or the model's error.
+  "Avoided this session" (Stop avoiding) lists `sessionAvoids` only while
+  `sessionAvoidsLive`. That message (`searchMessage`, an `AlertMessage`) has one line for
+  each, in this order: the screen's own refusal (`localFailure`), the host's failure or else
+  the search's status message, the model's own error (`SignalSearchModel::error()`, never the
+  store's text), then the store's lines (`storeMessage()`, issue #828: per file of
+  `dsd_app_signal_search_store_file_state()`, the history and permanent avoids read
+  incompletely, not yet overwritten or kept as their kept name, the version 1 journal left in
+  place, and each write owed; `test_message_lines_in_order`, `testStoreFilesWorded`). The
+  model forwards the same files (`storeFiles()`) to `StoreNotices` for Home's card. The
+  overload warning comes last (`overloadLine`, from the model's `overloaded` and
+  `overloadRange`, issue #828): shown only while a session runs and its phase is neither
+  STOPPED nor ERROR, since the engine keeps the warning in a failed or stopped status;
+  worded per phase (paused: lower the gain, then Resume; otherwise Pause first) and per
+  radio (`sourceType`: the range's receiver gain, or an Airspy gain for the range, as the
+  range editor labels them); its first sentence names the range, or reads "Part of a range"
+  should the name be empty. The message is gated (`navigationAllowed` read first) and
+  named through a `SpeechPacer` whose `shown` is that gate and its visibility, and whose
+  step is the other lines plus `overloadAdvice`, the warning's second sentence, which holds
+  no range: the warning appearing, clearing or changing phase is heard at once, a range
+  renamed every pass at the period, never the screen's `speechStep` (pass and range change
+  it) (`test_overload_*`, `test_message_nameless_behind_sheet`). The message is
   reparented by `sessionActive`: under the Now panel while a session runs, so it never moves
   the panel, and above the setup while idle (`test_message_never_moves_the_now_panel`).
   Leaving for another session is one Main operation,
@@ -12937,6 +13138,171 @@ Qt Quick frontend (`src/ui/qt`):
   the same saved UID restart as a manual site switch; Main waits for Idle and resolves the UID again. Location
   completion itself never starts a session. Tests: `ANDROID_LOCATION_JVM`, `RUNTIME_RR_SOAP`,
   `UI_QT_RADIO_REFERENCE`, `UI_QT_QML_CALL_LISTS` (`tst_site_chooser_sheet.qml`, `tst_site_restart.qml`).
+- `json_store.{h,cpp}` holds the Qt models' JSON-array stores in the app data root (`json_store_root()`): saved
+  systems, scan lists, imported files, decryption profiles, call history and its seen map, Signal search ranges. A store
+  that could not be read whole is never written over (issue #828):
+  - `json_store_read()` returns `Missing` (confirmed absent: `json_store_definitely_missing()`, a `dsd_stat_path()`
+    ENOENT/ENOTDIR), `Ok`, or `Unreadable` with a reason for the log: any other stat failure (a folder that cannot be
+    searched), a path that is not a regular file (checked before the open, so a FIFO cannot hang the GUI thread), an
+    open or read error (`file.error()` after `readAll()`), invalid JSON, or a document that is not an array. It marks
+    nothing, for readers that never save.
+  - `json_store_load_array()` (what the models call) marks an `Unreadable` file in a process-wide table keyed by
+    absolute path, logs it (`LOG_WARN`, so the diagnostics log keeps it) and posts a notice. A later `Ok` read does not
+    clear the mark.
+  - `json_store_save_array()` writes an unmarked file through QSaveFile as before. A marked one follows the keep-aside
+    rule shared with the native Signal search store: (1) write and sync its own temp
+    (`dsd_fopen_private_temp_for_replace()`), (2) rename the path, never followed (`dsd_path_type_nofollow()`: a
+    regular file or a link, the link itself), with `dsd_rename_noreplace()` to the first free `<name>.unreadable-N`,
+    N = 1..99, (3) `dsd_replace_file_with_temp()`. QSaveFile is not used there because it resolves a link at the path
+    and replaces its target. States: Marked → Kept → cleared. A failure at (1) or (2) moves nothing and the save fails
+    (owed, through each model's own save-failure path); a path confirmed absent at (2) clears the mark and is written;
+    a folder, FIFO or socket there, an unknown classification, or no free N refuses; a failure at (3) stays Kept, so
+    the retry only writes; a rename that left its source (`out_source_left`) counts as kept. (3) replaces only
+    nothing, a file or a link (the same type check), so a FIFO that appears after the move is never replaced, by that
+    save or its retry. Lazy: nothing moves on a run that never saves that store. A crash between (2) and (3) leaves
+    the list empty at the next launch, with the original kept and nothing destroyed.
+  - One mutex guards the marks and the notices, and is held across a marked file's whole save, so two saves of a
+    marked file never interleave. Unmarked saves run outside it: each model keeps its own saves of one file apart, as
+    before (call history's single save worker, and the destructor's save after `waitForDone()`).
+  - Notices: `json_store_notices()` (one `JsonStoreNotice {fileName, reason, keptName}` per file, oldest first;
+    `keptName` is the base name once moved), `json_store_post_notice()` (for files outside json_store, the settings
+    INI), and `json_store_set_notice_sink()`, called after each change with no json_store lock held, on the thread
+    that loaded or saved. `call_history_seen.json` gets a notice like any store; it is internal, so a frontend
+    shows no card for it (`StoreNotices` leaves it out).
+  - Test seams (`DSD_NEO_TEST_HOOKS`, `json_store_test_hooks.h`): a read error, and a hook run right after the move.
+  Tests: `UI_QT_PERSISTENCE` (each read class, keep-aside numbering, a mark surviving an `Ok` re-read, folder, FIFO,
+  link, mode 0200, a folder that cannot be searched, a marked file removed, retry after a failed replace,
+  `out_source_left`, marks across threads, saved systems and scan lists), `UI_QT_CALL_HISTORY_MODEL` (the worker save),
+  `UI_QT_SIGNAL_SEARCH` (ranges), `UI_QT_DECRYPTION_PROFILES`, `UI_QT_IMPORTED_FILES`.
+- `settings_recovery.{h,cpp}` applies the same rule to the two INI settings files (issue #828): AppPrefs'
+  (`IniFormat`, `AppPrefs::settingsOrganization()`/`settingsApplication()`, `dsd-neo`/`dsd-neo-app`) and call history's
+  default `QSettings` (`QSettings::defaultFormat()`, the application's names by QSettings' own rule; an INI file on
+  Linux and Android, while the Windows registry and Apple plists are left alone). QSettings parses sections lazily,
+  ignores a read error (a valid prefix reads `NoError`), and its next write rewrites the whole file from what it parsed,
+  dropping malformed lines; its status sticks per instance, and an organization fallback file counts towards it.
+  `recover_settings_files()` is the first statement of `ui_load()`, before the restore apply and before any model or
+  `AppPrefs` opens a settings file, and runs `recover_ini_settings(format, org, app)` for each:
+  - The path comes from `settings_file_path()` (`settings_path.h`): an organization-only `QSettings`'s `fileName()`
+    (`<user path><org><ext>` → `<user path><org>/<app><ext>`, following `setPath()`), so Qt never reads the settings
+    file before it is checked (and a FIFO there cannot hang the start). `AppPrefs::Settings` opens that one file as an
+    explicit-file `QSettings`, so no fallback file is read: a malformed one, read again whenever it changes, would
+    otherwise set `FormatError` on every instance and fail `replacePortable()`. The file is read through the json_store
+    classifier (confirmed absence → Missing; any other stat error, not a regular file, an open or read error →
+    Unreadable), then what was read is parsed apart from every fallback: an explicit-file `QSettings` on a copy in a
+    private work folder, `allKeys()` forcing every section, and the parsed keys written back by a fresh `QSettings`
+    (byte for byte what Qt's own next write would produce; empty when nothing parsed). The work folder is a
+    `QTemporaryDir` in the app cache (`<CacheLocation>/settings-check-XXXXXX`, 0700). Every copy is the owner's alone
+    whatever the umask (`write_private()`: `dsd_fopen_private(..., "wbx")`, 0600): the work folder's two files (the
+    clean file made empty first, since QSettings keeps the permissions of a file that exists and makes a new one
+    readable by all under the usual umask), and the scratch copy below, whose folders are made 0700
+    (`make_private_folders()`: `<CacheLocation>/settings-scratch` unless it is already there as a real folder, then
+    `<ini|native>` and every folder under it, each made by the start that seeds it; `test_settings_copies_owner_only`,
+    under umask 022, also after QSettings' own writes to the copy). A copy of the settings (which can hold
+    RadioReference credentials) is written only in the app's private cache, never in a shared temp folder, where
+    another process could remove a live copy or Qt re-create its folder with default permissions; Android lets an app
+    write no system temp folder anyway (`QDir::tempPath()` is `/tmp`, EACCES), and a default `QTemporaryDir` there
+    once made every start after the first run on scratch. On POSIX the file is opened once for the check,
+    non-blocking on its resolved path (`dsd_path_canonical()`, then `dsd_fopen_existing_regular_file()`, which refuses
+    anything but a regular file), and held: a FIFO swapped in after the stat is refused, never waited on. With no work
+    folder (no cache, or one that cannot take it), a file read whole is parsed in place by a read-only explicit-file
+    `QSettings` on that open file (`/proc/self/fd/N`, else `/dev/fd/N`; by name only on Windows, which has no FIFO at
+    a file path), N a duplicate of the check's descriptor at a number no parse in place used before in the process
+    (`InPlaceDescriptor`, `F_DUPFD_CLOEXEC` above the last one): QSettings keeps a parse by its path and takes it again
+    unread for a file there with the same size and modification time, so a reused N would let a malformed call history
+    file pass as AppPrefs' clean one (`test_in_place_parses_apart`; with no number left, the file is "could not be
+    checked"). That parse tells a clean file (left alone) but writes no clean file for one that is not, so an
+    unavailable cache never makes a healthy file "could not be checked", and the name is never opened again
+    (`test_no_system_temp_folder`'s FIFO swap). Qt must first read that path back as exactly the bytes the check read
+    (`reads_back()`): QSettings takes a path it cannot open as an empty file, which would pass as clean, so such a
+    file is "could not be checked" (`SettingsRecoveryEnv::inPlaceSource`, "in place unreadable"). A crash leaves a copy
+    of the settings in a work folder, so `recover_settings_files()` first removes every leftover in the app cache:
+    only folders named `settings-check-*`, only a real folder (a link or file with such a name stays), and all of it
+    or nothing: every entry is checked first (a regular file or a link, never a folder), and a folder holding anything
+    else is left whole. On POSIX each step works through directory descriptors (`fstatat` without following, a folder
+    only when this user owns it, opened `O_NOFOLLOW` and checked to be the same inode, entries removed with
+    `unlinkat`, a link removed itself, never followed); Windows does the same through `QFileInfo`
+    (`test_leftover_work_folders`, which also checks that the system temp folder is never touched). Documented limit:
+    two desktop instances at once are unsupported, as for the stores: a second instance starting at the same instant
+    could empty the first's check folder (that one check could then misjudge its file) or remove its cache scratch
+    copy. Both live in the app's private cache, so nothing leaks.
+  - Read whole and parsed cleanly, or missing: nothing happens.
+  - Read whole but not clean: its bytes are copied to the first free `<file>.unreadable-N` (N = 1..99,
+    `dsd_fopen_private(..., "wbx")`, never replacing anything; synced), then the clean file replaces it through a
+    synced temp and `dsd_replace_file_with_temp()`. The original stays in place until that replacement. A rewrite that
+    fails removes the copy (the original is still there).
+  - A regular file that could not be opened or read through cannot be copied, so it follows the stores' rename order:
+    (1) the clean file of what its readable prefix parsed is written and synced as a temp, (2) the path, never
+    followed (a link moves itself), is renamed with `dsd_rename_noreplace()` to the first free `<file>.unreadable-N`,
+    (3) the temp replaces it. A (3) that fails leaves the file kept, nothing at the path, and the run on scratch;
+    (3) replaces only nothing, a file or a link (`probe_target()`), so a folder or FIFO put there since the move is
+    left and the run goes on scratch (`test_fifo_before_replacement`).
+  - A file confirmed gone after it was read (removed meanwhile; at the replacement for a copy, at the rename for a
+    rename) is Missing, as if the check had found none: the copy or temp is removed, nothing is written in its place,
+    no notice is posted, and nothing stays noted from an earlier check.
+  - Anything else (an unknown stat answer, a folder, FIFO or socket, no free name, a failed copy, rename or write):
+    nothing may write the file this run. `QSettings::setPath(format, UserScope,
+    <CacheLocation>/settings-scratch/<ini|native>)` re-points the format, so every later `QSettings` of it
+    (constructor writes such as the location expiry, static helpers, deferred flushes, destruction) writes a scratch
+    copy seeded with the clean file of the keys that parsed (the bytes read only when no clean file could be made).
+    Where the app cache does not take the seeded copy there is no scratch copy, never one elsewhere
+    (`test_scratch_copy_not_in_cache`): the format points at a folder no process can create, root
+    included (`/dev/null/…`; on Windows a name holding `|`), so its settings are defaults held in memory this run and
+    nothing is written anywhere (`settings_recovery_in_memory(fileName)`). The original stays byte-identical and the
+    next start tries again. A later start that leaves a format on its real file (clean, kept or missing) removes that
+    format's copy in `<CacheLocation>/settings-scratch/` unless this start put the format on scratch
+    (`test_clean_start_forgets_cache_scratch`). That removal, and the one before a scratch copy is seeded, never
+    follows a link at any level (`clear_scratch_copy()`): `settings-scratch` is opened only as a real folder
+    (`O_NOFOLLOW`, the same inode), the format folder is removed through that descriptor only when it is a real folder
+    holding nothing but files and links (the links removed themselves), and a link or anything else at either name
+    stays; a seed then has no copy and the run holds defaults in memory (`test_scratch_links_never_followed`).
+    `settings_recovery_scratch(fileName)` (per file, also true in memory) and `settings_recovery_scratch()` (any
+    file) report it, safe from any thread, apart from QSettings' status, which reads `NoError` from the scratch copy.
+    Every outcome of `recover_ini_settings()` replaces what an earlier check noted for the file. A pending
+    restore is Deferred while AppPrefs' file (`settings_recovery_prefs_file_name()`) is on scratch (`backup_apply.cpp`),
+    so a scratch sync never counts as a restore; call history's settings alone do not hold a restore back.
+  - Each kept or scratch file posts a `JsonStoreNotice` through `json_store_post_notice()`: `fileName` is the settings
+    file's own name (`dsd-neo-app.ini`; call history's `<application>.conf`, `DSD-neo.conf` in the app), `reason` is
+    for the log (in memory, it ends "; no scratch copy could be written", so the notice changes and the card shows
+    it), and `keptName` is the kept file's name, empty when nothing was kept. Whether the file runs on scratch is
+    `settings_recovery_scratch(fileName)`, not the notice (a rename can succeed and the write after it fail).
+  - `SettingsRecoveryEnv` injects a read error after N bytes, a failing copy, rename, write or replacement (a step
+    callback may also remove the file, which is how the gone cases are tested) and no scratch folder, for tests. The
+    tests also take the folders away for real: `TMPDIR` and `XDG_CACHE_HOME` naming a file
+    (`test_no_system_temp_folder`) and a file where the cache's scratch folder goes (`test_scratch_copy_not_in_cache`).
+  Documented limits: a crash between the rename and the replacement leaves no settings file at the next start
+  (defaults), with the original kept; a transient read error that hits only Qt's own later read, and not the check, is
+  not seen. Tests: `UI_QT_SETTINGS_RECOVERY`.
+- `store_notices.{h,cpp}` (`storeNotices`; issue #828) is the list Home's `StoreNoticeCard.qml` shows: every file this
+  run could not read. `StoreNotices::instance()` is made once, on the GUI thread (`ui_load()`'s
+  `publish_app_context()` or the first `SignalSearchModel` refresh), and never destroyed, so neither it nor a dismissal
+  goes with a QML engine. It installs the json_store sink, which only queues `sync()` onto its own thread
+  (`QMetaObject::invokeMethod(…, Qt::QueuedConnection)`), so a call history worker's save changes nothing off the GUI
+  thread; `sync()` re-reads `json_store_notices()`. `SignalSearchModel` hands over the native store's files
+  (`setSignalSearchFiles()`) from its GUI-thread refresh. Each shown notice is `{file, store, state, kept,
+  earlierKept}`: `store` is what `Util.storeLabel()` names (the file name, or `call-history-settings` for call history's
+  settings file, named after the application); `state` is `unreadable` (not moved, not written over), `kept`,
+  `unsaved` (a settings file on its scratch copy, `settings_recovery_scratch(fileName)`; `kept` set when a rename
+  succeeded before the write failed), `defaults` (as `unsaved`, on defaults in memory,
+  `settings_recovery_in_memory(fileName)`; the card says default settings are in use rather than that entries may be
+  missing) or `leftInPlace` (the version 1 Signal search journal); `earlierKept` names a copy
+  kept earlier this run of a file unreadable again after a clean save (json_store's notice then names none).
+  `call_history_seen.json` is never listed. Shown in two runs: json_store's notices in the order it posted them, then
+  the Signal search store's. `dismiss(file)` hides the notice as it stands (file, state, kept and earlier kept
+  names): the same notice posted again stays hidden, a changed one shows again. `takeUnheard()` hands over the shown
+  notices not yet read out and marks them, with the same key, so each is announced once for the process: a
+  dismissal, a second file or a rebuilt Home (a new QML engine) repeats nothing. The card is one `AlertMessage` named
+  by all its text, navigation-gated, its lines plain `Text`; it announces from a `Timer` it owns, not `Qt.callLater`,
+  and only while navigation reaches it: under a sheet it neither takes nor announces anything, and it announces what
+  arrived meanwhile once navigation is allowed again (`test_k_covered_notice_waits_for_home`);
+  Dismiss dismisses every shown file. Its `source` is `storeNotices` (a test may hand it another list). Labels come
+  from `Util.storeLabel()`, which the backup refusal uses too, so a file has one name: the avoid file is "Signal
+  search permanent avoids" on Home, in the backup message and on the Signal search screen. Its copy never promises
+  lost data: "Some entries may be missing" (a 0-byte store is unreadable too). Write failures are not on it: they stay
+  on their screens (the Signal search line below, each model's save error). Tests: `UI_QT_STORE_NOTICES` (queued
+  delivery from workers under TSan, a real worker load and save, the seen store, dismissals, read out once, earlier kept
+  names, the Signal search files, a scratch and an in-memory settings file), `tst_home_store_notices.qml` (labels per
+  store, kept name after the move, dismissal and announcements across a rebuilt Home, gating, both scratch-settings and
+  both default-settings sentences, 360 px at the largest text).
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
   the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays
@@ -12993,8 +13359,12 @@ Qt Quick frontend (`src/ui/qt`):
   (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
   every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. The
   library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an earlier
-  launch. A missing file outside the library is the user's own and stays named. Tests: `UI_QT_IMPORTED_FILES`
-  (`test_remove_finishes_on_retry`), `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`),
+  launch. A missing file outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
+  library's load and in that cleanup alike (`json_store_definitely_missing()`, issue #828): a file whose stat fails
+  any other way (a folder that cannot be searched for now) keeps its row and every reference. Tests:
+  `UI_QT_IMPORTED_FILES` (`test_remove_finishes_on_retry`, `test_unsearchable_copy_is_not_pruned`),
+  `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`,
+  `test_startup_keeps_paths_it_cannot_check`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - Replacing a library file in place (discussion #748): `ImportedFilesModel::updateFile()` (Update from file) and
   `refreshGeneratedFile()` (RadioReference refresh) validate the staged file first, then call `replaceRowFile()`,
@@ -13198,7 +13568,21 @@ Qt Quick frontend (`src/ui/qt`):
     and `pastRuntimeRefs`, carries only regular non-symlink files under the data root's `imports/` (an owned bundle
     whole), clears any other reference and lists it in `notIncluded`, then parses its own output as a self-check. A
     carried file that changes between the export's two reads (a session appends to its talkgroup lists) fails it with
-    `BackupError::SourceChanged`, not `Io`.
+    `BackupError::SourceChanged`, not `Io`. An export never carries a file it could not read as an empty list, which its
+    restore would write over the file (issue #828): `backup_take_snapshot()` reads each store with `json_store_read()`
+    (never `json_store_load_array()`, whose mark would make the next save move a good file aside after a passing
+    failure) and lists in `Snapshot::unreadable`, by file name, each store found Unreadable now, the avoid file while
+    the signal-search store reports it `DSD_APP_SEARCH_FILE_UNREADABLE`, and AppPrefs' file while
+    `settings_recovery_scratch(settings_recovery_prefs_file_name())`. A store kept aside earlier in the run is read from
+    its clean file, and a `KEPT` avoid file does not refuse: the in-memory list is then what the store saves. A
+    non-empty list fails the build with `BackupError::Unreadable` before anything is read; the model hands the names to
+    QML as the result's `unreadable` (a QStringList). `backup_unreadable_files()` runs the same checks without the rest
+    of the snapshot; the model's `checkExport()` answers with it in exportPrepared's map shape, so `BackupFlow.qml`
+    refuses at Export backup before it asks for a passphrase; the export's own check stays for a file that turns
+    unreadable in between, and either refusal ends the flow with one message on the Settings card, under Export backup,
+    that names each file through `Util.storeLabel()` and gives the next step (save a change to that list, or restart
+    for the settings). Call history's settings are not in a backup. Kept `<name>.unreadable-N` files are never
+    carried, and a restore never touches them.
     `backup_parse_archive()` is pure and treats the archive as untrusted: size caps (64 MiB sealed, 4096 files, 32 MiB
     a file, 4096 rows a store, 4 MiB manifest), a sha256 per file, archive paths under `imports/` with case- and
     NFC-folded duplicates refused, store shapes and identities, settings filtered to `AppPrefs::portableKeys()`; it
@@ -13223,8 +13607,8 @@ Qt Quick frontend (`src/ui/qt`):
     name each other's files, so a library still losing rows on its third pass (a crafted chain) is refused as `Damaged`,
     at most three dry runs a row. `promote_staging()` renames it to `restore-pending/`, and `commit_pending()` writes
     `COMMITTED` (the manifest's sha256); every check reads only a regular `COMMITTED` file as the marker, as the apply
-    does. `ui_load()` calls `apply_pending_restore()` as its first statement, before any model reads a store, so
-    restored stores go through the loaders and migrations like any start's; its `engineBusy` is
+    does. `ui_load()` calls `apply_pending_restore()` right after the settings recovery, before any model reads a
+    store, so restored stores go through the loaders and migrations like any start's; its `engineBusy` is
     `DecoderHost::engineBusy()`. The apply writes an undo journal (`restore-pending/journal/`, `COMPLETE` last) of the
     old managed set: the five stores and the avoid file, the files under `imports/` a store's `File` value names (never
     one a `Recording` names), the owned bundle directories library rows claim (the first claim of a folded name), and
@@ -13239,17 +13623,21 @@ Qt Quick frontend (`src/ui/qt`):
     old setup does not own holds its place, the apply fails before any change ("A folder left by an earlier import is in
     the way of a restored channel map…"). A crash re-runs to the same end state, and an I/O failure rolls back byte for
     byte (pruned empty directories excepted). Outcomes are `Applied`, `Failed` (nothing changed), `Deferred` (engine
-    busy or storage short; kept) and `Stuck` (neither finishing nor undoing worked; kept); `backup-restore-result.json`
-    records the applied, failed and stuck ones. A commit marker that cannot be removed is Stuck without a rollback, on
-    purpose: a rollback ends by removing that same marker, so it could not complete either; the next start repeats the
-    idempotent roll forward and removes the marker then. A journal whose `prefs.json` does not match the hash its
+    busy, storage short, or AppPrefs' settings on their scratch copy,
+    `settings_recovery_scratch(settings_recovery_prefs_file_name())`; kept) and `Stuck` (neither finishing nor undoing
+    worked; kept); `backup-restore-result.json` records the applied, failed and stuck ones.
+    A commit marker that cannot be removed is Stuck without a rollback, on purpose: a rollback ends by removing that
+    same marker, so it could not complete either; the next start repeats the idempotent roll forward and removes the
+    marker then. A journal whose `prefs.json` does not match the hash its
     manifest records is unreadable (Stuck) rather than a rollback that would clear the settings. `discard_pending()`
     refuses once the journal is complete (`pending_apply_started()`). `detail::DataRoot` is the only writer, deleter and
     renamer: it refuses a path outside the data root or one with a symlink or junction among its existing components,
     and removes trees without following links. Documented limits: a resumed apply (journal complete) that finds the
-    engine busy is Deferred, and that session runs on the half-applied configuration, whose edits the next roll forward
-    can overwrite; a corrupt complete journal is Stuck at every start and cannot be discarded; a store file that is a
-    symlink fails every restore (`QSaveFile` writes through a link, so the models' own saves never replace it).
+    engine busy, or AppPrefs' settings on their scratch copy (`settings_recovery` above), is Deferred, and that
+    session runs on the half-applied configuration, whose edits the next roll forward can overwrite; a corrupt
+    complete journal is Stuck at every start and cannot be discarded; a store file that is a symlink fails every
+    restore (`QSaveFile` writes through a link, so the models' own saves replace it only when it could not be read, by
+    renaming the link aside: `json_store` above).
     `ApplyEnv` injects the engine check, free space and a fault per named step.
   - `backup_model.{h,cpp}`: `BackupModel`, context property `backup`. One low-priority worker thread (a `QThreadPool` of
     one) runs each job; work and replies cross through two queues under one `std::mutex`, and a job's files are its own
@@ -13284,7 +13672,11 @@ Qt Quick frontend (`src/ui/qt`):
     both pickers silently. A save that went to the Download folder (`savedToDownloads`) reads "Backup saved to
     Download/DSD-neo as <name>." with `decoderHost.savedDocumentName()`, or "Backup saved." when that is empty, then
     the "Not included" text. A commit refused as `SessionActive` or `Busy` keeps the stage and the confirmation
-    (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. Settings' Backup card
+    (`ConfirmDialog.closeOnConfirm: false`, its `error` line) for a retry; only Cancel discards. The flow's last result
+    (`notice`) is shown under the row of the action it reports on (`noticeAction`, "export" or "restore", set with
+    the notice; issue #828: an export refusal under Restore read as Restore's): between Export backup and Restore
+    from backup, with the divider after it, or under Restore. It is one navigation-gated `Text` reparented between
+    two slots (`tst_settings_backup.qml` `verifyNoticeUnder()`, `test_notice_follows_its_action`). Settings' Backup card
     gates the Restore row on `restoreAllowed` and `!restorePending`, and it and the Home card offer "Cancel
     restore"/"Discard restore" only while `restoreCancellable`, else `Util.restorePartWayText()`. The confirmation, the
     export result and the Home card list `notIncluded` through `Util.notIncludedText()`. `BackupResultCard.qml` on Home
@@ -14096,7 +14488,8 @@ Configuration backup (issue #580; the Qt side is under UI, Qt, "Configuration ba
 methods. `quitApp()` and `engineBusy()` are called on the Qt main thread; the document copies are called from a worker
 thread, which the rest of the interface never is.
 
-- Startup apply: `ui_load()` runs `apply_pending_restore()` first, before any model reads a store (the native
+- Startup apply: `ui_load()` runs `apply_pending_restore()` right after the settings recovery
+  (`recover_settings_files()`), before any model reads a store (the native
   signal-search store opens later, from `SignalSearchModel`), and asks `engineBusy()` there.
   `DecoderHostAndroid::engineBusy()` (`decoder_host_android_lifecycle.cpp`) reads the engine atomic, then
   `DecoderService.stateName()`, and returns `engine_busy()` from `session_state_map.h`: busy unless the service is IDLE
@@ -14930,7 +15323,8 @@ shown children are a step only when they settle unlike the ones last read, since
 rows and a scan's hops would otherwise be heard at the step floor), a
 recording's position (the time's name and the seek bar's description; steps: play, pause, stop, the end of the part, a
 seek once the host reports a position near where it was asked to land), Signal Search's status line, live level and call
-detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), the Monitor's scan target header (steps: a
+detail (steps: `SignalSearchScreen.speechStep`, a new hit or a state change), its message (steps: any line but
+the overload warning's range name), the Monitor's scan target header (steps: a
 scan starting or stopping, held or released; a hop is not one, as a 300 ms dwell hops three times a second), two
 headings a scan renames on its hops (the Spectrum's title, which names what is tuned, and the site sheet's, which names
 the protocol; no steps), and the squelch readouts and status lines in the Radio and Squelch sheets (steps: the gate

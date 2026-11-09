@@ -26,6 +26,7 @@
 #include <QRunnable>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QThread>
 #include <QUuid>
 #include <QVariant>
@@ -42,6 +43,7 @@
 #include <utility>
 #include "decoder_host.h"
 #include "json_store.h"
+#include "platform_path.h"
 #include "realtime_clock.h"
 #include "teardown_trace.h"
 
@@ -149,11 +151,16 @@ result_map(const QString& error, const QVariantMap& summary = QVariantMap()) {
             {QStringLiteral("summary"), summary}};
 }
 
-/** result_map() plus the export's not-included lines beside its summary. */
+/**
+ * result_map() plus the export's not-included lines beside its summary, and the file names an Unreadable export
+ * could not read (Snapshot::unreadable; empty otherwise).
+ */
 QVariantMap
-export_map(const QString& error, const QVariantMap& summary = QVariantMap()) {
+export_map(const QString& error, const QVariantMap& summary = QVariantMap(),
+           const QStringList& unreadable = QStringList()) {
     QVariantMap map = result_map(error, summary);
     map.insert(QStringLiteral("notIncluded"), summary.value(QStringLiteral("notIncluded")).toStringList());
+    map.insert(QStringLiteral("unreadable"), unreadable);
     return map;
 }
 
@@ -222,7 +229,8 @@ run_export(const ExportWork& work) {
     }
     wipe(built.archive);
     work.passphrase->wipe();
-    return export_map(error, error.isEmpty() ? backup::summary_to_map(built.summary) : QVariantMap());
+    return export_map(error, error.isEmpty() ? backup::summary_to_map(built.summary) : QVariantMap(),
+                      built.error == BackupError::Unreadable ? work.snapshot.unreadable : QStringList());
 }
 
 /** Everything an inspection job needs, copied on the UI thread. */
@@ -322,7 +330,7 @@ class Inspection {
         }
         const qint64 free = m_work.freeBytes
                                 ? m_work.freeBytes(m_work.root)
-                                : static_cast<qint64>(dsd_path_free_bytes(m_work.root.toUtf8().constData()));
+                                : static_cast<qint64>(dsd_path_free_bytes(platform_path(m_work.root).constData()));
         if (free >= 0 && free < 2 * static_cast<qint64>(m_archive.size()) + kStagingMarginBytes) {
             return error_name(BackupError::NoSpace);
         }
@@ -435,6 +443,17 @@ BackupModel::prepareExport(const QString& passphrase) {
         const QVariantMap result = run_export(work);
         reply([this, job, result]() { onExportBuilt(job, result); });
     });
+}
+
+QVariantMap
+BackupModel::checkExport() {
+    const QStringList unreadable = backup::backup_unreadable_files();
+    const QVariantMap result =
+        export_map(unreadable.isEmpty() ? QString() : error_name(BackupError::Unreadable), QVariantMap(), unreadable);
+    if (!unreadable.isEmpty()) {
+        setLastResult(QStringLiteral("prepareExport"), result);
+    }
+    return result;
 }
 
 void

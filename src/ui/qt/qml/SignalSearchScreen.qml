@@ -40,8 +40,8 @@ Item {
     property string failure: ""
     // This screen's own refusal of a Start, Resume (searchModel.arm()) or
     // handoff, shown first until the next attempt or until Back closes it; the
-    // host's failure, else the search's later message or the model's error,
-    // follows it.
+    // host's failure, else the search's later message, then the model's error
+    // and the store's lines follow it.
     property string localFailure: ""
     property string sourceType: "usb"
     property string host: ""
@@ -65,6 +65,25 @@ Item {
         status.rangeName || "", hit.id || "", hit.freqMHz || "", hit.confirmed === true, hit.protocol || ""].join("|")
     readonly property bool editable: !sessionActive || phase === 6
     readonly property bool ownedSession: sessionActive && !!status.owned
+    // Issue #828: the session's own avoid list exists while a search runs or
+    // is paused; a failed search (phase 7) has none, and refuses avoids.
+    readonly property bool sessionAvoidsLive: sessionActive && phase !== 7
+    // Issue #828: a span skipped because its measurements kept clipping. The
+    // status keeps the warning after the search fails or stops, so it shows
+    // only while the search runs or is paused, with the next step for that
+    // phase and for the gain controls the range editor offers this radio.
+    // The line is two sentences: what was skipped, naming the range (a range
+    // with no name reads as one), then that advice. The message's speech step
+    // holds the advice alone, so a name that changes each pass is heard at
+    // the message's pace while the warning appearing, clearing or changing
+    // phase is heard at once.
+    readonly property bool overloadShown: sessionActive && !!status.overloaded && phase !== 0 && phase !== 7
+    readonly property string overloadAdvice: !overloadShown ? "" : phase === 6
+        ? (sourceType === "airspy" ? qsTr("Set a lower Airspy gain for the range, then Resume.") : qsTr("Lower the range's receiver gain, then Resume."))
+        : (sourceType === "airspy" ? qsTr("Pause, then set a lower Airspy gain for the range.") : qsTr("Pause, then lower the range's receiver gain."))
+    readonly property string overloadLine: !overloadShown ? "" : ((status.overloadRange || "").length > 0
+        ? qsTr("Part of “%1” was skipped because the receiver is overloaded.").arg(status.overloadRange)
+        : qsTr("Part of a range was skipped because the receiver is overloaded.")) + " " + overloadAdvice
     signal closed
     signal backRequested
     signal start(string sourceType, string host, int port, string frequency)
@@ -254,7 +273,7 @@ Item {
     }
     readonly property string phaseLine: [qsTr("Stopped"), (status.rangeName || "").length > 0 ? qsTr("Searching %1…").arg(status.rangeName) : qsTr("Searching…"), qsTr("Tuning…"), qsTr("Trying digital identification…"), qsTr("Listening"), qsTr("Held"), qsTr("Paused"), qsTr("Search error")][phase] || ""
     // The panel's one identification line is short enough for a phone; the
-    // full phrase is its accessible description.
+    // full phrase is its accessible name.
     readonly property bool unresolvedShown: receiving && phase !== 2 && !hit.confirmed && !(phase === 3 || status.identifying) && !!hit.unresolved
     readonly property string identificationLine: leaving ? qsTr("Stopping the search…") : !receiving ? phaseLine : phase === 2 ? qsTr("Tuning to detection…") : hit.confirmed ? hit.protocol + qsTr(" · confirmed") : phase === 3 || status.identifying ? qsTr("Trying digital identification…") : hit.unresolved ? qsTr("NFM · digital unresolved") : hit.am ? qsTr("AM monitoring") : qsTr("NFM monitoring")
     readonly property string identificationFull: !leaving && unresolvedShown ? qsTr("NFM monitoring · digital identification unresolved") : identificationLine
@@ -365,7 +384,9 @@ Item {
         if (!all)
             return items;
         items.push({ text: qsTr("Save as system"), key: "save", objectName: "searchActionSave" });
-        if (ownedSession && phase !== 0)
+        // A permanent avoid is excluded already: avoiding it this session too
+        // would do nothing (issue #828).
+        if (ownedSession && phase !== 0 && sessionAvoidsLive && !permanentlyAvoided(h))
             items.push({ text: qsTr("Avoid this session"), key: "avoidSession", objectName: "searchActionAvoidSession" });
         if (permanentlyAvoided(h))
             items.push({ text: qsTr("Remove permanent avoid"), key: "removePermanent", objectName: "searchActionRemovePermanent" });
@@ -439,10 +460,14 @@ Item {
                 maximumLineCount: screen.sessionActive ? screen.statusLines : 1000
                 elide: Text.ElideRight
                 Accessible.role: Accessible.StaticText
+                // Gated as every node a screen reader reaches is: behind an
+                // open sheet it leaves the tree (issue #828).
+                readonly property bool navigationAllowed: Navigation.allows(statusText)
+                Accessible.ignored: !navigationAllowed || !visible
                 Accessible.name: statusSpeech.spoken
                 SpeechPacer {
                     id: statusSpeech
-                    shown: Navigation.allows(statusText) && statusText.visible
+                    shown: statusText.navigationAllowed && statusText.visible
                     step: screen.speechStep
                     read: function () {
                         return statusText.text;
@@ -525,6 +550,7 @@ Item {
                     width: parent.width - 2 * Theme.cardPadding
                     spacing: 6
                     Text {
+                        id: searchFrequencyText
                         objectName: "searchFrequency"
                         width: parent.width
                         height: Math.ceil(frequencyMetrics.lineSpacing)
@@ -540,7 +566,13 @@ Item {
                         minimumPixelSize: Theme.fontSize(14)
                         verticalAlignment: Text.AlignVCenter
                         Accessible.role: Accessible.StaticText
-                        Accessible.name: text
+                        // Each line of the panel is gated as every node a screen
+                        // reader reaches is: behind an open sheet (a detection's
+                        // menu) it leaves the tree and holds no name, rather than
+                        // being lifted over the covered panel (issue #828).
+                        readonly property bool navigationAllowed: Navigation.allows(searchFrequencyText)
+                        Accessible.ignored: !navigationAllowed || !visible
+                        Accessible.name: Accessible.ignored ? "" : text
                     }
                     Item {
                         id: strengthSlot
@@ -598,13 +630,16 @@ Item {
                             maximumLineCount: strengthSlot.lines
                             elide: Text.ElideRight
                             readonly property string spoken: strengthSpeech.spoken
+                            // Android reads a node's name, then its description: the
+                            // description adds only the range, never the levels again.
                             Accessible.name: spoken
-                            Accessible.description: spoken.length > 0 && (screen.hit.range || "").length > 0 ? spoken + " · " + screen.hit.range : spoken
-                            Accessible.ignored: text.length === 0
+                            Accessible.description: spoken.length > 0 ? screen.hit.range || "" : ""
+                            readonly property bool navigationAllowed: Navigation.allows(strengthText)
+                            Accessible.ignored: !navigationAllowed || !visible || text.length === 0
                             // The live level moves every tick (issue #782).
                             SpeechPacer {
                                 id: strengthSpeech
-                                shown: Navigation.allows(strengthText) && strengthText.visible && strengthText.text.length > 0
+                                shown: strengthText.navigationAllowed && strengthText.visible && strengthText.text.length > 0
                                 step: screen.speechStep
                                 read: function () {
                                     return strengthText.text.replace("\n", " · ");
@@ -613,6 +648,7 @@ Item {
                         }
                     }
                     Text {
+                        id: identificationText
                         objectName: "searchIdentification"
                         width: parent.width
                         height: Math.ceil(identificationMetrics.lineSpacing)
@@ -624,9 +660,11 @@ Item {
                         font.pixelSize: Theme.fontSize(16)
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
-                        Accessible.name: text
-                        Accessible.description: screen.identificationFull
-                        Accessible.ignored: text.length === 0
+                        // The full phrase, once: a description repeating the
+                        // short form would read the line twice.
+                        readonly property bool navigationAllowed: Navigation.allows(identificationText)
+                        Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                        Accessible.name: Accessible.ignored ? "" : screen.identificationFull
                     }
                     Item {
                         width: parent.width
@@ -656,13 +694,14 @@ Item {
                             wrapMode: Text.Wrap
                             maximumLineCount: 2
                             elide: Text.ElideRight
+                            // Every value, even those the two lines leave off.
                             Accessible.name: detailSpeech.spoken
-                            Accessible.description: detailSpeech.spoken
-                            Accessible.ignored: text.length === 0
+                            readonly property bool navigationAllowed: Navigation.allows(searchDetailText)
+                            Accessible.ignored: !navigationAllowed || !visible || text.length === 0
                             // A monitored call's talkgroup and source change with each call (issue #782).
                             SpeechPacer {
                                 id: detailSpeech
-                                shown: Navigation.allows(searchDetailText) && searchDetailText.visible && searchDetailText.text.length > 0
+                                shown: searchDetailText.navigationAllowed && searchDetailText.visible && searchDetailText.text.length > 0
                                 step: screen.speechStep
                                 read: function () {
                                     return searchDetailText.fullText;
@@ -691,9 +730,9 @@ Item {
                             verticalAlignment: Text.AlignVCenter
                             elide: Text.ElideRight
                             readonly property string fullText: text.length > 0 ? qsTr("Saved frequency: %1").arg(screen.knownNames.join(", ")) : ""
-                            Accessible.name: fullText
-                            Accessible.description: fullText
-                            Accessible.ignored: text.length === 0
+                            readonly property bool navigationAllowed: Navigation.allows(savedNames)
+                            Accessible.ignored: !navigationAllowed || !visible || text.length === 0
+                            Accessible.name: Accessible.ignored ? "" : fullText
                         }
                         Text {
                             id: savedMore
@@ -800,19 +839,37 @@ Item {
                     objectName: "searchMessage"
                     parent: screen.sessionActive ? sessionMessageSlot : idleMessageSlot
                     width: parent.width
-                    // This screen's own refusal comes first and never hides what
-                    // the search says now: the host's failure, else the search's
-                    // message or the model's error.
-                    text: [screen.localFailure, screen.failure || screen.status.message || (searchModel ? searchModel.error : "")].filter(function (s) { return s.length > 0; }).join("\n")
+                    // One line each, in this order: this screen's own refusal,
+                    // which never hides what the search says now; the host's
+                    // failure, else the search's message; the model's own error;
+                    // what the store couldn't read or save; then the overload
+                    // warning (issue #828).
+                    readonly property var lines: [screen.localFailure, screen.failure || screen.status.message, searchModel ? searchModel.error : "", searchModel ? searchModel.storeMessage || "" : ""]
+                    text: lines.concat([screen.overloadLine]).filter(function (s) { return !!s && s.length > 0; }).join("\n")
                     // A failure can name a device, host or path.
                     textFormat: Text.PlainText
                     color: Theme.textPrimary
                     wrapMode: Text.Wrap
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(14)
+                    // Gated as every node a screen reader reaches is: behind
+                    // an open sheet it leaves the tree, and holds no name.
+                    readonly property bool navigationAllowed: Navigation.allows(searchMessage)
                     Accessible.role: Accessible.AlertMessage
-                    // A role alone reads nothing (issue #782): the message is its name.
-                    Accessible.name: text
+                    Accessible.ignored: !navigationAllowed || !visible
+                    // A role alone reads nothing (issue #782): the message is its
+                    // name, paced, since two ranges that take turns clipping
+                    // rename the warning every pass. Every other line changes on
+                    // an action or a failure, and is heard at once.
+                    Accessible.name: messageSpeech.spoken
+                    SpeechPacer {
+                        id: messageSpeech
+                        shown: searchMessage.navigationAllowed && searchMessage.visible && searchMessage.text.length > 0
+                        step: searchMessage.lines.concat([screen.overloadAdvice]).join("\n")
+                        read: function () {
+                            return searchMessage.text;
+                        }
+                    }
                 }
             }
             Loader {
@@ -891,9 +948,9 @@ Item {
                 visible: active
                 sourceComponent: recentDetections
             }
-            ReadableText { heading: true; visible: screen.sessionActive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
+            ReadableText { heading: true; visible: screen.sessionAvoidsLive && searchModel && (searchModel.sessionAvoids || []).length > 0; text: qsTr("Avoided this session"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
             Repeater {
-                model: screen.sessionActive && searchModel ? (searchModel.sessionAvoids || []) : []
+                model: screen.sessionAvoidsLive && searchModel ? (searchModel.sessionAvoids || []) : []
                 OutlineButton {
                     required property var modelData
                     objectName: "searchSessionAvoid"
@@ -1043,7 +1100,7 @@ Item {
             else if (item.key === "avoidSession")
                 searchModel.avoidFrequency(String(screen.status.session || ""), screen.hitHz(h));
             else if (item.key === "avoidPermanent")
-                searchModel.avoidPermanently(String(screen.status.session || ""), screen.hitHz(h));
+                searchModel.avoidPermanently(screen.hitHz(h));
             else if (item.key === "removePermanent")
                 searchModel.removeAvoid(screen.hitHz(h));
             else if (item.key === "recordings")

@@ -28,6 +28,34 @@ void rtl_stream_test_seed_open_profile(void);
    with the search's bypass set to @p bypass for the call: whether the block was dropped, and whether the look-ahead
    is still live after it. */
 void rtl_stream_test_signal_search_drop(int bypass, int* out_dropped, int* out_lookahead_live);
+
+/* Device backends, as rtl_device.cpp numbers them. */
+enum {
+    RTL_DEVICE_TEST_BACKEND_USB = 0,
+    RTL_DEVICE_TEST_BACKEND_TCP = 1,
+    RTL_DEVICE_TEST_BACKEND_SOAPY = 2,
+    RTL_DEVICE_TEST_BACKEND_IQ_REPLAY = 3,
+    RTL_DEVICE_TEST_BACKEND_AIRSPY = 4,
+};
+
+/* What decides how a device converts its samples to floats. */
+typedef struct {
+    int backend;                     /* RTL_DEVICE_TEST_BACKEND_* */
+    int live_combine_rotate_enabled; /* a live device: DSD_NEO_COMBINE_ROT */
+    int replay_format;               /* a replay: dsd_iq_sample_format */
+    int replay_fs4_shift_enabled;
+    int replay_historical_cu8_two_pass;
+} rtl_device_test_conversion;
+
+/* rtl_device_signal_clip_level() of a device converting as @p conversion says (NULL: no device). */
+float rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conversion, int fs4_shift_active);
+/* The floats that device's cu8 conversion makes of @p len (even, at most 64) bytes, starting at Fs/4 phase 0: 0, or -1
+   on bad arguments. */
+int rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
+                              const unsigned char* bytes, size_t len, float* out);
+/* While @p fail is set, the Signal search tap has no detector and cannot allocate one (its next request fails as an
+   allocation failure); clearing it lets the next request allocate again. */
+void rtl_signal_measure_test_fail_allocation(int fail);
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
@@ -219,6 +247,27 @@ typedef struct {
 /* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */
 int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
                                       size_t* output_count, int* out_phase);
+
+typedef struct {
+    const int16_t* samples; /* the driver's CS16 buffer: pairs complex samples, I then Q */
+    size_t pairs;
+    size_t capacity;
+    size_t start;
+    int fs4_shift;
+    int start_phase;
+    const char* native_format; /* what getNativeStreamFormat() reported ("CS16", "CS8", ...) */
+    double native_full_scale;  /* and its full scale */
+} rtl_device_test_soapy_cs16_request;
+
+/* One CS16 read of a driver whose native format and full scale are the request's, through the reader's submit path:
+ * the input-level meter, then the ring (@p output takes up to *@p output_count floats from it). Returns 1, and leaves
+ * the outputs alone, when the build has no SoapySDR. */
+int rtl_device_test_soapy_cs16_ingest(const rtl_device_test_soapy_cs16_request* request, float* output,
+                                      size_t* output_count, int* out_phase);
+/* The input level the ingest path published last (rtl_stream_input_level_publish()), whether or not a stream runs: 1
+ * with it in @p out, 0 when there is none. */
+struct dsd_input_level_snapshot;
+int rtl_stream_test_input_level_read(struct dsd_input_level_snapshot* out);
 /* The SoapySDR reader's CS16 conversion (soapy_copy_cs16_samples(), scale 1/32768): @p elem_count pairs into @p dst,
  * each rotated at fs/4 phase *phase + i when @p apply_rot is set, *phase then moved on. Returns 1, and touches nothing,
  * when the build has no SoapySDR. */
@@ -332,6 +381,9 @@ typedef struct {
     int (*read)(void* ctx, void* buff, size_t elems, long timeout_us);
     void* ctx;
     int cs16; /* the stream's format: CS16 when set, else CF32 */
+    /* CS16: the full scale the driver reports for its native CS16 (getNativeStreamFormat()); 0: CS16 is not its
+     * native format, so it is read at 32768. */
+    double full_scale;
 } rtl_device_test_soapy_driver;
 
 /* A SoapySDR device into @p ring whose stream calls reach @p driver (kept by the caller until the device is freed), not

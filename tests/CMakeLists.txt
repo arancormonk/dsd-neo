@@ -4716,7 +4716,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_persistence
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
@@ -5147,6 +5147,58 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_backup_apply PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_BACKUP_APPLY COMMAND dsd-neo_test_ui_qt_backup_apply)
 
+    # A settings file Qt could not read whole is kept before Qt writes over it
+    # (issue #828): AppPrefs' and call history's INI files, the scratch copy a
+    # run writes when that fails, and the restore that waits for it. It links
+    # the whole UI library, so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_settings_recovery
+        ui/test_ui_qt_settings_recovery.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_settings_recovery
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_settings_recovery
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SETTINGS_RECOVERY
+        COMMAND dsd-neo_test_ui_qt_settings_recovery
+    )
+
+    # The files a run could not read, as Home's card lists them (issue #828):
+    # json_store's notices queued from worker threads onto the list's thread,
+    # dismissals, the Signal search store's files and a settings file on its
+    # scratch copy. It links the whole UI library, so the deferred engine link
+    # below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_store_notices
+        ui/test_ui_qt_store_notices.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE dsd-neo_ui_qt dsd-neo_crypto
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_store_notices
+        PRIVATE QT_NO_KEYWORDS
+    )
+    add_test(NAME UI_QT_STORE_NOTICES COMMAND dsd-neo_test_ui_qt_store_notices)
+
     # The backup screens' model (issue #580): export, inspect, commit and the
     # startup outcome through the model's worker, with a fake host, archives
     # built from the real models' stores and the apply the next start runs. It
@@ -5463,6 +5515,10 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
             # Issue #782: whether a screen reader is on, as views read it.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/screen_reader_state.cpp
+            # Issue #828: Home's store notice card reads the production list,
+            # fed through json_store's notices as the app feeds it.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/store_notices.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/settings_recovery.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
             # production one, so the preset a chip sends is really under test. It
             # needs the CLI mapping behind it, and that translation unit is
@@ -6427,6 +6483,24 @@ target_link_libraries(
 add_test(
     NAME RUNTIME_SIGNAL_SEARCH_VISIT_INIT_FAILURE
     COMMAND dsd-neo_test_runtime_signal_search_visit_init_failure
+)
+
+# The Signal search avoid lists: normalising, revisions only on a change, whole snapshots across threads (issue #828).
+add_executable(
+    dsd-neo_test_runtime_signal_search_avoids
+    runtime/test_runtime_signal_search_avoids.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_avoids
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_avoids
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_AVOIDS
+    COMMAND dsd-neo_test_runtime_signal_search_avoids
 )
 
 add_executable(
@@ -9040,6 +9114,8 @@ foreach(
     dsd-neo_test_ui_qt_backup_archive
     dsd-neo_test_ui_qt_backup_apply
     dsd-neo_test_ui_qt_backup_model
+    dsd-neo_test_ui_qt_settings_recovery
+    dsd-neo_test_ui_qt_store_notices
 )
     if(TARGET ${_qt_import_target})
         target_link_libraries(
@@ -17058,6 +17134,31 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_SOAPY_CS16_COPY COMMAND dsd-neo_test_io_soapy_cs16_copy)
 
+    # A 12-bit native CS16 stream (full scale 2048, Pluto and bladeRF) reaches the input ring as the driver's CF32
+    # (code / 2048) does, bit for bit: a real capture through the reader against the stand-in driver, both ways.
+    # Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        io/test_io_soapy_cs16_full_scale.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    add_test(
+        NAME IO_SOAPY_CS16_FULL_SCALE
+        COMMAND dsd-neo_test_io_soapy_cs16_full_scale
+    )
+
     # The narrow spectrum's frame buffers: the average carries across buffers, and a
     # frame folded while readers hold every spare buffer reaches the next one.
     add_executable(
@@ -23742,11 +23843,21 @@ add_test(
     COMMAND dsd-neo_test_engine_signal_search_protocol
 )
 
-# The native store keeps a failed history or avoid write owed until that file saves.
+# The native store keeps a failed history or avoid write owed until that file saves, and keeps a file it could not
+# read aside before replacing it (issue #828). The store source is compiled in with DSD_NEO_TEST_HOOKS for its open,
+# read, kept-name probe and after-move seams.
 add_executable(
     dsd-neo_test_app_signal_search_store
     ui/test_app_signal_search_store.c
     ${PROJECT_SOURCE_DIR}/src/app_control/signal_search_store.cpp
+)
+target_include_directories(
+    dsd-neo_test_app_signal_search_store
+    PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_compile_definitions(
+    dsd-neo_test_app_signal_search_store
+    PRIVATE DSD_NEO_TEST_HOOKS
 )
 target_link_libraries(
     dsd-neo_test_app_signal_search_store
@@ -23760,9 +23871,17 @@ add_test(
 # Signal discovery works on capture-rate samples, independently of any UI FFT.
 if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_signal_measure io/test_io_signal_measure.cpp)
+    target_include_directories(
+        dsd-neo_test_io_signal_measure
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
     target_link_libraries(
         dsd-neo_test_io_signal_measure
-        PRIVATE dsd-neo_io_radio dsd-neo_runtime
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_core
+            dsd-neo_runtime
+            ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.

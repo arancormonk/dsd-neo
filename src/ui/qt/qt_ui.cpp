@@ -10,7 +10,6 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
-#include <QFileInfo>
 #include <QFontDatabase>
 #include <QLatin1String>
 #include <QObject>
@@ -38,6 +37,7 @@
 #include "diagnostics_log.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
+#include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
 #include "metrics_model.h"
@@ -50,11 +50,13 @@
 #include "scan_lists_model.h"
 #include "screen_reader_state.h"
 #include "session_args.h"
+#include "settings_recovery.h"
 #include "sign_in_autofill.h"
 #include "signal_search_model.h"
 #include "site_groups.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
+#include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
 #include "ui_controller.h"
@@ -242,9 +244,12 @@ register_qml_types() {
 }
 
 // A restore the user confirmed applies before any model reads a store it replaces (#580), so the restored data goes
-// through the loaders, migrations and pruning below like any other start's.
+// through the loaders, migrations and pruning below like any other start's. Before it, and before anything opens a
+// settings file, a settings file Qt could not read whole is kept, or else this run's settings go to a scratch copy and
+// the restore waits (issue #828).
 static backup::ApplyResult
-apply_confirmed_restore(const DecoderHost* host) {
+recover_settings_and_apply_restore(const DecoderHost* host) {
+    recover_settings_files();
     backup::ApplyEnv env;
     env.engineBusy = [host]() { return host != nullptr && host->engineBusy(); };
     return backup::apply_pending_restore(env);
@@ -260,10 +265,11 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     QStringList gone = importedFiles->takePrunedPaths();
     // The library saves its prune before anything here runs, so a clear that fails is not in the next launch's
     // pruned list. Every reference into the library to a file that is gone is cleared as well, which retries it at
-    // each launch until it saves (issue #801). Files outside the library are the user's own and stay named.
+    // each launch until it saves (issue #801). Files outside the library are the user's own and stay named, and so
+    // does a file whose absence is not confirmed (a folder that cannot be searched for now, issue #828).
     const QString root = QDir::cleanPath(ImportedFilesModel::libraryRoot()) + QLatin1Char('/');
     for (const QString& path : systems->csvPaths() + scanLists->csvPaths()) {
-        if (!gone.contains(path) && QDir::cleanPath(path).startsWith(root) && !QFileInfo::exists(path)) {
+        if (!gone.contains(path) && QDir::cleanPath(path).startsWith(root) && json_store_definitely_missing(path)) {
             gone.append(path);
         }
     }
@@ -289,6 +295,17 @@ publish_input_context(QQmlContext* context, DecoderHost* host, RadioReferenceMod
                                 new SignInAutofill(host, radioReference, prefs, owner));
 }
 
+/* What every screen may read that no model owns: the version, how the person reads and types, and the files this run
+   could not read (issue #828), whose list is process-lifetime rather than the engine's, so a dismissal holds while the
+   app runs. */
+static void
+publish_app_context(QQmlContext* context, DecoderHost* host, RadioReferenceModel* radioReference, AppPrefs* prefs,
+                    QObject* owner) {
+    context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
+    publish_input_context(context, host, radioReference, prefs, owner);
+    context->setContextProperty(QStringLiteral("storeNotices"), StoreNotices::instance());
+}
+
 ListenPins*
 load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
                  ScanListsModel* scanLists, QObject* owner) {
@@ -299,7 +316,7 @@ load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystem
 
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
-    const backup::ApplyResult restoreOutcome = apply_confirmed_restore(host);
+    const backup::ApplyResult restoreOutcome = recover_settings_and_apply_restore(host);
     load_fonts(engine.rootContext());
 
     auto* metrics = new MetricsModel(&engine);
@@ -387,8 +404,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("knownFrequencies"), knownFrequencies);
     context->setContextProperty(QStringLiteral("listenPins"), listenPins);
     context->setContextProperty(QStringLiteral("signalSearch"), signalSearch);
-    context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
-    publish_input_context(context, host, radioReference, prefs, &engine);
+    publish_app_context(context, host, radioReference, prefs, &engine);
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

@@ -2703,7 +2703,7 @@ tg_policy_replace_group_file(dsd_tg_policy_context* ctx, const char* path, const
     }
     dsd_managed_file_unlock();
     if (rc != 0) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
     }
     return rc;
 }
@@ -2755,7 +2755,7 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
         failed = 1;
     }
     if (failed) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
     return tg_policy_replace_group_file(ctx, path, tmp, sink.hashes[0]);

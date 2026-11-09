@@ -10,21 +10,37 @@
    yet, the version 1 rows load with those details empty and the first write creates the version 2 journal from them;
    the version 1 journal stays byte for byte as an earlier release left it, and once a version 2 journal exists it
    alone is read. Damaged or unknown records stop the load; the history revision moves only when a record's persisted
-   content changes. */
+   content changes.
+   Unreadable files (issue #828): a version 2 journal or avoid list that did not load whole is renamed to
+   `<name>.unreadable-N` before its first replacement and is otherwise left byte for byte; a kept version 2 journal
+   keeps the version 1 rows out; the version 1 journal is reported, never moved. Open and read errors come through the
+   store's DSD_NEO_TEST_HOOKS seams. */
 
 #include <assert.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "signal_search_store_test_hooks.h"
 #include "test_support.h"
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <signal.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 typedef struct {
     char dir[DSD_TEST_PATH_MAX];
@@ -73,6 +89,25 @@ publish_hit(const dsd_signal_search_hit* hit) {
     s.phase = DSD_SEARCH_LISTENING;
     s.hit = *hit;
     dsd_app_signal_search_publish(&s, &s.hit, NULL);
+}
+
+/* A status with no detection: session @p session in @p phase. */
+static void
+publish_phase(uint64_t session, int phase, uint64_t revision) {
+    dsd_signal_search_status s;
+    DSD_MEMSET(&s, 0, sizeof(s));
+    s.session_id = session;
+    s.revision = revision;
+    s.phase = phase;
+    s.owned = phase != DSD_SEARCH_STOPPED;
+    dsd_app_signal_search_publish(&s, NULL, NULL);
+}
+
+/* The runtime's permanent avoid list, the one the running search reads; returns its length. */
+static size_t
+runtime_permanent(uint32_t* out, size_t cap) {
+    uint64_t revision = 0;
+    return dsd_signal_search_avoids_permanent_snapshot(out, cap, &revision);
 }
 
 static void
@@ -160,14 +195,20 @@ v1_body(record_buf* r, uint64_t id) {
     }
 }
 
+/* A record whose checksum is off by @p sum_flip (0 for a sound one). */
 static void
-write_record(FILE* f, uint32_t magic, const record_buf* body) {
+write_record_sum(FILE* f, uint32_t magic, const record_buf* body, uint32_t sum_flip) {
     record_buf header = {{0}, 0};
     put_le(&header, magic, 4);
     put_le(&header, body->n, 4);
-    put_le(&header, fnv1a(body->bytes, body->n), 4);
+    put_le(&header, fnv1a(body->bytes, body->n) ^ sum_flip, 4);
     assert(fwrite(header.bytes, 1, header.n, f) == header.n);
     assert(fwrite(body->bytes, 1, body->n, f) == body->n);
+}
+
+static void
+write_record(FILE* f, uint32_t magic, const record_buf* body) {
+    write_record_sum(f, magic, body, 0);
 }
 
 /* A version 2 body as the store writes one: version 1's, then site, slot and encryption. */
@@ -268,6 +309,732 @@ reopen(const char* journal, dsd_signal_search_hit* hits, size_t capacity) {
     return dsd_app_signal_search_history_get(hits, capacity);
 }
 
+/* ---- Unreadable files (issue #828) ---- */
+
+/* One version 2 record with its header, measured by the first case. */
+static long g_record;
+
+static void
+write_bytes(const char* path, const void* data, size_t n) {
+    FILE* f = dsd_fopen_private(path, "wb");
+    assert(f);
+    assert(fwrite(data, 1, n, f) == n);
+    assert(fclose(f) == 0);
+}
+
+/* @p path is a regular file holding exactly the @p n bytes of @p data. */
+static int
+file_is(const char* path, const void* data, size_t n) {
+    static unsigned char buf[16384];
+    FILE* f = dsd_fopen_existing_regular_file(path, "rb");
+    if (!f) {
+        return 0;
+    }
+    const size_t got = fread(buf, 1, sizeof(buf), f);
+    (void)fclose(f);
+    return got == n && memcmp(buf, data, n) == 0;
+}
+
+static int
+exists(const char* path) {
+    return dsd_path_exists_nofollow(path) == 1;
+}
+
+static void
+kept_path(char* out, size_t cap, const char* file, int n) {
+    const int w = DSD_SNPRINTF(out, cap, "%s.unreadable-%d", file, n);
+    assert(w > 0 && (size_t)w < cap);
+}
+
+/* @p which loaded as @p want, kept as the base name @p kept (NULL: none). */
+static int
+state_is(int which, dsd_app_search_file_load want, const char* kept) {
+    dsd_app_search_file_load state = DSD_APP_SEARCH_FILE_OK;
+    char name[256] = "x";
+    if (dsd_app_signal_search_store_file_state(which, &state, NULL, name, sizeof(name)) != 0) {
+        return 0;
+    }
+    return state == want && strcmp(name, kept ? kept : "") == 0;
+}
+
+static int
+write_owed(int which) {
+    int failed = -1;
+    assert(dsd_app_signal_search_store_file_state(which, NULL, &failed, NULL, 0) == 0);
+    return failed;
+}
+
+/* @p count version 2 records, hit ids 1..count; record @p damaged (1-based, 0 for none) fails its checksum. */
+static void
+write_v2_journal(const char* path, int count, int damaged) {
+    FILE* f = dsd_fopen_private(path, "wb");
+    assert(f);
+    record_buf body;
+    for (int i = 1; i <= count; ++i) {
+        detailed_v2_body(&body, (uint64_t)i);
+        write_record_sum(f, 0x32535344U, &body, i == damaged ? 1U : 0U);
+    }
+    assert(fclose(f) == 0);
+}
+
+static void
+store_dir(store_paths* p, const char* root, const char* leaf) {
+    paths_init(p, root, leaf);
+    assert(dsd_mkdir(p->dir, 0700) == 0);
+}
+
+typedef struct {
+    int open_err;    // the open fails with this errno, 0 for none
+    long read_after; // reads fail after this many bytes, -1 for none
+} load_fault;
+
+static const load_fault no_fault = {0, -1};
+
+static void
+open_with(const store_paths* p, int which, load_fault fault) {
+    dsd_app_signal_search_store_test_fail_open(which, fault.open_err);
+    dsd_app_signal_search_store_test_fail_read(which, fault.read_after);
+    assert(dsd_app_signal_search_store_open(p->journal) == 0);
+    dsd_app_signal_search_store_test_fail_open(which, 0);
+    dsd_app_signal_search_store_test_fail_read(which, -1);
+}
+
+/* An avoid list holding @p content that loads as unreadable (by itself or through @p fault) is left alone by a launch
+   that writes nothing, then kept byte for byte as "….unreadable-1" by the first save, which writes only the new list;
+   the next open reads that list. */
+static void
+expect_avoids_kept(const char* root, const char* leaf, const void* content, size_t n, load_fault fault) {
+    store_paths p;
+    store_dir(&p, root, leaf);
+    write_bytes(p.avoids, content, n);
+    uint32_t avoids[4], runtime[4];
+    open_with(&p, DSD_APP_SEARCH_STORE_AVOIDS, fault);
+    assert(!store_error()); // only a write failure is the store's message
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_MISSING, NULL));
+    assert(dsd_app_signal_search_avoids_get(avoids, 4) == 0 && runtime_permanent(runtime, 4) == 0);
+    dsd_app_signal_search_store_close();
+    assert(file_is(p.avoids, content, n));
+    open_with(&p, DSD_APP_SEARCH_STORE_AVOIDS, fault);
+    assert(dsd_app_signal_search_permanent_avoid(462900000) == DSD_APP_SEARCH_AVOID_ADDED);
+    dsd_app_signal_search_store_flush();
+    char kept[DSD_TEST_PATH_MAX];
+    kept_path(kept, sizeof(kept), p.avoids, 1);
+    assert(!store_error() && file_is(kept, content, n));
+    assert(file_is(p.avoids, "[462900000]\n", 12));
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_KEPT, "history.avoids.json.unreadable-1"));
+    assert(!write_owed(DSD_APP_SEARCH_STORE_AVOIDS));
+    // Later saves only write.
+    assert(dsd_app_signal_search_permanent_avoid(462925000) == DSD_APP_SEARCH_AVOID_ADDED);
+    dsd_app_signal_search_store_flush();
+    assert(file_is(p.avoids, "[462900000,462925000]\n", 22) && file_is(kept, content, n));
+    dsd_app_signal_search_store_close();
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_OK, NULL));
+    assert(dsd_app_signal_search_avoids_get(avoids, 4) == 2 && avoids[0] == 462900000);
+    dsd_app_signal_search_store_close();
+    assert(file_is(kept, content, n));
+    static const char* const files[] = {"history.avoids.json", "history.avoids.json.unreadable-1", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+/* A version 2 journal that loads @p rows before failing (by itself or through @p fault) is reported, shows those rows
+   and stays byte for byte through a launch that writes nothing. The first save keeps it as "….unreadable-<kept_n>"
+   and writes the rows shown plus the new one; the next open reads that journal. */
+static void
+expect_history_kept(const store_paths* p, load_fault fault, size_t rows, int kept_n) {
+    static unsigned char before[16384];
+    const size_t n = read_file(p->v2, before, sizeof(before));
+    dsd_signal_search_hit hits[8];
+    open_with(p, DSD_APP_SEARCH_STORE_HISTORY, fault);
+    assert(!store_error() && state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    assert(dsd_app_signal_search_history_get(hits, 8) == rows);
+    dsd_app_signal_search_store_close();
+    assert(file_is(p->v2, before, n));
+    char kept[DSD_TEST_PATH_MAX], kept_name[64];
+    kept_path(kept, sizeof(kept), p->v2, kept_n);
+    assert(!exists(kept));
+    open_with(p, DSD_APP_SEARCH_STORE_HISTORY, fault);
+    publish(40);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && file_is(kept, before, n));
+    const int w = DSD_SNPRINTF(kept_name, sizeof(kept_name), "history.v2.unreadable-%d", kept_n);
+    assert(w > 0 && (size_t)w < sizeof(kept_name));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_KEPT, kept_name));
+    assert(!write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(count_v2_records(p->v2, (size_t)g_record - 12U) == (int)rows + 1);
+    assert(reopen(p->journal, hits, 8) == rows + 1 && hits[0].hit_id == 40);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_OK, NULL));
+    dsd_app_signal_search_store_close();
+    assert(file_is(kept, before, n));
+}
+
+static void
+history_kept_cases(const char* root) {
+    static const char* const files[] = {"history.v2", "history.v2.unreadable-1", "history.v2.unreadable-2", NULL};
+    store_paths p;
+    // A record that fails its checksum, with more after it: nothing after the damage is lost (issue #828).
+    store_dir(&p, root, "damaged");
+    write_v2_journal(p.v2, 3, 2);
+    expect_history_kept(&p, no_fault, 1, 1);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    // A torn last record. A name already taken is skipped, not replaced.
+    store_dir(&p, root, "torn");
+    write_v2_journal(p.v2, 2, 0);
+    {
+        FILE* f = dsd_fopen_private(p.v2, "ab");
+        assert(f && fwrite("DSS", 1, 3, f) == 3 && fclose(f) == 0);
+    }
+    char taken[DSD_TEST_PATH_MAX];
+    kept_path(taken, sizeof(taken), p.v2, 1);
+    write_bytes(taken, "older", 5);
+    expect_history_kept(&p, no_fault, 2, 2);
+    assert(file_is(taken, "older", 5));
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    // A read error at a record boundary is not the end of the file (issue #828), nor one inside a record damage.
+    store_dir(&p, root, "readerr");
+    write_v2_journal(p.v2, 3, 0);
+    const load_fault at_boundary = {0, g_record};
+    expect_history_kept(&p, at_boundary, 1, 1);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    store_dir(&p, root, "readmid");
+    write_v2_journal(p.v2, 3, 0);
+    const load_fault mid_record = {0, g_record + 100};
+    expect_history_kept(&p, mid_record, 1, 1);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    // A journal that cannot be opened.
+    store_dir(&p, root, "noopen");
+    write_v2_journal(p.v2, 3, 0);
+    const load_fault denied = {EACCES, -1};
+    expect_history_kept(&p, denied, 0, 1);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+static void
+avoids_kept_cases(const char* root) {
+    static const char invalid[] = "[100,200,x]\n";
+    expect_avoids_kept(root, "badavoids", invalid, sizeof(invalid) - 1, no_fault);
+    // Text after a NUL is part of the file: the list is refused, not cut short (issue #828).
+    static const char nul[] = "[462700000]\0[462725000]\n";
+    expect_avoids_kept(root, "nulavoids", nul, sizeof(nul) - 1, no_fault);
+    static const char good[] = "[462700000,462725000]\n";
+    const load_fault eio = {EIO, -1};
+    expect_avoids_kept(root, "openavoids", good, sizeof(good) - 1, eio);
+    const load_fault cut = {0, 5};
+    expect_avoids_kept(root, "readavoids", good, sizeof(good) - 1, cut);
+}
+
+/* Set by the seam below: the next file renamed aside finds a folder at its old name, so the replacement fails. */
+static void
+block_after_aside(const char* path, const char* kept) {
+    (void)kept;
+    assert(dsd_mkdir(path, 0700) == 0);
+}
+
+/* The move succeeds and the replacement fails: the file stays kept, the write owed, and the retry only writes. */
+static void
+expect_retry_after_aside(const char* root) {
+    store_paths p;
+    store_dir(&p, root, "aside");
+    write_v2_journal(p.v2, 3, 2);
+    static unsigned char before[16384];
+    const size_t n = read_file(p.v2, before, sizeof(before));
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    dsd_app_signal_search_store_test_after_aside(block_after_aside);
+    publish(41);
+    dsd_app_signal_search_store_flush();
+    dsd_app_signal_search_store_test_after_aside(NULL);
+    char kept[DSD_TEST_PATH_MAX], second[DSD_TEST_PATH_MAX];
+    kept_path(kept, sizeof(kept), p.v2, 1);
+    kept_path(second, sizeof(second), p.v2, 2);
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_KEPT, "history.v2.unreadable-1"));
+    assert(file_is(kept, before, n));
+    // Whatever is at the name by the retry is replaced, never moved: the unreadable file was kept once already.
+    assert(dsd_test_rmdir(p.v2) == 0);
+    write_bytes(p.v2, "junk", 4);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(!exists(second) && file_is(kept, before, n));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 2);
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history.v2", "history.v2.unreadable-1", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+/* A version 2 journal a crash left kept with no new one: the version 1 rows stay out, and the history reports the
+   kept name (the newest of any). */
+static void
+expect_v1_blocked(const store_paths* p, const char* kept_name) {
+    dsd_signal_search_hit hits[8];
+    assert(dsd_app_signal_search_store_open(p->journal) == 0);
+    assert(dsd_app_signal_search_history_get(hits, 8) == 0 && !store_error());
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, kept_name ? DSD_APP_SEARCH_FILE_KEPT : DSD_APP_SEARCH_FILE_UNREADABLE,
+                    kept_name));
+    assert(state_is(DSD_APP_SEARCH_STORE_V1, DSD_APP_SEARCH_FILE_MISSING, NULL));
+    dsd_app_signal_search_store_close();
+}
+
+static void
+v1_gate_cases(const char* root) {
+    static const char* const files[] = {"history",
+                                        "history.v2",
+                                        "history.v2.unreadable-1",
+                                        "history.v2.unreadable-7",
+                                        "history.v2.unreadable-40",
+                                        "history.v2.unreadable-99",
+                                        NULL};
+    store_paths p;
+    store_dir(&p, root, "gate");
+    write_v1_journal(p.journal, 3);
+    static unsigned char v1_before[16384];
+    const size_t v1_bytes = read_file(p.journal, v1_before, sizeof(v1_before));
+    char kept[DSD_TEST_PATH_MAX];
+    // A restart after the move and before the replacement: the kept journal and the version 1 journal stay as they are,
+    // and the first save starts a new version 2 journal.
+    kept_path(kept, sizeof(kept), p.v2, 1);
+    write_v2_journal(kept, 2, 0);
+    expect_v1_blocked(&p, "history.v2.unreadable-1");
+    dsd_signal_search_hit hits[8];
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    publish(42);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && count_v2_records(p.v2, (size_t)g_record - 12U) == 1);
+    assert(count_v2_records(kept, (size_t)g_record - 12U) == 2);
+    assert(reopen(p.journal, hits, 8) == 1 && hits[0].hit_id == 42);
+    dsd_app_signal_search_store_close();
+    assert(file_is(p.journal, v1_before, v1_bytes));
+    assert(remove(p.v2) == 0 && remove(kept) == 0);
+    // Any number, holes included.
+    kept_path(kept, sizeof(kept), p.v2, 7);
+    write_bytes(kept, "x", 1);
+    expect_v1_blocked(&p, "history.v2.unreadable-7");
+    kept_path(kept, sizeof(kept), p.v2, 40);
+    write_bytes(kept, "y", 1);
+    expect_v1_blocked(&p, "history.v2.unreadable-40");
+    assert(remove(kept) == 0);
+    kept_path(kept, sizeof(kept), p.v2, 7);
+    assert(remove(kept) == 0);
+#if !DSD_PLATFORM_WIN_NATIVE
+    // A dangling link is a name that exists.
+    kept_path(kept, sizeof(kept), p.v2, 99);
+    assert(symlink("nowhere", kept) == 0);
+    expect_v1_blocked(&p, "history.v2.unreadable-99");
+    assert(remove(kept) == 0);
+#endif
+    // A name that cannot be checked may be a kept journal: no version 1 rows. The first save finds no version 2
+    // journal to keep and writes one.
+    dsd_app_signal_search_store_test_fail_probe(12);
+    expect_v1_blocked(&p, NULL);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    dsd_app_signal_search_store_test_fail_probe(0);
+    publish(43);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_MISSING, NULL));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 1);
+    dsd_app_signal_search_store_close();
+    assert(file_is(p.journal, v1_before, v1_bytes));
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+/* A version 1 journal that cannot be read whole is reported and left where it is; its rows read before the failure
+   are kept, and the first save writes the version 2 journal from them. */
+static void
+expect_v1_unreadable(const store_paths* p, load_fault fault, size_t rows) {
+    dsd_signal_search_hit hits[8];
+    open_with(p, DSD_APP_SEARCH_STORE_V1, fault);
+    assert(!store_error() && dsd_app_signal_search_history_get(hits, 8) == rows);
+    assert(state_is(DSD_APP_SEARCH_STORE_V1, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_MISSING, NULL));
+    publish(44);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && count_v2_records(p->v2, (size_t)g_record - 12U) == (int)rows + 1);
+    assert(state_is(DSD_APP_SEARCH_STORE_V1, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    assert(!write_owed(DSD_APP_SEARCH_STORE_V1));
+    dsd_app_signal_search_store_close();
+    char kept[DSD_TEST_PATH_MAX];
+    kept_path(kept, sizeof(kept), p->journal, 1);
+    assert(!exists(kept));
+}
+
+static void
+v1_unreadable_cases(const char* root) {
+    static const char* const files[] = {"history", "history.v2", NULL};
+    store_paths p;
+    // Damaged part way: the rows before it.
+    store_dir(&p, root, "v1damaged");
+    {
+        FILE* f = dsd_fopen_private(p.journal, "wb");
+        assert(f);
+        record_buf body;
+        for (int i = 1; i <= 3; ++i) {
+            v1_body(&body, (uint64_t)i);
+            write_record_sum(f, 0x31535344U, &body, i == 2 ? 1U : 0U);
+        }
+        assert(fclose(f) == 0);
+    }
+    static unsigned char v1_before[16384];
+    const size_t v1_bytes = read_file(p.journal, v1_before, sizeof(v1_before));
+    expect_v1_unreadable(&p, no_fault, 1);
+    assert(file_is(p.journal, v1_before, v1_bytes));
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    // Open and read errors.
+    store_dir(&p, root, "v1noopen");
+    write_v1_journal(p.journal, 3);
+    const load_fault denied = {EACCES, -1};
+    expect_v1_unreadable(&p, denied, 0);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    store_dir(&p, root, "v1readerr");
+    write_v1_journal(p.journal, 3);
+    record_buf v1_record;
+    v1_body(&v1_record, 1);
+    const load_fault at_boundary = {0, (long)v1_record.n + 12};
+    expect_v1_unreadable(&p, at_boundary, 1);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    // A folder in its place is not moved either.
+    store_dir(&p, root, "v1dir");
+    assert(dsd_mkdir(p.journal, 0700) == 0);
+    expect_v1_unreadable(&p, no_fault, 0);
+    assert(dsd_test_rmdir(p.journal) == 0);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+/* Each file keeps its own load state, and only its own save changes it (issue #828). */
+static void
+expect_per_file_states(const char* root) {
+    static const char invalid[] = "[1,x]";
+    store_paths p;
+    store_dir(&p, root, "perfile");
+    // Both unreadable: neither report replaces the other.
+    write_v2_journal(p.v2, 2, 1);
+    write_bytes(p.avoids, invalid, 5);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    dsd_app_signal_search_store_close();
+    assert(remove(p.v2) == 0);
+    // A history write that fails and then recovers leaves the avoid list's state, and the file, alone.
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(dsd_mkdir(p.v2, 0700) == 0);
+    publish(45);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY) && !write_owed(DSD_APP_SEARCH_STORE_AVOIDS));
+    assert(dsd_test_rmdir(p.v2) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_MISSING, NULL));
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    assert(file_is(p.avoids, invalid, 5));
+    // The avoid list's own save settles it.
+    assert(dsd_app_signal_search_permanent_avoid(463000000) == DSD_APP_SEARCH_AVOID_ADDED);
+    dsd_app_signal_search_store_flush();
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_KEPT, "history.avoids.json.unreadable-1"));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_MISSING, NULL));
+    // An unknown file is refused, and nothing reports for it.
+    dsd_app_search_file_load state = DSD_APP_SEARCH_FILE_KEPT;
+    assert(dsd_app_signal_search_store_file_state(3, &state, NULL, NULL, 0) == -1);
+    assert(dsd_app_signal_search_store_file_state(-1, &state, NULL, NULL, 0) == -1);
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history.v2", "history.avoids.json", "history.avoids.json.unreadable-1", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+/* Something other than a file at the avoid list's name when it loads is never moved or replaced: the write stays owed
+   until it is gone. A FIFO there does not hang the open. */
+static void
+expect_not_a_file(const char* root, const char* leaf, int fifo) {
+    store_paths p;
+    store_dir(&p, root, leaf);
+#if !DSD_PLATFORM_WIN_NATIVE
+    if (fifo) {
+        assert(mkfifo(p.avoids, 0600) == 0 && mkfifo(p.journal, 0600) == 0);
+    }
+#endif
+    if (!fifo) {
+        assert(dsd_mkdir(p.avoids, 0700) == 0);
+    }
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    assert(
+        state_is(DSD_APP_SEARCH_STORE_V1, fifo ? DSD_APP_SEARCH_FILE_UNREADABLE : DSD_APP_SEARCH_FILE_MISSING, NULL));
+    assert(dsd_app_signal_search_permanent_avoid(463025000) == DSD_APP_SEARCH_AVOID_ADDED);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_AVOIDS));
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    char kept[DSD_TEST_PATH_MAX];
+    kept_path(kept, sizeof(kept), p.avoids, 1);
+    assert(!exists(kept) && exists(p.avoids));
+    assert(fifo ? remove(p.avoids) == 0 : dsd_test_rmdir(p.avoids) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && file_is(p.avoids, "[463025000]\n", 12));
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_MISSING, NULL));
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history", "history.avoids.json", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+/* The sweep lists the folder the store's files are in: a root keeps its separator, since a drive letter alone ("C:")
+   names that drive's current folder. */
+static int
+folder_is(const char* path, const char* want) {
+    char folder[DSD_TEST_PATH_MAX];
+    dsd_app_signal_search_store_test_folder_of(path, folder, sizeof(folder));
+    return strcmp(folder, want) == 0;
+}
+
+static void
+expect_sweep_folder(void) {
+    assert(folder_is("history", "."));
+    assert(folder_is("dir/history", "dir"));
+    assert(folder_is("/a/b/history", "/a/b"));
+    assert(folder_is("/history", "/"));
+    assert(folder_is("C:/history", "C:/"));
+#if DSD_PLATFORM_WIN_NATIVE
+    assert(folder_is("C:\\history", "C:\\"));
+    assert(folder_is("C:\\Users\\history", "C:\\Users"));
+#endif
+}
+
+/* Opening removes this store's own temporary files a crash left, and nothing else. */
+static void
+expect_temp_sweep(const char* root) {
+    store_paths p;
+    store_dir(&p, root, "sweep");
+    static const char* const leaked[] = {"history.v2.tmp.Ab12Cd", "history.avoids.json.tmp.zz9Zz9"};
+    static const char* const kept[] = {"history.v2.tmpx", "history.tmp.123456", "history.v2.unreadable-3.tmp.aaaaaa",
+                                       "history.v2.tmp.Ab12Cd.mine"};
+    char path[DSD_TEST_PATH_MAX];
+    for (size_t i = 0; i < 2; ++i) {
+        assert(dsd_test_path_join(path, sizeof(path), p.dir, leaked[i]) == 0);
+        write_bytes(path, "t", 1);
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        assert(dsd_test_path_join(path, sizeof(path), p.dir, kept[i]) == 0);
+        write_bytes(path, "k", 1);
+    }
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    for (size_t i = 0; i < 2; ++i) {
+        assert(dsd_test_path_join(path, sizeof(path), p.dir, leaked[i]) == 0);
+        assert(!exists(path));
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        assert(dsd_test_path_join(path, sizeof(path), p.dir, kept[i]) == 0);
+        assert(file_is(path, "k", 1));
+    }
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history.v2.tmpx", "history.tmp.123456", "history.v2.unreadable-3.tmp.aaaaaa",
+                                        "history.v2.tmp.Ab12Cd.mine", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+#if !DSD_PLATFORM_WIN_NATIVE
+/* A FIFO that took a cleanly loaded journal's name: the append, and the retry that then rewrites the history, neither
+   wait on it nor replace it; the write stays owed and reported until it is gone. Run in a child, so a store that
+   waits on the FIFO fails the test within the budget instead of hanging it. */
+static void
+append_finds_fifo(const char* root) {
+    store_paths p;
+    store_dir(&p, root, "appendfifo");
+    write_v2_journal(p.v2, 3, 0);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_OK, NULL));
+    // The run's first write rewrites the journal; the next one appends to it.
+    publish(44);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && count_v2_records(p.v2, (size_t)g_record - 12U) == 4);
+    assert(remove(p.v2) == 0 && mkfifo(p.v2, 0600) == 0);
+    publish(45);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    // The failed append leaves the retry rewriting every record, which does not replace the FIFO either.
+    publish(46);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    struct stat st;
+    assert(lstat(p.v2, &st) == 0 && S_ISFIFO(st.st_mode));
+    assert(remove(p.v2) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 6);
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history.v2", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+static void
+expect_append_finds_fifo(const char* root) {
+    const pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        append_finds_fifo(root);
+        _exit(0);
+    }
+    const uint64_t deadline = dsd_realtime_mono_ms() + 10000U;
+    int status = 0;
+    pid_t done = 0;
+    while ((done = waitpid(pid, &status, WNOHANG)) == 0 && dsd_realtime_mono_ms() < deadline) {
+        dsd_sleep_ms(5);
+    }
+    if (done == 0) {
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, &status, 0);
+        (void)DSD_FPRINTF(stderr, "FAIL: the store waited on a FIFO at the journal's name\n");
+    }
+    assert(done == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+/* The seam's stand-in for a no-replace rename whose link worked and whose unlink failed (out_source_left): the old
+   name still names the kept file. */
+static void
+link_back_after_aside(const char* path, const char* kept) {
+    assert(link(kept, path) == 0);
+}
+
+/* The move succeeds and the replacement fails, then a FIFO takes the name before the retry: the retry, which only
+   writes, never replaces it (a rename over it would delete it), and the write stays owed until it is gone. */
+static void
+expect_retry_finds_fifo(const char* root) {
+    store_paths p;
+    store_dir(&p, root, "asidefifo");
+    write_v2_journal(p.v2, 3, 2);
+    static unsigned char before[16384];
+    const size_t n = read_file(p.v2, before, sizeof(before));
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    dsd_app_signal_search_store_test_after_aside(block_after_aside);
+    publish(43);
+    dsd_app_signal_search_store_flush();
+    dsd_app_signal_search_store_test_after_aside(NULL);
+    char kept[DSD_TEST_PATH_MAX], second[DSD_TEST_PATH_MAX];
+    kept_path(kept, sizeof(kept), p.v2, 1);
+    kept_path(second, sizeof(second), p.v2, 2);
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(dsd_test_rmdir(p.v2) == 0 && mkfifo(p.v2, 0600) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(store_error() && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_KEPT, "history.v2.unreadable-1"));
+    {
+        struct stat st;
+        assert(lstat(p.v2, &st) == 0 && S_ISFIFO(st.st_mode));
+    }
+    assert(!exists(second) && file_is(kept, before, n));
+    assert(remove(p.v2) == 0);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(!exists(second) && file_is(kept, before, n));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 2);
+    dsd_app_signal_search_store_close();
+    static const char* const files[] = {"history.v2", "history.v2.unreadable-1", NULL};
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+}
+
+/* POSIX only: a mode that refuses reading (as a user other than root), a symbolic link at the journal's name (refused,
+   and kept as the link itself), a source left after the move, which counts as kept and is replaced, and a FIFO at a
+   kept file's name by the retry or at a clean journal's name by an append. */
+static void
+posix_cases(const char* root) {
+    static const char* const files[] = {"history.v2",          "history.v2.unreadable-1",          "target",
+                                        "history.avoids.json", "history.avoids.json.unreadable-1", NULL};
+    store_paths p;
+    dsd_signal_search_hit hits[8];
+    expect_append_finds_fifo(root); // first: the fork's child finds no other store thread
+    if (geteuid() != 0) {
+        store_dir(&p, root, "mode000");
+        write_v2_journal(p.v2, 3, 0);
+        static unsigned char before[16384];
+        const size_t n = read_file(p.v2, before, sizeof(before));
+        assert(chmod(p.v2, 0) == 0);
+        assert(dsd_app_signal_search_store_open(p.journal) == 0);
+        assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+        publish(46);
+        dsd_app_signal_search_store_flush();
+        assert(!store_error() && count_v2_records(p.v2, (size_t)g_record - 12U) == 1);
+        dsd_app_signal_search_store_close();
+        char kept[DSD_TEST_PATH_MAX];
+        kept_path(kept, sizeof(kept), p.v2, 1);
+        assert(chmod(kept, 0600) == 0 && file_is(kept, before, n));
+        assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+    } else {
+        (void)DSD_FPRINTF(stderr, "skipping the unreadable-mode case: running as root\n");
+    }
+
+    store_dir(&p, root, "symlink");
+    char target[DSD_TEST_PATH_MAX], kept[DSD_TEST_PATH_MAX], link_text[DSD_TEST_PATH_MAX];
+    assert(dsd_test_path_join(target, sizeof(target), p.dir, "target") == 0);
+    write_v2_journal(target, 2, 0);
+    static unsigned char target_before[16384];
+    const size_t target_bytes = read_file(target, target_before, sizeof(target_before));
+    assert(symlink("target", p.v2) == 0);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(dsd_app_signal_search_history_get(hits, 8) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    publish(47);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && count_v2_records(p.v2, (size_t)g_record - 12U) == 1);
+    dsd_app_signal_search_store_close();
+    kept_path(kept, sizeof(kept), p.v2, 1);
+    const ssize_t len = readlink(kept, link_text, sizeof(link_text) - 1);
+    assert(len == 6 && memcmp(link_text, "target", 6) == 0);
+    assert(file_is(target, target_before, target_bytes));
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+
+    // A link to a folder is still a link: it is moved aside itself, the folder is never touched, and the write goes
+    // through.
+    store_dir(&p, root, "linkdir");
+    assert(dsd_test_path_join(target, sizeof(target), p.dir, "target") == 0);
+    assert(dsd_mkdir(target, 0700) == 0);
+    assert(symlink("target", p.v2) == 0);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    publish(48);
+    dsd_app_signal_search_store_flush();
+    assert(!store_error() && !write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_KEPT, "history.v2.unreadable-1"));
+    assert(count_v2_records(p.v2, (size_t)g_record - 12U) == 1);
+    dsd_app_signal_search_store_close();
+    kept_path(kept, sizeof(kept), p.v2, 1);
+    const ssize_t dir_len = readlink(kept, link_text, sizeof(link_text) - 1);
+    assert(dir_len == 6 && memcmp(link_text, "target", 6) == 0);
+    {
+        struct stat st;
+        assert(lstat(target, &st) == 0 && S_ISDIR(st.st_mode));
+    }
+    assert(dsd_test_rmdir(target) == 0);
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+
+    store_dir(&p, root, "sourceleft");
+    write_bytes(p.avoids, "[x]", 3);
+    assert(dsd_app_signal_search_store_open(p.journal) == 0);
+    dsd_app_signal_search_store_test_after_aside(link_back_after_aside);
+    assert(dsd_app_signal_search_permanent_avoid(463050000) == DSD_APP_SEARCH_AVOID_ADDED);
+    dsd_app_signal_search_store_flush();
+    dsd_app_signal_search_store_test_after_aside(NULL);
+    kept_path(kept, sizeof(kept), p.avoids, 1);
+    assert(!store_error() && file_is(kept, "[x]", 3) && file_is(p.avoids, "[463050000]\n", 12));
+    assert(state_is(DSD_APP_SEARCH_STORE_AVOIDS, DSD_APP_SEARCH_FILE_KEPT, "history.avoids.json.unreadable-1"));
+    dsd_app_signal_search_store_close();
+    assert(dsd_test_remove_temp_dir(p.dir, files) == 0);
+
+    expect_not_a_file(root, "fifo", 1);
+    expect_retry_finds_fifo(root);
+}
+#endif
+
+static void
+unreadable_cases(const char* root) {
+    history_kept_cases(root);
+    avoids_kept_cases(root);
+    expect_retry_after_aside(root);
+    v1_gate_cases(root);
+    v1_unreadable_cases(root);
+    expect_per_file_states(root);
+    expect_not_a_file(root, "diravoids", 0);
+    expect_sweep_folder();
+    expect_temp_sweep(root);
+#if !DSD_PLATFORM_WIN_NATIVE
+    posix_cases(root);
+#endif
+}
+
 int
 main(void) {
     char root[DSD_TEST_PATH_MAX];
@@ -285,6 +1052,7 @@ main(void) {
     assert(!store_error());
     const long record = file_size(clean.v2);
     assert(record > 0);
+    g_record = record;
     dsd_app_signal_search_store_close();
 
     // History written while the journal directory is missing must survive a later save that only changes an avoid.
@@ -308,12 +1076,14 @@ main(void) {
     dsd_app_signal_search_store_close();
 
     // A journal that still cannot be written stays reported after the avoid beside it saves. A directory in its place
-    // refuses both an append and the compacted replacement.
+    // refuses both an append and the compacted replacement, and is never moved aside; once it is gone the mark it
+    // earned at the load clears and the write goes through.
     store_paths blocked;
     paths_init(&blocked, root, "blocked");
     assert(dsd_mkdir(blocked.dir, 0700) == 0);
     assert(dsd_mkdir(blocked.v2, 0700) == 0);
     assert(dsd_app_signal_search_store_open(blocked.journal) == 0);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
     publish(4);
     dsd_app_signal_search_store_flush();
     assert(store_error());
@@ -321,9 +1091,16 @@ main(void) {
     dsd_app_signal_search_store_flush();
     assert(store_error());
     assert(file_size(blocked.avoids) > 0);
+    {
+        char kept[DSD_TEST_PATH_MAX];
+        kept_path(kept, sizeof(kept), blocked.v2, 1);
+        assert(!exists(kept) && write_owed(DSD_APP_SEARCH_STORE_HISTORY));
+        assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+    }
     assert(dsd_test_rmdir(blocked.v2) == 0);
     dsd_app_signal_search_store_flush();
     assert(!store_error() && file_size(blocked.v2) == record);
+    assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_MISSING, NULL));
     assert(reopen(blocked.journal, hits, 8) == 1 && hits[0].hit_id == 4);
     assert(dsd_app_signal_search_avoids_get(avoids, 4) == 1 && avoids[0] == 462600000);
     dsd_app_signal_search_store_close();
@@ -391,6 +1168,73 @@ main(void) {
     assert(!store_error());
     dsd_app_signal_search_store_close();
 
+    // Issue #828: the store alone writes the runtime's permanent avoid list, which a running search reads at its next
+    // tick: the list as loaded, then at every add and remove; closing the store withdraws it. A file that repeats a
+    // frequency loads it once (issue #828), so a single removal lifts it everywhere.
+    store_paths shared;
+    paths_init(&shared, root, "shared");
+    assert(dsd_mkdir(shared.dir, 0700) == 0);
+    {
+        FILE* f = dsd_fopen_private(shared.avoids, "wb");
+        assert(f);
+        assert(fputs("[462700000, 462725000,462700000]\n", f) >= 0);
+        assert(fclose(f) == 0);
+    }
+    uint32_t runtime[4];
+    assert(dsd_app_signal_search_store_open(shared.journal) == 0);
+    assert(!store_error());
+    assert(dsd_app_signal_search_avoids_get(avoids, 4) == 2 && avoids[0] == 462700000 && avoids[1] == 462725000);
+    assert(runtime_permanent(runtime, 4) == 2 && runtime[0] == 462700000 && runtime[1] == 462725000);
+    assert(dsd_app_signal_search_permanent_avoid(462750000) == DSD_APP_SEARCH_AVOID_ADDED);
+    assert(runtime_permanent(runtime, 4) == 3 && runtime[2] == 462750000);
+    const uint64_t permanent_revision = dsd_signal_search_avoids_permanent_revision();
+    assert(dsd_app_signal_search_permanent_avoid(462750000) == DSD_APP_SEARCH_AVOID_DUPLICATE);
+    assert(dsd_signal_search_avoids_permanent_revision() == permanent_revision);
+    assert(dsd_app_signal_search_avoid_remove(462700000) == 0);
+    assert(runtime_permanent(runtime, 4) == 2 && runtime[0] == 462725000 && runtime[1] == 462750000);
+    assert(dsd_app_signal_search_avoid_remove(462700000) == -1);
+    assert(dsd_app_signal_search_avoids_get(avoids, 4) == 2);
+    dsd_app_signal_search_store_close();
+    assert(runtime_permanent(runtime, 4) == 0 && dsd_app_signal_search_avoids_get(avoids, 4) == 0);
+    assert(dsd_app_signal_search_store_open(shared.journal) == 0);
+    assert(runtime_permanent(runtime, 4) == 2 && runtime[0] == 462725000 && runtime[1] == 462750000);
+
+    // The session list is the engine's, read from the runtime, and shown only for the store's own running session:
+    // never another session's, nor one that failed or stopped, even while the runtime still holds it. A change to the
+    // list, or to whether it is shown, moves the avoid revision the frontends copy by.
+    const uint32_t session_list[] = {462800000, 462825000};
+    publish_phase(41, DSD_SEARCH_SEARCHING, 1);
+    uint64_t avoid_revision = dsd_app_signal_search_avoids_revision();
+    dsd_signal_search_avoids_session_set(41, session_list, 2);
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 2 && avoids[0] == 462800000);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 1) == 1 && avoids[0] == 462800000);
+    dsd_signal_search_avoids_session_set(42, session_list, 1);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    dsd_signal_search_avoids_session_set(41, session_list + 1, 1);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1 && avoids[0] == 462825000);
+    avoid_revision = dsd_app_signal_search_avoids_revision();
+    publish_phase(41, DSD_SEARCH_PAUSED, 2);
+    assert(dsd_app_signal_search_avoids_revision() == avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1);
+    publish_phase(41, DSD_SEARCH_ERROR, 3);
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    avoid_revision = dsd_app_signal_search_avoids_revision();
+    publish_phase(41, DSD_SEARCH_PAUSED, 4);
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1);
+    publish_phase(41, DSD_SEARCH_STOPPED, 5);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    publish_phase(41, DSD_SEARCH_LISTENING, 6);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 1);
+    avoid_revision = dsd_app_signal_search_avoids_revision();
+    dsd_app_signal_search_session_ended();
+    assert(dsd_app_signal_search_avoids_revision() != avoid_revision);
+    assert(dsd_app_signal_search_session_avoids_get(avoids, 4) == 0);
+    dsd_signal_search_avoids_session_set(0, NULL, 0);
+    dsd_app_signal_search_store_close();
+
     // A version 1 journal loads every row, with no checked site, slot or encryption. The first write creates the
     // version 2 journal holding all of them; the version 1 journal is never touched, so an earlier release still
     // reads its own history.
@@ -451,7 +1295,8 @@ main(void) {
         write_record(f, 0x32535344U, &body);
         assert(fclose(f) == 0);
         assert(dsd_app_signal_search_store_open(migrate.journal) == 0);
-        assert(store_error() && dsd_app_signal_search_history_get(hits, 8) == 0);
+        assert(state_is(DSD_APP_SEARCH_STORE_V1, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
+        assert(dsd_app_signal_search_history_get(hits, 8) == 0);
         dsd_app_signal_search_store_close();
         assert(file_size(migrate.v2) == -1);
     }
@@ -535,7 +1380,7 @@ main(void) {
         write_record(f, 0x31535344U, &body); // DSS1: the version 2 journal holds only version 2 records
         assert(fclose(f) == 0);
         assert(dsd_app_signal_search_store_open(hostile.journal) == 0);
-        assert(store_error());
+        assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
         assert(dsd_app_signal_search_history_get(hits, 8) == 1 && hits[0].hit_id == 1 && hits[0].slot == 0);
         assert(strlen(hits[0].site) == sizeof(h.site) - 1 && strlen(hits[0].crypt) == sizeof(h.crypt) - 1);
         dsd_app_signal_search_store_close();
@@ -547,16 +1392,21 @@ main(void) {
         write_record(f, 0x32535344U, &body);
         assert(fclose(f) == 0);
         assert(dsd_app_signal_search_store_open(hostile.journal) == 0);
-        assert(store_error());
+        assert(state_is(DSD_APP_SEARCH_STORE_HISTORY, DSD_APP_SEARCH_FILE_UNREADABLE, NULL));
         assert(dsd_app_signal_search_history_get(hits, 8) == 0);
         dsd_app_signal_search_store_close();
+        // Closing writes nothing, so nothing was moved.
+        assert(file_size(hostile.v2) == (long)body.n + 12);
     }
+
+    unreadable_cases(root);
 
     // Failed replacements removed their temporary files.
     paths_remove(&migrate);
     paths_remove(&details);
     paths_remove(&hostile);
     paths_remove(&limits);
+    paths_remove(&shared);
     paths_remove(&clean);
     paths_remove(&late);
     paths_remove(&blocked);

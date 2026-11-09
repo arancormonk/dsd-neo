@@ -39,6 +39,7 @@
 
 #include "app_prefs.h"
 #include "decoder_host.h"
+#include "platform_path.h"
 #include "realtime_clock.h"
 #include "recording_journal.h"
 
@@ -232,12 +233,12 @@ recording_path_inside_root(const QString& path, const QString& root) {
 
 RecordingStore::RecordingStore(QObject* parent) : QObject(parent) {
     m_uploadHolds = [](const QString& path) {
-        const QByteArray native = QFile::encodeName(path);
+        const QByteArray native = platform_path(path);
         return dsd_rdio_upload_holds(native.constData()) != 0;
     };
     // Free bytes only: QStorageInfo also reads the volume's label, which Android's SELinux policy denies the app.
     m_freeSpaceProbe = [](const QString& path) {
-        return static_cast<qint64>(dsd_path_free_bytes(path.toUtf8().constData()));
+        return static_cast<qint64>(dsd_path_free_bytes(platform_path(path).constData()));
     };
     m_remove = [](const QString& path, QString* error) {
         QFile file(path);

@@ -26,18 +26,21 @@
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search.h>
+#include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 static dsd_signal_search_status status;
-static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0};
+static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
 static dsd_signal_measure_request request;
 static uint32_t ticket, target, generation = 1;
 static int tune_pending, buffered, defer, failed, live = 1, ready, cancelled, bypassed, carrier, boundary;
@@ -164,18 +167,40 @@ rtl_signal_capture_last_ms(void) {
     return dsd_realtime_mono_ms() + capture_ahead_ms - stalled_ms;
 }
 
+/* The reason the next span or live request is refused for, or DSD_SIGNAL_REQUEST_OK to take it. */
+static dsd_signal_request_failure request_failure = DSD_SIGNAL_REQUEST_OK;
+
 int
-rtl_signal_measure_request(const dsd_signal_measure_request* r) {
+rtl_signal_measure_request(const dsd_signal_measure_request* r, dsd_signal_request_failure* out_failure) {
+    if (out_failure) {
+        *out_failure = request_failure;
+    }
+    if (request_failure != DSD_SIGNAL_REQUEST_OK) {
+        return -1;
+    }
     request = *r;
     return 0;
 }
 
+/* The reason of the failure answer `ready` -1 (the outstanding request's) or -3 (an earlier request's) gives. */
+static dsd_signal_measure_failure fail_reason = DSD_SIGNAL_MEASURE_CLIPPED;
+
+/* The next answer: 1 a report detecting every candidate, 2 one detecting none, 3 a stale report, -1 or -3 a failure
+   carrying its request's ids and generation, no candidates and fail_reason, as the tap's. */
 int
 rtl_signal_measure_get(dsd_signal_measure_report* out) {
     if (!ready) {
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
+    if (ready < 0) {
+        out->session_id = request.session_id;
+        out->request_id = request.request_id - (ready == -3 ? 1U : 0U);
+        out->generation = request.capture.generation;
+        out->failure = fail_reason;
+        ready = 0;
+        return -1;
+    }
     out->session_id = request.session_id;
     out->request_id = request.request_id;
     out->generation = capture.generation;
@@ -376,7 +401,6 @@ test_listening_verdict_and_live_strength(dsd_opts* o, dsd_state* s, dsd_signal_s
     live = 1;
     carrier = 0;
     config->session_id = 44;
-    config->avoid_count = 0;
     config->ranges[0].digital = 0;
     config->ranges[0].max_visit_ms = 0;
     assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
@@ -697,6 +721,344 @@ test_capture_freshness(dsd_opts* o, dsd_state* s, dsd_signal_search_config* conf
     assert(status.phase == DSD_SEARCH_STOPPED);
 }
 
+/* A span measurement the tap refuses fails the search, saying why: the detector could not be allocated, or the plan is
+   one it does not support. */
+static void
+test_request_failure_messages(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    static const struct {
+        dsd_signal_request_failure failure;
+        const char* message;
+    } cases[] = {
+        {DSD_SIGNAL_REQUEST_NO_MEMORY, "Not enough memory for a measurement"},
+        {DSD_SIGNAL_REQUEST_UNSUPPORTED, "Unsupported FFT measurement plan"},
+    };
+
+    char error[192];
+    live = 1;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        config->session_id = 90 + i;
+        assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_TUNING);
+        request_failure = cases[i].failure;
+        land(o, s);
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_ERROR);
+        assert(strcmp(status.message, cases[i].message) == 0);
+        request_failure = DSD_SIGNAL_REQUEST_OK;
+        act(o, s, DSD_SEARCH_ACTION_STOP);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_STOPPED);
+    }
+}
+
+/* Clipping (issue #828): sessions over one or two one-span analog ranges, "Air band" and "Marine", whose span
+   measurements the stub answers by hand. The realtime clock drives the deadlines. */
+static void
+clip_start(dsd_opts* o, dsd_state* s, uint64_t session, uint32_t ranges) {
+    dsd_signal_search_config config;
+    DSD_MEMSET(&config, 0, sizeof(config));
+    config.session_id = session;
+    config.range_count = ranges;
+    dsd_signal_search_range_default(&config.ranges[0]);
+    DSD_SNPRINTF(config.ranges[0].name, sizeof(config.ranges[0].name), "%s", "Air band");
+    config.ranges[0].start_hz = 100000000;
+    config.ranges[0].end_hz = 100025000;
+    config.ranges[0].digital = 0;
+    config.ranges[0].max_visit_ms = 0;
+    config.ranges[1] = config.ranges[0];
+    DSD_SNPRINTF(config.ranges[1].name, sizeof(config.ranges[1].name), "%s", "Marine");
+    config.ranges[1].start_hz = 100100000;
+    config.ranges[1].end_hz = 100125000;
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    char error[192];
+    assert(dsd_engine_signal_search_start(o, s, &config, observer, NULL, error, sizeof(error)) == 0);
+    assert(!status.overloaded && status.overload_range[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING);
+    land(o, s); // the first span request goes out
+    assert(status.phase == DSD_SEARCH_SEARCHING && status.range_index == 0 && status.channel_index == 0);
+}
+
+/* One tick @p ms after the last; the outstanding span request answered with a failure of @p reason. */
+static void
+fail_after(dsd_opts* o, dsd_state* s, uint64_t ms, dsd_signal_measure_failure reason) {
+    realtime_ms += ms;
+    fail_reason = reason;
+    ready = -1;
+    tick(o, s);
+}
+
+/* One tick @p ms after the last, the outstanding request unanswered. */
+static void
+wait_after(dsd_opts* o, dsd_state* s, uint64_t ms) {
+    realtime_ms += ms;
+    tick(o, s);
+}
+
+/* Still measuring range @p range's span. */
+static int
+measuring_span(uint32_t range) {
+    return status.phase == DSD_SEARCH_SEARCHING && status.range_index == range && status.channel_index == 0;
+}
+
+/* The span just left with nothing detected: the search is past its channels and the next span is still to plan. */
+static int
+left_span(void) {
+    return status.phase == DSD_SEARCH_SEARCHING && status.channel_index == status.channel_count;
+}
+
+/* The next span: its tune is queued, lands, and its first request goes out. */
+static void
+next_span(dsd_opts* o, dsd_state* s) {
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.channel_index == 0);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+}
+
+/* Skips the span being measured: a clip, and another a second later. */
+static void
+clip_span_out(dsd_opts* o, dsd_state* s) {
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    fail_after(o, s, 1000, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(left_span() && status.overloaded);
+}
+
+/* Measures the span clean (nothing detected) and leaves it. */
+static void
+clean_span_out(dsd_opts* o, dsd_state* s) {
+    ready = 2;
+    tick(o, s);
+    assert(left_span());
+}
+
+static void
+clip_stop(dsd_opts* o, dsd_state* s) {
+    ready = 0;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    for (int i = 0; i < 3 && status.phase != DSD_SEARCH_STOPPED; ++i) {
+        land(o, s);
+    }
+    assert(status.phase == DSD_SEARCH_STOPPED);
+}
+
+/* A span that keeps clipping for a second is skipped with the overload warning instead of failing the search, and
+   measured again next pass; nothing is detected from a clipped measurement. Shorter clipping skips nothing, a complete
+   report is used before any deadline is judged, any other failure keeps the clip run going but cannot end it at a
+   second, and the warning names the first skipped range of a pass until a pass skips nothing. */
+static void
+test_clipping_span_skipped(dsd_opts* o, dsd_state* s) {
+    clip_start(o, s, 60, 2);
+    const uint32_t air_hz = target;
+    const int hits = hits_published;
+
+    // Under a second of clipping skips nothing; a complete report a second after the first clip is still used.
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    fail_after(o, s, 999, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(measuring_span(0) && !status.overloaded);
+    realtime_ms += 1;
+    clean_span_out(o, s);
+    assert(!status.overloaded && status.range_index == 0);
+
+    // Range B: a drop keeps the run going without ending it; the next clip, a second and a half after the first, skips.
+    next_span(o, s);
+    assert(status.range_index == 1);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    fail_after(o, s, 1000, DSD_SIGNAL_MEASURE_DROPPED);
+    wait_after(o, s, 400);
+    assert(measuring_span(1) && !status.overloaded);
+    fail_after(o, s, 100, DSD_SIGNAL_MEASURE_CLIPPED);
+    assert(left_span() && status.range_index == 1 && status.pass == 1);
+    assert(status.overloaded && strcmp(status.overload_range, "Marine") == 0);
+    assert(status.message[0] == '\0' && hits_published == hits && status.hit.hit_id == 0);
+
+    // Pass 2 measures range A again on the same tune. Its first skip renames the warning; a later one does not.
+    next_span(o, s);
+    assert(status.pass == 2 && status.range_index == 0 && target == air_hz);
+    assert(status.overloaded && strcmp(status.overload_range, "Marine") == 0);
+    clip_span_out(o, s);
+    assert(strcmp(status.overload_range, "Air band") == 0);
+    next_span(o, s);
+    clip_span_out(o, s);
+    assert(status.range_index == 1 && strcmp(status.overload_range, "Air band") == 0);
+
+    // A pass after one that skipped keeps the warning while it runs, clean or not; the end of a clean pass clears it.
+    next_span(o, s);
+    assert(status.pass == 3 && status.overloaded && strcmp(status.overload_range, "Air band") == 0);
+    clean_span_out(o, s);
+    next_span(o, s);
+    clean_span_out(o, s);
+    assert(status.overloaded);
+    next_span(o, s);
+    assert(status.pass == 4 && !status.overloaded && status.overload_range[0] == '\0');
+    assert(hits_published == hits && status.phase != DSD_SEARCH_ERROR);
+    clip_stop(o, s);
+}
+
+/* The span deadlines that skip, each row on a fresh one-range session: a first clip late in the five seconds skips at
+   five seconds, a clip and then no answer a second after the clip, and clipping and then only drops at five seconds. */
+static void
+test_clipping_deadline_skips(dsd_opts* o, dsd_state* s) {
+    // A first clip at 4.6 s: neither deadline at 5 s, a skip just after.
+    clip_start(o, s, 61, 1);
+    wait_after(o, s, 4600);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    wait_after(o, s, 400);
+    assert(measuring_span(0) && !status.overloaded);
+    wait_after(o, s, 1);
+    assert(left_span() && status.overloaded && strcmp(status.overload_range, "Air band") == 0);
+    clip_stop(o, s);
+
+    // A clip and then no answer: the clip's second still runs out.
+    clip_start(o, s, 62, 1);
+    fail_after(o, s, 300, DSD_SIGNAL_MEASURE_CLIPPED);
+    wait_after(o, s, 999);
+    assert(measuring_span(0) && !status.overloaded);
+    wait_after(o, s, 1);
+    assert(left_span() && status.overloaded);
+    clip_stop(o, s);
+
+    // A clip, then only drops: no second-long clip run, the five seconds skip.
+    clip_start(o, s, 63, 1);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    for (int i = 0; i < 10; ++i) {
+        fail_after(o, s, 500, DSD_SIGNAL_MEASURE_DROPPED);
+    }
+    assert(measuring_span(0) && !status.overloaded);
+    fail_after(o, s, 1, DSD_SIGNAL_MEASURE_DROPPED);
+    assert(left_span() && status.overloaded && status.phase != DSD_SEARCH_ERROR);
+    clip_stop(o, s);
+}
+
+/* Without a clip of its own request, a span tune that completes no measurement in five seconds fails the search, as
+   before: drops alone, no answer at all, or clips answering an earlier request. */
+static void
+test_unclipped_deadline_fails(dsd_opts* o, dsd_state* s) {
+    for (int row = 0; row < 3; ++row) {
+        clip_start(o, s, 64 + (uint64_t)row, 1);
+        for (int i = 0; i < 10; ++i) {
+            if (row == 0) {
+                fail_after(o, s, 500, DSD_SIGNAL_MEASURE_DROPPED);
+            } else if (row == 1) {
+                wait_after(o, s, 500);
+            } else {
+                realtime_ms += 500;
+                fail_reason = DSD_SIGNAL_MEASURE_CLIPPED;
+                ready = -3;
+                tick(o, s);
+            }
+        }
+        assert(measuring_span(0) && !status.overloaded);
+        wait_after(o, s, 1);
+        assert(status.phase == DSD_SEARCH_ERROR && !status.overloaded);
+        assert(strcmp(status.message, "No uninterrupted samples for a measurement") == 0);
+        clip_stop(o, s);
+    }
+}
+
+/* A report that completed is read before any deadline is judged: used, not failed or skipped, when it is read after
+   five seconds or at the clip run's second. */
+static void
+test_completed_report_beats_deadlines(dsd_opts* o, dsd_state* s) {
+    clip_start(o, s, 67, 1);
+    realtime_ms += 5001;
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && !status.hit.ended && !status.overloaded);
+    clip_stop(o, s);
+    clip_start(o, s, 68, 1);
+    fail_after(o, s, 0, DSD_SIGNAL_MEASURE_CLIPPED);
+    realtime_ms += 1000;
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && !status.overloaded);
+    clip_stop(o, s);
+}
+
+/* One span, or every span, clipping for good keeps searching: each skip wraps or moves on, the pass climbs, the
+   warning stays and names the pass's first skipped range, and nothing is detected. */
+static void
+test_clipping_keeps_searching(dsd_opts* o, dsd_state* s) {
+    clip_start(o, s, 69, 1);
+    const uint32_t tune_hz = target;
+    const int hits = hits_published;
+    for (uint64_t pass = 1; pass <= 5; ++pass) {
+        assert(status.pass == pass && target == tune_hz);
+        clip_span_out(o, s);
+        assert(strcmp(status.overload_range, "Air band") == 0);
+        next_span(o, s);
+    }
+    assert(status.pass == 6 && status.overloaded && hits_published == hits);
+    clip_stop(o, s);
+
+    clip_start(o, s, 70, 2);
+    for (uint64_t pass = 1; pass <= 3; ++pass) {
+        assert(status.pass == pass && status.range_index == 0);
+        clip_span_out(o, s);
+        next_span(o, s);
+        assert(status.range_index == 1);
+        clip_span_out(o, s);
+        assert(strcmp(status.overload_range, "Air band") == 0);
+        next_span(o, s);
+    }
+    assert(status.pass == 4 && status.overloaded && hits_published == hits && status.phase != DSD_SEARCH_ERROR);
+    clip_stop(o, s);
+}
+
+/* The warning stays through Pause and the visits and actions that clear a refusal, and goes at Resume and at a paused
+   restart with edited ranges, so a gain lowered there shows its effect; a span that still clips warns again. */
+static void
+test_overload_clears(dsd_opts* o, dsd_state* s) {
+    // A detection visited after the skip, and a Skip taken on it, leave the warning.
+    clip_start(o, s, 71, 2);
+    clip_span_out(o, s);
+    next_span(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && status.overloaded);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.overloaded);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(status.hit.ended && status.overloaded && strcmp(status.overload_range, "Air band") == 0);
+
+    // Paused, it still shows; Resume clears it, and the span that still clips sets it again with its name.
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED && status.overloaded);
+    act(o, s, DSD_SEARCH_ACTION_RESUME);
+    assert(!status.overloaded && status.overload_range[0] == '\0');
+    land(o, s); // the Skip's return tune completes; the span is planned again
+    assert(status.phase == DSD_SEARCH_TUNING);
+    land(o, s);
+    assert(measuring_span(1) && !status.overloaded);
+    clip_span_out(o, s);
+    assert(strcmp(status.overload_range, "Marine") == 0);
+    clip_stop(o, s);
+
+    // A paused restart with edited ranges clears it.
+    clip_start(o, s, 72, 1);
+    clip_span_out(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.overloaded);
+    dsd_signal_search_config edited;
+    DSD_MEMSET(&edited, 0, sizeof(edited));
+    edited.session_id = 72;
+    edited.range_count = 1;
+    dsd_signal_search_range_default(&edited.ranges[0]);
+    DSD_SNPRINTF(edited.ranges[0].name, sizeof(edited.ranges[0].name), "%s", "Air band");
+    edited.ranges[0].start_hz = 100000000;
+    edited.ranges[0].end_hz = 100025000;
+    edited.ranges[0].digital = 0;
+    edited.ranges[0].gain_set = 1;
+    edited.ranges[0].gain_tenth_db = 100;
+    char error[192];
+    assert(dsd_engine_signal_search_start(o, s, &edited, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING && !status.overloaded && status.overload_range[0] == '\0');
+    clip_stop(o, s);
+}
+
 /* The status names the range being searched, from the coordinator's own configuration: a detection in range A keeps
    its own range name when the search moves on, and the status shows the quiet range B the search is in now. Edited
    ranges reach the status only at the Resume that applies them. */
@@ -709,7 +1071,6 @@ test_status_names_running_range(dsd_opts* o, dsd_state* s, dsd_signal_search_con
     o->rtlsdr_center_freq = 100000000;
     dsd_signal_search_config two = *config;
     two.session_id = 54;
-    two.avoid_count = 0;
     two.range_count = 2;
     DSD_SNPRINTF(two.ranges[0].name, sizeof(two.ranges[0].name), "%s", "Air band");
     two.ranges[0].digital = 0;
@@ -767,7 +1128,6 @@ test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* con
     o->rtlsdr_center_freq = 100000000;
     dsd_signal_search_config one = *config;
     one.session_id = 55;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -867,11 +1227,14 @@ test_avoid_by_frequency(dsd_opts* o, dsd_state* s, dsd_signal_search_config* con
     assert(status.message[0] == '\0');
     dsd_engine_signal_search_notice(s, 55, "The permanent avoid list is full");
     assert(strcmp(status.message, "The permanent avoid list is full") == 0);
-    // A failed search keeps its error: a full list refuses without replacing it.
+    // A failed search keeps its error: its full session list went with it, and a session avoid is refused without
+    // replacing the error.
     act(o, s, DSD_SEARCH_ACTION_SKIP);
     failed = 1;
     land(o, s);
     assert(status.phase == DSD_SEARCH_ERROR && status.message[0] != '\0');
+    uint64_t avoid_session = 1;
+    assert(dsd_signal_search_avoids_session_get(&avoid_session, NULL, 0) == 0 && avoid_session == 0);
     char search_error_text[sizeof(status.message)];
     DSD_SNPRINTF(search_error_text, sizeof(search_error_text), "%s", status.message);
     by_frequency.frequency_hz = 300000000;
@@ -990,7 +1353,6 @@ test_site_notes_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     o->rtlsdr_center_freq = 100000000;
     dsd_signal_search_config one = *config;
     one.session_id = 61;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -1099,7 +1461,6 @@ test_access_note_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_confi
     one.session_id = 63;
     const int saved_sync = s->synctype;
     const int saved_sps = s->sps_hunt_idx;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -1219,7 +1580,6 @@ test_call_tuple_on_detection(dsd_opts* o, dsd_state* s, dsd_signal_search_config
     DSD_MEMSET(calls, 0, sizeof(calls));
     dsd_signal_search_config one = *config;
     one.session_id = 62;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].start_hz = 100000000;
     one.ranges[0].end_hz = 100025000;
@@ -1416,7 +1776,6 @@ static dsd_signal_search_config
 tag_config(const dsd_signal_search_config* base, uint64_t session, int digital, uint32_t max_visit_ms) {
     dsd_signal_search_config one = *base;
     one.session_id = session;
-    one.avoid_count = 0;
     one.range_count = 1;
     one.ranges[0].enabled = 1;
     one.ranges[0].start_hz = 100000000;
@@ -3067,6 +3426,303 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_probe_hook_answer(o, s, config);
 }
 
+/* The runtime session list as the engine last published it: its length, with its session in @p session. */
+static uint32_t published_session[DSD_SEARCH_MAX_AVOIDS];
+
+static size_t
+session_avoids(uint64_t* session) {
+    return dsd_signal_search_avoids_session_get(session, published_session, DSD_SEARCH_MAX_AVOIDS);
+}
+
+/* The store's permanent avoids, written as the app-control store writes them; a 0 is no frequency. */
+static void
+set_permanent(uint32_t first, uint32_t second) {
+    const uint32_t list[2] = {first, second};
+    dsd_signal_search_avoids_permanent_set(list, 2);
+}
+
+/* A by-frequency action on the running session. */
+static int
+control_frequency(dsd_opts* o, dsd_state* s, int action, uint32_t frequency) {
+    const dsd_signal_search_control a = {status.session_id, 0, action, frequency};
+    return dsd_engine_signal_search_control(o, s, &a);
+}
+
+/* The store's permanent avoids and this session's are two lists of 1,024 each (issue #828): a full permanent list
+   leaves the session all its room, and an avoid of a permanent frequency needs none. */
+static void
+test_avoid_lists_room(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static uint32_t permanent[DSD_SEARCH_MAX_AVOIDS];
+    for (uint32_t i = 0; i < DSD_SEARCH_MAX_AVOIDS; ++i) {
+        permanent[i] = 200000000U + i * 12500U;
+    }
+    dsd_signal_search_avoids_permanent_set(permanent, DSD_SEARCH_MAX_AVOIDS);
+    const dsd_signal_search_config one = tag_config(config, 97, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    uint32_t frequency = 300000000;
+    for (uint32_t i = 0; i < DSD_SEARCH_MAX_AVOIDS; ++i, frequency += 12500) {
+        assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, frequency) == 0);
+    }
+    assert(status.message[0] == '\0');
+    uint64_t session = 0;
+    assert(session_avoids(&session) == DSD_SEARCH_MAX_AVOIDS && session == 97 && published_session[0] == 300000000);
+    // The 1,025th session avoid has no room, and says so.
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, frequency) < 0);
+    assert(strcmp(status.message, "The avoid list is full") == 0);
+    // A permanent frequency takes no room: accepted, and nothing is added.
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, permanent[DSD_SEARCH_MAX_AVOIDS - 1]) == 0);
+    assert(session_avoids(&session) == DSD_SEARCH_MAX_AVOIDS && status.message[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && !status.hit.ended);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* A frequency is in at most one list (issue #828): an avoid of a permanent frequency adds nothing to the session list
+   and drops a session copy, Stop avoiding (UNAVOID) never lifts a permanent avoid, and the store's changes reach the
+   running search at its next action or tick: an added one is excluded, and leaves the visit it names; a removed one is
+   measured again. */
+static void
+test_session_avoid_of_permanent(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 98, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    uint64_t session = 0;
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 1 && session == 98 && published_session[0] == 100012500);
+    // Made permanent: the next action finds it so, and the session copy goes.
+    set_permanent(100012500, 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 0 && session == 98);
+    // Stop avoiding lifts only a session avoid: the permanent one stays excluded (below).
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_UNAVOID, 100012500) == 0);
+    // The hit being visited, already permanent: Avoid permanently leaves the visit and adds nothing.
+    set_permanent(100012500, 100025000);
+    act(o, s, DSD_SEARCH_ACTION_AVOID_PERMANENT);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && session_avoids(&session) == 0);
+    // Both permanent frequencies are excluded: only 100.000 MHz is visited, this pass and the next.
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100000000);
+    land(o, s);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.pass == 2);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100000000);
+    // A permanent avoid removed mid-search is measured again.
+    set_permanent(100025000, 0);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100012500);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    // One added for the visit, with no action: the next tick leaves it.
+    set_permanent(100025000, 100012500);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended && session_avoids(&session) == 0);
+    land(o, s);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* Avoid this session on a visited hit (AVOID) or by frequency (AVOID_FREQUENCY), when the store has just made that
+   frequency permanent: the action succeeds, adds nothing, the session copy of another frequency made permanent with it
+   goes, and the visit is left (issue #828). */
+static void
+test_hit_avoids_of_permanent(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 46, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING && status.hit.frequency_hz == 100025000);
+    uint64_t session = 0;
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 1 && session == 46 && published_session[0] == 100012500);
+    // AVOID on the hit, both frequencies now permanent.
+    set_permanent(100025000, 100012500);
+    const dsd_signal_search_control avoid_hit = {46, status.hit.hit_id, DSD_SEARCH_ACTION_AVOID, 0};
+    assert(dsd_engine_signal_search_control(o, s, &avoid_hit) == 0);
+    assert(session_avoids(&session) == 0 && session == 46 && status.message[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    // The next detection is the one frequency in neither list.
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100000000);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_LISTENING);
+    // AVOID_FREQUENCY naming the visited frequency, made permanent with a session avoid of another one.
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    assert(session_avoids(&session) == 1 && published_session[0] == 200000000);
+    const uint32_t all[] = {100025000, 100012500, 100000000, 200000000};
+    dsd_signal_search_avoids_permanent_set(all, 4);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100000000) == 0);
+    assert(session_avoids(&session) == 0 && session == 46 && status.message[0] == '\0');
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* A permanent avoid made for the hit being visited leaves it at once (issue #828), held and decoded without a break
+   too: the in-frame yield check finds the store's change with no command queued and no main-loop tick, and the tick it
+   returns to leaves the visit. A change that does not name the visit cuts no frame. */
+static void
+test_permanent_leaves_held_visit(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 99, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    assert(status.phase == DSD_SEARCH_HELD);
+    carrier = 1;
+    assert(!dsd_runtime_controls_pending() && !dsd_engine_signal_search_should_yield(o, s));
+    set_permanent(200000000, 0);
+    assert(!dsd_engine_signal_search_should_yield(o, s));
+    const uint64_t hit = status.hit.hit_id;
+    set_permanent(200000000, status.hit.frequency_hz);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    // The yield check only asks for the tick: the hit is retired there.
+    assert(status.phase == DSD_SEARCH_HELD && status.hit.hit_id == hit && !status.hit.ended);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.hit_id == hit && status.hit.ended);
+    carrier = 0;
+    land(o, s);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* Paused, the search still takes the store's changes, and a Resume with edited ranges keeps both lists (issue #828). */
+static void
+test_paused_search_keeps_both_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 77, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100000000) == 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED);
+    set_permanent(100012500, 200000000);
+    tick(o, s);
+    uint64_t session = 0;
+    assert(session_avoids(&session) == 1 && session == 77 && published_session[0] == 100000000);
+    DSD_SNPRINTF(one.ranges[0].name, sizeof(one.ranges[0].name), "%s", "Edited");
+    char error[192];
+    assert(dsd_engine_signal_search_start(o, s, &one, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING && strcmp(status.range_name, "Edited") == 0);
+    assert(session_avoids(&session) == 1 && session == 77 && published_session[0] == 100000000);
+    // The session avoid and the permanent one stay excluded: only 100.025 MHz is visited, this pass and the next.
+    tick(o, s);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100025000);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    const uint64_t pass = status.pass;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.pass == pass + 1);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100025000);
+    stop_tag_session(o, s);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+}
+
+/* The session list is the running session's alone (issue #828): a search that fails or stops clears the runtime list
+   and publishes no session avoid after that; a failed search refuses session avoids and keeps its error. */
+static void
+test_session_list_ends_with_session(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 79, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    uint64_t session = 0;
+    assert(session_avoids(&session) == 1 && session == 79);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    failed = 1;
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && status.message[0] != '\0');
+    assert(session_avoids(&session) == 0 && session == 0);
+    char search_error_text[sizeof(status.message)];
+    DSD_SNPRINTF(search_error_text, sizeof(search_error_text), "%s", status.message);
+    const uint64_t revision = dsd_signal_search_avoids_session_revision();
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 300000000) < 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_UNAVOID, 200000000) < 0);
+    set_permanent(200000000, 0);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && strcmp(status.message, search_error_text) == 0);
+    assert(dsd_signal_search_avoids_session_revision() == revision && session_avoids(&session) == 0);
+    failed = 0;
+    stop_tag_session(o, s);
+    assert(dsd_signal_search_avoids_session_revision() == revision);
+    dsd_signal_search_avoids_permanent_set(NULL, 0);
+
+    const dsd_signal_search_config two = tag_config(config, 82, 0, 0);
+    start_tag_session(o, s, &two);
+    visit_strongest(o, s);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 200000000) == 0);
+    assert(session_avoids(&session) == 1 && session == 82);
+    stop_tag_session(o, s);
+    assert(session_avoids(&session) == 0 && session == 0);
+}
+
+/* Taps interleaved with the store's changes (issue #828): each action is judged against the lists as they stand when
+   the decoder runs it. A session avoid run after a permanent avoid was made and removed again adds the frequency to the
+   session list; one run while it was permanent adds nothing, and the removal then leaves it in neither list, so it is
+   measured again. */
+static void
+test_avoid_interleaving(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 44, 0, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(status.hit.frequency_hz == 100025000);
+    uint64_t session = 0;
+    // Made permanent and removed again before the decoder runs the session avoid: it is a session avoid.
+    set_permanent(100012500, 0);
+    set_permanent(0, 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 1 && published_session[0] == 100012500);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_UNAVOID, 100012500) == 0);
+    assert(session_avoids(&session) == 0);
+    // Made permanent, the session avoid run, then removed: in neither list.
+    set_permanent(100012500, 0);
+    assert(control_frequency(o, s, DSD_SEARCH_ACTION_AVOID_FREQUENCY, 100012500) == 0);
+    assert(session_avoids(&session) == 0);
+    set_permanent(0, 0);
+    tick(o, s);
+    assert(session_avoids(&session) == 0);
+    // So the next measurement visits it (100.025 MHz was visited this pass).
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.frequency_hz == 100012500);
+    land(o, s);
+    stop_tag_session(o, s);
+}
+
+static void
+test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    test_avoid_lists_room(o, s, config);
+    test_session_avoid_of_permanent(o, s, config);
+    test_hit_avoids_of_permanent(o, s, config);
+    test_permanent_leaves_held_visit(o, s, config);
+    test_paused_search_keeps_both_lists(o, s, config);
+    test_session_list_ends_with_session(o, s, config);
+    test_avoid_interleaving(o, s, config);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -3230,6 +3886,13 @@ main(void) {
     test_auto_baseline_dispatches_dmr(o, s, &config);
     test_restore_retune_carries_family(o, s, &config);
     test_capture_freshness(o, s, &config);
+    test_request_failure_messages(o, s, &config);
+    test_clipping_span_skipped(o, s);
+    test_clipping_deadline_skips(o, s);
+    test_unclipped_deadline_fails(o, s);
+    test_completed_report_beats_deadlines(o, s);
+    test_clipping_keeps_searching(o, s);
+    test_overload_clears(o, s);
     test_status_names_running_range(o, s, &config);
     test_avoid_by_frequency(o, s, &config);
     test_site_record_binding();
@@ -3257,6 +3920,7 @@ main(void) {
     test_rejected_code_site(o, s, &config);
     test_rejected_code_p25p2_slot(o, s, &config);
     test_p25_site_and_codes(o, s, &config);
+    test_avoid_lists(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

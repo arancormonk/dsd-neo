@@ -774,7 +774,7 @@ config_write_temp_file(FILE* fp, const dsdneoUserConfig* cfg) {
 static int
 config_replace_temp_file(const char* tmp, const char* save_path) {
     if (dsd_replace_file_with_temp(tmp, save_path) != 0) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
     return 0;
@@ -807,7 +807,7 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     }
 
     if (config_write_temp_file(tmp_fp, cfg) != 0) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
 

@@ -160,6 +160,10 @@ class AppPrefs : public QObject {
     /** @brief Remove both scan-list companion keys (issue #697), as a restore or a repaired list UID must: the UIDs they
      *         name may now be other lists or none. sync() and return status() == QSettings::NoError. */
     static bool forgetScanCompanions();
+    /** @brief The settings file's organization and application names (IniFormat, UserScope), which settings recovery
+     *         checks before the first AppPrefs opens it (issue #828). */
+    static QString settingsOrganization();
+    static QString settingsApplication();
 
     explicit AppPrefs(QObject* parent = nullptr);
     ~AppPrefs() override;

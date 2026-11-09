@@ -42,7 +42,7 @@ suppressed until the next pass.
 | Probe duration | 3 seconds after fresh tuned samples arrive; adjustable from 2 to 10 seconds |
 | Quiet time | Resume after 500 ms without relevant carrier or validated digital activity; an analog visit counts it from the monitor's first verdict on the landed channel (at most 3 seconds after landing) |
 | Maximum visit | 30 seconds; adjustable through 600 seconds, or 0 to disable |
-| Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls |
+| Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls. When the search warns that the receiver is overloaded, Pause, lower this, then Resume |
 
 The range editor closes with **Save range** or **Cancel**. Once a field differs
 from what the editor opened with, Cancel, Back, Escape or a tap beside the panel
@@ -89,7 +89,8 @@ rtl_tcp source, 6, 12 and 18 dB steps in the transmitter's level each showed at
 the next reading, on NFM, digital-identification and decoded DMR visits. When the receiver cannot measure the
 channel for about two seconds (the capture keeps changing, drops samples or clips),
 the screen stops showing **Now** and shows only the detection level until a fresh
-measurement arrives; a visit's live level also ends with the visit. A small dot
+measurement arrives; a visit's live level also ends with the visit. Clipping
+during a visit does not end the visit or skip anything. A small dot
 beside **Now** brightens briefly at each fresh measurement, including one that
 reads the same level as the last, so a steady reading is visibly a live one; it
 is hidden while no live level is shown.
@@ -131,7 +132,19 @@ While a search runs, the screen is laid out for what is on the air now:
   each saved system the detection matched.
 - A refusal or error (**The avoid list is full**, a radio failure) shows under
   the **Now** panel, so it never moves the panel as it appears or clears; with
-  no search running it shows above the setup instead.
+  no search running it shows above the setup instead. The overload warning is
+  the last line there while the search runs or is paused, for example
+  **Part of “Marine” was skipped because the receiver is overloaded. Pause, then
+  lower the range's receiver gain.** Paused, it ends **Lower the range's receiver
+  gain, then Resume.** With an Airspy it would ask for a lower Airspy gain for
+  the range instead (**Use Airspy gain settings for this range** in the range
+  editor), but an Airspy's overload cannot be seen, so the warning does not
+  appear for one (see the Airspy paragraph under [Scope and
+  implementation](#scope-and-implementation)). It is not shown once the search
+  fails or stops. A screen reader hears
+  the warning at once as it appears or clears; a new range name in it is read at
+  most every five seconds, so two ranges that take turns clipping do not
+  interrupt every pass.
 - **Recent detections** shows the five newest; **Show more** adds 25. Under its
   verdict a row shows the site, access code, tone and encryption the detection
   last had, in the Now panel's order without the call
@@ -144,8 +157,9 @@ While a search runs, the screen is laid out for what is on the air now:
   of each frequency's codes. Each row's actions button
   (**Actions for 463.5521 MHz**) opens what can be done with that
   detection: **Explore here**, **Start “<saved system>”** for each saved system
-  it matched, **Save as system**, **Avoid this session** (while a search runs),
-  and **Avoid permanently**, or **Remove permanent avoid** when it already is.
+  it matched, **Save as system**, **Avoid this session** (while a search runs,
+  unless the frequency is a permanent avoid or the search failed), and **Avoid
+  permanently**, or **Remove permanent avoid** when it already is.
   A matched system whose site is avoided is listed but cannot start: remove the
   avoid in its site list first.
 - A row whose detection kept call recordings says how many under its details
@@ -337,23 +351,33 @@ showed.
   back when its identification window expires, even one that heard only traffic a
   receive filter rejects.
 - **Skip** suppresses this frequency for the current pass.
-- **Avoid this session** lasts until the session ends. Session avoids are listed
+- The search keeps two avoid lists, and a frequency is in one of them at most.
+  **Avoid this session** lasts until the session ends. Session avoids are listed
   under **Avoided this session**, and **Stop avoiding** lifts one for the following
   measurements; a frequency already visited in the current pass returns with the next
   pass. A history row's avoid works the same way, and leaves the frequency at once if
-  the search is visiting it. **Avoid permanently** also saves it for future searches;
-  removing a permanent avoid during a search lifts it from the running session too.
-  With no search running, a row's permanent avoid only saves it.
-- Each list holds 1,024 frequencies. A full list is said on the screen: **The
-  avoid list is full** for this session's list and **The permanent avoid list is
-  full** for the permanent one, and nothing changes, not even a skip. A
-  permanent avoid is saved first, so when only this session's list is full the
-  screen says **Saved as a permanent avoid; this session's avoid list is full**:
-  it applies from the next search. A full-list message clears when the search
-  tunes to its next detection, and a failed search keeps its own error. An avoid
+  the search is visiting it. **Avoid permanently** saves the frequency for this and
+  every later search and moves it to **Permanent avoids**: a running search leaves it
+  at once if it is visiting it, and drops it from **Avoided this session** if it was
+  there. A row's permanent avoid, and **Remove avoid**, change the saved list whether a
+  search runs or not; a running search follows within a moment. Removing a permanent
+  avoid lifts it from the running search too. **Stop avoiding** only lifts a session
+  avoid, so it never brings back a permanent one, and a row whose frequency is already
+  a permanent avoid does not offer **Avoid this session**.
+- Each list holds 1,024 frequencies, and permanent avoids take no room in the
+  session's list. A full list is said on the screen: **The avoid list is full** for
+  this session's list and **The permanent avoid list is full** for the permanent
+  one, and nothing changes, not even a skip. A full-list message clears when the
+  search tunes to its next detection. A search that failed keeps its own error,
+  shows no session list and offers no **Avoid this session**: its session avoids
+  ended with it, while permanent avoids stay listed and can be removed. An avoid
   for a detection the search has already left (the panel was a moment old)
   changes neither list and shows nothing: the panel already shows what the
   search is doing now.
+- Taps that change the avoids are taken in order, each against both lists as they
+  stand when the search runs it (within a moment of the tap), and the screen reads
+  both lists from the same place the search does, so what it lists is what the
+  search avoids.
 - **Pause** ends any call in progress on the channel and permits range edits. A search
   that fails (its input stalls, for example) ends that call too.
   **Resume** applies them and restarts the pass under the same session, retaining
@@ -422,6 +446,37 @@ do not reach this one. A detection republished with nothing new is not written
 again. Detection history is not part of a backup. History and permanent avoids
 are saved separately, and a failed one stays reported and is retried by later
 saves until it is written.
+
+Files that can't be read. When the version 2 journal or the permanent avoid
+list (`signal-search-history.v1.avoids.json`) can't be read whole (it can't be
+opened, a read fails, a record is damaged or cut short, or the avoid list isn't
+a valid list), the app says so and shows what it read before the problem: the
+detections before it, or no permanent avoids. The Signal search screen says it
+in its message line ("Signal search history couldn't be read completely, so
+some entries may be missing. The file won't be overwritten."), and a card on
+Home lists every file the app couldn't read this run until you dismiss it; a
+dismissed file shows again only if what is known about it changes. The file
+itself is not changed. The first time that file has to be saved, it is renamed
+to `<name>.unreadable-1` (or the next free number, up to 99) and a new file is
+written beside it, so nothing in it is lost; the screen and the card then name
+the kept file ("The file was kept as signal-search-history.v2.unreadable-1.").
+A save that fails is said on the screen too, and is retried with the next
+change.
+A run that saves nothing leaves the file where it is, so a problem that goes
+away (a permission fixed, a storage error) reads normally at the next start. A
+link at that name is renamed itself, never what it points to. A folder, FIFO or
+other special file there is never moved or replaced: saving it stays reported
+until it is gone. While a kept version 2 journal exists and no
+new one does, the earlier releases' journal is not read again, so an
+interrupted save cannot bring old detections back. The earlier releases'
+journal is never moved: if it can't be read, the app says so and leaves it as
+it is. Leftover temporary files from an interrupted save are removed at start.
+Limit: if the app stops between keeping the avoid list and writing the new
+one, the next start shows no permanent avoids; the kept file still holds them.
+Kept files are never part of a backup or touched by a restore. While the
+permanent avoid list can't be read, Export backup stops and says so; once a
+change to the permanent avoids has saved the list again, a backup holds only
+the avoids the app shows.
 
 A recording belongs to a detection through the call recording journal: each
 recording published from audio received on a detection's visit names it there
@@ -502,8 +557,57 @@ one it raises by less still counts, so with up to five raised blocks the estimat
 reads at most 2.875 times the third lowest block: over a flat floor about 4.6 dB high
 (five blocks 4.8 dB above three quiet ones read 3.5 dB high), more where the
 uncontaminated blocks themselves differ. Clipping and capture discontinuities invalidate the measurement.
-Allocations, FFT size, candidates and total channels are bounded; unsupported plans
-report an error.
+More than 1% of the samples clipped fails it. A sample counts as clipped when either
+of its two parts reaches the receiver's clip level. On an RTL-SDR or an rtl_tcp server
+that is the dongle's lowest or highest value, and the values one step inside them do
+not count. With `DSD_NEO_COMBINE_ROT=0`, or when replaying a cu8 capture recorded with
+that older conversion, a capture shifted by a quarter of its rate uses a conversion that
+puts the value one step above the lowest as far from the centre as the highest, so after
+the quarter-rate shift that value counts too. The shift swaps and mirrors the dongle's
+values, so which raw value one step from a limit counts changes from sample to sample;
+the lowest and highest always count. Other receivers count 0.999 of full scale. A
+failed measurement keeps the request it belonged to and says why it failed: clipped
+samples, dropped samples, a changed capture (retune, rate, gain or offset), a sample
+that is not a number, or a transform that could not run.
+Allocations, FFT size, candidates and total channels are bounded. An unsupported plan
+reports "Unsupported FFT measurement plan", and a detector that cannot be allocated
+reports "Not enough memory for a measurement".
+
+A span whose measurements keep clipping does not stop the search. When they keep
+clipping for one second, or one clipped a second ago and no answer has come since,
+the search skips the span and goes on to the next one. It also skips the span when
+five seconds have passed since the span's first measurement started, none has
+finished, and at least one of them clipped. A skipped span is
+measured again on the next pass. Nothing is ever detected from a clipped measurement.
+If the only span clips, or every span does, the search keeps going round, and the
+pass number keeps climbing. A measurement that fails for another reason, such as
+dropped samples or a changed capture, is simply tried again. If none finishes within
+five seconds and none of them clipped, the search fails with "No uninterrupted
+samples for a measurement". A measurement that finished in time is always used, even
+when the search reads it late.
+
+When a span is skipped, the search warns that the receiver is overloaded and names
+the range of the first span it skipped in that pass. A later skip in the same pass
+does not change the name. The warning stays while spans keep being skipped, and for
+the whole of the next pass, so there is time to read it. It clears at the end of a
+pass that skipped nothing. It also clears at Resume, including when Resume applies
+edited ranges, so a lower gain shows its effect at once; if the span still clips, the
+warning comes back a second later. To fix it, Pause, lower the range's receiver gain,
+then Resume. The warning is not a refusal or an error: visits, actions and new
+detections leave it in place.
+
+The receiver takes in a band at least two to three times wider than the span it
+searches at a time, and clipping anywhere in that band spoils every measurement taken
+from it. So one strong transmitter can overload the receiver even when it is outside
+the range being searched, and the spans near it, a few in a row, are all skipped. A
+lower gain, or a filter or attenuator in front of the receiver, keeps it from
+clipping.
+
+An Airspy's overload cannot be seen in the I/Q samples libairspy delivers. libairspy
+turns the Airspy's real samples into I/Q itself, and that conversion halves their
+amplitude and filters one of the two parts, so samples at the Airspy's limits arrive
+near half scale and never reach the clip level. Neither Signal search nor the input
+level meter shows Airspy clipping. If strong signals are near, lower the Airspy gain.
 
 A strong transmitter's skirt and the window's leakage reach neighbouring channels'
 windows, particularly with the default 16 kHz width on a 12.5 kHz grid or on any
@@ -639,8 +743,13 @@ The detector tests cover calibrated power, noise, carriers, modulated signals,
 bursts, off-grid signals, nearby transmitters, adjacent-channel leakage from a
 single strong NFM transmitter (narrow, wide, off-grid, at a range boundary and on a
 6.25 kHz grid), weaker separate neighbours (including two either side of a strong
-transmitter), clipping (more than 1% of samples at full scale in either component
-fails the measurement, fewer does not), non-finite samples mid-frame,
+transmitter), clipping (more than 1% of samples at the clip level in either component
+fails the measurement, fewer does not, whether the first window or only both together
+pass 1%), each RTL conversion's clip level (both rails and the codes next to them,
+through the production widening, and a clean tone just under each level measured),
+each failure's reason and request ids (from the detector, from the shared tap when a
+waiting report is invalidated, the first reason kept, and from a demod thread racing
+the requests), non-finite samples mid-frame,
 gain/rate/drop boundaries, DC, rotation, edges and fragmented input. They also
 cover a neighbour 6 dB down beside 5 kHz deviation on both sides at four bin
 alignments; single transmitters on 5 and 6.25 kHz grids at five FFT resolutions
@@ -672,11 +781,27 @@ by the main loop and a digitally confirmed visit serviced only by the in-frame y
 check each follow 12 dB and 6 dB level changes in the live strength within three
 intervals, withdraw a level the tap stops refreshing (a producer drop with every
 block, or clipped samples) within three intervals and a retry, show a fresh level
-once measurements succeed again, and publish no level for an ended visit. Coordinator
+once measurements succeed again, and publish no level for an ended visit; a clipped
+level on a main-loop visit is withdrawn the same way. A transmitter that overloads the
+receiver has its span skipped on every pass with the overload warning and the search
+never fails; once its level is back in range it is visited, and the first pass that
+skips nothing clears the warning. Coordinator
 tests exercise stale reports and controls, deferred/failed tunes, fresh-sample
 waits, short probes, fallback, hold during tuning, quiet release, an analog
 monitor that has not judged the landed channel yet (and its deadline), visit caps,
-live strength, lifting session avoids, pause/restart and scoped restoration, that a
+live strength, span measurements that clip (a span skipped once clipping lasts a
+second, a clip followed by no answer included, or at five seconds when the first clip
+came late or clips were mixed with drops; nothing skipped under a second; a single
+span and every span clipping keep searching with the pass climbing), failures that
+are not clipping, no answer at all and clips of an earlier request (the search fails
+at five seconds), a finished report read late (used, not failed or skipped), and the
+overload warning (named at the first skip of a pass, kept through visits, actions and
+Pause, cleared by a pass that skips nothing, Resume and a restart with edited
+ranges), the two avoid lists (1,024 permanent and 1,024 session avoids at once,
+a session avoid of a permanent frequency adding nothing, Stop avoiding keeping a
+permanent avoid, a permanent avoid added or removed mid-search taking effect at the
+next tick, even on a held visit, and session avoids refused after a failure),
+pause/restart and scoped restoration, that a
 Pause or a failure (a stalled or lost input during a held visit) runs the carrier boundary
 once, so a call it interrupts ends there, and that a session ending under a search leaves
 the frequency it started from.
@@ -689,13 +814,22 @@ EDACS, M17) a frame interrupted part-way and check that nothing read across the 
 plays, publishes, captures or reports evidence.
 Persistence and Qt tests cover bounded history, duplicate suppression, failed
 writes/retry (history and avoids each stay owed until their own write succeeds,
-including when storage only recovers by close), recreation, fractional steps,
+including when storage only recovers by close), files that can't be read (each
+kept byte for byte by the first save and never touched by a run that saves
+nothing: damaged, torn, unopenable and read-error journals, invalid and
+NUL-holding avoid lists, a failure after the rename and its retry, a kept
+journal or an unknown name blocking the earlier journal, the earlier journal
+reported and left in place, folders and FIFOs never moved, leftover temporary
+files), recreation, fractional steps,
 ambiguous matches, nested channel maps, immutable saves (including each source's own
 receiver settings and the detection's gain mode reaching the saved system), phone
 text scaling and navigation ownership. They also check that connection and USB-access
 failures reported after Start or Resume still reach the search screen beside its own
 refusals, that status-only refreshes leave history untouched (it is copied only when its store
-revision moves), session avoids, the aggregate 100,000-channel check before a start
+revision moves), session avoids (read from the search's own list, shown only for the running
+search and never after it failed or stopped), permanent avoids changed by a row
+action without the decoder (including at the Stop edge) and loaded once when the
+file or a backup repeats one, the aggregate 100,000-channel check before a start
 is submitted, and that a start the engine rejects with no search left owns nothing
 and is retired when the decoder session ends, so a recreated frontend never restores
 the search screen over a later ordinary session (a path Qt 6.11.2 never takes; see
@@ -717,6 +851,11 @@ session starts no search. A screen reopened over a running search after recreati
 receiver (USB, Airspy or rtl_tcp server) from the session's options snapshot, whether
 that snapshot arrives before or after the screen, offers that receiver's gain
 controls in a paused range edit, and keeps it through Stop and a restart.
+The overload warning reaches the screen as its own fields, never in the message; the
+screen words it per phase and radio as the message's last line, drops it once the
+search fails or stops, keeps the Now panel still as it comes and goes (also at 360 px
+with large text), and names it at a screen reader's pace: at once as it appears or
+clears, a new range name at most every period, and nothing while a sheet covers it.
 The app-control provenance regression also checks that a later false sync or
 unvalidated code change cannot enrich an already confirmed detection during a
 periodic refresh, and that a new detection starts without the preceding details.

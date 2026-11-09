@@ -234,6 +234,9 @@ Item {
     // reach it, and the flow's last result comes back for the card.
     property string backupNotice: ""
     property bool backupNoticeProblem: false
+    // The action the notice reports on ("export" or "restore"): it shows under
+    // that action's row.
+    property string backupNoticeAction: ""
     signal exportBackupRequested
     signal restoreBackupRequested
     signal cancelRestoreRequested
@@ -1016,8 +1019,27 @@ Item {
                         objectName: "settingsBackupExportRow"
                         title: qsTr("Export backup")
                         subtitle: qsTr("Encrypted file with your settings, systems, scan lists, imported files and keys")
-                        showDivider: true
+                        // With its notice under it, the divider goes below the notice.
+                        showDivider: !exportNoticeSlot.visible
                         onTapped: screen.exportBackupRequested()
+                    }
+
+                    // An export's notice, between its row and Restore's.
+                    Item {
+                        id: exportNoticeSlot
+                        objectName: "settingsBackupExportNoticeSlot"
+                        width: parent.width
+                        height: backupNotice.height
+                        visible: screen.backupNoticeAction === "export" && backupNotice.text.length > 0
+
+                        Rectangle {
+                            anchors.bottom: parent.bottom
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: Theme.cardPadding
+                            height: 1
+                            color: Theme.divider
+                        }
                     }
 
                     // A restore replaces what a running session uses, so it waits
@@ -1034,20 +1056,36 @@ Item {
                         onTapped: screen.restoreBackupRequested()
                     }
 
-                    Text {
-                        objectName: "settingsBackupNotice"
-                        x: Theme.cardPadding
-                        width: parent.width - 2 * Theme.cardPadding
-                        visible: text.length > 0
-                        bottomPadding: 10
-                        text: screen.backupNotice
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(13)
-                        color: screen.backupNoticeProblem ? Theme.alert : Theme.textSecondary
-                        Accessible.role: screen.backupNoticeProblem ? Accessible.AlertMessage : Accessible.StaticText
-                        Accessible.name: text
+                    // A restore's notice, under its row.
+                    Item {
+                        id: restoreNoticeSlot
+                        objectName: "settingsBackupRestoreNoticeSlot"
+                        width: parent.width
+                        height: backupNotice.height
+                        visible: screen.backupNoticeAction !== "export" && backupNotice.text.length > 0
+
+                        // The flow's last result, in the slot of the action it reports on.
+                        Text {
+                            id: backupNotice
+                            objectName: "settingsBackupNotice"
+                            parent: screen.backupNoticeAction === "export" ? exportNoticeSlot : restoreNoticeSlot
+                            x: Theme.cardPadding
+                            width: parent.width - 2 * Theme.cardPadding
+                            visible: text.length > 0
+                            bottomPadding: 10
+                            text: screen.backupNotice
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(13)
+                            color: screen.backupNoticeProblem ? Theme.alert : Theme.textSecondary
+                            Accessible.role: screen.backupNoticeProblem ? Accessible.AlertMessage : Accessible.StaticText
+                            // Gated as every node a screen reader reaches is: under
+                            // the passphrase sheet it leaves the tree, and holds no name.
+                            readonly property bool navigationAllowed: Navigation.allows(backupNotice)
+                            Accessible.ignored: !navigationAllowed || !visible
+                            Accessible.name: Accessible.ignored ? "" : text
+                        }
                     }
 
                     Column {

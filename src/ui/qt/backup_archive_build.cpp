@@ -60,6 +60,11 @@ class Builder {
             fail(BackupError::Io, QStringLiteral("snapshot: no data root"));
             return m_result;
         }
+        if (!m_snapshot.unreadable.isEmpty()) {
+            fail(BackupError::Unreadable,
+                 QStringLiteral("snapshot: could not read ") + m_snapshot.unreadable.join(QStringLiteral(", ")));
+            return m_result;
+        }
         normalizeStores();
         if (!checkRowCaps()) {
             return m_result;

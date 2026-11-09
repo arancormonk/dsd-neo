@@ -300,6 +300,42 @@ dsd_fopen_existing_regular_file(const char* path, const char* mode) {
     return fp;
 }
 
+FILE*
+dsd_fopen_private_append_regular(const char* path) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    /* As dsd_fopen_existing_regular_file(): O_NONBLOCK keeps open(2) from waiting on a FIFO, which with no reader
+       fails at once (ENXIO, reported as EINVAL); it is cleared once the target is known regular. */
+    int flags = O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int fd = open(path, flags, (mode_t)0600);
+    if (fd < 0) {
+        if (errno == ENXIO) {
+            errno = EINVAL;
+        }
+        return NULL;
+    }
+    if (dsd_existing_regular_fd_ready(fd) != 0) {
+        return NULL;
+    }
+
+    FILE* fp = fdopen(fd, "ab");
+    if (!fp) {
+        int saved_errno = errno ? errno : EINVAL;
+        close(fd);
+        errno = saved_errno;
+    }
+    return fp;
+}
+
 static void
 dsd_set_cloexec_best_effort(int fd) {
 #ifdef FD_CLOEXEC
@@ -478,6 +514,30 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     }
 #endif
     return dsd_rename_noreplace_by_link(from, to, out_source_left);
+}
+
+int
+dsd_path_type_nofollow(const char* path, dsd_path_type* out_type) {
+    if (!path || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
+    }
+    if (out_type) {
+        *out_type = S_ISLNK(st.st_mode)   ? DSD_PATH_TYPE_LINK
+                    : S_ISREG(st.st_mode) ? DSD_PATH_TYPE_FILE
+                    : S_ISDIR(st.st_mode) ? DSD_PATH_TYPE_DIR
+                                          : DSD_PATH_TYPE_OTHER;
+    }
+    return 1;
+}
+
+int
+dsd_path_exists_nofollow(const char* path) {
+    return dsd_path_type_nofollow(path, NULL);
 }
 
 static int

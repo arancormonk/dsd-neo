@@ -9,7 +9,9 @@
    windows' leakage reach are never tuned. A search started on a tap that a stopped stream has emptied waits for the
    next stream's first block. While listening (an NFM visit through the main-loop tick, a digitally confirmed one through
    the in-frame yield check alone), the live strength follows the transmitter's level, and a level the tap stops
-   refreshing (drops or clipping) is withdrawn within a bound, then returns once measurements succeed again. */
+   refreshing (drops or clipping) is withdrawn within a bound, then returns once measurements succeed again. A
+   transmitter that overloads the receiver has its span skipped with the overload warning on every pass, never failing
+   the search, until its level is back in range: it is then visited, and the warning clears. */
 
 #include <assert.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -34,6 +36,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* The coordinator reads this realtime clock (dsd_realtime_mono_ms is mapped here): the system clock, or a test clock
    that a listening scene advances with its blocks. */
@@ -42,7 +45,7 @@ uint64_t dsd_realtime_mono_ms(void);
 
 enum { RATE = 1536000, BLOCK = 8192, TRANSMITTER = 163012500 };
 
-static dsd_signal_capture capture = {RATE, 0, 1, RATE / 4, RATE / 4, 0, 0};
+static dsd_signal_capture capture = {RATE, 0, 1, RATE / 4, RATE / 4, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
 static dsd_signal_search_status status;
 static uint32_t ticket, target, generation = 1;
 static int tune_pending, gain_value = 123, gain_auto, autogain = 1;
@@ -340,6 +343,15 @@ scene_step(int drops) {
     dsd_decode_clock_test_set_ns(now_ms * 1000000);
 }
 
+/* Starts the scene clock at its base. */
+static void
+scene_clock_start(void) {
+    scene_clock = 1;
+    const uint64_t system_ms = dsd_realtime_mono_ms();
+    scene_base_ms = system_ms > SCENE_CLOCK_LEAD_MS ? system_ms - SCENE_CLOCK_LEAD_MS : 0;
+    scene_offset_ms = 0;
+}
+
 /* Listening services the live strength from the main-loop tick (@p yield_path 0) or, for a digitally confirmed
    transmission that keeps the decoder in its synced-frame loop, from the in-frame yield check alone. */
 static void
@@ -378,10 +390,7 @@ live_strength_scene(dsd_opts* o, dsd_state* s, uint64_t session, int yield_path,
     last_hit = 0;
     level = 0.3;
     DSD_MEMSET(&status, 0, sizeof(status));
-    scene_clock = 1;
-    const uint64_t system_ms = dsd_realtime_mono_ms();
-    scene_base_ms = system_ms > SCENE_CLOCK_LEAD_MS ? system_ms - SCENE_CLOCK_LEAD_MS : 0;
-    scene_offset_ms = 0;
+    scene_clock_start();
     carrier_open = !yield_path;
     capture.capture_hz = start + RATE / 4;
     feed();
@@ -447,6 +456,57 @@ live_strength_scene(dsd_opts* o, dsd_state* s, uint64_t session, int yield_path,
     scene_clock = 0;
 }
 
+/* Discovery on a receiver the transmitter overloads (issue #828): the span's measurements clip, so each pass skips it
+   with the overload warning, nothing is visited and the search never fails. With the level back in range the
+   transmitter is visited while the warning from the pass before still shows, and the first pass that skips nothing
+   clears it. */
+static void
+overload_scene(dsd_opts* o, dsd_state* s, uint64_t session) {
+    const uint32_t start = 162987500;
+    visits = 0;
+    last_hit = 0;
+    level = 1.2;
+    carrier_open = 0;
+    DSD_MEMSET(&status, 0, sizeof(status));
+    scene_clock_start();
+    capture.capture_hz = start + RATE / 4;
+    feed();
+    search_start(o, s, session, start);
+    /* Three passes of a one-span range, each skipped a second after its first clipped measurement, plus its tune. */
+    const uint64_t pass_ms = 1000, pass_bound_ms = 1100;
+    while (status.pass < 4) {
+        assert(scene_offset_ms < 3 * pass_bound_ms);
+        (void)dsd_engine_signal_search_tick(o, s);
+        assert(status.phase != DSD_SEARCH_ERROR && visits == 0);
+        assert(status.pass == 1 || status.overloaded);
+        scene_step(0);
+    }
+    assert(scene_offset_ms >= 3 * pass_ms);
+    assert(status.overloaded && strcmp(status.overload_range, "UHF") == 0 && status.message[0] == '\0');
+
+    level = 0.3;
+    while (visits == 0) {
+        assert(scene_offset_ms < 3 * pass_bound_ms + 500);
+        (void)dsd_engine_signal_search_tick(o, s);
+        assert(status.phase != DSD_SEARCH_ERROR);
+        scene_step(0);
+    }
+    assert(status.pass == 4 && status.overloaded);
+    while (status.pass < 5) {
+        assert(scene_offset_ms < SCENE_MAX_ADVANCE_MS);
+        (void)dsd_engine_signal_search_tick(o, s);
+        assert(status.phase != DSD_SEARCH_ERROR);
+        scene_step(0);
+    }
+    assert(!status.overloaded && status.overload_range[0] == '\0');
+    for (int i = 0; i < visits; ++i) {
+        assert(visited[i] == TRANSMITTER);
+    }
+    dsd_engine_signal_search_shutdown(o, s);
+    assert(!dsd_engine_signal_search_active(s));
+    scene_clock = 0;
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -466,6 +526,8 @@ main(void) {
     }
     live_strength_scene(o, s, 50, 0, 0);
     live_strength_scene(o, s, 51, 1, 1);
+    live_strength_scene(o, s, 52, 0, 1);
+    overload_scene(o, s, 53);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

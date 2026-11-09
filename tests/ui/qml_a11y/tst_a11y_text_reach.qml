@@ -45,6 +45,29 @@ Item {
         }
     }
 
+    // Issue #828: the search model a running Signal search reads, as tst_a11y_paced_names.qml fakes it.
+    QtObject {
+        id: searchFake
+        property var ranges: [{name: "Local UHF", startMHz: "450.000000", endMHz: "460.000000", enabled: true,
+            stepNum: 12500, stepDen: 1, bandwidth: 16000, am: false, digital: 1, gainSet: false, gainAuto: true,
+            gain: 0, sensitivity: 15, minimumSet: false, minimum: -60, squelchMode: 2, squelchMargin: 10,
+            squelchLevel: -60, probe: 3, visit: 30}]
+        property var history: []
+        property var avoids: []
+        property var sessionAvoids: []
+        property var status: ({phase: 0})
+        property string error: ""
+        property string storeMessage: ""
+        function control(action, session, hit) { return true; }
+        function avoidFrequency(session, frequency) { return true; }
+        function avoidPermanently(frequency) { return true; }
+        function removeSessionAvoid(frequency) { return true; }
+        function removeAvoid(frequency) {}
+        function arm() { return ""; }
+        function saveRange(row, range) { return ""; }
+        function defaultRange() { return Object.assign({}, ranges[0]); }
+    }
+
     // The positive controls' fixture: each way a text is or is not reached.
     Item {
         id: controls
@@ -199,6 +222,13 @@ Item {
             {file: "SiteSheet"},
             {file: "SpectrumScreen"},
             {file: "SquelchSheet"},
+            // Issue #828: one notice of each kind, through the production list.
+            {file: "StoreNoticeCard", open: function (card) {
+                testContext.setSignalSearchStoreFiles([
+                    {file: "signal-search-history.v2", state: "kept", kept: "signal-search-history.v2.unreadable-1"},
+                    {file: "signal-search-history.v1.avoids.json", state: "unreadable", kept: ""},
+                    {file: "signal-search-history.v1", state: "leftInPlace", kept: ""}]);
+            }},
             {file: "TalkgroupCard", properties: {idText: "100", name: "Fire dispatch", tags: "Fire", listening: true,
                 listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1}},
             {file: "TalkgroupEditSheet"},
@@ -422,6 +452,8 @@ Item {
             Ui.Navigation.modals = [];
             Ui.Navigation.layers = [];
             testContext.resetPins();
+            // Issue #828: the store notice case's files would otherwise put a card on every later Home.
+            testContext.setSignalSearchStoreFiles([]);
         }
 
         // The walk sees what TalkBack sees: a plain or ignored Text is unreached, a named one or a button's own label
@@ -528,6 +560,64 @@ Item {
             cover.destroy();
             dispose(item);
             compare(left.length, 0, data.spec.file + " covered still has in the tree: " + JSON.stringify(left));
+        }
+
+        // Issue #828 (emulator): a running search's Now panel. Android reads a node as its name, then its description
+        // (descriptionForInterface), so a description that repeats the name reads the words twice ("Tuning…,
+        // Tuning…"). And with a detection's menu open from its history row, nothing of the screen under it is in the
+        // tree: each part has its own navigation gate, so none is lifted over the covered panel.
+        function test_3c_signal_search_now_panel_data() {
+            var hit = {id: "41", freqMHz: "451.012500", frequency: 451012500, power: -32.1, range: "Local UHF"};
+            return [
+                {tag: "tuning", heard: "Tuning…", status: {phase: 2, owned: true, session: "17", pass: 1,
+                    rangeName: "Local UHF", hit: {}}},
+                {tag: "confirmed", heard: "P25 · confirmed", status: {phase: 4, owned: true, session: "17", pass: 1,
+                    rangeName: "Local UHF", livePowerValid: true, livePower: -47.2,
+                    hit: Object.assign({}, hit, {confirmed: true, protocol: "P25", site: "WACN BEE00 · SYS 1A3",
+                        access: "NAC 293", targetText: "TG 100", sourceText: "SRC 2001",
+                        knownNames: ["Warehouse", "Dock security", "Yard"]})}},
+                {tag: "unresolved", heard: "NFM monitoring · digital identification unresolved",
+                    status: {phase: 4, owned: true, session: "17", pass: 1, rangeName: "Local UHF",
+                        hit: Object.assign({}, hit, {unresolved: true})}}
+            ];
+        }
+        function test_3c_signal_search_now_panel(data) {
+            searchFake.history = [{id: "40", session: "17", freqMHz: "462.575000", frequency: 462575000, power: -40,
+                confirmed: false, ended: true, matches: [], recordingKey: "17:40"}];
+            searchFake.status = data.status;
+            var screen = build({file: "SignalSearchScreen", properties: {searchModel: searchFake, sessionActive: true}});
+            waitForRendering(host);
+            // The paced names catch up with a new state at once (a step).
+            wait(50);
+            var nodes = testContext.accessibleNodesUnder(screen).filter(function (node) {
+                return node.inTree;
+            }).map(function (node) {
+                var full = testContext.accessibleNode(node.item);
+                return {what: node.file + "#" + node.objectName, name: full.name, description: full.description};
+            });
+            var twice = nodes.filter(function (node) {
+                return node.name.length > 0 && node.description.length > 0
+                    && (node.description.indexOf(node.name) >= 0 || node.name.indexOf(node.description) >= 0);
+            });
+            compare(twice.length, 0, data.tag + ": named twice: " + JSON.stringify(twice));
+            verify(nodes.some(function (node) { return node.name === data.heard; }),
+                   data.tag + ": \"" + data.heard + "\" is heard: " + JSON.stringify(nodes.map(function (n) { return n.name; })));
+
+            findChild(screen, "searchHistoryActions").activate();
+            var menu = findChild(screen, "searchDetectionMenu");
+            verify(menu.visible, "the row's menu is open");
+            waitForRendering(host);
+            wait(20);
+            var left = testContext.accessibleNodesUnder(screen).filter(function (node) {
+                return node.inTree && !within(node.item, [menu]);
+            }).map(function (node) {
+                return node.file + "#" + node.objectName + " " + JSON.stringify(node.name);
+            });
+            menu.cancel();
+            dispose(screen);
+            searchFake.status = {phase: 0};
+            searchFake.history = [];
+            compare(left.length, 0, data.tag + ": under the menu, still in the tree: " + JSON.stringify(left));
         }
 
         // The monitor in a two-slot call with its details open: the hero, the other slot and every reading group.

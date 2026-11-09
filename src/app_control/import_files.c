@@ -78,12 +78,14 @@ dsd_app_import_remove(const char* csv_path) {
         return 0;
     }
     /* Truncation is rejected rather than shortened: a shortened path names a DIFFERENT file and this hands it straight
-       to remove(). */
+       to the delete. dsd_remove_file(), never remove(): on Windows remove() reads the path in the ANSI code page, while
+       the listing (dsd_dir_list()) and the writes name a UTF-8 path's file through the wide calls, so remove() would
+       miss it or delete the file whose ANSI name has the same bytes. */
     char side[DSD_APP_IMPORT_PATH_MAX + 4];
-    const int gone = (remove(csv_path) == 0) ? 1 : 0;
+    const int gone = (dsd_remove_file(csv_path) == 0) ? 1 : 0;
     const int n = DSD_SNPRINTF(side, sizeof side, "%s.rr", csv_path);
     if (n > 0 && (size_t)n < sizeof side) {
-        (void)remove(side);
+        (void)dsd_remove_file(side);
     }
     return gone;
 }
@@ -114,7 +116,7 @@ import_write_staging(const char* final_path, const char* text, size_t len, char*
         bad = 1;
     }
     if (bad) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
     return 0;
@@ -132,7 +134,7 @@ import_install_staged(const char* tmp, const char* final_path) {
     const int rc = dsd_replace_file_with_temp(tmp, final_path);
     dsd_managed_file_unlock();
     if (rc != 0) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -1;
     }
     return 0;
@@ -165,7 +167,7 @@ dsd_app_import_replace_checked(const char* path, const char* text, size_t len, i
     dsd_csv_validation counts = {0U, 0U, 0U};
     const int rc = is_chan ? dsd_csv_validate_chan_file(tmp, &counts) : dsd_csv_validate_group_file(tmp, &counts);
     if (rc != 0 || counts.accepted == 0U) {
-        (void)remove(tmp);
+        (void)dsd_remove_file(tmp);
         return -2;
     }
     return import_install_staged(tmp, path);

@@ -455,7 +455,7 @@ csvP25BandplanExportRows(const char* path, const p25_bandplan_row_t* rows, int c
         bad = 1;
     }
     if (bad) {
-        (void)remove(tmp_path);
+        (void)dsd_remove_file(tmp_path);
         LOG_ERROR("P25 band plan export: writing '%s' failed.\n", path);
         return -1;
     }

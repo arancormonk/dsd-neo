@@ -26,6 +26,7 @@
 #include "backup_archive_rules.h"
 #include "json_store.h"
 #include "realtime_clock.h"
+#include "settings_recovery.h"
 
 namespace dsd_qt {
 namespace backup {
@@ -50,6 +51,7 @@ backup_error_name(BackupError error) {
         case BackupError::Io: return QStringLiteral("Io");
         case BackupError::SourceChanged: return QStringLiteral("SourceChanged");
         case BackupError::StagingFailed: return QStringLiteral("StagingFailed");
+        case BackupError::Unreadable: return QStringLiteral("Unreadable");
     }
     return QStringLiteral("Io");
 }
@@ -126,15 +128,52 @@ summary_to_map(const Summary& summary) {
             {QStringLiteral("app"), summary.app}};
 }
 
+namespace {
+
+/* The files a backup carries that are not JSON stores, appended to @p unreadable when they cannot be read now. */
+void
+append_unreadable_native(QStringList* unreadable) {
+    // Only an avoid file still in place unread: once kept aside, the in-memory list is what the store saves.
+    dsd_app_search_file_load avoidsLoad = DSD_APP_SEARCH_FILE_OK;
+    if (dsd_app_signal_search_store_file_state(DSD_APP_SEARCH_STORE_AVOIDS, &avoidsLoad, nullptr, nullptr, 0) == 0
+        && avoidsLoad == DSD_APP_SEARCH_FILE_UNREADABLE) {
+        unreadable->append(QLatin1String(kAvoidsFileName));
+    }
+    if (settings_recovery_scratch(settings_recovery_prefs_file_name())) {
+        unreadable->append(settings_recovery_prefs_file_name());
+    }
+}
+
+} // namespace
+
+QStringList
+backup_unreadable_files() {
+    QStringList unreadable;
+    for (const QString& store : backup_store_names()) {
+        if (json_store_read(store).status == JsonStoreLoad::Unreadable) {
+            unreadable.append(store);
+        }
+    }
+    append_unreadable_native(&unreadable);
+    return unreadable;
+}
+
 Snapshot
 backup_take_snapshot() {
     Snapshot snapshot;
     snapshot.root = json_store_root();
     snapshot.canonicalRoot = QFileInfo(snapshot.root).canonicalFilePath();
     snapshot.prefs = AppPrefs::readPortable();
+    // Read, never loaded: a load would mark a store this snapshot only looks at, and its next save would move a good
+    // file aside after a passing read failure.
     for (const QString& store : backup_store_names()) {
-        snapshot.stores.insert(store, json_store_load_array(store));
+        const JsonStoreRead read = json_store_read(store);
+        if (read.status == JsonStoreLoad::Unreadable) {
+            snapshot.unreadable.append(store);
+        }
+        snapshot.stores.insert(store, read.array);
     }
+    append_unreadable_native(&snapshot.unreadable);
     std::vector<uint32_t> avoids(DSD_SEARCH_MAX_AVOIDS);
     const size_t count = dsd_app_signal_search_avoids_get(avoids.data(), avoids.size());
     for (size_t i = 0; i < count; ++i) {

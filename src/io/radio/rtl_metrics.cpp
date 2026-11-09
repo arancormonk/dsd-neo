@@ -21,7 +21,9 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <mutex>
-#include <numeric>
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include <numeric> /* the spectrum-hold test hook */
+#endif
 #include <stddef.h>
 #include <stdint.h>
 

@@ -41,12 +41,13 @@ Item {
         property var history: []
         property var avoids: []
         property string error: ""
+        property string storeMessage: ""
         function control(action, session, hit) { return true; }
         function arm() { return ""; }
         function cancelArm() {}
         function removeAvoid(frequency) {}
         function avoidFrequency(session, frequency) { return true; }
-        function avoidPermanently(session, frequency) { return true; }
+        function avoidPermanently(frequency) { return true; }
         function systemForHit(hit, source) {
             return Object.assign({}, source, {freqMhz: hit.freqMHz, decodeFlag: "-fA", gainDb: 21, trunking: false,
                 searchUnresolved: false});

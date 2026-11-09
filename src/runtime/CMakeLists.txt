@@ -18,6 +18,7 @@ target_sources(
         signal_search.c
         signal_search_hooks.c
         signal_search_visit.c
+        signal_search_avoids.c
         channel_scan_hooks.c
         stream_notice_hooks.c
         scan_options.c

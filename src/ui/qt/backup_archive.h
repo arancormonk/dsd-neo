@@ -77,7 +77,9 @@ enum class BackupError {
     /** A carried file changed while the export read it (a session appends to its talkgroup lists, say). */
     SourceChanged,
     /** A restore could not be prepared on this phone (its cache, staging or promotion failed), whatever the file. */
-    StagingFailed
+    StagingFailed,
+    /** A file the backup reads could not be read (Snapshot::unreadable): no archive is built (issue #828). */
+    Unreadable
 };
 
 /** The enumerator's name ("None", "NotBackup", …), for result maps handed to QML. */
@@ -161,10 +163,28 @@ struct Snapshot {
     QList<quint32> avoids; /**< The in-memory permanent avoid list. */
     QString app;           /**< GIT_TAG. */
     qint64 createdAt = 0;  /**< realtimeSecsSinceEpoch(). */
+    /** The files whose content the backup would carry but could not read (issue #828), by file name: a store
+        json_store_read() finds Unreadable now, kAvoidsFileName while the signal-search store reports it Unreadable,
+        and settings_recovery_prefs_file_name() while the settings run on their scratch copy. Each would otherwise go
+        into the backup as an empty or partial list, and its restore would replace the file with that. */
+    QStringList unreadable;
 };
 
-/** Read the current configuration. UI thread only. */
+/**
+ * Read the current configuration. UI thread only.
+ *
+ * Every store is read as it is on disk now, without marking it. A store whose original was kept aside earlier in the
+ * run is read from the clean file now at its path, and the avoid list once its unreadable file was kept aside (the
+ * in-memory list is then what the store saves): neither is listed in Snapshot::unreadable. A kept
+ * "<name>.unreadable-N" file is never part of a backup.
+ */
 Snapshot backup_take_snapshot();
+
+/**
+ * The file names backup_take_snapshot() would list in Snapshot::unreadable now, without reading the rest of the
+ * configuration: the check an export runs before it asks for a passphrase. UI thread only.
+ */
+QStringList backup_unreadable_files();
 
 struct BuildResult {
     BackupError error = BackupError::None;
@@ -178,7 +198,8 @@ struct BuildResult {
 };
 
 /**
- * Build the archive for @p snapshot. Worker-safe: it reads only the filesystem. Each carried file is read twice
+ * Build the archive for @p snapshot. Worker-safe: it reads only the filesystem. A snapshot that lists any unreadable
+ * file fails with Unreadable before anything is read. Each carried file is read twice
  * (sized and hashed, then copied straight into the archive and checked again), so the archive is the only large
  * buffer it holds.
  *

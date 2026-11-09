@@ -33,6 +33,7 @@
 #include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/io/tcp_quality_metrics.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
@@ -117,7 +118,9 @@ enum RtlUsbRecoveryRequest : int {
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
 #include <exception>
-#include <stdexcept>
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+#include <stdexcept> /* the SoapySDR test drivers throw */
+#endif
 
 namespace SoapySDR {
 class Stream;
@@ -540,6 +543,12 @@ struct rtl_device {
     int replay_has_eof_state = 0;
     int soapy_lock_inited = 0;
     int soapy_format = 0; /* SOAPY_FMT_* */
+    /* The full scale the driver reports for its native format (getNativeStreamFormat()), 0 when none was read. */
+    double soapy_native_full_scale = 0.0;
+    /* What the CS16 stream is read against (dsdneo::soapy_cs16_full_scale()) and its inverse, the reader's scale: set
+     * with soapy_format, so no sample pays for it. */
+    double soapy_cs16_full_scale = dsdneo::kSoapyCs16DefaultFullScale;
+    float soapy_cs16_scale = (float)(1.0 / dsdneo::kSoapyCs16DefaultFullScale);
     uint32_t soapy_mtu_elems = 0U;
     int rot_phase = 0;                   /* persistent j^n phase in [0..3] for capture-side FS/4 rotation */
     std::atomic<int> mute_byte_phase{0}; /* byte carry while an active mute span is discarded in fragments */
@@ -766,16 +775,17 @@ fs4_shift_capture_active(const struct rtl_device* s) {
     return (s && !s->offset_took && !disable_fs4_shift) ? 1 : 0;
 }
 
+/* The cu8 transform of @p s while a live capture's Fs/4 shift is @p live_fs4_active; a replay keeps its recorded one. */
 static inline void
-rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int* out_combine_active,
-                            int* out_use_two_pass) {
+rtl_u8_transform_policy_for(const struct rtl_device* s, int live_fs4_active, int* out_fs4_active,
+                            int* out_combine_active, int* out_use_two_pass) {
     int fs4_active = 0;
     int combine_active = 0;
     if (s && s->backend == RTL_BACKEND_IQ_REPLAY) {
         fs4_active = s->replay_fs4_shift_enabled ? 1 : 0;
         combine_active = s->replay_historical_cu8_two_pass ? 0 : 1;
     } else {
-        fs4_active = fs4_shift_capture_active(s);
+        fs4_active = live_fs4_active ? 1 : 0;
         combine_active = (s && s->live_combine_rotate_enabled) ? 1 : 0;
     }
     if (out_fs4_active) {
@@ -787,6 +797,29 @@ rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int
     if (out_use_two_pass) {
         *out_use_two_pass = (fs4_active && !combine_active) ? 1 : 0;
     }
+}
+
+static inline void
+rtl_get_u8_transform_policy(const struct rtl_device* s, int* out_fs4_active, int* out_combine_active,
+                            int* out_use_two_pass) {
+    rtl_u8_transform_policy_for(s, fs4_shift_capture_active(s), out_fs4_active, out_combine_active, out_use_two_pass);
+}
+
+/* Clip levels between each cu8 widening's rails and the codes next to them (rtl_device_signal_clip_level()). */
+static const float kCu8ClipLevel = 0.996f;
+static const float kCu8TwoPassClipLevel = 0.992f;
+
+float
+rtl_device_signal_clip_level(const struct rtl_device* dev, int fs4_shift_active) {
+    const int cu8 = dev
+                    && (dev->backend == RTL_BACKEND_USB || dev->backend == RTL_BACKEND_TCP
+                        || (dev->backend == RTL_BACKEND_IQ_REPLAY && dev->replay_cfg.format == DSD_IQ_FORMAT_CU8));
+    if (!cu8) {
+        return DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
+    }
+    int use_two_pass = 0;
+    rtl_u8_transform_policy_for(dev, fs4_shift_active, NULL, NULL, &use_two_pass);
+    return use_two_pass ? kCu8TwoPassClipLevel : kCu8ClipLevel;
 }
 
 /* Persisted IQ metadata and the live transform policy may select the two-pass
@@ -1279,12 +1312,13 @@ rtl_publish_cf32_input_level_source(const float* samples, size_t count, dsd_inpu
 
 #ifdef USE_SOAPYSDR
 static inline void
-rtl_publish_cs16_input_level(const int16_t* samples, size_t count) {
+rtl_publish_cs16_input_level(const int16_t* samples, size_t count, double full_scale) {
     dsd_input_level_snapshot snapshot;
     if (!samples || count == 0U) {
         return;
     }
-    if (dsd_input_level_metrics_from_cs16(samples, count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == 0) {
+    if (dsd_input_level_metrics_from_cs16(samples, count, full_scale, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot)
+        == 0) {
         rtl_stream_input_level_publish(&snapshot);
     }
 }
@@ -1320,7 +1354,9 @@ rtl_prepare_replay_input_level_snapshot(const struct rtl_device* s, const uint8_
         }
         std::vector<int16_t> samples(sample_count);
         DSD_MEMCPY(samples.data(), raw_block, sample_count * sizeof(int16_t));
-        return dsd_input_level_metrics_from_cs16(samples.data(), sample_count, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, out);
+        /* A cs16 sidecar holds 16-bit full-scale samples (replay_convert_cs16_to_f32()). */
+        return dsd_input_level_metrics_from_cs16(samples.data(), sample_count, dsdneo::kSoapyCs16DefaultFullScale,
+                                                 DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, out);
     }
     if (s->replay_cfg.format == DSD_IQ_FORMAT_CF32) {
         if (!scratch_f32 || (raw_bytes & 7U) != 0U
@@ -1673,7 +1709,7 @@ soapy_write_cs16_to_ring(struct rtl_device* s, const int16_t* src, size_t num_el
     int perf_on = rtl_perf_enabled();
     uint64_t perf_t0 = perf_on ? dsd_realtime_mono_ns() : 0ULL;
     uint64_t perf_drops_before = perf_on ? s->input_ring->producer_drops.load(std::memory_order_relaxed) : 0ULL;
-    const float scale = 1.0f / 32768.0f;
+    const float scale = s->soapy_cs16_scale;
     size_t need = num_elems * 2;
     size_t done = 0;
     int phase = s->rot_phase & 3;
@@ -3058,6 +3094,51 @@ rtl_device_test_replay_convert_block(const rtl_device_test_replay_convert_block_
     *out_have_carry = have_carry;
     *out_carry_byte = carry_byte;
     return rc;
+}
+
+static_assert((int)RTL_DEVICE_TEST_BACKEND_USB == (int)RTL_BACKEND_USB
+                  && (int)RTL_DEVICE_TEST_BACKEND_TCP == (int)RTL_BACKEND_TCP
+                  && (int)RTL_DEVICE_TEST_BACKEND_SOAPY == (int)RTL_BACKEND_SOAPY
+                  && (int)RTL_DEVICE_TEST_BACKEND_IQ_REPLAY == (int)RTL_BACKEND_IQ_REPLAY
+                  && (int)RTL_DEVICE_TEST_BACKEND_AIRSPY == (int)RTL_BACKEND_AIRSPY,
+              "test backend numbers follow the device's");
+
+static void
+rtl_device_test_conversion_apply(const rtl_device_test_conversion* conversion, struct rtl_device* dev) {
+    dev->backend = conversion->backend;
+    dev->live_combine_rotate_enabled = conversion->live_combine_rotate_enabled ? 1 : 0;
+    dev->replay_cfg.format = (dsd_iq_sample_format)conversion->replay_format;
+    dev->replay_fs4_shift_enabled = conversion->replay_fs4_shift_enabled ? 1 : 0;
+    dev->replay_historical_cu8_two_pass = conversion->replay_historical_cu8_two_pass ? 1 : 0;
+}
+
+extern "C" float
+rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conversion, int fs4_shift_active) {
+    if (!conversion) {
+        return rtl_device_signal_clip_level(NULL, fs4_shift_active);
+    }
+    rtl_device dev{};
+    rtl_device_test_conversion_apply(conversion, &dev);
+    return rtl_device_signal_clip_level(&dev, fs4_shift_active);
+}
+
+extern "C" int
+rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
+                          const unsigned char* bytes, size_t len, float* out) {
+    unsigned char copy[64];
+    if (!conversion || !bytes || !out || len == 0U || len > sizeof(copy) || (len & 1U) != 0U) {
+        return -1;
+    }
+    rtl_device dev{};
+    rtl_device_test_conversion_apply(conversion, &dev);
+    DSD_MEMCPY(copy, bytes, len);
+    int fs4_active = 0;
+    int combine_active = 0;
+    int use_two_pass = 0;
+    rtl_u8_transform_policy_for(&dev, fs4_shift_active, &fs4_active, &combine_active, &use_two_pass);
+    int phase = 0;
+    (void)rtl_process_u8_chunk(&dev, copy, out, len, fs4_active, combine_active, use_two_pass, &phase, NULL);
+    return 0;
 }
 #endif
 
@@ -4465,6 +4546,16 @@ soapy_valid_positive_rates(const std::vector<double>& rates) {
     return out;
 }
 
+/* The full scale a @p format stream's CS16 samples are read against, from the native format and full scale the
+ * driver reported, and the reader's scale. */
+static void
+soapy_set_cs16_full_scale(struct rtl_device* dev, const std::string& format) {
+    const double full_scale =
+        dsdneo::soapy_cs16_full_scale(format, dev->soapy_native_stream_format, dev->soapy_native_full_scale);
+    dev->soapy_cs16_full_scale = full_scale;
+    dev->soapy_cs16_scale = (float)(1.0 / full_scale);
+}
+
 static void
 soapy_set_cached_format(struct rtl_device* dev, const std::string& format) {
     if (!dev) {
@@ -4477,6 +4568,7 @@ soapy_set_cached_format(struct rtl_device* dev, const std::string& format) {
     } else {
         dev->soapy_format = SOAPY_FMT_NONE;
     }
+    soapy_set_cs16_full_scale(dev, format);
 }
 
 static void
@@ -4514,8 +4606,10 @@ soapy_cache_identity_locked(struct rtl_device* dev) {
         std::string native_format = dev->soapy_dev->getNativeStreamFormat(SOAPY_SDR_RX, 0, full_scale);
         rtl_device_copy_cstr(dev->soapy_native_stream_format, sizeof(dev->soapy_native_stream_format),
                              native_format.c_str());
+        dev->soapy_native_full_scale = full_scale;
     } catch (const std::exception&) {
         dev->soapy_native_stream_format[0] = '\0';
+        dev->soapy_native_full_scale = 0.0;
     }
     soapy_select_profile_locked(dev);
 }
@@ -4533,7 +4627,7 @@ soapy_refresh_stream_format_locked(struct rtl_device* dev, std::string* out_form
                     dsdneo::soapy_join_names(formats, 160).c_str(),
                     dev->soapy_requested_stream_format[0] ? dev->soapy_requested_stream_format : "auto",
                     dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-");
-        dev->soapy_format = SOAPY_FMT_NONE;
+        soapy_set_cached_format(dev, std::string());
         return -1;
     }
     soapy_set_cached_format(dev, chosen);
@@ -4574,12 +4668,17 @@ soapy_log_capability_summary_locked(struct rtl_device* dev) {
     }
 
     const dsdneo::SoapyProfile& profile = dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+    /* The full scale only when the driver reported one: a native format read that threw, or reported none, leaves 0. */
+    char native_full_scale[40] = "";
+    if (dev->soapy_native_full_scale > 0.0) {
+        DSD_SNPRINTF(native_full_scale, sizeof native_full_scale, " [full-scale=%g]", dev->soapy_native_full_scale);
+    }
     DSD_FPRINTF(
         stderr,
-        "SoapySDR: driver=%s hardware=%s profile=%s native=%s formats=[%s] gains=[%s] antennas=[%s] clocks=[%s].\n",
+        "SoapySDR: driver=%s hardware=%s profile=%s native=%s%s formats=[%s] gains=[%s] antennas=[%s] clocks=[%s].\n",
         dev->soapy_driver_key[0] ? dev->soapy_driver_key : "-",
         dev->soapy_hardware_key[0] ? dev->soapy_hardware_key : "-", profile.name,
-        dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-",
+        dev->soapy_native_stream_format[0] ? dev->soapy_native_stream_format : "-", native_full_scale,
         dsdneo::soapy_join_names(formats, 120).c_str(), dsdneo::soapy_join_names(gains, 120).c_str(),
         dsdneo::soapy_join_names(antennas, 80).c_str(), dsdneo::soapy_join_names(clocks, 80).c_str());
 }
@@ -5258,7 +5357,7 @@ soapy_submit_samples(struct rtl_device* dev, size_t drop_elems, size_t kept_elem
     }
     const int16_t* src = cs16_buf.data() + (drop_elems * 2U);
     rtl_submit_capture_bytes(dev, src, kept_elems * 2U * sizeof(int16_t));
-    rtl_publish_cs16_input_level(src, kept_elems * 2U);
+    rtl_publish_cs16_input_level(src, kept_elems * 2U, dev->soapy_cs16_full_scale);
     (void)soapy_write_cs16_to_ring(dev, src, kept_elems, apply_rot);
 }
 
@@ -5557,6 +5656,43 @@ rtl_device_test_soapy_cs16_copy(float* dst, const int16_t* src_iq, size_t elem_c
     soapy_copy_cs16_samples(dst, src_iq, elem_count, 1.0f / 32768.0f, apply_rot, phase);
     return 0;
 }
+
+/* One SoapySDR CS16 read through soapy_submit_samples() into a fresh input ring, its full scale chosen as a stream
+ * setup chooses it. */
+extern "C" int
+rtl_device_test_soapy_cs16_ingest(const rtl_device_test_soapy_cs16_request* request, float* output,
+                                  size_t* output_count, int* out_phase) {
+    if (!request || !request->samples || !output || !output_count || !out_phase
+        || request->start >= request->capacity) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, request->capacity) != 0) {
+        return -1;
+    }
+    ring.head.store(request->start);
+    ring.tail.store(request->start);
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_SOAPY;
+    rtl_device_copy_cstr(dev.soapy_native_stream_format, sizeof(dev.soapy_native_stream_format),
+                         request->native_format);
+    dev.soapy_native_full_scale = request->native_full_scale;
+    soapy_set_cached_format(&dev, SOAPY_SDR_CS16);
+    dev.input_ring = &ring;
+    dev.rot_phase = request->start_phase & 3;
+    const std::vector<std::complex<float>> cf32_buf;
+    std::vector<int16_t> cs16_buf(request->pairs * 2U);
+    DSD_MEMCPY(cs16_buf.data(), request->samples, request->pairs * 2U * sizeof(int16_t));
+    soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0);
+    size_t count = std::min(input_ring_used(&ring), *output_count);
+    for (size_t i = 0; i < count; ++i) {
+        output[i] = ring.buffer[(request->start + i) % ring.capacity];
+    }
+    *output_count = count;
+    *out_phase = dev.rot_phase;
+    input_ring_destroy(&ring);
+    return 0;
+}
 #else
 /* The build has no SoapySDR: nothing is copied, and the hook returns 1. */
 extern "C" int
@@ -5566,6 +5702,17 @@ rtl_device_test_soapy_cs16_copy(float* dst, const int16_t* src_iq, size_t elem_c
     (void)elem_count;
     (void)apply_rot;
     (void)phase;
+    return 1;
+}
+
+/* The build has no SoapySDR: there is no read to replay, so the outputs are not touched and the hook returns 1. */
+extern "C" int
+rtl_device_test_soapy_cs16_ingest(const rtl_device_test_soapy_cs16_request* request, float* output,
+                                  size_t* output_count, int* out_phase) {
+    (void)request;
+    (void)output;
+    (void)output_count;
+    (void)out_phase;
     return 1;
 }
 
@@ -8619,6 +8766,9 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->soapy_driver_key[0] = '\0';
     dev->soapy_hardware_key[0] = '\0';
     dev->soapy_native_stream_format[0] = '\0';
+    dev->soapy_native_full_scale = 0.0;
+    dev->soapy_cs16_full_scale = dsdneo::kSoapyCs16DefaultFullScale;
+    dev->soapy_cs16_scale = (float)(1.0 / dsdneo::kSoapyCs16DefaultFullScale);
     dev->soapy_requested_profile[0] = '\0';
     dev->soapy_requested_antenna[0] = '\0';
     dev->soapy_requested_clock[0] = '\0';
@@ -12320,7 +12470,11 @@ rtl_device_test_soapy_device(struct input_ring_state* ring, const rtl_device_tes
         return nullptr;
     }
     dev->soapy_lock_inited = 1;
-    dev->soapy_format = driver->cs16 ? SOAPY_FMT_CS16 : SOAPY_FMT_CF32;
+    if (driver->cs16 && driver->full_scale > 0.0) {
+        rtl_device_copy_cstr(dev->soapy_native_stream_format, sizeof(dev->soapy_native_stream_format), SOAPY_SDR_CS16);
+        dev->soapy_native_full_scale = driver->full_scale;
+    }
+    soapy_set_cached_format(dev, driver->cs16 ? SOAPY_SDR_CS16 : SOAPY_SDR_CF32);
     /* Never dereferenced: every driver call reaches the seam while it is attached. */
     dev->soapy_dev = reinterpret_cast<SoapySDR::Device*>(&g_test_soapy_handle_tokens[0]);
     return dev;
