@@ -58,6 +58,18 @@ test_names() {
     CHECK(sanitized_import_name(QStringLiteral("name. "), QString()) == QStringLiteral("name"));
 }
 
+/* Gate r3: an embedded NUL (or another C0 control character) never reaches the stored name, from a provider's name
+   or a decoded hint: a C-string rename would cut the name there while the index recorded all of it. */
+void
+test_control_characters() {
+    const QString nul = QStringLiteral("mylist") + QChar(0) + QStringLiteral(".csv");
+    CHECK(sanitized_import_name(nul, QString()) == QStringLiteral("mylist_.csv"));
+    CHECK(sanitized_import_name(QString(), QStringLiteral("mylist%00.csv")) == QStringLiteral("mylist_.csv"));
+    CHECK(sanitized_import_name(QString(), QStringLiteral("a%01b%1Fc.csv")) == QStringLiteral("a_b_c.csv"));
+    CHECK(!sanitized_import_name(QStringLiteral("x\x07y.csv"), QString()).contains(QChar(7)));
+    CHECK(sanitized_import_name(QStringLiteral("x\x07y.csv"), QString()) == QStringLiteral("x_y.csv"));
+}
+
 void
 test_long_name() {
     QString base;
@@ -116,6 +128,7 @@ test_unique() {
 int
 main() {
     test_names();
+    test_control_characters();
     test_long_name();
     test_unique();
     return failures ? 1 : 0;

@@ -12484,7 +12484,8 @@ Qt Quick frontend (`src/ui/qt`):
   a failure shows under the row and keeps the earlier file, and closing or reopening the wizard cancels the copy and
   drops its answer.
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
-  `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`, at most
+  `import_names.{h,cpp}` is the one rule both platforms use to name a stored import (`sanitized_import_name`: C0
+  control characters, NUL included, become `_` first, since a C-string rename would cut the name at a NUL; at most
   247 UTF-8 bytes so a " (999)" suffix always fits) and to find a free name (`unique_import_destination`, which also
   skips reserved paths).
   `document_import_transport.{h,cpp}` is the import copies' transport (#832): `DecoderHost::importTransport()` hands

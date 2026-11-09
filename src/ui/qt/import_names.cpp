@@ -47,11 +47,25 @@ strip_trailing_dots_and_spaces(QString name) {
     return name;
 }
 
+/** @brief @p name with every C0 control character (U+0000 to U+001F) replaced by '_'. */
+QString
+replace_control_characters(QString name) {
+    for (QChar& c : name) {
+        if (c.unicode() < 0x20) {
+            c = QLatin1Char('_');
+        }
+    }
+    return name;
+}
+
 } // namespace
 
 QString
 sanitized_import_name(const QString& providerName, const QString& hint) {
-    QString name = providerName.trimmed().isEmpty() ? QUrl::fromPercentEncoding(hint.toUtf8()) : providerName;
+    // First: an embedded NUL would cut the name where a C-string call (the publishing rename) reads it, so the stored
+    // file and the name recorded for it would differ.
+    QString name = replace_control_characters(
+        providerName.trimmed().isEmpty() ? QUrl::fromPercentEncoding(hint.toUtf8()) : providerName);
     name.replace(QLatin1Char('\\'), QLatin1Char('/'));
     const qsizetype slash = name.lastIndexOf(QLatin1Char('/'));
     if (slash >= 0) {
