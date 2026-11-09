@@ -2261,10 +2261,14 @@ suite runs under this compiler.
     effective store and, while a `-Y` row's or trunk-scan target's own list is in effect or suspended, the list held
     aside (`dsd_scan_groups_held_store()`), which also takes the learned row unless it has a row for that ID, as a
     reload would. Its baseline already counts the row, so a held list that cannot store it (out of memory) is marked
-    incomplete and refuses its next rewrite instead of passing the check and writing the row out of the file. The file is `opts->group_in_file`, which names the effective list's file (a row's own `-G` path
-    while its list is in effect, `scan_option_apply_group()`), so the effective list owns it: an append that creates
-    the file starts the effective list's baseline, and a list held aside for another file is left alone. Only when
-    the held list's baseline already names the file (a row naming the global file) does it own it too. An append is
+    incomplete and refuses its next rewrite instead of passing the check and writing the row out of the file. The
+    file is `opts->group_in_file`, which names the effective list's file (a row's own `-G` path while its list is in
+    effect, `scan_option_apply_group()`), so the effective list owns it: an append that creates the file starts the
+    effective list's baseline, and a list held aside for another file is left alone. Only when the held list's
+    baseline already names the file (a row naming the global file) does it own it too. An append that recreates a
+    file deleted outside dsd-neo starts every folded list's baseline from the appended row, the file's only row, so
+    the next rewrite writes the list back as it would over a missing file; an emptied file is an outside edit and
+    keeps its refusal. An append is
     refused (1) when a list that stands for the file was loaded incomplete; an incomplete list for another file does
     not block it. An edit made outside dsd-neo before an append still differs at the next rewrite, because the hash
     covers the whole row sequence.
@@ -2280,8 +2284,8 @@ suite runs under this compiler.
     file again, quietly, until the list is reloaded.
   - Tests: `CORE_TALKGROUP_POLICY` (`test_group_load_report`, `test_group_startup_incomplete_not_written`,
     `test_group_rows_hash_canonical`, `test_group_rewrite_guard`, `test_group_append_tracks_baseline`,
-    `test_group_check_is_quiet`, `test_group_startup_and_export_baseline`, `test_group_empty_export_guards_its_file`),
-    `CORE_SCAN_PROFILE` (`test_held_list_short_of_an_appended_row_is_not_saved`), `APP_COMMAND_QUEUE`,
+    `test_group_check_is_quiet`, `test_group_startup_and_export_baseline`, `test_group_empty_export_guards_its_file`,
+    `test_group_append_recreating_deleted_file`), `CORE_SCAN_PROFILE` (`test_held_list_short_of_an_appended_row_is_not_saved`), `APP_COMMAND_QUEUE`,
     `APP_CONTROL_IMPORT_FILES` and `UI_QT_IMPORTED_FILES` (the lock's interleavings), `P25_MOTOROLA_ALIAS`,
     `ENGINE_RUN_SETUP`.
 - Invariant (alias rows are radios, `talkgroup_policy.c` `tg_policy_entry_is_learned_alias()`): a row with source

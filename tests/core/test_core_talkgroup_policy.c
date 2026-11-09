@@ -3905,6 +3905,48 @@ test_group_append_tracks_baseline(void) {
     return rc;
 }
 
+/* A loaded file deleted outside dsd-neo, then recreated by an alias append, holds only the appended row: that row is
+ * the baseline, so the next save writes the list back (a missing file is written) instead of being refused for good. A
+ * file emptied outside dsd-neo is an outside edit: the append keeps the refusal. */
+static int
+test_group_append_recreating_deleted_file(void) {
+    int rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts) {
+        return 1;
+    }
+    dsd_tg_policy_entry alias;
+    init_entry(&alias, 300, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+    char path[64];
+    for (int emptied = 0; emptied < 2; emptied++) {
+        dsd_state* st = (dsd_state*)calloc(1, sizeof(*st));
+        rc |= load_report_file(path, sizeof path, NULL);
+        rc |= expect_true("recreate fixture", st && write_group_bytes(path, "id,mode,name\n100,A,Dispatch\n") == 0);
+        DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", path);
+        rc |= expect_true("recreate load", dsd_tg_policy_reload_group_file(opts, st) == 0);
+        if (emptied) {
+            rc |= expect_true("file emptied outside", write_group_bytes(path, "") == 0);
+        } else {
+            rc |= expect_true("file deleted outside", remove(path) == 0);
+        }
+        rc |= expect_true("recreate learn", dsd_tg_policy_learn_exact(st, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+        rc |= expect_true("recreate append", dsd_tg_policy_append_group_file_row(opts, st, &alias, "") == 0);
+        if (emptied) {
+            rc |= expect_true("emptied file still guarded", dsd_tg_policy_write_group_file(opts, st) == 2);
+        } else {
+            rc |= expect_true("recreated file saved", dsd_tg_policy_write_group_file(opts, st) == 0);
+            char text[128] = {0};
+            rc |= expect_true("recreated file holds the list", read_group_text(path, text, sizeof text) == 0
+                                                                   && strstr(text, "100,A,Dispatch\n") != NULL
+                                                                   && strstr(text, "300,D,Learned\n") != NULL);
+        }
+        free_test_state(st);
+        (void)remove(path);
+    }
+    free(opts);
+    return rc;
+}
+
 /* Group-file row warnings and open errors seen by the log tap. */
 static int g_group_row_warnings;
 static int g_group_open_errors;
@@ -4183,5 +4225,6 @@ main(void) {
     rc |= test_group_import_reports_why();
     rc |= test_group_check_is_quiet();
     rc |= test_group_empty_export_guards_its_file();
+    rc |= test_group_append_recreating_deleted_file();
     return rc;
 }

@@ -2487,6 +2487,7 @@ tg_policy_parse_header(const char* header_line) {
 typedef struct {
     int has_header;
     int missing_or_empty;
+    int missing;       /* No file at all (deleted, or never written): it holds none of the rows a baseline counts. */
     int needs_newline; /* The file's last line has no newline, so an append must end it first. */
     tg_policy_header_info header;
     char header_line[512]; /* The first line as read, or the one an append to a missing or empty file writes. */
@@ -2508,7 +2509,8 @@ tg_policy_probe_group_file(const char* path, tg_policy_group_file_probe* out) {
     rf = dsd_fopen_existing_regular_file(path, "rb");
     if (!rf) {
         out->missing_or_empty = 1;
-        return errno == ENOENT ? 0 : -1;
+        out->missing = errno == ENOENT;
+        return out->missing ? 0 : -1;
     }
 
     int failed = 0;
@@ -2852,7 +2854,9 @@ tg_policy_append_row(FILE* wf, const tg_policy_append_lists* lists, const char* 
     sink.hash_count = count;
     for (size_t i = 0; i < count; i++) {
         const dsd_tg_policy_context* ctx = lists->stores[i];
-        sink.hashes[i] = tg_policy_baseline_for(ctx, path) ? ctx->baseline.rows_hash : DSD_TG_POLICY_ROWS_HASH_INIT;
+        // A file the append creates holds the appended row alone, whatever a list's baseline counted of a deleted one.
+        sink.hashes[i] = (!probe->missing && tg_policy_baseline_for(ctx, path)) ? ctx->baseline.rows_hash
+                                                                                : DSD_TG_POLICY_ROWS_HASH_INIT;
     }
     if (tg_policy_write_group_file_entry(&sink, entry, probe, clean_mode, clean_name, clean_meta) != 0) {
         return -1;
