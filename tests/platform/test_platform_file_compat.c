@@ -21,6 +21,7 @@
 #include "test_support.h"
 #if DSD_PLATFORM_WIN_NATIVE
 #include <locale.h>
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -902,6 +903,69 @@ dir_takes_hard_links(const char* dir) {
     return ok;
 }
 
+#endif
+
+/* Issue #697: dsd_path_same_file() names one file however the path spells it (another spelling, a hard link; a symbolic
+   link on POSIX, another case of the name on Windows), tells two files apart, and refuses a missing file or an empty
+   argument. */
+static int
+expect_path_same_file(void) {
+    const char* dir = "dsd_neo_same_file";
+    const char* file = "dsd_neo_same_file/a.csv";
+    const char* spelled = "dsd_neo_same_file/./../dsd_neo_same_file/a.csv";
+    const char* hard = "dsd_neo_same_file/hard.csv";
+    const char* other = "dsd_neo_same_file/b.csv";
+    const char* missing = "dsd_neo_same_file/missing.csv";
+    (void)dsd_mkdir(dir, 0700);
+    int ok = write_text_file(file, "a") == 0 && write_text_file(other, "a") == 0;
+    int same = -1;
+    ok = ok && dsd_path_same_file(file, file, &same) == 0 && same == 1;
+    same = -1;
+    ok = ok && dsd_path_same_file(file, spelled, &same) == 0 && same == 1;
+    same = -1;
+    ok = ok && dsd_path_same_file(file, other, &same) == 0 && same == 0;
+#if DSD_PLATFORM_WIN_NATIVE
+    /* NTFS ignores case and takes a backslash; a hard link, unlike a symbolic one, needs no privilege. */
+    same = -1;
+    ok = ok && dsd_path_same_file(file, "DSD_NEO_SAME_FILE\\A.CSV", &same) == 0 && same == 1;
+    same = -1;
+    ok = ok && CreateHardLinkA(hard, file, NULL) && dsd_path_same_file(hard, file, &same) == 0 && same == 1;
+#else
+    const char* soft = "dsd_neo_same_file/soft.csv";
+    same = -1;
+    ok = ok && symlink("a.csv", soft) == 0 && dsd_path_same_file(soft, file, &same) == 0 && same == 1;
+    if (dir_takes_hard_links(dir)) {
+        same = -1;
+        ok = ok && link(file, hard) == 0 && dsd_path_same_file(hard, file, &same) == 0 && same == 1;
+    }
+#endif
+    same = -1;
+    errno = 0;
+    ok = ok && dsd_path_same_file(file, missing, &same) == -1 && errno == ENOENT && same == 0;
+    same = -1;
+    errno = 0;
+    ok = ok && dsd_path_same_file(missing, file, &same) == -1 && errno == ENOENT && same == 0;
+    same = -1;
+    errno = 0;
+    ok = ok && dsd_path_same_file("", file, &same) == -1 && errno == EINVAL && same == 0;
+    errno = 0;
+    ok = ok && dsd_path_same_file(file, NULL, &same) == -1 && errno == EINVAL;
+    errno = 0;
+    ok = ok && dsd_path_same_file(file, file, NULL) == -1 && errno == EINVAL;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "same file: a path, its spellings or links, or the error cases\n");
+    }
+#if !DSD_PLATFORM_WIN_NATIVE
+    (void)remove(soft);
+#endif
+    (void)remove(hard);
+    (void)remove(other);
+    (void)remove(file);
+    ok = dsd_test_rmdir(dir) == 0 && ok;
+    return ok ? 0 : 1;
+}
+
+#if !DSD_PLATFORM_WIN_NATIVE
 /* The hard-link fallback: EEXIST on a taken name, and a link whose source cannot be unlinked still publishes, reporting
    the source left behind. */
 static int
@@ -1000,6 +1064,7 @@ main(void) {
     rc |= expect_private_exclusive_create();
     rc |= expect_rename_noreplace();
     rc |= expect_rename_noreplace_non_ascii_dir();
+    rc |= expect_path_same_file();
 #if !DSD_PLATFORM_WIN_NATIVE
     rc |= expect_rejects_symlink();
     rc |= expect_rename_noreplace_link_fallback();

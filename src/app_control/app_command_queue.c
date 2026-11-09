@@ -16,6 +16,7 @@
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -32,6 +33,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25p2_playout.h>
@@ -69,6 +71,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -108,7 +111,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
@@ -343,15 +345,33 @@ q_is_empty_unlocked(void) {
 }
 
 static const int k_ui_cmd_string_ids[] = {
-    DSD_APP_CMD_EVENT_LOG_SET,       DSD_APP_CMD_WAV_STATIC_OPEN,      DSD_APP_CMD_WAV_RAW_OPEN,
-    DSD_APP_CMD_DSP_OUT_SET,         DSD_APP_CMD_SYMCAP_OPEN,          DSD_APP_CMD_SYMBOL_IN_OPEN,
-    DSD_APP_CMD_INPUT_WAV_SET,       DSD_APP_CMD_INPUT_SYM_STREAM_SET, DSD_APP_CMD_PULSE_OUT_SET,
-    DSD_APP_CMD_PULSE_IN_SET,        DSD_APP_CMD_LRRP_SET_CUSTOM,      DSD_APP_CMD_IMPORT_CHANNEL_MAP,
-    DSD_APP_CMD_IMPORT_SRC_LIST,     DSD_APP_CMD_IMPORT_GROUP_LIST,    DSD_APP_CMD_IMPORT_KEYS_DEC,
-    DSD_APP_CMD_IMPORT_KEYS_HEX,     DSD_APP_CMD_KEY_TYT_AP_SET,       DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
-    DSD_APP_CMD_KEY_TYT_EP_SET,      DSD_APP_CMD_KEY_KEN_SCR_SET,      DSD_APP_CMD_KEY_ANYTONE_BP_SET,
-    DSD_APP_CMD_KEY_XOR_SET,         DSD_APP_CMD_M17_USER_DATA_SET,    DSD_APP_CMD_IMPORT_P25_BANDPLAN,
+    DSD_APP_CMD_EVENT_LOG_SET,
+    DSD_APP_CMD_WAV_STATIC_OPEN,
+    DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_DSP_OUT_SET,
+    DSD_APP_CMD_SYMCAP_OPEN,
+    DSD_APP_CMD_SYMBOL_IN_OPEN,
+    DSD_APP_CMD_INPUT_WAV_SET,
+    DSD_APP_CMD_INPUT_SYM_STREAM_SET,
+    DSD_APP_CMD_PULSE_OUT_SET,
+    DSD_APP_CMD_PULSE_IN_SET,
+    DSD_APP_CMD_LRRP_SET_CUSTOM,
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+    DSD_APP_CMD_IMPORT_SRC_LIST,
+    DSD_APP_CMD_IMPORT_GROUP_LIST,
+    DSD_APP_CMD_IMPORT_KEYS_DEC,
+    DSD_APP_CMD_IMPORT_KEYS_HEX,
+    DSD_APP_CMD_KEY_TYT_AP_SET,
+    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
+    DSD_APP_CMD_KEY_TYT_EP_SET,
+    DSD_APP_CMD_KEY_KEN_SCR_SET,
+    DSD_APP_CMD_KEY_ANYTONE_BP_SET,
+    DSD_APP_CMD_KEY_XOR_SET,
+    DSD_APP_CMD_M17_USER_DATA_SET,
+    DSD_APP_CMD_IMPORT_P25_BANDPLAN,
     DSD_APP_CMD_EXPORT_P25_BANDPLAN,
+    DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD,
 };
 
 /* Setters where only the newest value matters, so a queued one may be overwritten
@@ -473,7 +493,7 @@ ui_set_toast(dsd_state* state, int ttl_s, const char* fmt, ...) {
     va_start(ap, fmt);
     (void)DSD_VSNPRINTF(state->ui_msg, sizeof state->ui_msg, fmt, ap);
     va_end(ap);
-    state->ui_msg_expire = dsd_realtime_time() + ttl_s;
+    dsd_state_toast_publish(state, dsd_realtime_time() + ttl_s);
 }
 
 /* A frequency in Hz as every tune toast names it: MHz to the Hz (issue #670). Returns @p out. */
@@ -789,7 +809,7 @@ apply_cmd_key_hytera_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     ui_cmd_reset_key_mute_state(opts, state);
     DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "Hytera key loaded (%s)",
                  (state->M == 1) ? "forced" : "not forced");
-    state->ui_msg_expire = dsd_realtime_time() + 5;
+    dsd_state_toast_publish(state, dsd_realtime_time() + 5);
     DSD_SECURE_ZERO(&p, sizeof p);
     return 1;
 }
@@ -2978,29 +2998,54 @@ apply_cmd_io_and_import_lrrp_and_p2(dsd_opts* opts, dsd_state* state, const stru
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/* A channel map import, or a reload (@p reload) of the file in use: the same service, refusals and toasts. */
+static int
+channel_map_import_apply(dsd_opts* opts, dsd_state* state, const char* path, int reload) {
+    int rc = svc_import_channel_map(opts, state, path);
+    if (rc == 0) {
+        dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // another map may be another system than an XPT site
+    }
+    char skipped[160];
+    if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
+        /* The rows load; the ones the DSP rate cannot run are named with the import (issue #526). */
+        ui_set_toast(state, 5, "%s; %s", reload ? "Reloaded" : "Imported", skipped);
+    } else if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: Channel map %s -> %s", reload ? "reloaded" : "imported", path);
+    } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
+        ui_set_toast(state, 4, "Failed: Channel map %s -> %s", reload ? "reload" : "import", path);
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
 static int
 ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
-            int rc = svc_import_channel_map(opts, state, path);
-            result = ui_cmd_apply_status_from_service_rc(rc);
-            if (rc == 0) {
-                dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // another map may be another system than an XPT site
-            }
-            char skipped[160];
-            if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
-                /* The rows load; the ones the DSP rate cannot run are named with the import (issue #526). */
-                ui_set_toast(state, 5, "Imported; %s", skipped);
-            } else if (rc == 0) {
-                ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
-            } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
-                ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
-            }
+            result = channel_map_import_apply(opts, state, path, 0);
         }
     }
     return result;
+}
+
+/* The channel map's file again, only when the session's map is @p path: a frontend that replaced that file posts it
+   whether or not the session still uses it, and the decision is taken here, against the live path. */
+static int
+ui_cmd_handle_import_channel_map_reload(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    char path[sizeof(((dsd_opts*)0)->chan_in_file)];
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (!ui_cmd_copy_payload_path(c, path, sizeof path)) {
+        ui_set_toast(state, 3, "Invalid channel map path");
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (strcmp(path, opts->chan_in_file) != 0) {
+        LOG_INFO("NOTICE: Channel map %s not reloaded: the session does not use it.\n", path);
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    return channel_map_import_apply(opts, state, path, 1);
 }
 
 static int
@@ -3040,22 +3085,96 @@ ui_cmd_handle_export_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct
     return result;
 }
 
+/* Why a group list load changed nothing, as the end of a toast or log line. */
+static const char*
+group_list_refusal_text(svc_group_list_status status) {
+    switch (status) {
+        case SVC_GROUP_LIST_NOT_FOUND: return "file not found";
+        case SVC_GROUP_LIST_UNREADABLE: return "file not readable";
+        case SVC_GROUP_LIST_NO_MEMORY: return "out of memory";
+        case SVC_GROUP_LIST_NO_USABLE_ROWS: return "no usable rows";
+        default: return "invalid path";
+    }
+}
+
+/* An import's (or reload's) feedback: the outcome and its counts in the toast, which ui_msg must hold; the path, and
+   whether temporary avoids and call skips went with the old list, in the log. Each skipped row was logged as it was
+   read. @p verb is "import" or "reload", @p done its past tense. */
+static void
+group_list_load_feedback(dsd_state* state, const char* verb, const char* done, const char* path,
+                         const svc_group_list_result* r) {
+    char skipped[32] = "";
+    if (r->rows.skipped > 0u) {
+        DSD_SNPRINTF(skipped, sizeof skipped, "%u skipped", r->rows.skipped);
+    }
+    if (r->status == SVC_GROUP_LIST_LOADED && r->rows.accepted == 0u) {
+        // A file with no data rows at all: an empty list on purpose, which "0 rows" would read as a failed load.
+        ui_set_toast(state, 3, "Applied: Group list %s -> empty list", done);
+        LOG_INFO("NOTICE: Group list %s from %s: the file has no rows, so the list is empty%s.\n", done, path,
+                 r->cleared_temporary ? "; temporary TG avoids and call skips cleared" : "");
+        return;
+    }
+    if (r->status == SVC_GROUP_LIST_LOADED) {
+        ui_set_toast(state, 3, "Applied: Group list %s -> %u %s%s%s", done, r->rows.accepted,
+                     r->rows.accepted == 1u ? "row" : "rows", skipped[0] ? ", " : "", skipped);
+        LOG_INFO("NOTICE: Group list %s from %s: %u rows loaded, %u skipped%s.\n", done, path, r->rows.accepted,
+                 r->rows.skipped, r->cleared_temporary ? "; temporary TG avoids and call skips cleared" : "");
+        return;
+    }
+    const char* why = group_list_refusal_text(r->status);
+    const int show_skipped = r->status == SVC_GROUP_LIST_NO_USABLE_ROWS && skipped[0];
+    ui_set_toast(state, 4, "Failed: Group list %s -> %s%s%s%s; list unchanged", verb, why, show_skipped ? " (" : "",
+                 show_skipped ? skipped : "", show_skipped ? ")" : "");
+    LOG_WARN("WARNING: Group list not %s from %s: %s; the list in use is unchanged.\n", done, path, why);
+}
+
 static int
 ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
-            int rc = svc_import_group_list(opts, state, path);
+            svc_group_list_result loaded;
+            int rc = svc_import_group_list(opts, state, path, &loaded);
             result = ui_cmd_apply_status_from_service_rc(rc);
-            if (rc == 0) {
-                ui_set_toast(state, 3, "Applied: Group list reloaded -> %s", path);
-            } else {
-                ui_set_toast(state, 4, "Failed: Group list reload -> %s", path);
-            }
+            group_list_load_feedback(state, "import", "imported", path, &loaded);
         }
     }
     return result;
+}
+
+/*
+ * The group list's file again (DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD). It runs while a -Y row's or trunk-scan target's
+ * own list is set aside (apply_cmd_scoped()), so opts->group_in_file is the configured global file, never the row's:
+ * the path is resolved here, on the decoder thread, never taken from a frontend's snapshot. With an expected path in
+ * the payload it reloads only when that is the configured file; another file, or none, is a no-op logged, so a
+ * frontend can post the file it replaced without knowing what the session uses. The import service decides the rest,
+ * refusals and their feedback included.
+ */
+static int
+ui_cmd_handle_import_group_list_reload(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    char expected[sizeof(((dsd_opts*)0)->group_in_file)] = "";
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (c->n > 0U && c->data[0] != 0U && !ui_cmd_copy_payload_path(c, expected, sizeof expected)) {
+        ui_set_toast(state, 3, "Invalid group list path");
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (expected[0] && strcmp(expected, opts->group_in_file) != 0) {
+        LOG_INFO("NOTICE: Group list %s not reloaded: the session does not use it.\n", expected);
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (!opts->group_in_file[0]) {
+        ui_set_toast(state, 4, "Failed: Group list reload -> no group list file; import one first");
+        return UI_CMD_APPLY_FAILED;
+    }
+    char path[sizeof(((dsd_opts*)0)->group_in_file)];
+    DSD_MEMCPY(path, opts->group_in_file, sizeof path); /* the import writes opts->group_in_file from it */
+    svc_group_list_result loaded;
+    const int rc = svc_import_group_list(opts, state, path, &loaded);
+    group_list_load_feedback(state, "reload", "reloaded", path, &loaded);
+    return ui_cmd_apply_status_from_service_rc(rc);
 }
 
 static int
@@ -3145,7 +3264,8 @@ ui_cmd_handle_import_group_list_clear(dsd_opts* opts, dsd_state* state, const st
     if (rc == 0) {
         ui_set_toast(state, 3, "Applied: Group list cleared");
     } else {
-        ui_set_toast(state, 4, "Failed: Group list clear");
+        // Clearing allocates the empty list, so memory is all it can run out of.
+        ui_set_toast(state, 4, "Failed: Group list clear -> out of memory; list unchanged");
     }
     return ui_cmd_apply_status_from_service_rc(rc);
 }
@@ -3191,6 +3311,8 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_IMPORT_CHANNEL_MAP, ui_cmd_handle_import_channel_map},
         {DSD_APP_CMD_IMPORT_GROUP_LIST, ui_cmd_handle_import_group_list},
+        {DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, ui_cmd_handle_import_group_list_reload},
+        {DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, ui_cmd_handle_import_channel_map_reload},
         {DSD_APP_CMD_IMPORT_SRC_LIST, ui_cmd_handle_import_src_list},
         {DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR, ui_cmd_handle_import_src_list_clear},
         {DSD_APP_CMD_IMPORT_KEYS_DEC, ui_cmd_handle_import_keys_dec},
@@ -3269,10 +3391,14 @@ apply_cmd_dsp(const struct dsd_app_command* c, const dsd_opts* opts, dsd_state* 
 #endif
 
 /* Through the shared chain rather than a fourth copy of the same ternary: the retune and
-   tune commands here have to name the control channel the status surfaces name. */
+   tune commands here have to name the control channel the status surfaces name. A TETRA
+   follow goes back to the control channel it started from (tetra_sm_return_cc_hz()),
+   whatever another cell decoded on the traffic carrier wrote to trunk_cc_freq since; the
+   call view reads no protocol state, and a frontend snapshot carries none. */
 static long
 current_cc_freq(const dsd_state* state) {
-    return dsd_app_cc_freq(state);
+    const long tetra_home = tetra_sm_return_cc_hz(state);
+    return tetra_home > 0 ? tetra_home : dsd_app_cc_freq(state);
 }
 
 static void
@@ -3550,6 +3676,17 @@ hand_tetra_sm_over(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A manual return to the control channel a TETRA follow started from (@p tetra_home, tetra_sm_return_cc_hz() read
+   before the tune; 0 for none): the session's control channel is that one again, whatever another cell decoded on the
+   traffic carrier wrote there, before the machine comes to rest on it. */
+static void
+hand_tetra_sm_home(const dsd_opts* opts, dsd_state* state, long tetra_home) {
+    if (tetra_home > 0) {
+        state->trunk_cc_freq = tetra_home;
+    }
+    hand_tetra_sm_over(opts, state);
+}
+
 /* Whether the P25 SM owns this trunk. When it does, the tune, the decoder resets and
  * the SM handoff run under the watchdog guard as one step, like every other CC
  * retune (p25_sm_select_control_channel(), the no-carrier return): a watchdog tick
@@ -3580,6 +3717,7 @@ run_manual_retune_guarded(dsd_opts* opts, dsd_state* state, manual_retune_step_f
 static int
 apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live) {
     const long freq = current_cc_freq(state);
+    const long tetra_home = tetra_sm_return_cc_hz(state);
     const int sym_rate = cc_symbol_rate(opts, state, 0);
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
@@ -3594,7 +3732,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
         hand_p25_sm_to_cc(opts, state, tune_result, request_id, "return-to-cc");
     }
     hand_dmr_sm_over(opts, state, 0, freq, request_id);
-    hand_tetra_sm_over(opts, state);
+    hand_tetra_sm_home(opts, state, tetra_home);
     LOG_INFO("User Activated Return to CC\n");
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3609,7 +3747,7 @@ apply_manual_return_to_cc(dsd_opts* opts, dsd_state* state) {
     if (ui_cmd_refuse_replay_tune(opts, state)) {
         return UI_CMD_APPLY_FAILED;
     }
-    if (opts->trunk_enable != 1 || (state->trunk_cc_freq == 0 && state->p25_cc_freq == 0)) {
+    if (opts->trunk_enable != 1 || current_cc_freq(state) == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
     return run_manual_retune_guarded(opts, state, apply_manual_return_to_cc_locked);
@@ -3625,6 +3763,7 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     dsd_trunk_tune_result tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
     uint64_t request_id = 0U;
     const int sym_rate = cc_symbol_rate(opts, state, 1);
+    const long tetra_home = tetra_sm_return_cc_hz(state);
     if (opts->trunk_enable == 1) {
         cc_freq = current_cc_freq(state);
         if (cc_freq != 0
@@ -3636,7 +3775,7 @@ apply_user_block_transition_locked(dsd_opts* opts, dsd_state* state, int p25_liv
     reset_call_tracking(opts, state, 1);
     if (cc_freq != 0) {
         /* Before the no-carrier pass, which would tick a machine that still owns the return. */
-        hand_tetra_sm_over(opts, state);
+        hand_tetra_sm_home(opts, state, tetra_home);
     }
     if (opts->trunk_enable == 1) {
         dsd_engine_no_carrier_locked(opts, state);
@@ -4715,6 +4854,8 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
     DSD_APP_CMD_IMPORT_KEYS_CLEAR,
     DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR,
+    /* With no path, the group list reload re-reads the configured file; with one, it is a string command. */
+    DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
     DSD_APP_CMD_QUIT,
     DSD_APP_CMD_FORCE_PRIV_TOGGLE,
     DSD_APP_CMD_FORCE_RC4_TOGGLE,
@@ -5099,7 +5240,8 @@ ui_cmd_payload_is_valid(const struct dsd_app_command* c) {
         return 0;
     }
     if (ui_cmd_is_action_id(c->id)) {
-        return c->n == 0U || (c->id == DSD_APP_CMD_AGGR_SYNC_TOGGLE && ui_cmd_payload_has_min_size(c, sizeof(int32_t)));
+        return c->n == 0U || (c->id == DSD_APP_CMD_AGGR_SYNC_TOGGLE && ui_cmd_payload_has_min_size(c, sizeof(int32_t)))
+               || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD; /* an action or a string command */
     }
     if (ui_cmd_id_in_list(c->id, k_ui_cmd_i32_ids, sizeof k_ui_cmd_i32_ids / sizeof k_ui_cmd_i32_ids[0])) {
         return ui_cmd_payload_has_min_size(c, sizeof(int32_t));
@@ -5214,7 +5356,7 @@ ui_cmd_handle_p25_ga_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_a
     if (state) {
         DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "P25 Group Affiliation: %s",
                      opts->frontend_display.show_p25_group_affiliations ? "On" : "Off");
-        state->ui_msg_expire = dsd_realtime_time() + 3;
+        dsd_state_toast_publish(state, dsd_realtime_time() + 3);
     }
     return 1;
 }
@@ -6741,7 +6883,7 @@ rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload*
         (void)svc_clear_channel_map(opts, state);
     }
     if (p->has_group) {
-        if (svc_import_group_list(opts, state, p->group_path) != 0) {
+        if (svc_import_group_list(opts, state, p->group_path, NULL) != 0) {
             failed |= RR_APPLY_GROUP_FAILED;
         }
     } else {
@@ -7134,10 +7276,7 @@ apply_dmr_reset(dsd_state* state) {
     state->nxdn_idas_site_code = 0;
     state->nxdn_last_ran = -1;
     state->nxdn_ran = 0;
-    state->nxdn_rcn = 0;
-    state->nxdn_base_freq = 0;
-    state->nxdn_step = 0;
-    state->nxdn_bw = 0;
+    dsd_nxdn_ca_reset(state);
     /* And what the received identity holds of them: the DMR trunking site, keeping the colour code the reset
        keeps, the DMR RAS evidence, and the NXDN location and IDAS site with the RAN. */
     {
@@ -7223,20 +7362,53 @@ tg_listen_apply(dsd_state* state, uint32_t id_start, uint32_t id_end, int listen
     return dsd_tg_policy_set_mode(state, id_start, id_end, listen ? "A" : "B");
 }
 
-static void
+/* Saves the list in force to its file. Returns the toast a refused save set (the change stays for the session), for
+   a later toast of the same command to keep in view (tg_listen_release_blocked_calls()), or NULL when nothing was
+   refused. */
+static const char*
 tg_listen_persist(dsd_opts* opts, dsd_state* state) {
     if (dsd_scan_groups_row_active(state)) {
-        return;
+        return NULL;
     }
-    if (dsd_tg_policy_write_group_file(opts, state) != 0) {
+    const int rc = dsd_tg_policy_write_group_file(opts, state);
+    const char* refusal = NULL;
+    if (rc == 1) {
+        LOG_WARN("WARNING: Talkgroup change not saved to '%s': the group list loaded incomplete. Reload the list, then "
+                 "make the change again.\n",
+                 opts->group_in_file);
+        refusal = "Talkgroup change kept for this session only; group list incomplete, reload it";
+    } else if (rc == 2) {
+        LOG_WARN("WARNING: Talkgroup change not saved to '%s': the file changed on disk since dsd-neo last read or "
+                 "wrote it. Reload the list, then make the change again (the reload drops changes not saved).\n",
+                 opts->group_in_file);
+        refusal = "Talkgroup change kept for this session only; group list changed on disk, reload it";
+    } else if (rc != 0) {
         LOG_WARN("WARNING: Talkgroup list changes could not be written to '%s'.\n", opts->group_in_file);
-        ui_set_toast(state, 4, "Talkgroup change kept for this session only");
+        refusal = "Talkgroup change kept for this session only";
     }
+    if (refusal) {
+        ui_set_toast(state, 4, "%s", refusal);
+    }
+    return refusal;
 }
 
 static int
 tg_listen_row_is_editable(const dsd_tg_policy_entry* entry) {
     return entry->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && strcmp(entry->mode, "D") != 0;
+}
+
+/* An active group call on @p target judged as its protocol admits it: an NXDN Type-C call whose target matches no row
+ * by its source's row (nxdn_held_call_policy_source(), as NXDN's grant and held-call paths judge it), every other call
+ * by its target alone. */
+static int
+tg_listen_evaluate_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint32_t target,
+                        dsd_tg_policy_decision* decision) {
+    if (DSD_SYNC_IS_NXDN(call->protocol)) {
+        const uint32_t source =
+            nxdn_held_call_policy_source(opts, state, dsd_call_snapshot_transmission(call), call->ota_source_id);
+        return dsd_tg_policy_evaluate_group_source_fallback(opts, state, target, source, 0, 0, decision);
+    }
+    return dsd_tg_policy_evaluate_group_call(opts, state, target, 0, 0, 0, decision);
 }
 
 /* Only mode/allow-list denial can change as a result of a row edit. A patched
@@ -7257,7 +7429,7 @@ tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
             continue;
         }
         dsd_tg_policy_decision decision;
-        if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0, &decision) != 0) {
+        if (tg_listen_evaluate_call(opts, state, &call, (uint32_t)target, &decision) != 0) {
             continue;
         }
         if (call.ota_target_id <= UINT32_MAX) {
@@ -7271,14 +7443,23 @@ tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
     return blocked;
 }
 
-static void
-tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int eligible_slots) {
+/* Returns the receiver to the control channel when a call in @p eligible_slots is blocked now. A failed return tune
+   says so, after @p refusal (a refused save's toast, tg_listen_persist()) when the command had one, so that stays in
+   view; returns UI_CMD_APPLY_FAILED then, else UI_CMD_APPLY_COMPLETED. */
+static int
+tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int eligible_slots, const char* refusal) {
     if (!(tg_listen_blocked_slots(opts, state) & eligible_slots)) {
-        return;
+        return UI_CMD_APPLY_COMPLETED;
     }
-    if (apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state)) == UI_CMD_APPLY_FAILED) {
+    if (apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state)) != UI_CMD_APPLY_FAILED) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (refusal) {
+        ui_set_toast(state, 4, "%s; return-to-CC tune failed", refusal);
+    } else {
         ui_set_toast(state, 4, "Talkgroup not tuned; return-to-CC tune failed");
     }
+    return UI_CMD_APPLY_FAILED;
 }
 
 /* WP-D1: Every talkgroup edit checks the same pair: comparing only the generation
@@ -7364,8 +7545,8 @@ apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup updated");
-    tg_listen_persist(opts, state);
-    tg_listen_release_blocked_calls(opts, state, eligible_slots);
+    const char* refusal = tg_listen_persist(opts, state);
+    (void)tg_listen_release_blocked_calls(opts, state, eligible_slots, refusal);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7386,8 +7567,8 @@ apply_cmd_tg_row_remove(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup removed");
-    tg_listen_persist(opts, state);
-    tg_listen_release_blocked_calls(opts, state, eligible_slots);
+    const char* refusal = tg_listen_persist(opts, state);
+    (void)tg_listen_release_blocked_calls(opts, state, eligible_slots, refusal);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7420,6 +7601,19 @@ apply_cmd_tg_list_export(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     DSD_SNPRINTF(output->group_in_file, sizeof output->group_in_file, "%s", path);
     int rc = dsd_tg_policy_write_group_file(output, state);
     free(output);
+    if (rc == 1) {
+        // The export would become the list's file, and the list is missing rows of the one it came from.
+        ui_set_toast(state, 4, "Talkgroup export refused: group list incomplete; reload it");
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (rc == 2) {
+        // Exporting over the list's own file would overwrite the edits made to it outside dsd-neo.
+        LOG_WARN("WARNING: Talkgroup list not exported to '%s': the file changed on disk since dsd-neo last read or "
+                 "wrote it. Reload the list, or export to another file.\n",
+                 path);
+        ui_set_toast(state, 4, "Talkgroup export refused: group list changed on disk; reload it");
+        return UI_CMD_APPLY_FAILED;
+    }
     if (rc != 0) {
         ui_set_toast(state, 3, "Talkgroup export failed");
         return UI_CMD_APPLY_FAILED;
@@ -7634,11 +7828,12 @@ apply_cmd_tg_selection(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
         ui_set_toast(state, 4, "The talkgroup selection changed or could not be applied. Review it again.");
         return UI_CMD_APPLY_FAILED;
     }
-    tg_listen_persist(opts, state);
-    if (!p.listening) {
-        tg_listen_release_blocked_calls(opts, state, 3U);
-    }
+    // Before the save, as every list edit does: a save that is refused replaces it with why.
     ui_set_toast(state, 4, "%u selected talkgroups %s", p.count, p.listening ? "listening" : "not tuned");
+    const char* refusal = tg_listen_persist(opts, state);
+    if (!p.listening) {
+        (void)tg_listen_release_blocked_calls(opts, state, 3U, refusal);
+    }
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7719,9 +7914,9 @@ apply_cmd_tg_listen_one(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         ui_set_toast(state, 4, "Could not update TG %u", (unsigned)payload.id_start);
         return UI_CMD_APPLY_FAILED;
     }
-    tg_listen_persist(opts, state);
+    const char* refusal = tg_listen_persist(opts, state);
     if (!payload.listen) {
-        tg_listen_release_blocked_calls(opts, state, 3U);
+        (void)tg_listen_release_blocked_calls(opts, state, 3U, refusal);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7743,9 +7938,9 @@ apply_cmd_tg_listen_all(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         }
     }
     ui_set_toast(state, 3, "%zu talkgroups %s", applied, payload.listen ? "listening" : "not tuned");
-    tg_listen_persist(opts, state);
+    const char* refusal = tg_listen_persist(opts, state);
     if (!payload.listen) {
-        tg_listen_release_blocked_calls(opts, state, 3U);
+        (void)tg_listen_release_blocked_calls(opts, state, 3U, refusal);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7764,15 +7959,14 @@ apply_cmd_tg_listen(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     return apply_cmd_tg_listen_all(opts, state, c);
 }
 
-static void
+/* The lockout's toast and save; returns a refused save's toast (tg_listen_persist()), else NULL. */
+static const char*
 tg_lockout_report(dsd_opts* opts, dsd_state* state, unsigned int tg) {
     const char* suffix = !opts->persist_tg_lockouts                                     ? " for this session"
                          : !opts->group_in_file[0] || dsd_scan_groups_row_active(state) ? " in current list (not saved)"
                                                                                         : "";
     ui_set_toast(state, 3, "TG %u locked out%s", tg, suffix);
-    if (opts->persist_tg_lockouts) {
-        tg_listen_persist(opts, state);
-    }
+    return opts->persist_tg_lockouts ? tg_listen_persist(opts, state) : NULL;
 }
 
 static void
@@ -7812,14 +8006,18 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
                  temporary ? "Session Only" : "User Lock Out");
     slot_block_note_event(opts, state, slot, text);
 
-    tg_lockout_report(opts, state, tg);
+    const char* refusal = tg_lockout_report(opts, state, tg);
 
     const int transition_status = apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state));
     if (transition_status == UI_CMD_APPLY_FAILED) {
         LOG_WARN("WARNING: User lockout for TG %u was applied, but the return-to-CC cleanup tune was not accepted.\n",
                  tg);
-        ui_set_toast(state, 4, "TG %u locked out%s; return-to-CC tune failed", tg,
-                     temporary ? " for this session" : "");
+        if (refusal) { /* the refused save stays in view: the lockout holds for this session only */
+            ui_set_toast(state, 4, "%s; return-to-CC tune failed", refusal);
+        } else {
+            ui_set_toast(state, 4, "TG %u locked out%s; return-to-CC tune failed", tg,
+                         temporary ? " for this session" : "");
+        }
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -8220,20 +8418,28 @@ scan_list_toast_name(const dsd_state* state, int list, char* out, size_t out_siz
     return out;
 }
 
-/* A switch the coordinator made: what is on now, as its own log line counts it (targets in the lists that are on,
-   avoided ones included). */
+/* The lists the published state has on (bit N-1: list N), of the first @p count; how many into @p lists_on. */
+static unsigned int
+scan_lists_on_mask(const dsd_state* state, int count, int* lists_on) {
+    unsigned int mask = 0U;
+    *lists_on = 0;
+    for (int l = 0; l < count; l++) {
+        if (state->trunk_scan_lists[l].enabled) {
+            mask |= 1U << l;
+            (*lists_on)++;
+        }
+    }
+    return mask;
+}
+
+/* A switch the coordinator made: what is on now, as its own log line counts it (the distinct targets in the lists that
+   are on, avoided ones included: a target two of them hold counts once). */
 static void
 scan_list_switched_toast(dsd_state* state, int list, int enabled) {
     const int count = state->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? state->trunk_scan_list_count
                                                                               : DSD_TRUNK_SCAN_MAX_LISTS;
     int lists_on = 0;
-    unsigned int targets = 0U;
-    for (int l = 0; l < count; l++) {
-        if (state->trunk_scan_lists[l].enabled) {
-            lists_on++;
-            targets += state->trunk_scan_lists[l].targets;
-        }
-    }
+    const unsigned int targets = dsd_app_scan_lists_targets_on(state, scan_lists_on_mask(state, count, &lists_on));
     const char* noun = targets == 1U ? "target" : "targets";
     if (list == DSD_APP_SCAN_LIST_ALL) {
         ui_set_toast(state, 3, "All scan lists on: %u %s", targets, noun);
@@ -9150,7 +9356,7 @@ cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUs
     if (strcmp(opts->group_in_file, cfg->trunk_group_csv) == 0) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (svc_load_group_list(opts, cfg->trunk_group_csv, groups) != 0) {
+    if (svc_load_group_list(opts, cfg->trunk_group_csv, groups, NULL) != 0) {
         ui_set_toast(state, 4, "Config not applied: group list could not be loaded");
         return UI_CMD_APPLY_FAILED;
     }
@@ -9803,8 +10009,11 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
  * says what loaded, unless the apply said something of its own.
  */
 static void
-cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, const char* msg_before,
-                          time_t msg_expire_before) {
+cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, uint32_t msg_seq_before) {
+    /* A plain config apply carries no autosave: only a load's payload has the fields after the config. */
+    if (!state || !c || c->n < sizeof(dsd_app_config_load_payload)) {
+        return;
+    }
     /* The fields after the config, read field by field: the payload bytes carry no alignment. */
     dsd_app_config_metadata_payload autosave;
     char profile[sizeof(((dsd_app_config_load_payload*)0)->profile)];
@@ -9814,7 +10023,8 @@ cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, con
     profile[sizeof profile - 1] = '\0';
     state->config_autosave_enabled = autosave.autosave_enabled ? 1 : 0;
     DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", autosave.path);
-    if (state->ui_msg_expire != msg_expire_before || strcmp(state->ui_msg, msg_before) != 0) {
+    /* Every toast the apply set counted (dsd_state_toast_publish()), the same text set again within its second too. */
+    if (state->ui_msg_seq != msg_seq_before) {
         return;
     }
     if (profile[0] != '\0') {
@@ -9901,9 +10111,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
-    char msg_before[sizeof state->ui_msg];
-    DSD_SNPRINTF(msg_before, sizeof msg_before, "%s", state->ui_msg);
-    const time_t msg_expire_before = state->ui_msg_expire;
+    const uint32_t msg_seq_before = state->ui_msg_seq;
     /* "Config not applied" leaves nothing for the next start either: a refusal has staged nothing, and a rollback puts
        back what it had left waiting (issue #671), so no save writes a config the session did not take. */
     dsd_opts_next_start* next_before = (dsd_opts_next_start*)malloc(sizeof *next_before);
@@ -9936,8 +10144,8 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         cfg_keep_next_start_startable(opts, state, &saves[0], &saves[1]);
         free(saves);
     }
-    if (kept && c->n >= sizeof(dsd_app_config_load_payload)) {
-        cfg_adopt_loaded_autosave(state, c, msg_before, msg_expire_before);
+    if (kept) {
+        cfg_adopt_loaded_autosave(state, c, msg_seq_before);
     }
     free(next_before);
     return rc;
@@ -10062,6 +10270,7 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
          * policy through dsd_scan_mode_set_configured_tone_policy(), and an nfm row's own tone options stay in force
          * over it. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
+        DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
         DSD_APP_CMD_MOD_SET,
@@ -10104,10 +10313,12 @@ static int
 command_writes_policy_store(const struct dsd_app_command* c) {
     static const int commands[] = {
         DSD_APP_CMD_IMPORT_GROUP_LIST,
+        DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_CONFIG_APPLY,
         DSD_APP_CMD_RR_APPLY_IMPORT,
         DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+        DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD,
         DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR,
         DSD_APP_CMD_TUNER_RELEASE,
         DSD_APP_CMD_SCANNER_TOGGLE,
@@ -10434,6 +10645,48 @@ apply_cmd_follow_rigctl_passband(dsd_opts* opts, dsd_state* state, const svc_rig
     return -1;
 }
 
+/* What a group list import, reload or clear finds before it runs (spec R3): whether the global list judges the active
+   calls, which dsd_scan_groups_row_active() can say only before the suspend sets a -Y row's or trunk-scan target's own
+   list aside, and which of them it blocks already. */
+typedef struct {
+    int global_list; /* the command changes the list that judges the calls */
+    unsigned int blocked;
+} ui_group_list_calls;
+
+static int
+command_replaces_group_list(const struct dsd_app_command* c) {
+    return c
+           && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD
+               || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR);
+}
+
+static ui_group_list_calls
+ui_group_list_calls_before(const dsd_opts* opts, const dsd_state* state, const struct dsd_app_command* c) {
+    ui_group_list_calls before = {0, 0U};
+    before.global_list = command_replaces_group_list(c) && opts && state && !dsd_scan_groups_row_active(state);
+    if (before.global_list) {
+        before.blocked = tg_listen_blocked_slots(opts, state);
+    }
+    return before;
+}
+
+/* After the scopes resume, with the row's settings and list back in force, and still under the tick guard: a call the
+   new global list blocks is released, as a row edit releases it. A row's or target's own list did not change, so its
+   calls stay. A failed return tune is said after the command's own toast (whether the list applied comes first);
+   returns -1 then. */
+static int
+ui_group_list_release_calls(dsd_opts* opts, dsd_state* state, const ui_group_list_calls* before) {
+    if (!before->global_list) {
+        return 0;
+    }
+    char outcome[sizeof state->ui_msg];
+    DSD_SNPRINTF(outcome, sizeof outcome, "%s", state->ui_msg);
+    return tg_listen_release_blocked_calls(opts, state, ~before->blocked, outcome[0] ? outcome : NULL)
+                   == UI_CMD_APPLY_FAILED
+               ? -1
+               : 0;
+}
+
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded,
                  int32_t* scan_list_code) {
@@ -10443,10 +10696,9 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     const int was_scanner = opts && opts->scanner_mode == 1;
     const ui_cmd_widths_before widths_before = ui_cmd_widths_before_of(opts, state, c);
     const ui_tone_filter_reach tone_before = ui_tone_filter_reach_of(opts, state);
+    const ui_group_list_calls group_calls = ui_group_list_calls_before(opts, state, c);
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
-    const int group_update = c
-                             && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
-                                 || c->id == DSD_APP_CMD_CONFIG_APPLY);
+    const int group_update = command_replaces_group_list(c) || (c && c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
     /* A stream the command starts while the scope is suspended opens on other settings than the row the resume puts
        back: a reopen on the configured ones, a rollback's restart on the row as it ran before (issue #578). One a
@@ -10467,11 +10719,12 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     if (apply_cmd_resume_and_note_widths(opts, state, scoped, stream, &widths_before) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
+    const int release_failed = ui_group_list_release_calls(opts, state, &group_calls) != 0;
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
     apply_cmd_note_tetra_on_pcm(opts, state);
     const int rigctl_refused = apply_cmd_follow_rigctl_passband(opts, state, &rigctl_before, &widths_before, guarded);
     ui_warn_tone_filter_unreached(opts, state, &tone_before);
-    return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
+    return rigctl_refused || release_failed ? UI_CMD_APPLY_FAILED : result;
 }
 
 /* A command that can change what an active call may play or record: the talkgroup policy store, the hold, the allow
@@ -10838,28 +11091,78 @@ command_dsp_op_deferred(const struct dsd_app_command* c) {
            || op.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
 }
 
-/* Whether the trunk-scan target on air of scan @p session owes a departure (issue #697): it is out of the rotation, its
-   list off or it is the avoided fallback, so the receiver leaves as soon as another target can take it. A scan flag
-   edit then starts or cancels that departure, so it cannot wait for the carrier to end: the coordinator's tick runs
-   before the drain, and would leave a target a list switched back on (or a put back) was meant to keep, or hold the
-   receiver on one a list switched on (or a put back) was meant to let go. Read from the decoder's own state, which
-   the coordinator writes at every hop, switch and pause on its thread; a paused scan publishes neither mark. */
+/* Whether the trunk-scan target on air of scan @p session owes a departure (issue #697): it is out of the rotation,
+   every list holding it off or it the avoided fallback, so the receiver leaves as soon as another target can take it.
+   A scan flag edit then starts or cancels that departure, so it cannot wait for the carrier to end: the coordinator's
+   tick runs before the drain, and would leave a target a list switched back on (or a put back) was meant to keep, or
+   hold the receiver on one a list switched on (or a put back) was meant to let go. Read from the decoder's own state,
+   which the coordinator writes at every hop, switch and pause on its thread; a paused scan publishes neither mark. */
 static int
 scan_departure_owed(const dsd_state* state, uint32_t session) {
     return session != 0U && session == state->trunk_scan_session
            && (state->trunk_scan_active_list_off != 0U || state->trunk_scan_active_avoided != 0U);
 }
 
-/* A trunk-scan list switch (issue #697) moves the receiver when it switches off the list that holds the target on air,
-   which leaves that target at once, as avoid does, or when that target owes a departure (above). Any other
-   switch, "all lists on" included, edits flags and never retunes, so it waits for the carrier to end like put back
-   and clear (issue #672). Judged against @p state, the asking decoder's own, so the answer is current and costs no
-   walk. A switch of the list on air that the coordinator then refuses as the last one to scan still takes the frame
-   loop: telling that apart walks the targets. Without a state, or with a payload of the wrong size, it takes the frame
-   loop; a payload of the right size that the drain then refuses (session 0, a list the scan does not have) is judged
-   by its fields like any other, so it waits unless it names this scan while its target on air owes a departure. */
+/* The lists of this scan, capped at the most a scan has. */
 static int
-command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state) {
+scan_list_count(const dsd_state* state) {
+    return state->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? state->trunk_scan_list_count
+                                                                   : DSD_TRUNK_SCAN_MAX_LISTS;
+}
+
+/* Whether list switch @p set is one the drain takes (scan_list_set_payload_valid()) and names this scan and one of its
+   lists (or, switching on, every list). A payload the drain refuses as invalid (enabled 2, say) switches nothing. */
+static int
+scan_list_set_names_this_scan(const dsd_app_scan_list_set_payload* set, const dsd_state* state) {
+    if (!scan_list_set_payload_valid(set) || set->session != state->trunk_scan_session) {
+        return 0;
+    }
+    return (set->list >= 1 && set->list <= scan_list_count(state))
+           || (set->list == DSD_APP_SCAN_LIST_ALL && set->enabled != 0U);
+}
+
+/* Whether switching off list @p set's list leaves the target on air of this scan (issue #697), with the lists in
+   @p lists_on on: the list is one the scan has (checked before it is a bit), it is on, it holds that target
+   (trunk_scan_active_lists, every list holding it), and no other list holding it is on. A target another list on holds
+   stays on air, its call going on. A paused scan publishes no target on air, so nothing leaves it. */
+static int
+scan_list_set_leaves_on_air(const dsd_app_scan_list_set_payload* set, const dsd_state* state, unsigned int lists_on) {
+    if (set->enabled != 0U || set->list == DSD_APP_SCAN_LIST_ALL || !scan_list_set_names_this_scan(set, state)) {
+        return 0;
+    }
+    const unsigned int bit = 1U << (set->list - 1);
+    const unsigned int held = state->trunk_scan_active_lists;
+    return (lists_on & bit) != 0U && (held & bit) != 0U && (held & lists_on & ~bit) == 0U;
+}
+
+/* The lists @p lists_on, a switch of this scan queued earlier, would leave on once the drain applies @p set: its list on
+   or off, or every list on. A switch the coordinator will refuse may still move the mark: that only lets a later switch
+   take the frame loop sooner. */
+static unsigned int
+scan_list_set_lists_after(const dsd_app_scan_list_set_payload* set, const dsd_state* state, unsigned int lists_on) {
+    if (!scan_list_set_names_this_scan(set, state)) {
+        return lists_on;
+    }
+    if (set->list == DSD_APP_SCAN_LIST_ALL) {
+        return (1U << scan_list_count(state)) - 1U;
+    }
+    const unsigned int bit = 1U << (set->list - 1);
+    return set->enabled != 0U ? (lists_on | bit) : (lists_on & ~bit);
+}
+
+/* A trunk-scan list switch (issue #697) moves the receiver when it switches off the last list on that holds the target
+   on air, which leaves that target at once, as avoid does, or when that target owes a departure (above). Any other
+   switch, "all lists on" and one of a target's lists while another of them stays on included, edits flags and never
+   retunes, so it waits for the carrier to end like put back and clear (issue #672). Judged against @p state, the
+   asking decoder's own, so the answer is current and costs no walk of the targets, with the lists on as the switches
+   of this scan queued before it leave them (@p lists_on, which this one then moves): "list 1 off" and then "list 2 off"
+   leave a target lists 1 and 2 hold at the second, though neither alone does. A switch of the list on air that the
+   coordinator then refuses as the last one to scan still takes the frame loop: telling that apart walks the targets.
+   Without a state, or with a payload of the wrong size, it takes the frame loop; a payload of the right size that the
+   drain then refuses (session 0, a list the scan does not have) is judged by its fields like any other, so it waits
+   unless it names this scan while its target on air owes a departure. */
+static int
+command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state, unsigned int* lists_on) {
     if (state == NULL || c->n != sizeof(dsd_app_scan_list_set_payload)) {
         return 0;
     }
@@ -10868,10 +11171,9 @@ command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state*
     if (scan_departure_owed(state, set.session)) {
         return 0;
     }
-    const int leaves_on_air =
-        set.enabled == 0U && set.list > 0 && set.session != 0U && set.session == state->trunk_scan_session
-        && (uint32_t)set.list == (uint32_t)state->trunk_scan_active_list && state->trunk_scan_active_list_off == 0U;
-    return !leaves_on_air;
+    const int leaves = scan_list_set_leaves_on_air(&set, state, *lists_on);
+    *lists_on = scan_list_set_lists_after(&set, state, *lists_on);
+    return !leaves;
 }
 
 /* Put back and clear (issue #672) only edit avoid flags, so they wait for the carrier to end, unless this scan's
@@ -10895,9 +11197,10 @@ command_scan_flag_edit_needs_frame_loop(const struct dsd_app_command* c, const d
            && scan_departure_owed(state, put_back.session);
 }
 
-/* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop. */
+/* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop; @p lists_on,
+   the trunk-scan lists on as the commands queued before it leave them, follows a list switch. */
 static int
-command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state) {
+command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state, unsigned int* lists_on) {
     if (c->id == DSD_APP_CMD_AIRSPY_SET) {
         return !command_airspy_setting_deferred(c);
     }
@@ -10905,7 +11208,7 @@ command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state
         return !command_dsp_op_deferred(c);
     }
     if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
-        return !command_scan_list_set_deferred(c, state);
+        return !command_scan_list_set_deferred(c, state, lists_on);
     }
     if (c->id == DSD_APP_CMD_SCAN_AVOID_CLEAR || c->id == DSD_APP_CMD_SCAN_AVOID_REMOVE) {
         return command_scan_flag_edit_needs_frame_loop(c, state);
@@ -10923,8 +11226,10 @@ dsd_app_commands_need_frame_loop(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     int needed = 0;
+    int lists = 0;
+    unsigned int lists_on = state != NULL ? scan_lists_on_mask(state, scan_list_count(state), &lists) : 0U;
     for (size_t i = g_head; i != g_tail && !needed; i = (i + 1) % DSD_APP_CMD_Q_CAP) {
-        needed = command_needs_frame_loop(&g_q[i], state);
+        needed = command_needs_frame_loop(&g_q[i], state, &lists_on);
     }
     dsd_mutex_unlock(&g_mu);
     return needed;

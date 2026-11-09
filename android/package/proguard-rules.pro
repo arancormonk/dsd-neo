@@ -102,6 +102,16 @@
     public static java.lang.String attemptContext(java.lang.String);
 }
 
+# The RadioReference sign-in form for password managers: DecoderHostAndroid's
+# signInAutofill* overrides.
+-keep,allowoptimization class io.github.arancormonk.dsdneo.SignInAutofill {
+    public static void begin(int);
+    public static void field(int, int, int, int, int, int, boolean, boolean, java.lang.String);
+    public static void request(int, int, int, int, int, int);
+    public static void commit(int, java.lang.String, java.lang.String);
+    public static void end(int);
+}
+
 # The exported Java_io_github_arancormonk_dsdneo_DsdNative_* symbols use these
 # names. This also keeps any native entry point not reached from Kotlin today.
 -keep,includedescriptorclasses class io.github.arancormonk.dsdneo.DsdNative {

@@ -19,6 +19,11 @@ Rectangle {
     // button is disabled exactly as before.
     property bool inputValid: true
     enabled: inputValid || Navigation.composing
+    // Whether a press also finishes the field's editing (focus leaves it, so
+    // its editingFinished runs) before the action. False keeps the field in
+    // use and finishes only the keyboard's word: a control beside a field that
+    // acts on it without committing it, such as a password's Show.
+    property bool finishesEditing: true
     // A caller that sizes the button for a fixed number of label lines caps
     // them here; a label longer than that elides rather than overflowing.
     property alias maximumLineCount: label.maximumLineCount
@@ -69,7 +74,7 @@ Rectangle {
             return;
         // Finish the keyboard's word and the field's editing before the action
         // reads the form; the validity bindings re-evaluate on the spot.
-        Navigation.commitComposing(true);
+        Navigation.commitComposing(control.finishesEditing);
         if (!inputValid)
             return;
         if (checkable && commandToggle) {

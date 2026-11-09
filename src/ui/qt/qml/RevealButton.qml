@@ -7,9 +7,12 @@ import QtQuick
 OutlineButton {
     id: control
     property bool revealed: false
+    // What a screen reader hears, naming what is shown or hidden.
+    property string revealedName: qsTr("Hide key")
+    property string hiddenName: qsTr("Show key")
     width: 82
     text: revealed ? qsTr("Hide") : qsTr("Show")
-    accessibleName: revealed ? qsTr("Hide key") : qsTr("Show key")
+    accessibleName: revealed ? control.revealedName : control.hiddenName
     Canvas {
         id: eye
         x: 5

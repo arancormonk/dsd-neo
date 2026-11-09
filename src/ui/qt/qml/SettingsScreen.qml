@@ -982,7 +982,9 @@ Item {
                     DisclosureRow {
                         objectName: "settingsAccountRow"
                         title: qsTr("RadioReference")
-                        subtitle: qsTr("Username and application key")
+                        // The fields the account screen asks for: a build
+                        // that carries its own application key asks for none.
+                        subtitle: radioReference.buildHasAppKey ? qsTr("Username and password") : qsTr("Username, password and application key")
                         onTapped: screen.openRadioReferenceAccount()
                     }
                 }

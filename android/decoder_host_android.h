@@ -15,6 +15,7 @@
 #define DSD_NEO_ANDROID_DECODER_HOST_ANDROID_H_
 
 #include <QByteArray>
+#include <QRect>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -283,6 +284,33 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     void abortDocumentTransfers() override;
 
+    /* Android has the Autofill Framework, so the relay samples the sign-in form here. */
+    bool
+    signInAutofillSupported() const override {
+        return true;
+    }
+
+    /*
+     * The RadioReference sign-in form for password managers: each call goes to SignInAutofill.kt, which posts it to
+     * the Android main thread and describes the form to the Autofill Framework there. JNI only, in
+     * decoder_host_android.cpp. A call that fails is dropped, its Java exception cleared.
+     */
+    void signInAutofillBegin(int token) override;
+    void signInAutofillField(int token, int field, const QRect& windowPixels, bool visible, bool focused,
+                             const QString& structureValue) override;
+    void signInAutofillRequest(int token, int field, const QRect& windowPixels) override;
+    void signInAutofillCommit(int token, const QString& username, const QString& password) override;
+    void signInAutofillEnd(int token) override;
+
+    /**
+     * @brief A password manager's fill from the Android main thread (DsdNative.nativeSignInFilled()).
+     *
+     * Takes both strings, leaving the caller's empty, and queues them to the newest live host, which hands them to
+     * deliverSignInFill() on the GUI thread; that drops a fill for any other token. With no host, or a host gone
+     * before the call runs, they are scrubbed and dropped. Any thread.
+     */
+    static void postSignInFill(int token, bool hasUsername, QString& username, bool hasPassword, QString& password);
+
   protected:
     /** @brief Hand @p path to RecordingPlayback; a play the platform refuses fails as "failed". */
     void beginPlayback(const QString& path) override;
@@ -307,6 +335,21 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool shareRecordingFile(const QString& path, const QString& title) override;
 
   private:
+    /**
+     * @brief Makes its host one postSignInFill() can reach, from construction until it goes
+     * (decoder_host_android_sign_in.cpp).
+     */
+    class SignInFillLink {
+      public:
+        explicit SignInFillLink(DecoderHostAndroid* host);
+        ~SignInFillLink();
+        SignInFillLink(const SignInFillLink&) = delete;
+        SignInFillLink& operator=(const SignInFillLink&) = delete;
+
+      private:
+        DecoderHostAndroid* m_host;
+    };
+
     /** @brief Whether @p reference is a content URI, which only the platform's ContentResolver opens. */
     static bool isContentUri(const QString& reference);
     /** @brief Publish the open play's status record (#708); a play that ended is polled no more. */
@@ -557,8 +600,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     qint64 m_document_request = 0;
     // The transfer jobs' way back to this host; cleared before it goes.
     std::shared_ptr<TransferLink> m_transfer_link = newTransferLink(this);
-    // One transfer at a time, off the GUI thread. Last, so it is destroyed first.
+    // One transfer at a time, off the GUI thread. After the link it reaches the host through, so it goes first.
     std::unique_ptr<QThreadPool> m_transfer_worker = newTransferWorker();
+    // Last, so it goes first: from then on no fill is queued to this host.
+    SignInFillLink m_sign_in_fill_link{this};
 };
 
 } // namespace dsd_android

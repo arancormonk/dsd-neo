@@ -107,7 +107,8 @@ call on another carrier for longer than 15 s lets the skipped call be followed
 again when next seen; tap **Skip** again. DMR, NXDN, EDACS and P25 private-call skips
 last 15 s from the tap in this version; ProVoice has no skip.
 
-**Avoid TG** blocks the talkgroup for the session, until stop or list reload/replacement.
+**Avoid TG** blocks the talkgroup for the session, until stop or a list reload or
+replacement that works (a refused one keeps the block).
 **Lock out** saves the block to the configured talkgroup list. **Settings → Listening
 → Save avoided talkgroups** selects **Lock out** when on (the default) and **Avoid TG**
 when off. Without a group file, or on a scan row's own list, lockouts stay in memory.
@@ -560,6 +561,18 @@ Limits:
 - A restore always fails, changing nothing, while one of DSD-neo's own list files is a symbolic link. DSD-neo never
   makes one; only something with access to its private storage (root, or `adb` on a debuggable build) can, and
   clearing DSD-neo's storage removes it.
+
+## Password managers
+
+The RadioReference sign-in forms (the import screen and Settings → Account) are offered to the phone's autofill
+service, as a username and a password field; what that looks like and its limits are in [RadioReference
+import](../docs/radioreference-import.md) "Password managers (Android)". Qt draws its own text fields and describes
+none of them to Android, so `SignInAutofill.kt` puts a host view of its own behind Qt's layout and describes the two
+fields as its virtual children, with `SignInAutofillState.kt` deciding what the Autofill Framework is told;
+`QtCursorHandle.kt` takes Qt's text cursor handle off the screen before each request, since some services refuse a
+request whose structure has that second window. The C++ side is `DecoderHostAndroid`'s `signInAutofill*` overrides,
+and a fill comes back through `DsdNative.nativeSignInFilled`. No value is logged on the way; `docs/code_map.md`
+"Sign-in autofill" has the contract.
 
 ## Build
 
@@ -2169,10 +2182,10 @@ of a saved system that scans its channel list) does not pause the scan: the scan
 to that entry and holds there, with the entry's own mode, keys and options (a paused
 scan resumes there). For a trunked system the scan goes to its control channel, which
 may not be the frequency you typed. **Hold** shows it held once the radio is there; tap
-**Hold** to let the scan go on. An entry that is avoided, or whose list is off, is not
-taken: **Go to** pauses the scan as usual and the message says why. Only **Go to** does
-this: on a paused scan, a tap, a drag or a step to the same frequency tunes it with your
-usual settings. The Go to sheet says so while a scan runs.
+**Hold** to let the scan go on. An entry that is avoided, or that no list switched on
+holds, is not taken: **Go to** pauses the scan as usual and the message says why. Only
+**Go to** does this: on a paused scan, a tap, a drag or a step to the same frequency
+tunes it with your usual settings. The Go to sheet says so while a scan runs.
 
 In Explore, when the frequency you are on is a scan list's entry or a saved system,
 Monitor (above Recent calls) and Spectrum (beside **Save**) offer to listen to it with

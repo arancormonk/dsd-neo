@@ -62,6 +62,16 @@ main(void) {
     printf("=== TETRA SCH/HU ===\n");
     CHECK(tetra_compute_scramb_seed(86, 28, 0x19) == 0x15801C67u,
           "862 network seed from MCC 86 / MNC 28 / colour 0x19");
+    /* Colour code 0 is predefined scrambling: all 30 bits of the vector are zero, only the two fixed initialisation
+       bits remain (EN 300 392-2 table 21.76 note 1, clause 8.2.5.2), whatever the MCC and MNC. */
+    CHECK(tetra_compute_scramb_seed(0, 0, 0) == 3u, "colour 0, no network: predefined scrambling");
+    CHECK(tetra_compute_scramb_seed(262, 1001, 0) == 3u, "colour 0 ignores MCC 262 / MNC 1001");
+    CHECK(tetra_compute_scramb_seed(460, 4242, 0) == 3u, "colour 0 ignores MCC 460 / MNC 4242");
+    CHECK(tetra_compute_scramb_seed(1023, 16383, 0) == 3u, "colour 0 ignores the largest MCC / MNC");
+    CHECK(tetra_compute_scramb_seed(460, 4242, 0x40) == 3u, "colour reads six bits");
+    CHECK(tetra_compute_scramb_seed(0, 0, 1) == 7u, "colour 1 with no network is not predefined");
+    CHECK(tetra_compute_scramb_seed(250, 13, 13) == ((((uint32_t)250 << 20 | (uint32_t)13 << 6 | 13u)) << 2 | 3u),
+          "a non-zero colour keeps the extended colour code");
 
     /* A fixed xorshift32 pattern, so a failure reproduces. */
     uint32_t x = 11u;

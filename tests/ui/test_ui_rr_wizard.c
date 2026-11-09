@@ -2999,8 +2999,12 @@ test_refresh_matches_sites_by_database_id(void) {
     expect("B1: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
     expect("B1: no error text", strcmp(rr_wizard_core_error_text(rc.c.core), "") == 0);
     expect_file_matches("B1: stored order wins over wire order", rc.csv_path, k_b1_want, strlen(k_b1_want));
-    expect("B1: status names the file", strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv.") == 0);
-    expect_ll("B1: nothing pushed to a session that is not using it", (long long)rc.c.h.n_post_import, 0);
+    /* No snapshot published: the reload is posted all the same, and the decoder decides whether the file is in use. */
+    expect("B1: status names the file",
+           strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv; the session reloads it if in use.") == 0);
+    expect_ll("B1: the expected-path reload posted", (long long)rc.c.h.n_post_import, 1);
+    expect_ll("B1: posted as a channel map reload", (long long)rc.c.h.last_post_cmd,
+              (long long)DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD);
     expect_ll("B1: no temp left behind", (long long)count_temp_files(rc.scratch), 0);
 
     /* The sidecar keeps the stored ids: a site missing from one fetch must be
@@ -3191,16 +3195,23 @@ test_refresh_honours_the_stored_partial_encryption_answer(void) {
     ref_case_close(&rc);
 }
 
+/*
+ * R2b: the refresh posts the expected-path reload of the refreshed file and never reads the published snapshot to
+ * decide "in use" (it can lag one publish behind, name an import queued since, or, under a -Y row or trunk-scan target
+ * with its own group list, the row's file): the decoder decides when it applies the command (APP_COMMAND_QUEUE
+ * test_group_reload_expected_path()). Was: posted IMPORT_CHANNEL_MAP only when the snapshot's chan_in_file matched.
+ */
 static void
-test_refresh_pushes_only_the_file_the_session_uses(void) {
+test_refresh_posts_an_expected_path_reload(void) {
     static ref_case rc;
     dsd_rr_provenance prov;
     ref_prov(&prov, "chan", 9340, "36085,36087", 1);
     if (!ref_case_open(&rc, "iowa chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
         return;
     }
+    /* A snapshot naming another map (an import queued since the refresh began, or one that has not been published). */
     DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
-    (void)DSD_SNPRINTF(g_stub_opts.chan_in_file, sizeof(g_stub_opts.chan_in_file), "%s", rc.csv_path);
+    (void)DSD_SNPRINTF(g_stub_opts.chan_in_file, sizeof(g_stub_opts.chan_in_file), "%s", "/elsewhere/other chan.csv");
     g_stub_opts_published = 1;
     if (!ref_drive(&rc)) {
         expect("push: refresh finished", 0);
@@ -3210,19 +3221,18 @@ test_refresh_pushes_only_the_file_the_session_uses(void) {
     }
     expect("push: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
     expect_ll("push: one reload posted", (long long)rc.c.h.n_post_import, 1);
-    expect_ll("push: posted as a channel-map import", (long long)rc.c.h.last_post_cmd,
-              (long long)DSD_APP_CMD_IMPORT_CHANNEL_MAP);
+    expect_ll("push: posted as a channel map reload", (long long)rc.c.h.last_post_cmd,
+              (long long)DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD);
     expect("push: posted the refreshed path", strcmp(rc.c.h.last_post_path, rc.csv_path) == 0);
-    /* "was asked to reload it", never "applied": the command queue has no
-     * completion channel, so the decoder thread owns the authoritative toast. */
-    expect("push: status says the session was asked, not told",
-           strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv; the session is reloading it.") == 0);
+    /* "reloads it if in use", never "applied": the decoder thread decides and owns the authoritative toast. */
+    expect("push: status says the session decides",
+           strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv; the session reloads it if in use.") == 0);
     g_stub_opts_published = 0;
     ref_case_close(&rc);
 }
 
 static void
-test_refresh_pushes_a_group_file_as_a_group_list(void) {
+test_refresh_posts_a_group_file_as_a_group_list_reload(void) {
     static ref_case rc;
     dsd_rr_provenance prov;
     ref_prov(&prov, "group", 6673, "16863", 1);
@@ -3230,38 +3240,25 @@ test_refresh_pushes_a_group_file_as_a_group_list(void) {
                        strlen("DEC,Mode,Name (generated from RadioReference)\n"), &prov)) {
         return;
     }
-    /* First: the same path published as the CHANNEL MAP. The push keys on the
-       sidecar's kind, not on "some opts field mentions this file", so a group
-       refresh must not post a channel-map import. */
+    /* The command keys on the sidecar's kind, never on which opts field of the snapshot names the file: here the same
+       path is the snapshot's channel map and another file its group list (a -Y row's own list looks like this). */
     DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
     (void)DSD_SNPRINTF(g_stub_opts.chan_in_file, sizeof(g_stub_opts.chan_in_file), "%s", rc.csv_path);
+    (void)DSD_SNPRINTF(g_stub_opts.group_in_file, sizeof(g_stub_opts.group_in_file), "%s", "/rows/row groups.csv");
     g_stub_opts_published = 1;
     if (!ref_drive(&rc)) {
-        expect("kind: first refresh finished", 0);
+        expect("kind: refresh finished", 0);
         g_stub_opts_published = 0;
         ref_case_close(&rc);
         return;
     }
-    expect("kind: first refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
-    expect_ll("kind: a group file is not pushed as a channel map", (long long)rc.c.h.n_post_import, 0);
-
-    /* Then the same file published as the GROUP LIST: now it is pushed, under
-       the group command id. */
-    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
-    (void)DSD_SNPRINTF(g_stub_opts.group_in_file, sizeof(g_stub_opts.group_in_file), "%s", rc.csv_path);
-    if (!ref_drive(&rc)) {
-        expect("kind: second refresh finished", 0);
-        g_stub_opts_published = 0;
-        ref_case_close(&rc);
-        return;
-    }
-    expect("kind: second refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect("kind: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
     expect_ll("kind: one reload posted", (long long)rc.c.h.n_post_import, 1);
-    expect_ll("kind: posted as a group-list import", (long long)rc.c.h.last_post_cmd,
-              (long long)DSD_APP_CMD_IMPORT_GROUP_LIST);
+    expect_ll("kind: posted as a group list reload", (long long)rc.c.h.last_post_cmd,
+              (long long)DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD);
     expect("kind: posted the refreshed path", strcmp(rc.c.h.last_post_path, rc.csv_path) == 0);
     expect("kind: status names the file",
-           strcmp(rc.c.h.last_status, "Refreshed sara group.csv; the session is reloading it.") == 0);
+           strcmp(rc.c.h.last_status, "Refreshed sara group.csv; the session reloads it if in use.") == 0);
     g_stub_opts_published = 0;
     ref_case_close(&rc);
 }
@@ -3499,8 +3496,8 @@ main(void) {
     test_refresh_keeps_the_file_when_one_site_survives();
     test_refresh_keeps_the_file_when_no_talkgroup_is_usable();
     test_refresh_honours_the_stored_partial_encryption_answer();
-    test_refresh_pushes_only_the_file_the_session_uses();
-    test_refresh_pushes_a_group_file_as_a_group_list();
+    test_refresh_posts_an_expected_path_reload();
+    test_refresh_posts_a_group_file_as_a_group_list_reload();
     test_refresh_tolerates_a_null_push_hook();
     test_refresh_staging_rejects_an_empty_map();
     test_refresh_is_abandoned_by_the_next_batch();

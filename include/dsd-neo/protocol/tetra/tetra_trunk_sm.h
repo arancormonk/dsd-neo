@@ -77,7 +77,9 @@ void tetra_sm_init(dsd_opts* opts, dsd_state* state);
  *   a move that reached it is over), and the move there is staged for the end of the burst (tetra_sm_after_burst()),
  *   but only on a carrier a CRC-passed downlink block proved before this SYSINFO's own block, so a SYSINFO never
  *   vouches for itself.
- * - While TUNED a traffic channel's SYSINFO only keeps the control channel a candidate.
+ * - While TUNED a traffic channel's SYSINFO only keeps the control channel a candidate. While the state machine guards
+ *   the follow (tetra_sm_guarding()) only the home cell's SYSINFO gets here: one naming another main carrier or
+ *   location area is another cell's on the followed carrier and is not applied (tetra_mac.c), so it adds no candidate.
  */
 void tetra_sm_on_cc_sync(dsd_opts* opts, dsd_state* state);
 
@@ -111,6 +113,18 @@ void tetra_sm_after_burst(dsd_opts* opts, dsd_state* state);
 void tetra_sm_forget_moves(dsd_state* state);
 
 /**
+ * @brief Trunking was turned on again (a trunk command, before it sets opts->trunk_enable): what the tick, the grant
+ * and SYSINFO entries and the burst's end do when they first see trunking on after seeing it off, for a toggle none of
+ * them sees. The history of moves to the main carrier is forgotten, and while TUNED the follow ends: the call was let go
+ * when trunking went off, and what the carrier delivered since cannot be trusted. The session's control channel
+ * (state->trunk_cc_freq) is the home's again at once, and until the return home completes grants are ignored and
+ * nothing on the carrier (speech, maintenance) keeps the channel: the next tick returns home, and again after a return
+ * refused, deferred or failed. A follow on the home control channel's own carrier stops there without a tune and the
+ * carrier's cell is taken on again from its SYNC and SYSINFO. Never creates TETRA state.
+ */
+void tetra_sm_on_trunking_on(dsd_state* state);
+
+/**
  * @brief Follow @p grant.
  *
  * Ignored unless trunking is on, a control channel is known, the grant names a frequency, no tune is in flight and a
@@ -139,9 +153,9 @@ int tetra_sm_settle(dsd_opts* opts, dsd_state* state);
  * @brief The call @p call_id was released (D-RELEASE, D-DISCONNECT, or a timeslot-0000 allocation to its party).
  *
  * Only the followed call releases: TUNED with a followed call id equal to @p call_id returns to the control channel
- * (or, for a traffic timeslot of the control channel's carrier, just stops following). Any other id is ignored. A
- * return the backend refuses or defers keeps the call; the next tick tries again. With trunking off nothing returns:
- * the receiver stays where it is, as tetra_sm_tick() leaves it.
+ * the follow started from (tetra_sm_return_cc_hz()), or, for a traffic timeslot of that control channel's carrier, just
+ * stops following. Any other id is ignored. A return the backend refuses or defers keeps the call; the next tick tries
+ * again. With trunking off nothing returns: the receiver stays where it is, as tetra_sm_tick() leaves it.
  */
 void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
 
@@ -155,9 +169,8 @@ void tetra_sm_on_release(dsd_opts* opts, dsd_state* state, uint16_t call_id);
 void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
 
 /**
- * @brief The followed channel is maintained for the followed call (EN 300 392-2 clause 23.5.6.1.2, T.209): an
- * ACCESS-ASSIGN PDU of a followed timeslot carries the call's traffic usage marker, or a PDU there is addressed to one
- * of its parties.
+ * @brief The followed channel is maintained for the followed call (EN 300 392-2 clause 23.5.6.1.2, T.209): a PDU there
+ * is addressed to one of its parties.
  *
  * While TUNED and before the call's first speech, the grant timeout runs from the last such event instead of the tune:
  * a call set up and silent is not left while its channel is kept for it. Speech, and with it the hangtime, is
@@ -166,16 +179,43 @@ void tetra_sm_note_voice(dsd_state* state, uint8_t tn);
 void tetra_sm_note_maintenance(dsd_state* state);
 
 /**
+ * @brief tetra_sm_note_maintenance() for an ACCESS-ASSIGN PDU of a followed timeslot carrying the call's traffic usage
+ * marker. The AACH has no CRC (EN 300 392-2 clause 8.3.1.1), and another cell's on the followed carrier can correct
+ * into a valid word under the home cell's scrambling: while the machine guards the follow (tetra_sm_guarding()) the
+ * event counts as of the home cell's last block whose CRC passed on the carrier (tetra_sm_note_home_crc()), not now,
+ * so the grant timeout runs out at most TETRA_SM_GRANT_TIMEOUT_S after it; a live home carrier sends its SYNC about
+ * once a second. Unguarded it is tetra_sm_note_maintenance(). @p opts may be NULL (unguarded).
+ */
+void tetra_sm_note_aach_maintenance(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * @brief A block whose CRC passed under the home cell's scrambling was decoded on the followed carrier: the home cell's
+ * SYNC, a signalling block of it (not one carrying another cell's SYSINFO) or speech. While TUNED with a home and no
+ * tune in flight, in a burst still on the carrier, it is the home cell's latest evidence there, which positive AACH
+ * evidence cannot outlive (tetra_sm_note_aach_maintenance(), tetra_sm_aach_corroborated()).
+ */
+void tetra_sm_note_home_crc(dsd_state* state);
+
+/**
+ * @brief 1 when an ACCESS-ASSIGN PDU carrying the followed call's usage marker may count toward its receive permission
+ * (N.213, EN 300 392-2 clause 23.8.2.3.2): always unguarded; while the machine guards the follow only within
+ * TETRA_SM_GRANT_TIMEOUT_S of the home cell's last block whose CRC passed on the carrier (tetra_sm_note_home_crc()).
+ * @p opts may be NULL (unguarded).
+ */
+int tetra_sm_aach_corroborated(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Time-driven transitions: settle the tune in flight once the backend answered it (until then nothing else
  * happens: the request stays the backend's and is never timed out here), then while TUNED end the followed call when
  * another owner released the shared tuning state (no tune), on the grant timeout or after the hangtime that follows the
- * last speech. With trunking off the receiver stays on the followed channel, as DMR's and P25's machines leave it (the
- * engine's return tunes nothing without trunking): TUNED keeps the channel and its timers, no call record (as
- * tetra_sm_retire_call() leaves it), and asks for no return until trunking is on again. ON_CC and ACQUIRING drop to
- * IDLE once trunking is off or no control channel is known (a BSCH of another cell dropped it); trunking on again
- * forgets the history of moves to the main carrier (tetra_sm_after_burst()). ACQUIRING on the main carrier without its
- * SYSINFO for TETRA_SM_MOVE_SILENT_S says so once, and moves nowhere. The session's call records age on the same tick
- * (tetra_calls_tick()), trunking or not.
+ * last speech; every return goes to the control channel the follow started from (tetra_sm_return_cc_hz()). With
+ * trunking off the receiver stays on the followed channel, as DMR's and P25's machines leave it (the engine's return
+ * tunes nothing without trunking): TUNED keeps the channel and its timers, no call record (as tetra_sm_retire_call()
+ * leaves it), and asks for no return until trunking is on again, which returns at once (tetra_sm_on_trunking_on()).
+ * ON_CC and ACQUIRING drop to IDLE once trunking is off or no control channel is known (a BSCH of another cell dropped
+ * it); trunking on again forgets the history of moves to the main carrier (tetra_sm_after_burst()). ACQUIRING on the
+ * main carrier without its SYSINFO for TETRA_SM_MOVE_SILENT_S says so once, and moves nowhere. The session's call
+ * records age on the same tick (tetra_calls_tick()), trunking or not.
  */
 void tetra_sm_tick(dsd_opts* opts, dsd_state* state);
 
@@ -202,6 +242,28 @@ void tetra_sm_abandon_carrier(dsd_opts* opts, dsd_state* state);
  * on. What the decoder reads as the carrier being received goes by it (tetra_calls.c).
  */
 long tetra_sm_receiver_freq(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief The control channel the state machine returns to, in Hz: while it holds a follow (TUNED, or a grant or return
+ * of its own in flight), the home, the control channel (state->trunk_cc_freq) when the follow started off it; a
+ * reallocation of the followed call keeps it. 0 when no follow is held, and for a session without TETRA state.
+ *
+ * After an assigned channel an MS returns to the control channel it was using before the assignment (EN 300 392-2
+ * clause 23.3.1.2.1.2), and nothing on the traffic carrier names it: with trunking off another cell decoded there
+ * rewrites state->trunk_cc_freq (while the state machine guards the follow it is not taken on). So every way back reads
+ * this first: the state machine's release (the hangtime, the grant timeout, a release, trunking turned back on), which
+ * sets state->trunk_cc_freq to it for the shared return, and the manual Return to CC, skip and lockout
+ * (current_cc_freq() in app_command_queue.c), which set it too before handing the state machine over.
+ * dsd_app_cc_freq(), which the call view and the status readouts use, reads state->trunk_cc_freq and does not apply
+ * the home: a frontend snapshot carries no TETRA state.
+ */
+long tetra_sm_return_cc_hz(const dsd_state* state);
+
+/**
+ * @brief 1 while the state machine guards a follow: trunking on and a home to return to (tetra_sm_return_cc_hz()).
+ * What another cell sends on the followed carrier must then not be taken on as the session's cell. 0 otherwise.
+ */
+int tetra_sm_guarding(const dsd_opts* opts, const dsd_state* state);
 
 /** @brief The session's state; IDLE for a NULL @p state or a session without TETRA state. */
 tetra_sm_state_e tetra_sm_get_state(const dsd_state* state);

@@ -1089,6 +1089,12 @@ SUITES = {
             android_native_writes_no_environment,
         ),
     ),
+    # The RadioReference sign-in form as the Autofill Framework sees it: tokens, the field snapshot, the framework
+    # session and the effects SignInAutofill carries out. Plain Kotlin with no Android imports, so no stubs;
+    # SignInAutofill runs it on the main looper against AutofillManager.
+    "sign_in_autofill": Suite(
+        builds=(Build(sources=("SignInAutofillState.kt",), tests=("SignInAutofillStateTest.kt",)),),
+    ),
     # The main-looper watchdog (#782), the activity trace it reads and the records waiting for the native library:
     # plain Kotlin with no stubs, against a fake clock, watchdog thread and main looper. MainLooperWatchdog and
     # HostDiagnostics, the Android glue around them, are not built here.

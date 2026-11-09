@@ -64,8 +64,10 @@ target_sources(
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801
         spectrum_view_item.cpp
+        spectrum_trace_geometry.cpp
         screen_reader_state.cpp # Issue #782
         session_args.cpp
+        sign_in_autofill.cpp
         talkgroup_filter_model.cpp
         talkgroup_list_model.cpp
         ui_controller.cpp

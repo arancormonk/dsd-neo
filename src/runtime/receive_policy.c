@@ -15,19 +15,47 @@ dsd_receive_filter_equal(const dsd_receive_filter* a, const dsd_receive_filter* 
            && memcmp(a->block.bits, b->block.bits, sizeof a->block.bits) == 0;
 }
 
-int
-dsd_receive_names_equal(const dsd_service_names* a, const dsd_service_names* b) {
-    if (!a || !b || a->count != b->count || a->count > DSD_RECEIVE_NAME_MAX) {
-        return 0;
+/* The name @p names gives identifier @p kind/@p value: its first rule's when @p last is 0, else its last rule's, the two
+   dsd_receive_service_name() reads (an access/tone match takes the first rule, a slot fallback the last); NULL when
+   no rule names it. */
+static const char*
+receive_names_find(const dsd_service_names* names, unsigned int kind, unsigned int value, int last) {
+    const char* found = NULL;
+    for (unsigned int i = 0; i < names->count; i++) {
+        const dsd_service_name* rule = &names->rules[i];
+        if (rule->kind == kind && rule->value == value) {
+            found = rule->name;
+            if (!last) {
+                break;
+            }
+        }
     }
+    return found;
+}
+
+/* Whether every identifier @p a names has the same names in @p b, by both of the lookup's precedences. */
+static int
+receive_names_cover(const dsd_service_names* a, const dsd_service_names* b) {
     for (unsigned int i = 0; i < a->count; i++) {
-        const dsd_service_name* x = &a->rules[i];
-        const dsd_service_name* y = &b->rules[i];
-        if (x->kind != y->kind || x->value != y->value || strcmp(x->name, y->name) != 0) {
-            return 0;
+        const dsd_service_name* rule = &a->rules[i];
+        for (int last = 0; last < 2; last++) {
+            const char* name = receive_names_find(b, rule->kind, rule->value, last);
+            if (!name || strcmp(name, receive_names_find(a, rule->kind, rule->value, last)) != 0) {
+                return 0;
+            }
         }
     }
     return 1;
+}
+
+/* Two tables are equal when the lookup reads the same name for every identifier from both: the order the rules were
+   written in is not part of the table. */
+int
+dsd_receive_names_equal(const dsd_service_names* a, const dsd_service_names* b) {
+    if (!a || !b || a->count > DSD_RECEIVE_NAME_MAX || b->count > DSD_RECEIVE_NAME_MAX) {
+        return 0;
+    }
+    return receive_names_cover(a, b) && receive_names_cover(b, a);
 }
 
 int

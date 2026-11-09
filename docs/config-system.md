@@ -385,7 +385,7 @@ the session; they never write the process environment.
 |-----|------|-------------|---------|
 | `enabled` | BOOL | Enable trunking | `false` |
 | `chan_csv` | PATH | Channel map CSV, imported at startup; a config applied to a running session keeps the map it loaded, says a restart is needed, and saves the new path for the next start | (empty) |
-| `group_csv` | PATH | Group list CSV | (empty) |
+| `group_csv` | PATH | Group list CSV, imported at startup whether or not trunking is enabled (as `-G` is). With trunking or trunk scan on, a file that does not load stops the start; with trunking off the start goes on with a warning, and dsd-neo writes nothing over the file: a missing file is created by the first saved change (one that appears there with rows first is not overwritten), and a file that cannot be read or has no usable rows is not saved to | (empty) |
 | `src_csv` | PATH | Source ID list CSV (`--src-csv`; names, optional radio policy columns; loads regardless of trunking) | (empty) |
 | `p25_bandplan_csv` | PATH | P25 band plan CSV (`--p25-bandplan`; see `docs/csv-formats.md`) | (empty) |
 | `allow_list` | BOOL | Use as allow list | `false` |

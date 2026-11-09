@@ -45,6 +45,10 @@ import org.qtproject.qt.android.bindings.QtActivity
  *
  * The foreground goes to [RecordingPlayback] too: leaving it pauses a call recording (#708).
  *
+ * [SignInAutofill] puts its host view into the content once `super.onCreate()` has set Qt's layout there, re-reads the
+ * autofill service on each resume, and cancels an open framework session and takes the host away on destroy: Qt's
+ * relay ends no session at exit.
+ *
  * The Activity also forwards its lifecycle and input to [ScreenSupport] for the screen
  * modes, each as a one-line delegation: creation and destruction; the start, stop, pause,
  * top-resumed, focus and multi-window callbacks; touch events (a tap that brightens a
@@ -93,6 +97,7 @@ class DsdNeoActivity : QtActivity() {
         super.onCreate(savedInstanceState)
         AccessibilityBridge.afterQt(this)
         LaunchGuard.afterQt()
+        SignInAutofill.attach(this)
         ScreenSupport.attach(this)
         if (Build.VERSION.SDK_INT >= 33) {
             val callback = OnBackInvokedCallback { ScreenSupport.userInteraction(this); AppSupport.requestBack() }
@@ -111,12 +116,13 @@ class DsdNeoActivity : QtActivity() {
         UsbSourceManager.reportAttachment(this, intent)
     }
 
-    // The notification permission can change while we are away.
+    // The notification permission and the autofill service can change while we are away.
     override fun onResume() {
         super.onResume()
         trace.phase(this, "resumed")
         AppSupport.refreshNotificationPermission()
         AccessibilityBridge.onResume(this)
+        SignInAutofill.onResume(this)
     }
 
     // The screen modes: every lifecycle and input callback that matters to them goes to ScreenSupport.
@@ -221,6 +227,7 @@ class DsdNeoActivity : QtActivity() {
     override fun onDestroy() {
         trace.phase(this, "destroying")
         AccessibilityBridge.onDestroy(this)
+        SignInAutofill.detach(this)
         ScreenSupport.detach(this)
         keyboardObserver?.let { window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(it) }
         keyboardObserver = null

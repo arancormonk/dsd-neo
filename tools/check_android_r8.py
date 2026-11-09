@@ -40,10 +40,14 @@ QT_CALLS = (
 )
 # Unannotated instance fields read by Qt's native APK file engine. This path is
 # exercised by Play's uncompressed native libraries, unlike the sideload APK.
+# Then the Qt fields the app itself reads by name.
 QT_FIELDS = (
     ("QtApkFileEngine$JFileInfo", "relativePath", "Ljava/lang/String;", False),
     ("QtApkFileEngine$JFileInfo", "size", "J", False),
     ("QtApkFileEngine$JFileInfo", "isDir", "Z", False),
+    # Read by name from Kotlin (QtCursorHandle.kt) to hide the text cursor handle before an autofill request.
+    ("QtEditText", "m_cursorHandle", "Lorg/qtproject/qt/android/CursorHandle;", False),
+    ("CursorHandle", "m_popup", "Landroid/widget/PopupWindow;", False),
 )
 
 

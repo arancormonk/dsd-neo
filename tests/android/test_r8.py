@@ -30,6 +30,12 @@ DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
   <field name="size" type="long" static="false"/>
   <field name="isDir" type="boolean" static="false"/>
 </class>
+<class name="QtEditText">
+  <field name="m_cursorHandle" type="org.qtproject.qt.android.CursorHandle" static="false"/>
+</class>
+<class name="CursorHandle">
+  <field name="m_popup" type="android.widget.PopupWindow" static="false"/>
+</class>
 </package></api>"""
 START = (r8.APP_PACKAGE + "DecoderService", "startDecoder",
          "(Landroid/content/Context;[Ljava/lang/String;J)V")
@@ -73,6 +79,13 @@ class R8ArtifactTests(unittest.TestCase):
     def test_unannotated_qt_method_cannot_disappear(self):
         with self.assertRaisesRegex(ValueError, "Missing Qt JNI entry point"):
             self.check_api(qt_calls=(("QtWindow", "setParent", "(Lorg/qtproject/qt/android/QtWindow;)V", False),))
+
+    def test_cursor_handle_fields_cannot_be_removed_or_renamed(self):
+        for name in ("m_cursorHandle", "m_popup"):
+            with self.subTest(field=name), self.assertRaisesRegex(ValueError, "Missing Qt JNI field"):
+                self.check_api(DEX_XML.replace(f'name="{name}"', 'name="a"'))
+        with self.assertRaisesRegex(ValueError, "Missing Qt JNI field"):
+            self.check_api(DEX_XML.replace('type="org.qtproject.qt.android.CursorHandle"', 'type="org.qtproject.qt.android.c"'))
 
     def test_apk_file_info_field_cannot_be_removed_or_renamed(self):
         for name in ("relativePath", "size", "isDir"):

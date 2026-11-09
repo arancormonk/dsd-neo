@@ -60,10 +60,12 @@ class KnownFrequencyIndex : public QObject {
     /**
      * The targets a running scan-list session scans, read from the target CSVs it started with (issue #644): @p lists
      * holds the session's lists in list order, each {uid, name, path} (path: ScanListStarter::sessionCsvPath()). One
-     * map per target row with an id: `listNumber` (1-based), `listUid`, `targetId`, `frequencyHz`, `width` (the
-     * channel width its mode names, as the index takes it), `name` ("<list name> / <label>") and `protocolLabel`. A
-     * list whose file cannot be read gives none. Reads the files on each call: for a session's start or its lists
-     * changing, not per frame.
+     * map per target, in the engine's target order: each list's rows with an id, in list order, but a row whose id an
+     * earlier list gave only once, as that list's (issue #697: a target id several lists hold is one target, which the
+     * engine refuses unless every list holding it gives it the same settings). Each map: `listNumber` (1-based, the
+     * first list holding it), `listUid`, `targetId`, `frequencyHz`, `width` (the channel width its mode names, as the
+     * index takes it), `name` ("<list name> / <label>") and `protocolLabel`. A list whose file cannot be read gives
+     * none. Reads the files on each call: for a session's start or its lists changing, not per frame.
      */
     Q_INVOKABLE QVariantList sessionTargets(const QVariantList& lists) const;
     /** The names of @p matches, each once, in their order: two rows of one name on one channel are named once. */

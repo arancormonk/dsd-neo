@@ -20,13 +20,18 @@
 
 #include <curses.h>
 #include <dsd-neo/app_control/config_files.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/menu_defs.h>
 #include <dsd-neo/ui/ui_prims.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -35,6 +40,7 @@
 #include "rr_panel.h"
 #include "scan_list_modal.h"
 #include "ui_keys.h"
+#include "ui_text.h"
 
 static int g_overlay_open = 0;
 static UiMenuFrame g_stack[8];
@@ -424,6 +430,47 @@ ui_menu_is_activate_key(int ch) {
     return ch == KEY_RIGHT || ui_key_is_enter(ch);
 }
 
+/*
+ * The decoder's toast (dsd_state::ui_msg) is the outcome of most commands a row posts -- an import or a reload says what
+ * it loaded or why it refused -- and the main screen shows it on a line an open menu can cover (on an 80x24 terminal
+ * the Channels & groups overlay does). Each new toast in the frame's snapshot goes to the menu's status line too: new by
+ * its sequence (a command run twice within a second sets the same text and expiry), or by its text or expiry for a
+ * toast set without one. It is sanitized as the text model draws (a path can carry any byte), and held no longer than
+ * the decoder holds it. A toast already live when the menu opens is the main screen's, not an answer to the menu.
+ */
+static struct {
+    char text[sizeof(((dsd_state*)0)->ui_msg)];
+    time_t expire;
+    uint32_t seq;
+} g_toast_seen;
+
+static int
+ui_menu_toast_is_new(const dsd_state* state) {
+    return state->ui_msg_seq != g_toast_seen.seq || state->ui_msg_expire != g_toast_seen.expire
+           || strncmp(state->ui_msg, g_toast_seen.text, sizeof g_toast_seen.text) != 0;
+}
+
+static void
+ui_menu_toast_mark_seen(const dsd_state* state) {
+    DSD_MEMCPY(g_toast_seen.text, state->ui_msg, sizeof g_toast_seen.text);
+    g_toast_seen.text[sizeof g_toast_seen.text - 1U] = '\0';
+    g_toast_seen.expire = state->ui_msg_expire;
+    g_toast_seen.seq = state->ui_msg_seq;
+}
+
+static void
+ui_menu_follow_decoder_toast(const dsd_state* state) {
+    if (!state || state->ui_msg[0] == '\0' || state->ui_msg_expire <= dsd_realtime_time()
+        || !ui_menu_toast_is_new(state)) {
+        return;
+    }
+    ui_menu_toast_mark_seen(state);
+    char shown[sizeof g_toast_seen.text];
+    (void)ui_text_sanitize(ui_text_unicode_output(), g_toast_seen.text, strlen(g_toast_seen.text), shown, sizeof shown);
+    ui_statusf("%s", shown);
+    ui_status_expire_by(state->ui_msg_expire);
+}
+
 void
 ui_menu_open_async(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
@@ -443,6 +490,7 @@ ui_menu_open_async(const dsd_opts* opts, const dsd_state* state) {
     if (dsd_app_config_default_missing(cfg_path, sizeof cfg_path)) {
         ui_statusf("No default config; use Config menu to save to %s", cfg_path);
     }
+    ui_menu_toast_mark_seen(state);
     g_overlay_open = 1;
     g_depth = 1;
     g_modal_only = 0;
@@ -462,6 +510,7 @@ ui_menu_open_modal_async(const dsd_opts* opts, const dsd_state* state, nc_action
         return;
     }
     UiCtx* ctx = ui_menu_stable_ctx(opts, state);
+    ui_menu_toast_mark_seen(state);
     g_overlay_open = 1;
     g_depth = 1;
     g_modal_only = 1;
@@ -553,6 +602,7 @@ ui_menu_tick(const dsd_opts* opts, const dsd_state* state) {
     if (!g_overlay_open || g_depth <= 0) {
         return;
     }
+    ui_menu_follow_decoder_toast(state);
     // Render Prompt overlay (highest priority) - delegate to menu_prompts.c
     if (ui_prompt_active()) {
         ui_prompt_render();

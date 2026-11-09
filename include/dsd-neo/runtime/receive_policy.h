@@ -14,7 +14,8 @@ extern "C" {
 int dsd_receive_edit_parse(dsd_receive_policy* policy, int kind, int enabled, const char* allow, const char* block,
                            const char* names, char* error, size_t capacity);
 int dsd_receive_policy_validate(const dsd_receive_policy* policy, int kind, char* error, size_t capacity);
-/** Semantic equality, independent of structure padding and unused naming entries. */
+/** Semantic equality, independent of structure padding and unused naming entries. Two naming tables are equal when
+ * dsd_receive_service_name() gives every identity the same name from both, whatever order their rules are in. */
 int dsd_receive_filter_equal(const dsd_receive_filter* a, const dsd_receive_filter* b);
 int dsd_receive_names_equal(const dsd_service_names* a, const dsd_service_names* b);
 int dsd_receive_policy_equal(const dsd_receive_policy* a, const dsd_receive_policy* b);

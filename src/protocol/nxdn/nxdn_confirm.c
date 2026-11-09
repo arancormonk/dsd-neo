@@ -70,6 +70,12 @@ nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence) {
     if (!state) {
         return;
     }
+    if (state->nxdn_frame_foreign) {
+        /* Another channel's control traffic on the followed traffic channel proves that channel, not the call followed:
+           it is noted as heard, and confirms nothing. */
+        state->nxdn_site.foreign_control_m = dsd_decode_now_mono_s();
+        return;
+    }
     if (evidence == NXDN_EVIDENCE_STRONG) {
         state->nxdn_confirm_frame_evidence = (uint8_t)NXDN_EVIDENCE_STRONG;
         state->nxdn_confirm_weak_streak = 0;

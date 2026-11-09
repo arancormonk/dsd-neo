@@ -156,9 +156,11 @@ typedef struct {
      *
      * b1_valid:   1 when b1_dibuf holds a fresh capture, cleared
      *                   after processTetraFrame() consumes it.
-     * polarity:   0 = normal (+TETRA), 1 = inverted (-TETRA).
-     *                     Written by the frame sync from a synchronisation
-     *                     burst, and by the decoder from a control uplink
+     * polarity:   0 = normal (+TETRA), 1 = inverted (-TETRA): the
+     *                     carrier's, which normal bursts are classified
+     *                     and decoded with. Written by the decoder only:
+     *                     from a synchronisation burst whose BSCH (or DSB
+     *                     SCH/S) passed its CRC, and from a control uplink
      *                     burst whose SCH/HU passed its CRC.
      * nts2:        1 = this NDB matched training sequence 2.
      * cb:          1 = the frame sync locked a control uplink burst. Every
@@ -189,6 +191,9 @@ typedef struct {
     float sb1_soft[60];
     uint8_t sb1_valid;
     uint8_t sb1_soft_valid;
+    /* The polarity of the synchronisation burst in sb1_dibuf, 0 normal or 1 inverted, as its training sequence matched
+     * it: the burst is decoded with it, and it becomes the carrier's (polarity) only once the burst is accepted. */
+    uint8_t sb_polarity;
     /* Set by the decoder: 1 when block 1 sits directly against the training sequence (direct mode and the
      * uplink normal burst have no AACH), so the frame sync captures it from the right symbols. */
     uint8_t block1_follows_training;
@@ -749,6 +754,48 @@ typedef struct {
      * unknown held call) and the rest stays only so that naming that call as the same one keeps follow_m. */
     uint8_t gap;
 } dsd_nxdn_call_identity;
+
+/* NXDN Type-C: where the channel access parameters (dsd_state::nxdn_rcn, nxdn_base_freq, nxdn_step) came from
+   (dsd_state::nxdn_ca). They are a site's, carried only by its SITE_INFO (TS 1-A §6.5.36), so they are kept apart from
+   the site identity: <dsd-neo/core/nxdn_channel_access.h> owns every write. */
+typedef struct {
+    uint32_t location_id; /**< the Location ID of the SITE_INFO that set them; 0 none */
+    /** Advances whenever the parameters, their site or their validity change: what was computed under one generation
+     * does not hold under the next. */
+    uint32_t generation;
+    /** 1 while the parameters are a SITE_INFO's and still hold. nxdn_rcn stays as the last notation heard while they
+     * are not (the message layouts still follow it), but no channel is resolved by DFA arithmetic. */
+    uint8_t valid;
+} dsd_nxdn_ca_source;
+
+/* NXDN Type-C: the site the receiver chose ("this site", dsd_state::nxdn_site) and what the session knows of the system
+   it decodes, forgotten with the channel access parameters (dsd_nxdn_ca_reset()). Only a SITE_INFO or SRV_INFO decoded
+   while no traffic channel is followed names this site (TS 1-A §6.4.3.1-2 "for current site"): a CCH_INFO may name any
+   site, and a broadcast heard on a followed channel may be another site's. <dsd-neo/core/nxdn_channel_access.h> owns
+   every write but the foreign control stamp (nxdn_confirm_note_evidence()). */
+typedef struct {
+    uint32_t location_id; /**< this site's 24-bit Location ID, while known is 1 */
+    uint8_t known;        /**< 1 once a SITE_INFO or SRV_INFO named this site */
+    /** 1 once Type-C trunking decoded here (a CAC, a CCH_INFO or a SITE_INFO): the LICH values a composite control
+     * channel (RTCH_C) shares with a Type-D RTCH2 are read as RTCH_C (nxdn_frame.c). */
+    uint8_t type_c;
+    /** Decode clock (dsd_decode_now_mono_s()): when a check of another channel's control traffic last passed on the
+     * followed traffic channel (dsd_state::nxdn_frame_foreign); 0 never. */
+    double foreign_control_m;
+} dsd_nxdn_site_record;
+
+enum { DSD_NXDN_DFA_LEARNED_MAX = 128 };
+
+/* NXDN Type-C: the channel map rows DFA arithmetic wrote (dsd_state::nxdn_dfa_learned), all computed under the
+   parameter generation recorded here. They are dropped when the parameters change, so an old site's frequency never
+   answers for the new site's channel number. A row any other writer sets (an imported channel map, another protocol)
+   leaves this record and is never dropped by it. */
+typedef struct {
+    uint16_t chan[DSD_NXDN_DFA_LEARNED_MAX];
+    long int freq[DSD_NXDN_DFA_LEARNED_MAX]; /**< the frequency written, so a row changed behind the record stays */
+    uint32_t generation;                     /**< dsd_nxdn_ca_source::generation the rows were computed under */
+    uint16_t count;
+} dsd_nxdn_dfa_learned;
 
 /**
  * @brief One row of a user-supplied P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV").
@@ -2335,6 +2382,11 @@ struct dsd_state {
      * <dsd-neo/protocol/nxdn/nxdn.h>), set only while that frame's channels decode: element parsers whose layout or
      * meaning depends on the channel read it, never anything retained from an earlier frame. */
     uint8_t nxdn_frame_channel;
+    /* 1 while the channels being decoded are another channel's control traffic heard on the followed traffic channel
+     * (a CAC, or a composite control channel's frame, while the receiver follows a call elsewhere than this site's
+     * control channel, dsd_nxdn_control_heard_is_foreign()): they are decoded for the log only, and their checks stamp
+     * dsd_nxdn_site_record::foreign_control_m instead of confirming the transmission. */
+    uint8_t nxdn_frame_foreign;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
     uint8_t nxdn_alias_block_number;
@@ -2361,6 +2413,9 @@ struct dsd_state {
     uint8_t nxdn_base_freq;
     uint8_t nxdn_step;
     uint8_t nxdn_bw;
+    dsd_nxdn_ca_source nxdn_ca;
+    dsd_nxdn_dfa_learned nxdn_dfa_learned;
+    dsd_nxdn_site_record nxdn_site;
 
     // NXDN trunking: last observed call grant mapping (for UI/logging)
     uint16_t nxdn_grant_chan;
@@ -2624,20 +2679,28 @@ struct dsd_state {
     /* The --trunk-scan target lists (issue #697), written by the coordinator at its start, at each list switched on
      * or off and at each hop, and cleared when it detaches. trunk_scan_lists[i] is list i + 1 (its name, whether it
      * is on, and its target count); trunk_scan_lists_seq moves at every start and change of them and never repeats a
-     * value in the process. trunk_scan_active_list: the list (1-based) of the target on air, 0 when none is (paused
-     * included); trunk_scan_active_list_off: that target's list is off, so the receiver stays there only until another
-     * target can take it, as it stays on an avoided one (trunk_scan_active_avoided; either can hold, or both).
-     * trunk_scan_rotation_count: the targets of the lists that are on, avoided ones included;
-     * trunk_scan_rotation_ordinal: the target on air's 1-based position among them, 0 while its list is off or none is
-     * on air. The identity ordinal (trunk_scan_active_ordinal, the position among every loaded target) does not move
-     * when a list does. */
+     * value in the process. A target whose id several lists' files hold is one target in each of them.
+     * trunk_scan_active_list: the list (1-based) that names the target on air, the lowest-numbered list holding it
+     * that is on, else the lowest-numbered list holding it; 0 when none is on air (paused included).
+     * trunk_scan_active_lists: every list holding the target on air (bit N-1: list N), on or off; 0 when none is on
+     * air (paused included). trunk_scan_active_list_off: every list holding that target is off, so the receiver stays
+     * there only until another target can take it, as it stays on an avoided one (trunk_scan_active_avoided; either
+     * can hold, or both). trunk_scan_rotation_count: the distinct targets of the lists that are on, avoided ones
+     * included; trunk_scan_rotation_ordinal: the target on air's 1-based position among them, 0 while its lists are
+     * off or none is on air. The identity ordinal (trunk_scan_active_ordinal, the position among every loaded target)
+     * does not move when a list does. A list's targets count the ones it shares, and
+     * trunk_scan_membership_counts[m - 1] is how many distinct targets are in exactly the lists of membership mask m
+     * (bit N-1: list N): the distinct total of any set of lists sums the masks that meet it. Written at the start,
+     * since the lists' files never change while the scan runs. */
     uint8_t trunk_scan_list_count;
     uint8_t trunk_scan_active_list;
     uint8_t trunk_scan_active_list_off;
+    uint8_t trunk_scan_active_lists;
     uint16_t trunk_scan_rotation_ordinal;
     uint16_t trunk_scan_rotation_count;
     uint32_t trunk_scan_lists_seq;
     dsd_trunk_scan_list_publication trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    uint16_t trunk_scan_membership_counts[DSD_TRUNK_SCAN_MEMBERSHIP_MASKS];
     /* The scan row on air, for the "this channel" editors (issue #518): the scanner that owns it (dsd_scan_row_scanner,
      * 0 = none), the scan session (a new one for every trunk-scan coordinator and -Y scan, so an edit opened on one never
      * lands on the next), the row (a --trunk-scan target's index, a -Y channel map row), the session-edit fields
@@ -2746,6 +2809,9 @@ struct dsd_state {
        owned; rides the vertex_ks_count..ui_msg range. */
     dsd_received_identity rx_id;
 
+    /* Counts ui_msg's toasts (dsd_state_toast_publish()), so a frontend tells a toast repeated word for word within its
+       second from one it has shown already (discussion #748). Rides the vertex_ks_count..ui_msg range. */
+    uint32_t ui_msg_seq;
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
     /* 1 while an accepted trunking retune's drop of the access code waits for the decoder thread to apply it to rx_id
@@ -2796,6 +2862,15 @@ struct dsd_state {
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
+
+/* Publish the toast just written to state->ui_msg, shown until @p expire (epoch seconds of the real-time clock): every
+   writer of a toast ends here, so ui_msg_seq counts each one and a frontend tells the same text set again within its
+   second from one it has shown (discussion #748). Clearing the toast and amending the one just published do not. */
+static inline void
+dsd_state_toast_publish(dsd_state* state, time_t expire) {
+    state->ui_msg_expire = expire;
+    state->ui_msg_seq++;
 }
 
 /* Raise an input interruption for @p reason (dsd_input_interrupt_reason). A reason already standing that ranks higher
@@ -2962,10 +3037,35 @@ dsd_state_untrack_trunk_chan(dsd_state* state, uint16_t channel) {
     state->trunk_chan_map_used_count = count;
 }
 
+/* Take a channel map row out of the NXDN DFA record (dsd_nxdn_dfa_learned): its next writer owns it. */
+static inline void
+dsd_state_nxdn_dfa_untag(dsd_state* state, uint32_t channel) {
+    dsd_nxdn_dfa_learned* learned = &state->nxdn_dfa_learned;
+    uint16_t count = learned->count;
+    if (count > DSD_NXDN_DFA_LEARNED_MAX) {
+        count = DSD_NXDN_DFA_LEARNED_MAX;
+    }
+    for (uint16_t i = 0; i < count; i++) {
+        if (learned->chan[i] != channel) {
+            continue;
+        }
+        learned->chan[i] = learned->chan[count - 1U];
+        learned->freq[i] = learned->freq[count - 1U];
+        count--;
+        break;
+    }
+    learned->count = count;
+}
+
+/* Set one channel map row. Every writer but the NXDN DFA resolver (dsd_nxdn_dfa_learn()) sets a row it owns, so the
+   row leaves the DFA record and no later parameter change drops it. */
 static inline void
 dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
     if (!state || !dsd_state_trunk_chan_valid(channel)) {
         return;
+    }
+    if (state->nxdn_dfa_learned.count != 0U) {
+        dsd_state_nxdn_dfa_untag(state, channel);
     }
 
     const long int old_freq = state->trunk_chan_map[channel];

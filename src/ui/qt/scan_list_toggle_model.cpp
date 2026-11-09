@@ -107,13 +107,14 @@ ScanListToggleModel::listsOn() const {
     return on;
 }
 
+/* The lists the rows show on, each target counted once however many of them hold it (issue #697). */
 int
 ScanListToggleModel::targetsOn() const {
-    int targets = 0;
+    unsigned int onMask = 0U;
     for (int i = 0; i < count(); ++i) {
-        targets += rowOn(i) ? m_view.lists[i].targets : 0;
+        onMask |= rowOn(i) ? 1U << i : 0U;
     }
-    return targets;
+    return static_cast<int>(dsd_app_scan_list_view_targets_on(&m_view, onMask));
 }
 
 QString

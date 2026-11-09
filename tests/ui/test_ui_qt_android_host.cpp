@@ -27,6 +27,7 @@
 #include <memory>
 #include <mutex>
 #include <stdint.h>
+#include <thread>
 #include <utility>
 #include "../../android/decoder_host_android.h"
 #include "../../android/document_pick_record.h"
@@ -229,10 +230,15 @@ static QString startDispatchFailure;
 static QList<uint64_t> retirements;
 static int lifecycleReadsAtRetire;
 static bool serviceTookAttempt;
+
 // When not empty, the record the service publishes once the retirement returns (gate r5 L1): what happened to the
 // service between the host's lifecycle read and its retirement. Its answer is then the service's own rule, taken when
 // the record's attempt is the bound and was not cancelled, and the hook is used once.
-static QJsonObject recordAtRetire;
+static QJsonObject&
+record_at_retire() {
+    static QJsonObject value;
+    return value;
+}
 
 // UsbSourceManager.deviceStatus(), which the host's local-device refresh applies.
 static QJsonObject&
@@ -336,9 +342,9 @@ bool
 DecoderHostAndroid::platformRetireAttempts(uint64_t through) {
     retirements.append(through);
     lifecycleReadsAtRetire = lifecycleReads;
-    if (!recordAtRetire.isEmpty()) {
-        retained_record() = recordAtRetire;
-        recordAtRetire = QJsonObject();
+    if (!record_at_retire().isEmpty()) {
+        retained_record() = record_at_retire();
+        record_at_retire() = QJsonObject();
         /* DecoderService.retireAttempts(): one still STARTING is cancelled, one past it (RUNNING) is taken. */
         return static_cast<uint64_t>(retained_record().value(QStringLiteral("attemptId")).toInteger()) == through
                && retained_record().value(QStringLiteral("state")).toString() != QStringLiteral("STARTING");
@@ -577,6 +583,22 @@ DecoderHostAndroid::platformDiscardPendingDownload(const QString& reference) {
     const std::lock_guard<std::mutex> lock(d.mutex);
     d.discarded.append(reference);
 }
+
+/* The sign-in form's calls out are JNI only (decoder_host_android.cpp); the way a fill comes back in is real. */
+void
+DecoderHostAndroid::signInAutofillBegin(int) {}
+
+void
+DecoderHostAndroid::signInAutofillField(int, int, const QRect&, bool, bool, const QString&) {}
+
+void
+DecoderHostAndroid::signInAutofillRequest(int, int, const QRect&) {}
+
+void
+DecoderHostAndroid::signInAutofillCommit(int, const QString&, const QString&) {}
+
+void
+DecoderHostAndroid::signInAutofillEnd(int) {}
 } // namespace dsd_android
 
 static int failures;
@@ -2064,7 +2086,7 @@ check_claim_error_connection() {
     run.insert("usbDevice", kA);
     run.insert("usbEpoch", 1);
     run.insert("usbConnection", 3);
-    retained_record() = run;
+    retained_record() = std::move(run);
     running = true;
     host.refresh();
     usb_record() = rtl_connection(kA, 1, 4, "00000001");
@@ -2089,20 +2111,20 @@ check_receiver_take_failures() {
 
     struct Case {
         const char* wire;
-        int kind;
         const char* text;
         const char* broker_kind;
+        int kind;
         int pill;
     };
 
     const Case cases[] = {
-        {"usb_gone", kAttemptUsbGone, "The USB receiver is no longer connected", "detached",
+        {"usb_gone", "The USB receiver is no longer connected", "detached", kAttemptUsbGone,
          DecoderHost::DeviceDetached},
-        {"usb_permission", kAttemptUsbPermission, "The USB receiver needs permission again", "permission",
+        {"usb_permission", "The USB receiver needs permission again", "permission", kAttemptUsbPermission,
          DecoderHost::DevicePermission},
-        {"usb_open_failed", kAttemptUsbOpenFailed, "The USB receiver could not be reopened", "open_failed",
+        {"usb_open_failed", "The USB receiver could not be reopened", "open_failed", kAttemptUsbOpenFailed,
          DecoderHost::DeviceOpenFailed},
-        {"previous_stopping", kAttemptPreviousStopping, "A previous session is still stopping", "", -1},
+        {"previous_stopping", "A previous session is still stopping", "", kAttemptPreviousStopping, -1},
     };
     for (const Case& c : cases) {
         DecoderHostAndroid host;
@@ -2331,7 +2353,7 @@ check_attempt_identity() {
     QJsonObject other = gone;
     other.insert(QStringLiteral("attemptId"), static_cast<qint64>(second + 7));
     other.insert(QStringLiteral("failureKind"), QStringLiteral("usb_permission"));
-    retained_record() = other;
+    retained_record() = std::move(other);
     host.refresh();
     check(host.inputFailureKind() == kAttemptUsbGone, "another attempt's failure kind replaces nothing");
     retained_record() = gone;
@@ -2542,7 +2564,7 @@ check_superseded_attempt_never_drives_the_phase() {
         check(host.sessionState() == DecoderHost::Starting, "the first start is on its way");
 
         retirements.clear();
-        recordAtRetire = {
+        record_at_retire() = {
             {"sessionId", 151}, {"state", "STARTING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
         nowMs = 700500;
         check(host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
@@ -2712,7 +2734,8 @@ check_superseded_attempt_that_ran_keeps_the_screen() {
     nowMs = 900250;
     host.refresh();
     retirements.clear();
-    recordAtRetire = {{"sessionId", 171}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
+    record_at_retire() = {
+        {"sessionId", 171}, {"state", "RUNNING"}, {"reason", kRunPending}, {"attemptId", (qint64)first}};
     running = true;
     check(!host.start(QStringList{QStringLiteral("-i"), QStringLiteral("rtl:0")}),
           "a start whose predecessor ran meanwhile is refused");
@@ -2732,6 +2755,96 @@ check_superseded_attempt_that_ran_keeps_the_screen() {
     check(host.sessionState() == DecoderHost::Idle, "and its end ends it");
     check(serviceStops == 0, "nothing here stops the service");
     retained_record() = QJsonObject();
+}
+
+namespace {
+/* What a host's fill sink received, and on which thread. */
+struct SignInFills {
+    int calls = 0;
+    int token = 0;
+    bool hasUsername = false;
+    bool hasPassword = false;
+    QString username;
+    QString password;
+    bool onGuiThread = false;
+
+    void
+    sinkInto(dsd_android::DecoderHostAndroid& host) {
+        host.setSignInFillSink(
+            [this](int fillToken, bool hasUser, const QString& user, bool hasPass, const QString& pass) {
+                ++calls;
+                token = fillToken;
+                hasUsername = hasUser;
+                hasPassword = hasPass;
+                username = user;
+                password = pass;
+                onGuiThread = QThread::currentThread() == QCoreApplication::instance()->thread();
+            });
+    }
+};
+
+/* As nativeSignInFilled() does, from a thread of its own (the Android main thread); true when it left both empty. */
+bool
+post_fill_from_another_thread(int token, bool hasUser, const QString& user, bool hasPass, const QString& pass) {
+    bool emptied = false;
+    std::thread poster([&]() {
+        QString username = user;
+        QString password = pass;
+        dsd_android::DecoderHostAndroid::postSignInFill(token, hasUser, username, hasPass, password);
+        emptied = username.isEmpty() && password.isEmpty();
+    });
+    poster.join();
+    return emptied;
+}
+} // namespace
+
+/*
+ * A password manager's fill reaches the Qt thread's relay through the newest live host, queued: never on the Android
+ * main thread, never on a host that went, and the strings handed over are taken from the caller.
+ */
+static void
+check_sign_in_fill_reaches_the_live_host() {
+    using dsd_android::DecoderHostAndroid;
+    check(post_fill_from_another_thread(3, true, QStringLiteral("alice"), true, QStringLiteral("s3cret")),
+          "a fill with no host is taken and dropped");
+    QCoreApplication::processEvents();
+
+    DecoderHostAndroid host;
+    check(host.signInAutofillSupported(), "Android offers the sign-in form, so the relay samples and settles for it");
+    SignInFills fills;
+    fills.sinkInto(host);
+    check(post_fill_from_another_thread(7, true, QStringLiteral("alice"), true, QStringLiteral("s3cret")),
+          "the poster's strings are taken, not copied");
+    check(fills.calls == 0, "a fill is queued, not run on the posting thread");
+    QCoreApplication::processEvents();
+    check(fills.calls == 1 && fills.onGuiThread, "it reaches the sink once, on the GUI thread");
+    check(fills.token == 7 && fills.hasUsername && fills.hasPassword, "with its token and what it filled");
+    check(fills.username == QStringLiteral("alice") && fills.password == QStringLiteral("s3cret"),
+          "and the values filled");
+
+    post_fill_from_another_thread(8, false, QString(), true, QStringLiteral("only"));
+    QCoreApplication::processEvents();
+    check(fills.calls == 2 && fills.token == 8 && !fills.hasUsername && fills.hasPassword
+              && fills.password == QStringLiteral("only"),
+          "a password-only fill says so");
+
+    {
+        DecoderHostAndroid newer;
+        SignInFills newest;
+        newest.sinkInto(newer);
+        post_fill_from_another_thread(9, true, QStringLiteral("bob"), false, QString());
+        QCoreApplication::processEvents();
+        check(newest.calls == 1 && newest.username == QStringLiteral("bob"), "the newest host takes a fill");
+        check(fills.calls == 2, "and only it");
+        post_fill_from_another_thread(10, true, QStringLiteral("carol"), false, QString());
+        /* Gone before the queued call runs: it goes with the host, unrun. */
+    }
+    QCoreApplication::processEvents();
+    check(fills.calls == 2, "a fill queued to a host that went is dropped");
+    post_fill_from_another_thread(11, true, QStringLiteral("dave"), false, QString());
+    QCoreApplication::processEvents();
+    check(fills.calls == 3 && fills.token == 11, "once the newer host goes, the older one takes fills again");
+    host.setSignInFillSink(nullptr);
 }
 
 int
@@ -2767,6 +2880,7 @@ main(int argc, char** argv) {
     check_download_discards();
     check_recording_share();
     check_queued_share_holds_its_recording();
+    check_sign_in_fill_reaches_the_live_host();
     DecoderHostAndroid host;
     /* Settings shows the Screen rows only where the host applies them (#574). */
     check(host.screenPolicySupported(), "the Android host applies the screen policy");

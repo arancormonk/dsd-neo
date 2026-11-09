@@ -7,12 +7,26 @@
  * @file
  * @brief The two drawn halves of the spectrum view: live trace and waterfall.
  *
- * QQuickPaintedItem rather than QML Canvas or a scene-graph node. Canvas would
- * marshal a thousand bins into JavaScript fifteen times a second, which is the
- * slow path on a phone; a QSGNode would be faster still but is a great deal
- * more code for a workload that is one image blit and one polyline per frame.
- * These are the first qmlRegisterType'd items in the tree — every other C++
- * object QML sees is a context property.
+ * The trace is scene-graph geometry. It was a QQuickPaintedItem, and on a phone
+ * QPainter's antialiased stroke of a thousand-point spiky polyline took 100-150
+ * ms a frame (measured on the emulator with a real dongle; 75 ms of it the
+ * stroke alone) — inside the scene graph's sync, while the GUI thread waits, so
+ * a pan stuttered at about 8 frames a second. As triangles the stroke costs the
+ * CPU a few thousand vertices; the GPU draws them, antialiased by a coverage
+ * ramp across each edge (spectrum_trace_geometry.h).
+ *
+ * Qt's software scene graph cannot draw such geometry: it is what
+ * QT_QUICK_BACKEND=software selects, and also what Qt falls back to by itself
+ * on a platform with no RHI. There the trace paints itself with QPainter into
+ * an image, as before.
+ *
+ * The waterfall stays a QQuickPaintedItem: its paint is one scaled image blit,
+ * measured at 2-3 ms, and drawing it at its own size changed nothing.
+ *
+ * QML Canvas would marshal a thousand bins into JavaScript fifteen times a
+ * second, which is the slow path on a phone. These are the first
+ * qmlRegisterType'd items in the tree — every other C++ object QML sees is a
+ * context property.
  *
  * Colors arrive as properties so the screen can bind them to Theme tokens; no
  * palette decisions are made here.
@@ -25,21 +39,28 @@
 #include <QImage>
 #include <QList>
 #include <QObject>
-#include <QPointF> // IWYU pragma: keep -- complete element type for the Qt point buffer.
+#include <QPointer>
+#include <QQuickItem>
 #include <QQuickPaintedItem>
 #include <QtGlobal>
 #include <qrgb.h>
+#include <vector>
 
 #include "spectrum_math.h"
+#include "spectrum_model.h"
+#include "spectrum_trace_geometry.h" // IWYU pragma: keep -- C++14 vector members need complete vertex types.
 
-class QQuickItem;
+class QSGNode;
 
 namespace dsd_qt {
 
-class SpectrumModel;
-
-/** @brief The instantaneous spectrum, drawn as a filled trace over a faint grid. */
-class SpectrumTraceItem : public QQuickPaintedItem {
+/**
+ * @brief The instantaneous spectrum, drawn as a filled trace over a faint grid.
+ *
+ * Content is clipped to the item, as a painted item's was: the stroke's caps,
+ * bevels and fringes reach past the points they surround.
+ */
+class SpectrumTraceItem : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(dsd_qt::SpectrumModel* model READ model WRITE setModel NOTIFY modelChanged)
     Q_PROPERTY(QColor lineColor READ lineColor WRITE setLineColor NOTIFY colorsChanged)
@@ -52,7 +73,7 @@ class SpectrumTraceItem : public QQuickPaintedItem {
 
     SpectrumModel*
     model() const {
-        return m_model;
+        return m_model.data();
     }
 
     void setModel(SpectrumModel* next);
@@ -78,28 +99,61 @@ class SpectrumTraceItem : public QQuickPaintedItem {
 
     void setGridColor(const QColor& color);
 
-    void paint(QPainter* painter) override;
+#ifdef DSD_NEO_TEST_HOOKS
+    /**
+     * @brief The node tree updatePaintNode() returns on an RHI window, built without one.
+     *
+     * Headless Qt only has the software scene graph, so this is how a test sees
+     * the geometry, materials and flags the GPU path hands Qt. Same rules as
+     * updatePaintNode(): pass the previous result back as @p old.
+     */
+    QSGNode* testUpdateGpuTree(QSGNode* old, double width, double height, double pixel_ratio);
+
+    /** @brief The software path's picture at @p pixel_ratio, as its image node would show it. */
+    QImage testSoftwareImage(double width, double height, double pixel_ratio);
+
+    /** @brief The size, in item coordinates, the software path's image node shows that picture at (from 0, 0). */
+    void testSoftwareRectSize(double width, double height, double pixel_ratio, double* shown_width,
+                              double* shown_height);
+
+    /** @brief The auto-range, so a test can tell a fold from a repaint. */
+    const spectrum_math::AutoRange&
+    testRange() const {
+        return m_range;
+    }
+#endif
 
   Q_SIGNALS:
     void modelChanged();
     void colorsChanged();
 
+  protected:
+    QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData* /*data*/) override;
+    void geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) override;
+    void itemChange(ItemChange change, const ItemChangeData& value) override;
+
   private:
     void onFrame();
     void onRetuned();
+    void onModelDestroyed();
+    void forgetFrames();
+    bool buildTrace(int w, int h);
+    QSGNode* updateGpuTree(QSGNode* old, int w, int h, double pixel_ratio, bool have_trace);
+    QImage paintSoftwareImage(int w, int h, double pixel_ratio, bool have_trace) const;
 
-    SpectrumModel* m_model = nullptr;
+    QPointer<SpectrumModel> m_model;
     QColor m_line_color = QColor(0x22, 0xDC, 0xF5);
     QColor m_area_color = QColor(0x22, 0xDC, 0xF5, 0x33);
     QColor m_grid_color = QColor(0x23, 0x2B, 0x3A);
     spectrum_math::AutoRange m_range;
-    /* Both reused across frames: a polyline and a column set this wide would
-     * otherwise allocate twice on every repaint, fifteen times a second. The
-     * point buffer carries the filled polygon too — its first and last entries
-     * are the two baseline corners, and the polyline is drawn from the middle —
-     * so the area pass does not build a second one of its own. */
-    QVector<QPointF> m_points;
+    /* All reused across frames: a trace this wide would otherwise allocate on
+     * every sync, fifteen times a second. m_xs/m_ys are the trace's points, one
+     * per pixel column; the stroke and area buffers are their triangles. */
     QVector<float> m_columns;
+    std::vector<float> m_xs;
+    std::vector<float> m_ys;
+    std::vector<spectrum_geometry::StrokeVertex> m_stroke;
+    std::vector<spectrum_geometry::AreaVertex> m_area;
     /* Which frame the auto-range last folded in. The fold is stateful (a 5%
      * relaxation per call), so it has to happen once per frame and not once per
      * repaint: viewChanged repaints at touch rate during a pan, which would
@@ -122,7 +176,7 @@ class WaterfallItem : public QQuickPaintedItem {
 
     SpectrumModel*
     model() const {
-        return m_model;
+        return m_model.data();
     }
 
     void setModel(SpectrumModel* next);
@@ -170,11 +224,12 @@ class WaterfallItem : public QQuickPaintedItem {
 
   private:
     void onFrame();
+    void onModelDestroyed();
     void clearHistory();
     void rebuildRamp();
     QRgb rampColor(double t) const;
 
-    SpectrumModel* m_model = nullptr;
+    QPointer<SpectrumModel> m_model;
     QColor m_cold_color = QColor(0x12, 0x16, 0x1E);
     QColor m_mid_color = QColor(0x22, 0xDC, 0xF5);
     QColor m_hot_color = QColor(0xEC, 0x1F, 0xDC);

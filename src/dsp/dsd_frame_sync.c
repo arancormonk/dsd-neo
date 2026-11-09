@@ -1163,8 +1163,8 @@ frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
     frame_sync_tetra_begin(ctx, phase_rot);
-    /* NTS2 aliases inverted NTS1: keep the polarity the synchronisation burst set and only record which training
-     * matched. */
+    /* NTS2 aliases inverted NTS1: keep the carrier's polarity, which a synchronisation burst the decoder accepted set,
+     * and only record which training matched. */
     state->tetra_sync.nts2 = (uint8_t)(inverted ^ (state->tetra_sync.polarity ? 1 : 0));
     state->tetra_sync.cb = 0;
     frame_sync_tetra_capture_block1(ctx, 108, (follows ? 11 : 18) + lead);
@@ -1176,7 +1176,11 @@ frame_sync_try_tetra_ndb(frame_sync_match_ctx* ctx) {
                                    inverted ? DSD_SYNC_TETRA_NDB_NEG : DSD_SYNC_TETRA_NDB_POS, 11 + lead);
 }
 
-/* Synchronisation burst: the 19-dibit training sequence, which also sets the polarity. */
+/* Synchronisation burst: the 19-dibit training sequence, which is no other training sequence inverted, so it tells the
+ * burst's polarity. That polarity is the burst's alone (tetra_sync.sb_polarity): the decoder reads the burst with it
+ * and makes it the carrier's once the burst's BSCH, or a DSB's SCH/S, passed its CRC and the burst was taken on. A
+ * false match, or a burst of another polarity that fails or is not taken on, leaves the carrier's polarity the normal
+ * bursts are classified with (frame_sync_try_tetra_ndb()). */
 static int
 frame_sync_try_tetra_sb(frame_sync_match_ctx* ctx) {
     if (!frame_sync_match_window_ready(ctx, 79)) {
@@ -1191,7 +1195,7 @@ frame_sync_try_tetra_sb(frame_sync_match_ctx* ctx) {
     }
     dsd_state* state = ctx->state;
     frame_sync_tetra_begin(ctx, phase_rot);
-    state->tetra_sync.polarity = (uint8_t)inverted;
+    state->tetra_sync.sb_polarity = (uint8_t)inverted;
     state->tetra_sync.cb = 0;
     frame_sync_capture_tetra_dibits(ctx->synctest79, state->tetra_sync.sb1_dibuf, 60);
     state->tetra_sync.sb1_soft_valid =

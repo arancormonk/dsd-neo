@@ -13,6 +13,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25p2_playout.h>
 #include <dsd-neo/core/power.h>
@@ -7218,6 +7219,45 @@ test_dmr_ras_carrier_lifetime(void) {
     return rc;
 }
 
+/*
+ * NXDN's system type is the carrier's: an operator move (a tune, a source or input change, a scan step) may land on a
+ * Type-D repeater, whose frames must not read as a composite control channel's, so the Type-C context and the foreign
+ * control stamp go with trunking on as off. A stream gap stays on the carrier, and keeps them; this site stays with
+ * trunking on (only the untrunked forget drops it).
+ */
+static int
+test_operator_boundary_forgets_the_nxdn_system_type(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    opts->trunk_enable = 1;
+    dsd_nxdn_site_latch(state, (2U << 12) | 0x21U);
+    dsd_nxdn_note_type_c(state);
+    state->nxdn_site.foreign_control_m = 42.0;
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    rc |= expect_true("nxdn-system-type: a stream gap keeps the Type-C context",
+                      dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) > 0.0);
+    static const dsd_carrier_boundary_kind k_kinds[] = {
+        DSD_CARRIER_BOUNDARY_TUNE,
+        DSD_CARRIER_BOUNDARY_SOURCE,
+        DSD_CARRIER_BOUNDARY_INPUT_SWITCH,
+        DSD_CARRIER_BOUNDARY_SCAN_STEP,
+    };
+    for (size_t i = 0; i < sizeof(k_kinds) / sizeof(k_kinds[0]); i++) {
+        dsd_nxdn_note_type_c(state);
+        state->nxdn_site.foreign_control_m = 42.0;
+        dsd_engine_carrier_boundary(opts, state, k_kinds[i], 0);
+        rc |= expect_true("nxdn-system-type: an operator move forgets the Type-C context",
+                          !dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) == 0.0);
+        rc |= expect_true("nxdn-system-type: trunking keeps this site", dsd_nxdn_site_is(state, (2U << 12) | 0x21U));
+    }
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 static int
 test_carrier_boundary_forgets_the_access_codes(void) {
     dsd_opts* opts = NULL;
@@ -7370,8 +7410,23 @@ test_carrier_boundary_forgets_the_access_codes(void) {
         opts->trunk_enable = trunked;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 851012500L;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 851012500L;
+        /* An NXDN DFA site latched as this site, its channel access parameters, a row computed from them and one an
+           import set. */
+        dsd_nxdn_site_latch(state, (2U << 12) | 0x21U);
+        dsd_nxdn_ca_apply(state, (2U << 12) | 0x21U, 1U, 1U, 2U);
+        dsd_nxdn_dfa_learn(state, 10U, 100012500L);
+        dsd_state_set_trunk_chan_freq(state, 5U, 155500000L);
         dsd_engine_forget_untrunked_carrier_state(opts, state);
         const long want = trunked ? 851012500L : 0L;
+        rc |= expect_true(trunked ? "access-codes: trunking keeps the NXDN channel access parameters and their rows"
+                                  : "access-codes: the untrunked forget drops the NXDN channel access parameters and "
+                                    "the rows DFA computed from them",
+                          dsd_nxdn_ca_valid(state) == trunked && state->nxdn_rcn == (trunked ? 1U : 0U)
+                              && state->trunk_chan_map[10] == (trunked ? 100012500L : 0L));
+        rc |= expect_true(trunked ? "access-codes: trunking keeps this NXDN site"
+                                  : "access-codes: the untrunked forget drops this NXDN site",
+                          state->nxdn_site.known == (trunked ? 1U : 0U));
+        rc |= expect_true("access-codes: an imported channel map row stays", state->trunk_chan_map[5] == 155500000L);
         rc |= expect_true(trunked ? "access-codes: trunking keeps the P25 voice frequencies"
                                   : "access-codes: the untrunked forget drops the P25 voice frequencies",
                           state->p25_vc_freq[0] == want && state->p25_vc_freq[1] == want);
@@ -9306,7 +9361,7 @@ test_config_stopping_the_scan_ends_its_calls_under_the_old_groups(void) {
         (void)remove(new_groups);
         return 1;
     }
-    rc |= expect_case(what, "the old groups are imported", svc_import_group_list(opts, state, old_groups) == 0);
+    rc |= expect_case(what, "the old groups are imported", svc_import_group_list(opts, state, old_groups, NULL) == 0);
     rc |= expect_case(what, "Next lands on BRAVO", press_walk(opts, state, 1) == 1);
     rc |= expect_case(what, "a call is heard", open_unrendered_call(state, tg) == 0);
     static dsdneoUserConfig cfg;
@@ -12789,6 +12844,7 @@ main(void) {
     rc |= test_dmr_stale_follow_clear_runs_on_the_decode_clock();
     rc |= test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking();
     rc |= test_carrier_boundary_forgets_the_access_codes();
+    rc |= test_operator_boundary_forgets_the_nxdn_system_type();
     rc |= test_received_identity_lifetime();
     rc |= test_dmr_ras_carrier_lifetime();
     rc |= test_carrier_boundary_restarts_the_evidence();

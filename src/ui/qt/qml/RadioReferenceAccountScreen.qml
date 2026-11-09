@@ -81,8 +81,11 @@ FocusScope {
                     wrapMode: Text.Wrap
                 }
 
+                // The same sign-in form as the import screen's, sharing its
+                // session password and account verdict through the model.
                 RadioReferenceAccountEditor {
                     width: parent.width
+                    active: screen.visible
                 }
             }
         }
