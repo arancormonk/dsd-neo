@@ -756,6 +756,22 @@ CommandBridge::importGroupList(const QString& path) const {
 }
 
 bool
+CommandBridge::reloadGroupList(const QString& path) const {
+    if (path.isEmpty()) {
+        return accepted(dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD));
+    }
+    return accepted(dsd_app_command_set_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, path.toUtf8().constData()));
+}
+
+bool
+CommandBridge::reloadChannelMap(const QString& path) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, path.toUtf8().constData()));
+}
+
+bool
 CommandBridge::importKeys(const QString& path, bool hex) const {
     if (path.isEmpty()) {
         return false;

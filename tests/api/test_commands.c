@@ -166,6 +166,8 @@ static const sample k_samples[] = {
     {"import_keys_hex", "{\"value\":\"/tmp/keys_hex.csv\"}"},
     {"import_p25_bandplan", "{\"value\":\"/tmp/bandplan.csv\"}"},
     {"export_p25_bandplan", "{\"value\":\"/tmp/bandplan_out.csv\"}"},
+    {"reload_group_list", "{\"value\":\"/tmp/group.csv\"}"},
+    {"reload_channel_map", "{\"value\":\"/tmp/chan.csv\"}"},
     {"rr_apply_import", "{\"decode_mode\":2,\"trunking\":true,\"tune_hz\":851375000}"},
     {"rr_account_set", "{\"username\":\"user\",\"app_key\":\"key\"}"},
     {"import_src_list", "{\"value\":\"/tmp/src.csv\"}"},
@@ -387,6 +389,43 @@ check_scan_list_set_request_ids(void) {
     free(opts);
 }
 
+/* Run API command @p name with @p params (NULL: none), which must answer "queued", and drain it: the decoder's
+   outcome is its status message (state->ui_msg, "unchanged" when it set none). */
+static void
+check_reload_queued(dsd_opts* opts, dsd_state* state, const char* name, const char* params, const char* want_message) {
+    dsd_json_node* resp = execute(name, params);
+    assert(is_ok(resp));
+    const char* status = dsd_json_as_str(dsd_json_obj_get(resp, "status"));
+    assert(status != NULL && strcmp(status, "queued") == 0);
+    dsd_json_free(resp);
+    DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", "unchanged");
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    if (strcmp(state->ui_msg, want_message) != 0) {
+        DSD_FPRINTF(stderr, "%s %s: status message \"%s\", want \"%s\"\n", name, params ? params : "", state->ui_msg,
+                    want_message);
+        assert(0);
+    }
+}
+
+/* The reloads answer "queued", as the imports do, and the decoder's outcome follows in the status message: with no
+   group file the group list reload fails, with or without "params"; a path the session does not use changes nothing;
+   the channel map reload needs its path. */
+static void
+check_reload_commands(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    api_session_start(&opts, &state, AUDIO_IN_PULSE, "pulse", 48);
+    const char* no_file = "Failed: Group list reload -> no group list file; import one first";
+    check_reload_queued(opts, state, "reload_group_list", NULL, no_file);
+    check_reload_queued(opts, state, "reload_group_list", "{}", no_file);
+    check_reload_queued(opts, state, "reload_group_list", "{\"value\":\"/tmp/dsd-api-not-in-use.csv\"}", "unchanged");
+    check_reload_queued(opts, state, "reload_channel_map", "{\"value\":\"/tmp/dsd-api-not-in-use.csv\"}", "unchanged");
+    dsd_json_node* resp = execute("reload_channel_map", "{}");
+    assert(!is_ok(resp) && strcmp(error_code(resp), "invalid_params") == 0);
+    dsd_json_free(resp);
+    api_session_stop(opts, state);
+}
+
 int
 main(void) {
     int ids[MAX_IDS];
@@ -486,8 +525,9 @@ main(void) {
             assert(0);
         }
         dsd_json_free(resp);
-        /* Every decryption field is optional; every other command with params needs at least one. */
-        if (takes_params && strcmp(name, "decryption_apply") != 0) {
+        /* Every decryption field is optional, and so is the group list reload's path; every other command with params
+           needs at least one. */
+        if (takes_params && strcmp(name, "decryption_apply") != 0 && strcmp(name, "reload_group_list") != 0) {
             resp = execute(name, "{}");
             if (is_ok(resp) || strcmp(error_code(resp), "invalid_params") != 0) {
                 DSD_FPRINTF(stderr, "command %s accepted empty params\n", name);
@@ -503,6 +543,7 @@ main(void) {
     dsd_json_free(resp);
     dsd_app_frontend_runtime_stop();
     check_scan_list_set_request_ids();
+    check_reload_commands();
 
     dsd_json_free(root);
     dsd_json_buf_free(&catalog);

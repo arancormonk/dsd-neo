@@ -1078,6 +1078,34 @@ test_am_bandwidth_bridge() {
     freeState(&state);
 }
 
+// The reloads Qt posts after replacing a file go through the real bridge and decoder queue: reloadGroupList() with no
+// path re-reads the configured file (none here, so the decoder says so), with a path only when the session uses it
+// (nothing happens otherwise); reloadChannelMap() needs its path. The bridge reports queued, never reloaded.
+static void
+test_reload_bridge() {
+    dsd_qt::CommandBridge bridge;
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(bridge.reloadGroupList(QString()));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(std::strcmp(state.ui_msg, "Failed: Group list reload -> no group list file; import one first") == 0);
+    state.ui_msg[0] = '\0';
+    check(bridge.reloadGroupList(QStringLiteral("/tmp/dsd-neo-not-in-use.csv")));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(state.ui_msg[0] == '\0');
+    check(!bridge.reloadChannelMap(QString()));
+    check(bridge.reloadChannelMap(QStringLiteral("/tmp/dsd-neo-not-in-use.csv")));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(state.ui_msg[0] == '\0');
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+}
+
 // The live tone-filter editor goes through the real bridge and decoder queue as DSD_APP_CMD_TONE_FILTER_SET with the
 // mode and the list as typed; the decoder applies what the list parser accepts and refuses the rest with the policy
 // unchanged. The bridge's inline check is that same parser's answer, empty when the edit would apply, and a list the
@@ -1642,6 +1670,7 @@ main(int argc, char** argv) {
     test_sheet_policy_edits();
     test_nfm_bandwidth_bridge();
     test_am_bandwidth_bridge();
+    test_reload_bridge();
     test_tone_filter_bridge();
     test_scan_row_edit_bridge();
     test_scan_step_bridge();

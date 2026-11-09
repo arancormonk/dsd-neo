@@ -16,7 +16,6 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/import_files.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
@@ -1418,27 +1417,24 @@ rr_refresh_touch_provenance(const RrWizardCore* w) {
 }
 
 /**
- * @brief Ask the running session to re-read the file, but only if it is using it.
+ * @brief Ask the running session to re-read the file if it is using it.
  *
- * Reads the frame's published snapshot (RrWizardHooks.session_opts), never the
- * live struct: the decoder thread rewrites opts->chan_in_file / group_in_file
- * under no lock and the terminal UI runs on its own thread. The snapshot may be
- * NULL and may lag one publish behind, so a file imported moments ago may not
- * be visible yet - the refresh still succeeds, it just does not push.
+ * Posts the expected-path reload (DSD_APP_CMD_IMPORT_*_RELOAD) and lets the
+ * decoder thread decide "in use" when it applies it, against the file it
+ * uses then. Deciding here from the published snapshot could reinstall the
+ * old file over an import queued since, miss a file imported moments ago,
+ * or, while a -Y row or trunk-scan target runs its own group list (the
+ * snapshot's group_in_file is then the row's), make the row's file the
+ * session's global list.
  *
- * @return 1 when the command was posted, 0 otherwise.
+ * @return 1 when the command was queued, 0 otherwise.
  */
 static int
 rr_refresh_push_live(RrWizardCore* w, const char* path, int is_chan) {
-    const dsd_opts* osnap = rr_core_session_opts(w);
-    if (osnap == NULL || w->hooks.post_import_path == NULL) {
+    if (w->hooks.post_import_path == NULL) {
         return 0;
     }
-    const char* in_use = is_chan ? osnap->chan_in_file : osnap->group_in_file;
-    if (strcmp(in_use, path) != 0) {
-        return 0;
-    }
-    const int cmd = is_chan ? DSD_APP_CMD_IMPORT_CHANNEL_MAP : DSD_APP_CMD_IMPORT_GROUP_LIST;
+    const int cmd = is_chan ? DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD : DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD;
     return (w->hooks.post_import_path(w->hook_user, cmd, path) > 0) ? 1 : 0;
 }
 
@@ -1456,10 +1452,10 @@ rr_refresh_fail(RrWizardCore* w, const char* text) {
 /**
  * @brief Report the replacement and hand the panel back to the menu.
  *
- * "is reloading it", never "applied": dsd_app_drain_cmds() discards the
- * handler's return value, so the decoder thread owns the authoritative toast,
- * and svc_import_channel_map() can still refuse outright when a trunk scan is
- * running - in which case its own message follows this one.
+ * "reloads it if in use", never "applied": the decoder thread decides whether
+ * the session uses the file and owns the authoritative toast, and the import
+ * service can still refuse the file - in which case its own message follows
+ * this one.
  */
 static void
 rr_refresh_succeed(RrWizardCore* w, int pushed) {
@@ -1469,7 +1465,7 @@ rr_refresh_succeed(RrWizardCore* w, int pushed) {
 
     /* The leaf is clipped so the second clause survives one status row. */
     if (pushed) {
-        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %.24s; the session is reloading it.", leaf);
+        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %.24s; the session reloads it if in use.", leaf);
     } else {
         (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %.40s.", leaf);
     }

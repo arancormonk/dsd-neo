@@ -24244,6 +24244,448 @@ test_group_alias_learned_on_a_row_list_is_kept(int mode) {
     return rc;
 }
 
+/* The group list reload re-reads the configured file through the import service, so its counts, refusals and the
+   temporary avoids and call skips it clears are the import's; with no file it fails and changes nothing. The payload
+   may be empty (the action form) or an empty string. */
+static int
+test_group_reload_rereads_the_file(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(path, sizeof path, "dsd_reload_file", "id,mode,name\n100,A,Dispatch\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    rc |= expect_int("reload with no file queued", dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("reload with no file drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("reload with no file toast", state.ui_msg,
+                     "Failed: Group list reload -> no group list file; import one first");
+    rc |= expect_int("reload with no file loads nothing", (int)dsd_tg_policy_entry_count(&state), 0);
+
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("reload seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("reload seed temporary avoid", dsd_tg_policy_session_avoid_add(&state, 300), 0);
+    rc |=
+        expect_int("reload seed call skip", dsd_tg_policy_call_skip_arm(&state, 400, 1, 0, dsd_decode_now_mono_s()), 0);
+    const char* edited = "id,mode,name\n100,A,Dispatch\n200,A,Fire\nnot a row\n";
+    rc |= write_file_bytes(path, edited, strlen(edited));
+    rc |= expect_int("reload queued", dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("reload toast counts rows", state.ui_msg, "Applied: Group list reloaded -> 2 rows, 1 skipped");
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_int("reload reads the edit", dsd_tg_policy_lookup_id(&state, 200, &lookup), 0);
+    rc |= expect_str("reload reads the edit's name", lookup.entry.name, "Fire");
+    rc |= expect_true("reload clears temporary avoids", !dsd_tg_policy_session_avoid_contains(&state, 300));
+    rc |=
+        expect_true("reload clears call skips", !dsd_tg_policy_call_skip_active(&state, 400, dsd_decode_now_mono_s()));
+    rc |= expect_str("reload keeps the path", opts.group_in_file, path);
+
+    const char* more = "id,mode,name\n100,A,Dispatch\n200,A,Fire\n300,A,EMS\n";
+    rc |= write_file_bytes(path, more, strlen(more));
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, "");
+    rc |= expect_int("empty-path reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("empty-path reload reads the configured file", state.ui_msg,
+                     "Applied: Group list reloaded -> 3 rows");
+
+    const char* excel = "id;mode;name\n100;B;Dispatch\n200;B;Fire\n";
+    rc |= write_file_bytes(path, excel, strlen(excel));
+    post_empty(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD);
+    rc |= expect_int("unusable reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("unusable reload refused as an import is", state.ui_msg,
+                     "Failed: Group list reload -> no usable rows (2 skipped); list unchanged");
+    rc |= expect_int("unusable reload keeps the rows", (int)dsd_tg_policy_entry_count(&state), 3);
+    rc |= expect_file_bytes(path, excel);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(path);
+    return rc;
+}
+
+/* A reload naming the file it expects reloads only when that is the configured group file, decided when it runs: a
+   file the session no longer uses (another import ran since the frontend looked, as a terminal RadioReference refresh
+   could find, spec R2b) or none at all is a no-op, never reinstated. */
+static int
+test_group_reload_expected_path(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char first[DSD_TEST_PATH_MAX], second[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(first, sizeof first, "dsd_reload_first", "id,mode,name\n100,A,Dispatch\n");
+    rc |= make_group_file(second, sizeof second, "dsd_reload_second", "id,mode,name\n500,A,Second\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, first);
+    rc |= expect_int("expected seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    group_list_mark mark;
+    group_list_mark_take(&opts, &state, &mark);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, second);
+    rc |= expect_int("not-in-use reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("not-in-use reload sets no toast", state.ui_msg, "Applied: Group list imported -> 1 row");
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(&state, &context, &generation);
+    rc |= expect_true("not-in-use reload changes nothing", context == mark.context && generation == mark.generation
+                                                               && strcmp(opts.group_in_file, first) == 0);
+
+    // Another import ran after the frontend replaced the first file: its reload must not bring that file back.
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, second);
+    rc |= expect_int("intervening import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    const char* refreshed = "id,mode,name\n100,A,Dispatch\n700,A,Seven\n";
+    rc |= write_file_bytes(first, refreshed, strlen(refreshed));
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, first);
+    rc |= expect_int("stale reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_str("stale reload keeps the imported file", opts.group_in_file, second);
+    rc |= expect_int("stale reload installs no row of the old file", dsd_tg_policy_lookup_id(&state, 700, &lookup), 0);
+    rc |= expect_int("stale reload installs no row of the old file (match)", lookup.match, DSD_TG_POLICY_MATCH_NONE);
+
+    // The file in use reloads.
+    const char* second_edited = "id,mode,name\n500,A,Second\n600,A,Six\n";
+    rc |= write_file_bytes(second, second_edited, strlen(second_edited));
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, second);
+    rc |= expect_int("in-use reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("in-use reload toast", state.ui_msg, "Applied: Group list reloaded -> 2 rows");
+
+    // With no file in use, an expected path is a no-op, not the "no file" failure.
+    post_empty(DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR);
+    rc |= expect_int("clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, second);
+    rc |= expect_int("reload after clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("reload after clear sets no toast", state.ui_msg, "Applied: Group list cleared");
+    rc |= expect_int("reload after clear loads nothing", (int)dsd_tg_policy_entry_count(&state), 0);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(first);
+    (void)remove(second);
+    return rc;
+}
+
+/* Under a -Y row with its own list the live group_in_file is the row's (scan_mode.c), yet the reload resolves the
+   configured global file and reloads that beneath the row's list, which stays in force; the row's file named as the
+   expected path is not in use, so it never becomes the global list (spec R2b). */
+static int
+test_group_reload_under_a_row_list(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char global[DSD_TEST_PATH_MAX], row_file[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(global, sizeof global, "dsd_reload_row_global", "id,mode,name\n100,A,Dispatch\n");
+    rc |= make_group_file(row_file, sizeof row_file, "dsd_reload_row_own", "id,mode,name\n500,A,Row\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, global);
+    rc |= expect_int("row reload global import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("row reload row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_DMR), 0);
+    dsd_scan_option_values values = {0};
+    values.present = DSD_SCAN_OPT_GROUP;
+    DSD_SNPRINTF(values.group_file, sizeof values.group_file, "%s", row_file);
+    rc |= expect_int("row reload row options", dsd_scan_mode_options(&opts, &state, &values), 0);
+    dsd_scan_options parsed = {0};
+    parsed.values = values;
+    dsd_key_set keys = {0};
+    dsd_scan_row_profile* row = NULL;
+    rc |= expect_int("row reload row profile", dsd_scan_profile_load(&parsed, 0, &row, &keys), 0);
+    rc |= expect_int("row reload row scope", dsd_scan_groups_begin(&state), 0);
+    dsd_scan_groups_enter(&state, row);
+    rc |= expect_str("row reload live path is the row's", opts.group_in_file, row_file);
+
+    const char* edited = "id,mode,name\n100,A,Dispatch\n200,A,Fire\n";
+    rc |= write_file_bytes(global, edited, strlen(edited));
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, row_file);
+    rc |= expect_int("row file reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("row file is not in use as the group list", state.ui_msg, "Applied: Group list imported -> 1 row");
+    post_empty(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD);
+    rc |= expect_int("configured reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("configured reload reads the global file", state.ui_msg, "Applied: Group list reloaded -> 2 rows");
+    dsd_tg_policy_lookup lookup;
+    rc |= expect_true("the row's list stays in force", dsd_scan_groups_row_active(&state)
+                                                           && dsd_tg_policy_lookup_id(&state, 500, &lookup) == 0
+                                                           && lookup.match != DSD_TG_POLICY_MATCH_NONE);
+    rc |= expect_str("the row keeps its file", opts.group_in_file, row_file);
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, global);
+    rc |= expect_int("configured path reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("the configured path is in use under the row", state.ui_msg,
+                     "Applied: Group list reloaded -> 2 rows");
+
+    dsd_scan_groups_leave(&state);
+    dsd_scan_mode_leave(&opts, &state);
+    rc |= expect_str("leaving the row restores the global file", opts.group_in_file, global);
+    rc |= expect_true("the global list holds the reloaded rows",
+                      dsd_tg_policy_lookup_id(&state, 200, &lookup) == 0 && strcmp(lookup.entry.name, "Fire") == 0);
+    rc |= expect_true("the row's rows never became the global list",
+                      dsd_tg_policy_lookup_id(&state, 500, &lookup) == 0 && lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    rc |= expect_file_bytes(row_file, "id,mode,name\n500,A,Row\n");
+    dsd_scan_profile_free(row);
+    dsd_key_set_free(&keys);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(global);
+    (void)remove(row_file);
+    return rc;
+}
+
+/* The channel map reload takes the file it expects and reloads only that, when it is the session's map. */
+static int
+test_channel_map_reload_expected_path(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char map[DSD_TEST_PATH_MAX], other[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_reload_map", "channel,freq\n1,851012500\n");
+    rc |= make_group_file(other, sizeof other, "dsd_reload_map_other", "channel,freq\n1,852012500\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("map seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("map seed import maps", state.trunk_chan_map[1] == 851012500, 1);
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, other);
+    rc |= expect_int("map not-in-use reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("map not-in-use reload changes nothing",
+                      state.trunk_chan_map[1] == 851012500 && strcmp(opts.chan_in_file, map) == 0);
+    const char* edited = "channel,freq\n1,851025000\n2,851050000\n";
+    rc |= write_file_bytes(map, edited, strlen(edited));
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, map);
+    rc |= expect_int("map reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("map reload reads the edit",
+                      state.trunk_chan_map[1] == 851025000 && state.trunk_chan_map[2] == 851050000);
+    rc |= expect_true("map reload toast", strncmp(state.ui_msg, "Applied: Channel map reloaded -> ", 33) == 0);
+    rc |= expect_int("map reload needs a path", dsd_app_command_action(DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(map);
+    (void)remove(other);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/* Where the followed call and its list stand when a group list command runs (spec R3). */
+enum {
+    GROUP_RELEASE_IMPORT,       /* an import of a file that blocks the call */
+    GROUP_RELEASE_RELOAD,       /* a reload of the list's file, edited to block it */
+    GROUP_RELEASE_CLEAR,        /* a clear under -W: an empty list admits nothing */
+    GROUP_RELEASE_INHERITED,    /* a -Y row without its own list: the global list judges its calls */
+    GROUP_RELEASE_PROTOCOL,     /* a P25 row over a configured DMR session: released as the row runs */
+    GROUP_RELEASE_ROW_LIST,     /* a -Y row's own list judges the call: nothing to release */
+    GROUP_RELEASE_TARGET_LIST,  /* a trunk-scan target's own list, likewise */
+    GROUP_RELEASE_RETURN_FAILS, /* the return tune fails: its toast says so */
+};
+
+/* A group list import, reload or clear that newly blocks the followed call releases it, as a row edit does; one whose
+   list does not judge the call (a row's or target's own list governs) releases nothing. Whose list governs is read
+   before the scoped suspend, and the release runs after the resume, with the row's settings back in force. */
+static int
+test_group_list_command_releases_blocked_calls(int scenario) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char global[DSD_TEST_PATH_MAX], blocking[DSD_TEST_PATH_MAX], row_file[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(global, sizeof global, "dsd_r3_global", "id,mode,name\n1001,A,Followed\n");
+    rc |= make_group_file(blocking, sizeof blocking, "dsd_r3_block", "id,mode,name\n1001,B,Followed\n");
+    /* The row's own list blocks the call already (held there by something else): the command changes another list,
+       so that is no reason to release it now. Read whose list governs after the suspend and it reads as newly
+       blocked. */
+    rc |= make_group_file(row_file, sizeof row_file, "dsd_r3_row", "id,mode,name\n1001,B,Row\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, global);
+    rc |= expect_int("R3 global import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    opts.trunk_use_allow_list = scenario == GROUP_RELEASE_CLEAR;
+    const int row_list = scenario == GROUP_RELEASE_ROW_LIST || scenario == GROUP_RELEASE_TARGET_LIST;
+    const int in_row = row_list || scenario == GROUP_RELEASE_INHERITED || scenario == GROUP_RELEASE_PROTOCOL;
+    dsd_key_set keys = {0};
+    dsd_scan_row_profile* row = NULL;
+    if (scenario == GROUP_RELEASE_PROTOCOL) {
+        // The configured session decodes DMR with trunking on; the row runs P25.
+        opts.frame_p25p1 = opts.frame_p25p2 = 0;
+        opts.frame_dmr = 1;
+        opts.trunk_enable = 1;
+    }
+    opts.trunk_scan_enabled = scenario == GROUP_RELEASE_TARGET_LIST;
+    if (in_row) {
+        rc |= expect_int("R3 row entered", dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_P25), 0);
+    }
+    if (row_list) {
+        dsd_scan_options parsed = {0};
+        parsed.values.present = DSD_SCAN_OPT_GROUP;
+        DSD_SNPRINTF(parsed.values.group_file, sizeof parsed.values.group_file, "%s", row_file);
+        rc |= expect_int("R3 row options", dsd_scan_mode_options(&opts, &state, &parsed.values), 0);
+        rc |= expect_int("R3 row profile", dsd_scan_profile_load(&parsed, 0, &row, &keys), 0);
+        rc |= expect_int("R3 row scope", dsd_scan_groups_begin(&state), 0);
+        dsd_scan_groups_enter(&state, row);
+    }
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(scenario == GROUP_RELEASE_RETURN_FAILS ? DSD_TRUNK_TUNE_RESULT_FAILED
+                                                              : DSD_TRUNK_TUNE_RESULT_OK);
+    if (scenario == GROUP_RELEASE_RELOAD) {
+        const char* blocked = "id,mode,name\n1001,B,Followed\n";
+        rc |= write_file_bytes(global, blocked, strlen(blocked));
+        post_empty(DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD);
+    } else if (scenario == GROUP_RELEASE_CLEAR) {
+        post_empty(DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR);
+    } else {
+        post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, blocking);
+    }
+    rc |= expect_int("R3 list command drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("R3 return tune only when the changed list judges the call", g_cc_tune_calls, row_list ? 0 : 1);
+    if (scenario != GROUP_RELEASE_RETURN_FAILS) {
+        rc |= expect_call_phase("R3 call released when blocked", &state, 0U,
+                                row_list ? DSD_CALL_PHASE_ACTIVE : DSD_CALL_PHASE_ENDED);
+    }
+    if (scenario == GROUP_RELEASE_PROTOCOL) {
+        // The P25 control channel's timing, which only the row's settings give: released after the resume.
+        rc |= expect_true("R3 released with the row's P25 timing", g_cc_tune_ted_sps > 0);
+    }
+    if (scenario == GROUP_RELEASE_RETURN_FAILS) {
+        rc |= expect_str("R3 return failure toast", state.ui_msg, "Talkgroup not tuned; return-to-CC tune failed");
+    }
+    if (row_list) {
+        dsd_scan_groups_leave(&state);
+    }
+    if (in_row) {
+        dsd_scan_mode_leave(&opts, &state);
+    }
+    opts.trunk_scan_enabled = 0;
+    dsd_scan_profile_free(row);
+    dsd_key_set_free(&keys);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(global);
+    (void)remove(blocking);
+    (void)remove(row_file);
+    return rc;
+}
+
+/* An active NXDN call on talkgroup @p tg from radio @p source, followed on a Type-C site with trunking on. */
+static int
+seed_active_nxdn_call(dsd_opts* opts, dsd_state* state, uint32_t tg, uint32_t source) {
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->frame_nxdn48 = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_cc_freq = 451000000L;
+    state->trunk_vc_freq[0] = 452000000L;
+    state->synctype = state->lastsynctype = DSD_SYNC_NXDN_POS;
+    const dsd_call_observation observation = {.protocol = DSD_SYNC_NXDN_POS,
+                                              .slot = 0U,
+                                              .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                              .ota_target_id = tg,
+                                              .policy_target_id = tg,
+                                              .ota_source_id = source,
+                                              .frequency_hz = 452000000L,
+                                              .observed_m = 1.0};
+    const int rc =
+        expect_int("NXDN call seeded", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    return rc;
+}
+
+enum { NXDN_RELEASE_ROW_EDIT, NXDN_RELEASE_IMPORT, NXDN_RELEASE_TYPE_D };
+
+/* An NXDN Type-C talkgroup with no row is admitted by its source's row (nxdn_policy_tune_allowed()), so blocking that
+   row, by a row edit or by an import, releases the call (spec R6). On main every group call was judged by its target
+   alone: under -W such a call counted as blocked already and was never released. A Type-D call is judged by its
+   target alone, as Type-D admission is: its source's row releases nothing. */
+static int
+test_nxdn_source_fallback_call_released(int scenario) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX], blocking[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(path, sizeof path, "dsd_r6_list", "id,mode,name\n1234,A,Talker\n");
+    rc |= make_group_file(blocking, sizeof blocking, "dsd_r6_block", "id,mode,name\n1234,B,Talker\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("R6 import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    opts.trunk_use_allow_list = 1;
+    rc |= seed_active_nxdn_call(&opts, &state, 500U, 1234U);
+    if (scenario == NXDN_RELEASE_TYPE_D) {
+        dsd_call_snapshot call;
+        rc |= expect_int("R6 Type-D call read", dsd_call_state_get(&state, 0U, &call), 1);
+        state.nxdn_call.valid = 1U;
+        state.nxdn_call.type_d = 1U;
+        state.nxdn_call.target = 500U;
+        state.nxdn_call.source = 1234U;
+        state.nxdn_call.call_epoch = dsd_call_snapshot_transmission(&call);
+    }
+    if (scenario == NXDN_RELEASE_IMPORT) {
+        post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, blocking);
+    } else {
+        dsd_app_tg_row_payload block = {
+            .id_start = 1234, .id_end = 1234, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0, .table_index = -1};
+        dsd_tg_policy_table_version(&state, &block.policy_context, &block.policy_generation);
+        rc |= expect_int("R6 row edit queued", dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block),
+                         DSD_APP_COMMAND_SUBMIT_QUEUED);
+    }
+    rc |= expect_int("R6 command drained", dsd_app_drain_cmds(&opts, &state), 1);
+    // The release ends the call (its return tune is the io_control leg's, which a radio-off build does not take).
+    rc |= expect_call_phase("R6 call released", &state, 0U,
+                            scenario != NXDN_RELEASE_TYPE_D ? DSD_CALL_PHASE_ENDED : DSD_CALL_PHASE_ACTIVE);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(path);
+    (void)remove(blocking);
+    return rc;
+}
+
+/* A save the decoder refused (the group file changed on disk) keeps its toast when the same command's return tune
+   fails: the change is in the session only and the receiver is still on the voice channel, and both are said. On main
+   the tune failure's toast replaced the refusal, for a row edit and for a lockout. */
+static int
+test_refused_save_survives_a_failed_return(int lockout) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char path[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(path, sizeof path, "dsd_r4_return", "id,mode,name\n1001,A,Followed\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path);
+    rc |= expect_int("refusal import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    const char* edited = "id,mode,name\n1001,A,Followed\n2000,A,Added\n";
+    rc |= write_file_bytes(path, edited, strlen(edited));
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1001);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_FAILED);
+    if (lockout) {
+        opts.persist_tg_lockouts = 1;
+        rc |= expect_true("refusal lockout queued", dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U) > 0);
+    } else {
+        dsd_app_tg_row_payload block = {
+            .id_start = 1001, .id_end = 1001, .fields = DSD_APP_TG_FIELD_LISTEN, .listen = 0, .table_index = -1};
+        dsd_tg_policy_table_version(&state, &block.policy_context, &block.policy_generation);
+        rc |= expect_true("refusal row edit queued",
+                          dsd_app_command_submit(DSD_APP_CMD_TG_ROW_SET, &block, sizeof block) > 0);
+    }
+    rc |= expect_int("refusal command drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("refusal return tune tried", g_cc_tune_calls, 1);
+    rc |= expect_str("refusal stays in view beside the tune failure", state.ui_msg,
+                     "Talkgroup change kept for this session only; group list changed on disk, reload it; "
+                     "return-to-CC tune failed");
+    rc |= expect_file_bytes(path, edited);
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(path);
+    return rc;
+}
+#endif
+
 static int
 test_config_group_path_reloads_before_persist(int scoped) {
     static dsd_opts opts;
@@ -29009,6 +29451,20 @@ main(void) {
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_GLOBAL_MISSING);
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_NO_GLOBAL_LIST);
     rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_SUSPENDED);
+    rc |= test_group_reload_rereads_the_file();
+    rc |= test_group_reload_expected_path();
+    rc |= test_group_reload_under_a_row_list();
+    rc |= test_channel_map_reload_expected_path();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    for (int scenario = GROUP_RELEASE_IMPORT; scenario <= GROUP_RELEASE_RETURN_FAILS; scenario++) {
+        rc |= test_group_list_command_releases_blocked_calls(scenario);
+    }
+    rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_ROW_EDIT);
+    rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_IMPORT);
+    rc |= test_nxdn_source_fallback_call_released(NXDN_RELEASE_TYPE_D);
+    rc |= test_refused_save_survives_a_failed_return(0);
+    rc |= test_refused_save_survives_a_failed_return(1);
+#endif
 #ifdef DSD_NEO_TEST_TG_POLICY_WRAP
     rc |= test_group_import_refuses_a_partial_load();
     rc |= test_group_startup_partial_load_is_not_saved();

@@ -76,6 +76,16 @@ int nxdn_held_call_on_followed_route(const dsd_opts* opts, const dsd_state* stat
  */
 void nxdn_held_call_note_call_end(const dsd_opts* opts, dsd_state* state);
 
+/**
+ * @brief The source a group call's admission is judged with, as NXDN's grant and held-call paths judge it
+ * (dsd_tg_policy_evaluate_group_source_fallback()): @p source for a Type-C call, whose target with no row is judged by
+ * its source's row; 0 for a Type-D (IDAS) call, judged by its target alone, which is one the held call
+ * (dsd_state::nxdn_call) names as Type-D (bound to @p transmission, dsd_call_snapshot_transmission()) or one heard while
+ * the receiver is on a followed Type-D repeater. 0 also for a source that is no 32-bit ID.
+ */
+uint32_t nxdn_held_call_policy_source(const dsd_opts* opts, const dsd_state* state, uint64_t transmission,
+                                      uint64_t source);
+
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */
 uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);

@@ -422,6 +422,16 @@ Commands whose parameters are shown as `–` take none. Commands shown with
 in the table are the decoder's; the API refuses only values that do not fit the
 field, and the decoder refuses the rest when it applies the command.
 
+`reload_group_list` and `reload_channel_map` re-read the file the session uses.
+The decoder decides which file that is when it applies the command, after a
+`-Y` row's or trunk-scan target's own group list is set aside, so a row's file
+never becomes the session's list. With a `value`, the file is reloaded only when
+it is the one in use (an exact path match); otherwise nothing changes and the
+decoder logs why. `reload_group_list` without a `value` reloads the configured
+group file. As for the imports, `"status":"queued"` means only that the command
+was queued: the reload's outcome (rows loaded, or why the file was refused) is in
+the status message.
+
 | Command | Parameters |
 | --- | --- |
 | `toggle_mute` | – |
@@ -578,10 +588,12 @@ field, and the decoder refuses the rest when it applies the command.
 | `import_keys_clear` | – |
 | `import_p25_bandplan` | `{value:path, <=1023 bytes}` |
 | `export_p25_bandplan` | `{value:path, <=1023 bytes}` |
+| `reload_group_list` | `{value?:path expected in use, <=1023 bytes; none = the configured file}` |
 | `rr_apply_import` | `{decode_mode,edacs_ea,edacs_esk,simulcast_qpsk,p25_prefer_candidates,trunking,scanner,chan_path,group_path,tune_hz}` |
 | `rr_account_set` | `{username,app_key}` |
 | `import_src_list` | `{value:path, <=1023 bytes}` |
 | `import_src_list_clear` | – |
+| `reload_channel_map` | `{value:path expected in use, <=1023 bytes}` |
 | `p25_p2_params_set` | `{wacn,sysid,cc}` |
 | `tg_listen_set` | `{id_start,id_end,listen,table_index,pattern,policy_context,policy_generation}` |
 | `tg_listen_set_all` | `{listen,tags}` |

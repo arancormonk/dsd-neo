@@ -2267,7 +2267,9 @@ suite runs under this compiler.
     NXDN only refuses (never releases) on a repeat. A new grant naming a blocked radio is refused everywhere; the
     per-frame gates then mute a radio learned mid-call. EDACS all-calls keep their `-W` reprieve except for a blocked
     radio. DMR's C_MOVE keeps following on a radio-only rejection, and its Hold allowance ignores the radio part.
-    App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose.
+    App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose (mode and allow-list
+    blocks), judging each call as its protocol admits it: an NXDN Type-C call by the source fallback with the call's
+    source (`nxdn_held_call_policy_source()`, 0 for a Type-D call), every other call by its target.
   - A call whose target is unknown but whose source is known (`dsd_tg_policy_radio_blocked()`): the `-Y` voice gate
     holds no blocked radio (M17 stays outside policy) and the Qt block label names it.
   - The P25 Phase 2 verdict key carries the radio list's store id (`dsd_p25p2_policy_key::radio_store`), read from the
@@ -13430,7 +13432,9 @@ Shared command IDs 592/593/594 are the talkgroup row set, remove and export (`ap
 its `policy_context` and `policy_generation` match the list (`tg_edit_check_version()`). The row `fields` mask selects
 listen/priority/preempt/name/tags/record (record applied after a mode change in the same edit). Set and remove refuse a
 learned alias row, rewrite the group file (outside a scan row) and end an active group call the edit newly blocks (by
-mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`); export
+mode or allow list) as a lockout does, returning to the control channel (`tg_listen_release_blocked_calls()`; so do a
+group list import, reload and clear whose global list judges the calls, read before the scoped suspend and released
+after the resume, `ui_group_list_calls_before()`); export
 is refused for a scan row's list, writes the list to the given path and makes it the session's group file. IDs 652/653
 are a typed, bounded direct key (`apply_cmd_key_direct()`: each key type's CLI parsing through
 `dsd_scan_keys_apply_direct()`, keeping an active scan row's signalled key IDs, key loader and profile) and an int32

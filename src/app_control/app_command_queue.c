@@ -70,6 +70,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -344,15 +345,33 @@ q_is_empty_unlocked(void) {
 }
 
 static const int k_ui_cmd_string_ids[] = {
-    DSD_APP_CMD_EVENT_LOG_SET,       DSD_APP_CMD_WAV_STATIC_OPEN,      DSD_APP_CMD_WAV_RAW_OPEN,
-    DSD_APP_CMD_DSP_OUT_SET,         DSD_APP_CMD_SYMCAP_OPEN,          DSD_APP_CMD_SYMBOL_IN_OPEN,
-    DSD_APP_CMD_INPUT_WAV_SET,       DSD_APP_CMD_INPUT_SYM_STREAM_SET, DSD_APP_CMD_PULSE_OUT_SET,
-    DSD_APP_CMD_PULSE_IN_SET,        DSD_APP_CMD_LRRP_SET_CUSTOM,      DSD_APP_CMD_IMPORT_CHANNEL_MAP,
-    DSD_APP_CMD_IMPORT_SRC_LIST,     DSD_APP_CMD_IMPORT_GROUP_LIST,    DSD_APP_CMD_IMPORT_KEYS_DEC,
-    DSD_APP_CMD_IMPORT_KEYS_HEX,     DSD_APP_CMD_KEY_TYT_AP_SET,       DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
-    DSD_APP_CMD_KEY_TYT_EP_SET,      DSD_APP_CMD_KEY_KEN_SCR_SET,      DSD_APP_CMD_KEY_ANYTONE_BP_SET,
-    DSD_APP_CMD_KEY_XOR_SET,         DSD_APP_CMD_M17_USER_DATA_SET,    DSD_APP_CMD_IMPORT_P25_BANDPLAN,
+    DSD_APP_CMD_EVENT_LOG_SET,
+    DSD_APP_CMD_WAV_STATIC_OPEN,
+    DSD_APP_CMD_WAV_RAW_OPEN,
+    DSD_APP_CMD_DSP_OUT_SET,
+    DSD_APP_CMD_SYMCAP_OPEN,
+    DSD_APP_CMD_SYMBOL_IN_OPEN,
+    DSD_APP_CMD_INPUT_WAV_SET,
+    DSD_APP_CMD_INPUT_SYM_STREAM_SET,
+    DSD_APP_CMD_PULSE_OUT_SET,
+    DSD_APP_CMD_PULSE_IN_SET,
+    DSD_APP_CMD_LRRP_SET_CUSTOM,
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+    DSD_APP_CMD_IMPORT_SRC_LIST,
+    DSD_APP_CMD_IMPORT_GROUP_LIST,
+    DSD_APP_CMD_IMPORT_KEYS_DEC,
+    DSD_APP_CMD_IMPORT_KEYS_HEX,
+    DSD_APP_CMD_KEY_TYT_AP_SET,
+    DSD_APP_CMD_KEY_RETEVIS_RC2_SET,
+    DSD_APP_CMD_KEY_TYT_EP_SET,
+    DSD_APP_CMD_KEY_KEN_SCR_SET,
+    DSD_APP_CMD_KEY_ANYTONE_BP_SET,
+    DSD_APP_CMD_KEY_XOR_SET,
+    DSD_APP_CMD_M17_USER_DATA_SET,
+    DSD_APP_CMD_IMPORT_P25_BANDPLAN,
     DSD_APP_CMD_EXPORT_P25_BANDPLAN,
+    DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD,
 };
 
 /* Setters where only the newest value matters, so a queued one may be overwritten
@@ -2979,29 +2998,54 @@ apply_cmd_io_and_import_lrrp_and_p2(dsd_opts* opts, dsd_state* state, const stru
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/* A channel map import, or a reload (@p reload) of the file in use: the same service, refusals and toasts. */
+static int
+channel_map_import_apply(dsd_opts* opts, dsd_state* state, const char* path, int reload) {
+    int rc = svc_import_channel_map(opts, state, path);
+    if (rc == 0) {
+        dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // another map may be another system than an XPT site
+    }
+    char skipped[160];
+    if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
+        /* The rows load; the ones the DSP rate cannot run are named with the import (issue #526). */
+        ui_set_toast(state, 5, "%s; %s", reload ? "Reloaded" : "Imported", skipped);
+    } else if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: Channel map %s -> %s", reload ? "reloaded" : "imported", path);
+    } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
+        ui_set_toast(state, 4, "Failed: Channel map %s -> %s", reload ? "reload" : "import", path);
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
 static int
 ui_cmd_handle_import_channel_map(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int result = UI_CMD_APPLY_COMPLETED;
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
-            int rc = svc_import_channel_map(opts, state, path);
-            result = ui_cmd_apply_status_from_service_rc(rc);
-            if (rc == 0) {
-                dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // another map may be another system than an XPT site
-            }
-            char skipped[160];
-            if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
-                /* The rows load; the ones the DSP rate cannot run are named with the import (issue #526). */
-                ui_set_toast(state, 5, "Imported; %s", skipped);
-            } else if (rc == 0) {
-                ui_set_toast(state, 3, "Applied: Channel map imported -> %s", path);
-            } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
-                ui_set_toast(state, 4, "Failed: Channel map import -> %s", path);
-            }
+            result = channel_map_import_apply(opts, state, path, 0);
         }
     }
     return result;
+}
+
+/* The channel map's file again, only when the session's map is @p path: a frontend that replaced that file posts it
+   whether or not the session still uses it, and the decision is taken here, against the live path. */
+static int
+ui_cmd_handle_import_channel_map_reload(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    char path[sizeof(((dsd_opts*)0)->chan_in_file)];
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (!ui_cmd_copy_payload_path(c, path, sizeof path)) {
+        ui_set_toast(state, 3, "Invalid channel map path");
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (strcmp(path, opts->chan_in_file) != 0) {
+        LOG_INFO("NOTICE: Channel map %s not reloaded: the session does not use it.\n", path);
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    return channel_map_import_apply(opts, state, path, 1);
 }
 
 static int
@@ -3090,6 +3134,40 @@ ui_cmd_handle_import_group_list(dsd_opts* opts, dsd_state* state, const struct d
         }
     }
     return result;
+}
+
+/*
+ * The group list's file again (DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD). It runs while a -Y row's or trunk-scan target's
+ * own list is set aside (apply_cmd_scoped()), so opts->group_in_file is the configured global file, never the row's:
+ * the path is resolved here, on the decoder thread, never taken from a frontend's snapshot. With an expected path in
+ * the payload it reloads only when that is the configured file; another file, or none, is a no-op logged, so a
+ * frontend can post the file it replaced without knowing what the session uses. The import service decides the rest,
+ * refusals and their feedback included.
+ */
+static int
+ui_cmd_handle_import_group_list_reload(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    char expected[sizeof(((dsd_opts*)0)->group_in_file)] = "";
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (c->n > 0U && c->data[0] != 0U && !ui_cmd_copy_payload_path(c, expected, sizeof expected)) {
+        ui_set_toast(state, 3, "Invalid group list path");
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    if (expected[0] && strcmp(expected, opts->group_in_file) != 0) {
+        LOG_INFO("NOTICE: Group list %s not reloaded: the session does not use it.\n", expected);
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (!opts->group_in_file[0]) {
+        ui_set_toast(state, 4, "Failed: Group list reload -> no group list file; import one first");
+        return UI_CMD_APPLY_FAILED;
+    }
+    char path[sizeof(((dsd_opts*)0)->group_in_file)];
+    DSD_MEMCPY(path, opts->group_in_file, sizeof path); /* the import writes opts->group_in_file from it */
+    svc_group_list_result loaded;
+    const int rc = svc_import_group_list(opts, state, path, &loaded);
+    group_list_load_feedback(state, "reload", "reloaded", path, &loaded);
+    return ui_cmd_apply_status_from_service_rc(rc);
 }
 
 static int
@@ -3226,6 +3304,8 @@ apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct d
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_IMPORT_CHANNEL_MAP, ui_cmd_handle_import_channel_map},
         {DSD_APP_CMD_IMPORT_GROUP_LIST, ui_cmd_handle_import_group_list},
+        {DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD, ui_cmd_handle_import_group_list_reload},
+        {DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, ui_cmd_handle_import_channel_map_reload},
         {DSD_APP_CMD_IMPORT_SRC_LIST, ui_cmd_handle_import_src_list},
         {DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR, ui_cmd_handle_import_src_list_clear},
         {DSD_APP_CMD_IMPORT_KEYS_DEC, ui_cmd_handle_import_keys_dec},
@@ -4767,6 +4847,8 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
     DSD_APP_CMD_IMPORT_KEYS_CLEAR,
     DSD_APP_CMD_IMPORT_SRC_LIST_CLEAR,
+    /* With no path, the group list reload re-reads the configured file; with one, it is a string command. */
+    DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
     DSD_APP_CMD_QUIT,
     DSD_APP_CMD_FORCE_PRIV_TOGGLE,
     DSD_APP_CMD_FORCE_RC4_TOGGLE,
@@ -5151,7 +5233,8 @@ ui_cmd_payload_is_valid(const struct dsd_app_command* c) {
         return 0;
     }
     if (ui_cmd_is_action_id(c->id)) {
-        return c->n == 0U || (c->id == DSD_APP_CMD_AGGR_SYNC_TOGGLE && ui_cmd_payload_has_min_size(c, sizeof(int32_t)));
+        return c->n == 0U || (c->id == DSD_APP_CMD_AGGR_SYNC_TOGGLE && ui_cmd_payload_has_min_size(c, sizeof(int32_t)))
+               || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD; /* an action or a string command */
     }
     if (ui_cmd_id_in_list(c->id, k_ui_cmd_i32_ids, sizeof k_ui_cmd_i32_ids / sizeof k_ui_cmd_i32_ids[0])) {
         return ui_cmd_payload_has_min_size(c, sizeof(int32_t));
@@ -7272,31 +7355,53 @@ tg_listen_apply(dsd_state* state, uint32_t id_start, uint32_t id_end, int listen
     return dsd_tg_policy_set_mode(state, id_start, id_end, listen ? "A" : "B");
 }
 
-static void
+/* Saves the list in force to its file. Returns the toast a refused save set (the change stays for the session), for
+   a later toast of the same command to keep in view (tg_listen_release_blocked_calls()), or NULL when nothing was
+   refused. */
+static const char*
 tg_listen_persist(dsd_opts* opts, dsd_state* state) {
     if (dsd_scan_groups_row_active(state)) {
-        return;
+        return NULL;
     }
     const int rc = dsd_tg_policy_write_group_file(opts, state);
+    const char* refusal = NULL;
     if (rc == 1) {
         LOG_WARN("WARNING: Talkgroup change not saved to '%s': the group list loaded incomplete. Reload the list, then "
                  "make the change again.\n",
                  opts->group_in_file);
-        ui_set_toast(state, 4, "Talkgroup change kept for this session only; group list incomplete, reload it");
+        refusal = "Talkgroup change kept for this session only; group list incomplete, reload it";
     } else if (rc == 2) {
         LOG_WARN("WARNING: Talkgroup change not saved to '%s': the file changed on disk since dsd-neo last read or "
                  "wrote it. Reload the list, then make the change again (the reload drops changes not saved).\n",
                  opts->group_in_file);
-        ui_set_toast(state, 4, "Talkgroup change kept for this session only; group list changed on disk, reload it");
+        refusal = "Talkgroup change kept for this session only; group list changed on disk, reload it";
     } else if (rc != 0) {
         LOG_WARN("WARNING: Talkgroup list changes could not be written to '%s'.\n", opts->group_in_file);
-        ui_set_toast(state, 4, "Talkgroup change kept for this session only");
+        refusal = "Talkgroup change kept for this session only";
     }
+    if (refusal) {
+        ui_set_toast(state, 4, "%s", refusal);
+    }
+    return refusal;
 }
 
 static int
 tg_listen_row_is_editable(const dsd_tg_policy_entry* entry) {
     return entry->source != DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS && strcmp(entry->mode, "D") != 0;
+}
+
+/* An active group call on @p target judged as its protocol admits it: an NXDN Type-C call whose target matches no row
+ * by its source's row (nxdn_held_call_policy_source(), as NXDN's grant and held-call paths judge it), every other call
+ * by its target alone. */
+static int
+tg_listen_evaluate_call(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call, uint32_t target,
+                        dsd_tg_policy_decision* decision) {
+    if (DSD_SYNC_IS_NXDN(call->protocol)) {
+        const uint32_t source =
+            nxdn_held_call_policy_source(opts, state, dsd_call_snapshot_transmission(call), call->ota_source_id);
+        return dsd_tg_policy_evaluate_group_source_fallback(opts, state, target, source, 0, 0, decision);
+    }
+    return dsd_tg_policy_evaluate_group_call(opts, state, target, 0, 0, 0, decision);
 }
 
 /* Only mode/allow-list denial can change as a result of a row edit. A patched
@@ -7317,7 +7422,7 @@ tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
             continue;
         }
         dsd_tg_policy_decision decision;
-        if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)target, 0, 0, 0, &decision) != 0) {
+        if (tg_listen_evaluate_call(opts, state, &call, (uint32_t)target, &decision) != 0) {
             continue;
         }
         if (call.ota_target_id <= UINT32_MAX) {
@@ -7331,14 +7436,23 @@ tg_listen_blocked_slots(const dsd_opts* opts, const dsd_state* state) {
     return blocked;
 }
 
-static void
-tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int eligible_slots) {
+/* Returns the receiver to the control channel when a call in @p eligible_slots is blocked now. A failed return tune
+   says so, after @p refusal (a refused save's toast, tg_listen_persist()) when the command had one, so that stays in
+   view; returns UI_CMD_APPLY_FAILED then, else UI_CMD_APPLY_COMPLETED. */
+static int
+tg_listen_release_blocked_calls(dsd_opts* opts, dsd_state* state, unsigned int eligible_slots, const char* refusal) {
     if (!(tg_listen_blocked_slots(opts, state) & eligible_slots)) {
-        return;
+        return UI_CMD_APPLY_COMPLETED;
     }
-    if (apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state)) == UI_CMD_APPLY_FAILED) {
+    if (apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state)) != UI_CMD_APPLY_FAILED) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (refusal) {
+        ui_set_toast(state, 4, "%s; return-to-CC tune failed", refusal);
+    } else {
         ui_set_toast(state, 4, "Talkgroup not tuned; return-to-CC tune failed");
     }
+    return UI_CMD_APPLY_FAILED;
 }
 
 /* WP-D1: Every talkgroup edit checks the same pair: comparing only the generation
@@ -7424,8 +7538,8 @@ apply_cmd_tg_row_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup updated");
-    tg_listen_persist(opts, state);
-    tg_listen_release_blocked_calls(opts, state, eligible_slots);
+    const char* refusal = tg_listen_persist(opts, state);
+    (void)tg_listen_release_blocked_calls(opts, state, eligible_slots, refusal);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7446,8 +7560,8 @@ apply_cmd_tg_row_remove(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         return UI_CMD_APPLY_FAILED;
     }
     ui_set_toast(state, 3, "Applied: Talkgroup removed");
-    tg_listen_persist(opts, state);
-    tg_listen_release_blocked_calls(opts, state, eligible_slots);
+    const char* refusal = tg_listen_persist(opts, state);
+    (void)tg_listen_release_blocked_calls(opts, state, eligible_slots, refusal);
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -7709,9 +7823,9 @@ apply_cmd_tg_selection(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     }
     // Before the save, as every list edit does: a save that is refused replaces it with why.
     ui_set_toast(state, 4, "%u selected talkgroups %s", p.count, p.listening ? "listening" : "not tuned");
-    tg_listen_persist(opts, state);
+    const char* refusal = tg_listen_persist(opts, state);
     if (!p.listening) {
-        tg_listen_release_blocked_calls(opts, state, 3U);
+        (void)tg_listen_release_blocked_calls(opts, state, 3U, refusal);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7793,9 +7907,9 @@ apply_cmd_tg_listen_one(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         ui_set_toast(state, 4, "Could not update TG %u", (unsigned)payload.id_start);
         return UI_CMD_APPLY_FAILED;
     }
-    tg_listen_persist(opts, state);
+    const char* refusal = tg_listen_persist(opts, state);
     if (!payload.listen) {
-        tg_listen_release_blocked_calls(opts, state, 3U);
+        (void)tg_listen_release_blocked_calls(opts, state, 3U, refusal);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7817,9 +7931,9 @@ apply_cmd_tg_listen_all(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         }
     }
     ui_set_toast(state, 3, "%zu talkgroups %s", applied, payload.listen ? "listening" : "not tuned");
-    tg_listen_persist(opts, state);
+    const char* refusal = tg_listen_persist(opts, state);
     if (!payload.listen) {
-        tg_listen_release_blocked_calls(opts, state, 3U);
+        (void)tg_listen_release_blocked_calls(opts, state, 3U, refusal);
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7838,15 +7952,14 @@ apply_cmd_tg_listen(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     return apply_cmd_tg_listen_all(opts, state, c);
 }
 
-static void
+/* The lockout's toast and save; returns a refused save's toast (tg_listen_persist()), else NULL. */
+static const char*
 tg_lockout_report(dsd_opts* opts, dsd_state* state, unsigned int tg) {
     const char* suffix = !opts->persist_tg_lockouts                                     ? " for this session"
                          : !opts->group_in_file[0] || dsd_scan_groups_row_active(state) ? " in current list (not saved)"
                                                                                         : "";
     ui_set_toast(state, 3, "TG %u locked out%s", tg, suffix);
-    if (opts->persist_tg_lockouts) {
-        tg_listen_persist(opts, state);
-    }
+    return opts->persist_tg_lockouts ? tg_listen_persist(opts, state) : NULL;
 }
 
 static void
@@ -7886,14 +7999,18 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
                  temporary ? "Session Only" : "User Lock Out");
     slot_block_note_event(opts, state, slot, text);
 
-    tg_lockout_report(opts, state, tg);
+    const char* refusal = tg_lockout_report(opts, state, tg);
 
     const int transition_status = apply_lockout_decoder_transition_locked(opts, state, p25_sm_owns_trunk(opts, state));
     if (transition_status == UI_CMD_APPLY_FAILED) {
         LOG_WARN("WARNING: User lockout for TG %u was applied, but the return-to-CC cleanup tune was not accepted.\n",
                  tg);
-        ui_set_toast(state, 4, "TG %u locked out%s; return-to-CC tune failed", tg,
-                     temporary ? " for this session" : "");
+        if (refusal) { /* the refused save stays in view: the lockout holds for this session only */
+            ui_set_toast(state, 4, "%s; return-to-CC tune failed", refusal);
+        } else {
+            ui_set_toast(state, 4, "TG %u locked out%s; return-to-CC tune failed", tg,
+                         temporary ? " for this session" : "");
+        }
     }
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -10136,6 +10253,7 @@ command_updates_scan_mode(const struct dsd_app_command* c) {
          * policy through dsd_scan_mode_set_configured_tone_policy(), and an nfm row's own tone options stay in force
          * over it. */
         DSD_APP_CMD_IMPORT_GROUP_LIST,
+        DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_DECODE_MODE_SET,
         DSD_APP_CMD_MOD_SET,
@@ -10178,10 +10296,12 @@ static int
 command_writes_policy_store(const struct dsd_app_command* c) {
     static const int commands[] = {
         DSD_APP_CMD_IMPORT_GROUP_LIST,
+        DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
         DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR,
         DSD_APP_CMD_CONFIG_APPLY,
         DSD_APP_CMD_RR_APPLY_IMPORT,
         DSD_APP_CMD_IMPORT_CHANNEL_MAP,
+        DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD,
         DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR,
         DSD_APP_CMD_TUNER_RELEASE,
         DSD_APP_CMD_SCANNER_TOGGLE,
@@ -10508,6 +10628,42 @@ apply_cmd_follow_rigctl_passband(dsd_opts* opts, dsd_state* state, const svc_rig
     return -1;
 }
 
+/* What a group list import, reload or clear finds before it runs (spec R3): whether the global list judges the active
+   calls, which dsd_scan_groups_row_active() can say only before the suspend sets a -Y row's or trunk-scan target's own
+   list aside, and which of them it blocks already. */
+typedef struct {
+    int global_list; /* the command changes the list that judges the calls */
+    unsigned int blocked;
+} ui_group_list_calls;
+
+static int
+command_replaces_group_list(const struct dsd_app_command* c) {
+    return c
+           && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD
+               || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR);
+}
+
+static ui_group_list_calls
+ui_group_list_calls_before(const dsd_opts* opts, const dsd_state* state, const struct dsd_app_command* c) {
+    ui_group_list_calls before = {0, 0U};
+    before.global_list = command_replaces_group_list(c) && opts && state && !dsd_scan_groups_row_active(state);
+    if (before.global_list) {
+        before.blocked = tg_listen_blocked_slots(opts, state);
+    }
+    return before;
+}
+
+/* After the scopes resume, with the row's settings and list back in force, and still under the tick guard: a call the
+   new global list blocks is released, as a row edit releases it. A row's or target's own list did not change, so its
+   calls stay. Returns -1 when the return tune failed (its toast says so). */
+static int
+ui_group_list_release_calls(dsd_opts* opts, dsd_state* state, const ui_group_list_calls* before) {
+    if (!before->global_list) {
+        return 0;
+    }
+    return tg_listen_release_blocked_calls(opts, state, ~before->blocked, NULL) == UI_CMD_APPLY_FAILED ? -1 : 0;
+}
+
 static int
 apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int guarded,
                  int32_t* scan_list_code) {
@@ -10517,10 +10673,9 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     const int was_scanner = opts && opts->scanner_mode == 1;
     const ui_cmd_widths_before widths_before = ui_cmd_widths_before_of(opts, state, c);
     const ui_tone_filter_reach tone_before = ui_tone_filter_reach_of(opts, state);
+    const ui_group_list_calls group_calls = ui_group_list_calls_before(opts, state, c);
     const int scoped = mode_update && opts && state && dsd_scan_mode_suspend(opts, state);
-    const int group_update = c
-                             && (c->id == DSD_APP_CMD_IMPORT_GROUP_LIST || c->id == DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR
-                                 || c->id == DSD_APP_CMD_CONFIG_APPLY);
+    const int group_update = command_replaces_group_list(c) || (c && c->id == DSD_APP_CMD_CONFIG_APPLY);
     const int groups_suspended = group_update && dsd_scan_groups_suspend(state);
     /* A stream the command starts while the scope is suspended opens on other settings than the row the resume puts
        back: a reopen on the configured ones, a rollback's restart on the row as it ran before (issue #578). One a
@@ -10541,11 +10696,12 @@ apply_cmd_scoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_command*
     if (apply_cmd_resume_and_note_widths(opts, state, scoped, stream, &widths_before) != 0) {
         return UI_CMD_APPLY_FAILED;
     }
+    const int release_failed = ui_group_list_release_calls(opts, state, &group_calls) != 0;
     apply_cmd_fall_back_from_am_on_pcm(opts, state, c);
     apply_cmd_note_tetra_on_pcm(opts, state);
     const int rigctl_refused = apply_cmd_follow_rigctl_passband(opts, state, &rigctl_before, &widths_before, guarded);
     ui_warn_tone_filter_unreached(opts, state, &tone_before);
-    return rigctl_refused ? UI_CMD_APPLY_FAILED : result;
+    return rigctl_refused || release_failed ? UI_CMD_APPLY_FAILED : result;
 }
 
 /* A command that can change what an active call may play or record: the talkgroup policy store, the hold, the allow
