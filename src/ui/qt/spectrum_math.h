@@ -74,6 +74,45 @@ freq_to_bin(double center, double span, int n, double f) {
     return static_cast<int>(raw);
 }
 
+/* Slack, in bins, for an edge that sits exactly on a bin center: the division
+ * that finds it leaves a few ulps either side, and an aligned edge must keep
+ * its bin. */
+constexpr double kBinEdgeSlack = 1.0e-9;
+
+/**
+ * @brief First bin whose center is at or above @p f, clamped to [0, n].
+ *
+ * Unlike freq_to_bin(), which rounds to the nearest bin, this never answers
+ * with a bin below @p f: a selection bounded by a window edge must not pick a
+ * bin centered outside it. n means none.
+ */
+inline int
+first_bin_at_or_above(double center, double span, int n, double f) {
+    if (n <= 0 || !(span > 0.0)) {
+        return 0;
+    }
+    const double low = center - (span / 2.0);
+    const double raw = std::ceil((((f - low) / span) * static_cast<double>(n)) - kBinEdgeSlack);
+    if (!(raw > 0.0)) {
+        return 0;
+    }
+    return (raw > static_cast<double>(n)) ? n : static_cast<int>(raw);
+}
+
+/** @brief Last bin whose center is at or below @p f, clamped to [-1, n-1]; -1 means none. */
+inline int
+last_bin_at_or_below(double center, double span, int n, double f) {
+    if (n <= 0 || !(span > 0.0)) {
+        return n - 1;
+    }
+    const double low = center - (span / 2.0);
+    const double raw = std::floor((((f - low) / span) * static_cast<double>(n)) + kBinEdgeSlack);
+    if (!(raw > -1.0)) {
+        return -1;
+    }
+    return (raw > static_cast<double>(n - 1)) ? n - 1 : static_cast<int>(raw);
+}
+
 /** @brief The visible slice of the capture span. */
 struct ViewWindow {
     double low_hz = 0.0;

@@ -12831,6 +12831,23 @@ Qt Quick frontend (`src/ui/qt`):
     visible ("Qt QML editing convention"). Tests: `tst_decryption_profile_editor.qml`, `tst_key_sheet.qml`,
     `tst_history_session_identity.qml`, `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml`
     `test_b2_target_names_leave_the_closed_key_sheet_quiet`, `tst_a11y_closed_sheets.qml`).
+- Spectrum view items (`spectrum_view_item.{h,cpp}`, registered as `SpectrumTrace` and `Waterfall`). The trace is a
+  `QQuickItem` drawing scene-graph geometry: three `QSGGeometryNode` layers (grid, area, line) under one root, rebuilt
+  in place each sync. Line and grid are triangles from `spectrum_trace_geometry.{h,cpp}` (Qt-free): full-width segments,
+  round joins, square end caps, inner sides cut along each turn's bisector, and a one-device-pixel coverage ramp centred
+  on the pen edge, colored per vertex with premultiplied alpha. Every layer is 32-bit-indexed with no indices, so Qt
+  never merges it into a 16-bit batch (a wide trace passes 65534 vertices). On the software scene graph
+  (`QT_QUICK_BACKEND=software`, or Qt's own fallback with no RHI, as in every headless test) geometry nodes are not
+  drawn, so `updatePaintNode()` checks `graphicsApi()` and paints the whole chart with QPainter into one `QSGImageNode`
+  instead. The item clips to its rectangle and draws nothing at 1 px or less. It was a `QQuickPaintedItem`: its
+  antialiased stroke cost 100-150 ms a frame on a phone, inside the sync while the GUI thread waits. The waterfall is
+  still a painted item (one image blit, 2-3 ms). Both keep the model in a `QPointer` and forget it on `destroyed`. The
+  trace's column mapping (`freq_to_bin` of the view edges, `resample_columns`) is the one `TunerMarker.qml` and the axis
+  labels share; taps and hops are bounded inward instead (`first_bin_at_or_above`/`last_bin_at_or_below` in
+  `spectrum_math.h`), so a window edge between two bin centers never admits the bin outside it. Tests:
+  `UI_QT_SPECTRUM_TRACE_GEOMETRY` (coverage against the exact ramped outline), `UI_QT_SPECTRUM_MODEL` (the GPU tree
+  through a test hook, the software picture, a real window, one fold per frame, model destruction, fractional edges),
+  `UI_QT_SPECTRUM_MATH`.
 - Platform-free by rule: it may include Qt and the public `app_control`, `core`, `runtime` and `crypto` headers (the
   backup seals through `<dsd-neo/crypto/backup_seal.h>`), never engine/io/protocol internals, and never platform APIs
   (`QJniObject`, `jni.h`, `<android/*.h>`). Platform specifics live behind the `DecoderHost` interface, implemented per
