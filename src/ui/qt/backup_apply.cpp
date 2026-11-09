@@ -41,6 +41,7 @@
 #include "backup_apply_fs.h"
 #include "backup_archive.h"
 #include "backup_archive_rules.h"
+#include "platform_path.h"
 #include "settings_recovery.h"
 
 namespace dsd_qt {
@@ -899,7 +900,7 @@ class Applier {
         const qint64 oldBytes = LiveScan(m_root, &m_journal).run();
         const qint64 free = m_env.freeBytes
                                 ? m_env.freeBytes(m_root.path())
-                                : static_cast<qint64>(dsd_path_free_bytes(m_root.path().toUtf8().constData()));
+                                : static_cast<qint64>(dsd_path_free_bytes(platform_path(m_root.path()).constData()));
         if (free >= 0 && free < m_staging.bytes + oldBytes + kSpaceMargin) {
             return result(ApplyOutcome::Deferred, space_reason());
         }

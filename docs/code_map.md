@@ -1265,6 +1265,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     `dsd_path_fopen_user_read_file()` and the tests' `dsd_test_rmdir()`. `PLATFORM_FILE_COMPAT` runs Latin, CJK and
     Hangul names under the default C locale (on Windows at code pages 1252 and 949 locally, under Wine), and at code
     page 1252 an ANSI name and a UTF-8 name that must not reach the ANSI folder its bytes spell
+    - A file a helper made is deleted with `dsd_remove_file()`, never the CRT's `remove()`, which reads the path in the
+      ANSI code page (`APP_CONTROL_IMPORT_FILES` deletes an import named outside ASCII). The Qt app hands these
+      helpers, and the decoder's own path APIs such as `dsd_rdio_upload_holds()`, a path through `platform_path()`
+      (`src/ui/qt/platform_path.h`): UTF-8 on Windows, never `QFile::encodeName()`, the ANSI code page there
   - Win32 wrappers keep the POSIX contract callers rely on: errno values, never raw `GetLastError()` codes (the
     thread scheduling and condition calls map them; affinity and realtime priority return ENOSYS where the platform
     has no such control), ENOENT for a missing file from `dsd_fopen_existing_regular_file()`, and temp files

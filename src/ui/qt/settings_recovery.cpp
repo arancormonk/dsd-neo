@@ -39,6 +39,7 @@
 
 #include "app_prefs.h"
 #include "json_store.h"
+#include "platform_path.h"
 #include "settings_path.h"
 
 namespace dsd_qt {
@@ -66,17 +67,6 @@ note_scratch(const QString& fileName, bool scratch, bool inMemory = false) {
 /* The settings formats put on a scratch copy this start: a clean start removes the app cache's copy of any other
    (forget_cache_scratch()). Read and written by the recovery alone, on the GUI thread. */
 QList<QSettings::Format> g_scratchFormats;
-
-/* The platform layer reads a path as UTF-8 on Windows (it calls the wide API) and in the local 8-bit encoding
-   elsewhere, as QFile does. */
-QByteArray
-platform_path(const QString& path) {
-#ifdef Q_OS_WIN
-    return path.toUtf8();
-#else
-    return QFile::encodeName(path);
-#endif
-}
 
 /* What reading a settings file found. */
 enum class FileRead { Missing, Ok, Unreadable };

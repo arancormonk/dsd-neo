@@ -25,6 +25,8 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
 
+#include "platform_path.h"
+
 #ifdef DSD_NEO_TEST_HOOKS
 #include "json_store_test_hooks.h"
 #endif
@@ -60,17 +62,6 @@ Registry&
 registry() {
     static Registry r;
     return r;
-}
-
-/* The platform layer reads a path as UTF-8 on Windows (it calls the wide API) and in the local 8-bit encoding
-   elsewhere, as QFile does. */
-QByteArray
-platform_path(const QString& path) {
-#ifdef Q_OS_WIN
-    return path.toUtf8();
-#else
-    return QFile::encodeName(path);
-#endif
 }
 
 JsonStoreRead

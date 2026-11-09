@@ -43,6 +43,7 @@
 #include <utility>
 #include "decoder_host.h"
 #include "json_store.h"
+#include "platform_path.h"
 #include "realtime_clock.h"
 #include "teardown_trace.h"
 
@@ -329,7 +330,7 @@ class Inspection {
         }
         const qint64 free = m_work.freeBytes
                                 ? m_work.freeBytes(m_work.root)
-                                : static_cast<qint64>(dsd_path_free_bytes(m_work.root.toUtf8().constData()));
+                                : static_cast<qint64>(dsd_path_free_bytes(platform_path(m_work.root).constData()));
         if (free >= 0 && free < 2 * static_cast<qint64>(m_archive.size()) + kStagingMarginBytes) {
             return error_name(BackupError::NoSpace);
         }

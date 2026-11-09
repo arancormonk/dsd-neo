@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <utility>
 #include "diagnostics_log.h"
+#include "platform_path.h"
 
 #include <QClipboard>
 #include <QCoreApplication>
@@ -125,7 +126,7 @@ replaceFile(const QString& path, const QByteArray& bytes) {
     if (!file.commit()) {
         return false;
     }
-    dsd_fsync_parent_dir(QFile::encodeName(path).constData());
+    dsd_fsync_parent_dir(platform_path(path).constData());
     return true;
 }
 
@@ -1710,7 +1711,7 @@ DiagnosticsLog::openCurrent(Segments& segments) {
     segments.fileSize = file->size();
     segments.file = std::move(file);
     if (!existed) {
-        dsd_fsync_parent_dir(QFile::encodeName(path).constData());
+        dsd_fsync_parent_dir(platform_path(path).constData());
     }
 }
 
@@ -1780,7 +1781,7 @@ DiagnosticsLog::rotate(Segments& segments, const QByteArray& header) {
                      &segments == &m_host);
         }
     }
-    dsd_fsync_parent_dir(QFile::encodeName(tailPath).constData());
+    dsd_fsync_parent_dir(platform_path(tailPath).constData());
     {
         std::lock_guard<std::mutex> lock(m_statsMutex);
         ++segments.stats.rotations;
@@ -1805,7 +1806,7 @@ DiagnosticsLog::clearFiles(Segments& segments) const {
         || dsd_fsync(file.handle()) != 0) {
         ok = false;
     }
-    dsd_fsync_parent_dir(QFile::encodeName(tailPath).constData());
+    dsd_fsync_parent_dir(platform_path(tailPath).constData());
     segments.fileSize = 0;
     segments.dirtyBytes = 0;
     if (!ok) {
