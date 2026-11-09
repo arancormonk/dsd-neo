@@ -35,18 +35,21 @@ Item {
     property bool cancelling: false
     readonly property bool copying: request > 0
     readonly property bool choosingCompanions: requiredFiles.length > 0
-    // The picked name as a person reads it: a provider's reference arrives
-    // URL-encoded ("primary%3ADownload%2Fmap.csv").
-    readonly property string displayName: {
-        var name = fileName;
+    // The picked name as a person reads it.
+    readonly property string displayName: readableName(fileName)
+    signal finished(var result, var context)
+
+    // A file's name as a person reads it, from a name or a reference: a
+    // provider's arrives URL-encoded ("primary%3ADownload%2Fmap.csv").
+    function readableName(name) {
+        var decoded = name;
         try {
-            name = decodeURIComponent(name);
+            decoded = decodeURIComponent(name);
         } catch (e) {
             // Not an encoded name: shown as it came.
         }
-        return name.substring(name.lastIndexOf('/') + 1);
+        return decoded.substring(decoded.lastIndexOf('/') + 1);
     }
-    signal finished(var result, var context)
 
     // One completion per pick()/begin(). A companion rejection only abandons
     // that slot's choice; the enclosing import remains active on the sheet.
@@ -297,6 +300,8 @@ Item {
                         Accessible.role: Accessible.RadioButton
                         Accessible.checkable: true
                         Accessible.checked: checked
+                        // A change would not reach the copy running now.
+                        enabled: !flow.copying
                         onClicked: flow.selectCompanion(slot.modelData, modelData.path)
                     }
                 }
@@ -304,11 +309,13 @@ Item {
                     objectName: "csvChooseFile_" + slot.index
                     width: parent.width
                     text: qsTr("Choose a file…")
+                    enabled: !flow.copying
                     onClicked: flow.chooseFile(slot.modelData)
                 }
                 ReadableText {
+                    objectName: "csvCompanionSelected_" + slot.index
                     width: parent.width
-                    text: flow.companions[slot.modelData] ? qsTr("Selected: %1").arg(flow.companions[slot.modelData].split('/').pop()) : qsTr("No file selected")
+                    text: flow.companions[slot.modelData] ? qsTr("Selected: %1").arg(flow.readableName(flow.companions[slot.modelData])) : qsTr("No file selected")
                     wrapMode: Text.Wrap
                     color: Theme.textSecondary
                     font.pixelSize: Theme.fontSize(13)

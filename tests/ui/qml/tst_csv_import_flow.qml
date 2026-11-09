@@ -208,6 +208,15 @@ Item {
             item("csvPrimaryPicker").reject();
             compare(completion.count, 1);
         }
+        // A provider's reference names the file URL-encoded: the line under
+        // the choice reads its decoded name, as the busy sheet does.
+        function test_selected_names_an_encoded_reference() {
+            openSheet();
+            flow.selectCompanion(flow.requiredFiles[0], "content://com.android.providers.downloads.documents/document/raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fcounty-keys.csv");
+            compare(item("csvCompanionSelected_0").text, "Selected: county-keys.csv");
+            flow.selectCompanion(flow.requiredFiles[0], "file:///data/keys/plain%zz.csv");
+            compare(item("csvCompanionSelected_0").text, "Selected: plain%zz.csv", "a name that does not decode shows as it came");
+        }
         function test_companion_picker_cancel_resumes_unresolved() {
             openSheet();
             item("csvChooseFile_0").clicked();
@@ -437,11 +446,20 @@ Item {
         function test_companion_retry_shows_importing() {
             addKeys("wanted.csv", "keysDec");
             openSheet();
+            verify(item("csvLibraryChoice_0_0").enabled && item("csvChooseFile_0").enabled);
             testContext.holdImports(true);
             item("csvCompleteBundle").clicked();
             verify(flow.copying);
             compare(item("csvCompleteBundle").text, "Importing…");
             verify(!item("csvCompleteBundle").enabled);
+            // A changed choice would not reach the copy running now.
+            verify(!item("csvLibraryChoice_0_0").enabled, "the library choice waits for the copy");
+            verify(!item("csvChooseFile_0").enabled, "Choose a file waits for the copy");
+            var chosen = flow.companions[flow.requiredFiles[0]];
+            item("csvLibraryChoice_0_0").activate();
+            item("csvChooseFile_0").activate();
+            compare(flow.choosing, "", "no picker opens");
+            compare(flow.companions[flow.requiredFiles[0]], chosen, "the choice stays");
             verify(item("csvCompleteBundle").visible, "the companion choices stay on show");
             verify(!item("csvCopyingText").visible);
             item("csvCompleteBundle").clicked();

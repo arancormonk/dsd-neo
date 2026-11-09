@@ -3360,6 +3360,8 @@ class Setup : public QObject {
      * every ancestor's interface lists the one below it among its children, which is how the Android bridge builds
      * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
      * and `value` are the interface's texts; `invisible`, `checked` and `focusable` are its state flags.
+     * `currentValue` is the value interface's reading (a progress bar's, which the Android bridge reads after the
+     * name), or undefined when it has none.
      */
     Q_INVOKABLE QVariantMap
     accessibleNode(QObject* item) const {
@@ -3367,6 +3369,7 @@ class Setup : public QObject {
         if (iface == nullptr || !iface->isValid()) {
             return {{QStringLiteral("exists"), false}, {QStringLiteral("inTree"), false}};
         }
+        QAccessibleValueInterface* value = iface->valueInterface();
         return {{QStringLiteral("exists"), true},
                 {QStringLiteral("inTree"), accessibleInTree(iface)},
                 {QStringLiteral("role"), static_cast<int>(iface->role())},
@@ -3376,7 +3379,8 @@ class Setup : public QObject {
                 {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)},
                 {QStringLiteral("checked"), static_cast<bool>(iface->state().checked)},
                 {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
-                {QStringLiteral("childCount"), iface->childCount()}};
+                {QStringLiteral("childCount"), iface->childCount()},
+                {QStringLiteral("currentValue"), value != nullptr ? value->currentValue() : QVariant()}};
     }
 
     /**

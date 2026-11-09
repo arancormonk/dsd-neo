@@ -135,6 +135,23 @@ Item {
             compare(tc.wizard.replayNotice, "");
         }
 
+        // A screen reader reads the bar's value after its name: a whole
+        // percent, never the byte count, with the amount as its description.
+        function test_progress_bar_reads_a_percent() {
+            pickReplay("content://provider/document/cap.wav");
+            testContext.replayProgress(1.2e9, 3.4e9);
+            var bar = item("wizardReplayProgressBar");
+            var node = testContext.accessibleNode(bar);
+            compare(node.name, "Copy progress");
+            compare(node.currentValue, 35, "1.2 GB of 3.4 GB reads as 35 percent");
+            compare(String(node.currentValue), "35");
+            compare(node.description, item("wizardReplayProgressAmount").text, "the amount describes it");
+            compare(bar.minimumValue, 0);
+            compare(bar.maximumValue, 100);
+            testContext.replayProgress(3.4e9, 3.4e9);
+            compare(testContext.accessibleNode(bar).currentValue, 100);
+        }
+
         function test_unsized_copy_shows_bytes_without_a_bar() {
             pickReplay("content://provider/document/cap.wav");
             testContext.replayProgress(1.2e9, -1);

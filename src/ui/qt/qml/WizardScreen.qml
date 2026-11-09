@@ -1037,6 +1037,7 @@ Item {
                             // How far, on its own line: a long name wraps
                             // without splitting the figures.
                             LiveText {
+                                id: replayAmount
                                 objectName: "wizardReplayProgressAmount"
                                 step: String(wizard.replayRequest)
                                 width: parent.width
@@ -1058,14 +1059,18 @@ Item {
                                 color: Theme.toggleOffTrack
                                 Accessible.role: Accessible.ProgressBar
                                 Accessible.name: qsTr("Copy progress")
+                                Accessible.description: replayAmount.text
+                                // How far, as the bar shows it.
+                                readonly property real fraction: replayFiles.copyTotal > 0 ? Math.min(1, replayFiles.copyBytes / replayFiles.copyTotal) : 0
                                 // Read when asked (Android polls it); a plain Item's value raises no
-                                // ValueChanged, so it stays live (issue #782).
-                                readonly property real value: replayFiles.copyBytes
-                                readonly property real minimumValue: 0
-                                readonly property real maximumValue: Math.max(0, replayFiles.copyTotal)
+                                // ValueChanged, so it stays live (issue #782). A whole percent, so a
+                                // screen reader says "42", never a byte count.
+                                readonly property int value: Math.floor(100 * fraction)
+                                readonly property int minimumValue: 0
+                                readonly property int maximumValue: 100
 
                                 Rectangle {
-                                    width: replayFiles.copyTotal > 0 ? parent.width * Math.min(1, replayFiles.copyBytes / replayFiles.copyTotal) : 0
+                                    width: parent.width * parent.fraction
                                     height: parent.height
                                     radius: 2
                                     color: Theme.cyan
