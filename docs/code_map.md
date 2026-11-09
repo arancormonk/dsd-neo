@@ -6886,11 +6886,14 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   cu8 transform policy the reader uses, with the demod's Fs/4 view as for `rotation_hz`):
   RTL USB, rtl_tcp and cu8 replay widen with (x - 127.5) / 127.5 → 0.996 (rails count, the
   next codes at 0.992 do not); the two-pass (x - 128) / 127.5 (combined transform off with
-  the Fs/4 shift) → 0.992 (byte 1 counts with byte 0); Airspy, SoapySDR and CF32/CS16
-  replay → 0.999. Airspy overload is not detectable: libairspy's real-to-I/Q conversion
-  halves the amplitude and filters one branch, so ADC rails arrive near 0.5 (a documented
-  limit, issue #828; the input-level meter cannot see it either). The level is a property of the conversion, so
-  `same_capture()` ignores it. Leakage rejection runs once per request on both
+  the Fs/4 shift, or a cu8 replay recorded with it) → 0.992 (byte 1 after the byte-domain
+  rotation counts with byte 0; the rotation's 255 - x mirrors raw 1 and 254 on phases 1-3,
+  so which raw near-rail code counts depends on phase and component; both rails always
+  do); Airspy, SoapySDR and CF32/CS16 replay → 0.999. Airspy overload is not detectable:
+  libairspy's real-to-I/Q conversion halves the amplitude and filters one branch, so ADC
+  rails arrive near 0.5 (a documented limit, issue #828; the input-level meter cannot see
+  it either). The level is a property of the conversion, so `same_capture()` ignores it.
+  Leakage rejection runs once per request on both
   windows' power: transmitters are located in the spectrum (not just the requested
   channels), each from the anchor its channels' windows climb to, centred where its
   segment best overlaps its own mirror image, with segments cut and merged at valleys and

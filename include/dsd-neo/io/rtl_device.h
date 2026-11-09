@@ -302,11 +302,12 @@ dsd_rate_plan_backend rtl_device_rate_plan_backend(const struct rtl_device* dev)
  *
  * A component counts as clipped at or above it: the cu8 rails (bytes 0 and 255) count and the codes next to them do
  * not. An RTL-SDR or rtl_tcp server, and a cu8 replay, widen bytes with (x - 127.5) / 127.5 (rails at 1.0, the next
- * codes at 0.992): 0.996. With the combined transform off (DSD_NEO_COMBINE_ROT=0) a capture that carries the Fs/4 shift
- * rotates bytes and widens them with (x - 128) / 127.5 instead (rails at 0.996 and 1.004; byte 1 at 0.996 counts
- * with byte 0, as the input-level meter's cu8 rule does): 0.992. Every other source (Airspy, SoapySDR, a CF32 or CS16
- * replay, NULL) answers DSD_SIGNAL_CLIP_LEVEL_DEFAULT; libairspy's real-to-complex conversion keeps its ADC rails
- * near half scale, so an Airspy's overload is not visible in its samples at all.
+ * codes at 0.992): 0.996. With the combined transform off (DSD_NEO_COMBINE_ROT=0, or a cu8 replay recorded with it) a
+ * capture that carries the Fs/4 shift rotates bytes (255 - x mirrors them on three phases of four) and widens them with
+ * (x - 128) / 127.5 instead (rails at 0.996 and 1.004; byte 1 after the rotation, at 0.996, counts with byte 0, as the
+ * input-level meter's cu8 rule does): 0.992. Every other source (Airspy, SoapySDR, a CF32 or CS16 replay, NULL) answers
+ * DSD_SIGNAL_CLIP_LEVEL_DEFAULT; libairspy's real-to-complex conversion keeps its ADC rails near half scale, so an
+ * Airspy's overload is not visible in its samples at all.
  *
  * Reads only what the device was created with, so any thread may ask while the device exists.
  *

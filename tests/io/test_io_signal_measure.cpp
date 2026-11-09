@@ -719,18 +719,22 @@ test_tap_failures(const dsd_signal_measure_request& r, const std::vector<float>&
     rtl_signal_measure_cancel();
 }
 
-/* @p code as each component of a pair of the cu8 conversion @p c (Fs/4 phase 0, so neither is rotated) when the
-   capture carries the Fs/4 shift @p fs4. */
+/* @p code as one component of a raw pair, widened by the cu8 conversion @p c at Fs/4 phase @p phase (0 leaves the pair,
+   2 mirrors both components) when the capture carries the Fs/4 shift @p fs4. */
 static void
-widen_code(const rtl_device_test_conversion& c, int fs4, unsigned char code, int component, float* out) {
-    unsigned char pair[2] = {128U, 128U};
-    pair[component] = code;
-    assert(rtl_device_test_widen_cu8(&c, fs4, pair, sizeof(pair), out) == 0);
+widen_code(const rtl_device_test_conversion& c, int fs4, int phase, unsigned char code, int component, float* out) {
+    unsigned char raw[8] = {128U, 128U, 128U, 128U, 128U, 128U, 128U, 128U};
+    float widened[8];
+    raw[2 * phase + component] = code;
+    assert(rtl_device_test_widen_cu8(&c, fs4, raw, 2 * (size_t)phase + 2, widened) == 0);
+    out[0] = widened[2 * phase];
+    out[1] = widened[2 * phase + 1];
 }
 
 /* The clip level each source sets: a cu8 conversion's rails count and the codes next to them do not, except byte 1 of
-   the two-pass widening, as far from centre as byte 255 there, which counts with byte 0. A clean tone just under a
-   level measures; one over it clips. */
+   the two-pass widening, as far from centre as byte 255 there, which counts with byte 0. That byte is the one after the
+   two-pass rotation, which mirrors bytes (255 - x): at phase 2 a raw 254 becomes it and counts, and a raw 1 does not.
+   A clean tone just under a level measures; one over it clips. */
 static void
 test_clip_levels(dsd_signal_detector* d, const dsd_signal_measure_request& r) {
     using conversion = rtl_device_test_conversion;
@@ -772,14 +776,17 @@ test_clip_levels(dsd_signal_detector* d, const dsd_signal_measure_request& r) {
     // Each cu8 conversion's rails and their neighbours, in either component, at 2% of the pairs: counted fails.
     const struct {
         const conversion* c;
-        int fs4;
-        bool counted[4]; // bytes 0, 1, 254, 255
+        int fs4, phase;
+        bool counted[4]; // raw bytes 0, 1, 254, 255
     } conversions[] = {
-        {&usb, 1, {true, false, false, true}},
-        {&usb, 0, {true, false, false, true}},
-        {&tcp, 1, {true, false, false, true}},
-        {&usb_two_pass, 1, {true, true, false, true}},
-        {&replay_two_pass, 0, {true, true, false, true}},
+        {&usb, 1, 0, {true, false, false, true}},
+        {&usb, 1, 2, {true, false, false, true}},
+        {&usb, 0, 0, {true, false, false, true}},
+        {&tcp, 1, 0, {true, false, false, true}},
+        {&usb_two_pass, 1, 0, {true, true, false, true}},
+        {&usb_two_pass, 1, 2, {true, false, true, true}},
+        {&replay_two_pass, 0, 0, {true, true, false, true}},
+        {&replay_two_pass, 0, 2, {true, false, true, true}},
     };
 
     const unsigned char codes[4] = {0U, 1U, 254U, 255U};
@@ -789,7 +796,7 @@ test_clip_levels(dsd_signal_detector* d, const dsd_signal_measure_request& r) {
         for (int code = 0; code < 4; ++code) {
             for (int component = 0; component < 2; ++component) {
                 float pair[2];
-                widen_code(*k.c, k.fs4, codes[code], component, pair);
+                widen_code(*k.c, k.fs4, k.phase, codes[code], component, pair);
                 auto peaks = samples(q, q.frequencies[0], 0.1, 30000);
                 for (size_t i = 0; i < peaks.size() / 2; i += 50) {
                     peaks[2 * i] = pair[0];

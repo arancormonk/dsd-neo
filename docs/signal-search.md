@@ -547,9 +547,12 @@ uncontaminated blocks themselves differ. Clipping and capture discontinuities in
 More than 1% of the samples clipped fails it. A sample counts as clipped when either
 of its two parts reaches the receiver's clip level. On an RTL-SDR or an rtl_tcp server
 that is the dongle's lowest or highest value, and the values one step inside them do
-not count. With `DSD_NEO_COMBINE_ROT=0`, while the capture is shifted by a quarter of
-its rate, the value one step above the lowest counts too, since that conversion puts it
-as far from the centre as the highest. Other receivers count 0.999 of full scale. A
+not count. With `DSD_NEO_COMBINE_ROT=0`, or when replaying a cu8 capture recorded with
+that older conversion, a capture shifted by a quarter of its rate uses a conversion that
+puts the value one step above the lowest as far from the centre as the highest, so after
+the quarter-rate shift that value counts too. The shift swaps and mirrors the dongle's
+values, so which raw value one step from a limit counts changes from sample to sample;
+the lowest and highest always count. Other receivers count 0.999 of full scale. A
 failed measurement keeps the request it belonged to and says why it failed: clipped
 samples, dropped samples, a changed capture (retune, rate, gain or offset), a sample
 that is not a number, or a transform that could not run.
