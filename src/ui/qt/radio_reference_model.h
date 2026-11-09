@@ -382,7 +382,7 @@ class RadioReferenceModel : public QObject {
     void statusChanged();
     void listsChanged();
     void systemChanged();
-    /** @brief One refreshRow() outcome; @p result has importFile()'s shape. */
+    /** @brief One refreshRow() outcome; @p result has ImportedFilesModel::refreshGeneratedFile()'s shape. */
     void refreshFinished(int row, const QVariantMap& result);
 
   private:

@@ -50,12 +50,12 @@ Item {
             // the fixture has to be one.
             var groups = testContext.writeFixtureCsv("groups.csv", "id,mode,name\n1001,A,Dispatch\n1002,A,Fireground\n");
             verify(groups.length > 0, "could not write the talkgroup fixture");
-            var accepted = importedFiles.importFile(groups, "groups.csv", "group");
+            var accepted = testContext.importNow(groups, "group");
             verify(accepted.ok, "the talkgroup fixture did not import");
 
             var more = testContext.writeFixtureCsv("extra.csv", "id,mode,name\n2001,A,Public Works\n");
             verify(more.length > 0, "could not write the second fixture");
-            verify(importedFiles.importFile(more, "extra.csv", "group").ok, "the second fixture did not import");
+            verify(testContext.importNow(more, "group").ok, "the second fixture did not import");
 
             tryCompare(tc.list, "count", 2);
             tc.waitForRendering(tc.list);
@@ -78,7 +78,7 @@ Item {
                 + "1,851012500,p25,--squelch-db -60\n"
                 + "2,852012500,dmr,--squelch-db 0\n"
                 + "3,853012500,dmr,\n");
-            var result = importedFiles.importFile(map, "squelch-map.csv", "chan");
+            var result = testContext.importNow(map, "chan");
             verify(result.ok, result.detail || "the channel map did not import");
             var row = importedFiles.rowForPath(result.path);
             try {
@@ -114,7 +114,7 @@ Item {
                 + "3,853012500,dmr,\n"
                 + "4,118300000,am,--am-bandwidth-hz 8333\n"
                 + "5,121500000,am,\n");
-            var result = importedFiles.importFile(map, "bandwidth-map.csv", "chan");
+            var result = testContext.importNow(map, "chan");
             verify(result.ok, result.detail || "the channel map did not import");
             var row = importedFiles.rowForPath(result.path);
             try {
@@ -160,7 +160,7 @@ Item {
                 + "4,155535000,nfm,\n"
                 + "5,118300000,am,\n"
                 + "6,853012500,dmr,\n");
-            var result = importedFiles.importFile(map, "tone-map.csv", "chan");
+            var result = testContext.importNow(map, "chan");
             verify(result.ok, result.detail || "the channel map did not import");
             var row = importedFiles.rowForPath(result.path);
             try {
@@ -197,14 +197,17 @@ Item {
             var flow = findChild(tc.screen, "importsCsvImport");
             verify(flow !== null);
             if (data.tag === "primary") {
-                flow.pick("chan");
+                flow.pick("chan", tc.screen.importContext());
                 testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
             } else {
                 var source = testContext.writeFixtureCsv("cancel-consumer.csv",
                     "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
-                flow.begin(source, "Map.csv", "chan");
+                // A new import, as the kind sheet starts: pendingRow is the stale state under test.
+                flow.begin(source, "Map.csv", "chan", {generation: tc.screen.generation});
+                tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
                 findChild(flow, "csvCompanionSheet").requestDismiss();
             }
+            tryCompare(flow, "active", false);
             compare(tc.screen.pendingRow, -1);
             compare(tc.screen.notice, "");
             verify(!tc.screen.noticeIsProblem);
@@ -218,7 +221,7 @@ Item {
             return path;
         }
         function addGroup(name) {
-            var result = importedFiles.importFile(groupFile(name, "3001,A," + name + "\n"), name, "group");
+            var result = testContext.importNamed(groupFile(name, "3001,A," + name + "\n"), name, "group");
             verify(result.ok, "the fixture " + name + " did not import");
             return result.path;
         }
@@ -246,6 +249,8 @@ Item {
                 var id = startUpdate(second);
                 importedFiles.remove(importedFiles.rowForPath(first));
                 testContext.answerDocumentPicked(id, "file://" + groupFile("second-new.csv", "4001,A,One\n4002,A,Two\n"), "second-new.csv", false);
+                // #832: the copy answers later, from the import worker.
+                tryCompare(findChild(tc.screen, "importsCsvImport"), "active", false);
                 compare(readRows(second), 2, "the asked-for file was replaced");
                 compare(readRows(third), 1, "the file that moved up is untouched");
                 verify(!tc.screen.noticeIsProblem, tc.screen.notice);
@@ -268,6 +273,7 @@ Item {
                 importedFiles.remove(importedFiles.rowForPath(second));
                 var count = importedFiles.count;
                 testContext.answerDocumentPicked(id, "file://" + groupFile("second-new.csv", "4001,A,One\n4002,A,Two\n"), "second-new.csv", false);
+                tryCompare(findChild(tc.screen, "importsCsvImport"), "active", false);
                 compare(importedFiles.count, count, "nothing was added");
                 compare(readRows(third), 1, "the file now in its place is untouched");
                 compare(tc.screen.notice, "That file changed while you were picking. Try again.");
@@ -395,6 +401,104 @@ Item {
                 sheet = sheet.parent;
             verify(sheet !== null);
             sheet.visible = false;
+        }
+    }
+    // #832: an import answers later, from the import worker.
+    TestCase {
+        id: importTc
+        name: "ImportsScreenImports"
+        when: windowShown
+        readonly property var screen: screenLoader.item
+        readonly property var flow: findChild(screenLoader.item, "importsCsvImport")
+
+        function groups(name, rows) {
+            var text = "id,mode,name\n";
+            for (var i = 0; i < rows; ++i)
+                text += (1001 + i) + ",A,Group " + i + "\n";
+            return testContext.writeFixtureCsv(name, text);
+        }
+        function init() {
+            importTc.screen.visible = true;
+            importTc.screen.notice = "";
+            importTc.screen.pendingRow = -1;
+        }
+        function cleanup() {
+            testContext.holdImports(false);
+            importTc.screen.visible = true;
+            tryCompare(importTc.flow, "active", false);
+            while (importedFiles.count > 0)
+                importedFiles.remove(0);
+        }
+        // The host's picker hands back @p path (issue #829).
+        function accept(path) {
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, "file://" + path, path.substring(path.lastIndexOf('/') + 1), false);
+        }
+
+        // An update names its row by path: a row removed above it while the
+        // copy runs moves it, and the update still lands on it.
+        function test_update_lands_on_its_row_after_rows_move() {
+            var above = testContext.importNow(groups("imports-above.csv", 1), "group");
+            var target = testContext.importNow(groups("imports-target.csv", 1), "group");
+            verify(above.ok && target.ok);
+            importTc.screen.pendingRow = importedFiles.rowForPath(target.path);
+            compare(importTc.screen.pendingRow, 1);
+            testContext.holdImports(true);
+            importTc.screen.importPickedFile();
+            accept(groups("imports-update.csv", 3));
+            verify(importTc.flow.copying);
+            verify(importedFiles.remove(importedFiles.rowForPath(above.path)));
+            compare(importedFiles.rowForPath(target.path), 0, "the row moved up");
+            testContext.holdImports(false);
+            tryCompare(importTc.flow, "active", false);
+            compare(importedFiles.count, 1);
+            compare(importedFiles.get(0).path, target.path);
+            compare(importedFiles.get(0).accepted, 3, "the update replaced its own row's file");
+            compare(importTc.screen.notice, "Updated · 3 talkgroups");
+            verify(!importTc.screen.noticeIsProblem);
+        }
+
+        // The screen is kept while closed: closing cancels the copy, and the
+        // answer is not reported to the next visit.
+        function test_closing_cancels_the_copy() {
+            testContext.holdImports(true);
+            importTc.screen.importPickedFile();
+            accept(groups("imports-closed.csv", 2));
+            verify(importTc.flow.copying);
+            importTc.screen.visible = false;
+            tryCompare(importTc.flow, "active", false);
+            compare(importedFiles.count, 0, "the cancelled copy added nothing");
+            compare(importTc.screen.notice, "");
+        }
+
+        // Each failure says what went wrong.
+        function test_failures_say_why() {
+            var gone = testContext.storePath("fixtures/imports-gone.csv");
+            importTc.flow.begin(gone, "imports-gone.csv", "group", importTc.screen.importContext());
+            tryCompare(importTc.flow, "active", false);
+            compare(importTc.screen.notice, "Could not read imports-gone.csv. Check that it is still available, then try again.");
+            verify(importTc.screen.noticeIsProblem);
+            var read = importTc.screen.notice;
+
+            var bad = testContext.writeFixtureCsv("imports-bad-map.csv", "not a talkgroup row\n");
+            importTc.flow.begin(bad, "imports-bad-map.csv", "dmrTgKeys", importTc.screen.importContext());
+            tryCompare(importTc.flow, "active", false);
+            verify(importTc.screen.noticeIsProblem);
+            // The parser's own reason, not only "is not a valid ...".
+            compare(importTc.screen.notice, "DMR TG key ID map CSV 'imports-bad-map.csv' contains no mappings.");
+
+            // The row is removed while its update copies.
+            var target = testContext.importNow(groups("imports-stale.csv", 1), "group");
+            verify(target.ok);
+            importTc.screen.pendingRow = 0;
+            testContext.holdImports(true);
+            importTc.screen.importPickedFile();
+            accept(groups("imports-stale-update.csv", 2));
+            verify(importedFiles.remove(0));
+            testContext.holdImports(false);
+            tryCompare(importTc.flow, "active", false);
+            compare(importTc.screen.notice, "The imported file changed while the new copy was being made. Nothing was replaced.");
+            verify(importTc.screen.noticeIsProblem);
+            compare(importedFiles.count, 0);
         }
     }
 }

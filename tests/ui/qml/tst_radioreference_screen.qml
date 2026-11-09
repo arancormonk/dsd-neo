@@ -1588,7 +1588,7 @@ Item {
 
             var picked = testContext.writeFixtureCsv("picked.csv", "TG,Mode,Name\n2001,A,Works\n")
             verify(picked.length > 0, "could not write the picked fixture")
-            verify(importedFiles.importFile(picked, "picked.csv", "group").ok,
+            verify(testContext.importNow(picked, "group").ok,
                    "the picked fixture did not import")
         }
 

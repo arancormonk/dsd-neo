@@ -4702,6 +4702,11 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         # Issue #801: the pinned Listen shortcuts, over both models.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
@@ -4712,7 +4717,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_persistence
-        PRIVATE Qt6::Core dsd-neo_runtime
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_persistence
@@ -4726,10 +4731,14 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_decryption_profiles.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -4823,6 +4832,11 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
@@ -4831,7 +4845,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_site_groups
-        PRIVATE Qt6::Core dsd-neo_runtime
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_site_groups
@@ -4987,10 +5001,14 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_session_args
@@ -5014,8 +5032,12 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
     )
@@ -5054,14 +5076,117 @@ if(DSD_ENABLE_QT_UI)
     target_link_libraries(dsd-neo_test_ui_qt_qml_gc_policy PRIVATE Qt6::Core)
     add_test(NAME UI_QT_QML_GC_POLICY COMMAND dsd-neo_test_ui_qt_qml_gc_policy)
 
-    # The imported-files layer behind the CSV pickers: DecoderHost's desktop
-    # importDocument() copy/unique-ify/replace semantics and the library model
-    # the wizard and the imports screen share.
+    # The one rule that names a stored import and finds it a free name.
+    add_executable(
+        dsd-neo_test_ui_qt_import_names
+        ui/test_ui_qt_import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_import_names
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_import_names PRIVATE Qt6::Core)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_import_names
+        PRIVATE QT_NO_KEYWORDS
+    )
+    add_test(NAME UI_QT_IMPORT_NAMES COMMAND dsd-neo_test_ui_qt_import_names)
+
+    # The import copies' transport (#832): the base local copy, its cap, cancel and abort, and the host's hand-out.
+    add_executable(
+        dsd-neo_test_ui_qt_import_transport
+        ui/test_ui_qt_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_import_transport
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_import_transport
+        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_import_transport
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_import_transport
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_IMPORT_TRANSPORT
+        COMMAND dsd-neo_test_ui_qt_import_transport
+    )
+
+    # The import worker (#832): staging folders and their sweep, one commit per request in order, cancel, teardown
+    # with a copy that will not stop, and the commit journal.
+    add_executable(
+        dsd-neo_test_ui_qt_import_service
+        ui/test_ui_qt_import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_import_service
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_import_service
+        PRIVATE Qt6::Gui dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_import_service
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_import_service
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_IMPORT_SERVICE
+        COMMAND dsd-neo_test_ui_qt_import_service
+    )
+
+    # Replay captures picked in the wizard (#832): copies on the import worker into replays/ with the free-space
+    # budget, progress and cancel, the pending/kept manifest, the startup reclaim and its guards. It links the whole UI
+    # library (load_replays() is ui_load()'s), so the deferred engine link below applies.
+    add_executable(
+        dsd-neo_test_ui_qt_replay_store
+        ui/test_ui_qt_replay_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_replay_store
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_replay_store
+        PRIVATE dsd-neo_ui_qt dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_replay_store
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_replay_store PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_REPLAY_STORE COMMAND dsd-neo_test_ui_qt_replay_store)
+
+    # The imported-files layer behind the CSV pickers: the library model the
+    # wizard and the imports screen share, its import worker and commits.
     add_executable(
         dsd-neo_test_ui_qt_imported_files_model
         ui/test_ui_qt_imported_files_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -5074,7 +5199,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE Qt6::Gui
+        PRIVATE Qt6::Gui Qt6::Test
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_imported_files_model
@@ -5238,7 +5363,11 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -5291,7 +5420,11 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -5496,13 +5629,18 @@ if(DSD_ENABLE_QT_UI)
             # They persist under disposable test storage (see qml_test_context.h).
             ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/backup_typed_paths.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/input_commit.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/csv_bundle_import.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
@@ -9114,6 +9252,7 @@ foreach(
     dsd-neo_test_ui_qt_backup_archive
     dsd-neo_test_ui_qt_backup_apply
     dsd-neo_test_ui_qt_backup_model
+    dsd-neo_test_ui_qt_replay_store
     dsd-neo_test_ui_qt_settings_recovery
     dsd-neo_test_ui_qt_store_notices
 )
@@ -22334,10 +22473,13 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_android_host
         ui/test_ui_qt_android_host.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_imports.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_sign_in.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         # #708: a queued share's hold in the real recording store.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
@@ -22364,6 +22506,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
         # WP-D1: exercise the real bridge through the retained export result.
@@ -22378,6 +22522,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/diagnostics_log.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
@@ -22464,6 +22610,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_journal.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_store.cpp
@@ -23136,9 +23284,13 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
     )
     target_include_directories(
@@ -23183,8 +23335,12 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
     )

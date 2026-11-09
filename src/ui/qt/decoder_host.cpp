@@ -13,134 +13,28 @@
 #include <QByteArray>
 #include <QClipboard>
 #include <QDateTime>
-#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIODevice>
 #include <QSaveFile>
-#include <QUrl>
 
+#include "document_import_transport.h"
 #include "json_store.h"
 #include "qstring_scrub.h"
 
 #include <Qt>
 #include <QtGlobal>
+#include <algorithm>
 
 namespace dsd_qt {
 
 namespace {
 
-QString
-imports_dir_path() {
-    // Same root json_store uses, so the library index and the files it points at
-    // can never end up under different app-data locations.
-    return json_store_path(QStringLiteral("imports"));
-}
-
-/** @brief chan.csv, chan (2).csv, chan (3).csv … first name not already taken. */
-QString
-unique_destination(const QDir& dir, const QString& fileName) {
-    if (!dir.exists(fileName)) {
-        return dir.filePath(fileName);
-    }
-    const QFileInfo info(fileName);
-    const QString base = info.completeBaseName();
-    const QString suffix = info.suffix();
-    for (int i = 2; i < 1000; i++) {
-        const QString candidate = suffix.isEmpty() ? QStringLiteral("%1 (%2)").arg(base).arg(i)
-                                                   : QStringLiteral("%1 (%2).%3").arg(base).arg(i).arg(suffix);
-        if (!dir.exists(candidate)) {
-            return dir.filePath(candidate);
-        }
-    }
-    return QString();
-}
-
-/**
- * @brief @p replacePath when it names a file directly inside @p dir, else empty.
- *
- * Canonicalizes the *directory*, not the file: QFileInfo::canonicalPath() gives
- * up on a missing leaf and returns ".", which would silently turn an update of a
- * copy that vanished behind the app's back into a fresh unique copy the caller
- * then rejects and never cleans up. The Android host resolves the parent too, so
- * this keeps the two in step.
- */
-QString
-replace_destination(const QDir& dir, const QString& replacePath) {
-    if (replacePath.isEmpty()) {
-        return QString();
-    }
-    const QString canonicalDir = QFileInfo(dir.absolutePath()).canonicalFilePath();
-    const QString canonicalTarget = QFileInfo(QFileInfo(replacePath).absolutePath()).canonicalFilePath();
-    if (canonicalDir.isEmpty() || canonicalTarget != canonicalDir) {
-        return QString();
-    }
-    return replacePath;
-}
-
-/**
- * @brief Copy @p source to @p out in chunks, at most @p maxBytes of it (no limit when negative).
- *
- * Loops on the read result rather than atEnd(): a read error returns an empty
- * chunk without advancing pos(), so an atEnd()-driven loop would spin forever on
- * it, and a readable source QFile reports size 0 for (a FIFO, /proc) claims to be
- * at its end before a byte has been read. The cap is counted on what was read for
- * the same reason, not taken from the source's reported size.
- *
- * @param abort Optional; checked before every chunk. Once raised the copy fails.
- * @return A DecoderHost::DocumentCopy value (a failed write to @p out is DocumentLocalFailed); any failure cancels
- *         @p out.
- */
-int
-copy_stream_capped(QIODevice& source, QSaveFile& out, qint64 maxBytes, const std::atomic<bool>* abort = nullptr) {
-    QByteArray chunk(1 << 16, Qt::Uninitialized);
-    qint64 total = 0;
-    for (;;) {
-        if (abort != nullptr && abort->load()) {
-            out.cancelWriting();
-            return DecoderHost::DocumentFailed;
-        }
-        const qint64 n = source.read(chunk.data(), chunk.size());
-        if (n < 0) {
-            out.cancelWriting();
-            return DecoderHost::DocumentFailed;
-        }
-        if (n == 0) {
-            return DecoderHost::DocumentCopied;
-        }
-        total += n;
-        if (maxBytes >= 0 && total > maxBytes) {
-            out.cancelWriting();
-            return DecoderHost::DocumentTooLarge;
-        }
-        if (out.write(chunk.constData(), n) != n) {
-            out.cancelWriting();
-            return DecoderHost::DocumentLocalFailed;
-        }
-    }
-}
-
-/** @brief Copy @p source to @p out in chunks; false on any read or write error. */
-bool
-copy_stream(QIODevice& source, QSaveFile& out) {
-    return copy_stream_capped(source, out, -1) == DecoderHost::DocumentCopied;
-}
-
-/** @brief The local path a file:// URL or a plain absolute path names; empty for anything else (a content URI). */
-QString
-local_document_path(const QString& reference) {
-    const QUrl url(reference);
-    if (url.isLocalFile()) {
-        return url.toLocalFile();
-    }
-    return QDir::isAbsolutePath(reference) ? reference : QString();
-}
-
-/** @brief Open @p out for writing, readable and writable by the owner only. */
-bool
-open_private(QSaveFile& out) {
-    return out.open(QIODevice::WriteOnly) && out.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+/** @brief A copy_stream_capped() predicate that stops once @p aborted is raised (never with no flag). */
+std::function<bool(qint64)>
+until_aborted(const std::atomic<bool>* aborted) {
+    return [aborted](qint64) { return aborted == nullptr || !aborted->load(); };
 }
 
 } // namespace
@@ -179,7 +73,7 @@ DecoderHost::copyDocumentToFile(const QString& reference, const QString& destPat
     if (!open_private(out)) {
         return DocumentLocalFailed;
     }
-    const int copied = copy_stream_capped(source, out, maxBytes, &m_documentTransfersAborted);
+    const int copied = copy_stream_capped(source, out, maxBytes, until_aborted(&m_documentTransfersAborted));
     if (copied != DocumentCopied) {
         return copied;
     }
@@ -200,12 +94,40 @@ DecoderHost::copyFileToLocalDocument(const QString& sourcePath, const QString& r
         return false;
     }
     QSaveFile out(path);
-    return open_private(out) && copy_stream_capped(source, out, -1, aborted) == DocumentCopied && out.commit();
+    return open_private(out) && copy_stream_capped(source, out, -1, until_aborted(aborted)) == DocumentCopied
+           && out.commit();
 }
 
 void
 DecoderHost::abortDocumentTransfers() {
     m_documentTransfersAborted.store(true);
+    const std::lock_guard<std::mutex> lock(m_importTransportsLock);
+    for (const std::weak_ptr<DocumentImportTransport>& handedOut : m_importTransports) {
+        if (const std::shared_ptr<DocumentImportTransport> transport = handedOut.lock()) {
+            transport->abort();
+        }
+    }
+}
+
+std::shared_ptr<DocumentImportTransport>
+DecoderHost::importTransport() const {
+    return keepImportTransport(std::make_shared<DocumentImportTransport>());
+}
+
+std::shared_ptr<DocumentImportTransport>
+DecoderHost::keepImportTransport(std::shared_ptr<DocumentImportTransport> transport) const {
+    const std::lock_guard<std::mutex> lock(m_importTransportsLock);
+    m_importTransports.erase(
+        std::remove_if(m_importTransports.begin(), m_importTransports.end(),
+                       [](const std::weak_ptr<DocumentImportTransport>& handedOut) { return handedOut.expired(); }),
+        m_importTransports.end());
+    m_importTransports.push_back(transport);
+    /* abortDocumentTransfers() raises the flag before it takes the lock, so a transport kept after its sweep sees the
+     * flag here. */
+    if (m_documentTransfersAborted.load()) {
+        transport->abort();
+    }
+    return transport;
 }
 
 QVariantMap
@@ -515,54 +437,6 @@ DecoderHost::reportRecordingsMissing(const QStringList& paths) {
     if (!paths.isEmpty()) {
         Q_EMIT recordingFilesMissing(paths);
     }
-}
-
-QString
-DecoderHost::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {
-    const QUrl url(reference);
-    return importLocalFile(url.isLocalFile() ? url.toLocalFile() : reference, fileName, replacePath);
-}
-
-QString
-DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName, const QString& replacePath) {
-    QFile source(sourcePath);
-    if (!source.open(QIODevice::ReadOnly)) {
-        return QString();
-    }
-
-    QDir importsDir(imports_dir_path());
-    if (!importsDir.mkpath(QStringLiteral("."))) {
-        return QString();
-    }
-
-    // The display name comes from the picker; keep only its last component so
-    // it cannot navigate out of the imports directory.
-    QString name = QFileInfo(fileName).fileName();
-    if (name.isEmpty()) {
-        name = QFileInfo(sourcePath).fileName();
-    }
-    if (name.isEmpty()) {
-        return QString();
-    }
-
-    QString destination = replace_destination(importsDir, replacePath);
-    if (destination.isEmpty()) {
-        destination = unique_destination(importsDir, name);
-    }
-    if (destination.isEmpty()) {
-        return QString();
-    }
-
-    // QSaveFile stages beside the target and renames over it on commit, so an
-    // update never leaves a half-written CSV where a saved system points.
-    QSaveFile out(destination);
-    if (!open_private(out)) {
-        return QString();
-    }
-    if (!copy_stream(source, out) || !out.commit()) {
-        return QString();
-    }
-    return destination;
 }
 
 } // namespace dsd_qt

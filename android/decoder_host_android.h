@@ -198,18 +198,6 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void requestLocalDeviceAccess() override;
     void setScreenPolicy(int mode, int delaySeconds) override;
 
-    /** @brief Materialize a replay document into durable app-private storage; returns "" on failure. */
-    QString importContentUri(const QString& reference, const QString& fileName) override;
-
-    /**
-     * @brief Materialize a SAF content URI into filesDir/imports; returns "" on failure.
-     *
-     * No default argument: on a virtual it would be bound from the static type of
-     * the call, so a base-class default that ever changed would silently mean two
-     * different things depending on which pointer type the caller held.
-     */
-    QString importDocument(const QString& reference, const QString& fileName, const QString& replacePath) override;
-
     /**
      * @brief Finish the Activity so a committed restore applies at the next launch (#580).
      *
@@ -240,6 +228,19 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      */
     int copyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes) const override;
     bool copyFileToDocument(const QString& sourcePath, const QString& reference) const override;
+
+    /**
+     * @brief The import copies' transport (#832; decoder_host_android_imports.cpp), on the import worker thread.
+     *
+     * A content:// reference goes over JNI to DocumentCopies' import copies, on the held ContentResolver, as the
+     * backup's copies do: the destination is cleared first (DocumentLocalFailed when it cannot be), and without a held
+     * ContentResolver the copy is DocumentLocalFailed. The platform's codes pass through, DocumentCancelled included.
+     * A copy reported without its file (a failed JNI call reads as 0) is DocumentLocalFailed; any other answer is
+     * DocumentFailed. Any other reference takes the base transport's local copy. cancel() and forget() reach both
+     * sides; progress() reads the side the latest copy took. abortDocumentTransfers() stops the platform's copies
+     * (DocumentCopies.abort()) and aborts the transport.
+     */
+    std::shared_ptr<dsd_qt::DocumentImportTransport> importTransport() const override;
 
     /**
      * @brief Shared storage's "Call recordings" folder, then internal storage's (#708 D1; RecordingShare.roots()).
@@ -428,6 +429,24 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static int platformCopyDocumentToFile(const QString& reference, const QString& destPath, qint64 maxBytes);
     /** @brief DocumentCopies.copyFileToDocument() over JNI; false when the call failed. */
     static bool platformCopyFileToDocument(const QString& sourcePath, const QString& reference);
+    /*
+     * DocumentCopies' import copies over JNI (#832), from the import worker. The transport that calls them is a nested
+     * class so it can, without holding the host.
+     */
+    class ImportTransport;
+    /**
+     * @brief DocumentCopies.copyImportDocument(): a DocumentCopy value, 0 when the call failed, and DocumentLocalFailed
+     * without a held ContentResolver.
+     */
+    static int platformCopyImportDocument(qint64 request, const QString& reference, const QString& destPath,
+                                          qint64 maxBytes);
+    static void platformCancelImport(qint64 request);
+    /** @brief DocumentCopies.importProgress(): bytes copied and declared size; -1, -1 when none runs or it failed. */
+    static void platformImportProgress(qint64 request, qint64& bytes, qint64& total);
+    /** @brief DocumentCopies.importName(); empty when it has none or the call failed. */
+    static QString platformImportName(qint64 request);
+    static bool platformImportNoSpace(qint64 request);
+    static void platformForgetImport(qint64 request);
     void requestServiceStop();
     /* Call recordings (#708) over JNI: RecordingShare, RecordingPlayback and RecordingExport. */
     /** @brief RecordingShare.roots(); empty when the call failed. */

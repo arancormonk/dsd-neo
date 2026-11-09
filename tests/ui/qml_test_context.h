@@ -41,6 +41,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QFocusEvent>
@@ -66,12 +67,14 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
 #include <QXmlStreamReader>
 #include <QtQuickTest>
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <ctime>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/scan_list_view.h>
@@ -88,8 +91,11 @@
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <iterator>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <thread>
 #include <utility>
+#include "../test_support/qt_library_import.h"
 #include "../test_support/qt_test_paths.h"
 #include "decryption_profiles_model.h"
 
@@ -101,6 +107,7 @@
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
+#include "document_import_transport.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "json_store.h"
@@ -128,17 +135,91 @@ using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
 
 /**
+ * @brief The switch that holds import copies (#832): while held, every copy waits before it starts until the switch
+ * opens or its request is cancelled, so a case can see an import in flight and cancel it there. Held even through a
+ * cancel, a cancelled copy waits too, so a case can see the flow while it waits for that answer.
+ */
+struct ImportCopyGate {
+    std::mutex lock;
+    std::condition_variable changed;
+    bool held = false;          // guarded by lock
+    bool holdCancelled = false; // guarded by lock
+    std::set<qint64> cancelled; // guarded by lock
+    int waiting = 0;            // guarded by lock: the copies held right now
+
+    void
+    hold(bool on, bool evenCancelled) {
+        {
+            const std::lock_guard<std::mutex> guard(lock);
+            held = on;
+            holdCancelled = on && evenCancelled;
+        }
+        changed.notify_all();
+    }
+
+    /* Whether @p request may copy now; the caller holds the lock. */
+    bool
+    opens(qint64 request) const {
+        return !held || (!holdCancelled && cancelled.count(request) != 0);
+    }
+};
+
+/** @brief The base transport behind an ImportCopyGate: the copy itself is the production local-file copy. */
+class HeldImportTransport : public dsd_qt::DocumentImportTransport {
+  public:
+    explicit HeldImportTransport(std::shared_ptr<ImportCopyGate> gate) : m_gate(std::move(gate)) {}
+
+    int
+    copy(qint64 request, const QString& reference, const QString& destPath, qint64 maxBytes) override {
+        {
+            std::unique_lock<std::mutex> guard(m_gate->lock);
+            ++m_gate->waiting;
+            m_gate->changed.wait(guard, [&] { return m_gate->opens(request); });
+            --m_gate->waiting;
+        }
+        return DocumentImportTransport::copy(request, reference, destPath, maxBytes);
+    }
+
+    void
+    cancel(qint64 request) override {
+        DocumentImportTransport::cancel(request);
+        {
+            const std::lock_guard<std::mutex> guard(m_gate->lock);
+            m_gate->cancelled.insert(request);
+        }
+        m_gate->changed.notify_all();
+    }
+
+  private:
+    std::shared_ptr<ImportCopyGate> m_gate;
+};
+
+/**
  * @brief Minimal DecoderHost so ImportedFilesModel has one to copy through.
  *
- * Only importDocument() is exercised here, and that is DecoderHost's own
- * non-virtual desktop implementation. The lifecycle members exist because the
- * base class is abstract; the `decoderHost` the QML reads is still the plain map
- * below, which is what keeps the screens' session bindings drivable from a case.
+ * Only its import transport is used here: the base local-file copy, behind a gate the cases can hold. The lifecycle
+ * members exist because the base class is abstract; the `decoderHost` the QML reads is still the plain map below,
+ * which is what keeps the screens' session bindings drivable from a case.
  */
 class ImportOnlyHost : public dsd_qt::DecoderHost {
     Q_OBJECT
 
   public:
+    ImportOnlyHost() = default;
+    ImportOnlyHost(const ImportOnlyHost&) = delete;
+    ImportOnlyHost& operator=(const ImportOnlyHost&) = delete;
+
+    /* A copy still held at teardown goes on, so the import worker can end. */
+    ~ImportOnlyHost() override { importGate->hold(false, false); }
+
+    /* #832: holdImports() holds the copies of every model built over this host. */
+    std::shared_ptr<ImportCopyGate> importGate = std::make_shared<ImportCopyGate>();
+
+    std::shared_ptr<dsd_qt::DocumentImportTransport>
+    importTransport() const override {
+        return keepImportTransport(std::make_shared<HeldImportTransport>(importGate));
+    }
+
     bool
     isRunning() const override {
         return m_running;
@@ -464,6 +545,170 @@ class InitializingHost : public ImportOnlyHost {
     signalsSessionInitialized() const override {
         return true;
     }
+};
+
+/**
+ * @brief The `replayFiles` the wizard copies a picked replay through (#832), scripted by the case.
+ *
+ * The production ReplayStore copies only content URIs (a local file is answered with its own path), which this
+ * desktop suite cannot make. So a case drives the copy's progress and its answer itself, through
+ * testContext.replayProgress() and finishReplay(); the surface QML reads is the store's.
+ */
+class ReplayFilesFake : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool copying READ copying NOTIFY progressChanged)
+    Q_PROPERTY(QString copyName READ copyName NOTIFY progressChanged)
+    Q_PROPERTY(qint64 copyBytes READ copyBytes NOTIFY progressChanged)
+    Q_PROPERTY(qint64 copyTotal READ copyTotal NOTIFY progressChanged)
+
+  public:
+    using QObject::QObject;
+
+    /* As the store's: a copy still running is cancelled first. A local file (a file:// URL or an absolute path) is
+     * never copied: it is answered later with its own path, and no copy runs meanwhile. */
+    Q_INVOKABLE int
+    beginReplayImport(const QString& reference, const QString& fileName) {
+        if (m_current != 0) {
+            dropCurrent();
+        }
+        ++begins;
+        lastReference = reference;
+        const QString local = dsd_qt::local_document_path(reference);
+        if (!local.isEmpty()) {
+            const int id = ++m_next;
+            const QVariantMap answer{{QStringLiteral("ok"), true},
+                                     {QStringLiteral("path"), QDir::cleanPath(local)},
+                                     {QStringLiteral("name"), QFileInfo(local).fileName()}};
+            QMetaObject::invokeMethod(
+                this, [this, id, answer]() { Q_EMIT replayImportFinished(id, answer); }, Qt::QueuedConnection);
+            return id;
+        }
+        m_current = ++m_next;
+        m_name = fileName;
+        m_bytes = 0;
+        m_total = -1;
+        Q_EMIT progressChanged();
+        return m_current;
+    }
+
+    /* As the store's: the running copy stops copying and answers "cancelled" later, from the event loop, and never
+     * again; finishReplay() then has no copy to answer. */
+    Q_INVOKABLE void
+    cancelReplayImport() {
+        if (m_current != 0) {
+            ++cancels;
+            dropCurrent();
+        }
+    }
+
+    bool
+    copying() const {
+        return m_current != 0;
+    }
+
+    QString
+    copyName() const {
+        return m_name;
+    }
+
+    qint64
+    copyBytes() const {
+        return m_bytes;
+    }
+
+    qint64
+    copyTotal() const {
+        return m_total;
+    }
+
+    void
+    progress(qint64 bytes, qint64 total) {
+        m_bytes = bytes;
+        m_total = total;
+        Q_EMIT progressChanged();
+    }
+
+    /* Answer the running copy with @p result (its name filled in when the case leaves it out); false with none. */
+    bool
+    finish(QVariantMap result) {
+        if (m_current == 0) {
+            return false;
+        }
+        const int id = m_current;
+        if (!result.contains(QStringLiteral("name"))) {
+            result.insert(QStringLiteral("name"), m_name);
+        }
+        m_current = 0;
+        Q_EMIT progressChanged();
+        Q_EMIT replayImportFinished(id, result);
+        return true;
+    }
+
+    /* As the store's: the copy this session's migration moved @p path to (that uid's first, else any), else @p path. */
+    Q_INVOKABLE QString
+    migratedPath(const QString& uid, const QString& path) const {
+        QString any;
+        for (const auto& move : m_migrated) {
+            if (move.value(1) == path && move.value(0) == uid) {
+                return move.value(2);
+            }
+            if (move.value(1) == path && any.isEmpty()) {
+                any = move.value(2);
+            }
+        }
+        return any.isEmpty() ? path : any;
+    }
+
+    /* The migration repointed the system @p uid from @p from to @p to, as the store's commit does. */
+    void
+    migrate(const QString& uid, const QString& from, const QString& to) {
+        m_migrated.append({uid, from, to});
+        Q_EMIT replaysMigrated();
+    }
+
+    void
+    reset() {
+        m_migrated.clear();
+        m_current = 0;
+        m_name.clear();
+        m_bytes = 0;
+        m_total = -1;
+        begins = 0;
+        cancels = 0;
+        lastReference.clear();
+        Q_EMIT progressChanged();
+    }
+
+    int begins = 0;
+    int cancels = 0;
+    QString lastReference;
+
+  Q_SIGNALS:
+    void replayImportFinished(int id, const QVariantMap& result);
+    void progressChanged();
+    void replaysMigrated();
+
+  private:
+    /* The running copy answers "cancelled", queued, and no copy runs from here on. */
+    void
+    dropCurrent() {
+        const int previous = m_current;
+        const QVariantMap cancelled{{QStringLiteral("ok"), false},
+                                    {QStringLiteral("error"), QStringLiteral("cancelled")},
+                                    {QStringLiteral("name"), m_name}};
+        QMetaObject::invokeMethod(
+            this, [this, previous, cancelled]() { Q_EMIT replayImportFinished(previous, cancelled); },
+            Qt::QueuedConnection);
+        m_current = 0;
+        Q_EMIT progressChanged();
+    }
+
+    int m_current = 0;
+    int m_next = 0;
+    QString m_name;
+    qint64 m_bytes = 0;
+    qint64 m_total = -1;
+    QList<QStringList> m_migrated; // {uid, from, to}
 };
 
 // The history model itself is already real in these fixtures; the controller
@@ -2376,15 +2621,6 @@ class ReadingMap : public QQmlPropertyMap {
         noteCall(QStringLiteral("discardPendingDownload"), {{QStringLiteral("reference"), reference}});
     }
 
-    /* The wizard's replay file copy: the reference itself, as the base host answers, unless a case set what the copy
-     * gives (testContext.setImportContentResult(); "" is a copy that failed). */
-    Q_INVOKABLE QString
-    importContentUri(const QString& reference, const QString& fileName) {
-        noteCall(QStringLiteral("importContentUri"),
-                 {{QStringLiteral("reference"), reference}, {QStringLiteral("fileName"), fileName}});
-        return importContentAnswered ? importContentResult : reference;
-    }
-
     void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
@@ -2399,9 +2635,6 @@ class ReadingMap : public QQmlPropertyMap {
     QVariantList calls;
     QVariantMap lastDocumentRequest;
     QMap<QString, QString> savedDocumentNames;
-    /* What importContentUri() answers once a case set it; until then it echoes the reference. */
-    bool importContentAnswered = false;
-    QString importContentResult;
     bool shareAccepted = true;
     /* Issue #782: false for a host that ignores a seek (a platform player that clamps it or drops it). */
     bool seekApplied = true;
@@ -3408,6 +3641,8 @@ class Setup : public QObject {
      * every ancestor's interface lists the one below it among its children, which is how the Android bridge builds
      * its node tree (childIdListForAccessibleObject). `role` is the QAccessible::Role value; `name`, `description`
      * and `value` are the interface's texts; `invisible`, `checked` and `focusable` are its state flags.
+     * `currentValue` is the value interface's reading (a progress bar's, which the Android bridge reads after the
+     * name), or undefined when it has none.
      */
     Q_INVOKABLE QVariantMap
     accessibleNode(QObject* item) const {
@@ -3415,6 +3650,7 @@ class Setup : public QObject {
         if (iface == nullptr || !iface->isValid()) {
             return {{QStringLiteral("exists"), false}, {QStringLiteral("inTree"), false}};
         }
+        QAccessibleValueInterface* value = iface->valueInterface();
         return {{QStringLiteral("exists"), true},
                 {QStringLiteral("inTree"), accessibleInTree(iface)},
                 {QStringLiteral("role"), static_cast<int>(iface->role())},
@@ -3424,7 +3660,8 @@ class Setup : public QObject {
                 {QStringLiteral("invisible"), static_cast<bool>(iface->state().invisible)},
                 {QStringLiteral("checked"), static_cast<bool>(iface->state().checked)},
                 {QStringLiteral("focusable"), static_cast<bool>(iface->state().focusable)},
-                {QStringLiteral("childCount"), iface->childCount()}};
+                {QStringLiteral("childCount"), iface->childCount()},
+                {QStringLiteral("currentValue"), value != nullptr ? value->currentValue() : QVariant()}};
     }
 
     /**
@@ -3753,16 +3990,14 @@ class Setup : public QObject {
 
     /**
      * @brief Forget them, and put the player and the transfer back at rest (nothing open, nothing running). The
-     * document picker's records go too, on every host: no lastDocumentRequest() from before the reset, no name set
-     * through setSavedDocumentName() and no importContentUri() answer set through setImportContentResult().
+     * document picker's records go too, on every host: no lastDocumentRequest() from before the reset and no name set
+     * through setSavedDocumentName().
      */
     Q_INVOKABLE void
     resetHostPlayback() {
         m_host_readings->calls.clear();
         m_host_readings->lastDocumentRequest.clear();
         m_host_readings->savedDocumentNames.clear();
-        m_host_readings->importContentAnswered = false;
-        m_host_readings->importContentResult.clear();
         for (ImportOnlyHost* host : {m_import_host, m_initializing_host}) {
             host->lastDocumentRequest.clear();
             host->documentCalls.clear();
@@ -3963,7 +4198,7 @@ class Setup : public QObject {
      * @brief Write @p contents to a disposable CSV and answer its path.
      *
      * The imports library only grows a row by copying a real file through
-     * DecoderHost::importDocument() and parsing what landed, and QML cannot
+     * its import transport and parsing what landed, and QML cannot
      * create one. The file goes under the same disposable app data tree the
      * library itself persists to, so a run leaves nothing behind.
      */
@@ -3985,6 +4220,17 @@ class Setup : public QObject {
         return path;
     }
 
+    /** @brief A disposable fixture of @p bytes zero bytes (sparse where it can be), for the import size limits. */
+    Q_INVOKABLE QString
+    writeSizedFixture(const QString& name, double bytes) const {
+        const QString path = writeFixtureCsv(name, QString());
+        QFile file(path);
+        if (path.isEmpty() || !file.open(QIODevice::ReadWrite) || !file.resize(static_cast<qint64>(bytes))) {
+            return QString();
+        }
+        return path;
+    }
+
     /**
      * @brief Make @p path impossible to replace or delete as a file, or (@p blocked false) put it back.
      *
@@ -3997,6 +4243,69 @@ class Setup : public QObject {
             return QFile::rename(path, path + QStringLiteral(".held")) && QDir().mkpath(path + QStringLiteral("/held"));
         }
         return QDir(path).removeRecursively() && QFile::rename(path + QStringLiteral(".held"), path);
+    }
+
+    /**
+     * @brief Import @p path as @p type through the library's own async import, and answer its result once it is in
+     * (#832); a fixture's one-line import. The stored copy takes the file's own name.
+     */
+    Q_INVOKABLE QVariantMap
+    importNow(const QString& path, const QString& type) {
+        return dsd_test_import_and_wait(*m_imported_files, path, type);
+    }
+
+    /** @brief importNow() of a copy of @p path picked under @p name, so the stored copy takes that name. */
+    Q_INVOKABLE QVariantMap
+    importNamed(const QString& path, const QString& name, const QString& type) {
+        return dsd_test_import_named_and_wait(*m_imported_files, path, name, type);
+    }
+
+    /**
+     * @brief Hold every import copy before it starts (#832), or let the held ones go on. A cancel lets its copy go on
+     * (to answer "cancelled") unless @p evenCancelled.
+     */
+    Q_INVOKABLE void
+    holdImports(bool held, bool evenCancelled = false) {
+        m_import_host->importGate->hold(held, evenCancelled);
+    }
+
+    /** @brief How many import copies are held right now: a case waits for its copy to reach the gate. */
+    Q_INVOKABLE int
+    heldImports() const {
+        const std::lock_guard<std::mutex> guard(m_import_host->importGate->lock);
+        return m_import_host->importGate->waiting;
+    }
+
+    /** @brief The running replay copy has made @p bytes of @p total (-1: size unknown). */
+    Q_INVOKABLE void
+    replayProgress(double bytes, double total) {
+        m_replay_files->progress(static_cast<qint64>(bytes), static_cast<qint64>(total));
+    }
+
+    /** @brief Answer the running replay copy with @p result; false when none runs. */
+    Q_INVOKABLE bool
+    finishReplay(const QVariantMap& result) {
+        return m_replay_files->finish(result);
+    }
+
+    /** @brief The startup migration moved system @p uid's cached replay @p from to its copy @p to. */
+    Q_INVOKABLE void
+    migrateReplay(const QString& uid, const QString& from, const QString& to) {
+        m_replay_files->migrate(uid, from, to);
+    }
+
+    /** @brief What the wizard asked of `replayFiles`: begins, cancels and the last reference. */
+    Q_INVOKABLE QVariantMap
+    replayCalls() const {
+        return {{QStringLiteral("begins"), m_replay_files->begins},
+                {QStringLiteral("cancels"), m_replay_files->cancels},
+                {QStringLiteral("reference"), m_replay_files->lastReference}};
+    }
+
+    /** @brief Forget every replay copy and call, for the next case. */
+    Q_INVOKABLE void
+    resetReplayFiles() {
+        m_replay_files->reset();
     }
 
     /**
@@ -4324,13 +4633,6 @@ class Setup : public QObject {
         m_import_host->savedDocumentNames.insert(reference, name);
         m_initializing_host->savedDocumentNames.insert(reference, name);
         m_host_readings->savedDocumentNames.insert(reference, name);
-    }
-
-    /** @brief What the decoderHost map's importContentUri() answers until the next reset; "" is a failed copy. */
-    Q_INVOKABLE void
-    setImportContentResult(const QString& path) {
-        m_host_readings->importContentAnswered = true;
-        m_host_readings->importContentResult = path;
     }
 
     /** @brief Publish a live/idle host so cases can exercise session-only actions. */
@@ -5418,6 +5720,9 @@ class Setup : public QObject {
         auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
         session_args->setSavedSystems(saved_systems);
         ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
+        m_imported_files = imported_files;
+        m_replay_files = new ReplayFilesFake(engine);
+        ctx->setContextProperty(QStringLiteral("replayFiles"), m_replay_files);
         m_network = new dsd_qt::P25NetworkModel(engine);
         ctx->setContextProperty(QStringLiteral("p25Network"), m_network); // WP-F2
         // Issue #782: the production state, following QAccessible (on in the DSD_QML_TEST_ACCESSIBILITY=1 run).
@@ -5553,6 +5858,8 @@ class Setup : public QObject {
 
     CommandRecorder* m_commands = nullptr;
     ImportOnlyHost* m_import_host = nullptr;
+    dsd_qt::ImportedFilesModel* m_imported_files = nullptr;
+    ReplayFilesFake* m_replay_files = nullptr;
     ImportOnlyHost* m_initializing_host = nullptr;
     ImportOnlyHost* m_lifecycle_host = nullptr;
     std::unique_ptr<dsd_opts> m_talkgroup_opts = std::make_unique<dsd_opts>();

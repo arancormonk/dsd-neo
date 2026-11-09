@@ -8,17 +8,22 @@
  * @brief Library of imported CSV files (channel maps, talkgroups, keys, P25 band plans, radio IDs), persisted as JSON.
  *
  * The wizard's pickers and the imports screen share this model: importing copies
- * the picked document into durable app storage through DecoderHost::importDocument(),
- * dry-run validates it for row counts, and records one library row per stored file.
- * Saved systems reference stored paths, so one file can serve several systems.
+ * the picked document into a private staging folder on the import worker
+ * (ImportService), dry-run validates it there for row counts, then publishes it
+ * into durable app storage on the Qt thread and records one library row per
+ * stored file. Saved systems reference stored paths, so one file can serve
+ * several systems.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_IMPORTED_FILES_MODEL_H_
 #define DSD_NEO_SRC_UI_QT_IMPORTED_FILES_MODEL_H_
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QList>
 #include <QObject>
+#include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -26,15 +31,23 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <functional>
+#include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
-struct CsvBundleImport;
+struct BundleRevisions;
+struct LibraryFile;
 
 class DecoderHost;
+class ImportService;
 
 class ImportedFilesModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    /** Whether an import this model began has not finished yet. */
+    Q_PROPERTY(bool importing READ importing NOTIFY importingChanged)
+    /** Changes with every change to the library, a replaced file's counts included; bind entriesForType() to it. */
+    Q_PROPERTY(int revision READ revision NOTIFY entriesChanged)
 
   public:
     /* Append new roles; never insert. A delegate that binds by number would
@@ -52,8 +65,20 @@ class ImportedFilesModel : public QAbstractListModel {
         RrSiteIdsRole   // every selected siteId, comma-joined - what a refresh matches on
     };
 
+    /**
+     * @brief The library, importing through @p imports, the app's one import worker.
+     *
+     * The service may be destroyed first (the app's is); the model never calls it from its destructor.
+     */
+    ImportedFilesModel(DecoderHost* host, ImportService* imports, QObject* parent = nullptr);
+    /** @brief The library with an import worker of its own, copying through @p host's transport (tests, fixtures). */
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
     ~ImportedFilesModel() override;
+
+    /** How a replace moves its staged copy over the stored file: 0, else -1 with errno set. */
+    using ReplaceFile = std::function<int(const QString& staged, const QString& path)>;
+    /** @brief Replace how a replace moves its file (tests: a move that fails, or does something first). */
+    void setReplaceFile(ReplaceFile replaceFile);
 
     /** @brief Every library row type the model can validate; a row of any other type cannot be used. */
     static QStringList knownTypes();
@@ -79,59 +104,67 @@ class ImportedFilesModel : public QAbstractListModel {
         return static_cast<int>(m_rows.size());
     }
 
-    /** WP-D1: generate an app-owned destination without registering or writing a file. */
+    bool
+    importing() const {
+        return !m_inFlight.isEmpty();
+    }
+
+    int
+    revision() const {
+        return static_cast<int>(m_revision & 0x7fffffffU);
+    }
+
+    /**
+     * WP-D1: generate an app-owned destination without registering or writing a file. The path stays reserved for the
+     * life of the process (the engine may still write it after the export flow gave up), so no import takes its name.
+     */
     Q_INVOKABLE QString newTalkgroupListPath() const;
-    /** Register a successfully exported list in place; the engine keeps writing this path. */
+    /**
+     * Register a successfully exported list in place; the engine keeps writing this path. False, with no row added,
+     * when the library cannot be saved; the file stays where it is.
+     */
     Q_INVOKABLE bool registerTalkgroupList(const QString& path);
 
     /**
-     * @brief Copy a picked document into the library, validate it, record a row.
+     * @brief Import a picked document: copied and checked on the import worker, published on the Qt thread.
      *
-     * @return {ok, path, name, accepted, skipped, error}. error is "" on success,
-     *         "open" when the copy or parse failed (no row is added), or "empty"
-     *         when the file parsed but no row was usable — the row is kept, so
-     *         the user can fix the file and update, but the UI should warn.
+     * @param reference   The picker's reference (a file:// URL, a path, or an Android content URI).
+     * @param fileName    The picker's name hint; the provider's own name for the document wins over it.
+     * @param type        The library type to import it as.
+     * @param companions  A bundle's companion choices (channel maps and target lists).
+     * @param replacePath The stored path of the row to replace, or empty for a new row. It is taken when the pick
+     *                    is asked for, never a row index: rows can go while a picker is up (issue #829), and a path
+     *                    no row holds any more is refused at once ("changed", with detail). A replace commits only
+     *                    when that row is still there unchanged (else "stale"); replacing a target list is refused
+     *                    while the decoder runs ("busy"), at the start and again at the commit. A talkgroup list or
+     *                    channel map is replaced while it runs, its move under the managed-file lock
+     *                    (<dsd-neo/core/managed_file.h>), and the caller asks a running session to reload it.
+     * @return The request id (> 0); importFinished() answers it exactly once, queued, a refusal included. Result keys:
+     *         ok, error, detail, path, name, type, accepted, skipped, limitBytes, noSpace. error is "" or "empty"
+     *         (ok, no usable row) on success, else too_large (limitBytes), read, local (noSpace), format (detail),
+     *         changed (detail), stale, busy, save (detail), path or cancelled.
      */
-    Q_INVOKABLE QVariantMap importFile(const QString& reference, const QString& fileName, const QString& type);
-    Q_INVOKABLE QVariantMap importBundle(const QString& reference, const QString& fileName, const QString& type,
-                                         const QVariantMap& companions, int replaceRow = -1);
+    Q_INVOKABLE int beginImport(const QString& reference, const QString& fileName, const QString& type,
+                                const QVariantMap& companions, const QString& replacePath);
     /**
-     * @brief importBundle() for a pick that finished after the user asked for it (issue #829).
-     *
-     * The row to replace is named by the stored path it had when the pick was
-     * asked for, not by its index, since rows can be removed while a picker is
-     * up and the index would then name another file. It always replaces: a
-     * new file goes through importBundle().
-     *
-     * @return importBundle()'s result, or {ok false, error "changed", detail}
-     *         when no row holds @p replacePath any more (or it is empty);
-     *         nothing is imported.
+     * @brief Cancel import @p id. One whose commit has not run is answered "cancelled" at once (queued), without
+     * waiting for its copy to stop: a provider that ignores the cancel cannot hold the caller. The copy is still told
+     * to stop, and its commit, whenever the copy returns, publishes nothing and is not answered again. Once the commit
+     * ran, or for an unknown id, it does nothing.
      */
-    Q_INVOKABLE QVariantMap importBundleReplacing(const QString& reference, const QString& fileName,
-                                                  const QString& type, const QVariantMap& companions,
-                                                  const QString& replacePath);
-
-    /**
-     * @brief Re-pick flow: replace the row's stored file and re-validate.
-     *
-     * The pick is staged beside the library and validated BEFORE it is committed
-     * over the row's file, so a file that is not parseable as the row's type
-     * leaves the stored copy byte-identical. Every saved system referencing that
-     * path keeps working.
-     */
-    Q_INVOKABLE QVariantMap updateFile(int row, const QString& reference, const QString& fileName);
+    Q_INVOKABLE void cancelImport(int id);
 
     /**
      * @brief Adopt a file this process generated, recording where it came from.
      *
-     * Same validate/rollback/persist flow as importFile(), but the source is a
-     * plain path we wrote rather than a picker reference.
+     * beginImport()'s stage and commit, run at once on the calling thread: the source is a plain path we wrote
+     * rather than a picker reference, and @p fileName names the copy.
      *
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
      * @param type       "chan" | "group" | "keysDec" | "keysHex" | "p25Bandplan" | "src".
      * @param origin     Provenance: {origin, rrSid, rrSiteIds, rrKind, rrPartialEnc}.
-     * @return Same shape as importFile().
+     * @return beginImport()'s result.
      */
     Q_INVOKABLE QVariantMap importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
                                                 const QVariantMap& origin);
@@ -146,7 +179,7 @@ class ImportedFilesModel : public QAbstractListModel {
      *
      * @param row        Library row.
      * @param sourcePath Absolute path of the freshly generated file.
-     * @return Same shape as importFile().
+     * @return beginImport()'s result.
      */
     Q_INVOKABLE QVariantMap refreshGeneratedFile(int row, const QString& sourcePath);
 
@@ -198,13 +231,71 @@ class ImportedFilesModel : public QAbstractListModel {
 
   Q_SIGNALS:
     void countChanged();
+    /** Every library change: a row added, removed or replaced. */
+    void entriesChanged();
+    void importingChanged();
+    void importFinished(int id, const QVariantMap& result);
 
   private:
-    QVariantMap companionDetails(const CsvBundleImport& bundle) const;
+    /** What a request imports into: a new row of a type, or the row a replace began against (its commit needs that row
+     * still there, unchanged). */
+    struct ImportTarget {
+        QString path; // empty for a new row
+        quint64 revision = 0;
+        QString type;
+        /* A RadioReference refresh: it keeps the row's provenance, and the decoder running does not hold it back. */
+        bool refresh = false;
+        /* A channel map or target list: built with its companions, as a bundle. */
+        bool bundle = false;
+    };
+
+    QVariantMap companionDetails(const QVariantMap& requiredDetails) const;
     QVariantMap companionChoices(const QVariantMap& requirement) const;
-    QVariantMap replaceBundle(int replaceRow, const CsvBundleImport& bundle, const QString& type);
-    QString bundleReplacementError(int row, const QString& type) const;
+    /** What a bundle stage needs from the library, taken on the Qt thread: its rows' types and the replaced row. */
+    QVariantMap bundleRequest(const QString& reference, const QString& fileName, const QString& type,
+                              const QVariantMap& companions, const ImportTarget& target) const;
     bool decoderBusy() const;
+    /**
+     * Whether a cleanup must delete nothing: no host, or a decoder this UI sees or the host's live answer says is
+     * starting or running. The live answer matters at startup, where Android's cached phase reads Idle until its first
+     * refresh() even while the service runs a session that may still read an older revision.
+     */
+    bool cleanupBlocked() const;
+    /** Whether replacing a row of @p type must wait: the running engine writes talkgroup lists, reads target lists. */
+    bool replacementBusy(const QString& type) const;
+    /** beginImport()'s answer when it refuses at once, else empty with @p target filled. */
+    QVariantMap importRefusal(const QString& type, const QString& replacePath, ImportTarget* target) const;
+    /** Answer a request at once, through a queued importFinished(), under a fresh id. */
+    int answerLater(const QVariantMap& result);
+    /** Emit importFinished(@p id, @p result) later, from the event loop. */
+    void answerQueued(int id, const QVariantMap& result);
+    /** Run a single-file stage and its commit at once on the calling thread; the commit's result. */
+    QVariantMap importNow(const QString& reference, const QString& providerName, const QString& hint,
+                          const QString& type, const ImportTarget& target, const QVariantMap& origin);
+    void finishImport(qint64 id, const QVariantMap& staged, bool cancelled, const ImportTarget& target);
+    QVariantMap commitStaged(const QVariantMap& staged, bool cancelled, const ImportTarget& target,
+                             const QVariantMap& origin);
+    QVariantMap commitNewFile(const QVariantMap& staged, const QVariantMap& origin);
+    QVariantMap commitReplacement(const QVariantMap& staged, const ImportTarget& target);
+    /** The row @p target began against, or -1 when it is gone or changed since. */
+    int currentRow(const ImportTarget& target) const;
+    /** A bundle's commit: its new directories journaled, made and filled, then the primary published or replaced. */
+    QVariantMap commitBundle(const QVariantMap& staged, const ImportTarget& target);
+    /** Record a new bundle whose directories @p created are filled: publish the primary, then save the row. */
+    QVariantMap publishBundle(const QVariantMap& staged, const QStringList& created);
+    QVariantMap replaceBundleRow(int row, const QVariantMap& staged, const QStringList& created);
+    /**
+     * Replace row @p row's file with the staged copy: the index saved first, then the file moved over. @p created are
+     * the journaled directories the commit made for it: removed when nothing was published, dropped from the journal
+     * once the file is in place, and left journaled when neither the move nor the rollback could be saved.
+     */
+    QVariantMap replaceRowFile(int row, const QVariantMap& staged, bool refresh, const QStringList& created = {});
+    /**
+     * Reclaim @p bundles' unreached revisions on the import worker, keeping any file another row's CSV reaches;
+     * nothing while cleanupBlocked().
+     */
+    void reclaimRevisions(const QList<BundleRevisions>& bundles);
+    void updateImporting(bool before);
 
     struct Row {
         QString name;
@@ -235,6 +326,9 @@ class ImportedFilesModel : public QAbstractListModel {
         bool rrPartialEnc = true;
         int rrEncryptionPolicy = 0;
         QString bundleRoot;
+        /* In memory only: the library revision of the row's last change (added, replaced, refreshed). A replace
+         * commits only over the revision it began against. */
+        quint64 revision = 0;
     };
 
     static Row rowFromMap(const QVariantMap& map);
@@ -248,46 +342,47 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     static QVariant provenanceRole(const Row& row, int role);
 
-    /**
-     * @brief Validate an already-stored copy and record a library row for it.
-     *
-     * Shared tail of importFile() and importGeneratedFile(): on a validation
-     * failure the copy is taken back out, because a row that cannot be parsed is
-     * a dead entry and nothing else would ever delete the file.
-     */
-    QVariantMap adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin);
-
-    /**
-     * @brief Shared tail of updateFile() and refreshGeneratedFile(): stamp the
-     *        row's new counts, notify, persist, and build the result map.
-     *
-     * @param keepProvenance True for a refresh, which rewrites the row from the
-     *        same RadioReference selection. False for a user re-pick: the bytes
-     *        are theirs now, and leaving the provenance behind would keep
-     *        offering a refresh that would silently overwrite their file.
-     */
-    QVariantMap commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance = true);
-
-    /**
-     * @brief Replace a row's file with the validated @p source and commit the
-     *        row, or roll the file back when the commit fails.
-     *
-     * The backup, install and commit-or-rollback run under the managed-file
-     * lock (<dsd-neo/core/managed_file.h>), which the decoder's group list
-     * writer takes too. The rollback restores the backup only over the bytes
-     * this replacement installed: a file changed since is kept, and the
-     * update reports failure either way.
-     */
-    QVariantMap replaceRowFile(int row, const Row& snapshot, const QString& source, int accepted, int skipped,
-                               bool keepProvenance);
+    /** @brief Append @p row, saved first: false, with nothing changed, when the index cannot be saved. */
+    bool appendRow(Row row);
+    /** @brief Take @p next, which replaced row @p row, as the library, and notify. */
+    void applyReplacement(int row, QList<Row> next);
+    static Row newRow(const QString& path, const QString& type, int accepted, int skipped, const QVariantMap& origin);
+    /** @brief A successful import's result for @p row. */
+    static QVariantMap rowResult(const Row& row);
 
     void load();
+    /**
+     * @brief Settle the commit journal a crash left (load() only, before the prune): remove each journaled directory
+     * that @p rows do not reference (a row's bundle root, or a revision its primary reaches), that holds no file
+     * kept_library_files() keeps (a typed path field names it, or any row's stored CSV reaches it), and that lies
+     * under imports/bundles/ with an owned name. A journal that cannot be read deletes nothing and is set aside; a
+     * store or stored file that cannot be read deletes nothing and keeps the journal. load() skips it while
+     * cleanupBlocked(), which keeps the journal for the next start.
+     */
+    static void recoverJournal(const QList<Row>& rows);
+    /** The stored file and type of each of @p rows, for kept_library_files(). */
+    static QList<LibraryFile> libraryFiles(const QList<Row>& rows);
     bool save() const;
     bool saveRows(const QList<Row>& rows) const;
 
     DecoderHost* m_host = nullptr;
+    QPointer<ImportService> m_imports;
+    ReplaceFile m_replaceFile;
     QList<Row> m_rows;
     QStringList m_pruned_paths;
+    /* The library revision: every change takes the next one. */
+    quint64 m_revision = 0;
+
+    /* What a request in flight answers when it is cancelled. */
+    struct InFlight {
+        QString name;
+        QString type;
+    };
+
+    /* Imports begun through the worker that are not answered yet. */
+    QHash<qint64, InFlight> m_inFlight;
+    /* Imports answered at their cancel whose commit has not run yet: it publishes nothing and answers nothing. */
+    QSet<qint64> m_dropped;
 };
 
 } // namespace dsd_qt

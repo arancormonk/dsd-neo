@@ -3,6 +3,7 @@
 """Regressions for validation of the optimized Android artifacts."""
 
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -37,6 +38,22 @@ DEX_XML = """<api><package name="io.github.arancormonk.dsdneo">
   <field name="m_popup" type="android.widget.PopupWindow" static="false"/>
 </class>
 </package></api>"""
+
+
+def kept_static_methods(class_name):
+    """The (name, descriptor) of each `public static` method the app's ProGuard rules keep in `class_name`."""
+    rules = (ROOT / "android/package/proguard-rules.pro").read_text(encoding="utf-8")
+    block = re.search(r"-keep\S*\s+class\s+" + re.escape(r8.APP_PACKAGE.replace("/", ".") + class_name) +
+                      r"\s*\{([^}]*)\}", rules)
+    if not block:
+        return set()
+    kept = set()
+    for result, name, parameters in re.findall(r"public static ([\w.\[\]]+) (\w+)\(([^)]*)\);", block.group(1)):
+        args = "".join(r8.descriptor(p.strip()) for p in parameters.split(",") if p.strip())
+        kept.add((name, "(" + args + ")" + r8.descriptor(result)))
+    return kept
+
+
 START = (r8.APP_PACKAGE + "DecoderService", "startDecoder",
          "(Landroid/content/Context;[Ljava/lang/String;J)V")
 NATIVE = (r8.APP_PACKAGE + "DsdNative", "nativeRun")
@@ -123,6 +140,36 @@ class R8ArtifactTests(unittest.TestCase):
         self.assertIn(NATIVE, downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeHostDiagnostic"), downcalls)
         self.assertIn((r8.APP_PACKAGE + "DsdNative", "nativeQuitUi"), downcalls)
+
+    def test_import_copy_entry_points_are_kept(self):
+        # DecoderHostAndroid calls these by literal name and descriptor from the import worker (#832).
+        kept = kept_static_methods("DocumentCopies")
+        for entry in (
+            ("copyImportDocument", "(Landroid/content/ContentResolver;JLjava/lang/String;Ljava/lang/String;J)I"),
+            ("cancelImport", "(J)V"),
+            ("importProgress", "(J)[J"),
+            ("importName", "(J)Ljava/lang/String;"),
+            ("importNoSpace", "(J)Z"),
+            ("forgetImport", "(J)V"),
+        ):
+            with self.subTest(entry=entry):
+                self.assertIn(entry, kept)
+        self.assertIn(("copyDocumentToFile", "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;J)I"),
+                      kept)
+
+    def test_static_keeps_match_the_native_upcalls(self):
+        # A keep with no caller left keeps dead code alive (AppSupport.importDocumentToFiles after #832), and a caller
+        # with no keep breaks once R8 renames the method.
+        upcalls, _ = r8.jni_contract(ROOT)
+        rules = (ROOT / "android/package/proguard-rules.pro").read_text(encoding="utf-8")
+        classes = re.findall(r"-keep\S*\s+class\s+" + re.escape(r8.APP_PACKAGE.replace("/", ".")) + r"(\w+)\s*\{",
+                             rules)
+        self.assertIn("AppSupport", classes)
+        for class_name in classes:
+            called = {(name, signature) for owner, name, signature in upcalls
+                      if owner == r8.APP_PACKAGE + class_name}
+            with self.subTest(class_name=class_name):
+                self.assertEqual(kept_static_methods(class_name), called)
 
     def test_mapping_requires_r8_and_class_mappings(self):
         r8.verify_mapping("# compiler: R8\nexample.Policy -> a.b:\n")

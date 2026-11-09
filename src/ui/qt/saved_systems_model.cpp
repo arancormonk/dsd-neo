@@ -3,7 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <QChar>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <qanystringview.h>
 #include <utility>
@@ -22,15 +21,11 @@
 #include <QUuid>
 #include <QVariant>
 
-#include <QFile>
-#include <QFileInfo>
-#include <QStandardPaths>
-#include <QUrl>
 #include <dsd-neo/runtime/log.h>
-#include "decoder_host.h"
 #include "json_store.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
+#include "replay_store.h"
 #include "stored_int.h"
 
 namespace dsd_qt {
@@ -372,9 +367,10 @@ SavedSystemsModel::add(const QVariantMap& system) {
     }
     Row row = rowFromMap(system, Row());
     row.uid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    row.filePath = migratedReplay(QString(), row.filePath);
     auto next = m_rows;
     next.append(row);
-    if (!saveRows(next)) {
+    if (!adoptReplay(row.filePath) || !saveRows(next)) {
         return false;
     }
     beginInsertRows(QModelIndex(), count(), count());
@@ -428,13 +424,20 @@ SavedSystemsModel::update(int row, const QVariantMap& system) {
     // Missing encKeyValue means Keep; a present empty value explicitly clears it.
     auto next = m_rows;
     next[row] = rowFromMap(fields, m_rows.at(row));
-    if (!saveRows(next)) {
+    // A draft opened before the replay migration finished still names the cached file: it saves as the copy.
+    next[row].filePath = migratedReplay(next.at(row).uid, next.at(row).filePath);
+    const QString previousFile = m_rows.at(row).filePath;
+    const QString file = next.at(row).filePath;
+    if ((file != previousFile && !adoptReplay(file)) || !saveRows(next)) {
         return false;
     }
     m_rows = std::move(next);
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx);
     Q_EMIT sitesChanged();
+    if (file != previousFile) {
+        releaseReplayIfUnused(previousFile);
+    }
     return true;
 }
 
@@ -470,12 +473,14 @@ SavedSystemsModel::remove(int row) {
     if (!saveRows(next)) {
         return false;
     }
+    const QString file = m_rows.at(row).filePath;
     beginRemoveRows(QModelIndex(), row, row);
     m_rows = std::move(next);
     endRemoveRows();
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     Q_EMIT mostRecentRowChanged();
+    releaseReplayIfUnused(file);
     return true;
 }
 
@@ -652,50 +657,77 @@ SavedSystemsModel::keyValueForUid(const QString& uid) const {
     return row >= 0 ? m_rows.at(row).encKeyValue : QString();
 }
 
+void
+SavedSystemsModel::setReplayStore(ReplayStore* replays) {
+    m_replays = replays;
+}
+
 bool
-SavedSystemsModel::migrateCachedReplayFiles(DecoderHost* host) {
-    if (!host) {
-        return false;
-    }
-    const QString cache =
-        QFileInfo(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)).canonicalFilePath();
-    if (cache.isEmpty()) {
+SavedSystemsModel::adoptReplay(const QString& path) {
+    if (path.isEmpty() || m_replays.isNull() || ReplayStore::adopt(path)) {
         return true;
     }
-    auto next = m_rows;
-    QMap<QString, QString> copies;
-    for (auto& row : next) {
-        if (row.sourceType != "file") {
-            continue;
-        }
-        const QFileInfo original(row.filePath);
-        const QString source = original.canonicalFilePath();
-        if (source.isEmpty() || !source.startsWith(cache + '/') || !original.isFile()) {
-            continue;
-        }
-        if (!copies.contains(source)) {
-            const QString stored =
-                host->importDocument(QUrl::fromLocalFile(source).toString(), original.fileName(), QString());
-            if (stored.isEmpty() || QFileInfo(stored).canonicalFilePath() == source) {
-                continue;
-            }
-            copies.insert(source, stored);
-        }
-        row.filePath = copies.value(source);
+    // Saved naming a copy the manifest still calls pending, a later start could delete what this system uses.
+    LOG_WARN("A replay copy could not be marked as used; the system was not saved.\n");
+    return false;
+}
+
+QString
+SavedSystemsModel::migratedReplay(const QString& uid, const QString& path) const {
+    return m_replays.isNull() || path.isEmpty() ? path : m_replays->migratedPath(uid, path);
+}
+
+void
+SavedSystemsModel::releaseReplayIfUnused(const QString& path) {
+    if (path.isEmpty() || m_replays.isNull() || ReplayStore::names(filePaths(), path)) {
+        return;
     }
-    if (copies.isEmpty()) {
+    // A release that fails keeps the copy: a leak, never a loss.
+    if (!ReplayStore::release(path)) {
+        LOG_WARN("A replay copy no system uses could not be marked unused; it is kept.\n");
+    }
+}
+
+QStringList
+SavedSystemsModel::filePaths() const {
+    QStringList paths;
+    for (const Row& row : m_rows) {
+        if (!row.filePath.isEmpty() && !paths.contains(row.filePath)) {
+            paths.append(row.filePath);
+        }
+    }
+    return paths;
+}
+
+bool
+SavedSystemsModel::moveFilePaths(const QList<FilePathMove>& moves, QStringList* applied) {
+    applied->clear();
+    auto next = m_rows;
+    QList<int> changed;
+    QStringList used;
+    for (const FilePathMove& move : moves) {
+        const int row = rowForUid(move.uid);
+        if (row < 0 || next.at(row).filePath != move.from) {
+            continue; // edited, removed or reseeded since: the row stays as the user made it
+        }
+        next[row].filePath = move.to;
+        changed.append(row);
+        if (!used.contains(move.to)) {
+            used.append(move.to);
+        }
+    }
+    if (changed.isEmpty()) {
         return true;
     }
     if (!saveRows(next)) {
-        for (const auto& path : copies) {
-            QFile::remove(path);
-        }
         return false;
     }
     m_rows = std::move(next);
-    if (!m_rows.isEmpty()) {
-        Q_EMIT dataChanged(index(0), index(count() - 1));
+    for (const int row : changed) {
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx, {FilePathRole});
     }
+    *applied = used;
     return true;
 }
 
@@ -704,7 +736,9 @@ SavedSystemsModel::load() {
     QList<Row> rows;
     QSet<QString> seen;
     bool migrated = false;
-    const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName));
+    JsonStoreLoad status = JsonStoreLoad::Unreadable;
+    const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName), &status);
+    m_storeLoaded = status != JsonStoreLoad::Unreadable;
     // auto, not QJsonValue: iterating a QJsonArray yields a QJsonValueConstRef
     // proxy, and binding that to a QJsonValue reference converts — copying every
     // element into a temporary the loop then reads through.

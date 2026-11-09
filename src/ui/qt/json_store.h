@@ -65,6 +65,14 @@ JsonStoreRead json_store_read(const QString& fileName);
 QJsonArray json_store_load_array(const QString& fileName);
 
 /**
+ * @brief json_store_load_array(), and how the read went.
+ * @param status  Receives Ok, Missing (confirmed absent) or Unreadable (marked as above). Callers that delete anything
+ *                on the strength of the store's contents must do nothing on Unreadable.
+ * @return The array, empty unless @p status is Ok.
+ */
+QJsonArray json_store_load_array(const QString& fileName, JsonStoreLoad* status);
+
+/**
  * @brief Atomically write @p array to @p fileName, creating directories as needed.
  *
  * A marked file is replaced in the order that keeps it: (1) write and sync a temporary file beside it, (2) rename the

@@ -27,11 +27,16 @@
 #include <QtGlobal>
 #include <atomic>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 class QRect;
 
 namespace dsd_qt {
+
+class DocumentImportTransport;
 
 class DecoderHost : public QObject {
     Q_OBJECT
@@ -100,9 +105,16 @@ class DecoderHost : public QObject {
     /**
      * @brief copyDocumentToFile() results. DocumentFailed: the document could not be read (or the copy was aborted);
      * DocumentLocalFailed: it could, but this device could not write the copy (its destination could not be cleared,
-     * opened, written or committed).
+     * opened, written or committed). DocumentCancelled: the import request the copy belongs to was cancelled; only
+     * import copies answer it, never the backup's.
      */
-    enum DocumentCopy { DocumentCopied = 0, DocumentTooLarge = 1, DocumentFailed = 2, DocumentLocalFailed = 3 };
+    enum DocumentCopy {
+        DocumentCopied = 0,
+        DocumentTooLarge = 1,
+        DocumentFailed = 2,
+        DocumentLocalFailed = 3,
+        DocumentCancelled = 4
+    };
 
     /**
      * @brief What the call recording player is doing (issue #708). Stopped: nothing open. Preparing: opening
@@ -190,6 +202,16 @@ class DecoderHost : public QObject {
      * transfers of its own stops them too and calls this base.
      */
     virtual void abortDocumentTransfers();
+
+    /**
+     * @brief A new transport for the import copies (#832), which may outlive this host.
+     *
+     * The base host's copies local files (file:// URLs and absolute paths). The transport never calls back into the
+     * host, so the import worker may keep it, and finish a copy, after the host is gone. abortDocumentTransfers()
+     * aborts every transport handed out, and one handed out after it starts aborted. A host with a transport of its
+     * own returns it through keepImportTransport().
+     */
+    virtual std::shared_ptr<DocumentImportTransport> importTransport() const;
 
     virtual bool
     usesPlatformFontScaling() const {
@@ -751,59 +773,6 @@ class DecoderHost : public QObject {
     refresh() {}
 
     /**
-     * @brief Turn a platform file reference into a path the engine can open.
-     *
-     * Hosts whose file pickers hand back opaque references (Android SAF content URIs)
-     * copy the payload somewhere real and return that path. Hosts with real paths
-     * return @p reference unchanged.
-     *
-     * @return Absolute filesystem path, or an empty string on failure.
-     */
-    virtual QString
-    importContentUri(const QString& reference, const QString& fileName) {
-        (void)fileName;
-        return reference;
-    }
-
-    /**
-     * @brief Materialize a picked document into durable app storage.
-     *
-     * Unlike importContentUri(), which serves a one-shot open, this copy must
-     * outlive the session: saved systems keep the returned path. (The Android
-     * host makes the same durable copy for both.) Collisions on @p fileName are
-     * unique-ified, never overwritten — two different documents may share a
-     * display name.
-     *
-     * @param reference   Platform file reference from the picker (file:// URL or
-     *                    Android SAF content URI).
-     * @param fileName    Display name to store the copy under.
-     * @param replacePath Existing stored file to update in place, or empty for a
-     *                    new copy. A path outside the app's imports directory is
-     *                    not a write target and is treated as a new copy.
-     * @return Absolute filesystem path of the stored copy, or empty on failure.
-     */
-    virtual QString importDocument(const QString& reference, const QString& fileName,
-                                   const QString& replacePath = QString());
-
-    /**
-     * @brief Store a file this process already wrote, by plain filesystem path.
-     *
-     * This is importDocument()'s body without the picker: no URL parsing and no
-     * platform brokering, because the source is ours. Deliberately NOT virtual -
-     * a generated file must take the pure-Qt copy path on every platform, and on
-     * Android the imports directory is ordinary filesDir storage, so there is
-     * nothing for a SAF override to add.
-     *
-     * @param sourcePath  Absolute path of the file to copy in.
-     * @param fileName    Display name to store the copy under.
-     * @param replacePath Existing stored file to update in place, or empty for a
-     *                    new copy. A path outside the imports directory is not a
-     *                    write target and is treated as a new copy.
-     * @return Absolute filesystem path of the stored copy, or empty on failure.
-     */
-    QString importLocalFile(const QString& sourcePath, const QString& fileName, const QString& replacePath = QString());
-
-    /**
      * @brief Ask the platform for access to a directly attached SDR.
      *
      * May show a permission prompt, so the answer arrives later: watch
@@ -980,6 +949,10 @@ class DecoderHost : public QObject {
     static bool copyFileToLocalDocument(const QString& sourcePath, const QString& reference,
                                         const std::atomic<bool>* aborted);
 
+    /** @brief Hand out @p transport: abortDocumentTransfers() aborts it, and it starts aborted after one. */
+    std::shared_ptr<DocumentImportTransport>
+    keepImportTransport(std::shared_ptr<DocumentImportTransport> transport) const;
+
     /** @brief A new document request id, one more than the last; the base requests take theirs here too. */
     qint64
     nextDocumentRequestId() {
@@ -1000,6 +973,9 @@ class DecoderHost : public QObject {
     qint64 refuseDocumentRequest();
 
     std::atomic<bool> m_documentTransfersAborted{false};
+    /* The import transports handed out, for abortDocumentTransfers(); handed out from a const host. */
+    mutable std::mutex m_importTransportsLock;
+    mutable std::vector<std::weak_ptr<DocumentImportTransport>> m_importTransports; // guarded by the lock
     QString m_playbackPath;
     int m_playbackState = PlaybackStopped;
     qint64 m_playbackPositionMs = 0;

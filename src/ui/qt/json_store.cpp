@@ -9,6 +9,7 @@
 #include <QChar>
 #include <QDir>
 #include <QFile>
+#include <QFileDevice>
 #include <QFileInfo>
 #include <QHash>
 #include <QIODevice>
@@ -319,12 +320,20 @@ json_store_read(const QString& fileName) {
 }
 
 QJsonArray
-json_store_load_array(const QString& fileName) {
+json_store_load_array(const QString& fileName, JsonStoreLoad* status) {
     JsonStoreRead read = json_store_read(fileName);
     if (read.status == JsonStoreLoad::Unreadable) {
         mark_unreadable(fileName, read.reason);
     }
+    if (status != nullptr) {
+        *status = read.status;
+    }
     return std::move(read.array);
+}
+
+QJsonArray
+json_store_load_array(const QString& fileName) {
+    return json_store_load_array(fileName, nullptr);
 }
 
 bool

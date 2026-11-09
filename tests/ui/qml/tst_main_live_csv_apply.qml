@@ -110,7 +110,7 @@ Item {
             var mainRoot = appLoader.item
             var wizard = findChild(mainRoot, "wizardScreen")
             var source = testContext.writeFixtureCsv("switch-" + data.tag.replace(/ /g, "-") + ".csv", data.imported)
-            var imported = importedFiles.importFile(source, "switch.csv", "group")
+            var imported = testContext.importNamed(source, "switch.csv", "group")
             verify(imported.ok, "the talkgroup fixture did not import")
             var path = imported.path
             try {

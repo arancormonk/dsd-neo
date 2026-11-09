@@ -218,9 +218,13 @@ FILE* dsd_fopen_private_temp_for_replace(const char* final_path, char* tmp_path,
 void dsd_fsync_parent_dir(const char* path);
 
 /**
- * @brief Atomically replace a destination path with a sibling temporary file.
+ * @brief Atomically replace a destination path with a temporary file.
  *
- * @param tmp_path    Existing temporary file created in the destination directory.
+ * Moves one regular file, @p tmp_path, onto @p final_path, in the same directory or another one on the same volume.
+ * Never copies: across volumes it fails (EXDEV; on Windows ERROR_NOT_SAME_DEVICE maps to EXDEV) and leaves both paths
+ * as they were. A directory @p tmp_path is refused with EISDIR before anything moves.
+ *
+ * @param tmp_path    Existing temporary file, on the same volume as @p final_path.
  * @param final_path  Destination path to replace.
  * @return 0 on success, -1 on error with errno set.
  */
@@ -229,16 +233,19 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
 /**
  * @brief Rename @p from to @p to unless @p to already exists.
  *
- * Never replaces an existing @p to: the call fails with EEXIST and leaves both files as they were. The rename is
- * atomic where the platform and filesystem offer a no-replace rename (Linux renameat2(RENAME_NOREPLACE), macOS
- * renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' MoveFileExW() without
- * MOVEFILE_REPLACE_EXISTING refuses an existing name when both names are UTF-8, else the CRT's rename()). On a
- * POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to with an exclusive create
- * and renames onto that claim: @p to briefly exists as an empty file, and only a process that deletes the claim in
- * between can still be replaced.
+ * Moves one regular file, in the same directory or into another one on the same volume. Never copies: across volumes
+ * it fails (EXDEV; on Windows ERROR_NOT_SAME_DEVICE maps to EXDEV). A directory @p from is refused with EISDIR before
+ * anything moves. Never replaces an existing @p to: the call fails with EEXIST and leaves both files as they were. The
+ * rename is atomic where the platform and filesystem offer a no-replace rename (Linux renameat2(RENAME_NOREPLACE),
+ * macOS renamex_np(RENAME_EXCL), a hard link then an unlink on other POSIX systems; Windows' MoveFileEx() without
+ * MOVEFILE_REPLACE_EXISTING or MOVEFILE_COPY_ALLOWED). On Windows the pair takes one call, as dsd_win32_path_wide()
+ * picks: MoveFileExW() when both names are UTF-8 (whatever the process code page), MoveFileExA() otherwise, never
+ * both. On a POSIX filesystem that supports neither (no no-replace rename, no hard links) it claims @p to with an
+ * exclusive create and renames onto that claim: @p to briefly exists as an empty file, and only a process that deletes
+ * the claim in between can still be replaced.
  *
  * @param from              Existing file.
- * @param to                New name, in the same directory as @p from.
+ * @param to                New name, on the same volume as @p from.
  * @param out_source_left   Optional. Set to 1 when @p to was created but @p from could not be removed afterwards (a
  *                          hard link whose unlink failed): the call still succeeds, and @p from names the same file.
  *                          Set to 0 otherwise.

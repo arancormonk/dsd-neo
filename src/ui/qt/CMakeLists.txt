@@ -31,6 +31,7 @@ target_sources(
         backup_archive_build.cpp
         backup_archive_parse.cpp
         backup_archive_rules.cpp
+        backup_typed_paths.cpp
         backup_model.cpp
         backup_stage.cpp
         call_history_filter.cpp
@@ -41,7 +42,10 @@ target_sources(
         decoder_host.cpp
         decryption_profiles_model.cpp
         diagnostics_log.cpp
+        document_import_transport.cpp
         imported_files_model.cpp
+        import_names.cpp
+        import_service.cpp
         input_commit.cpp
         csv_bundle_import.cpp
         json_store.cpp
@@ -52,6 +56,7 @@ target_sources(
         recording_journal.cpp
         recording_status.cpp
         recording_store.cpp
+        replay_store.cpp
         site_groups.cpp # WP-D4
         saved_systems_model.cpp
         scan_avoid_list_model.cpp

@@ -252,31 +252,47 @@ them and Android limits how many an app may hold.
 ## Imported files (trunking CSVs)
 
 The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
-a regular file, `O_NOFOLLOW`), so SAF content URIs are always materialized into a
-copy first. `AppSupport.importDocumentToFiles` makes that copy in `files/imports/`,
-both for the wizard's audio/capture "File" source and for the CSV library (channel
-maps, talkgroup lists, key files, P25 band plans, source ID lists). These copies must
-survive restarts — saved systems reference the path, and the engine appends learned
-talkgroup rows to the group list in place — so none of them goes to the evictable
-cache. Display-name collisions are unique-ified (`chan.csv` → `chan (2).csv`); updates
-stage a temp file and rename over the target so a half-copied CSV is never observable.
+a regular file, `O_NOFOLLOW`), so SAF content URIs are always copied first. The
+import worker makes every copy (`src/ui/qt/import_service.cpp`), never the UI
+thread: for a `content://` reference it calls `DocumentCopies.copyImportDocument`
+on the application `ContentResolver`, which writes into the request's own folder
+under `files/import-staging/` (removed whole at each start), counts the bytes it
+reads against a cap and stops at the next chunk when the import is cancelled. A CSV
+library file (channel maps, talkgroup lists, key files, P25 band plans, source ID
+lists, target lists) is checked there and only then moved into `files/imports/`:
+at most 32 MiB per file, and 64 MiB for a CSV with the companion files it names. A
+name already taken gets a free one (`chan.csv` → `chan (2).csv`); an update moves
+the checked copy over the stored file in one step, so a half-copied CSV is never
+seen there. These copies must survive restarts — saved systems reference the path,
+and the engine appends learned talkgroup rows to the group list in place — so none
+of them goes to the evictable cache. While a file copies, its sheet shows its name
+and **Cancel**, which closes the sheet at once even if the provider has not let go
+of the copy yet; the copy then stores nothing. Copies run one at a time, so a
+provider that ignores the cancel delays later imports until its copy returns.
+
+The wizard's audio/capture **File** source copies a replay the same way into
+`files/replays/`, as long as the free space less 512 MiB holds it, with
+"Copying <name>…", how much is copied of how much, and **Cancel copy** under the
+row. `replay_copies.json` lists each copy as pending until a saved system names it,
+and a pending copy no system names is deleted at the next start; a copy a system
+once named is kept, also after a restore clears that system's file. Copies older
+versions made in `files/imports/` are never touched.
 
 Embedded `single_key_dec`/`single_key_hex` values in a channel map travel with that copied file and therefore work on
 Android. The companion selection flow copies referenced files into a private bundle
 and rewrites the stored paths. A target CSV additionally includes its channel maps,
 band plans, scoped policy/mapping files, and dependencies inside channel maps.
 
-Picks go through the app's document picker (issue #829). A pick belongs to the screen that asked for it: leaving
-Imported files, the scan list editor or the wizard, or reopening the editor or the wizard for another item, cancels it.
-A file or "None" chosen for the same field while the picker is out wins over the pick that comes back later, and
-"Update" replaces the file it was started on, or says "That file changed while you were picking. Try again." when that
-file was removed meanwhile. When no picker can open, the import ends with the reason; on the companion sheet the reason
-shows above the companions and the files already chosen stay.
+Picks go through the app's document picker (issue #829), and the picked document is then copied by the import worker
+as above. A pick belongs to the screen that asked for it: leaving Imported files, the scan list editor or the wizard, or
+reopening the editor or the wizard for another item, cancels it, and so does a copy still running. A file or "None"
+chosen for the same field while the picker is out wins over the pick that comes back later, and "Update" replaces the
+file it was started on, or says "That file changed while you were picking. Try again." when that file was removed
+meanwhile. When no picker can open, the import ends with the reason; on the companion sheet the reason shows above the
+companions and the files already chosen stay. On the wizard's **File** source the reason shows under the Replay file
+row, where a failed replay copy says why too, and the earlier file stays.
 
-Both uses are reached through `DecoderHost` virtuals (`importContentUri` /
-`importDocument`); the desktop default of `importDocument` implements the same
-semantics under `QStandardPaths::AppDataLocation`, which is what
-`UI_QT_IMPORTED_FILES` tests on the host. The library itself (one JSON-persisted
+The library itself (one JSON-persisted
 row per stored file, with dry-run validation counts from
 `<dsd-neo/core/csv_validate.h>`) is `src/ui/qt/imported_files_model.{h,cpp}`,
 surfaced as Settings → Imported files and the wizard's Trunking data pickers.
@@ -469,7 +485,9 @@ It does not carry: call history, call recordings, replay recordings (the files r
 detection history, diagnostics, the last location fix, the Listen tab the phone opens on (each phone remembers its
 own, and a restore keeps it) and first-run state. The RadioReference password is never saved,
 so it is never in a backup.
-Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again. A
+Generated scan-list CSVs and compiled decryption files are not carried either; the restoring phone makes them again,
+and neither are temporary files an import left behind in a bundle folder (only when nothing uses them). An imported
+file is carried whatever it is called. A
 file that a saved system, scan list or profile names outside DSD-neo's imported files cannot be carried: the export
 leaves that reference out and lists it under **Not included** on the Settings card.
 
@@ -524,13 +542,14 @@ can stop it: neither **Cancel restore** nor **Discard restore** is offered, Sett
 part-way through, and reopening DSD-neo finishes or undoes it.
 
 A backup never carries recordings, so each replay system arrives without its file: open it with Edit and choose the
-recording again (until then, starting it says its recording is missing). A restore replaces the old setup as a whole:
-its saved systems, scan lists, decryption profiles, settings, Signal search ranges and permanent avoids, and the
-imported files it used (generated scan-list CSVs and compiled decryption files are made again). It never deletes a
-recording or any other file the old setup did not use. When such a file holds a name an incoming file needs, the
-incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it. Call recordings stay, but
-the restored Storage limit applies to them: when it is lower than what they take, the oldest are removed once DSD-neo
-opens again.
+recording again (until then, starting it says its recording is missing). The copy of a recording DSD-neo made for a
+replay system stays in `files/replays/` after a restore, and is not deleted later either. A restore replaces the old
+setup as a whole: its saved systems, scan lists, decryption profiles, settings, Signal search ranges and permanent
+avoids, and the imported files it used (generated scan-list CSVs and compiled decryption files are made again). It never
+deletes a recording or any other file the old setup did not use. When such a file holds a name an incoming file needs,
+the incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it. Call recordings stay,
+but the restored Storage limit applies to them: when it is lower than what they take, the oldest are removed once
+DSD-neo opens again.
 
 **Restore only backups you made or trust.** A backup carries every setting, and extra decoder options run exactly as
 typed: a crafted backup could, for example, send decoded audio to someone else's server. The confirmation therefore
@@ -546,6 +565,9 @@ Limits:
   included** when you export.
 - The file is encrypted with AES-256-GCM under a key that scrypt derives from the passphrase (N = 2^16, r = 8, p = 2,
   about 64 MiB of memory per attempt). That slows guessing; it cannot protect a short or common passphrase.
+- Older DSD-neo versions left out imported files whose names start with `.import` or `.staged-`. A backup made by one
+  of them does not hold those files, so restoring it cannot bring them back. Those older versions also refuse a newer
+  backup that holds such a file, as damaged: restore it with a current version.
 - The sealed backup file is at most 64 MiB. Inside it: up to 4096 files of up to 32 MiB each, and up to 4096 entries
   of each kind (saved systems, scan lists, imported files, profiles, ranges).
 - Google Drive has not been tested as a place to save or restore: it cannot be exercised on the test emulators. If it

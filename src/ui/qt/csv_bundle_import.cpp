@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QMap>
 #include <QObject>
 #include <QRegularExpression>
@@ -18,12 +19,16 @@
 #include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
+#include <cerrno>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <functional>
 #include <iterator>
+#include <qflags.h>
 #include <stddef.h>
 #include <utility>
+#include "backup_archive.h"
 #include "csv_bundle_import.h"
 #include "decoder_host.h"
 #include "json_store.h"
@@ -187,8 +192,160 @@ writePrivate(const QString& path, const QByteArray& data) {
 bool
 ownedRoot(const QString& root) {
     const QString parent = QDir::cleanPath(json_store_path("imports/bundles"));
-    return !QFileInfo(root).isSymLink() && QFileInfo(root).absolutePath() == parent
+    return !QFileInfo(root).isSymLink() && !QFileInfo(root).isJunction() && QFileInfo(root).absolutePath() == parent
            && QRegularExpression("^[A-Za-z0-9_-]{1,63}$").match(QFileInfo(root).fileName()).hasMatch();
+}
+
+/* Bytes that may hold key material (a channel map's options can carry -H), wiped when they go. */
+struct PrivateBytes {
+    QByteArray bytes;
+
+    ~PrivateBytes() {
+        if (!bytes.isEmpty()) {
+            DSD_SECURE_ZERO(bytes.data(), static_cast<size_t>(bytes.size()));
+        }
+    }
+};
+
+/* Read @p path whole; false on any read error, so a failed read's valid prefix is never taken for the file (B9). */
+bool
+readWhole(const QString& path, QByteArray& bytes) {
+    QFile input(path);
+    if (!input.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    bytes = input.readAll();
+    return input.error() == QFileDevice::NoError;
+}
+
+QString
+newUuid() {
+    return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+bool
+revisionName(const QString& name) {
+    static const QRegularExpression revision(QStringLiteral("^[0-9a-f-]{36}$"));
+    return revision.match(name).hasMatch();
+}
+
+bool
+realDirectory(const QFileInfo& info) {
+    return info.isDir() && !info.isSymLink() && !info.isJunction();
+}
+
+/* A path relative to imports/ that stays inside it: clean, not absolute, never "..". */
+bool
+insideRelative(const QString& relative) {
+    return !relative.isEmpty() && !QDir::isAbsolutePath(relative) && QDir::cleanPath(relative) == relative
+           && relative != QLatin1String("..") && !relative.startsWith(QLatin1String("../"));
+}
+
+QString
+inLibrary(const QString& relative) {
+    return QDir::cleanPath(json_store_path(QStringLiteral("imports")) + '/' + relative);
+}
+
+/* What a bundle may still copy: each copy at most 32 MiB and at most what is left of the bundle's budget. */
+class CopyBudget {
+  public:
+    explicit CopyBudget(qint64 limit) : m_limit(limit) {}
+
+    qint64
+    cap() const {
+        return std::min(backup::kMaxFileBytes, m_limit - m_copied);
+    }
+
+    /*
+     * The limit a refused copy of a document of @p size bytes (-1: unknown) ran into: the bundle's once it is what held
+     * the copy back, unless the document is over the per-file limit anyway.
+     */
+    qint64
+    limitFor(qint64 allowed, qint64 size) const {
+        return allowed < backup::kMaxFileBytes && size <= backup::kMaxFileBytes ? m_limit : backup::kMaxFileBytes;
+    }
+
+    qint64
+    add(qint64 bytes) {
+        m_copied += bytes;
+        return m_copied;
+    }
+
+  private:
+    qint64 m_limit;
+    qint64 m_copied = 0;
+};
+
+void
+tooLarge(CsvBundleImport& result, qint64 limit, const QString& name) {
+    result.error = QStringLiteral("too_large");
+    result.limitBytes = limit;
+    result.name = name;
+}
+
+/*
+ * Copy one document of the bundle into the staging folder, within @p budget: the copy's path, and its name in @p name.
+ * Empty when it failed, with the failure in @p result, whose name then names the document that failed.
+ */
+QString
+fetchDocument(const ImportFetch& fetch, CopyBudget& budget, const QString& source, const QString& hint,
+              CsvBundleImport& result, QString* name) {
+    const qint64 cap = budget.cap();
+    if (cap <= 0) {
+        tooLarge(result, budget.limitFor(cap, -1), hint);
+        return {};
+    }
+    const ImportFetchResult copy = fetch(documentReference(source), hint, cap);
+    switch (copy.code) {
+        case DecoderHost::DocumentCopied:
+            result.copiedBytes = budget.add(copy.bytes);
+            *name = copy.name;
+            return copy.path;
+        case DecoderHost::DocumentTooLarge: tooLarge(result, budget.limitFor(cap, copy.size), copy.name); return {};
+        case DecoderHost::DocumentLocalFailed:
+            result.error = QStringLiteral("local");
+            result.noSpace = copy.noSpace;
+            break;
+        case DecoderHost::DocumentCancelled: result.error = QStringLiteral("cancelled"); break;
+        default: result.error = QStringLiteral("read"); break;
+    }
+    result.name = copy.name;
+    return {};
+}
+
+/* Move a staged copy to @p relative in the mirror and list it; false (local) when it cannot go there. */
+bool
+placeInMirror(const QString& copy, const QString& mirrorRoot, const QString& relative, CsvBundleImport& result) {
+    const QString destination = mirrorRoot + '/' + relative;
+    if (!QDir().mkpath(QFileInfo(destination).absolutePath()) || !QFile::rename(copy, destination)) {
+        result.error = QStringLiteral("local");
+        return false;
+    }
+    result.stagedRelative.append(relative);
+    return true;
+}
+
+/*
+ * The bundle's layout: a new root (or the replaced row's), a new revision in it, and the primary's final place (the
+ * replaced row's, else @p newPrimary in the new root). The mirror gets the revision directory.
+ */
+bool
+layoutBundle(const BundleTarget& target, const QString& newPrimary, CsvBundleImport& result) {
+    result.newRoot = target.existingRootRelative.isEmpty();
+    result.rootRelative = result.newRoot ? QStringLiteral("bundles/") + newUuid() : target.existingRootRelative;
+    result.revisionRelative = result.rootRelative + '/' + newUuid();
+    result.primaryRelative =
+        target.primaryRelative.isEmpty() ? result.rootRelative + '/' + newPrimary : target.primaryRelative;
+    if (!insideRelative(result.rootRelative) || !ownedRoot(inLibrary(result.rootRelative))
+        || !insideRelative(result.primaryRelative)) {
+        result.error = QStringLiteral("path");
+        return false;
+    }
+    if (!QDir().mkpath(target.mirrorRoot + '/' + result.revisionRelative)) {
+        result.error = QStringLiteral("local");
+        return false;
+    }
+    return true;
 }
 } // namespace
 
@@ -272,17 +429,21 @@ rejectCompanionType(CsvBundleImport& result, const QString& key, const QString& 
     return true;
 }
 
+bool
+owned_bundle_root(const QString& dir) {
+    return ownedRoot(dir) && realDirectory(QFileInfo(dir));
+}
+
+bool
+owned_bundle_revision(const QString& dir) {
+    const QFileInfo info(dir);
+    return revisionName(info.fileName()) && realDirectory(info) && owned_bundle_root(info.absolutePath());
+}
+
 void
-discard_csv_bundle(const CsvBundleImport& bundle, bool existingRoot) {
-    if (!bundle.path.isEmpty()) {
-        QFile::remove(bundle.path);
-    }
-    if (!bundle.root.isEmpty() && ownedRoot(bundle.root)) {
-        if (!existingRoot) {
-            QDir(bundle.root).removeRecursively();
-        } else if (!bundle.revision.isEmpty()) {
-            QDir(bundle.root + '/' + bundle.revision).removeRecursively();
-        }
+remove_bundle_root(const QString& root) {
+    if (owned_bundle_root(root)) {
+        QDir(root).removeRecursively();
     }
 }
 
@@ -322,22 +483,24 @@ resolveSources(const QString& reference, const QStringList& references, const QV
     return sources;
 }
 
+/* Copy each selected companion into the mirror's revision directory; the map from each reference to the path the
+   primary will name it by, or empty with the failure in @p result. */
 static QMap<QString, QString>
-copyCompanions(DecoderHost* host, const QStringList& references, const QMap<QString, QString>& sources,
-               const CsvBundleImport& result) {
+copyCompanions(const ImportFetch& fetch, CopyBudget& budget, const BundleTarget& target, const QStringList& references,
+               const QMap<QString, QString>& sources, CsvBundleImport& result) {
     QMap<QString, QString> replacements;
+    const QDir primaryDir(QFileInfo(target.mirrorRoot + '/' + result.primaryRelative).absolutePath());
     for (int i = 0; i < references.size(); ++i) {
-        const QString relative = result.revision + '/' + QString::number(i) + ".csv";
-        const QString staged = host->importDocument(
-            documentReference(sources.value(references[i])),
-            result.requiredDetails.value(references[i]).toMap().value("name").toString(), QString());
-        if (staged.isEmpty() || !QFile::rename(staged, result.root + '/' + relative)) {
-            if (!staged.isEmpty()) {
-                QFile::remove(staged);
-            }
+        const QString relative = result.revisionRelative + '/' + QString::number(i) + ".csv";
+        QString name;
+        const QString copy =
+            fetchDocument(fetch, budget, sources.value(references[i]),
+                          result.requiredDetails.value(references[i]).toMap().value("name").toString(), result, &name);
+        if (copy.isEmpty() || !placeInMirror(copy, target.mirrorRoot, relative, result)) {
             return {};
         }
-        replacements.insert(references[i], relative);
+        result.stagedNames.insert(relative, name);
+        replacements.insert(references[i], primaryDir.relativeFilePath(target.mirrorRoot + '/' + relative));
     }
     return replacements;
 }
@@ -354,33 +517,9 @@ channelSourcesReady(const QMap<QString, QString>& sources, const QVariantMap& li
     return true;
 }
 
-CsvBundleImport
-stage_csv_bundle(DecoderHost* host, const QString& reference, const QString& name, const QVariantMap& companions,
-                 const QString& existingRoot, const QVariantMap& libraryEntries) {
-    CsvBundleImport result;
-    if (!host) {
-        result.error = "open";
-        return result;
-    }
-    const QString copied = host->importDocument(documentReference(reference), name, QString());
-    if (copied.isEmpty()) {
-        result.error = "open";
-        return result;
-    }
-    QFile input(copied);
-    if (!input.open(QIODevice::ReadOnly)) {
-        QFile::remove(copied);
-        result.error = "open";
-        return result;
-    }
-    auto bytes = input.readAll();
-    input.close();
-    if (bytes.contains('\0')) {
-        QFile::remove(copied);
-        result.error = "format";
-        return result;
-    }
-    const QString text = QString::fromUtf8(bytes);
+/* The channel map's companion references, each once, with their labels and roles in @p result. */
+static QStringList
+channelReferences(const QString& text, CsvBundleImport& result) {
     QStringList references;
     (void)rewriteMap(text, [&](const QString& path, const QString& type) {
         const QString key = channelReferenceKey(path, type);
@@ -392,48 +531,73 @@ stage_csv_bundle(DecoderHost* host, const QString& reference, const QString& nam
             key, QVariantMap{{"name", QFileInfo(path).fileName()}, {"type", type}, {"reference", path}});
         return path;
     });
+    return references;
+}
+
+/* The rewritten primary, written to its place in the mirror; false with the failure in @p result. */
+static bool
+writeChannelPrimary(const BundleTarget& target, const QString& text, const QMap<QString, QString>& replacements,
+                    CsvBundleImport& result) {
+    PrivateBytes rewritten;
+    rewritten.bytes = rewriteMap(text, [&](const QString& path, const QString& type) {
+                          return replacements.value(channelReferenceKey(path, type), path);
+                      }).toUtf8();
+    if (rewritten.bytes.size() > backup::kMaxFileBytes) {
+        tooLarge(result, backup::kMaxFileBytes, result.name);
+        return false;
+    }
+    errno = 0;
+    if (!writePrivate(target.mirrorRoot + '/' + result.primaryRelative, rewritten.bytes)) {
+        result.error = QStringLiteral("local");
+        result.noSpace = errno == ENOSPC;
+        return false;
+    }
+    result.stagedRelative.append(result.primaryRelative);
+    result.stagedNames.insert(result.primaryRelative, result.name);
+    return true;
+}
+
+CsvBundleImport
+stage_csv_bundle(const ImportFetch& fetch, const BundleTarget& target, const QString& reference, const QString& name,
+                 const QVariantMap& companions, const QVariantMap& libraryEntries) {
+    CsvBundleImport result;
+    CopyBudget budget(target.budget);
+    const QString copied = fetchDocument(fetch, budget, reference, name, result, &result.name);
+    if (copied.isEmpty()) {
+        return result;
+    }
+    PrivateBytes bytes;
+    if (!readWhole(copied, bytes.bytes)) {
+        result.error = QStringLiteral("local");
+        return result;
+    }
+    if (bytes.bytes.contains('\0')) {
+        result.error = QStringLiteral("format");
+        return result;
+    }
+    const QString text = QString::fromUtf8(bytes.bytes);
+    const QStringList references = channelReferences(text, result);
     if (references.isEmpty()) {
-        result.path = copied;
+        // A plain map: its own bytes, at the replaced row's place or under its own name.
+        result.primaryRelative = target.primaryRelative.isEmpty() ? result.name : target.primaryRelative;
+        if (insideRelative(result.primaryRelative)) {
+            if (placeInMirror(copied, target.mirrorRoot, result.primaryRelative, result)) {
+                result.stagedNames.insert(result.primaryRelative, result.name);
+            }
+        } else {
+            result.error = QStringLiteral("path");
+        }
         return result;
     }
+    const QString existingRoot =
+        target.existingRootRelative.isEmpty() ? QString() : inLibrary(target.existingRootRelative);
     const auto sources = resolveSources(reference, references, companions, existingRoot, result);
-    if (!channelSourcesReady(sources, libraryEntries, result)) {
-        QFile::remove(copied);
+    if (!channelSourcesReady(sources, libraryEntries, result) || !layoutBundle(target, result.name, result)) {
         return result;
     }
-    const QString root = existingRoot.isEmpty()
-                             ? json_store_path("imports/bundles/" + QUuid::createUuid().toString(QUuid::WithoutBraces))
-                             : existingRoot;
-    if (!ownedRoot(root)) {
-        QFile::remove(copied);
-        result.error = "path";
-        return result;
-    }
-    result.root = root;
-    result.revision = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    const QString directory = root + '/' + result.revision;
-    if (!QDir().mkpath(directory)) {
-        QFile::remove(copied);
-        result.error = "copy";
-        return result;
-    }
-    const auto replacements = copyCompanions(host, references, sources, result);
-    if (replacements.size() != references.size()) {
-        QFile::remove(copied);
-        result.error = "copy";
-        discard_csv_bundle(result, !existingRoot.isEmpty());
-        return result;
-    }
-    const QString rewritten = rewriteMap(text, [&](const QString& path, const QString& type) {
-        return replacements.value(channelReferenceKey(path, type), path);
-    });
-    result.path =
-        root + '/' + (existingRoot.isEmpty() ? QFileInfo(copied).fileName() : ".staged-" + result.revision + ".csv");
-    QFile::remove(copied);
-    if (!writePrivate(result.path, rewritten.toUtf8())) {
-        result.error = "copy";
-        discard_csv_bundle(result, !existingRoot.isEmpty());
-        result.path.clear();
+    const auto replacements = copyCompanions(fetch, budget, target, references, sources, result);
+    if (replacements.size() == references.size()) {
+        (void)writeChannelPrimary(target, text, replacements, result);
     }
     return result;
 }
@@ -464,16 +628,6 @@ collectTargetReference(const dsd_app_scan_csv_reference* ref, void* context) {
         {ref->index, ref->kind, QString::fromUtf8(ref->path), QString::fromUtf8(ref->resolved_path)});
 }
 
-struct StagedCopies {
-    QStringList paths;
-
-    ~StagedCopies() {
-        for (const auto& path : paths) {
-            QFile::remove(path);
-        }
-    }
-};
-
 struct TargetDocument {
     QString source, label;
     bool channel = false;
@@ -482,10 +636,10 @@ struct TargetDocument {
 
 class TrunkBundleStager {
   public:
-    TrunkBundleStager(DecoderHost* h, CsvBundleImport& out, const QVariantMap& selections, const QString& oldRoot,
-                      const QString& fileName, const QVariantMap& entries)
-        : host(h), result(out), companions(selections), libraryEntries(entries), existingRoot(oldRoot), name(fileName) {
-    }
+    TrunkBundleStager(const ImportFetch& f, const BundleTarget& t, CsvBundleImport& out, const QVariantMap& selections,
+                      const QString& oldRoot, const QString& fileName, const QVariantMap& entries)
+        : fetch(f), target(t), result(out), companions(selections), libraryEntries(entries), existingRoot(oldRoot),
+          name(fileName), budget(t.budget) {}
 
     QString
     stageDocument(const TargetDocument& input) {
@@ -493,15 +647,14 @@ class TrunkBundleStager {
         if (stored.contains(identity)) {
             return stored.value(identity);
         }
-        const QString copy = host->importDocument(documentReference(input.source),
-                                                  input.primary ? name : QFileInfo(input.label).fileName());
+        QString copied;
+        const QString copy = fetchDocument(fetch, budget, input.source,
+                                           input.primary ? name : QFileInfo(input.label).fileName(), result, &copied);
         if (copy.isEmpty()) {
-            result.error = "open";
             return {};
         }
-        copies.paths << copy;
         if (input.primary) {
-            result.name = QFileInfo(copy).fileName();
+            result.name = copied;
         }
         const QUrl url(input.source);
         const QString original = url.isLocalFile() ? url.toLocalFile() : input.source;
@@ -516,7 +669,8 @@ class TrunkBundleStager {
             result.detail = QString::fromUtf8(error);
             return {};
         }
-        QString destination = input.primary ? result.path : nextPath();
+        const QString relative = input.primary ? result.primaryRelative : nextRelative();
+        QString destination = target.mirrorRoot + '/' + relative;
         QList<QByteArray> replacements;
         QList<dsd_app_scan_csv_replacement> mapping;
         if (!stageReferences(input, local, refs, destination, replacements, mapping)) {
@@ -525,21 +679,46 @@ class TrunkBundleStager {
         for (qsizetype i = 0; i < mapping.size(); ++i) {
             mapping[i].relative_path = replacements[i].constData();
         }
-        if (dsd_app_scan_csv_rewrite(copy.toUtf8().constData(), base.constData(), input.channel,
-                                     destination.toUtf8().constData(), mapping.constData(),
-                                     static_cast<size_t>(mapping.size()), error, sizeof error)) {
-            result.error = "format";
-            result.detail = QString::fromUtf8(error);
+        if (!rewrite(copy, base, input.channel, destination, mapping)) {
             return {};
         }
+        result.stagedRelative.append(relative);
+        result.stagedNames.insert(relative, copied);
         stored.insert(identity, destination);
         return destination;
     }
 
   private:
     QString
-    nextPath() {
-        return result.root + '/' + result.revision + '/' + QString::number(nextFile++) + ".csv";
+    nextRelative() {
+        return result.revisionRelative + '/' + QString::number(nextFile++) + ".csv";
+    }
+
+    /* Rewrite @p copy's references into @p destination: a write that fails is this device's (local), an input the
+       rewrite refuses a format failure, and an output over 32 MiB too large. */
+    bool
+    rewrite(const QString& copy, const QByteArray& base, bool channel, const QString& destination,
+            const QList<dsd_app_scan_csv_replacement>& mapping) {
+        char error[512] = {};
+        errno = 0;
+        const int rc = dsd_app_scan_csv_rewrite(copy.toUtf8().constData(), base.constData(), channel,
+                                                destination.toUtf8().constData(), mapping.constData(),
+                                                static_cast<size_t>(mapping.size()), error, sizeof error);
+        if (rc == DSD_APP_SCAN_CSV_WRITE_FAILED) {
+            result.error = "local";
+            result.noSpace = errno == ENOSPC;
+            return false;
+        }
+        if (rc != 0) {
+            result.error = "format";
+            result.detail = QString::fromUtf8(error);
+            return false;
+        }
+        if (QFileInfo(destination).size() > backup::kMaxFileBytes) {
+            tooLarge(result, backup::kMaxFileBytes, result.name);
+            return false;
+        }
+        return true;
     }
 
     QString
@@ -571,17 +750,13 @@ class TrunkBundleStager {
         if (stored.contains(identity)) {
             return stored.value(identity);
         }
-        const QString copy = host->importDocument(documentReference(source), QFileInfo(label).fileName());
-        if (copy.isEmpty()) {
-            result.error = "open";
+        QString copied;
+        const QString copy = fetchDocument(fetch, budget, source, QFileInfo(label).fileName(), result, &copied);
+        const QString relative = nextRelative();
+        if (copy.isEmpty() || !placeInMirror(copy, target.mirrorRoot, relative, result)) {
             return {};
         }
-        copies.paths << copy;
-        QString destination = nextPath();
-        if (!QFile::rename(copy, destination)) {
-            result.error = "copy";
-            return {};
-        }
+        QString destination = target.mirrorRoot + '/' + relative;
         stored.insert(identity, destination);
         return destination;
     }
@@ -621,51 +796,30 @@ class TrunkBundleStager {
         return result.required.isEmpty();
     }
 
-    DecoderHost* host;
+    const ImportFetch& fetch;
+    const BundleTarget& target;
     CsvBundleImport& result;
     const QVariantMap& companions;
     const QVariantMap& libraryEntries;
     QString existingRoot, name;
-    StagedCopies copies;
+    CopyBudget budget;
     QMap<QString, QString> stored;
     int nextFile = 0;
 };
 } // namespace
 
 CsvBundleImport
-stage_trunk_csv_bundle(DecoderHost* host, const QString& reference, const QString& name, const QVariantMap& companions,
-                       const QString& existingRoot, const QVariantMap& libraryEntries) {
+stage_trunk_csv_bundle(const ImportFetch& fetch, const BundleTarget& target, const QString& reference,
+                       const QString& name, const QVariantMap& companions, const QVariantMap& libraryEntries) {
     CsvBundleImport result;
-    if (!host) {
-        result.error = "open";
+    if (!layoutBundle(target, QStringLiteral("targets.csv"), result)) {
         return result;
     }
-    result.root = existingRoot.isEmpty()
-                      ? json_store_path("imports/bundles/" + QUuid::createUuid().toString(QUuid::WithoutBraces))
-                      : existingRoot;
-    result.revision = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    if (!ownedRoot(result.root) || !QDir().mkpath(result.root + '/' + result.revision)) {
-        result.error = "copy";
-        return result;
-    }
-    result.path = result.root + '/'
-                  + (existingRoot.isEmpty() ? QStringLiteral("targets.csv") : ".staged-" + result.revision + ".csv");
-    TrunkBundleStager stager(host, result, companions, existingRoot, name, libraryEntries);
+    const QString existingRoot = result.newRoot ? QString() : inLibrary(result.rootRelative);
+    TrunkBundleStager stager(fetch, target, result, companions, existingRoot, name, libraryEntries);
     stager.stageDocument({reference, QString(), false, true});
     if (result.error.isEmpty() && !result.required.isEmpty()) {
         result.error = "companions";
-    }
-    if (result.error.isEmpty()) {
-        char error[512] = {};
-        if (dsd_app_trunk_scan_validate_bundle(result.path.toUtf8().constData(), nullptr, nullptr, error,
-                                               sizeof error)) {
-            result.error = "format";
-            result.detail = QString::fromUtf8(error);
-        }
-    }
-    if (!result.error.isEmpty()) {
-        discard_csv_bundle(result, !existingRoot.isEmpty());
-        result.path.clear();
     }
     return result;
 }
@@ -689,28 +843,175 @@ collectReachableReferences(const QString& path, QList<TargetReference>& refs) {
     return true;
 }
 
-void
-clean_trunk_csv_revisions(const QString& path, const QString& root) {
-    if (!ownedRoot(root) || QFileInfo(path).absolutePath() != root
-        || dsd_app_trunk_scan_validate_bundle(path.toUtf8().constData(), nullptr, nullptr, nullptr, 0)) {
-        return;
+namespace {
+bool
+collectChannelReferences(const QString& path, QList<TargetReference>& refs) {
+    QList<TargetReference> found;
+    const dsd_app_scan_csv_callbacks callbacks{nullptr, collectTargetReference, &found, nullptr};
+    if (dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 1, &callbacks, nullptr, 0) != 0) {
+        return false;
+    }
+    refs.append(found);
+    return true;
+}
+} // namespace
+
+bool
+bundle_reached_files(const QString& path, const QString& root, const QString& type, QSet<QString>* files) {
+    QList<TargetReference> refs;
+    if (type == QLatin1String("trunkTargets")) {
+        // A target list reaches its channel maps' companions too; one that no longer validates keeps everything.
+        if (dsd_app_trunk_scan_validate_bundle(path.toUtf8().constData(), nullptr, nullptr, nullptr, 0)
+            || !collectReachableReferences(path, refs)) {
+            return false;
+        }
+    } else if (!collectChannelReferences(path, refs)) {
+        return false;
+    }
+    const QString prefix = QDir::cleanPath(root) + '/';
+    for (const auto& ref : refs) {
+        const QString resolved = QDir::cleanPath(ref.resolved);
+        if (resolved.startsWith(prefix)) {
+            files->insert(resolved);
+        }
+    }
+    return true;
+}
+
+bool
+bundle_reached_revisions(const QString& path, const QString& root, const QString& type, QSet<QString>* names) {
+    QSet<QString> files;
+    if (!bundle_reached_files(path, root, type, &files)) {
+        return false;
+    }
+    const qsizetype skip = QDir::cleanPath(root).size() + 1;
+    for (const auto& file : files) {
+        names->insert(file.mid(skip).section('/', 0, 0));
+    }
+    return true;
+}
+
+namespace {
+/* @p path as the file system resolves it, through every link (/data/user/0 and /data/data are one folder); its clean
+   absolute spelling when it does not exist. */
+QString
+resolvedPath(const QString& path) {
+    const QFileInfo info(path);
+    const QString canonical = info.canonicalFilePath();
+    return canonical.isEmpty() ? QDir::cleanPath(info.absoluteFilePath()) : canonical;
+}
+} // namespace
+
+bool
+holds_named_file(const QString& dir, const QStringList& named) {
+    // Either spelling of the folder: a file that is gone is kept by its spelling alone.
+    const QString resolved = resolvedPath(dir) + '/';
+    const QString clean = QDir::cleanPath(dir) + '/';
+    return std::any_of(named.cbegin(), named.cend(), [&resolved, &clean](const QString& path) {
+        return path.startsWith(resolved) || path.startsWith(clean);
+    });
+}
+
+namespace {
+/* Add the files @p file's stored CSV reaches to @p reached; false when it cannot be read or parsed. */
+bool
+addReachedFiles(const LibraryFile& file, QStringList* reached) {
+    const bool targets = file.type == QLatin1String("trunkTargets");
+    // Only channel maps and target lists name other files; a file that is gone names nothing (load() prunes its row).
+    if ((!targets && file.type != QLatin1String("chan")) || !QFileInfo::exists(file.path)) {
+        return true;
     }
     QList<TargetReference> refs;
-    if (!collectReachableReferences(path, refs)) {
+    if (!(targets ? collectReachableReferences(file.path, refs) : collectChannelReferences(file.path, refs))) {
+        return false;
+    }
+    for (const auto& ref : refs) {
+        reached->append(QDir::cleanPath(ref.resolved));
+    }
+    return true;
+}
+} // namespace
+
+bool
+kept_library_files(const QList<LibraryFile>& library, QStringList* kept) {
+    bool ok = false;
+    QStringList files = backup::typed_file_paths(&ok);
+    QStringList reached;
+    if (!ok || !library_reached_files(library, &reached)) {
+        return false;
+    }
+    // Compared as the file system resolves them, so a reference through a link still keeps its file.
+    std::transform(files.begin(), files.end(), files.begin(), resolvedPath);
+    files += reached;
+    files.removeDuplicates();
+    *kept = std::move(files);
+    return true;
+}
+
+bool
+library_reached_files(const QList<LibraryFile>& library, QStringList* reached) {
+    QStringList files;
+    const auto add = [&files](const LibraryFile& file) { return addReachedFiles(file, &files); };
+    if (!std::all_of(library.cbegin(), library.cend(), add)) {
+        return false;
+    }
+    std::transform(files.begin(), files.end(), files.begin(), resolvedPath);
+    files.removeDuplicates();
+    *reached = std::move(files);
+    return true;
+}
+
+namespace {
+/* The revision directories of @p root: owned names, real directories, no link. */
+QStringList
+revisionDirectories(const QString& root) {
+    QStringList dirs;
+    const QDir directory(root);
+    for (const auto& name : directory.entryList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System)) {
+        if (revisionName(name) && realDirectory(QFileInfo(directory.filePath(name)))) {
+            dirs.append(name);
+        }
+    }
+    return dirs;
+}
+
+void
+cleanBundle(const BundleRevisions& bundle, const QStringList& kept,
+            const std::function<QStringList(bool* ok)>& journal) {
+    const QString root = QDir::cleanPath(bundle.root);
+    if (!owned_bundle_root(root)) {
         return;
     }
-    QSet<QString> used;
-    for (const auto& ref : refs) {
-        const QString relative = QDir(root).relativeFilePath(ref.resolved);
-        used.insert(relative.section('/', 0, 0));
+    // Listed first, then the journal, then the primary: a directory listed here was journaled before it was made, and
+    // its commit drops it from the journal only once the primary names it.
+    const QStringList revisions = revisionDirectories(root);
+    if (revisions.isEmpty()) {
+        return;
     }
-    QDir directory(root);
-    const QRegularExpression revision(QStringLiteral("^[0-9a-f-]{36}$"));
-    for (const auto& name : directory.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        if (revision.match(name).hasMatch() && !used.contains(name)
-            && !QFileInfo(directory.filePath(name)).isSymLink()) {
-            QDir(directory.filePath(name)).removeRecursively();
+    bool ok = false;
+    const QStringList inFlight = journal(&ok);
+    QSet<QString> reached;
+    if (!ok || inFlight.contains(root) || !bundle_reached_revisions(bundle.path, root, bundle.type, &reached)) {
+        return;
+    }
+    for (const auto& name : revisions) {
+        const QString dir = root + '/' + name;
+        if (!reached.contains(name) && !inFlight.contains(dir) && !holds_named_file(dir, kept)) {
+            QDir(dir).removeRecursively();
         }
+    }
+}
+} // namespace
+
+void
+clean_bundle_revisions(const QList<BundleRevisions>& bundles, const QList<LibraryFile>& library,
+                       const std::function<QStringList(bool* ok)>& journal) {
+    QStringList kept;
+    if (bundles.isEmpty() || !kept_library_files(library, &kept)) {
+        return;
+    }
+    for (const auto& bundle : bundles) {
+        cleanBundle(bundle, kept, journal);
     }
 }
 } // namespace dsd_qt

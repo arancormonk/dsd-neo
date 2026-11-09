@@ -74,7 +74,7 @@ Item {
             verify(!findChild(card, "scanListPlay").enabled);
             var source = testContext.writeFixtureCsv("ready-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\ntwo,p25-conventional,852500000,,,,\n");
-            var result = importedFiles.importFile(source, "Ready targets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok);
             try {
                 scanLists.update(0, {isDraft: false, targetSource: "csv", targetsCsvPath: result.path});
@@ -383,7 +383,7 @@ Item {
         function test_csv_list_play_and_label() {
             var source = testContext.writeFixtureCsv("home-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\nCSV target,p25-conventional,851500000,,,,\n");
-            var result = importedFiles.importFile(source, "Home targets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             var app = appLoader.item;
             try {

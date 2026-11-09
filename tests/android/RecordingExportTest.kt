@@ -183,11 +183,7 @@ private class ShortSink(private val limit: Long) : OutputStream() {
     }
 }
 
-private val noSteps = object : RecordingExport.Steps {
-    override fun check() {}
-
-    override fun copied(bytes: Int) {}
-}
+private val noSteps = DocumentTransfer.NoSteps
 
 private fun aShortWriteFailsTheZipWithoutClosingTheSink() {
     val (paths, names) = recordings(4 * DocumentTransfer.CHUNK_BYTES, 300)

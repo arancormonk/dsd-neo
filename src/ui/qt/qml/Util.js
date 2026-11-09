@@ -797,6 +797,106 @@ function sizeText(bytes) {
     return unit(b / 1e9, "GB")
 }
 
+// #832: what a failed import says, the same on the wizard, Imported files
+// and Scan lists. `result` is an importedFiles.importFinished() or a
+// replayFiles.replayImportFinished() answer; `context` is "replay" for a
+// replay capture (its size is checked against the free space), else a CSV.
+// Empty for a success (an "empty" file is the host's own warning) and for a
+// cancel, which the user asked for.
+function importMessage(result, context) {
+    var error = result.error || ""
+    if (result.ok || error === "cancelled")
+        return ""
+    var name = result.name || ""
+    if (error === "too_large")
+        return context === "replay" ? replaySpaceMessage(result, name) : csvSizeMessage(result, name)
+    if (error === "read")
+        return name ? qsTr("Could not read %1. Check that it is still available, then try again.").arg(name)
+                    : qsTr("Could not read this file. Check that it is still available, then try again.")
+    if (error === "local")
+        return localCopyMessage(result.noSpace === true, name)
+    if (error === "format")
+        return result.detail || formatMessage(result.type, name)
+    if (error === "stale")
+        return qsTr("The imported file changed while the new copy was being made. Nothing was replaced.")
+    // The row an update was picked for went while the picker was up (issue #829).
+    if (error === "changed")
+        return result.detail || qsTr("That file changed while you were picking. Try again.")
+    // No picker could ask (issue #829): DocumentPicker's reason.
+    if (error === "unavailable")
+        return result.detail || qsTr("The file picker could not open. Try again.")
+    if (error === "busy")
+        return result.detail || qsTr("Stop the decoder before replacing target files.")
+    if (error === "save")
+        return result.detail || qsTr("Could not save the list of imported files. Try again.")
+    if (error === "path")
+        return result.detail || qsTr("Cannot replace this imported file.")
+    return name ? qsTr("Could not import %1.").arg(name) : qsTr("Could not import this file.")
+}
+
+// The import limits are whole MiB (backup::kMaxFileBytes and the bundle's).
+function mibText(bytes) {
+    return keptWhole(qsTr("%1 MiB").arg(Math.round((Number(bytes) || 0) / (1024 * 1024))))
+}
+
+// A figure and its unit kept on one line inside a wrapped message.
+function keptWhole(text) {
+    return text.replace(/ /g, "\u00a0")
+}
+
+// A CSV over its limit: one file over the per-file limit, or a CSV with its
+// companions over the larger bundle limit.
+function csvSizeMessage(result, name) {
+    var limit = Number(result.limitBytes) || 0
+    if (limit > 32 * 1024 * 1024)
+        return qsTr("These files are too large to import together. A CSV and its companion files can be up to %1 in all.").arg(mibText(limit))
+    return name ? qsTr("%1 is too large to import. A CSV file can be up to %2.").arg(name).arg(mibText(limit || 32 * 1024 * 1024))
+                : qsTr("This file is too large to import. A CSV file can be up to %1.").arg(mibText(limit || 32 * 1024 * 1024))
+}
+
+// A replay capture the free space cannot hold. The store keeps some space
+// spare (reserveBytes) and counts it in neededBytes, so the numbers shown are
+// the file's own size, the free space and that spare part, rounded the way a
+// person says it: a file smaller than the free space then still reads as not
+// fitting, and says why.
+function replaySpaceMessage(result, name) {
+    var file = name || qsTr("this file")
+    var free = keptWhole(sizeText(result.freeBytes))
+    var reserve = Number(result.reserveBytes) || 0
+    var spare = keptWhole(qsTr("%1 GB").arg(fixed(reserve / 1e9, 1)))
+    var size = Number(result.neededBytes) - reserve
+    if (Number(result.neededBytes) > 0 && size >= 0) {
+        var sized = keptWhole(sizeText(size))
+        return reserve > 0 ? qsTr("There is not enough free space to copy %1 (%2). This device has %3 free, and DSD-neo keeps about %4 spare.").arg(file).arg(sized).arg(free).arg(spare)
+                           : qsTr("There is not enough free space to copy %1 (%2). This device has %3 free.").arg(file).arg(sized).arg(free)
+    }
+    return reserve > 0 ? qsTr("There is not enough free space to copy %1. This device has %2 free, and DSD-neo keeps about %3 spare.").arg(file).arg(free).arg(spare)
+                       : qsTr("There is not enough free space to copy %1. This device has %2 free.").arg(file).arg(free)
+}
+
+function localCopyMessage(noSpace, name) {
+    var file = name || qsTr("this file")
+    return noSpace ? qsTr("Could not save a copy of %1 on this device. Free up some storage, then try again.").arg(file)
+                   : qsTr("Could not save a copy of %1 on this device.").arg(file)
+}
+
+// A file its kind cannot parse, when the parser gave no reason of its own.
+function formatMessage(type, name) {
+    var kinds = {
+        chan: qsTr("channel map"),
+        group: qsTr("talkgroup list"),
+        keysDec: qsTr("decimal key file"),
+        keysHex: qsTr("hex key file"),
+        p25Bandplan: qsTr("P25 band plan"),
+        src: qsTr("radio ID list"),
+        dmrTgKeys: qsTr("DMR key mapping file"),
+        vertexKeys: qsTr("Vertex keystream file"),
+        trunkTargets: qsTr("target CSV")
+    }
+    var kind = kinds[type] || qsTr("CSV file")
+    return name ? qsTr("%1 is not a valid %2.").arg(name).arg(kind) : qsTr("This file is not a valid %1.").arg(kind)
+}
+
 // The storage limit in its choices' words: 0 is no limit.
 function limitText(mb) {
     return mb > 0 ? sizeText(mb * 1e6) : qsTr("No limit")

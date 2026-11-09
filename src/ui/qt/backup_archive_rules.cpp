@@ -9,6 +9,7 @@
 #include <QChar>
 #include <QLatin1String>
 #include <QObject>
+#include <QRegularExpression>
 #include <QUuid>
 #include <QVariant>
 #include <algorithm>
@@ -28,23 +29,6 @@ namespace backup {
 namespace detail {
 
 namespace {
-
-constexpr TypedPathField kTypedPathFields[] = {
-    {kSavedSystemsStore, "chanCsvPath", PathKind::File},
-    {kSavedSystemsStore, "groupCsvPath", PathKind::File},
-    {kSavedSystemsStore, "keyCsvPath", PathKind::File},
-    {kSavedSystemsStore, "p25BandplanCsvPath", PathKind::File},
-    {kSavedSystemsStore, "srcCsvPath", PathKind::File},
-    {kSavedSystemsStore, "filePath", PathKind::Recording},
-    {kScanListsStore, "groupCsvPath", PathKind::File},
-    {kScanListsStore, "srcCsvPath", PathKind::File},
-    {kScanListsStore, "targetsCsvPath", PathKind::File},
-    {kImportedFilesStore, "path", PathKind::File},
-    {kImportedFilesStore, "bundleRoot", PathKind::BundleRoot},
-    {kDecryptionProfilesStore, "legacyCsvPath", PathKind::File},
-    {kDecryptionProfilesStore, "mappingCsvPath", PathKind::File},
-    {kDecryptionProfilesStore, "vendorCsvPath", PathKind::File},
-};
 
 QJsonArray
 repair_scan_entries(const QJsonValue& entries) {
@@ -170,17 +154,6 @@ validate_ranges(QJsonArray& rows, QString* why) {
 
 } // namespace
 
-const QList<TypedPathField>&
-typed_fields() {
-    static const QList<TypedPathField> fields(std::begin(kTypedPathFields), std::end(kTypedPathFields));
-    return fields;
-}
-
-bool
-is_typed_field(const QString& store, const TypedPathField& field) {
-    return store == QLatin1String(field.store);
-}
-
 QString
 new_uid() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -219,8 +192,20 @@ owned_name(const QString& id) {
 }
 
 bool
-staging_name(const QString& name) {
-    return name.startsWith(QLatin1String(".staged-")) || name.startsWith(QLatin1String(".import"));
+leftover_name(const QString& name) {
+    // A channel map's staged revision (QUuid::WithoutBraces), a trunk row's check copy (QTemporaryFile's letters) and
+    // the replace helper's temp ("%s.tmp.XXXXXX": [A-Za-z0-9] on POSIX, a subset on Windows).
+    static const QRegularExpression patterns[] = {
+        QRegularExpression(
+            QStringLiteral("^\\.staged-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.csv$")),
+        QRegularExpression(QStringLiteral("^\\.bundle-check-[A-Za-z]{6}\\.csv$")),
+        QRegularExpression(QStringLiteral("^.+\\.tmp\\.[A-Za-z0-9]{6}$")),
+    };
+    return std::any_of(std::begin(patterns), std::end(patterns), [&name](const QRegularExpression& pattern) {
+        // '$' also matches before a final newline: the match must span the whole name.
+        const QRegularExpressionMatch match = pattern.match(name);
+        return match.hasMatch() && match.capturedLength() == name.size();
+    });
 }
 
 QString
@@ -255,10 +240,8 @@ archive_path_problem(const QString& path) {
     const bool unusable = std::any_of(parts.cbegin(), parts.cend(), [](const QString& part) {
         return part.isEmpty() || part == QLatin1String(".") || part == QLatin1String("..");
     });
-    if (unusable) {
-        return QStringLiteral("empty, '.' or '..' component");
-    }
-    return staging_name(parts.last()) ? QStringLiteral("staging leftover") : QString();
+    // No name is refused: a stored file is carried whatever it is called (#832).
+    return unusable ? QStringLiteral("empty, '.' or '..' component") : QString();
 }
 
 QString

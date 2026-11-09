@@ -38,6 +38,10 @@ struct LogTap {
 std::atomic<const LogTap*> g_log_tap{nullptr};
 thread_local bool g_in_tap = false;
 
+/* dsd_neo_log_capture_error()'s buffer for this thread, or none. */
+thread_local char* g_error_capture = nullptr;
+thread_local size_t g_error_capture_size = 0;
+
 std::atomic<int> g_log_sink{kLogSinkUnresolved};
 
 /**
@@ -112,6 +116,15 @@ dsd_neo_log_set_tap(dsd_neo_log_tap_fn fn, void* ctx) {
 }
 
 extern "C" void
+dsd_neo_log_capture_error(char* buf, size_t size) {
+    g_error_capture = size > 0 ? buf : nullptr;
+    g_error_capture_size = g_error_capture ? size : 0;
+    if (g_error_capture) {
+        g_error_capture[0] = '\0';
+    }
+}
+
+extern "C" void
 dsd_neo_log_set_sink(dsd_neo_log_sink_t sink) {
     g_log_sink.store((int)sink, std::memory_order_relaxed);
 }
@@ -144,6 +157,12 @@ dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     if (!dsd_unicode_supported()) {
         dsd_ascii_fallback(buf, safe, sizeof(safe));
         out = safe;
+    }
+
+    /* The message as formatted, not as the terminal shows it: a caller matches the paths it names, and an ASCII
+       fallback would have replaced their non-ASCII characters. */
+    if (level == LOG_LEVEL_ERROR && g_error_capture && g_error_capture[0] == '\0') {
+        DSD_SNPRINTF(g_error_capture, g_error_capture_size, "%s", buf);
     }
 
     const auto* tap = g_log_tap.load(std::memory_order_acquire);

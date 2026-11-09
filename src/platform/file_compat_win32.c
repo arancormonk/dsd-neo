@@ -655,42 +655,49 @@ dsd_win32_path_pair_wide(const char* a, const char* b, wchar_t** out_a, wchar_t*
     return kind_b;
 }
 
+/* A directory source is refused before any move (see the POSIX helper). The name is looked up as the move reads it
+   (dsd_win32_path_wide()'s one call); a link to a folder is a link, not a folder, as lstat() reports it. */
+static int
+dsd_move_source_is_directory(const char* path) {
+    dsd_path_type type = DSD_PATH_TYPE_OTHER;
+    return dsd_path_type_nofollow(path, &type) == 1 && type == DSD_PATH_TYPE_DIR;
+}
+
+/* One move of the pair, through the one call dsd_win32_path_pair_wide() picks. @p flags never holds
+   MOVEFILE_COPY_ALLOWED: another volume fails with ERROR_NOT_SAME_DEVICE. Returns ERROR_SUCCESS or the native error;
+   a pair that could not be widened (no memory) returns ERROR_NOT_ENOUGH_MEMORY. */
+static DWORD
+dsd_win32_move(const char* from, const char* to, DWORD flags) {
+    wchar_t* wide_from = NULL;
+    wchar_t* wide_to = NULL;
+    const int kind = dsd_win32_path_pair_wide(from, to, &wide_from, &wide_to);
+    if (kind < 0) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    const BOOL moved = kind > 0 ? MoveFileExW(wide_from, wide_to, flags) : MoveFileExA(from, to, flags);
+    const DWORD err = moved ? ERROR_SUCCESS : GetLastError();
+    free(wide_from);
+    free(wide_to);
+    return err;
+}
+
 int
 dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     if (!tmp_path || tmp_path[0] == '\0' || !final_path || final_path[0] == '\0') {
         errno = EINVAL;
         return -1;
     }
-    wchar_t* wide_tmp = NULL;
-    wchar_t* wide_final = NULL;
-    const int kind = dsd_win32_path_pair_wide(tmp_path, final_path, &wide_tmp, &wide_final);
-    if (kind < 0) {
+    if (dsd_move_source_is_directory(tmp_path)) {
+        errno = EISDIR;
         return -1;
     }
-    const DWORD flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED;
-    const BOOL moved = kind > 0 ? MoveFileExW(wide_tmp, wide_final, flags) : MoveFileExA(tmp_path, final_path, flags);
-    free(wide_tmp);
-    free(wide_final);
-    if (!moved) {
-        errno = EACCES;
+    const DWORD err = dsd_win32_move(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING);
+    if (err != ERROR_SUCCESS) {
+        /* Never a copy: another volume is a failure the caller can tell from a denial. */
+        errno = err == ERROR_NOT_SAME_DEVICE ? EXDEV : err == ERROR_NOT_ENOUGH_MEMORY ? ENOMEM : EACCES;
         return -1;
     }
     return 0;
-}
-
-/* The ANSI form of dsd_rename_noreplace(), for a pair that is not UTF-8. The CRT's rename() refuses an existing
-   destination and keeps the CRT's own path conversion, which MoveFileExA() would not. It reports that refusal as
-   EACCES, the errno of every other denial too, so the native error the same call left tells them apart. */
-static int
-dsd_rename_noreplace_ansi(const char* from, const char* to) {
-    _doserrno = 0;
-    if (rename(from, to) == 0) {
-        return 0;
-    }
-    const int saved = errno;
-    const unsigned long native = (unsigned long)_doserrno;
-    errno = (native == ERROR_ALREADY_EXISTS || native == ERROR_FILE_EXISTS) ? EEXIST : saved;
-    return -1;
 }
 
 int
@@ -702,18 +709,15 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
         errno = EINVAL;
         return -1;
     }
-    /* MoveFileExW() without MOVEFILE_REPLACE_EXISTING refuses an existing destination (ERROR_ALREADY_EXISTS or
-       ERROR_FILE_EXISTS, so EEXIST) and, within one volume, renames a link itself. MOVEFILE_COPY_ALLOWED keeps what the
-       CRT's rename() did for a destination on another volume. */
-    wchar_t* wide_from = NULL;
-    wchar_t* wide_to = NULL;
-    const int kind = dsd_win32_path_pair_wide(from, to, &wide_from, &wide_to);
-    if (kind <= 0) {
-        return kind < 0 ? -1 : dsd_rename_noreplace_ansi(from, to);
+    if (dsd_move_source_is_directory(from)) {
+        errno = EISDIR;
+        return -1;
     }
-    const DWORD err = MoveFileExW(wide_from, wide_to, MOVEFILE_COPY_ALLOWED) ? ERROR_SUCCESS : GetLastError();
-    free(wide_from);
-    free(wide_to);
+    /* Not the CRT's rename(): it converts through the process code page, which is not UTF-8 in the Qt app, and the UCRT
+       moves with MOVEFILE_COPY_ALLOWED, so another volume would copy the whole file instead of failing. MoveFileEx()
+       without MOVEFILE_REPLACE_EXISTING refuses an existing @p to (ERROR_ALREADY_EXISTS or ERROR_FILE_EXISTS, so
+       EEXIST) and, within one volume, renames a link itself. */
+    const DWORD err = dsd_win32_move(from, to, 0);
     if (err != ERROR_SUCCESS) {
         errno = dsd_win32_file_errno(err);
         return -1;

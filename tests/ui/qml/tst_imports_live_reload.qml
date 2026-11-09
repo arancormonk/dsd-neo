@@ -55,11 +55,11 @@ Item {
 
         function init() {
             var groups = testContext.writeFixtureCsv("live-groups.csv", "id,mode,name\n1001,A,Dispatch\n");
-            var imported = importedFiles.importFile(groups, "live-groups.csv", "group");
+            var imported = testContext.importNamed(groups, "live-groups.csv", "group");
             verify(imported.ok && imported.error === "", "the talkgroup fixture did not import");
             tc.groupPath = imported.path;
             var map = testContext.writeFixtureCsv("live-map.csv", "channel,frequency\n1,851012500\n");
-            var mapped = importedFiles.importFile(map, "live-map.csv", "chan");
+            var mapped = testContext.importNamed(map, "live-map.csv", "chan");
             verify(mapped.ok && mapped.error === "", "the channel map fixture did not import");
             tc.chanPath = mapped.path;
             testContext.resetCommands();
@@ -76,6 +76,15 @@ Item {
             compare(importedFiles.count, 0, "the library did not empty");
         }
 
+        // Answers the CSV import's pick with @p source (issue #829), then waits for its copy to answer (#832).
+        function pick(source) {
+            var flow = findChild(tc.screen, "importsCsvImport");
+            verify(flow !== null);
+            testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, "file://" + source,
+                                             source.substring(source.lastIndexOf('/') + 1), false);
+            tryCompare(flow, "active", false);
+        }
+
         // Taps Update from file on @p path's row and picks @p source, as the user does; null cancels the picker.
         function update(path, source) {
             tc.screen.actionRow = importedFiles.rowForPath(path);
@@ -86,22 +95,12 @@ Item {
             verify(button !== null && button.visible, "Update from file is missing");
             button.clicked();
             var picker = findChild(findChild(tc.screen, "importsCsvImport"), "csvPrimaryPicker");
-            verify(picker !== null && picker.visible, "the picker did not open");
+            verify(picker !== null && picker.visible);
             if (source === null) {
-                testContext.answerDocumentCancelled(pickRequest());
+                testContext.answerDocumentCancelled(testContext.lastDocumentRequest().id);
                 return;
             }
-            pickFile(source);
-        }
-
-        // Issue #829: the open request the CSV picker waits on, answered by the host.
-        function pickRequest() {
-            var request = testContext.lastDocumentRequest();
-            compare(request.kind, "open");
-            return request.id;
-        }
-        function pickFile(source) {
-            testContext.answerDocumentPicked(pickRequest(), "file://" + source, source.split("/").pop(), false);
+            pick(source);
         }
 
         function test_update_reloads_the_file_in_a_running_session_data() {
@@ -163,11 +162,10 @@ Item {
                 compare(tc.screen.notice, "Updated — no usable rows. Check the file format, then update it.");
                 verify(tc.screen.noticeIsProblem);
             } else {
-                var flow = findChild(tc.screen, "importsCsvImport");
                 tc.screen.pendingRow = -1;
-                flow.pick("group");
-                verify(findChild(flow, "csvPrimaryPicker").visible, "the picker did not open");
-                pickFile(testContext.writeFixtureCsv("new-groups.csv", "id,mode,name\n7,A,Seven\n"));
+                tc.screen.pendingType = "group";
+                tc.screen.importPickedFile();
+                pick(testContext.writeFixtureCsv("new-groups.csv", "id,mode,name\n7,A,Seven\n"));
                 compare(tc.screen.notice, "Imported · 1 talkgroup");
             }
             compare(commands.listCommands(), []);

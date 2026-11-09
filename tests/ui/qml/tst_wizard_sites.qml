@@ -220,7 +220,7 @@ Item {
                 rrSid: 6673,
                 rrSiteIds: "16863",
                 rrKind: kind
-            }) : importedFiles.importFile(path, name, kind);
+            }) : testContext.importNow(path, kind);
             verify(result.ok, "could not add " + name + " to the library");
             libraryPaths = libraryPaths.concat([result.path]);
             return result.path;

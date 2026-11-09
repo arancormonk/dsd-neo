@@ -51,6 +51,7 @@
 #include <stdio.h>
 #include <utility>
 #include <vector>
+#include "../test_support/qt_library_import.h"
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "backup_apply.h"
@@ -344,7 +345,7 @@ struct Backup {
 
 QString
 import_path(dsd_qt::ImportedFilesModel& library, const QString& source, const QString& name, const QString& type) {
-    const QVariantMap result = library.importFile(source, name, type);
+    const QVariantMap result = dsd_test_import_named_and_wait(library, source, name, type);
     expect("fixture import succeeds", result.value("ok").toBool());
     return result.value("path").toString();
 }
@@ -358,7 +359,7 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Backup& b) {
                && write_file(source.filePath("channels.csv"),
                              "channel,frequency_hz,mode,keys_hex_csv,options\n1,461000000,dmr,keys.csv,"
                              "--dmr-tg-key-csv 'map.csv'\n"));
-    QVariantMap result = library.importBundle(source.filePath("channels.csv"), "Bundle.csv", "chan", {});
+    QVariantMap result = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan");
     expect("channel bundle imports", result.value("ok").toBool());
     b.chan = result.value("path").toString();
     b.chanRoot = library.get(library.rowForPath(b.chan)).value("bundleRoot").toString();
@@ -370,7 +371,7 @@ import_bundles(dsd_qt::ImportedFilesModel& library, Backup& b) {
                && write_file(source.filePath("targets.csv"),
                              "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
                              "one,p25-trunk,851012500,tmap.csv,250,,\n"));
-    result = library.importFile(source.filePath("targets.csv"), "Targets.csv", "trunkTargets");
+    result = dsd_test_import_and_wait(library, source.filePath("targets.csv"), "trunkTargets");
     expect("target bundle imports", result.value("ok").toBool());
     b.targets = result.value("path").toString();
     b.targetsRoot = library.get(library.rowForPath(b.targets)).value("bundleRoot").toString();
@@ -507,8 +508,7 @@ change_library(TestHost& host, const Backup& b, Old& old) {
            write_file(source.filePath("keys2.csv"), "keyid,value\n03,FEDCB\n")
                && write_file(source.filePath("channels.csv"),
                              "channel,frequency_hz,mode,keys_hex_csv\n1,462000000,dmr,keys2.csv\n"));
-    const QVariantMap updated =
-        library.importBundle(source.filePath("channels.csv"), "Bundle.csv", "chan", {}, library.rowForPath(b.chan));
+    const QVariantMap updated = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan", b.chan);
     expect("bundle updated in place",
            updated.value("ok").toBool() && library.get(library.rowForPath(b.chan)).value("bundleRoot") == b.chanRoot);
     for (QDirIterator it(b.chanRoot, QDir::Files, QDirIterator::Subdirectories); it.hasNext();) {
@@ -869,28 +869,39 @@ test_staging_layout(const Backup& b) {
     remove_tree(dir);
 }
 
-/** @p b's archive with the file at @p path replaced by @p bytes, size and hash updated. */
+/**
+ * @p archive rebuilt with the file at @p path replaced by @p bytes (size and hash updated), or left out when @p bytes
+ * is null; @p edit may change the manifest after that.
+ */
 QByteArray
-with_file_bytes(const QByteArray& archive, const QString& path, const QByteArray& bytes) {
+with_file_bytes(const QByteArray& archive, const QString& path, const QByteArray& bytes,
+                const std::function<void(QJsonObject&)>& edit = {}) {
     const quint32 length = qFromBigEndian<quint32>(archive.constData() + 4);
     QJsonObject manifest = QJsonDocument::fromJson(archive.mid(8, static_cast<qsizetype>(length))).object();
-    QJsonArray table = manifest.value("files").toArray();
+    const QJsonArray table = manifest.value("files").toArray();
+    QJsonArray kept;
     QByteArray data;
     qsizetype offset = 8 + static_cast<qsizetype>(length);
-    for (qsizetype i = 0; i < table.size(); ++i) {
-        QJsonObject entry = table.at(i).toObject();
+    for (const auto& value : table) {
+        QJsonObject entry = value.toObject();
         const qsizetype size = static_cast<qsizetype>(entry.value("size").toInteger());
         QByteArray file = archive.mid(offset, size);
         offset += size;
         if (entry.value("path").toString() == path) {
+            if (bytes.isNull()) {
+                continue;
+            }
             file = bytes;
             entry.insert("size", file.size());
             entry.insert("sha256", sha256_hex(file));
-            table.replace(i, entry);
         }
+        kept.append(entry);
         data.append(file);
     }
-    manifest.insert("files", table);
+    manifest.insert("files", kept);
+    if (edit) {
+        edit(manifest);
+    }
     const QByteArray json = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
     QByteArray out("DNBA");
     char size[4];
@@ -2120,9 +2131,10 @@ make_beside(TestHost& host) {
                    && write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
                    && write_file(source.filePath("channels.csv"),
                                  "channel,frequency_hz,mode,keys_hex_csv\n1,461000000,dmr,keys.csv\n"));
-        QVariantMap result = library.importBundle(source.filePath("plain.csv"), "Plain.csv", "chan", {});
+        QVariantMap result = dsd_test_import_and_wait(library, source.filePath("plain.csv"), "chan");
         const int row = library.rowForPath(result.value("path").toString());
-        result = library.importBundle(source.filePath("channels.csv"), "Plain.csv", "chan", {}, row);
+        result = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan",
+                                          library.get(row).value("path").toString());
         expect("the plain map is updated with companions", result.value("ok").toBool());
         beside.map = result.value("path").toString();
         beside.bundle = library.get(row).value("bundleRoot").toString();
@@ -2176,6 +2188,80 @@ test_bundle_named_from_outside(TestHost& host, const Old& old) {
     expect("the failed restore leaves nothing pending", !dsd_qt::backup::pending_exists());
     expect("the result says why", dsd_qt::backup::read_result_file().value("reason") == reason);
     expect("no bundle took a fresh id", !QFileInfo::exists(beside.bundle + "-1"));
+}
+
+/**
+ * @p archive as an export from before #832 wrote it for a configuration whose library row @p name keeps its file at
+ * @p path, a name it left out: no file, no row, every other value naming it cleared, and the row listed instead.
+ */
+QByteArray
+as_exported_before_832(const QByteArray& archive, const QString& path, const QString& name) {
+    return with_file_bytes(archive, path, QByteArray(), [&](QJsonObject& manifest) {
+        const QString absolute = manifest.value("sourceRoots").toArray().at(0).toString() + '/' + path;
+        QJsonObject stores = manifest.value("stores").toObject();
+        for (const QString& store : stores.keys()) {
+            QJsonArray rows = dsd_qt::backup::map_typed_path_values(
+                store, stores.value(store).toArray(), [&absolute](const dsd_qt::backup::TypedPathValue& v) {
+                    return v.value == absolute ? QString() : v.value;
+                });
+            for (qsizetype i = rows.size() - 1; store == "imported_files.json" && i >= 0; --i) {
+                if (rows.at(i).toObject().value("path").toString().isEmpty()) {
+                    rows.removeAt(i);
+                }
+            }
+            stores.insert(store, rows);
+        }
+        manifest.insert("stores", stores);
+        manifest.insert("notIncluded", QJsonArray{"Imported file " + name});
+    });
+}
+
+/**
+ * Issue #832 (B2): a library file named like an import's temp file is configuration like any other. A backup used to
+ * leave it out, and restoring that backup over the configuration it came from then deleted the file, as the library
+ * named it; now the backup carries it and the restore puts it back byte-identical. A backup written before the change
+ * still restores (without the file it never carried).
+ */
+void
+test_restore_keeps_import_named_file(TestHost& host) {
+    put_back(Tree());
+    QString list;
+    {
+        dsd_qt::ImportedFilesModel library(&host);
+        list = import_path(library, example("group.csv"), ".import-list.tmp", "group");
+    }
+    {
+        dsd_qt::SavedSystemsModel systems;
+        expect("a system names the list",
+               systems.add({{"name", "Metro"}, {"sourceType", "usb"}, {"groupCsvPath", list}}));
+    }
+    expect("the list keeps its .import* name", list == at("imports/.import-list.tmp"));
+    const QByteArray bytes = read_file(list);
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    const auto parsed = dsd_qt::backup::backup_parse_archive(built.archive, root());
+    expect("the backup builds and parses", built.error == BackupError::None && parsed.error == BackupError::None);
+    expect("the backup carries the .import* file",
+           parsed.files.size() == 1 && parsed.files.at(0).path == "imports/.import-list.tmp");
+    const Tree tree = capture();
+
+    stage_over(parsed, built.archive, tree);
+    expect("over its own configuration: applied", apply().outcome == ApplyOutcome::Applied);
+    expect("the .import* file is kept byte-identical", !bytes.isEmpty() && read_file(list) == bytes);
+    const QJsonArray library = dsd_qt::json_store_load_array("imported_files.json");
+    expect("its library row is kept", library.size() == 1 && library.at(0).toObject().value("path") == list);
+    expect("the system still names it",
+           dsd_qt::json_store_load_array("saved_systems.json").at(0).toObject().value("groupCsvPath") == list);
+
+    const QByteArray older = as_exported_before_832(built.archive, "imports/.import-list.tmp", ".import-list.tmp");
+    const auto olderParsed = dsd_qt::backup::backup_parse_archive(older, root());
+    expect("a backup written before #832 parses",
+           olderParsed.error == BackupError::None && olderParsed.files.isEmpty()
+               && olderParsed.summary.notIncluded == QStringList{"Imported file .import-list.tmp"});
+    stage_over(olderParsed, older, tree);
+    expect("a backup written before #832 restores", apply().outcome == ApplyOutcome::Applied);
+    expect("its library holds no row for the file it left out",
+           dsd_qt::json_store_load_array("imported_files.json").isEmpty()
+               && dsd_qt::json_store_load_array("saved_systems.json").at(0).toObject().value("groupCsvPath") == "");
 }
 
 /**
@@ -2320,6 +2406,7 @@ main(int argc, char** argv) {
         test_repeated_avoids(host, backup, old);
         test_two_restores_in_a_row(backup, old, reference);
         test_bundle_named_from_outside(host, old);
+        test_restore_keeps_import_named_file(host);
     }
     dsd_app_signal_search_store_close();
 

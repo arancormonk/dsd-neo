@@ -64,8 +64,12 @@ QString variant_string(const QJsonValue& value);
 /** Whether @p id may name an owned bundle directory (csv_bundle_import.cpp's ownedRoot() rule). */
 bool owned_name(const QString& id);
 
-/** Whether @p name is a staging leftover (".staged-*", ".import*") a backup never carries. */
-bool staging_name(const QString& name);
+/**
+ * Whether @p name has the exact shape of a temp file an import of an older version (or the replace helper) left in a
+ * bundle root: ".staged-<uuid>.csv", ".bundle-check-XXXXXX.csv" or "<name>.tmp.XXXXXX". Only an export filter for the
+ * bundle files nothing references, never proof that the app made the file.
+ */
+bool leftover_name(const QString& name);
 
 /** The comparison key for archive paths: equal for paths equal exactly, by case folding or by normalization. */
 QString path_key(const QString& path);

@@ -24,6 +24,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QUrl>
 #include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
@@ -34,6 +35,7 @@
 #include <utility>
 #include "app_prefs.h"
 #include "decoder_host.h"
+#include "document_import_transport.h"
 #include "recording_sessions.h"
 
 #include <dsd-neo/core/opts.h>
@@ -1558,6 +1560,20 @@ test_network_and_file_sources(void) {
            input_spec(session_args_build(file, SessionArgPrefs(), &error)) == QStringLiteral("/sdcard/capture.wav"));
 }
 
+/* I5 (#832): desktop Browse hands the wizard a file:// URL; the replay store keeps its plain path, which -i opens. */
+void
+test_desktop_browse_stores_a_plain_path(void) {
+    const QString path = QStringLiteral("/home/user/captures/site 1.wav");
+    const QString stored = dsd_qt::local_document_path(QUrl::fromLocalFile(path).toString());
+    expect("a file URL is stored as its plain path", stored == path);
+    expect("a plain path is stored as it is", dsd_qt::local_document_path(path) == path);
+    QVariantMap file;
+    file.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
+    file.insert(QStringLiteral("filePath"), stored);
+    SessionArgsError error = SessionArgsError::None;
+    expect("-i gets the plain path", input_spec(session_args_build(file, SessionArgPrefs(), &error)) == path);
+}
+
 void
 test_keys() {
     using namespace dsd_qt;
@@ -2102,6 +2118,7 @@ main(int argc, char** argv) {
     test_ppm_shapes();
     test_bias_tee_tristate();
     test_network_and_file_sources();
+    test_desktop_browse_stores_a_plain_path();
     test_past_int_range();
     test_explore_system();
     test_radio_settings_args();

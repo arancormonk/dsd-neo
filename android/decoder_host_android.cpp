@@ -477,27 +477,6 @@ DecoderHostAndroid::moveToBackground() {
     return activity.callMethod<jboolean>("moveTaskToBack", "(Z)Z", JNI_TRUE) == JNI_TRUE;
 }
 
-QString
-DecoderHostAndroid::importContentUri(const QString& reference, const QString& fileName) {
-    return importDocument(reference, fileName, QString());
-}
-
-QString
-DecoderHostAndroid::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {
-    QJniObject context = android_context();
-    if (!context.isValid()) {
-        return QString();
-    }
-    QJniObject uri = QJniObject::fromString(reference);
-    QJniObject name = QJniObject::fromString(fileName);
-    QJniObject replace = QJniObject::fromString(replacePath);
-    QJniObject result = QJniObject::callStaticObjectMethod(
-        kSupportClass, "importDocumentToFiles",
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-        context.object(), uri.object(), name.object(), replace.object());
-    return result.isValid() ? result.toString() : QString();
-}
-
 bool
 DecoderHostAndroid::quitApp() {
     if (!QNativeInterface::QAndroidApplication::isActivityContext()) {
@@ -556,6 +535,80 @@ DecoderHostAndroid::platformCopyFileToDocument(const QString& sourcePath, const 
                "(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z", resolver, source.object(),
                uri.object())
            == JNI_TRUE;
+}
+
+/*
+ * The JNI transport of the import copies (#832; DecoderHostAndroid::ImportTransport in
+ * decoder_host_android_imports.cpp), on the import worker thread, which QJniObject attaches. Only the copy uses the
+ * held ContentResolver; the rest read or change DocumentCopies' request table under its lock. None waits on another
+ * thread.
+ */
+int
+DecoderHostAndroid::platformCopyImportDocument(qint64 request, const QString& reference, const QString& destPath,
+                                               qint64 maxBytes) {
+    const jobject resolver = g_content_resolver.load();
+    if (resolver == nullptr) {
+        return DocumentLocalFailed; // the app never held its ContentResolver: nothing to do with the document
+    }
+    const QJniObject uri = QJniObject::fromString(reference);
+    const QJniObject dest = QJniObject::fromString(destPath);
+    // Must match DocumentCopies.kt:
+    // @JvmStatic fun copyImportDocument(ContentResolver, Long, String, String, Long): Int.
+    return QJniObject::callStaticMethod<jint>(
+        kDocumentsClass, "copyImportDocument",
+        "(Landroid/content/ContentResolver;JLjava/lang/String;Ljava/lang/String;J)I", resolver,
+        static_cast<jlong>(request), uri.object(), dest.object(), static_cast<jlong>(maxBytes));
+}
+
+void
+DecoderHostAndroid::platformCancelImport(qint64 request) {
+    // Must match DocumentCopies.kt: @JvmStatic fun cancelImport(request: Long).
+    QJniObject::callStaticMethod<void>(kDocumentsClass, "cancelImport", "(J)V", static_cast<jlong>(request));
+}
+
+void
+DecoderHostAndroid::platformImportProgress(qint64 request, qint64& bytes, qint64& total) {
+    bytes = -1;
+    total = -1;
+    // Must match DocumentCopies.kt: @JvmStatic fun importProgress(request: Long): LongArray ([copied, declared]).
+    const QJniObject answer =
+        QJniObject::callStaticObjectMethod(kDocumentsClass, "importProgress", "(J)[J", static_cast<jlong>(request));
+    if (!answer.isValid()) {
+        return;
+    }
+    QJniEnvironment env;
+    const auto values = static_cast<jlongArray>(answer.object());
+    jlong pair[2] = {-1, -1};
+    if (env->GetArrayLength(values) < 2) {
+        return;
+    }
+    env->GetLongArrayRegion(values, 0, 2, pair);
+    if (env.checkAndClearExceptions()) {
+        return;
+    }
+    bytes = pair[0];
+    total = pair[1];
+}
+
+QString
+DecoderHostAndroid::platformImportName(qint64 request) {
+    // Must match DocumentCopies.kt: @JvmStatic fun importName(request: Long): String?.
+    const QJniObject name = QJniObject::callStaticObjectMethod(kDocumentsClass, "importName", "(J)Ljava/lang/String;",
+                                                               static_cast<jlong>(request));
+    return name.isValid() ? name.toString() : QString();
+}
+
+bool
+DecoderHostAndroid::platformImportNoSpace(qint64 request) {
+    // Must match DocumentCopies.kt: @JvmStatic fun importNoSpace(request: Long): Boolean.
+    return QJniObject::callStaticMethod<jboolean>(kDocumentsClass, "importNoSpace", "(J)Z", static_cast<jlong>(request))
+           == JNI_TRUE;
+}
+
+void
+DecoderHostAndroid::platformForgetImport(qint64 request) {
+    // Must match DocumentCopies.kt: @JvmStatic fun forgetImport(request: Long).
+    QJniObject::callStaticMethod<void>(kDocumentsClass, "forgetImport", "(J)V", static_cast<jlong>(request));
 }
 
 /*

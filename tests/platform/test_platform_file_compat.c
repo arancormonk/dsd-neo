@@ -21,6 +21,7 @@
 #include "test_support.h"
 #if DSD_PLATFORM_WIN_NATIVE
 #include <direct.h>
+#include <locale.h>
 #include <stdlib.h>
 #include <wchar.h>
 #include <windows.h>
@@ -1413,6 +1414,92 @@ expect_path_exists_nofollow(void) {
     return ok ? 0 : 1;
 }
 
+/* Whether a file is at @p path, a UTF-8 name: on Windows looked up through the wide call, as dsd_win32_path_wide() picks
+   for a UTF-8 name. */
+static int
+utf8_name_exists(const char* path) {
+    return dsd_path_exists_nofollow(path) == 1;
+}
+
+/* Gate r1 (#832): UTF-8 names move under those names whatever the process code page. The Qt app keeps the "C" locale,
+   where the CRT's rename() read the bytes in the ANSI code page and published a mangled name (two characters for the
+   accented letter). The file goes from an ASCII name to UTF-8 names and back, so its bytes are read through the ASCII
+   name. */
+static int
+expect_rename_noreplace_utf8_names(void) {
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)setlocale(LC_CTYPE, "C");
+#endif
+    const char* const plain = "dsd_neo_utf8_plain.tmp";
+    const char* const back = "dsd_neo_utf8_back.tmp";
+    const char* const from = "dsd_neo_caf\xC3\xA9_from.tmp";
+    const char* const taken = "dsd_neo_caf\xC3\xA9_taken.tmp";
+    const char* const to = "dsd_neo_caf\xC3\xA9.tmp";
+    const char* const all[] = {plain, back, from, taken, to};
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        (void)dsd_remove_file(all[i]);
+    }
+    int left = -1;
+    int ok = write_text_file(plain, "taken") == 0 && dsd_rename_noreplace(plain, taken, &left) == 0;
+    ok = ok && write_text_file(plain, "from") == 0 && dsd_rename_noreplace(plain, from, &left) == 0 && left == 0;
+    ok = ok && utf8_name_exists(from) && utf8_name_exists(taken) && !file_exists(plain);
+    errno = 0;
+    ok = ok && dsd_rename_noreplace(from, taken, &left) == -1 && errno == EEXIST;
+    ok = ok && dsd_rename_noreplace(from, to, &left) == 0 && left == 0;
+    ok = ok && !utf8_name_exists(from) && utf8_name_exists(to);
+#if DSD_PLATFORM_WIN_NATIVE
+    /* Through the ANSI code page the UTF-8 bytes name another file, which must not have been made. */
+    ok = ok && (GetACP() == CP_UTF8 || !file_exists(to));
+#endif
+    ok = ok && dsd_rename_noreplace(to, back, &left) == 0 && file_text_is(back, "from");
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        (void)dsd_remove_file(all[i]);
+    }
+    return ok ? 0 : 1;
+}
+
+/* Issue #832: the move helpers carry a regular file between directories of one volume (the import staging folder to
+   the imports folder), never write over a taken name, and refuse a directory source before anything moves. */
+static int
+expect_move_helpers_across_directories(void) {
+    const char* const dir_a = "dsd_neo_move_a";
+    const char* const dir_b = "dsd_neo_move_b";
+    const char* const a_file = "dsd_neo_move_a/f.tmp";
+    const char* const a_tmp = "dsd_neo_move_a/t.tmp";
+    const char* const b_file = "dsd_neo_move_b/x";
+    const char* const sub = "dsd_neo_move_a/sub";
+    (void)dsd_remove_file(a_file);
+    (void)dsd_remove_file(a_tmp);
+    (void)dsd_remove_file(b_file);
+    (void)dsd_mkdir(dir_a, 0700);
+    (void)dsd_mkdir(dir_b, 0700);
+    (void)dsd_mkdir(sub, 0700);
+    int ok = write_text_file(a_file, "first") == 0;
+    int left = -1;
+    ok = ok && dsd_rename_noreplace(a_file, b_file, &left) == 0 && left == 0;
+    ok = ok && !file_exists(a_file) && file_text_is(b_file, "first");
+    /* A second move onto the taken name fails and leaves both files. */
+    ok = ok && write_text_file(a_file, "second") == 0;
+    errno = 0;
+    ok = ok && dsd_rename_noreplace(a_file, b_file, &left) == -1 && errno == EEXIST;
+    ok = ok && file_text_is(a_file, "second") && file_text_is(b_file, "first");
+    /* The replace helper overwrites it atomically from another directory. */
+    ok = ok && write_text_file(a_tmp, "third") == 0;
+    ok = ok && dsd_replace_file_with_temp(a_tmp, b_file) == 0;
+    ok = ok && !file_exists(a_tmp) && file_text_is(b_file, "third");
+    /* A directory source is refused by both helpers and stays where it is. */
+    errno = 0;
+    ok = ok && dsd_rename_noreplace(sub, "dsd_neo_move_b/sub", &left) == -1 && errno == EISDIR;
+    errno = 0;
+    ok = ok && dsd_replace_file_with_temp(sub, "dsd_neo_move_b/sub") == -1 && errno == EISDIR;
+    ok = ok && !file_exists("dsd_neo_move_b/sub") && dsd_test_rmdir(sub) == 0;
+    (void)dsd_remove_file(a_file);
+    (void)dsd_remove_file(b_file);
+    ok = dsd_test_rmdir(dir_a) == 0 && ok;
+    ok = dsd_test_rmdir(dir_b) == 0 && ok;
+    return ok ? 0 : 1;
+}
+
 #if DSD_PLATFORM_WIN_NATIVE
 #ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
 #define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
@@ -1444,6 +1531,32 @@ expect_path_type_reparse_point(void) {
 #endif
 
 #if !DSD_PLATFORM_WIN_NATIVE
+/* Across volumes both helpers fail with EXDEV and leave the source alone: never a copy. Skipped where no second
+   volume is at hand (/dev/shm on another device than the working directory). */
+static int
+expect_move_helpers_refuse_other_volume(void) {
+    struct stat here;
+    struct stat there;
+    if (stat(".", &here) != 0 || stat("/dev/shm", &there) != 0 || here.st_dev == there.st_dev) {
+        return 0;
+    }
+    const char* const from = "dsd_neo_xdev_from.tmp";
+    char to[128];
+    DSD_SNPRINTF(to, sizeof to, "/dev/shm/dsd_neo_xdev_%ld.tmp", (long)getpid());
+    (void)remove(to);
+    int left = -1;
+    int ok = write_text_file(from, "stay") == 0;
+    errno = 0;
+    ok = ok && dsd_rename_noreplace(from, to, &left) == -1 && errno == EXDEV;
+    ok = ok && file_text_is(from, "stay") && !file_exists(to);
+    errno = 0;
+    ok = ok && dsd_replace_file_with_temp(from, to) == -1 && errno == EXDEV;
+    ok = ok && file_text_is(from, "stay") && !file_exists(to);
+    (void)remove(from);
+    (void)remove(to);
+    return ok ? 0 : 1;
+}
+
 /* Whether the filesystem holding @p dir takes hard links: some (FAT-like, some FUSE) do not, and the fallback then
    claims the name instead. */
 static int
@@ -1656,6 +1769,8 @@ main(void) {
     rc |= expect_private_exclusive_create();
     rc |= expect_rename_noreplace();
     rc |= expect_non_ascii_dir_helpers();
+    rc |= expect_rename_noreplace_utf8_names();
+    rc |= expect_move_helpers_across_directories();
     rc |= expect_path_exists_nofollow();
     rc |= expect_path_same_file();
 #if DSD_PLATFORM_WIN_NATIVE
@@ -1666,6 +1781,7 @@ main(void) {
 #else
     rc |= expect_path_exists_nofollow_links_and_unknown();
     rc |= expect_rejects_symlink();
+    rc |= expect_move_helpers_refuse_other_volume();
     rc |= expect_rename_noreplace_link_fallback();
     rc |= expect_rename_noreplace_reservation_fallback();
 #endif

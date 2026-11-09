@@ -37,6 +37,7 @@
 #include "../../android/session_state_map.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
+#include "document_import_transport.h"
 #include "recording_journal.h"
 #include "recording_store.h"
 
@@ -71,6 +72,32 @@ struct PlatformCopies {
 static PlatformCopies&
 platform() {
     static PlatformCopies value;
+    return value;
+}
+
+namespace {
+/* The platform's import copies (#832): each call recorded, and the answers the test arranged. */
+struct PlatformImports {
+    int copies = 0;
+    qint64 request = -1;
+    QString reference;
+    QString destPath;
+    qint64 maxBytes = -1;
+    bool destExisted = false;
+    int answer = dsd_qt::DecoderHost::DocumentCopied;
+    bool writesDest = true; // As the Kotlin side's rename does on a copy.
+    QList<qint64> cancelled;
+    QList<qint64> forgotten;
+    qint64 bytes = -1;
+    qint64 total = -1;
+    QString name;
+    bool noSpace = false;
+};
+} // namespace
+
+static PlatformImports&
+imports() {
+    static PlatformImports value;
     return value;
 }
 
@@ -233,7 +260,8 @@ static bool serviceTookAttempt;
 
 // When not empty, the record the service publishes once the retirement returns (gate r5 L1): what happened to the
 // service between the host's lifecycle read and its retirement. Its answer is then the service's own rule, taken when
-// the record's attempt is the bound and was not cancelled, and the hook is used once.
+// the record's attempt is the bound and was not cancelled, and the hook is used once. Made on first use, as
+// usb_record(): a QJsonObject's constructor may throw.
 static QJsonObject&
 record_at_retire() {
     static QJsonObject value;
@@ -384,16 +412,6 @@ DecoderHostAndroid::noteStartAttempt(const QString&) {}
 void
 DecoderHostAndroid::setScreenPolicy(int, int) {}
 
-QString
-DecoderHostAndroid::importContentUri(const QString&, const QString&) {
-    return {};
-}
-
-QString
-DecoderHostAndroid::importDocument(const QString&, const QString&, const QString&) {
-    return {};
-}
-
 bool
 DecoderHostAndroid::quitApp() {
     return false;
@@ -428,6 +446,51 @@ DecoderHostAndroid::platformCopyFileToDocument(const QString& sourcePath, const 
     copies.sourcePath = sourcePath;
     copies.reference = reference;
     return copies.saves;
+}
+
+int
+DecoderHostAndroid::platformCopyImportDocument(qint64 request, const QString& reference, const QString& destPath,
+                                               qint64 maxBytes) {
+    PlatformImports& i = imports();
+    ++i.copies;
+    i.request = request;
+    i.reference = reference;
+    i.destPath = destPath;
+    i.maxBytes = maxBytes;
+    i.destExisted = QFileInfo::exists(destPath);
+    if (i.writesDest) {
+        QFile out(destPath);
+        if (out.open(QIODevice::WriteOnly)) {
+            out.write("imported");
+        }
+    }
+    return i.answer;
+}
+
+void
+DecoderHostAndroid::platformCancelImport(qint64 request) {
+    imports().cancelled.append(request);
+}
+
+void
+DecoderHostAndroid::platformImportProgress(qint64, qint64& bytes, qint64& total) {
+    bytes = imports().bytes;
+    total = imports().total;
+}
+
+QString
+DecoderHostAndroid::platformImportName(qint64) {
+    return imports().name;
+}
+
+bool
+DecoderHostAndroid::platformImportNoSpace(qint64) {
+    return imports().noSpace;
+}
+
+void
+DecoderHostAndroid::platformForgetImport(qint64 request) {
+    imports().forgotten.append(request);
 }
 
 void
@@ -1023,6 +1086,113 @@ check_document_dispatch() {
     check(host.copyDocumentToFile(QUrl::fromLocalFile(source).toString(), dir.filePath(QStringLiteral("late.in")), 1024)
               == DecoderHost::DocumentFailed,
           "after an abort the base host's copies fail too");
+}
+
+/*
+ * The import copies' transport (#832): a content URI goes to the platform's import copy with its request id, and its
+ * answer is read as the backup's is; any other reference takes the base transport's local copy.
+ */
+static void
+check_import_dispatch() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    const QTemporaryDir dir;
+    check(dir.isValid(), "a scratch directory exists");
+    const QString source = dir.filePath(QStringLiteral("talkgroups.csv"));
+    const QString dest = dir.filePath(QStringLiteral("staged.csv"));
+    const QString content = QStringLiteral("content://com.example.documents/document/primary%3Atalkgroups.csv");
+    write_file(source, "1,a\n");
+    DecoderHostAndroid host;
+    const std::shared_ptr<dsd_qt::DocumentImportTransport> transport = host.importTransport();
+    check(transport != nullptr, "the Android host hands out an import transport");
+
+    platform() = PlatformCopies();
+    imports() = PlatformImports();
+    check(transport->copy(41, content, dest, 77) == DecoderHost::DocumentCopied && read_file(dest) == "imported",
+          "a content URI is imported by the platform");
+    check(imports().copies == 1 && imports().request == 41 && imports().reference == content
+              && imports().destPath == dest && imports().maxBytes == 77,
+          "the platform's import copy gets the request id and the copy's arguments");
+    check(platform().calls == 0, "an import never takes the backup's platform copy");
+
+    imports() = PlatformImports();
+    imports().bytes = 512;
+    imports().total = 2048;
+    imports().name = QStringLiteral("Talkgroups.csv");
+    imports().noSpace = true;
+    const dsd_qt::ImportCopyProgress shown = transport->progress(41);
+    check(shown.bytes == 512 && shown.total == 2048 && shown.displayName == QStringLiteral("Talkgroups.csv")
+              && shown.noSpace,
+          "a content request's progress is the platform's");
+
+    QFile::remove(dest);
+    imports() = PlatformImports();
+    check(transport->copy(42, QUrl::fromLocalFile(source).toString(), dest, 77) == DecoderHost::DocumentCopied
+              && read_file(dest) == "1,a\n" && imports().copies == 0,
+          "a file URL takes the base transport's local copy");
+    check(transport->progress(42).displayName == QStringLiteral("talkgroups.csv") && transport->progress(42).total == 4,
+          "a local request's progress is the base transport's");
+
+    /* A file already at the destination must not pass for this copy. */
+    write_file(dest, "stale");
+    imports() = PlatformImports();
+    imports().writesDest = false;
+    check(transport->copy(43, content, dest, 77) == DecoderHost::DocumentLocalFailed,
+          "a copy reported without its file (a failed JNI call reads as 0) is the app's failure");
+    check(!imports().destExisted && !QFileInfo::exists(dest),
+          "a stale destination is removed before the platform copies");
+
+    struct Answer {
+        int platform;
+        int result;
+        const char* why;
+    };
+
+    static const Answer kAnswers[] = {
+        {DecoderHost::DocumentTooLarge, DecoderHost::DocumentTooLarge, "too large passes through"},
+        {DecoderHost::DocumentFailed, DecoderHost::DocumentFailed, "a failure passes through"},
+        {DecoderHost::DocumentLocalFailed, DecoderHost::DocumentLocalFailed, "this device's failure passes through"},
+        {DecoderHost::DocumentCancelled, DecoderHost::DocumentCancelled, "a cancelled import copy passes through"},
+        {5, DecoderHost::DocumentFailed, "an unknown answer is a failure"},
+        {-1, DecoderHost::DocumentFailed, "a negative answer is a failure"},
+    };
+    for (const Answer& answer : kAnswers) {
+        QFile::remove(dest);
+        imports() = PlatformImports();
+        imports().answer = answer.platform;
+        imports().writesDest = false;
+        check(transport->copy(44, content, dest, 77) == answer.result, answer.why);
+    }
+
+    QDir(dir.path()).mkpath(QStringLiteral("busy/inner"));
+    imports() = PlatformImports();
+    check(transport->copy(45, content, dir.filePath(QStringLiteral("busy")), 77) == DecoderHost::DocumentLocalFailed
+              && transport->copy(45, content, QString(), 77) == DecoderHost::DocumentFailed
+              && transport->copy(45, content, dest, -1) == DecoderHost::DocumentFailed && imports().copies == 0,
+          "a destination that cannot be cleared, an empty one or a negative cap never reaches the platform");
+    platform().holdsResolver = false;
+    check(transport->copy(45, content, dest, 77) == DecoderHost::DocumentLocalFailed && imports().copies == 0,
+          "an import without a held ContentResolver is the app's failure");
+    platform() = PlatformCopies();
+
+    /* A cancel and a forget reach both sides: a request's later copies may be local or the platform's. */
+    imports() = PlatformImports();
+    transport->cancel(46);
+    check(imports().cancelled == QList<qint64>{46}, "a cancel reaches the platform's import copies");
+    check(transport->copy(46, source, dir.filePath(QStringLiteral("local.csv")), 77) == DecoderHost::DocumentCancelled,
+          "and the base transport's");
+    transport->forget(46);
+    check(imports().forgotten == QList<qint64>{46}, "a forget reaches the platform's import copies");
+    check(transport->copy(46, source, dir.filePath(QStringLiteral("local.csv")), 77) == DecoderHost::DocumentCopied,
+          "and the base transport's");
+
+    host.abortDocumentTransfers();
+    QFile::remove(dest);
+    imports() = PlatformImports();
+    check(transport->copy(47, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
+          "after the host's abort no import reaches the platform");
+    check(host.importTransport()->copy(48, content, dest, 77) == DecoderHost::DocumentFailed && imports().copies == 0,
+          "and a transport handed out after it starts aborted");
 }
 
 /* #708: the host knows its session state only after its first poll of the service; the call recording store holds
@@ -2857,6 +3027,7 @@ main(int argc, char** argv) {
     check_document_requests();
     check_document_reentrant_drain();
     check_document_dispatch();
+    check_import_dispatch();
     check_stop_publishes_stopping();
     check_session_state_known_after_first_poll();
     check_receiver_health();

@@ -37,7 +37,6 @@
 #include <qflags.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
-#include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "json_store.h"
 #include "saved_systems_model.h"
@@ -121,52 +120,6 @@ test_qml_and_session_protocols_agree() {
     // -mq is the P25 Simulcast preset: both read it as P25, so a DMR-only profile is refused at start.
     check(decryptionProtocol.call({QJSValue(QStringLiteral("-mq"))}).toString() == "p25"
           && session_expected_protocol(QStringLiteral("-mq")) == "p25");
-}
-
-namespace {
-class ReplayTestHost : public dsd_qt::DecoderHost {
-  public:
-    bool
-    isRunning() const override {
-        return false;
-    }
-
-    QString
-    statusText() const override {
-        return {};
-    }
-
-    bool
-    start(const QStringList&) override {
-        return false;
-    }
-
-    void
-    stop() override {}
-};
-} // namespace
-
-static void
-test_replay_migration(dsd_qt::SavedSystemsModel& systems) {
-    ReplayTestHost host;
-    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    check(QDir().mkpath(cache));
-    const QString oldPath = cache + "/legacy.wav";
-    QFile file(oldPath);
-    const QByteArray contents("test replay copy");
-    check(file.open(QIODevice::WriteOnly) && file.write(contents) == contents.size());
-    file.close();
-    check(systems.add({{"name", "Replay migration"}, {"sourceType", "file"}, {"filePath", oldPath}}));
-    const int index = systems.count() - 1;
-    check(systems.migrateCachedReplayFiles(&host));
-    const QString durable = systems.get(index).value("filePath").toString();
-    check(durable != oldPath && QFile::exists(oldPath));
-    check(host.documentInfo(durable).value("sizeBytes").toLongLong() == contents.size());
-    check(QFile::remove(oldPath));
-    dsd_qt::SavedSystemsModel reopened;
-    check(reopened.get(index).value("filePath").toString() == durable && QFile::exists(durable));
-    check(systems.migrateCachedReplayFiles(&host));
-    check(systems.get(index).value("filePath").toString() == durable);
 }
 
 /* Issue #526: an analog (nfm or am) scan entry keeps the decryption choice the editor hides on it, but it uses no
@@ -1120,7 +1073,6 @@ main(int argc, char** argv) {
     test_hex_normalisation(profiles);
     test_aes256_profile_imports(profiles);
     test_simulcast_preset_is_p25(profiles, systems);
-    test_replay_migration(systems);
     test_analog_scan_entries_hold_no_profile(profiles, systems, scans, entry);
     dsd_neo_log_set_tap(captureWarning, nullptr);
     test_compiled_rows_load_unchanged();

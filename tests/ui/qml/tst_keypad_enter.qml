@@ -711,7 +711,7 @@ Item {
 
         function test_wizard_file_choice_takes_keypad_enter() {
             var path = testContext.writeFixtureCsv("keypad-groups.csv", "id,mode,name\n1001,A,Dispatch\n");
-            var imported = importedFiles.importFile(path, "keypad-groups.csv", "group");
+            var imported = testContext.importNow(path, "group");
             verify(imported.ok);
             var wizard = load("WizardScreen.qml");
             wizard.openForAdd(false);

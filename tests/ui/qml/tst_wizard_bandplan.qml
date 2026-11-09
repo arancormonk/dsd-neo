@@ -95,10 +95,15 @@ Item {
             } else {
                 var source = testContext.writeFixtureCsv("cancel-consumer.csv",
                     "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
-                flow.begin(source, "Map.csv", "chan", -1, {target: "chan", keyFormat: "", generation: tc.wizard.csvGeneration("chan")});
-                findChild(flow, "csvCompanionSheet").requestDismiss();
+                tc.wizard.pickerTarget = "chan";
+                flow.begin(source, "Map.csv", "chan", tc.wizard.csvContext());
+                var sheet = findChild(flow, "csvCompanionSheet");
+                // #832: the copy answers later; the companions it asks for come
+                // with that answer.
+                tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
+                sheet.requestDismiss();
             }
-            verify(!flow.active);
+            tryCompare(flow, "active", false);
             compare(tc.wizard.chanCsvPath, "keep.csv");
             compare(tc.wizard.csvNotice, "");
             verify(!tc.wizard.csvNoticeIsProblem);
@@ -117,9 +122,11 @@ Item {
             var id = importFor("chan")
             tc.wizard.pickerTarget = data.later
             testContext.answerDocumentPicked(id, mapFile("b4-map.csv"), "B4 map.csv", false)
-            verify(!flow().active)
+            // #832: the copy answers later, from the import worker.
+            tryCompare(flow(), "active", false)
             verify(tc.wizard.chanCsvPath.length > 0, "the map landed in its own field")
-            compare(importedFiles.get(importedFiles.rowForPath(tc.wizard.chanCsvPath)).name, "B4 map.csv")
+            // The provider's own name for the document: a local file's name.
+            compare(importedFiles.get(importedFiles.rowForPath(tc.wizard.chanCsvPath)).name, "b4-map.csv")
             compare(tc.wizard.groupCsvPath, "")
             compare(tc.wizard.pickerTarget, data.later)
         }
@@ -131,6 +138,7 @@ Item {
             tc.wizard.pickerKeyHex = true
             var keys = testContext.writeFixtureCsv("wizard-keys.csv", "id,value\n1,12345\n")
             testContext.answerDocumentPicked(id, "file://" + keys, "wizard-keys.csv", false)
+            tryCompare(flow(), "active", false)
             verify(tc.wizard.keyCsvPath.length > 0)
             verify(!tc.wizard.keyCsvHex, "a decimal pick stays decimal")
             compare(importedFiles.get(importedFiles.rowForPath(tc.wizard.keyCsvPath)).type, "keysDec")
@@ -189,7 +197,7 @@ Item {
             var notice = tc.wizard.csvNotice
             var late = data.target === "keys" ? "file://" + testContext.writeFixtureCsv("late-keys.csv", "id,value\n1,12345\n") : mapFile("late-map.csv")
             testContext.answerDocumentPicked(id, late, "late.csv", false)
-            verify(!flow().active)
+            tryCompare(flow(), "active", false)
             compare(path(), chosen)
             compare(tc.wizard.csvNotice, notice, "the newer choice's notice stays")
             compare(importedFiles.count, 0, "the dropped pick imported nothing")
@@ -199,6 +207,7 @@ Item {
             var id = importFor("chan")
             tc.wizard.assignCsvPath("group", "/data/imports/groups.csv", false)
             testContext.answerDocumentPicked(id, mapFile("kept-map.csv"), "kept.csv", false)
+            tryCompare(flow(), "active", false)
             verify(tc.wizard.chanCsvPath.length > 0)
             compare(tc.wizard.groupCsvPath, "/data/imports/groups.csv")
         }
@@ -217,9 +226,10 @@ Item {
             testContext.answerDocumentUnavailable(importFor("chan"), "noPicker")
             compare(tc.wizard.announcements, said + 2)
             compare(tc.wizard.chanCsvPath, "")
-            // A file that cannot be read still says so in the wizard's words.
+            // A file that cannot be read says so, naming it.
             testContext.answerDocumentPicked(importFor("chan"), "file:///missing/map.csv", "map.csv", false)
-            compare(tc.wizard.csvNotice, "Could not read that file")
+            tryCompare(flow(), "active", false)
+            compare(tc.wizard.csvNotice, "Could not read map.csv. Check that it is still available, then try again.")
             compare(tc.wizard.announcements, said + 3)
         }
 
@@ -249,8 +259,8 @@ Item {
             // there.
             if (Qt.platform.os === "windows")
                 skip("Windows file names cannot hold markup")
-            var source = testContext.writeFixtureCsv("markup-map.csv", "channel,frequency\n1,851012500\n")
-            var result = importedFiles.importFile(source, "<b>Map &amp; plan.csv", "chan")
+            var source = testContext.writeFixtureCsv("<b>Map &amp; plan.csv", "channel,frequency\n1,851012500\n")
+            var result = testContext.importNow(source, "chan")
             verify(result.ok, "the map was not imported: " + result.error)
             var sheet = findChild(tc.wizard, "wizardCsvSheet")
             try {

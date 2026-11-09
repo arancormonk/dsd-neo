@@ -109,9 +109,10 @@ Item {
                     "channel,frequency,mode,keys_dec_csv\n1,851012500,p25,missing.csv\n");
             verify(source.length > 0);
             var count = importedFiles.count;
-            flow.begin(source, "Map.csv", "chan");
+            flow.begin(source, "Map.csv", "chan", imports.importContext());
             var sheet = findChild(flow, "csvCompanionSheet");
             tryCompare(sheet, "visible", true);
+            tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
             tryVerify(function () { return sheet.activeFocus; });
             compare(uiController.autoStartBlocked, true);
             keyClick(Qt.Key_Escape);

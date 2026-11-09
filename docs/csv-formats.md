@@ -28,9 +28,12 @@ manages the library (import, update, remove), and the add/edit-system wizard's *
 channel map, talkgroup list, key file, P25 band plan, or source ID list (**Radio IDs**, kind `src`) to a system.
 Files are picked with the app's document picker (Android's file picker, or any installed app that can hand over a
 document) and copied into app-private storage (`files/imports/`), so the original can live anywhere (Downloads, Drive,
-…) and is not read again after import — use "Update from file" to pull in a changed original. A device with no file
-picker gets a message saying so instead of a picker that never opens. Each import is validated immediately and the row
-shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
+…) and is not read again after import — use "Update from file" to pull in a changed original (a target list is updated
+only while the decoder is stopped, because the running decoder uses it). A device with no file picker gets a message
+saying so instead of a picker that never opens. The copy runs in the background while a sheet shows its name and
+**Cancel**. A CSV can be up to 32 MiB, and a CSV with the files it names up to 64 MiB together (see [Scoped decryption
+maps and companion files](#scoped-decryption-maps-and-companion-files)). Each import is validated immediately and the
+row shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
 "No usable rows". A talkgroup list with a header and no rows is a list emptied on purpose, not a wrong file: its row
 reads "Empty list", and it loads as an empty list. While a session is running, "Update from file" and
 **Refresh from RadioReference** of a talkgroup list or channel map also send the new file to the session, which
@@ -167,7 +170,8 @@ Notes:
   configured decoder, options and global keys. A spectrum tap or drag never takes a row's settings.
 - Validation opens key files and validates direct values, so an unloadable path or malformed direct key fails the
   import. Diagnostics name the field but never repeat a direct key value. The Qt/Android picker flow supports direct
-  values because they are embedded in the copied channel map; it does not copy companion per-row key files.
+  values, which travel inside the copied channel map, and copies the per-row key files a row names along with it (see
+  [Scoped decryption maps and companion files](#scoped-decryption-maps-and-companion-files)).
 - Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
   the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
   traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
@@ -528,8 +532,8 @@ setting as `-F`/`--strict-crc` (every relaxed CRC gate, DMR's included); under a
 scan restores that baseline. Frontend configuration saves preserve configured defaults, not temporary row
 overrides.
 
-The Qt/Android picker supports embedded values. Companion files named by `-G`, `-k` or `-K` have the same limitation
-as existing key-file columns: the picker does not copy companion files alongside the imported list.
+The Qt/Android picker supports embedded values, and it copies the companion files named by `-G`, `-k` or `-K` along
+with the imported list, as it does the key-file columns.
 
 Declared modes use these symbol profiles:
 
@@ -1250,11 +1254,13 @@ with the target's key/force scope on exit. An explicit clear differs from inheri
 `--no-decryption-keys` selects an empty key set and rejects simultaneous key material.
 `--key-profile-ref <opaque-id>` carries an optional nonsecret profile revision.
 
-Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
+Qt and Android channel-map imports copy referenced `keys_hex_csv`, `keys_dec_csv` and
 `-k`/`-K`/`-G`/`--dmr-tg-key-csv` option files into a private bundle and rewrite their
 paths. Target CSV imports also copy channel maps (including their nested companions)
-and P25 band plans. Desktop imports continue resolving existing relative paths beside
-the original document; Android document references use the host's document importer.
+and P25 band plans. On the desktop a relative reference is read beside the picked
+file; an Android document has no folder to look in, so the sheet below asks for it.
+Every copy is made in the background, outside the library, and checked there before
+anything in the library changes.
 
 When a companion cannot be resolved, the Qt import sheet offers stored library files
 of the required kind, with name and row count, and **Choose a file…**. Decimal and hex
@@ -1281,19 +1287,42 @@ The stager copies the file into the new bundle revision, rewriting nested paths;
 it neither adopts nor moves the library entry. These independent copies let either
 library entry be removed without breaking the other. The complete bundle is validated
 before registration or replacing an existing map; a rejected update retains the prior
-files. Removing the bundle removes its owned copies. Target replacement and removal
+files. A map or target list and the companion files it copies may total 64 MiB, each
+file at most 32 MiB. An older revision of a bundle's companions that the stored file no
+longer names is removed after a replace and when the app starts, but never while the
+decoder runs. Removing the bundle removes its owned copies. Target replacement and removal
 remain unavailable during an active or transitioning decoder session.
 
 `CsvImportFlow.pick()` (primary picker) and `begin()` (already selected document)
-start an import. `finished(result)` fires exactly once when it succeeds, fails, or
-is cancelled. Cancel, Back/Escape, scrim dismissal, and primary picker rejection
-all complete with `{ok:false, error:"cancelled"}`. Rejecting a companion picker
-clears only that slot and returns to the still-active sheet: it does **not** finish
-the import. The user can choose again or cancel the sheet. Abandoning the flow leaves
-the library unchanged. The Home scan-list shortcut changes the draft to CSV mode only
-after successful import, so cancellation preserves the editor's prior draft and
-clean/dirty state. Cancelling the Home shortcut leaves its new editor in entries
-mode with its initial clean fingerprint; closing it does not ask to discard changes.
+start an import, each with the host's context (the field it fills, the stored path of
+a row it updates, which opening of the screen it belongs to). The file is copied and
+checked in the background, so the flow's sheet shows at once with "Copying <name>…"
+and **Cancel**, and nothing behind it takes input meanwhile. `finished(result,
+context)` fires exactly once when the import succeeds, fails, or is cancelled, and
+hands the context back: a screen closed or opened again since ignores it, and closing
+the wizard, Imported files or a scan list cancels a copy still running. Cancel,
+Back/Escape, scrim dismissal, and closing the primary picker without choosing a file
+all cancel. Cancel answers at once, `{ok:false, error:"cancelled"}`, even when the
+copy has not stopped yet (a provider can hold a copy past its cancel): "Cancelling…"
+shows only until that answer comes on the next turn, and the copy stores nothing when
+it does return. Imports copy one at a time, so a provider that never lets go of a
+cancelled copy delays every later import (and replay copy) until it returns; that is a
+known limit. A new pick is refused while a copy runs. "Import complete bundle" reads
+"Importing…" while its copy runs, and the companion choices cannot change until it
+answers. Each failure has its own message
+(`Util.importMessage()`): too large (32 MiB for a CSV, 64 MiB for a CSV and its
+companions together; a file over 32 MiB names itself and that limit even inside a
+bundle), could not be read, could not be saved on this device (and, when storage is
+full, to free some), not valid for its kind (with the parser's reason when it gives
+one, such as `Channel map file 'county.csv' row 2: invalid mode; expected p25, dmr,
+…`), changed while being replaced, the decoder still running, or the library not
+saved. Rejecting a companion picker clears only that slot and returns to the
+still-active sheet: it does **not** finish the import. The user can choose again or
+cancel the sheet. Abandoning the flow leaves the library unchanged. The Home scan-list
+shortcut changes the draft to CSV mode only after successful import, so cancellation
+preserves the editor's prior draft and clean/dirty state. Cancelling the Home shortcut
+leaves its new editor in entries mode with its initial clean fingerprint; closing it
+does not ask to discard changes.
 
 The file library also accepts **DMR key mappings** and **Vertex keystreams** as
 separate kinds. Vertex files are used by standalone vendor profiles, not by the

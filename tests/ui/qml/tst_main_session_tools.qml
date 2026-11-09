@@ -1540,8 +1540,8 @@ Item {
                 header + rok + "A,dmr-conventional,851512500,,,,,Alpha\n");
             var lowSource = testContext.writeFixtureCsv("shared-low.csv",
                 header + "B,p25-conventional,851012500,,,,,Bravo\n" + rok);
-            var convFile = importedFiles.importFile(convSource, "Conv.csv", "trunkTargets");
-            var lowFile = importedFiles.importFile(lowSource, "Low.csv", "trunkTargets");
+            var convFile = testContext.importNamed(convSource, "Conv.csv", "trunkTargets");
+            var lowFile = testContext.importNamed(lowSource, "Low.csv", "trunkTargets");
             verify(convFile.ok && lowFile.ok);
             var list = function (name, path) {
                 scanLists.add({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234, targetSource: "csv",
@@ -1819,8 +1819,8 @@ Item {
             var security = null;
             var twin = null;
             try {
-                gateFile = importedFiles.importFile(gateSource, "Gate.csv", "trunkTargets");
-                twinFile = importedFiles.importFile(twinSource, "Twin.csv", "trunkTargets");
+                gateFile = testContext.importNamed(gateSource, "Gate.csv", "trunkTargets");
+                twinFile = testContext.importNamed(twinSource, "Twin.csv", "trunkTargets");
                 verify(gateFile.ok && twinFile.ok);
                 security = list("Security", gateFile.path);
                 twin = list("Twin", twinFile.path);

@@ -13,6 +13,11 @@
  * settings, the five JSON stores, the signal-search avoid list, the export's "not included" list and the file table
  * (path, size, sha256).
  *
+ * Compatibility (#832, no format bump): a backup carries a stored file whatever it is called, and the restore accepts
+ * any such name. This reader accepts every older archive. An app version from before #832 refuses an archive that
+ * carries a name it used to leave out (".staged-*", ".import*"), and an older archive that left such a file out cannot
+ * bring it back.
+ *
  * A restored archive is untrusted: anyone can hand a user a crafted backup and its passphrase. backup_parse_archive()
  * therefore validates everything before anything is written, and the stores it returns name only files the archive
  * carries, under the restoring root's imports/ directory. backup_build_archive() sanitizes its copy of the stores so
@@ -130,6 +135,13 @@ QList<TypedPathValue> typed_path_values(const QString& store, const QJsonArray& 
 QJsonArray map_typed_path_values(const QString& store, const QJsonArray& rows,
                                  const std::function<QString(const TypedPathValue&)>& map);
 
+/**
+ * Every File value of a typed path field in the stores on disk, clean and absolute paths as stored. @p ok is false,
+ * and the list incomplete, when a store cannot be read: a caller then deletes nothing on the strength of it. Reads the
+ * files, not the models, so it is safe on a worker thread.
+ */
+QStringList typed_file_paths(bool* ok);
+
 /** Counts shown before a restore and after an export. */
 struct Summary {
     int systems = 0;
@@ -204,13 +216,15 @@ struct BuildResult {
  * buffer it holds.
  *
  * The snapshot's stores are copied and sanitized: a typed File value that is not a regular, non-symlink file whose
- * real path lies inside the root's imports/ (and is not a staging leftover) is cleared and listed in notIncluded; a
- * library row whose file is not carried is dropped and listed; a bundle root that is not owned is cleared and its
- * row's file carried alone, while an owned one carries its whole subtree (regular, non-symlink files only); every
- * Recording value is cleared; profiles lose their compiled form and runtime references; rows the models' loaders
- * would drop are dropped and identities they would regenerate are regenerated. A file no kept value names and no kept
- * row's bundle holds is not carried. Carried channel maps that name companion files by absolute path are listed too.
- * Exceeding a cap fails with TooLarge.
+ * real path lies inside the root's imports/ is cleared and listed in notIncluded, and one that is is carried whatever
+ * the file is called; a library row whose file is not carried is dropped and listed; a bundle root that is not owned
+ * is cleared and its row's file carried alone, while an owned one carries its subtree (regular, non-symlink files
+ * only): first every file the row's file reaches or a typed value names, then every other file except an unreferenced
+ * leftover of an import's own temp files (exact names, detail::leftover_name()); every Recording value is cleared;
+ * profiles lose their compiled form and runtime references; rows the models' loaders would drop are dropped and
+ * identities they would regenerate are regenerated. A file no kept value names and no kept row's bundle holds is not
+ * carried. Carried channel maps that name companion files by absolute path are listed too. Exceeding a cap fails with
+ * TooLarge.
  *
  * @param cancel Optional; checked between files. A raised flag ends the build with BuildResult::cancelled set.
  */

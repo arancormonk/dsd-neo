@@ -35,6 +35,7 @@
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "import_service.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "json_store.h"
@@ -45,6 +46,7 @@
 #include "radio_reference_model.h"
 #include "recording_status.h"
 #include "recording_store.h"
+#include "replay_store.h"
 #include "saved_systems_model.h"
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
@@ -314,31 +316,61 @@ load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystem
     return pins;
 }
 
-bool
-ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
-    const backup::ApplyResult restoreOutcome = recover_settings_and_apply_restore(host);
-    load_fonts(engine.rootContext());
-
-    auto* metrics = new MetricsModel(&engine);
-    auto* network = new P25NetworkModel(&engine); // WP-F2
-    auto* commands = make_command_bridge(engine, metrics);
+static DiagnosticsLogModel*
+make_diagnostics(QQmlApplicationEngine& engine) {
     DiagnosticsLog::installTap();
     // The log is process-lifetime and never destroyed, so its last records are made durable here (or, on Android, by
     // main()'s final flush after the teardown, which this only asks to start).
     QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
                      [] { DiagnosticsLog::flushAtQuit(); });
-    auto* diagnostics = new DiagnosticsLogModel(nullptr, &engine);
+    return new DiagnosticsLogModel(nullptr, &engine);
+}
+
+// Issue #832: the one import worker the library and the replay imports share. No import has started yet, so whatever
+// an earlier run staged is stale; the sweep runs after a restore has applied and before the service exists. The
+// service is the engine's child before the models that use it, so it goes before them: no commit reaches a model that
+// is being destroyed.
+static ImportService*
+start_imports(QQmlApplicationEngine& engine, const DecoderHost* host) {
+    ImportService::sweepStaging();
+    return new ImportService(host->importTransport(), &engine);
+}
+
+ReplayStore*
+load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* systems, backup::ApplyOutcome restore,
+             QObject* owner) {
+    auto* replays = new ReplayStore(host, imports, owner);
+    systems->setReplayStore(replays);
+    // A restore still waiting (Deferred) or stopped part-way (Stuck) may yet replace saved_systems.json, so what it
+    // names now says nothing about what the user keeps.
+    if (restore != backup::ApplyOutcome::Deferred && restore != backup::ApplyOutcome::Stuck) {
+        replays->reclaim(*systems, systems->storeLoaded());
+    }
+    replays->migrateCachedReplays(systems);
+    return replays;
+}
+
+bool
+ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
+    const backup::ApplyResult restoreOutcome = recover_settings_and_apply_restore(host);
+    auto* imports = start_imports(engine, host);
+    load_fonts(engine.rootContext());
+
+    auto* metrics = new MetricsModel(&engine);
+    auto* network = new P25NetworkModel(&engine); // WP-F2
+    auto* commands = make_command_bridge(engine, metrics);
+    auto* diagnostics = make_diagnostics(engine);
     auto* prefs = new AppPrefs(&engine);
     auto* backupModel = new BackupModel(host, restoreOutcome, &engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
-    (void)systems->migrateCachedReplayFiles(host);
+    auto* replays = load_replays(host, imports, systems, restoreOutcome.outcome, &engine);
     sessionArgs->setSavedSystems(systems);
 
     // WP-S1: persisted lists and the pre-start validation facade.
     auto* scanLists = new ScanListsModel(&engine);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
-    auto* importedFiles = new ImportedFilesModel(host, &engine);
+    auto* importedFiles = new ImportedFilesModel(host, imports, &engine);
     wire_target_files(scanListStarter, scanLists, importedFiles);
     auto* decryptionProfiles =
         wire_decryption_profiles(engine, host, systems, scanLists, sessionArgs, scanListStarter, commands, metrics);
@@ -393,6 +425,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("scanLists"), scanLists);
     context->setContextProperty(QStringLiteral("scanListStarter"), scanListStarter);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
+    context->setContextProperty(QStringLiteral("replayFiles"), replays);
     context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     publish_recording_context(context, recordings, recordingStatus);

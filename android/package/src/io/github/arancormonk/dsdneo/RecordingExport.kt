@@ -145,14 +145,14 @@ object RecordingExport {
         if (paths.isEmpty() || (if (zip) names.size != paths.size else paths.size != 1)) {
             return FAILED
         }
-        val steps = object : Steps {
+        val steps = object : DocumentTransfer.Steps {
             override fun check() {
                 if (DocumentTransfer.isAborted) throw IOException("document transfers were aborted")
                 transfer.signal.throwIfCanceled()
             }
 
-            override fun copied(bytes: Int) {
-                transfer.bytes += bytes
+            override fun copied(count: Int) {
+                transfer.bytes += count
             }
         }
         val write = try {
@@ -186,14 +186,6 @@ object RecordingExport {
         }
     }
 
-    /** The checks a transfer makes before every chunk, and the progress it reports after each. */
-    internal interface Steps {
-        /** Throw to stop the transfer. */
-        fun check()
-
-        fun copied(bytes: Int)
-    }
-
     /** A recording opened to read, or null when it is gone. */
     internal fun openRecording(path: String): InputStream? = try {
         FileInputStream(path)
@@ -212,7 +204,7 @@ object RecordingExport {
         output: OutputStream,
         paths: List<String>,
         names: List<String>,
-        steps: Steps,
+        steps: DocumentTransfer.Steps,
         open: (String) -> InputStream?,
         missing: MutableList<String>,
     ): Int {
@@ -273,7 +265,12 @@ object RecordingExport {
     }
 
     /** Copy the one recording at [path] into [output] as it is: 1 when it was written, 0 when it is gone. */
-    private fun writeOne(output: OutputStream, path: String, steps: Steps, missing: MutableList<String>): Int {
+    private fun writeOne(
+        output: OutputStream,
+        path: String,
+        steps: DocumentTransfer.Steps,
+        missing: MutableList<String>,
+    ): Int {
         steps.check()
         val input = openRecording(path)
         if (input == null) {
@@ -285,7 +282,7 @@ object RecordingExport {
         return 1
     }
 
-    private fun copy(input: InputStream, output: OutputStream, steps: Steps) {
+    private fun copy(input: InputStream, output: OutputStream, steps: DocumentTransfer.Steps) {
         val buffer = ByteArray(DocumentTransfer.CHUNK_BYTES)
         while (true) {
             steps.check()

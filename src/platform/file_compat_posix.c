@@ -414,10 +414,22 @@ dsd_fsync_parent_dir(const char* path) {
     }
 }
 
+/* A directory source is refused before any move: rename() would move a whole tree, which the callers' contract (one
+   regular file) never means. A symbolic link is not a directory here; rename() moves the link itself. */
+static int
+dsd_move_source_is_directory(const char* path) {
+    struct stat st;
+    return lstat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 int
 dsd_replace_file_with_temp(const char* tmp_path, const char* final_path) {
     if (!tmp_path || tmp_path[0] == '\0' || !final_path || final_path[0] == '\0') {
         errno = EINVAL;
+        return -1;
+    }
+    if (dsd_move_source_is_directory(tmp_path)) {
+        errno = EISDIR;
         return -1;
     }
     if (rename(tmp_path, final_path) != 0) {
@@ -496,6 +508,10 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     }
     if (!from || from[0] == '\0' || !to || to[0] == '\0') {
         errno = EINVAL;
+        return -1;
+    }
+    if (dsd_move_source_is_directory(from)) {
+        errno = EISDIR;
         return -1;
     }
 #if defined(__linux__) && defined(SYS_renameat2)

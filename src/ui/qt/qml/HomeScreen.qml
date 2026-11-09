@@ -39,9 +39,11 @@ Item {
             screen.siteRevision++;
         }
     }
+    // Every library change, a file replaced in place included: a user's own
+    // file over a RadioReference one no longer asks for a refresh (#832).
     Connections {
         target: importedFiles
-        function onCountChanged() {
+        function onEntriesChanged() {
             screen.siteRevision++;
         }
     }
@@ -1069,7 +1071,7 @@ Item {
                         width: content.width
                         listName: name
                         entryCount: {
-                            var changed = importedFiles.count;
+                            var changed = importedFiles.revision;
                             return scanLists.entryCount({targetSource: targetSource, entries: entries, targetsCsvPath: targetsCsvPath || ""});
                         }
                         onPlay: screen.playScanList(index)

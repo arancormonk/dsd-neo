@@ -107,14 +107,32 @@ Rectangle {
         showValidation(preview.ok ? "" : preview.error);
     }
 
-    function importTargets() {
-        targetImport.pick("trunkTargets", -1, {generation: targetsGeneration});
+    // #832: which draft an import belongs to. Every openFor() and every close
+    // takes the next, so a copy that answers late never lands in another list.
+    // The targets generation (issue #829) also drops a pick that comes back
+    // after a newer choice of target CSV or target source.
+    property int importGeneration: 0
+    function importContext() {
+        return {
+            generation: importGeneration,
+            targets: targetsGeneration
+        };
     }
-
-    // Issue #829: closing the editor, by any route, ends a pick still out.
+    function importWanted(context) {
+        return context.generation === importGeneration && context.targets === targetsGeneration;
+    }
+    function stopImport() {
+        importGeneration++;
+        targetImport.cancel();
+    }
+    // Closing the editor, by any route, ends a pick still out.
     onVisibleChanged: {
         if (!visible)
-            targetImport.cancel();
+            stopImport();
+    }
+
+    function importTargets() {
+        targetImport.pick("trunkTargets", importContext());
     }
 
     CsvImportFlow {
@@ -123,13 +141,15 @@ Rectangle {
 
         overlayParent: screen
         wanted: function (context) {
-            return context.generation === screen.targetsGeneration;
+            return screen.importWanted(context);
         }
-        onFinished: function (result) {
+        onFinished: function (result, context) {
+            if (!screen.importWanted(context))
+                return;
             if (result.ok)
                 screen.selectTargets(result.path);
             else if (result.error !== "cancelled")
-                screen.showImportProblem(result.detail || qsTr("Could not import the target CSV."));
+                screen.showImportProblem(Util.importMessage(result, "csv"));
         }
     }
 
@@ -199,8 +219,8 @@ Rectangle {
     }
 
     function openFor(row) {
-        // A pick from the list this editor showed before is not this one's.
-        targetImport.cancel();
+        // A pick or copy from the list this editor showed before is not this one's.
+        stopImport();
         editRow = row;
         draft = row >= 0 ? scanLists.get(row) : scanLists.newDraft();
         editUid = row >= 0 ? draft.uid || "" : "";
@@ -684,7 +704,7 @@ Rectangle {
 
                 PlexComboBox {
                     id: targetCsvPicker
-                    property var files: (importedFiles.count, importedFiles.entriesForType("trunkTargets"))
+                    property var files: (importedFiles.revision, importedFiles.entriesForType("trunkTargets"))
 
                     objectName: "scanTargetCsvPicker"
                     width: parent.width
@@ -1165,7 +1185,7 @@ Rectangle {
                                 wrapMode: Text.Wrap
                             }
                             PlexComboBox {
-                                property var files: (importedFiles.count, importedFiles.entriesForType(modelData.type))
+                                property var files: (importedFiles.revision, importedFiles.entriesForType(modelData.type))
                                 objectName: "scanFile_" + modelData.key
                                 width: parent.width
                                 Accessible.name: modelData.label

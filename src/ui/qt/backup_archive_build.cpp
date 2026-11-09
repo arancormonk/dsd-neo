@@ -158,7 +158,7 @@ class Builder {
             return {};
         }
         const QFileInfo info(value);
-        if (info.isSymLink() || info.isJunction() || !info.isFile() || staging_name(info.fileName())) {
+        if (info.isSymLink() || info.isJunction() || !info.isFile()) {
             return {};
         }
         const QString canonical = info.canonicalFilePath();
@@ -178,26 +178,86 @@ class Builder {
                && info.canonicalFilePath() == m_canonicalRoot + QLatin1Char('/') + relative;
     }
 
-    /** Carry an owned bundle root's regular files; the root's archive path, or empty when it carries none. */
+    /**
+     * Every file a typed File value names or a stored library CSV reaches (another row's map may name a file in this
+     * bundle that its own primary no longer reaches), by its real path: a bundle carries these whatever they are
+     * called. A library CSV that cannot be parsed reaches nothing here; its own bundle carries every file
+     * (bundleFilesToCarry()).
+     */
+    void
+    collectNamedFiles() {
+        for (auto it = m_stores.cbegin(); it != m_stores.cend(); ++it) {
+            for (const TypedPathValue& value : typed_path_values(it.key(), it.value())) {
+                const QString canonical =
+                    value.field.kind == PathKind::File ? QFileInfo(value.value).canonicalFilePath() : QString();
+                if (!canonical.isEmpty()) {
+                    m_namedFiles.insert(canonical);
+                }
+            }
+        }
+        for (const auto& value : m_stores.value(QLatin1String(kImportedFilesStore))) {
+            const QJsonObject row = value.toObject();
+            const QString path = variant_string(row.value(QLatin1String("path")));
+            const QString type = row.value(QLatin1String("type")).toString();
+            QStringList reached;
+            if (library_reached_files({LibraryFile{path, type}}, &reached)) {
+                for (const QString& file : reached) {
+                    m_namedFiles.insert(file);
+                }
+            }
+        }
+    }
+
+    /** The regular files below the real directory @p directory, by their real paths; links are not followed. */
+    static QStringList
+    bundleFiles(const QString& directory) {
+        QStringList files;
+        QDirIterator it(directory, QDir::Files | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QFileInfo file(it.next());
+            const QString canonical = file.canonicalFilePath();
+            if (file.isFile() && !file.isSymLink() && canonical.startsWith(directory + QLatin1Char('/'))) {
+                files.append(canonical);
+            }
+        }
+        return files;
+    }
+
+    /**
+     * @p directory's files, those a reference reaches first: the files @p primary (a row's file of @p type) reaches and
+     * those collectNamedFiles() lists, whatever they are called, then every other file whose name is not an import's
+     * own leftover (leftover_name()). A primary that cannot be parsed reaches everything: nothing is left out then.
+     */
+    QStringList
+    bundleFilesToCarry(const QString& directory, const QString& primary, const QString& type) const {
+        QSet<QString> reached;
+        const bool known = bundle_reached_files(primary, directory, type, &reached);
+        QStringList referenced, others;
+        for (const QString& file : bundleFiles(directory)) {
+            if (!known || reached.contains(file) || m_namedFiles.contains(file)) {
+                referenced.append(file);
+            } else if (!leftover_name(QFileInfo(file).fileName())) {
+                others.append(file);
+            }
+        }
+        return referenced + others;
+    }
+
+    /**
+     * Carry an owned bundle root's files (bundleFilesToCarry(); @p primary is the row's file, by its real path): the
+     * root's archive path, or empty when it carries none.
+     */
     QString
-    carryBundle(const QString& root, const QString& label) {
+    carryBundle(const QString& root, const QString& label, const QString& primary, const QString& type) {
         const QFileInfo info(root);
         QString relative = QStringLiteral("imports/bundles/") + info.fileName();
         if (m_canonicalRoot.isEmpty() || !ownedBundle(info, relative) || m_claimedRoots.contains(path_key(relative))) {
             return {};
         }
-        const QString directory = info.canonicalFilePath();
         int carried = 0;
-        QDirIterator it(directory, QDir::Files | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            const QFileInfo file(it.next());
-            const QString canonical = file.canonicalFilePath();
-            if (!file.isFile() || file.isSymLink() || staging_name(file.fileName())
-                || !canonical.startsWith(directory + QLatin1Char('/'))) {
-                continue;
-            }
+        for (const QString& canonical : bundleFilesToCarry(info.canonicalFilePath(), primary, type)) {
             if (carryCanonical(canonical).isEmpty()) {
-                notInclude(QObject::tr("%1: %2").arg(label, file.fileName()));
+                notInclude(QObject::tr("%1: %2").arg(label, QFileInfo(canonical).fileName()));
             } else {
                 carried++;
             }
@@ -213,7 +273,8 @@ class Builder {
     bool
     sanitizeLibraryRow(QJsonObject& row, QSet<QString>* paths) {
         const QString label = row_label(row);
-        const bool known = ImportedFilesModel::knownTypes().contains(row.value(QLatin1String("type")).toString());
+        const QString type = row.value(QLatin1String("type")).toString();
+        const bool known = ImportedFilesModel::knownTypes().contains(type);
         const QString file = known ? carryFile(variant_string(row.value(QLatin1String("path")))) : QString();
         if (file.isEmpty()) {
             notInclude(QObject::tr("Imported file %1").arg(label));
@@ -230,7 +291,7 @@ class Builder {
             // A bundled file belongs to its own row's bundle; one anywhere else under bundles/ keeps none.
             const QString own = QStringLiteral("imports/bundles/") + QFileInfo(root).fileName() + QLatin1Char('/');
             const bool fits = !path_key(file).startsWith(QStringLiteral("imports/bundles/")) || file.startsWith(own);
-            carried = fits ? carryBundle(root, label) : QString();
+            carried = fits ? carryBundle(root, label, m_canonicalRoot + QLatin1Char('/') + file, type) : QString();
             if (carried.isEmpty()) {
                 notInclude(QObject::tr("%1: companion files").arg(label));
             }
@@ -253,6 +314,7 @@ class Builder {
 
     void
     sanitizeLibrary() {
+        collectNamedFiles();
         QJsonArray kept;
         QSet<QString> paths;
         for (const auto& value : m_stores.value(QLatin1String(kImportedFilesStore))) {
@@ -504,6 +566,7 @@ class Builder {
     QMap<QString, QString> m_sources;      // archive path → canonical source path
     QMap<QString, QString> m_claimedRoots; // carried bundle root's folded key → its archive path
     QMap<QString, QString> m_channelMaps;  // archive path of a carried, unbundled channel map → its row's label
+    QSet<QString> m_namedFiles;            // real path of every file a typed File value or a library CSV names
     QStringList m_notIncluded;
     QJsonArray m_fileTable;
     qint64 m_fileBytes = 0;

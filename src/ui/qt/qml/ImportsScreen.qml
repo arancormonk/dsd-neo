@@ -14,16 +14,19 @@ Item {
     Keys.onEscapePressed: Navigation.back(screen.Window.window)
     Keys.onBackPressed: Navigation.back(screen.Window.window)
     onVisibleChanged: {
-        // Issue #829: every way off this screen (Back clears importsOpen in
-        // Main directly) ends a pick still out, so it never lands later.
-        if (!visible) {
-            csvImport.cancel();
+        if (visible) {
+            Qt.callLater(function () {
+                if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
+                    screen.forceActiveFocus();
+            });
             return;
         }
-        Qt.callLater(function () {
-            if (screen.visible && Navigation.allows(screen) && !Navigation.contains(screen, screen.Window.window.activeFocusItem))
-                screen.forceActiveFocus();
-        });
+        // #832, #829: the screen is kept while closed, and every way off it
+        // (Back clears importsOpen in Main directly) ends a pick still out, so
+        // it never lands later. An import still copying is cancelled, and what
+        // it answers is not this visit's to report.
+        generation++;
+        csvImport.cancel();
     }
 
     signal closed
@@ -35,6 +38,8 @@ Item {
     property int pendingRow: -1
     property string pendingType: "chan"
     property bool pendingKeyHex: false
+    // #832: which visit an import belongs to; every close takes the next.
+    property int generation: 0
     // Row the action sheet is open on.
     property int actionRow: -1
     // Transient outcome line under the header; magenta when it reports a problem.
@@ -87,7 +92,7 @@ Item {
 
     function resultNotice(verb, result) {
         if (!result.ok) {
-            screen.notice = result.detail || qsTr("Could not read that file");
+            screen.notice = Util.importMessage(result, "csv");
             screen.noticeIsProblem = true;
             return;
         }
@@ -154,17 +159,30 @@ Item {
         }
     }
 
+    // An update names its row by the stored path, taken when the pick is
+    // asked for: rows can move while the picker is up or the copy runs
+    // (another import, a removal), and the path stays the row's. A row with
+    // no path is refused by the flow, never imported as a new file.
+    function importContext() {
+        return {
+            replacing: pendingRow >= 0,
+            replacePath: pendingRow >= 0 ? importedFiles.get(pendingRow).path || "" : "",
+            generation: generation
+        };
+    }
     function importPickedFile() {
         var type = pendingRow >= 0 ? importedFiles.get(pendingRow).type : pendingType === "keys" ? (pendingKeyHex ? "keysHex" : "keysDec") : pendingType;
-        csvImport.pick(type, pendingRow);
+        csvImport.pick(type, importContext());
     }
 
     CsvImportFlow {
         id: csvImport
         objectName: "importsCsvImport"
         overlayParent: screen
-        onFinished: function (result) {
-            var updated = screen.pendingRow >= 0;
+        onFinished: function (result, context) {
+            if (context.generation !== screen.generation)
+                return;
+            var updated = context.replacing === true;
             screen.pendingRow = -1;
             screen.notice = "";
             screen.noticeIsProblem = false;

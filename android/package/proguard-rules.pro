@@ -24,7 +24,6 @@
     public static boolean takeNotificationPermissionRefresh();
     public static boolean notificationPermissionNeeded(android.content.Context);
     public static void ensureNotificationPermission(android.app.Activity);
-    public static java.lang.String importDocumentToFiles(android.content.Context, java.lang.String, java.lang.String, java.lang.String);
     public static void finishApp(android.content.Context);
 }
 
@@ -44,6 +43,13 @@
     public static int copyDocumentToFile(android.content.ContentResolver, java.lang.String, java.lang.String, long);
     public static boolean copyFileToDocument(android.content.ContentResolver, java.lang.String, java.lang.String);
     public static void abort();
+    # Imports (#832), from the import worker.
+    public static int copyImportDocument(android.content.ContentResolver, long, java.lang.String, java.lang.String, long);
+    public static void cancelImport(long);
+    public static long[] importProgress(long);
+    public static java.lang.String importName(long);
+    public static boolean importNoSpace(long);
+    public static void forgetImport(long);
 }
 
 # Call recordings (#708): playback, export/save and share.

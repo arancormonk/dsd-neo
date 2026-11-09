@@ -35,6 +35,17 @@ Item {
         }
     }
 
+    // #832: a draft opened again after a commit ran, before its answer is in.
+    Connections {
+        id: reopenOnCommit
+        target: importedFiles
+        enabled: false
+        function onEntriesChanged() {
+            reopenOnCommit.enabled = false;
+            screen.openFor(-1);
+        }
+    }
+
     TestCase {
         function init() {
             testContext.setDocumentPickerSupported(true);
@@ -77,17 +88,59 @@ Item {
                 // The scan list drops a pick that is not for its current
                 // targets, so the import carries the context importTargets() gives.
                 var flow = findChild(screen, "targetCsvImport");
-                flow.begin(source, "Targets.csv", "trunkTargets", -1, {generation: screen.targetsGeneration});
-                verify(flow.active, "the import waits on its companion sheet");
-                var sheet = findChild(screen, "csvCompanionSheet");
-                verify(sheet.visible, "the companion sheet is up");
-                sheet.requestDismiss();
-                verify(!sheet.visible);
-                verify(!flow.active, "dismissing the sheet ended the import");
+                flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
+                tryVerify(function () { return flow.requiredFiles.length > 0; }, 5000, "the companions are asked for");
+                findChild(screen, "csvCompanionSheet").requestDismiss();
+                tryCompare(flow, "active", false);
             }
             compare(screen.fingerprint(), before);
             compare(screen.initialDraft, initial);
             compare(JSON.stringify(screen.targetRows), preview);
+        }
+
+        // #832: a target import answers later. Its failures say why, and a
+        // draft opened again since it began ignores even a successful answer.
+        function test_target_import_failures_say_why() {
+            var flow = findChild(screen, "targetCsvImport");
+            flow.begin(testContext.storePath("fixtures/scan-gone.csv"), "scan-gone.csv", "trunkTargets", screen.importContext());
+            tryCompare(flow, "active", false);
+            compare(screen.validationText, "Could not read scan-gone.csv. Check that it is still available, then try again.");
+            var bad = testContext.writeFixtureCsv("scan-bad-targets.csv", "not,a,target,header\n1,2,3,4\n");
+            flow.begin(bad, "scan-bad-targets.csv", "trunkTargets", screen.importContext());
+            tryCompare(flow, "active", false);
+            verify(screen.validationText.length > 0, "a format failure is explained");
+            verify(screen.validationText.indexOf("Could not read") < 0, "and reads apart from a read failure: " + screen.validationText);
+            verify(!screen.csvMode);
+        }
+
+        function test_reopened_draft_ignores_a_late_target_import() {
+            var flow = findChild(screen, "targetCsvImport");
+            var source = testContext.writeFixtureCsv("scan-late-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\n");
+            reopenOnCommit.enabled = true;
+            flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
+            tryCompare(flow, "active", false);
+            verify(!reopenOnCommit.enabled, "the draft was opened again before the answer");
+            verify(!screen.csvMode, "the draft opened since keeps its own targets");
+            compare(screen.validationText, "");
+            while (importedFiles.count)
+                importedFiles.remove(0);
+        }
+
+        function test_closing_cancels_a_target_import() {
+            var flow = findChild(screen, "targetCsvImport");
+            var source = testContext.writeFixtureCsv("scan-closed-targets.csv",
+                "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\none,p25-conventional,851500000,,,,\n");
+            var count = importedFiles.count;
+            testContext.holdImports(true);
+            flow.begin(source, "Targets.csv", "trunkTargets", screen.importContext());
+            verify(flow.copying);
+            screen.visible = false;
+            tryCompare(flow, "active", false);
+            testContext.holdImports(false);
+            screen.visible = true;
+            compare(importedFiles.count, count, "the cancelled copy added nothing");
+            verify(!screen.csvMode);
         }
 
         // ---- issue #829: the target CSV pick belongs to the list it was asked for ----
@@ -106,8 +159,10 @@ Item {
             try {
                 screen.importTargets();
                 testContext.answerDocumentPicked(testContext.lastDocumentRequest().id, targetsFile("picked-targets.csv"), "Picked targets.csv", false);
-                verify(screen.csvMode);
-                compare(importedFiles.get(importedFiles.rowForPath(screen.draft.targetsCsvPath)).name, "Picked targets.csv");
+                // #832: the copy answers later, from the import worker.
+                tryVerify(function () { return screen.csvMode; }, 5000, "the picked targets are selected");
+                // The provider's own name for the document: a local file's name.
+                compare(importedFiles.get(importedFiles.rowForPath(screen.draft.targetsCsvPath)).name, "picked-targets.csv");
                 compare(screen.targetRows.length, 1);
             } finally {
                 clearLibrary();
@@ -146,7 +201,7 @@ Item {
         }
         function test_newer_choice_survives_a_late_pick(data) {
             try {
-                var library = importedFiles.importFile(targetsFile("library-targets.csv").substring(7), "Library.csv", "trunkTargets");
+                var library = testContext.importNamed(targetsFile("library-targets.csv").substring(7), "Library.csv", "trunkTargets");
                 verify(library.ok);
                 screen.importTargets();
                 var id = testContext.lastDocumentRequest().id;
@@ -161,7 +216,7 @@ Item {
                 }
                 var draft = JSON.stringify(screen.draft);
                 testContext.answerDocumentPicked(id, targetsFile("late-targets.csv"), "late.csv", false);
-                verify(!findChild(screen, "targetCsvImport").active);
+                tryCompare(findChild(screen, "targetCsvImport"), "active", false);
                 compare(JSON.stringify(screen.draft), draft, "the newer choice stays");
                 compare(importedFiles.count, 1, "the dropped pick imported nothing");
             } finally {
@@ -207,7 +262,7 @@ Item {
         function test_imported_target_preview_and_save() {
             var source = testContext.writeFixtureCsv("scan-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,--scan-max-visit-ms 20000\n");
-            var result = importedFiles.importFile(source, "Targets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.draft.name = "Imported";
@@ -242,7 +297,7 @@ Item {
                 + "thr,p25-conventional,851500000,,,,,--squelch-db -60\n"
                 + "off,dmr-conventional,461000000,,,,,--squelch-db 0\n"
                 + "inh,nxdn48-conventional,461556250,,,,,\n");
-            var result = importedFiles.importFile(source, "SquelchTargets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -268,7 +323,7 @@ Item {
                 + "dig,dmr-conventional,461000000,,,,,\n"
                 + "tower,am-conventional,118300000,,,,,--am-bandwidth-hz 8333\n"
                 + "guard,am-conventional,121500000,,,,,\n");
-            var result = importedFiles.importFile(source, "BandwidthTargets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -308,7 +363,7 @@ Item {
                 + "inh,nfm-conventional,155535000,,,,,\n"
                 + "tower,am-conventional,118300000,,,,,\n"
                 + "dig,dmr-conventional,461000000,,,,,\n");
-            var result = importedFiles.importFile(source, "ToneTargets.csv", "trunkTargets");
+            var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -349,7 +404,7 @@ Item {
         function test_reselect_csv_targets_keeps_preview() {
             var fixture = testContext.writeFixtureCsv("scan-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,--scan-max-visit-ms 20000\n");
-            var result = importedFiles.importFile(fixture, "Targets.csv", "trunkTargets");
+            var result = testContext.importNow(fixture, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
                 screen.selectTargets(result.path);
@@ -1026,7 +1081,7 @@ Item {
         function test_modes_preserved_until_selected_mode_is_saved(data) {
             var fixture = testContext.writeFixtureCsv("both-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\nCSV ID,p25-conventional,851500000,,,,,\n");
-            var result = importedFiles.importFile(fixture, "Both.csv", "trunkTargets");
+            var result = testContext.importNow(fixture, "trunkTargets");
             verify(result.ok, result.detail);
             try {
                 edit("scanListName", "Both modes");
@@ -1405,7 +1460,7 @@ Item {
                 control("scanAdvancedToggle").Accessible.pressAction();
                 for (var fixture of fixtures) {
                     var source = testContext.writeFixtureCsv("scan-" + fixture.type + ".csv", fixture.csv);
-                    var result = importedFiles.importFile(source, "scan-" + fixture.type + ".csv", fixture.type);
+                    var result = testContext.importNow(source, fixture.type);
                     verify(result.ok, result.detail);
                     paths.push(result.path);
                     var picker = control("scanFile_" + fixture.key);

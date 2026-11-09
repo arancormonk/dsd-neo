@@ -66,7 +66,7 @@ Item {
 
         function test_import_remove_order() {
             var source = testContext.writeFixtureCsv("order.csv", "id,mode,name\n1001,A,Dispatch\n");
-            var imported = importedFiles.importFile(source, "order.csv", "group");
+            var imported = testContext.importNow(source, "group");
             verify(imported.ok, "the fixture did not import");
             var path = imported.path;
             verify(savedSystems.add({name: "Order system", sourceType: "usb", groupCsvPath: path}));
@@ -116,7 +116,7 @@ Item {
         // without the file afterwards: the field empties and the list is no draft.
         function test_remove_names_and_clears_fallback_lists() {
             var source = testContext.writeFixtureCsv("fallback.csv", "id,mode,name\n1001,A,Dispatch\n");
-            var imported = importedFiles.importFile(source, "fallback.csv", "group");
+            var imported = testContext.importNow(source, "group");
             verify(imported.ok, "the fixture did not import");
             var path = imported.path;
             verify(scanLists.add({name: "Fallback list", groupCsvPath: path}));

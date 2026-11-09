@@ -67,6 +67,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include "../test_support/qt_library_import.h"
 #include "../test_support/qt_test_paths.h"
 #include "../test_support/test_support.h"
 #include "app_prefs.h"
@@ -492,7 +493,7 @@ staging_dirs() {
 
 QString
 import_path(dsd_qt::ImportedFilesModel& library, const QString& source, const QString& name, const QString& type) {
-    const QVariantMap result = library.importFile(source, name, type);
+    const QVariantMap result = dsd_test_import_named_and_wait(library, source, name, type);
     expect("fixture import succeeds", result.value("ok").toBool());
     return result.value("path").toString();
 }
@@ -514,7 +515,7 @@ import_library(FakeHost& host) {
                && write_file(source.filePath("channels.csv"),
                              "channel,frequency_hz,mode,keys_hex_csv,options\n1,461000000,dmr,keys.csv,"
                              "--dmr-tg-key-csv 'map.csv'\n"));
-    QVariantMap result = library.importBundle(source.filePath("channels.csv"), "Bundle.csv", "chan", {});
+    QVariantMap result = dsd_test_import_and_wait(library, source.filePath("channels.csv"), "chan");
     expect("channel bundle imports", result.value("ok").toBool());
     lib.chan = result.value("path").toString();
     expect("write target bundle fixture",
@@ -524,7 +525,7 @@ import_library(FakeHost& host) {
                && write_file(source.filePath("targets.csv"),
                              "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes\n"
                              "one,p25-trunk,851012500,tmap.csv,250,,\n"));
-    result = library.importFile(source.filePath("targets.csv"), "Targets.csv", "trunkTargets");
+    result = dsd_test_import_and_wait(library, source.filePath("targets.csv"), "trunkTargets");
     expect("target bundle imports", result.value("ok").toBool());
     lib.targets = result.value("path").toString();
     return lib;

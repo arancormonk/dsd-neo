@@ -5,10 +5,10 @@ import QtQuick
 import QtTest
 
 // Issue #829: the wizard's Replay file Browse. It asks the app's document
-// picker (the decoderHost map plays the host), copies the picked document
-// through importContentUri() and keeps the previous file when the copy fails,
-// saying so under the row (B8). A pick still out ends with the wizard session
-// it was asked in.
+// picker (the decoderHost map plays the host), hands the picked document to
+// `replayFiles` (#832, scripted here by the case), and keeps the previous file
+// when the copy fails or no picker could open, saying so under the row (B8). A
+// pick still out ends with the wizard session it was asked in.
 Item {
     id: root
 
@@ -38,6 +38,7 @@ Item {
             verify(tc.wizard !== null, "WizardScreen.qml failed to load")
             testContext.setDocumentPickerSupported(true)
             testContext.resetHostPlayback()
+            testContext.resetReplayFiles()
             wizardLoader.visible = true
             tc.wizard.openForAdd(false)
             tc.wizard.sourceType = "file"
@@ -46,7 +47,9 @@ Item {
         function cleanup() {
             root.width = 420
             wizardLoader.visible = true
+            tc.wizard.openForAdd(false)
             testContext.resetHostPlayback()
+            testContext.resetReplayFiles()
             if (tc.savedRow >= 0) {
                 savedSystems.remove(tc.savedRow)
                 tc.savedRow = -1
@@ -60,65 +63,67 @@ Item {
         }
         // Tap Browse; the request the wizard now waits on.
         function browse() {
-            var button = item("wizardBrowse")
+            var button = item("wizardReplayBrowse")
             verify(button.visible && button.enabled)
             button.clicked()
             var request = testContext.lastDocumentRequest()
             compare(request.kind, "open")
-            verify(item("wizardSourcePicker").visible)
+            verify(item("wizardReplayPicker").visible)
             return request.id
         }
         function copies() {
-            return testContext.hostCalls().filter(function (call) { return call.name === "importContentUri" })
+            return testContext.replayCalls().begins
         }
         function notice() {
-            return item("wizardSourceNotice")
+            return item("wizardReplayNotice")
         }
+        // The copy of the pick fails as an unreadable document does.
+        function failCopy() {
+            verify(testContext.finishReplay({ok: false, error: "read"}))
+        }
+        readonly property string readFailure: "Could not read a b.wav. Check that it is still available, then try again."
 
         function test_browse_copies_the_pick() {
             tc.wizard.pickerTarget = "chan"
             var id = browse()
             compare(tc.wizard.pickerTarget, "chan", "Browse leaves the picker sheet's field alone")
-            testContext.setImportContentResult("/data/imports/a b.wav")
             testContext.answerDocumentPicked(id, tc.reference, "a b.wav", false)
-            compare(copies().length, 1)
-            compare(copies()[0].reference, tc.reference, "the reference reaches the copy byte for byte")
-            compare(copies()[0].fileName, "a b.wav", "named by the picker's display name")
-            compare(tc.wizard.fileText, "/data/imports/a b.wav")
-            compare(tc.wizard.sourceNotice, "")
+            compare(copies(), 1)
+            compare(testContext.replayCalls().reference, tc.reference, "the reference reaches the copy byte for byte")
+            compare(replayFiles.copyName, "a b.wav", "named by the picker's display name")
+            verify(testContext.finishReplay({ok: true, path: "/data/replays/a b.wav"}))
+            compare(tc.wizard.fileText, "/data/replays/a b.wav")
+            compare(tc.wizard.replayNotice, "")
             verify(!notice().visible)
-            verify(!item("wizardSourcePicker").visible)
+            verify(!item("wizardReplayPicker").visible)
         }
 
-        // B8: a copy that fails keeps what was there and says so, naming the
-        // previous file only when there was one.
+        // B8: a copy that fails keeps what was there and says why.
         function test_copy_failure_keeps_the_file_data() {
-            return [
-                {tag: "no-previous", previous: "", text: "Could not copy that file."},
-                {tag: "previous", previous: "/data/imports/old.wav", text: "Could not copy that file. The previous file is still selected."}
-            ]
+            return [{tag: "no-previous", previous: ""}, {tag: "previous", previous: "/data/imports/old.wav"}]
         }
         function test_copy_failure_keeps_the_file(data) {
             tc.wizard.fileText = data.previous
             var said = tc.wizard.announcements
             var id = browse()
-            testContext.setImportContentResult("")
             testContext.answerDocumentPicked(id, tc.reference, "a b.wav", false)
-            compare(copies().length, 1)
+            failCopy()
+            compare(copies(), 1)
             compare(tc.wizard.fileText, data.previous)
-            compare(tc.wizard.sourceNotice, data.text)
+            compare(tc.wizard.replayNotice, tc.readFailure)
             verify(notice().visible)
-            compare(notice().text, data.text)
+            compare(notice().text, tc.readFailure)
             compare(notice().Accessible.role, Accessible.AlertMessage)
             compare(tc.wizard.announcements, said + 1, "read out once")
-            compare(tc.wizard.announced, data.text)
+            compare(tc.wizard.announced, tc.readFailure)
 
             // The next Browse clears it; the same failure is read out again.
             id = browse()
-            compare(tc.wizard.sourceNotice, "", "a new Browse starts with no notice")
+            compare(tc.wizard.replayNotice, "", "a new Browse starts with no notice")
             verify(!notice().visible)
             testContext.answerDocumentPicked(id, tc.reference, "a b.wav", false)
-            compare(tc.wizard.sourceNotice, data.text)
+            failCopy()
+            compare(tc.wizard.replayNotice, tc.readFailure)
             compare(tc.wizard.announcements, said + 2, "a repeat is read out again")
         }
 
@@ -127,8 +132,8 @@ Item {
             tc.wizard.fileText = "/data/imports/old.wav"
             root.width = 320
             var id = browse()
-            testContext.setImportContentResult("")
             testContext.answerDocumentPicked(id, tc.reference, "a b.wav", false)
+            failCopy()
             var line = notice()
             verify(line.width <= 320)
             verify(line.lineCount > 1, "the sentence wraps")
@@ -139,17 +144,17 @@ Item {
         // once a copy lands.
         function test_successful_copy_clears_the_notice() {
             tc.wizard.fileText = "/data/imports/old.wav"
-            testContext.setImportContentResult("")
             testContext.answerDocumentPicked(browse(), tc.reference, "a b.wav", false)
-            compare(tc.wizard.sourceNotice, "Could not copy that file. The previous file is still selected.")
+            failCopy()
+            compare(tc.wizard.replayNotice, tc.readFailure)
             // The next Browse fails to open: its reason replaces the notice.
             testContext.answerDocumentUnavailable(browse(), "noPicker")
-            compare(tc.wizard.sourceNotice, "No compatible file picker on this device. Install a file manager app, then try again.")
+            compare(tc.wizard.replayNotice, "No compatible file picker on this device. Install a file manager app, then try again.")
             var id = browse()
-            testContext.setImportContentResult("/data/imports/new.wav")
             testContext.answerDocumentPicked(id, tc.reference, "new.wav", false)
-            compare(tc.wizard.fileText, "/data/imports/new.wav")
-            compare(tc.wizard.sourceNotice, "", "the copy that landed cleared it")
+            verify(testContext.finishReplay({ok: true, path: "/data/replays/new.wav"}))
+            compare(tc.wizard.fileText, "/data/replays/new.wav")
+            compare(tc.wizard.replayNotice, "", "the copy that landed cleared it")
             verify(!notice().visible)
         }
 
@@ -165,9 +170,9 @@ Item {
             var said = tc.wizard.announcements
             var id = browse()
             testContext.answerDocumentUnavailable(id, data.tag)
-            compare(copies().length, 0)
+            compare(copies(), 0)
             compare(tc.wizard.fileText, "/data/imports/old.wav")
-            compare(tc.wizard.sourceNotice, data.text)
+            compare(tc.wizard.replayNotice, data.text)
             verify(notice().visible)
             compare(notice().Accessible.role, Accessible.AlertMessage)
             compare(tc.wizard.announcements, said + 1)
@@ -179,11 +184,11 @@ Item {
             var said = tc.wizard.announcements
             var id = browse()
             testContext.answerDocumentCancelled(id)
-            compare(copies().length, 0)
+            compare(copies(), 0)
             compare(tc.wizard.fileText, "/data/imports/old.wav")
-            compare(tc.wizard.sourceNotice, "")
+            compare(tc.wizard.replayNotice, "")
             compare(tc.wizard.announcements, said)
-            verify(!item("wizardSourcePicker").visible)
+            verify(!item("wizardReplayPicker").visible)
         }
 
         // A pick still out, and the notice, end with the session: reopening
@@ -206,7 +211,7 @@ Item {
             }
             var failed = browse()
             testContext.answerDocumentUnavailable(failed, "noPicker")
-            verify(tc.wizard.sourceNotice.length > 0)
+            verify(tc.wizard.replayNotice.length > 0)
             var id = browse()
             if (data.tag === "openForAdd")
                 tc.wizard.openForAdd(false)
@@ -216,14 +221,14 @@ Item {
                 tc.wizard.openForEdit(tc.savedRow)
             else
                 wizardLoader.visible = false
-            verify(!item("wizardSourcePicker").visible, "the pick ended with its session")
+            verify(!item("wizardReplayPicker").visible, "the pick ended with its session")
             verify(testContext.documentCalls().some(function (call) {
                 return call.name === "cancelDocumentRequest" && call.id === id
             }), "the host request was cancelled")
-            compare(tc.wizard.sourceNotice, "", "the notice went with its session")
+            compare(tc.wizard.replayNotice, "", "the notice went with its session")
             var fileText = tc.wizard.fileText
             testContext.answerDocumentPicked(id, tc.reference, "late.wav", false)
-            compare(copies().length, 0, "the late pick was never copied")
+            compare(copies(), 0, "the late pick was never copied")
             compare(tc.wizard.fileText, fileText)
         }
 

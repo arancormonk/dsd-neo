@@ -16,10 +16,16 @@ class QQmlApplicationEngine;
 
 namespace dsd_qt {
 
+namespace backup {
+enum class ApplyOutcome;
+} // namespace backup
+
 class AppPrefs;
 class DecoderHost;
+class ImportService;
 class ImportedFilesModel;
 class ListenPins;
+class ReplayStore;
 class SavedSystemsModel;
 class ScanListsModel;
 
@@ -57,6 +63,16 @@ void prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsMode
  */
 ListenPins* load_listen_pins(AppPrefs* prefs, ImportedFilesModel* importedFiles, SavedSystemsModel* systems,
                              ScanListsModel* scanLists, QObject* owner);
+
+/**
+ * @brief Make the replay store (#832) over the loaded saved systems, owned by @p owner, and run its startup work.
+ *
+ * ui_load() calls it once the saved systems have loaded: the store becomes the systems' replay store, reclaims the
+ * pending copies no system names (not when @p restore says a restore is still waiting to apply or stopped part-way,
+ * Deferred or Stuck: its stores are not settled) and starts the cached-replay migration on the import worker.
+ */
+ReplayStore* load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* systems,
+                          backup::ApplyOutcome restore, QObject* owner);
 
 } // namespace dsd_qt
 

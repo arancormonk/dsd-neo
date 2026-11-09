@@ -6,6 +6,12 @@ import java.util.Collections
 
 class ErrnoException(val functionName: String, val errno: Int) : Exception("$functionName failed: errno $errno")
 
+// The errno a full disk sets, as Linux numbers it.
+object OsConstants {
+    @JvmField
+    val ENOSPC = 28
+}
+
 // fsync and ftruncate on the JVM's own descriptors. A test can make fsync fail (or wait) through [fsyncHook], and
 // sees each descriptor synced.
 object Os {
