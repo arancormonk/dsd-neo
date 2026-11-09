@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/core/access_code.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
@@ -182,13 +183,12 @@ sacch_encode(uint8_t out[60], uint8_t sf, uint8_t ran, const uint8_t elements[18
  * NULL for an IDLE message), scrambled with the default PN95 sequence (nxdn_descramble_with_seed(), its own inverse).
  */
 static void
-build_frame(uint8_t lich, uint8_t ran, const uint8_t* facch_a, const uint8_t* facch_b) {
+build_frame_sacch(uint8_t lich, uint8_t ran, uint8_t sf, const uint8_t* sacch_elements, const uint8_t* facch_a,
+                  const uint8_t* facch_b) {
     uint8_t bits[364];
     uint8_t idle[80];
-    uint8_t sacch_elements[18];
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMSET(idle, 0, sizeof(idle));
-    DSD_MEMSET(sacch_elements, 0, sizeof(sacch_elements));
     put_bits(idle, 2U, 0x10U, 6U); // IDLE
 
     const uint8_t full = (uint8_t)(lich << 1U);
@@ -197,7 +197,7 @@ build_frame(uint8_t lich, uint8_t ran, const uint8_t* facch_a, const uint8_t* fa
         bits[2U * i] = (uint8_t)(((full | parity) >> (7U - i)) & 1U);
         bits[(2U * i) + 1U] = 1U;
     }
-    sacch_encode(&bits[16], 3U, ran, sacch_elements); // a single-segment superframe position (part 1 of 4)
+    sacch_encode(&bits[16], sf, ran, sacch_elements);
     facch1_encode(&bits[76], facch_a != NULL ? facch_a : idle);
     facch1_encode(&bits[220], facch_b != NULL ? facch_b : idle);
     for (size_t i = 0; i < 182U; i++) {
@@ -207,10 +207,26 @@ build_frame(uint8_t lich, uint8_t ran, const uint8_t* facch_a, const uint8_t* fa
     g_frame_pos = 0U;
 }
 
+/* A frame whose SACCH is the first segment of an empty superframe (sf 3, part 1 of 4). */
+static void
+build_frame(uint8_t lich, uint8_t ran, const uint8_t* facch_a, const uint8_t* facch_b) {
+    uint8_t sacch_elements[18];
+    DSD_MEMSET(sacch_elements, 0, sizeof(sacch_elements));
+    build_frame_sacch(lich, ran, 3U, sacch_elements, facch_a, facch_b);
+}
+
 static void
 send_frame(dsd_opts* opts, dsd_state* state, uint8_t lich, uint8_t ran, const uint8_t* facch_a,
            const uint8_t* facch_b) {
     build_frame(lich, ran, facch_a, facch_b);
+    (void)nxdn_frame(opts, state);
+}
+
+/* Frames whose SACCH carries one segment of a 72-bit superframe message: segment @p part (0-3, sf 3, 2, 1, 0). */
+static void
+send_sacch_segment(dsd_opts* opts, dsd_state* state, uint8_t lich, uint8_t ran, const uint8_t message[72], int part) {
+    static const uint8_t k_sf[4] = {3U, 2U, 1U, 0U};
+    build_frame_sacch(lich, ran, k_sf[part], &message[(size_t)part * 18U], NULL, NULL);
     (void)nxdn_frame(opts, state);
 }
 
@@ -641,6 +657,141 @@ test_type_c_drops_the_type_d_misreading(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* RTCH outbound idle (superframe SACCH only, TS 1-A Table 5.2-2), and RTCH_C's. */
+enum {
+    LICH_RTCH_IDLE = 0x39,
+    LICH_COMPOSITE_IDLE = 0x79,
+};
+
+/* A group voice call's VCALL (0x01) or TX_REL (0x08), 72 elements, from @p source to @p target. */
+static void
+call_message(uint8_t message[72], uint8_t type, uint16_t source, uint16_t target) {
+    DSD_MEMSET(message, 0, 72U);
+    put_bits(message, 2U, type, 6U);
+    put_bits(message, 16U, 1U, 3U); // group call
+    put_bits(message, 24U, source, 16U);
+    put_bits(message, 40U, target, 16U);
+}
+
+/*
+ * Site B's composite control channel on F sends the first three SACCH segments of a VCALL; the followed RTCH's next
+ * frame carries a fourth segment that would complete it. The foreign segments never join the followed channel's
+ * superframe, so no VCALL of B's becomes the call.
+ */
+static int
+test_foreign_sacch_segments_never_complete_a_vcall(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[72];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    call_message(vcall, 0x01U, 2100U, 1100U);
+    for (int part = 0; part < 3; part++) {
+        send_sacch_segment(opts, state, LICH_COMPOSITE_IDLE, 0x22U, vcall, part);
+    }
+    send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, vcall, 3);
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call);
+    rc |= expect_long("foreign SACCH segments: no call of B's", has_call && call.ota_target_id == 1100U, 0L);
+    rc |= expect_long("foreign SACCH segments: heard as foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
+
+    /* Control: the followed channel's own four segments publish its VCALL. */
+    follow_call_to_f(opts, state);
+    for (int part = 0; part < 4; part++) {
+        send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, vcall, part);
+    }
+    rc |= expect_long("own SACCH superframe: the call",
+                      dsd_call_state_get(state, 0U, &call) && call.ota_target_id == 1100U, 1L);
+    return rc;
+}
+
+/*
+ * The followed call is up (its own VCALL, an encrypted one). Site B's composite control channel then sends three
+ * segments of a TX_REL and the followed channel a fourth: the release is B's, so the followed call stays up and keeps
+ * its cipher.
+ */
+static int
+test_foreign_sacch_segments_never_release_the_call(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[72];
+    uint8_t release[72];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    call_message(vcall, 0x01U, 5100U, 7100U);
+    for (int part = 0; part < 4; part++) {
+        send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, vcall, part);
+    }
+    dsd_call_snapshot call;
+    rc |= expect_long(
+        "release case: the followed call is up",
+        dsd_call_state_get(state, 0U, &call) && call.ota_target_id == 7100U && call.phase != DSD_CALL_PHASE_ENDED, 1L);
+    state->nxdn_cipher_type = 2U;
+
+    call_message(release, 0x08U, 2100U, 1100U);
+    for (int part = 0; part < 3; part++) {
+        send_sacch_segment(opts, state, LICH_COMPOSITE_IDLE, 0x22U, release, part);
+    }
+    send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, release, 3);
+    rc |= expect_long(
+        "foreign release: the followed call stays up",
+        dsd_call_state_get(state, 0U, &call) && call.ota_target_id == 7100U && call.phase != DSD_CALL_PHASE_ENDED, 1L);
+    rc |= expect_long("foreign release: the cipher stays", state->nxdn_cipher_type, 2L);
+    return rc;
+}
+
+/*
+ * An SCCH that passed its short CRC on a composite frame read as Type-D during startup left the "Type-D" category; once
+ * a CCH_INFO says Type-C, a VCALL decodes with the Type-C layout (16-bit IDs), not the IDAS one (11-bit IDs and a
+ * repeater number).
+ */
+static int
+test_type_c_drops_the_type_d_category(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    rc |= expect_long("Type-D category: Type-C known", dsd_nxdn_type_c(state), 1L);
+
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 5100U, 7100U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, vcall, NULL);
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call);
+    rc |= expect_long("Type-D category: call source", has_call ? (long)call.ota_source_id : -1L, 5100L);
+    rc |= expect_long("Type-D category: call target", has_call ? (long)call.ota_target_id : -1L, 7100L);
+    return rc;
+}
+
+/*
+ * Only a whole CCH_INFO or SITE_INFO says Type-C. A non-superframe SACCH (26 elements) naming CCH_INFO passed a 6-bit
+ * CRC at most and is too short to decode; a FACCH1's 80 elements are too short for a SITE_INFO. Neither turns the
+ * Type-D reading off: a Type-D SRV_INFO after them still names the IDAS site.
+ */
+static int
+test_short_site_messages_do_not_say_type_c(dsd_opts* opts, dsd_state* state) {
+    uint8_t sacch[18];
+    uint8_t site[80];
+    uint8_t srv[80];
+    int rc = 0;
+    clear_state(opts, state);
+    DSD_MEMSET(sacch, 0, sizeof(sacch));
+    put_bits(sacch, 2U, 0x1AU, 6U);                         // CCH_INFO, cut short
+    build_frame_sacch(0x21U, 0x21U, 0U, sacch, NULL, NULL); // RTCH outbound, non-superframe SACCH, two FACCH1s
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("short CCH_INFO: no Type-C", dsd_nxdn_type_c(state), 0L);
+
+    DSD_MEMSET(site, 0, sizeof(site));
+    put_bits(site, 2U, 0x18U, 6U); // SITE_INFO in a FACCH1, cut short
+    put_bits(site, 8U, SITE_A, 24U);
+    send_frame(opts, state, 0x31U, 0x21U, site, NULL); // RTCH outbound, superframe SACCH, two FACCH1s
+    rc |= expect_long("short SITE_INFO: no Type-C", dsd_nxdn_type_c(state), 0L);
+
+    srv_info(srv, SITE_A);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, srv, NULL);
+    rc |= expect_long("short site messages: Type-D SRV_INFO still read", state->nxdn_idas_site_code, 0x12L);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -665,6 +816,10 @@ main(void) {
     rc |= test_call_on_this_sites_composite_control_channel(opts, state);
     rc |= test_foreign_cac_frame_on_followed_channel(opts, state);
     rc |= test_type_c_drops_the_type_d_misreading(opts, state);
+    rc |= test_foreign_sacch_segments_never_complete_a_vcall(opts, state);
+    rc |= test_foreign_sacch_segments_never_release_the_call(opts, state);
+    rc |= test_type_c_drops_the_type_d_category(opts, state);
+    rc |= test_short_site_messages_do_not_say_type_c(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

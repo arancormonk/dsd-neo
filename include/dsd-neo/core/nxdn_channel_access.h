@@ -38,6 +38,7 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -204,7 +205,7 @@ dsd_nxdn_site_latch(dsd_state* state, uint32_t location_id) {
  * Note that Type-C trunking decoded here: composite control channel frames are read as Type-C from now on. Until now a
  * composite control channel's SRV_INFO could only have been read with the Type-D layout, which names an IDAS System ID
  * and Site Code out of a Type-C Location ID: whatever IDAS identity the decoder holds is dropped with the Type-D
- * reading.
+ * reading, and with it the "Type-D" category an SCCH misread on such a frame left.
  */
 static inline void
 dsd_nxdn_note_type_c(dsd_state* state) {
@@ -215,6 +216,11 @@ dsd_nxdn_note_type_c(dsd_state* state) {
     state->nxdn_idas_system_id = 0U;
     state->nxdn_idas_site_code = 0U;
     dsd_rxid_forget_nxdn_typed_system(state);
+    /* So is the "Type-D" category an SCCH that passed its short CRC on such a frame left, which the VCALL and IV
+       parsers read as an IDAS layout (11-bit IDs). */
+    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
+    }
 }
 
 /**

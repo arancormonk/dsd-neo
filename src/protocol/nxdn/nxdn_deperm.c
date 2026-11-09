@@ -293,11 +293,31 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
     nxdn_reset_sacch_segments(state);
 }
 
+/*
+ * A superframe SACCH segment of another channel's control traffic (dsd_state::nxdn_frame_foreign): its check says that
+ * channel is heard, and nothing of it enters the superframe being assembled. The assembly is dropped too, both ways: the
+ * followed channel's segments before it and after it belong to no one superframe with it, and a superframe the next
+ * followed segment completed would otherwise mix the two channels' messages.
+ */
+static void
+nxdn_handle_sacch_superframe_foreign(dsd_state* state, int part_of_frame, uint8_t crc, uint8_t check) {
+    if (crc == check) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+    }
+    DSD_FPRINTF(stderr, "PF %d/4", part_of_frame + 1);
+    nxdn_reset_sacch_segments(state);
+    state->nxdn_part_of_frame = 0;
+}
+
 static void
 nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                              uint8_t crc, uint8_t check) {
     const uint8_t sf = (trellis_buf[0] << 1) | trellis_buf[1];
     const int part_of_frame = nxdn_sacch_part_of_frame(sf);
+    if (state->nxdn_frame_foreign) {
+        nxdn_handle_sacch_superframe_foreign(state, part_of_frame, crc, check);
+        return;
+    }
     const int valid_sequence =
         nxdn_sacch_segment_sequence_is_valid((uint8_t)(crc == check), state->nxdn_part_of_frame, part_of_frame);
 
@@ -316,9 +336,7 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
 
     if (crc == check) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
-        /* Another channel's RAN (a composite control channel's on the followed traffic channel) is not this one's: a
-           confirmation the followed call left behind must not let it through. */
-        if (nxdn_confirm_is_confirmed(state) && !state->nxdn_frame_foreign) {
+        if (nxdn_confirm_is_confirmed(state)) {
             const int ran = nxdn_ran_from_trellis(trellis_buf);
             state->nxdn_ran = state->nxdn_last_ran = ran;
             state->nxdn_last_ran_stand_in = 0U;

@@ -8880,10 +8880,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - NXDN composite control channels (RTCH_C, TS 1-A §5.2.1, TS 1-C §16.3). Their outbound LICH values 0x61, 0x69, 0x6F,
   0x71, 0x73, 0x75 and 0x77 are also Type-D RTCH2 values; `nxdn_frame.c` reads them as RTCH_C (SACCH, FACCH1, FACCH2,
   UDCH, as an RTCH's; plus the idle 0x79) once the session decoded Type-C trunking (`dsd_nxdn_type_c()`: a CRC-good CAC,
-  a CCH_INFO, or a SITE_INFO on a frame not read as Type-D, messages Type-D does not send), and as Type-D until then:
-  a session that starts on a composite control channel during a call reads its first frames as Type-D until one of
-  those decodes. Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite
-  SRV_INFO read as Type-D left. The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never
+  a whole CCH_INFO, or a whole SITE_INFO on a frame not read as Type-D, messages Type-D does not send; one too short for
+  its layout, such as a non-superframe SACCH's 26 elements, says nothing), and as Type-D until then: a session that
+  starts on a composite control channel during a call reads its first frames as Type-D until one of those decodes.
+  Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as
+  Type-D left, and the "Type-D" category an SCCH misread on such a frame left (the VCALL and IV parsers read it as the
+  IDAS layout). The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never
   a retune within a trunked system or a stream gap) forgets it with the foreign control stamp
   (`dsd_nxdn_forget_carrier_system()`).
 - NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
@@ -8895,7 +8897,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with
   `dsd_nxdn_foreign_control_last_m()`, decode clock); no RAN, received control channel, CC hunt note or Type-C note is
   written; its site broadcasts are printed only, every other message prints its type only (no grant, call, release or
-  control-sync effect); and the frame skips the decoder's own carrier-sync stamp (`nxdn_mark_carrier_sync_active()`)
+  control-sync effect); its superframe SACCH segment never enters the SACCH assembly, which it empties, so no superframe
+  mixes the two channels' segments; and the frame skips the decoder's own carrier-sync stamp (`nxdn_mark_carrier_sync_active()`)
   and plays no voice (the frame-sync accept still stamps `last_cc_sync_time` for any NXDN sync,
   `frame_sync_note_cc_sync()`). A call on this site's control channel
   itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is the site's own.

@@ -124,11 +124,11 @@ static int nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uin
                                      uint32_t location_id, uint8_t channel1sts);
 static void nxdn_adj_site_channel_entry(const dsd_state* state, uint32_t site, uint8_t opt, uint16_t chan);
 static void nxdn_adj_site_dfa_entry(const dsd_state* state, uint32_t site, uint8_t opt, uint8_t bw, uint16_t chan);
-static void NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static int NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, int control_channel);
 static void NXDN_decode_srv_info_type_d(dsd_state* state, const uint8_t* Message);
 static void NXDN_decode_adj_site_type_d(const uint8_t* Message);
-static void NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static int NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_adj_site(const dsd_state* state, const uint8_t* Message, size_t message_bits);
 static char* NXDN_Call_Type_To_Str(uint8_t CallType);
 static void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode);
@@ -440,24 +440,24 @@ nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8
 }
 
 /* CCH_INFO and SITE_INFO are Type-C messages a Type-D system does not send (NXDN TS 1-E; independently, SDRTrunk's
- * NXDNMessageType lists no Type-D 0x18 or 0x1A): decoded, they say the session decodes Type-C trunking. A FACCH1 is
+ * NXDNMessageType lists no Type-D 0x18 or 0x1A): decoded whole, they say the session decodes Type-C trunking. A FACCH1 is
  * laid out alike in both readings of a composite control channel's LICH, so a CCH_INFO says it whichever reading the
  * frame took; a SITE_INFO, too long for a FACCH1, on a frame read as Type-D came through a layout of Type-D's own. */
 static void
 nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    if (!state->nxdn_frame_foreign) {
+    // Only a whole message says it: a short one (a non-superframe SACCH's 26 elements) passed a short CRC at most.
+    if (NXDN_decode_cch_info(opts, state, elements, elements_bits) && !state->nxdn_frame_foreign) {
         dsd_nxdn_note_type_c(state);
     }
-    NXDN_decode_cch_info(opts, state, elements, elements_bits);
     nxdn_element_mark_control_sync(opts, state);
 }
 
 static void
 nxdn_element_handle_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign) {
+    if (NXDN_decode_site_info(opts, state, elements, elements_bits)
+        && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign) {
         dsd_nxdn_note_type_c(state);
     }
-    NXDN_decode_site_info(opts, state, elements, elements_bits);
     nxdn_element_mark_control_sync(opts, state);
 }
 
@@ -2480,7 +2480,8 @@ nxdn_adj_site_dfa_entry(const dsd_state* state, uint32_t site, uint8_t opt, uint
     (void)nxdn_channel_to_frequency_display(state, chan);
 }
 
-static void
+/* Returns 1 when the message was long enough for its notation's layout and decoded, 0 when it was refused. */
+static int
 NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     enum {
         NXDN_CCH_INFO_MIN_BITS = 64U,
@@ -2488,7 +2489,7 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
 
     if (message_bits < NXDN_CCH_INFO_MIN_BITS) {
         DSD_FPRINTF(stderr, " CCH_INFO Too Short (%zu bits); ", message_bits);
-        return;
+        return 0;
     }
 
     //6.4.3.3. Control Channel Information (CCH_INFO) for more information
@@ -2515,10 +2516,11 @@ NXDN_decode_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* Message, s
     if (state->nxdn_rcn == 1
         && !nxdn_cch_info_dfa_version(opts, state, Message, message_bits, location_id, channel1sts)) {
         DSD_FPRINTF(stderr, "%s", KNRM);
-        return;
+        return 0;
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+    return 1;
 }
 
 static void
@@ -2626,7 +2628,8 @@ NXDN_decode_adj_site_type_d(const uint8_t* Message) {
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-static void
+/* Returns 1 when the message was long enough to decode, 0 when it was refused. */
+static int
 NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     enum {
         NXDN_SITE_INFO_MIN_BITS = 144U,
@@ -2634,7 +2637,7 @@ NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Mes
 
     if (message_bits < NXDN_SITE_INFO_MIN_BITS) {
         DSD_FPRINTF(stderr, " SITE_INFO Too Short (%zu bits); ", message_bits);
-        return;
+        return 0;
     }
 
     uint32_t location_id = 0;
@@ -2697,6 +2700,7 @@ NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Mes
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+    return 1;
 }
 
 static void
