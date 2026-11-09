@@ -2529,9 +2529,109 @@ class RadioReferenceRecorder : public QQmlPropertyMap {
         insert(QStringLiteral("busy"), false);
     }
 
+    /* The sign-in form's two model calls, counted and nothing more: the readings (hasPassword, credentialsReady,
+     * accountState) stay the case's to set, as every other reading here is. A case that needs the model to answer
+     * uses FakeRadioReference.qml. */
+    Q_INVOKABLE void
+    setPassword(const QString& password) {
+        passwordCommits++;
+        lastPasswordEmpty = password.isEmpty();
+    }
+
+    Q_INVOKABLE void
+    checkAccount() {
+        accountChecks++;
+    }
+
     int nearbyCalls = 0;
+    int passwordCommits = 0;
+    bool lastPasswordEmpty = true;
+    int accountChecks = 0;
   Q_SIGNALS:
     void locationRequestAllocated(qint64 requestId);
+};
+
+/**
+ * @brief The `signInAutofill` context object: records what the sign-in forms ask of the relay.
+ *
+ * Tokens grow from 1 and begin() retires the live one, as SignInAutofill's do. Every call is logged as a map with its
+ * `op` ("begin", "end", "track", "note"), its `token`, and for track the `field`, the `input` item and `visible`, for
+ * note the `field` and `text`. A case fires a fill with fill(); like the production relay, the values are the case's
+ * to apply first (prefs, the model), and the signal carries only which fields were filled.
+ */
+class SignInAutofillRecorder : public QObject {
+    Q_OBJECT
+
+  public:
+    explicit SignInAutofillRecorder(QObject* parent) : QObject(parent) {}
+
+    Q_INVOKABLE int
+    begin() {
+        m_live = ++m_last;
+        log({{QStringLiteral("op"), QStringLiteral("begin")}, {QStringLiteral("token"), m_live}});
+        return m_live;
+    }
+
+    Q_INVOKABLE void
+    end(int token) {
+        log({{QStringLiteral("op"), QStringLiteral("end")}, {QStringLiteral("token"), token}});
+        if (token == m_live) {
+            m_live = 0;
+        }
+    }
+
+    Q_INVOKABLE void
+    track(int token, int field, QObject* input, bool visible) {
+        log({{QStringLiteral("op"), QStringLiteral("track")},
+             {QStringLiteral("token"), token},
+             {QStringLiteral("field"), field},
+             {QStringLiteral("input"), QVariant::fromValue(input)},
+             {QStringLiteral("visible"), visible}});
+    }
+
+    Q_INVOKABLE void
+    note(int token, int field, const QString& text) {
+        log({{QStringLiteral("op"), QStringLiteral("note")},
+             {QStringLiteral("token"), token},
+             {QStringLiteral("field"), field},
+             {QStringLiteral("text"), text}});
+    }
+
+    /** @brief Every call since the last clear(), oldest first. */
+    Q_INVOKABLE QVariantList
+    calls() const {
+        return m_calls;
+    }
+
+    Q_INVOKABLE void
+    clear() {
+        m_calls.clear();
+    }
+
+    /** @brief The live token (0 with none). */
+    Q_INVOKABLE int
+    liveToken() const {
+        return m_live;
+    }
+
+    /** @brief A fill for @p token, as the relay announces one it applied. */
+    Q_INVOKABLE void
+    fill(int token, bool hasUsername, bool hasPassword) {
+        Q_EMIT filled(token, hasUsername, hasPassword);
+    }
+
+  Q_SIGNALS:
+    void filled(int token, bool hasUsername, bool hasPassword);
+
+  private:
+    void
+    log(const QVariantMap& call) {
+        m_calls.append(call);
+    }
+
+    QVariantList m_calls;
+    int m_last = 0;
+    int m_live = 0;
 };
 
 /**
@@ -3543,6 +3643,18 @@ class Setup : public QObject {
     Q_INVOKABLE int
     radioReferenceNearbyCalls() const {
         return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->nearbyCalls : 0;
+    }
+
+    /** @brief How many times QML submitted an account check to the recorder (the model would dedupe; this does not). */
+    Q_INVOKABLE int
+    radioReferenceAccountChecks() const {
+        return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->accountChecks : 0;
+    }
+
+    /** @brief How many times QML committed a password to the recorder. */
+    Q_INVOKABLE int
+    radioReferencePasswordCommits() const {
+        return m_radio_reference_recorder != nullptr ? m_radio_reference_recorder->passwordCommits : 0;
     }
 
     /** Use an offline QML model for complete account/import navigation flows. */
@@ -4941,6 +5053,11 @@ class Setup : public QObject {
         rr[QStringLiteral("errorKind")] = 0;
         rr[QStringLiteral("errorIsAuth")] = false;
         rr[QStringLiteral("errorIsSubscription")] = false;
+        /* The account check, at rest: no session password, nothing checked (AccountNone). */
+        rr[QStringLiteral("hasPassword")] = false;
+        rr[QStringLiteral("accountState")] = 0;
+        rr[QStringLiteral("accountMessage")] = QString();
+        rr[QStringLiteral("checkingAccount")] = false;
         /* Both, and independently: the real model answers false to both for a
          * system type it cannot import, so a fixture that derived one from the
          * other could not express the case that mis-selects. */
@@ -4959,6 +5076,8 @@ class Setup : public QObject {
             m_radio_reference_recorder->insert(it.key(), it.value());
         }
         ctx->setContextProperty(QStringLiteral("radioReference"), m_radio_reference_recorder);
+        /* The password-manager relay the sign-in forms drive; see SignInAutofillRecorder. */
+        ctx->setContextProperty(QStringLiteral("signInAutofill"), new SignInAutofillRecorder(engine));
 
         /* The real SpectrumModel over the canned getter in qml_spectrum_stub.cpp:
          * the polling, viewport and tap-snapping under test are the production

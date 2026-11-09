@@ -12378,7 +12378,8 @@ Qt Quick frontend (`src/ui/qt`):
   the item its `preeditText` as a commit and resets the input method. Callers: `activate()` of `OutlineButton`,
   `GradientButton`, `IconButton`, `DashedActionButton` and `BottomNav` (commit and finish editing: focus leaves the
   text field so `editingFinished` drafts, such as the profile editor's fallback algorithm, update before the action
-  reads them) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
+  reads them; an `OutlineButton` with `finishesEditing: false` only commits the word, as the RadioReference
+  password's Show and "Check account" do) and of `DecodeChip`, `FilterPill`, `SegmentedControl` segments and `DisclosureRow` (commit only);
   `ModalSheet.requestDismiss()`; `Navigation.back()` before its focus clear. A button gated on a field's committed
   text puts that term in `inputValid` (visuals dim on it) rather than `enabled`: its default `enabled` is `inputValid
   || Navigation.composing`, so it is live while a word is composing, and a tap commits first and calls `clicked()`
@@ -12431,7 +12432,24 @@ Qt Quick frontend (`src/ui/qt`):
   it returns: for the live token the relay itself sets `AppPrefs::rrUsername` and calls
   `RadioReferenceModel::setPassword()` (an empty value fills nothing), then emits the credential-free `filled(token,
   hasUsername, hasPassword)`, so a filled password never reaches QML (`UI_QT_SIGN_IN_AUTOFILL`, its window at a 1.5
-  device pixel ratio). `systemDetails.protocolToken`
+  device pixel ratio). The sign-in form is `qml/RadioReferenceAccountEditor.qml`, used whole by the import screen's
+  credentials card and by `qml/RadioReferenceAccountScreen.qml` (Settings → Account; the Settings row's subtitle names
+  the fields the build asks for): username, password with a `RevealButton` (`finishesEditing: false`, "Show
+  password"/"Hide password"), the key heading, field and link only without a baked key, the hint, "Check account"
+  and a result line that reads only `accountState`/`accountMessage` (with a fallback for an empty Failed message; the
+  import screen sets `showsFailures: false`, since its notice line reports a failure). The password field is a draft:
+  cleared and masked whenever `active` (the screen's visibility) changes, committed by `setPassword()` only when
+  non-empty, its placeholder "Entered for this session" while empty with `hasPassword`, and none otherwise (the
+  label is read once). A field's commit checks the account only while the credentials are ready and unchecked
+  (`accountState` None), so an untouched field never re-asks; "Check account" (`finishesEditing: false`) moves the
+  focus off the field under `checkCommitting` and checks once. Becoming active takes a token
+  (`signInAutofill.begin()`), tracks the two inner inputs with the form's visibility (re-sent when the import card
+  hides) and notes the username; becoming inactive ends it. `filled` for the form's own token commits the field the
+  fill left alone, clears the draft when the password was filled, and checks once, under `fillApplying`. The import
+  card stays up while `checkingAccount`. The QML fixtures fake the relay (`SignInAutofillRecorder` in
+  `tests/ui/qml_test_context.h`, whose `fill()` fires `filled`), and `FakeRadioReference.qml` follows the account
+  state (`settle()`); `tst_radioreference_screen.qml` and `tst_settings_layout.qml` cover the forms.
+  `systemDetails.protocolToken`
   (`dsd_rr_protocol_token()`, "tetra") is how QML tells the protocol apart, and the talkgroup summary (count,
   encryption counts, sample) holds only the rows the group writer keeps (`dsd_rr_talkgroup_writable()`, then the first
   row of each ID), so the preview agrees with the file. The screen's TETRA note (`radioReferenceTetraNote`, repeated in
