@@ -49,7 +49,22 @@ Item {
         return count === 1 ? qsTr("key") : qsTr("keys");
     }
 
+    // Issue #748: a talkgroup list with no rows at all (a header only) is a
+    // list emptied on purpose, which the decoder takes as it does at startup.
+    // Rows that are there but none usable mean a wrong file, and so does any
+    // other kind of file with no rows.
+    function emptyList(type, accepted, skipped) {
+        return type === "group" && accepted === 0 && skipped === 0;
+    }
+
+    // Whether a finished import or refresh holds a file the decoder takes.
+    function usable(result) {
+        return result.ok && (result.error !== "empty" || screen.emptyList(result.type, result.accepted, result.skipped || 0));
+    }
+
     function summaryFor(type, accepted, skipped, importedAt) {
+        if (emptyList(type, accepted, skipped))
+            return [qsTr("Empty list"), Qt.formatDate(new Date(importedAt * 1000), "MMM d")].join(" · ");
         if (accepted === 0)
             return qsTr("No usable rows — check the file format");
         var parts = [accepted + " " + nounFor(type, accepted)];
@@ -63,6 +78,11 @@ Item {
         if (!result.ok) {
             screen.notice = result.detail || qsTr("Could not read that file");
             screen.noticeIsProblem = true;
+            return;
+        }
+        if (screen.emptyList(result.type, result.accepted, result.skipped || 0)) {
+            screen.notice = qsTr("%1 · empty list").arg(verb);
+            screen.noticeIsProblem = false;
             return;
         }
         if (result.error === "empty") {
@@ -118,7 +138,7 @@ Item {
             // A reload, never an import: the decoder takes it only for the file
             // it uses, so another system's channel map cannot retune the session
             // onto frequencies it never asked for.
-            if (result.error !== "empty")
+            if (screen.usable(result))
                 screen.reloadIfInUse(qsTr("Refreshed"), result);
         }
     }
@@ -141,7 +161,7 @@ Item {
                 return;
             screen.resultNotice(updated ? qsTr("Updated") : qsTr("Imported"), result);
             // A new import lands at a new path no session uses yet.
-            if (updated && result.ok && result.error !== "empty")
+            if (updated && screen.usable(result))
                 screen.reloadIfInUse(qsTr("Updated"), result);
         }
     }
@@ -291,7 +311,7 @@ Item {
                     text: screen.summaryFor(fileRow.type, fileRow.accepted, fileRow.skipped, Number(fileRow.importedAt))
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(12)
-                    color: fileRow.accepted === 0 ? Theme.magenta : Theme.textSubdued
+                    color: fileRow.accepted === 0 && !screen.emptyList(fileRow.type, fileRow.accepted, fileRow.skipped) ? Theme.magenta : Theme.textSubdued
                     elide: Text.ElideRight
                 }
             }

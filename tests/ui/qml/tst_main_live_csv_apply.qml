@@ -100,7 +100,10 @@ Item {
                 {tag: "made unusable since its import", imported: "id,mode,name\n1001,A,Dispatch\n",
                  now: "id;mode;name\n1001;A;Dispatch\n", want: "clearGroupList"},
                 {tag: "fixed since its import", imported: "id;mode;name\n1001;A;Dispatch\n",
-                 now: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"}
+                 now: "id,mode,name\n1001,A,Dispatch\n", want: "importGroupList"},
+                // A library file that cannot be read is refused by the import too.
+                {tag: "unreadable since its import", imported: "id,mode,name\n1001,A,Dispatch\n", now: "",
+                 blocked: true, want: "clearGroupList"}
             ]
         }
         function test_group_list_switch(data) {
@@ -113,6 +116,8 @@ Item {
             try {
                 if (data.now.length > 0)
                     verify(testContext.rewriteFile(path, data.now), "could not rewrite the library file")
+                if (data.blocked)
+                    verify(testContext.blockPath(path, true), "could not block the library file")
                 wizard.openForAdd(false)
                 wizard.nameText = "Live talkgroups"
                 wizard.commit()
@@ -135,6 +140,8 @@ Item {
                 wizard.commit()
                 compare(commands.listCommands(), ["clearGroupList"])
             } finally {
+                if (data.blocked)
+                    verify(testContext.blockPath(path, false), "could not unblock the library file")
                 importedFiles.remove(importedFiles.rowForPath(path))
             }
         }

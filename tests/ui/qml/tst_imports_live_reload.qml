@@ -103,7 +103,10 @@ Item {
                  want: "reloadGroupList", notice: "Updated · 2 talkgroups · sent to the running session"},
                 {tag: "channel map", kind: "chan", name: "live-map-2.csv",
                  text: "channel,frequency\n1,851012500\n2,851512500\n",
-                 want: "reloadChannelMap", notice: "Updated · 2 channels · sent to the running session"}
+                 want: "reloadChannelMap", notice: "Updated · 2 channels · sent to the running session"},
+                // A talkgroup list with no rows at all is a list emptied on purpose, which the decoder takes.
+                {tag: "empty talkgroup list", kind: "group", name: "live-groups-empty.csv", text: "id,mode,name\n",
+                 want: "reloadGroupList", notice: "Updated · empty list · sent to the running session"}
             ];
         }
         function test_update_reloads_the_file_in_a_running_session(data) {
@@ -134,7 +137,7 @@ Item {
         }
 
         function test_no_reload_for_nothing_new_data() {
-            return [{tag: "cancelled"}, {tag: "no usable rows"}, {tag: "new import"}];
+            return [{tag: "cancelled"}, {tag: "no usable rows"}, {tag: "empty channel map"}, {tag: "new import"}];
         }
         function test_no_reload_for_nothing_new(data) {
             testContext.setHostRunning(true);
@@ -142,8 +145,15 @@ Item {
                 update(tc.groupPath, null);
                 compare(tc.screen.notice, "");
             } else if (data.tag === "no usable rows") {
-                update(tc.groupPath, testContext.writeFixtureCsv("empty-groups.csv", "id,mode,name\n"));
-                verify(tc.screen.noticeIsProblem, tc.screen.notice);
+                // Rows that are there but none usable (an Excel CSV saved with ';') mean a wrong file.
+                update(tc.groupPath, testContext.writeFixtureCsv("excel-groups.csv", "id;mode;name\n1001;A;Dispatch\n"));
+                compare(tc.screen.notice, "Updated — no usable rows. Check the file format, then update it.");
+                verify(tc.screen.noticeIsProblem);
+            } else if (data.tag === "empty channel map") {
+                // Only a talkgroup list is a list emptied on purpose; a channel map with no rows is a wrong file.
+                update(tc.chanPath, testContext.writeFixtureCsv("empty-map.csv", "channel,frequency\n"));
+                compare(tc.screen.notice, "Updated — no usable rows. Check the file format, then update it.");
+                verify(tc.screen.noticeIsProblem);
             } else {
                 var flow = findChild(tc.screen, "importsCsvImport");
                 tc.screen.pendingRow = -1;
@@ -161,8 +171,12 @@ Item {
         // only when the saved system the session started from named the file, which a manual Apply outdates.
         function test_refresh_reloads_the_file_in_a_running_session_data() {
             return [
-                {tag: "talkgroups", kind: "group", want: "reloadGroupList", noun: "talkgroups"},
-                {tag: "channel map", kind: "chan", want: "reloadChannelMap", noun: "channels"}
+                {tag: "talkgroups", kind: "group", want: "reloadGroupList", accepted: 3,
+                 notice: "Refreshed · 3 talkgroups · sent to the running session"},
+                {tag: "channel map", kind: "chan", want: "reloadChannelMap", accepted: 3,
+                 notice: "Refreshed · 3 channels · sent to the running session"},
+                {tag: "empty talkgroup list", kind: "group", want: "reloadGroupList", accepted: 0,
+                 notice: "Refreshed · empty list · sent to the running session"}
             ];
         }
         function test_refresh_reloads_the_file_in_a_running_session(data) {
@@ -170,24 +184,38 @@ Item {
             testContext.setHostRunning(true);
             var path = data.kind === "group" ? tc.groupPath : tc.chanPath;
             fakeRefresh.refreshFinished(importedFiles.rowForPath(path),
-                                        {ok: true, path: path, type: data.kind, accepted: 3, skipped: 0, error: ""});
+                                        {ok: true, path: path, type: data.kind, accepted: data.accepted, skipped: 0,
+                                         error: data.accepted ? "" : "empty"});
             compare(commands.listCommands(), [data.want + " " + path]);
-            compare(tc.screen.notice, "Refreshed · 3 " + data.noun + " · sent to the running session");
+            compare(tc.screen.notice, data.notice);
             verify(!tc.screen.noticeIsProblem);
         }
 
         function test_refresh_sends_nothing_new_data() {
-            return [{tag: "no session", running: false, error: ""}, {tag: "no usable rows", running: true, error: "empty"}];
+            return [{tag: "no session", running: false, kind: "group", accepted: 3, skipped: 0, error: ""},
+                    {tag: "no usable rows", running: true, kind: "group", accepted: 0, skipped: 2, error: "empty"},
+                    {tag: "empty channel map", running: true, kind: "chan", accepted: 0, skipped: 0, error: "empty"}];
         }
         function test_refresh_sends_nothing_new(data) {
             testContext.useRadioReferenceModel(fakeRefresh);
             testContext.setHostRunning(data.running);
-            fakeRefresh.refreshFinished(importedFiles.rowForPath(tc.groupPath),
-                                        {ok: true, path: tc.groupPath, type: "group", accepted: data.error ? 0 : 3,
-                                         skipped: 0, error: data.error});
+            var path = data.kind === "group" ? tc.groupPath : tc.chanPath;
+            fakeRefresh.refreshFinished(importedFiles.rowForPath(path),
+                                        {ok: true, path: path, type: data.kind, accepted: data.accepted,
+                                         skipped: data.skipped, error: data.error});
             compare(commands.listCommands(), []);
             if (!data.running)
                 compare(tc.screen.notice, "Refreshed · 3 talkgroups");
+            else
+                verify(tc.screen.noticeIsProblem, tc.screen.notice);
+        }
+
+        // The library row says the same as the notice: an empty talkgroup list is no problem, rows none of which
+        // load are.
+        function test_row_summary_tells_an_empty_list_from_a_wrong_file() {
+            compare(tc.screen.summaryFor("group", 0, 0, 0).indexOf("Empty list · "), 0);
+            compare(tc.screen.summaryFor("group", 0, 2, 0), "No usable rows — check the file format");
+            compare(tc.screen.summaryFor("chan", 0, 0, 0), "No usable rows — check the file format");
         }
     }
 }
