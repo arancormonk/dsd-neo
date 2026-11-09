@@ -22042,6 +22042,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_documents.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_lifecycle.cpp
         ${PROJECT_SOURCE_DIR}/android/decoder_host_android_recordings.cpp
+        ${PROJECT_SOURCE_DIR}/android/decoder_host_android_sign_in.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         # #708: a queued share's hold in the real recording store.
@@ -22527,6 +22528,13 @@ if(Python3_Interpreter_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
             a11y_bridge
     )
+    add_test(
+        NAME ANDROID_SIGN_IN_AUTOFILL_JVM
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/android/run_jvm_tests.py --suite
+            sign_in_autofill
+    )
     set_tests_properties(
         ANDROID_LOCATION_JVM
         ANDROID_DECODER_STATUS_JVM
@@ -22541,6 +22549,7 @@ if(Python3_Interpreter_FOUND)
         ANDROID_RECORDING_EXPORT_JVM
         ANDROID_RECORDING_SHARE_JVM
         ANDROID_A11Y_BRIDGE_JVM
+        ANDROID_SIGN_IN_AUTOFILL_JVM
         PROPERTIES
             SKIP_RETURN_CODE 77
             TIMEOUT 90

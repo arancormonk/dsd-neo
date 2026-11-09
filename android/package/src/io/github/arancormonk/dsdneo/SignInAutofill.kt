@@ -1,0 +1,307 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+package io.github.arancormonk.dsdneo
+
+import android.app.Activity
+import android.content.Context
+import android.graphics.Rect
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.util.SparseArray
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.view.ViewStructure
+import android.view.autofill.AutofillManager
+import android.view.autofill.AutofillValue
+import io.github.arancormonk.dsdneo.SignInAutofillState.Companion.PASSWORD
+import io.github.arancormonk.dsdneo.SignInAutofillState.Companion.USERNAME
+import io.github.arancormonk.dsdneo.SignInAutofillState.Effect
+
+/**
+ * The RadioReference sign-in form for Android's Autofill Framework, so a password manager can fill it and offer to save
+ * what RadioReference accepted. Qt 6.11.3 draws its own text fields and gives Android nothing to autofill, so a host
+ * [View] of the app's own describes the two fields as virtual children: field 1 the username, field 2 the password.
+ *
+ * Qt's relay (`src/ui/qt/sign_in_autofill.cpp`, through `DecoderHostAndroid`) calls [begin], [field], [request],
+ * [commit] and [end] from its own thread. Each posts to the main looper, in order, and hands [SignInAutofillState]
+ * the event; the effects it returns run there against the attached activity's [AutofillManager], read at that moment.
+ * With no host attached, no manager, or the service off, the state is told [SignInAutofillState.disabled] and nothing
+ * reaches the framework; the snapshot stays, so a service turned on later works from the next focus entry, and so does
+ * [onResume]'s fresh read. A commit's notifications and the commit itself run in one posted operation.
+ *
+ * The host is the activity content's first child, behind Qt's layout and as large: childless, never focused or clicked,
+ * no touches, hidden from accessibility, important for autofill, drawing nothing. It is never focused, so
+ * [AutofillManager.requestAutofill] marks each request as coming from an unfocused view, and the framework shows its
+ * dropdown instead of waiting for the keyboard's inline suggestions, which match only the view the keyboard types into
+ * (Qt's). Qt sends rects in its window's pixels; the origin of the Qt window view (the largest visible
+ * `org.qtproject.qt.android.QtWindow` under Qt's root layout, found again when it leaves the window) relative to the
+ * host turns them into host pixels, and is read again on that view's layout changes, before each request and for each
+ * structure. Without it a request is skipped; Qt's next focus entry asks again.
+ *
+ * A fill goes back to Qt in one [DsdNative.nativeSignInFilled] call, under the token live when the framework filled.
+ * Nothing on this path logs a value: a failure is recorded in [HostDiagnostics] by its exception's class name only.
+ * Main thread, apart from the entry points Qt calls.
+ */
+object SignInAutofill {
+    private const val QT_WINDOW_CLASS = "org.qtproject.qt.android.QtWindow"
+
+    private val main = Handler(Looper.getMainLooper())
+    private val slot = ActivitySlot<Activity>()
+    private val state = SignInAutofillState()
+    private var host: Host? = null
+    private var qtWindow: View? = null
+    private val qtWindowLayout = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> guarded { refreshOrigin() } }
+
+    /** A sign-in form was shown: session [token] starts, and any older one is over. */
+    @JvmStatic
+    fun begin(token: Int) {
+        post { execute { state.begin(token) } }
+    }
+
+    /** Field [vid] as it is now, in Qt window pixels; [value] is the username's text, empty for the password. */
+    @JvmStatic
+    fun field(token: Int, vid: Int, left: Int, top: Int, width: Int, height: Int, visible: Boolean, focused: Boolean,
+              value: String?) {
+        val rect = SignInAutofillState.Rect(left, top, width, height)
+        post { execute { state.field(token, vid, rect, visible, focused, value.orEmpty()) } }
+    }
+
+    /** Field [vid] has focus and has been still: ask the password manager to fill it. */
+    @JvmStatic
+    fun request(token: Int, vid: Int, left: Int, top: Int, width: Int, height: Int) {
+        val rect = SignInAutofillState.Rect(left, top, width, height)
+        post {
+            refreshOrigin()
+            execute { enabled -> state.request(token, vid, rect, enabled) }
+        }
+    }
+
+    /** RadioReference accepted these credentials: the password manager may offer to save them. */
+    @JvmStatic
+    fun commit(token: Int, username: String?, password: String?) {
+        post { execute { state.commit(token, username.orEmpty(), password.orEmpty()) } }
+    }
+
+    /** The form of session [token] left the screen. */
+    @JvmStatic
+    fun end(token: Int) {
+        post { execute { state.end(token) } }
+    }
+
+    /** Right after the activity's `super.onCreate()`, which set Qt's layout as the content view. */
+    fun attach(activity: Activity) {
+        guarded {
+            val content = activity.findViewById<ViewGroup>(android.R.id.content)
+            if (content != null) {
+                removeHost()
+                val view = Host(activity)
+                content.addView(view, 0, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT))
+                host = view
+                slot.attach(activity)
+            }
+        }
+    }
+
+    /** The service may have been turned on or off while the app was away. */
+    fun onResume(activity: Activity) {
+        guarded {
+            if (slot.current === activity) {
+                state.resumed(host?.let(::enabledManager) != null)
+            }
+        }
+    }
+
+    /** The activity is going: a framework session still open is cancelled, and the form is forgotten. */
+    fun detach(activity: Activity) {
+        guarded {
+            if (slot.current === activity) {
+                execute { state.end(state.token) }
+                slot.detach(activity)
+                removeHost()
+            }
+        }
+    }
+
+    private fun post(block: () -> Unit) {
+        main.post { guarded(block) }
+    }
+
+    private fun guarded(block: () -> Unit) {
+        try {
+            block()
+        } catch (e: RuntimeException) {
+            HostDiagnostics.submit("sign-in autofill: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** Runs [event] with whether the service takes calls now, and carries out its effects if it does. */
+    private fun execute(event: (enabled: Boolean) -> List<Effect>) {
+        val view = host
+        val manager = view?.let(::enabledManager)
+        if (view == null || manager == null) {
+            state.disabled()
+            event(false)
+            return
+        }
+        event(true).forEach { apply(manager, view, it) }
+    }
+
+    private fun enabledManager(view: View): AutofillManager? =
+        view.context.getSystemService(AutofillManager::class.java)?.takeIf { it.isEnabled }
+
+    private fun apply(manager: AutofillManager, view: View, effect: Effect) {
+        when (effect) {
+            is Effect.Request -> manager.requestAutofill(view, effect.vid, onScreen(view, effect.rect))
+            is Effect.Exit -> manager.notifyViewExited(view, effect.vid)
+            is Effect.Value -> manager.notifyValueChanged(view, effect.vid, AutofillValue.forText(effect.text))
+            is Effect.Visibility -> manager.notifyViewVisibilityChanged(view, effect.vid, effect.visible)
+            Effect.Commit -> manager.commit()
+            Effect.Cancel -> manager.cancel()
+        }
+    }
+
+    /** A host-pixel rect in absolute screen coordinates, as requestAutofill() takes it. */
+    private fun onScreen(view: View, rect: SignInAutofillState.Rect): Rect {
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        val left = rect.left + location[0]
+        val top = rect.top + location[1]
+        return Rect(left, top, left + rect.width, top + rect.height)
+    }
+
+    /** The Qt window's origin relative to the host, or none while either is not laid out. */
+    private fun refreshOrigin() {
+        val view = host
+        val window = view?.let(::qtWindowView)
+        if (view == null || window == null || !view.isLaidOut || !window.isLaidOut) {
+            state.origin(null)
+            return
+        }
+        val hostLocation = IntArray(2)
+        val windowLocation = IntArray(2)
+        view.getLocationOnScreen(hostLocation)
+        window.getLocationOnScreen(windowLocation)
+        state.origin(SignInAutofillState.Offset(windowLocation[0] - hostLocation[0], windowLocation[1] - hostLocation[1]))
+    }
+
+    /** The cached Qt window view, or the largest visible one under Qt's root layout once that left the window. */
+    private fun qtWindowView(view: Host): View? {
+        qtWindow?.let { cached ->
+            if (cached.isAttachedToWindow && cached.isShown) {
+                return cached
+            }
+        }
+        forgetQtWindow()
+        val content = view.parent as? ViewGroup ?: return null
+        var best: View? = null
+        var bestArea = -1L
+        for (i in 0 until content.childCount) {
+            val layout = content.getChildAt(i) as? ViewGroup ?: continue
+            for (j in 0 until layout.childCount) {
+                val child = layout.getChildAt(j)
+                val area = child.width.toLong() * child.height
+                if (child.javaClass.name == QT_WINDOW_CLASS && child.isShown && area > bestArea) {
+                    best = child
+                    bestArea = area
+                }
+            }
+        }
+        best?.addOnLayoutChangeListener(qtWindowLayout)
+        qtWindow = best
+        return best
+    }
+
+    private fun forgetQtWindow() {
+        qtWindow?.removeOnLayoutChangeListener(qtWindowLayout)
+        qtWindow = null
+    }
+
+    private fun removeHost() {
+        forgetQtWindow()
+        host?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        host = null
+        state.origin(null)
+    }
+
+    private fun provideStructure(view: Host, structure: ViewStructure) {
+        if (host !== view) {
+            return
+        }
+        refreshOrigin()
+        val children = state.structure()
+        val parent = structure.autofillId
+        if (children.isEmpty() || parent == null) {
+            return
+        }
+        val first = structure.addChildCount(children.size)
+        children.forEachIndexed { index, field ->
+            val child = structure.newChild(first + index)
+            val username = field.vid == USERNAME
+            child.setAutofillId(parent, field.vid)
+            child.setAutofillType(View.AUTOFILL_TYPE_TEXT)
+            child.setAutofillHints(arrayOf(if (username) View.AUTOFILL_HINT_USERNAME else View.AUTOFILL_HINT_PASSWORD))
+            // The password's is always empty: the state never holds one.
+            child.setAutofillValue(AutofillValue.forText(field.value))
+            child.setDimens(field.rect.left, field.rect.top, 0, 0, field.rect.width, field.rect.height)
+            child.setVisibility(if (field.visible) View.VISIBLE else View.INVISIBLE)
+            child.setClassName("android.widget.EditText")
+            child.setInputType(
+                if (username) InputType.TYPE_CLASS_TEXT
+                else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            )
+            child.setDataIsSensitive(true)
+            child.setHint(if (username) "Username" else "Password")
+            child.setId(field.vid, view.context.packageName, null, if (username) "username" else "password")
+            child.setFocused(field.focused)
+        }
+    }
+
+    /** One fill, for the token live now, back to Qt in a single call. */
+    private fun fill(view: Host, values: SparseArray<AutofillValue>) {
+        val token = state.token
+        if (host !== view || token == 0) {
+            return
+        }
+        val username = values.get(USERNAME)?.takeIf { it.isText }?.textValue?.toString()
+        val password = values.get(PASSWORD)?.takeIf { it.isText }?.textValue?.toString()
+        if (username == null && password == null) {
+            return
+        }
+        try {
+            DsdNative.nativeSignInFilled(token, username != null, username, password != null, password)
+        } catch (e: LinkageError) {
+            HostDiagnostics.submit("sign-in autofill: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** The virtual form's host view; see [SignInAutofill]. */
+    private class Host(context: Context) : View(context) {
+        init {
+            isFocusable = false
+            isFocusableInTouchMode = false
+            isClickable = false
+            isLongClickable = false
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+            importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
+            setWillNotDraw(true)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean = false
+
+        override fun onProvideAutofillVirtualStructure(structure: ViewStructure, flags: Int) {
+            guarded { provideStructure(this, structure) }
+        }
+
+        override fun isVisibleToUserForAutofill(virtualId: Int): Boolean = host === this && state.isVisible(virtualId)
+
+        override fun autofill(values: SparseArray<AutofillValue>) {
+            guarded { fill(this, values) }
+        }
+    }
+}

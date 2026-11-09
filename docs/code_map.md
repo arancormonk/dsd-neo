@@ -12415,8 +12415,8 @@ Qt Quick frontend (`src/ui/qt`):
   credential. Password managers: `sign_in_autofill.{h,cpp}` (`SignInAutofill`, the `signInAutofill` context object,
   built in `qt_ui.cpp` over the host, the model and AppPrefs) describes the sign-in form to the platform's autofill
   support through `DecoderHost`'s no-op `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` virtuals (in the plain
-  `public:` section, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, the
-  desktop does nothing). Field 1 is the username, field 2 the password, whose structure value is always empty.
+  `public:` section, not slots: QML reaches every slot and signal of `decoderHost`; Android implements them, "Sign-in
+  autofill" under Android foundation integration contracts; the desktop does nothing). Field 1 is the username, field 2 the password, whose structure value is always empty.
   `begin()` hands out a token (positive, only growing) and retires the older one; every call and fill carries it, and
   any other token is dropped. `track(token, field, input, visible)` follows a field's inner TextInput through a
   `QPointer` (focus from `hasActiveFocus()`), and `note()` sets the username's structure value. A rect is the input's
@@ -13549,6 +13549,53 @@ thread, which the rest of the interface never is.
   (`DocumentTransfer.kt` with no stubs, `DocumentCopies.kt` against provider stubs). Real providers, JNI and
   `finishAndRemoveTask()` need a device or emulator.
 
+#### Sign-in autofill (password managers)
+
+Qt 6.11.3 draws its own text fields and exposes nothing to Android's Autofill Framework, so the app describes the
+RadioReference sign-in form itself (the relay, `SignInAutofill` in `src/ui/qt`, is under UI, Qt):
+
+- `DecoderHostAndroid`'s `signInAutofillBegin`/`Field`/`Request`/`Commit`/`End` overrides (`decoder_host_android.cpp`,
+  JNI only) call `SignInAutofill.kt`'s `@JvmStatic` `begin(int)`, `field(int, int, int, int, int, int, boolean,
+  boolean, String)`, `request(int, int, int, int, int, int)`, `commit(int, String, String)` and `end(int)`, kept by
+  `proguard-rules.pro`. A rect goes as its window pixels (x, y, width, height); each string goes as a local ref deleted
+  right after the call, so the committed password's Java copy is let go of at once.
+- `SignInAutofill.kt` posts each call to the main looper in order and hands `SignInAutofillState.kt` (plain Kotlin) the
+  event; the effects it returns (`Request`, `Exit`, `Value`, `Commit`, `Cancel`, `Visibility`) run there against the
+  attached activity's `AutofillManager`, read at that moment: with no host, no manager or `!isEnabled()` the state is
+  told `disabled()` instead (the framework session flag drops, the snapshot stays). The state's rules: stale tokens
+  (any but the live one; tokens only grow) do nothing; a request goes out only for a shown field, with the service on
+  and the Qt window's origin known, and starts the framework session; focus loss exits, commit reports both values,
+  commits and hides both fields, and end cancels, each in a started session only; a request after a commit starts a
+  new session under the same token. A commit's calls run in one posted operation.
+- The host view is the activity content's first child (`android.R.id.content`, `MATCH_PARENT`, behind Qt's
+  `QtRootLayout`, which `super.onCreate()` set as the content view): childless, not focusable or clickable, no touches,
+  `IMPORTANT_FOR_ACCESSIBILITY_NO`, `IMPORTANT_FOR_AUTOFILL_YES`, no drawing. Never focused, so `requestAutofill()` adds
+  `FLAG_VIEW_NOT_FOCUSED` and the framework shows its dropdown instead of waiting for keyboard suggestions, which match
+  only the view the keyboard serves (Qt's `QtEditText`). `onProvideAutofillVirtualStructure()` gives the live form's
+  fields as children 1 (username) and 2 (password): `AUTOFILL_TYPE_TEXT`, the username/password hint, the structure
+  value (the password's always empty), host-pixel dimens, visibility, `android.widget.EditText`, the text or password
+  input type, `setDataIsSensitive(true)`, a hint, `setId(vid, package, null, "username"|"password")` and focus; no web
+  domain. `isVisibleToUserForAutofill()` reads the snapshot; `autofill()` makes one
+  `DsdNative.nativeSignInFilled(token, hasUser, user, hasPass, pass)` call under the token live then.
+- Origin: Qt's rects are its window's pixels; the largest visible view of class `org.qtproject.qt.android.QtWindow`
+  under Qt's root layout (looked up again once it leaves the window or hides, with an `OnLayoutChangeListener`) gives
+  the offset to host pixels, read again before each request and each structure. Unknown, a request is skipped; Qt's
+  next focus entry asks again.
+- `DsdNeoActivity` attaches the host right after the launch statements (`LaunchGuard.afterQt()`), re-reads the service
+  on resume, and detaches on destroy, cancelling a session still open (Qt's relay sends no end at exit); detach goes
+  through `ActivitySlot`.
+- A fill: `nativeSignInFilled` (`dsdneo_jni.cpp`) copies each string's UTF-16 units into a QString through a native
+  buffer cleared with `DSD_SECURE_ZERO`, and `DecoderHostAndroid::postSignInFill()`
+  (`decoder_host_android_sign_in.cpp`) queues them, under one mutex, to the newest live host (a `SignInFillLink` member
+  registers each host from construction to destruction), which calls `deliverSignInFill()` on the GUI thread. No
+  host, or one gone before the call runs: the strings are scrubbed and dropped.
+- Privacy: no value is logged on this path; an exception is recorded in `HostDiagnostics` by class name only, and an
+  effect's `toString()` leaves the text out.
+- Tests: `ANDROID_SIGN_IN_AUTOFILL_JVM` (`SignInAutofillStateTest.kt`: every rule above, the origin, the structure
+  and the commit order); `UI_QT_ANDROID_HOST` (a fill from another thread reaches the newest live host's sink once, on
+  the GUI thread, and a host gone first drops it); `tools/check_android_r8.py` (the upcalls and `nativeSignInFilled`
+  in the release DEX). The framework itself needs an emulator or device.
+
 #### Accessibility bridge (issue #782)
 
 Qt 6.11.3 turns its Android accessibility bridge on whenever any accessibility service is enabled, and with the bridge
@@ -13656,7 +13703,10 @@ its source:
 - it is registered, and called when accessibility is enabled, synchronously inside `super.onCreate()`;
 - enabling the bridge mid-session is unsafe (QTBUG-144911; fixed upstream in 6.12.1, not in 6.11.3);
 - a second activity instance restarts the process (`QtActivityBase.onCreate()` → `restartApplication()`);
-- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below).
+- the bridge is one plain `android.view.View` that Qt adds as the last child of its root layout (the probe below);
+- `super.onCreate()` sets Qt's root layout as the content view, and Qt's window view is the class
+  `org.qtproject.qt.android.QtWindow` under it ("Sign-in autofill" above; the app's own host is the content's first
+  child, an app class, not the bridge).
 
 What trips: bumping `ANDROID_QT_VERSION` in `tools/ci-dependency-pins.env` fails `ANDROID_A11Y_BRIDGE_JVM`
 (`launch_policy()`) until `LaunchGuard.QT_RESTART` names the new version. Change that text only once the checks below
