@@ -12779,7 +12779,9 @@ Qt Quick frontend (`src/ui/qt`):
   names): the same notice posted again stays hidden, a changed one shows again. `takeUnheard()` hands over the shown
   notices not yet read out and marks them, with the same key, so each is announced once for the process: a
   dismissal, a second file or a rebuilt Home (a new QML engine) repeats nothing. The card is one `AlertMessage` named
-  by all its text, navigation-gated, its lines plain `Text`; it announces from a `Timer` it owns, not `Qt.callLater`;
+  by all its text, navigation-gated, its lines plain `Text`; it announces from a `Timer` it owns, not `Qt.callLater`,
+  and only while navigation reaches it: under a sheet it neither takes nor announces anything, and it announces what
+  arrived meanwhile once navigation is allowed again (`test_k_covered_notice_waits_for_home`);
   Dismiss dismisses every shown file. Its `source` is `storeNotices` (a test may hand it another list). Labels come
   from `Util.storeLabel()`, which the backup refusal uses too, so a file has one name: the avoid file is "Signal
   search permanent avoids" on Home, in the backup message and on the Signal search screen. Its copy never promises

@@ -219,6 +219,24 @@ Item {
             verify(!c.Accessible.ignored);
         }
 
+        // A notice that arrives while a sheet covers Home is neither read out nor marked heard under the sheet: it is
+        // read out once, when Home is reachable again.
+        function test_k_covered_notice_waits_for_home() {
+            var c = card();
+            var before = c.announcements;
+            cover.visible = true;
+            tryCompare(c, "navigationAllowed", false);
+            testContext.postStoreNotice("call_history.json", "call_history.json.unreadable-9");
+            waitForNotices(1);
+            wait(50);
+            compare(c.announcements, before, "nothing is read out under the sheet");
+            cover.visible = false;
+            tryCompare(c, "navigationAllowed", true);
+            tryCompare(c, "announcements", before + 1);
+            wait(50);
+            compare(c.announcements, before + 1, "read out once");
+        }
+
         // Settings that couldn't be kept run on a scratch copy: what is changed now isn't saved, whether or not the
         // file was renamed aside before the write failed. Dismiss reaches the list the card shows.
         function test_i_settings_on_scratch() {

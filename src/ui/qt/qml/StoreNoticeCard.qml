@@ -59,8 +59,10 @@ UiPanel {
     }
     // Each notice is read out once for the process: the list marks what it
     // hands over, so a dismissal, a second file or a rebuilt Home repeats nothing.
+    // Not while a sheet covers Home: nothing is taken or said under it, and
+    // what arrived meanwhile is read out once Home is reachable again.
     function announceNew() {
-        if (!visible || !source)
+        if (!visible || !source || !navigationAllowed)
             return;
         var fresh = source.takeUnheard();
         if (!fresh.length)
@@ -86,6 +88,7 @@ UiPanel {
     }
     onSpeechChanged: announceLater.restart()
     onVisibleChanged: announceLater.restart()
+    onNavigationAllowedChanged: announceLater.restart()
     Component.onCompleted: announceLater.restart()
 
     Column {
