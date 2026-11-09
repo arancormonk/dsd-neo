@@ -12539,7 +12539,8 @@ Qt Quick frontend (`src/ui/qt`):
   `copyName`, `copyBytes` and `copyTotal` (-1 unknown) come from `ImportService::progress(id)`, read every 250 ms while
   it runs, and `progressChanged` fires only on a change. The manifest `<AppData>/replay_copies.json` (`[{path, state}]`,
   Qt thread)
-  lists every copy the store made, pending or kept. `SavedSystemsModel` (given the store by `setReplayStore()`) adopts a
+  lists every copy the store made, pending or kept; it records a copy's chosen name before the copy leaves staging, and
+  only `ReplayStore` writes in `replays/`, so a name taken by another writer is not guarded against. `SavedSystemsModel` (given the store by `setReplayStore()`) adopts a
   copy (pending → kept) before it saves a system that newly names it, refusing the save when that cannot be written, and
   releases one (kept → pending) only after the save of the remove or edit that left no system naming it (canonical
   compare); a release that fails keeps the copy. `qt_ui.cpp`'s `load_replays()` makes the store after the saved systems
