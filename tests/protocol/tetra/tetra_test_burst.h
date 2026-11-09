@@ -9,6 +9,9 @@
  *   puncturing and interleaving tables are the library's, which test_air_chain_vector.c checks against a fixed vector.
  * - The AACH (clause 8.3.1.1): the (30,14) Reed-Muller codeword of the library's encoder, which test_tetra_aach.c
  *   checks against words received off air, scrambled here.
+ * - Full-slot speech, TCH/S on an NTS1 burst (EN 300 395-2 clause 5.5): the class-2 CRC and parity bit, the rate-1/3
+ *   speech mother code and the matrix interleaving are written out here from the standard; the 8/12 and 8/18
+ *   puncturing tables are the library's.
  *
  * Scrambling seeds are in the decoder's register form (tetra_compute_scramb_seed()): p(-31) and p(-30) in bits 0 and
  * 1, the extended colour code e(30) to e(1) in bits 2 to 31. ttb_seed() makes one from the network and colour code.
@@ -31,6 +34,7 @@ enum {
     TTB_BLOCK_DIBITS = 108, /* a half-slot block: SB block 2, an NTS2 block, half an NTS1 block */
     TTB_AACH_DIBITS = 15,   /* the AACH: 7 in half 1 before the training sequence, 8 in half 2 after it */
     TTB_CODED_MAX = 432,
+    TTB_TCH_FS_BITS = 274, /* full-slot speech type-1 bits: 102 class 0, 112 class 1, 60 class 2 (table 5 order) */
 };
 
 /* The scrambling seed of network @p mcc / @p mnc and colour code @p colour (clause 8.2.5.2): e(1) to e(30) are the MCC,
@@ -164,6 +168,81 @@ ttb_encode_aach(uint16_t pdu, uint32_t error, uint32_t seed, uint8_t* dibits) {
         bits[i] = (uint8_t)((word >> (29 - i)) & 1u);
     }
     ttb_scramble_to_dibits(bits, 30, seed, dibits);
+}
+
+/* The seven CRC bits of full-slot speech class 2 (EN 300 395-2 clause 5.5.1, equations 43 to 45): F(X) = X^7 I(X)
+ * mod G(X) with G(X) = 1 + X^3 + X^7 and I(X) = C(1) + C(2) X + ... + C(60) X^59, f(i) the coefficient of X^i, sent
+ * as b(i + 1). */
+static inline void
+ttb_speech_full_crc(const uint8_t* class2, uint8_t* crc) {
+    uint8_t rem[60 + 7] = {0}; /* X^7 I(X): coefficient k of X^k */
+    for (int k = 0; k < 60; k++) {
+        rem[k + 7] = (uint8_t)(class2[k] & 1u);
+    }
+    for (int k = 60 + 7 - 1; k >= 7; k--) {
+        if (rem[k]) { /* subtract X^(k-7) G(X) */
+            rem[k] ^= 1u;
+            rem[k - 7 + 3] ^= 1u;
+            rem[k - 7] ^= 1u;
+        }
+    }
+    DSD_MEMCPY(crc, rem, 7);
+}
+
+/* Full-slot speech (EN 300 395-2 clause 5.5): @p speech's 274 type-1 bits (TTB_TCH_FS_BITS, table 5 order), the class-2
+ * CRC and parity bit and four tail bits, class 1 coded at rate 8/12 and the rest at 8/18 from one rate-1/3 trellis,
+ * class 0 sent uncoded before them, matrix interleaved and scrambled with @p seed: the 216 dibits of an NTS1 burst's
+ * two blocks. */
+static inline void
+ttb_encode_tch_fs(const uint8_t* speech, uint32_t seed, uint8_t* dibits) {
+    enum { CLASS0 = 102, CLASS1 = 112, CLASS2 = 60, CODED_IN = CLASS1 + CLASS2 + 8 + 4, C1_CODED = 168 };
+
+    uint8_t in[CODED_IN] = {0};
+    DSD_MEMCPY(in, speech + CLASS0, CLASS1 + CLASS2);
+    uint8_t* const parity = in + CLASS1 + CLASS2;
+    ttb_speech_full_crc(speech + CLASS0 + CLASS1, parity);
+    uint8_t sum = 0;
+    for (int i = 0; i < CLASS2; i++) {
+        sum ^= (uint8_t)(speech[CLASS0 + CLASS1 + i] & 1u);
+    }
+    for (int i = 0; i < 7; i++) {
+        sum ^= parity[i];
+    }
+    parity[7] = sum; /* b8: class 2 and the CRC bits sum to 0 with it */
+    /* Clause 5.4.3.1: G1 = 1 + D + D^2 + D^3 + D^4, G2 = 1 + D + D^3 + D^4, G3 = 1 + D^2 + D^4. */
+    uint8_t mother[CODED_IN * 3];
+    uint8_t d1 = 0;
+    uint8_t d2 = 0;
+    uint8_t d3 = 0;
+    uint8_t d4 = 0;
+    for (size_t i = 0; i < (size_t)CODED_IN; i++) {
+        const uint8_t b = (uint8_t)(in[i] & 1u);
+        mother[(i * 3U) + 0U] = (uint8_t)(b ^ d1 ^ d2 ^ d3 ^ d4);
+        mother[(i * 3U) + 1U] = (uint8_t)(b ^ d1 ^ d3 ^ d4);
+        mother[(i * 3U) + 2U] = (uint8_t)(b ^ d2 ^ d4);
+        d4 = d3;
+        d3 = d2;
+        d2 = d1;
+        d1 = b;
+    }
+    uint8_t type3[TTB_CODED_MAX];
+    for (int i = 0; i < CLASS0; i++) {
+        type3[i] = (uint8_t)(speech[i] & 1u);
+    }
+    int n = tetra_rcpc_puncture_by_id(TETRA_RCPC_PUNCT_SPEECH_8_12, mother, CLASS1 * 3, type3 + CLASS0, C1_CODED);
+    assert(n == C1_CODED);
+    n = tetra_rcpc_puncture_by_id(TETRA_RCPC_PUNCT_SPEECH_8_18, mother + (CLASS1 * 3), (CODED_IN - CLASS1) * 3,
+                                  type3 + CLASS0 + C1_CODED, TTB_CODED_MAX - CLASS0 - C1_CODED);
+    assert(n == TTB_CODED_MAX - CLASS0 - C1_CODED);
+    /* Clause 5.5.3: the 432 bits written into a matrix of 24 lines and 18 columns line by line, read column by
+     * column: C4(i * 24 + j) = C3(j * 18 + i). */
+    uint8_t type4[TTB_CODED_MAX];
+    for (int i = 0; i < 18; i++) {
+        for (int j = 0; j < 24; j++) {
+            type4[(i * 24) + j] = type3[(j * 18) + i];
+        }
+    }
+    ttb_scramble_to_dibits(type4, TTB_CODED_MAX, seed, dibits);
 }
 
 #endif /* DSD_NEO_TESTS_PROTOCOL_TETRA_TETRA_TEST_BURST_H_ */

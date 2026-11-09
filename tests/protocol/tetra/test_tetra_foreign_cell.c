@@ -1710,6 +1710,56 @@ test_live_home_carrier_keeps_a_silent_call(void) {
     close_session(&s);
 }
 
+/* An NTS1 normal downlink burst in the next slot of timeslot @p tn: a full-slot speech frame pair through the test
+ * transmit chain (TCH/S, a fixed pattern) scrambled with @p seed, its AACH not captured. */
+static void
+speech_burst_on_air(session* s, uint8_t tn, uint32_t seed) {
+    uint8_t speech[TTB_TCH_FS_BITS];
+    for (int i = 0; i < TTB_TCH_FS_BITS; i++) {
+        speech[i] = (uint8_t)(((i * 7) + (i / 5)) & 1);
+    }
+    uint8_t slot[2 * TTB_BLOCK_DIBITS];
+    ttb_encode_tch_fs(speech, seed, slot);
+    in_next_slot(s, tn);
+    (void)ndb_on_air(s, 0, slot, slot + TTB_BLOCK_DIBITS);
+}
+
+/* Speech whose CRC passed is the home cell's evidence on the followed carrier as its signalling is
+ * (tetra_nb_speech_decoded()): the home's speech on another timeslot of the carrier, through the real full-slot speech
+ * decode, keeps a silent call's channel, which the call's marker in the AACH maintains, past TETRA_SM_GRANT_TIMEOUT_S
+ * after the home's last SYNC, and the grant timeout returns home that long after the last speech. The same speech
+ * scrambled with the other cell's colour code is no such evidence (regression: with no speech stamp the call went home
+ * 4 s after the SYNC). */
+static void
+test_home_speech_keeps_a_silent_call(void) {
+    reset_backend();
+    session s = open_on(&k_vec_home, 0);
+    follow_marked(&s);
+    const tetra_state_t* const ts = tetra_st_peek(s.state);
+    const double sync_m = ts->sm.t_home_crc_m;
+    advance(&s, 0.25);
+    speech_burst_on_air(&s, 3U, seed_of(&k_vec_other));
+    assert(same_time(ts->sm.t_home_crc_m, sync_m));
+    for (int i = 1; i <= 40; i++) {
+        advance(&s, 0.25);
+        if (i % 4 == 0) {
+            speech_burst_on_air(&s, 3U, seed_of(&k_vec_home));
+            assert(same_time(ts->sm.t_home_crc_m, dsd_decode_now_mono_s()));
+        }
+        aach_on_air(&s, VEC_HOME_READS, seed_of(&k_vec_home));
+        tetra_sm_tick(s.opts, s.state);
+        assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    }
+    assert(ts->sm.t_voice_m <= 0.0); /* none of it the followed call's speech */
+    advance(&s, TETRA_SM_GRANT_TIMEOUT_S - 0.01);
+    tetra_sm_tick(s.opts, s.state);
+    assert(tetra_sm_get_state(s.state) == TETRA_SM_TUNED && g_returns == 0);
+    advance(&s, 0.01);
+    tetra_sm_tick(s.opts, s.state);
+    assert_back_home(&s, 1);
+    close_session(&s);
+}
+
 /* Adverse AACH evidence is the standard's own rule and stays as on main: three ACCESS-ASSIGN PDUs saying the channel
  * went back to common control (header 00, N.208) end a speaking call and return home, the home cell's last CRC evidence
  * 5 s old. So do three of the other cell's that read that way under the home's scrambling (a documented limit: as
@@ -1762,6 +1812,7 @@ main(void) {
     test_aach_run_needs_home_evidence();
     test_rx_perm_lapses_without_home_evidence();
     test_live_home_carrier_keeps_a_silent_call();
+    test_home_speech_keeps_a_silent_call();
     test_adverse_aach_ends_the_call();
     printf("TETRA foreign cell: OK\n");
     return 0;

@@ -10196,7 +10196,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   - The AACH. Within 4 s of the home evidence another cell's AACH words still count for maintenance and N.213, and
     adverse ones can end a live call early (N.208; the follow then returns home) or mute it (N.212), as noise can.
     Speech counts as home evidence on its CRC and the speech decoder's re-encode check (`TETRA_TCH_MAX_MISMATCH`,
-    `TETRA_HALF_MAX_MISMATCH`), which no test drives with encoded speech bursts: there is no TCH encoder.
+    `TETRA_HALF_MAX_MISMATCH`); `PROTOCOL_TETRA_FOREIGN_CELL` drives it with full-slot speech bursts from the test
+    transmit chain (`ttb_encode_tch_fs()`), and half-slot speech only through code review.
   - Direct mode and another cell's BSCH. A guarded DSB is consumed, but `tetra_sb_bsch()` still leaves direct mode
     (`tetra_dmo_leave()`) before it parses a BSCH that turns out another cell's. Direct mode on a guarded carrier exists
     only when it was taken on with trunking off, and then trunking on again returns home at once.
