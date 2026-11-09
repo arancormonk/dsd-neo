@@ -725,10 +725,11 @@ static void
 widen_code(const rtl_device_test_conversion& c, int fs4, int phase, unsigned char code, int component, float* out) {
     unsigned char raw[8] = {128U, 128U, 128U, 128U, 128U, 128U, 128U, 128U};
     float widened[8];
-    raw[2 * phase + component] = code;
-    assert(rtl_device_test_widen_cu8(&c, fs4, raw, 2 * (size_t)phase + 2, widened) == 0);
-    out[0] = widened[2 * phase];
-    out[1] = widened[2 * phase + 1];
+    const size_t at = 2U * (size_t)phase; // the pair's first component
+    raw[at + (size_t)component] = code;
+    assert(rtl_device_test_widen_cu8(&c, fs4, raw, at + 2U, widened) == 0);
+    out[0] = widened[at];
+    out[1] = widened[at + 1U];
 }
 
 /* The clip level each source sets: a cu8 conversion's rails count and the codes next to them do not, except byte 1 of
