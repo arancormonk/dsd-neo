@@ -245,12 +245,16 @@ _Static_assert(offsetof(dsd_state, lcn_scan_entry_hold) >= offsetof(dsd_state, t
 _Static_assert(offsetof(dsd_state, trunk_scan_paused) >= offsetof(dsd_state, trunk_scan_active_id)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_paused) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
                "trunk_scan_paused must ride the vertex_ks_count..ui_msg range");
-/* The trunk-scan lists (issue #697): the inline table, the list on air and the rotation counts every frontend's list
- * readout and toggle rows read. */
+/* The trunk-scan lists (issue #697): the inline table, the list on air and every list holding its target, the rotation
+ * counts and the distinct targets per set of lists every frontend's list readout and toggle rows read. */
 _Static_assert(offsetof(dsd_state, trunk_scan_list_count) >= offsetof(dsd_state, trunk_scan_active_id)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_lists) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
+                   && offsetof(dsd_state, trunk_scan_membership_counts) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_membership_counts) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
                    && offsetof(dsd_state, trunk_scan_active_list) >= offsetof(dsd_state, trunk_scan_active_id)
                    && offsetof(dsd_state, trunk_scan_active_list_off) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && offsetof(dsd_state, trunk_scan_active_lists) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_active_lists) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq)
                    && offsetof(dsd_state, trunk_scan_rotation_ordinal) >= offsetof(dsd_state, trunk_scan_active_id)
                    && offsetof(dsd_state, trunk_scan_rotation_count) >= offsetof(dsd_state, trunk_scan_active_id)
                    && UI_SNAPSHOT_FIELD_END(trunk_scan_lists_seq) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),

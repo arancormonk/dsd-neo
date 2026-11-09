@@ -106,13 +106,14 @@ scan_list_row_enabled(int i) {
     return dsd_app_scan_list_row_on(&g_modal.rows[i], &g_modal.view, i);
 }
 
-static int
-scan_list_modal_lists_on(void) {
-    int on = 0;
+/* The lists the rows show on, as a mask (bit N-1: list N). */
+static unsigned int
+scan_list_modal_on_mask(void) {
+    unsigned int mask = 0U;
     for (int i = 0; i < (int)g_modal.view.list_count; i++) {
-        on += scan_list_row_enabled(i);
+        mask |= scan_list_row_enabled(i) ? 1U << i : 0U;
     }
-    return on;
+    return mask;
 }
 
 /* ---- Row text ---- */
@@ -220,19 +221,21 @@ scan_list_format_row(int row, const ScanListColumns* cols, char* out, size_t out
     }
 }
 
-/* "Scan lists (2 of 3 on, 14 targets)"; while paused the count matters less than why nothing switches. */
+/* "Scan lists (2 of 3 on, 14 targets)": the targets of the lists the rows show on, a target several of them hold
+   counted once; while paused the count matters less than why nothing switches. */
 static void
 scan_list_format_title(char* out, size_t out_size) {
-    const int on = scan_list_modal_lists_on();
+    const unsigned int on_mask = scan_list_modal_on_mask();
+    unsigned int on = 0U;
+    for (unsigned int m = on_mask; m != 0U; m &= m - 1U) {
+        on++;
+    }
     if (g_modal.view.paused) {
-        DSD_SNPRINTF(out, out_size, "Scan lists (%d of %u on, scan paused)", on, (unsigned)g_modal.view.list_count);
+        DSD_SNPRINTF(out, out_size, "Scan lists (%u of %u on, scan paused)", on, (unsigned)g_modal.view.list_count);
         return;
     }
-    unsigned int targets = 0U;
-    for (int i = 0; i < (int)g_modal.view.list_count; i++) {
-        targets += scan_list_row_enabled(i) ? g_modal.view.lists[i].targets : 0U;
-    }
-    DSD_SNPRINTF(out, out_size, "Scan lists (%d of %u on, %u %s)", on, (unsigned)g_modal.view.list_count, targets,
+    const unsigned int targets = dsd_app_scan_list_view_targets_on(&g_modal.view, on_mask);
+    DSD_SNPRINTF(out, out_size, "Scan lists (%u of %u on, %u %s)", on, (unsigned)g_modal.view.list_count, targets,
                  targets == 1U ? "target" : "targets");
 }
 

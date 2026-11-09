@@ -15,10 +15,12 @@ extern "C" {
  * profiles) are not opened or checked for readability. Parsed key storage is erased before returning. */
 int dsd_app_trunk_scan_validate_targets_csv(const char* path, int* target_count, char* err, size_t err_sz);
 
-/** The same for the lists of one session (issue #697): each file through the parser, then the rules across them
- * (dsd_trunk_scan_check_target_lists(): no target id twice, the union within the target budget). Every error names
- * the file it is about, by @p names[i] (a display name, for a frontend validating private copies), or by
- * @p paths[i] when @p names is NULL. 1 to DSD_TRUNK_SCAN_MAX_LISTS lists; @p target_count is their total. */
+/** The same for the lists of one session (issue #697): each file through the parser, then the engine's rule across
+ * them (dsd_trunk_scan_check_target_lists(): a row whose id an earlier list holds is that target, shared, when every
+ * setting is the same, and refused naming both rows and the first column that differs otherwise; the distinct targets
+ * within the target budget). Every error names the file it is about, by @p names[i] (a display name, for a frontend
+ * validating private copies), or by @p paths[i] when @p names is NULL. 1 to DSD_TRUNK_SCAN_MAX_LISTS lists;
+ * @p target_count is their distinct targets, a shared one counted once. */
 int dsd_app_trunk_scan_validate_target_lists(const char* const* paths, const char* const* names, size_t count,
                                              int* target_count, char* err, size_t err_sz);
 

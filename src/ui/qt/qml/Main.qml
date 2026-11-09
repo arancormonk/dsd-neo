@@ -1334,7 +1334,8 @@ Window {
         return names;
     }
     // The names of every entry of @a lists, merged (issue #697: a session
-    // scans several). Target ids are unique across a session's lists.
+    // scans several). A target id names one target, however many of the
+    // session's lists hold it.
     function channelNamesOfLists(lists) {
         var names = {};
         for (var list of lists) {

@@ -2624,20 +2624,28 @@ struct dsd_state {
     /* The --trunk-scan target lists (issue #697), written by the coordinator at its start, at each list switched on
      * or off and at each hop, and cleared when it detaches. trunk_scan_lists[i] is list i + 1 (its name, whether it
      * is on, and its target count); trunk_scan_lists_seq moves at every start and change of them and never repeats a
-     * value in the process. trunk_scan_active_list: the list (1-based) of the target on air, 0 when none is (paused
-     * included); trunk_scan_active_list_off: that target's list is off, so the receiver stays there only until another
-     * target can take it, as it stays on an avoided one (trunk_scan_active_avoided; either can hold, or both).
-     * trunk_scan_rotation_count: the targets of the lists that are on, avoided ones included;
-     * trunk_scan_rotation_ordinal: the target on air's 1-based position among them, 0 while its list is off or none is
-     * on air. The identity ordinal (trunk_scan_active_ordinal, the position among every loaded target) does not move
-     * when a list does. */
+     * value in the process. A target whose id several lists' files hold is one target in each of them.
+     * trunk_scan_active_list: the list (1-based) that names the target on air, the lowest-numbered list holding it
+     * that is on, else the lowest-numbered list holding it; 0 when none is on air (paused included).
+     * trunk_scan_active_lists: every list holding the target on air (bit N-1: list N), on or off; 0 when none is on
+     * air (paused included). trunk_scan_active_list_off: every list holding that target is off, so the receiver stays
+     * there only until another target can take it, as it stays on an avoided one (trunk_scan_active_avoided; either
+     * can hold, or both). trunk_scan_rotation_count: the distinct targets of the lists that are on, avoided ones
+     * included; trunk_scan_rotation_ordinal: the target on air's 1-based position among them, 0 while its lists are
+     * off or none is on air. The identity ordinal (trunk_scan_active_ordinal, the position among every loaded target)
+     * does not move when a list does. A list's targets count the ones it shares, and
+     * trunk_scan_membership_counts[m - 1] is how many distinct targets are in exactly the lists of membership mask m
+     * (bit N-1: list N): the distinct total of any set of lists sums the masks that meet it. Written at the start,
+     * since the lists' files never change while the scan runs. */
     uint8_t trunk_scan_list_count;
     uint8_t trunk_scan_active_list;
     uint8_t trunk_scan_active_list_off;
+    uint8_t trunk_scan_active_lists;
     uint16_t trunk_scan_rotation_ordinal;
     uint16_t trunk_scan_rotation_count;
     uint32_t trunk_scan_lists_seq;
     dsd_trunk_scan_list_publication trunk_scan_lists[DSD_TRUNK_SCAN_MAX_LISTS];
+    uint16_t trunk_scan_membership_counts[DSD_TRUNK_SCAN_MEMBERSHIP_MASKS];
     /* The scan row on air, for the "this channel" editors (issue #518): the scanner that owns it (dsd_scan_row_scanner,
      * 0 = none), the scan session (a new one for every trunk-scan coordinator and -Y scan, so an edit opened on one never
      * lands on the next), the row (a --trunk-scan target's index, a -Y channel map row), the session-edit fields

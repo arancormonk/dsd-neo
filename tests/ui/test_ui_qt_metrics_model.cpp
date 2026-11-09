@@ -350,8 +350,25 @@ three_lists(uint32_t seq, bool securityOn = true, bool hospitalOn = true, bool p
         view.lists[i].targets = targets[i];
         view.lists[i].has_active = i == 1 ? 1U : 0U;
         DSD_SNPRINTF(view.lists[i].name, sizeof view.lists[i].name, "%s", names[i]);
+        /* No list shares a target: each list's targets are in its own membership mask only. */
+        view.membership_counts[(1U << i) - 1U] = targets[i];
     }
     view.active_list = 2U;
+    return view;
+}
+
+/* Issue #697: the same three lists sharing targets. security's file holds 12 (s, which hospital holds too, m, which
+   municipality holds too, and 10 of its own), hospital's 1 (s, on air), municipality's 3 (m and 2 of its own). */
+static dsd_app_scan_list_view
+shared_lists(uint32_t seq, bool hospitalOn = true) {
+    dsd_app_scan_list_view view = three_lists(seq, true, hospitalOn);
+    DSD_MEMSET(view.membership_counts, 0, sizeof view.membership_counts);
+    view.membership_counts[0x1 - 1] = 10U;
+    view.membership_counts[0x3 - 1] = 1U; /* s */
+    view.membership_counts[0x5 - 1] = 1U; /* m */
+    view.membership_counts[0x4 - 1] = 2U;
+    view.lists[0].has_active = 1U;
+    view.active_list = 1U;
     return view;
 }
 
@@ -572,6 +589,52 @@ test_scan_list_toggle_session_change() {
     expect("no session, no rows", model.count() == 0 && !model.switchable() && !model.setEnabled(1, false));
 }
 
+/* Issue #697: the sheet's total counts each target once for the lists its rows show on (a switch waiting, answered
+   ahead of its snapshot, refused or answered out of order included), while each row keeps its file's count. */
+static void
+test_scan_list_toggle_shared_targets() {
+    using M = dsd_qt::ScanListToggleModel;
+    ToggleRig rig;
+    M model;
+    model.setBackend(rig.backend());
+    model.refresh(shared_lists(10));
+    expect("each row keeps its file's count", toggle_row(model, 0, M::TargetsRole).toInt() == 12
+                                                  && toggle_row(model, 1, M::TargetsRole).toInt() == 1
+                                                  && toggle_row(model, 2, M::TargetsRole).toInt() == 3);
+    expect("every list holding the target on air says so", toggle_row(model, 0, M::OnAirRole).toBool()
+                                                               && toggle_row(model, 1, M::OnAirRole).toBool()
+                                                               && !toggle_row(model, 2, M::OnAirRole).toBool());
+    expect("all on: each target once", model.listsOn() == 3 && model.targetsOn() == 14);
+
+    /* hospital off, waiting: s stays counted through security. */
+    const uint32_t hospitalOff = rig.nextRequest;
+    expect("hospital off is sent", model.setEnabled(2, false));
+    expect("waiting: s still counted once", model.listsOn() == 2 && model.targetsOn() == 14);
+    rig.answer(hospitalOff, DSD_APP_SCAN_LIST_SET_REFUSED_LAST, 10);
+    model.refresh(shared_lists(10));
+    expect("refused: back on",
+           toggle_row_is(model, 1, true, false, QStringLiteral("Nothing else to scan. Switch on another list first.")));
+    expect("refused: the total as before", model.listsOn() == 3 && model.targetsOn() == 14);
+
+    /* hospital off, then municipality off; the later answered first (busy), then hospital's ahead of its snapshot. */
+    model.refresh(shared_lists(11));
+    const uint32_t first = rig.nextRequest;
+    expect("hospital off is sent again", model.setEnabled(2, false));
+    const uint32_t second = rig.nextRequest;
+    expect("municipality off is sent", model.setEnabled(3, false));
+    expect("both waiting: security alone", model.listsOn() == 1 && model.targetsOn() == 12);
+    rig.answer(second, DSD_APP_SCAN_LIST_SET_BUSY, 11);
+    model.refresh(shared_lists(11));
+    expect("municipality back on, hospital still waiting", model.listsOn() == 2 && model.targetsOn() == 14);
+    rig.answer(first, DSD_APP_SCAN_LIST_SET_OK, 12);
+    model.refresh(shared_lists(11));
+    expect("hospital off ahead of its snapshot",
+           toggle_row_is(model, 1, false, false, QString()) && model.listsOn() == 2 && model.targetsOn() == 14);
+    model.refresh(shared_lists(12, false));
+    expect("the snapshot shows it", toggle_row_is(model, 1, false, false, QString()) && model.targetsOn() == 14
+                                        && toggle_row(model, 1, M::OnAirRole).toBool());
+}
+
 /* The header's readings and the sheet's rows from a snapshot: the lists, the list on air, and the rotation's place
    among the targets of the lists that are on. */
 static void
@@ -590,7 +653,10 @@ test_scan_list_readings() {
     state.trunk_scan_lists[0].targets = 12U;
     state.trunk_scan_lists[1].enabled = 0U;
     state.trunk_scan_lists[1].targets = 2U;
+    state.trunk_scan_membership_counts[0x1 - 1] = 12U;
+    state.trunk_scan_membership_counts[0x2 - 1] = 2U;
     state.trunk_scan_active_list = 2U;
+    state.trunk_scan_active_lists = 0x2U;
     state.trunk_scan_active_list_off = 1U;
     state.trunk_scan_rotation_ordinal = 0U;
     state.trunk_scan_rotation_count = 12U;
@@ -603,6 +669,7 @@ test_scan_list_readings() {
     expect("the rotation's place: none while its list is off",
            model.scanRotationActive() && model.scanRotationOrdinal() == 0 && model.scanRotationCount() == 12);
     state.trunk_scan_active_list = 1U;
+    state.trunk_scan_active_lists = 0x1U;
     state.trunk_scan_active_list_off = 0U;
     state.trunk_scan_rotation_ordinal = 3U;
     model.refresh(&opts, &state);
@@ -615,6 +682,25 @@ test_scan_list_readings() {
     state.trunk_scan_paused = 0U;
     expect("the sheet's rows", model.scanListModel()->count() == 2 && model.scanListModel()->listsOn() == 1
                                    && model.scanListModel()->targetsOn() == 12);
+    /* Issue #697: hospital's file holds 2, one of them a security target too, on air; both lists on. The header names
+       the list the engine publishes for it (security, the lowest on), the sheet marks both and counts it once, and the
+       rotation's count is the engine's distinct one. */
+    state.trunk_scan_lists[1].enabled = 1U;
+    state.trunk_scan_membership_counts[0x1 - 1] = 11U;
+    state.trunk_scan_membership_counts[0x2 - 1] = 1U;
+    state.trunk_scan_membership_counts[0x3 - 1] = 1U;
+    state.trunk_scan_active_lists = 0x3U;
+    state.trunk_scan_rotation_count = 13U;
+    state.trunk_scan_lists_seq = 5U;
+    model.refresh(&opts, &state);
+    using T = dsd_qt::ScanListToggleModel;
+    const T* sheet = model.scanListModel();
+    expect("a shared target on air", model.scanActiveList() == 1 && !model.scanActiveListOff()
+                                         && model.scanRotationOrdinal() == 3 && model.scanRotationCount() == 13);
+    expect("the sheet counts it once and marks both lists",
+           sheet->listsOn() == 2 && sheet->targetsOn() == 13 && sheet->data(sheet->index(0, 0), T::OnAirRole).toBool()
+               && sheet->data(sheet->index(1, 0), T::OnAirRole).toBool()
+               && sheet->data(sheet->index(1, 0), T::TargetsRole).toInt() == 2);
     model.clear();
     expect("cleared with the session", model.scanListCount() == 0 && model.scanListModel()->count() == 0);
     freeState(&state);
@@ -2847,6 +2933,7 @@ main(int argc, char** argv) {
     test_scan_list_toggle_answer_kept_past_a_gap();
     test_scan_list_toggle_gap_while_results_keep_coming();
     test_scan_list_toggle_session_change();
+    test_scan_list_toggle_shared_targets();
     test_scan_list_readings();
     test_scan_avoids();
     test_scan_avoids_large_list();

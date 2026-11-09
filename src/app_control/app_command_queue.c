@@ -16,6 +16,7 @@
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
+#include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -8220,20 +8221,28 @@ scan_list_toast_name(const dsd_state* state, int list, char* out, size_t out_siz
     return out;
 }
 
-/* A switch the coordinator made: what is on now, as its own log line counts it (targets in the lists that are on,
-   avoided ones included). */
+/* The lists the published state has on (bit N-1: list N), of the first @p count; how many into @p lists_on. */
+static unsigned int
+scan_lists_on_mask(const dsd_state* state, int count, int* lists_on) {
+    unsigned int mask = 0U;
+    *lists_on = 0;
+    for (int l = 0; l < count; l++) {
+        if (state->trunk_scan_lists[l].enabled) {
+            mask |= 1U << l;
+            (*lists_on)++;
+        }
+    }
+    return mask;
+}
+
+/* A switch the coordinator made: what is on now, as its own log line counts it (the distinct targets in the lists that
+   are on, avoided ones included: a target two of them hold counts once). */
 static void
 scan_list_switched_toast(dsd_state* state, int list, int enabled) {
     const int count = state->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? state->trunk_scan_list_count
                                                                               : DSD_TRUNK_SCAN_MAX_LISTS;
     int lists_on = 0;
-    unsigned int targets = 0U;
-    for (int l = 0; l < count; l++) {
-        if (state->trunk_scan_lists[l].enabled) {
-            lists_on++;
-            targets += state->trunk_scan_lists[l].targets;
-        }
-    }
+    const unsigned int targets = dsd_app_scan_lists_targets_on(state, scan_lists_on_mask(state, count, &lists_on));
     const char* noun = targets == 1U ? "target" : "targets";
     if (list == DSD_APP_SCAN_LIST_ALL) {
         ui_set_toast(state, 3, "All scan lists on: %u %s", targets, noun);
@@ -10838,28 +10847,78 @@ command_dsp_op_deferred(const struct dsd_app_command* c) {
            || op.op == DSD_APP_DSP_OP_TUNER_AUTOGAIN_TOGGLE;
 }
 
-/* Whether the trunk-scan target on air of scan @p session owes a departure (issue #697): it is out of the rotation, its
-   list off or it is the avoided fallback, so the receiver leaves as soon as another target can take it. A scan flag
-   edit then starts or cancels that departure, so it cannot wait for the carrier to end: the coordinator's tick runs
-   before the drain, and would leave a target a list switched back on (or a put back) was meant to keep, or hold the
-   receiver on one a list switched on (or a put back) was meant to let go. Read from the decoder's own state, which
-   the coordinator writes at every hop, switch and pause on its thread; a paused scan publishes neither mark. */
+/* Whether the trunk-scan target on air of scan @p session owes a departure (issue #697): it is out of the rotation,
+   every list holding it off or it the avoided fallback, so the receiver leaves as soon as another target can take it.
+   A scan flag edit then starts or cancels that departure, so it cannot wait for the carrier to end: the coordinator's
+   tick runs before the drain, and would leave a target a list switched back on (or a put back) was meant to keep, or
+   hold the receiver on one a list switched on (or a put back) was meant to let go. Read from the decoder's own state,
+   which the coordinator writes at every hop, switch and pause on its thread; a paused scan publishes neither mark. */
 static int
 scan_departure_owed(const dsd_state* state, uint32_t session) {
     return session != 0U && session == state->trunk_scan_session
            && (state->trunk_scan_active_list_off != 0U || state->trunk_scan_active_avoided != 0U);
 }
 
-/* A trunk-scan list switch (issue #697) moves the receiver when it switches off the list that holds the target on air,
-   which leaves that target at once, as avoid does, or when that target owes a departure (above). Any other
-   switch, "all lists on" included, edits flags and never retunes, so it waits for the carrier to end like put back
-   and clear (issue #672). Judged against @p state, the asking decoder's own, so the answer is current and costs no
-   walk. A switch of the list on air that the coordinator then refuses as the last one to scan still takes the frame
-   loop: telling that apart walks the targets. Without a state, or with a payload of the wrong size, it takes the frame
-   loop; a payload of the right size that the drain then refuses (session 0, a list the scan does not have) is judged
-   by its fields like any other, so it waits unless it names this scan while its target on air owes a departure. */
+/* The lists of this scan, capped at the most a scan has. */
 static int
-command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state) {
+scan_list_count(const dsd_state* state) {
+    return state->trunk_scan_list_count < DSD_TRUNK_SCAN_MAX_LISTS ? state->trunk_scan_list_count
+                                                                   : DSD_TRUNK_SCAN_MAX_LISTS;
+}
+
+/* Whether list switch @p set is one the drain takes (scan_list_set_payload_valid()) and names this scan and one of its
+   lists (or, switching on, every list). A payload the drain refuses as invalid (enabled 2, say) switches nothing. */
+static int
+scan_list_set_names_this_scan(const dsd_app_scan_list_set_payload* set, const dsd_state* state) {
+    if (!scan_list_set_payload_valid(set) || set->session != state->trunk_scan_session) {
+        return 0;
+    }
+    return (set->list >= 1 && set->list <= scan_list_count(state))
+           || (set->list == DSD_APP_SCAN_LIST_ALL && set->enabled != 0U);
+}
+
+/* Whether switching off list @p set's list leaves the target on air of this scan (issue #697), with the lists in
+   @p lists_on on: the list is one the scan has (checked before it is a bit), it is on, it holds that target
+   (trunk_scan_active_lists, every list holding it), and no other list holding it is on. A target another list on holds
+   stays on air, its call going on. A paused scan publishes no target on air, so nothing leaves it. */
+static int
+scan_list_set_leaves_on_air(const dsd_app_scan_list_set_payload* set, const dsd_state* state, unsigned int lists_on) {
+    if (set->enabled != 0U || set->list == DSD_APP_SCAN_LIST_ALL || !scan_list_set_names_this_scan(set, state)) {
+        return 0;
+    }
+    const unsigned int bit = 1U << (set->list - 1);
+    const unsigned int held = state->trunk_scan_active_lists;
+    return (lists_on & bit) != 0U && (held & bit) != 0U && (held & lists_on & ~bit) == 0U;
+}
+
+/* The lists @p lists_on, a switch of this scan queued earlier, would leave on once the drain applies @p set: its list on
+   or off, or every list on. A switch the coordinator will refuse may still move the mark: that only lets a later switch
+   take the frame loop sooner. */
+static unsigned int
+scan_list_set_lists_after(const dsd_app_scan_list_set_payload* set, const dsd_state* state, unsigned int lists_on) {
+    if (!scan_list_set_names_this_scan(set, state)) {
+        return lists_on;
+    }
+    if (set->list == DSD_APP_SCAN_LIST_ALL) {
+        return (1U << scan_list_count(state)) - 1U;
+    }
+    const unsigned int bit = 1U << (set->list - 1);
+    return set->enabled != 0U ? (lists_on | bit) : (lists_on & ~bit);
+}
+
+/* A trunk-scan list switch (issue #697) moves the receiver when it switches off the last list on that holds the target
+   on air, which leaves that target at once, as avoid does, or when that target owes a departure (above). Any other
+   switch, "all lists on" and one of a target's lists while another of them stays on included, edits flags and never
+   retunes, so it waits for the carrier to end like put back and clear (issue #672). Judged against @p state, the
+   asking decoder's own, so the answer is current and costs no walk of the targets, with the lists on as the switches
+   of this scan queued before it leave them (@p lists_on, which this one then moves): "list 1 off" and then "list 2 off"
+   leave a target lists 1 and 2 hold at the second, though neither alone does. A switch of the list on air that the
+   coordinator then refuses as the last one to scan still takes the frame loop: telling that apart walks the targets.
+   Without a state, or with a payload of the wrong size, it takes the frame loop; a payload of the right size that the
+   drain then refuses (session 0, a list the scan does not have) is judged by its fields like any other, so it waits
+   unless it names this scan while its target on air owes a departure. */
+static int
+command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state* state, unsigned int* lists_on) {
     if (state == NULL || c->n != sizeof(dsd_app_scan_list_set_payload)) {
         return 0;
     }
@@ -10868,10 +10927,9 @@ command_scan_list_set_deferred(const struct dsd_app_command* c, const dsd_state*
     if (scan_departure_owed(state, set.session)) {
         return 0;
     }
-    const int leaves_on_air =
-        set.enabled == 0U && set.list > 0 && set.session != 0U && set.session == state->trunk_scan_session
-        && (uint32_t)set.list == (uint32_t)state->trunk_scan_active_list && state->trunk_scan_active_list_off == 0U;
-    return !leaves_on_air;
+    const int leaves = scan_list_set_leaves_on_air(&set, state, *lists_on);
+    *lists_on = scan_list_set_lists_after(&set, state, *lists_on);
+    return !leaves;
 }
 
 /* Put back and clear (issue #672) only edit avoid flags, so they wait for the carrier to end, unless this scan's
@@ -10895,9 +10953,10 @@ command_scan_flag_edit_needs_frame_loop(const struct dsd_app_command* c, const d
            && scan_departure_owed(state, put_back.session);
 }
 
-/* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop. */
+/* Whether queued command @p c returns a decoder holding one carrier in a loop of its own to the frame loop; @p lists_on,
+   the trunk-scan lists on as the commands queued before it leave them, follows a list switch. */
 static int
-command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state) {
+command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state, unsigned int* lists_on) {
     if (c->id == DSD_APP_CMD_AIRSPY_SET) {
         return !command_airspy_setting_deferred(c);
     }
@@ -10905,7 +10964,7 @@ command_needs_frame_loop(const struct dsd_app_command* c, const dsd_state* state
         return !command_dsp_op_deferred(c);
     }
     if (c->id == DSD_APP_CMD_SCAN_LIST_SET) {
-        return !command_scan_list_set_deferred(c, state);
+        return !command_scan_list_set_deferred(c, state, lists_on);
     }
     if (c->id == DSD_APP_CMD_SCAN_AVOID_CLEAR || c->id == DSD_APP_CMD_SCAN_AVOID_REMOVE) {
         return command_scan_flag_edit_needs_frame_loop(c, state);
@@ -10923,8 +10982,10 @@ dsd_app_commands_need_frame_loop(const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     int needed = 0;
+    int lists = 0;
+    unsigned int lists_on = state != NULL ? scan_lists_on_mask(state, scan_list_count(state), &lists) : 0U;
     for (size_t i = g_head; i != g_tail && !needed; i = (i + 1) % DSD_APP_CMD_Q_CAP) {
-        needed = command_needs_frame_loop(&g_q[i], state);
+        needed = command_needs_frame_loop(&g_q[i], state, &lists_on);
     }
     dsd_mutex_unlock(&g_mu);
     return needed;

@@ -3,9 +3,12 @@
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -862,6 +865,124 @@ test_scan_list_uid_repair_persists() {
 }
 
 namespace {
+/* The uid of entry @p entry of list @p row. */
+QString
+entry_uid(const dsd_qt::ScanListsModel& lists, int row, int entry) {
+    return lists.get(row).value("entries").toList().value(entry).toMap().value("uid").toString();
+}
+
+/* The uid stored for entry @p entry of list @p row. */
+QString
+stored_entry_uid(const QJsonArray& rows, int row, int entry) {
+    return rows.at(row).toObject().value("entries").toArray().at(entry).toObject().value("uid").toString();
+}
+
+/* A frequency entry named @p uid, none when empty. */
+QJsonObject
+uid_entry(const QString& uid, const QString& freq) {
+    QJsonObject entry{{"kind", "freq"}, {"protocol", "p25"}, {"freqMhz", freq}};
+    if (!uid.isEmpty()) {
+        entry.insert("uid", uid);
+    }
+    return entry;
+}
+} // namespace
+
+// Issue #697: a target id names one target in a session, so no two of the app's lists share an entry uid. One an
+// earlier list holds (a hand-edited or older store) is given another at load, the first list keeping it, and saved, so
+// the next load keeps it; list uids, and so the remembered companions and pins that name lists, are left alone. A store
+// the save cannot replace keeps the new uid for this run.
+static void
+test_scan_list_entry_uid_repair_at_load() {
+    count_scan_repair_warnings();
+    const QString store = QStringLiteral("scan_lists.json");
+    {
+        dsd_qt::AppPrefs prefs;
+        prefs.setAcceptedStartCompanions({"b"});
+    }
+    const QJsonArray rows{
+        QJsonObject{
+            {"uid", "a"}, {"name", "A"}, {"entries", QJsonArray{uid_entry("e1", "851.0"), uid_entry("e2", "852.0")}}},
+        QJsonObject{
+            {"uid", "b"}, {"name", "B"}, {"entries", QJsonArray{uid_entry("e1", "853.0"), uid_entry("e3", "854.0")}}},
+        QJsonObject{
+            {"uid", "c"}, {"name", "C"}, {"entries", QJsonArray{uid_entry("e2", "855.0"), uid_entry("", "856.0")}}}};
+    check(dsd_qt::json_store_save_array(store, rows));
+    QStringList minted;
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(lists.count() == 3 && !lists.uidsRepaired() && lists.get(0).value("uid") == "a"
+              && lists.get(1).value("uid") == "b" && lists.get(2).value("uid") == "c");
+        check(entry_uid(lists, 0, 0) == "e1" && entry_uid(lists, 0, 1) == "e2" && entry_uid(lists, 1, 1) == "e3");
+        minted = {entry_uid(lists, 1, 0), entry_uid(lists, 2, 0), entry_uid(lists, 2, 1)};
+        for (const QString& uid : minted) {
+            check(!uid.isEmpty() && uid != "e1" && uid != "e2" && uid != "e3");
+        }
+        check(minted.at(0) != minted.at(1) && minted.at(1) != minted.at(2) && minted.at(0) != minted.at(2));
+    }
+    {
+        dsd_qt::AppPrefs prefs;
+        check(prefs.acceptedStartCompanions() == QStringList{"b"});
+        prefs.setAcceptedStartCompanions({});
+    }
+    QJsonArray stored = dsd_qt::json_store_load_array(store);
+    check(stored.size() == 3 && stored_entry_uid(stored, 0, 0) == "e1" && stored_entry_uid(stored, 1, 0) == minted.at(0)
+          && stored_entry_uid(stored, 2, 0) == minted.at(1) && stored_entry_uid(stored, 2, 1) == minted.at(2));
+    // The next load mints nothing and saves nothing.
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(entry_uid(lists, 1, 0) == minted.at(0) && entry_uid(lists, 2, 0) == minted.at(1)
+              && entry_uid(lists, 2, 1) == minted.at(2));
+    }
+    check(dsd_qt::json_store_load_array(store) == stored);
+
+    // A store the app can read but not replace: the new uid holds for this run, and the failure is logged once.
+    check(dsd_qt::json_store_save_array(store, rows));
+    const QString path = dsd_qt::json_store_path(store);
+    const auto permissions = QFile::permissions(path);
+    check(QFile::setPermissions(path, QFileDevice::ReadOwner));
+    const int before = g_scan_repair_warnings;
+    {
+        const dsd_qt::ScanListsModel lists;
+        check(entry_uid(lists, 0, 0) == "e1" && !entry_uid(lists, 1, 0).isEmpty() && entry_uid(lists, 1, 0) != "e1");
+        check(g_scan_repair_warnings - before == 1);
+    }
+    check(QFile::setPermissions(path, permissions));
+    check(stored_entry_uid(dsd_qt::json_store_load_array(store), 1, 0) == "e1");
+    check(dsd_qt::json_store_save_array(store, QJsonArray{}));
+}
+
+// Issue #697: add() and update() give an entry whose uid another list holds a new one, as the load does; the list being
+// updated is no conflict with itself, so its own entries keep theirs.
+static void
+test_scan_list_entry_uid_repair_on_save() {
+    const QString store = QStringLiteral("scan_lists.json");
+    check(dsd_qt::json_store_save_array(
+        store,
+        QJsonArray{QJsonObject{{"uid", "a"}, {"name", "A"}, {"entries", QJsonArray{uid_entry("e1", "851.0")}}}}));
+    dsd_qt::ScanListsModel lists;
+    const QVariantMap added{
+        {"name", "B"},
+        {"entries", QVariantList{uid_entry("e1", "853.0").toVariantMap(), uid_entry("e4", "854.0").toVariantMap()}}};
+    check(lists.add(added) && lists.count() == 2);
+    const QString addedUid = entry_uid(lists, 1, 0);
+    check(entry_uid(lists, 0, 0) == "e1" && !addedUid.isEmpty() && addedUid != "e1" && entry_uid(lists, 1, 1) == "e4");
+    // A's own e1 is no conflict; B's e4 is.
+    check(lists.update(0, {{"entries", QVariantList{uid_entry("e1", "851.0").toVariantMap(),
+                                                    uid_entry("e4", "852.0").toVariantMap()}}}));
+    const QString updatedUid = entry_uid(lists, 0, 1);
+    check(entry_uid(lists, 0, 0) == "e1" && !updatedUid.isEmpty() && updatedUid != "e4" && updatedUid != addedUid
+          && entry_uid(lists, 1, 0) == addedUid && entry_uid(lists, 1, 1) == "e4");
+    // An update that leaves the entries alone keeps every uid.
+    check(lists.update(1, {{"name", "B renamed"}}) && entry_uid(lists, 1, 0) == addedUid
+          && entry_uid(lists, 1, 1) == "e4");
+    const QJsonArray stored = dsd_qt::json_store_load_array(store);
+    check(stored.size() == 2 && stored_entry_uid(stored, 0, 0) == "e1" && stored_entry_uid(stored, 0, 1) == updatedUid
+          && stored_entry_uid(stored, 1, 0) == addedUid && stored_entry_uid(stored, 1, 1) == "e4");
+    check(dsd_qt::json_store_save_array(store, QJsonArray{}));
+}
+
+namespace {
 // A host that keeps the argv of each start it is asked for.
 class StartHost : public Host {
   public:
@@ -896,7 +1017,7 @@ manual_list(dsd_qt::ScanListsModel& lists, const QString& name, const QString& e
 } // namespace
 
 // Issue #697: several lists start as one session, the first list's receiver with one --trunk-scan each, in order;
-// a list that cannot join, or two lists that share a target id, start nothing at all.
+// a list that cannot join starts nothing at all.
 static void
 test_scan_lists_start_together() {
     dsd_qt::AppPrefs prefs;
@@ -938,18 +1059,21 @@ test_scan_lists_start_together() {
     check(!refused.value("ok").toBool() && !refused.value("started").toBool() && host.starts.size() == 2);
     check(refused.value("error").toString() == QStringLiteral("“Louder” can't scan with “Security”: different gain."));
 
-    // Two lists holding the same target id: refused by the check across lists, nothing starts.
+    // A list given an entry uid another list holds: the save gives it a new one, so the two are independent targets
+    // and start together.
     const QVariantMap twin = manual_list(lists, "Twin", "gate-a", "855.0125");
-    refused = starter.startLists({security, twin}, &host);
-    check(!refused.value("ok").toBool() && !refused.value("started").toBool() && host.starts.size() == 2);
-    check(refused.value("error").toString().startsWith(QStringLiteral("Scan lists rejected: "))
-          && refused.value("error").toString().contains(QStringLiteral("gate-a")));
+    const QString twinUid = twin.value("entries").toList().value(0).toMap().value("uid").toString();
+    check(!twinUid.isEmpty() && twinUid != QStringLiteral("gate-a")
+          && security.value("entries").toList().value(0).toMap().value("uid") == QStringLiteral("gate-a"));
+    const QVariantMap together = starter.startLists({security, twin}, &host);
+    check(together.value("ok").toBool() && together.value("started").toBool()
+          && together.value("targetCount").toInt() == 2 && host.starts.size() == 3);
     // A draft among them: refused by name.
     QVariantMap draft = twin;
     draft.insert("isDraft", true);
     draft.insert("name", "Draft");
     refused = starter.startLists({security, draft}, &host);
-    check(!refused.value("started").toBool() && host.starts.size() == 2
+    check(!refused.value("started").toBool() && host.starts.size() == 3
           && refused.value("error").toString().startsWith(QStringLiteral("“Draft”: ")));
     // Nine lists are more than a session takes.
     QVariantList nine;
@@ -957,7 +1081,91 @@ test_scan_lists_start_together() {
         nine << security;
     }
     refused = starter.startLists(nine, &host);
-    check(!refused.value("started").toBool() && host.starts.size() == 2);
+    check(!refused.value("started").toBool() && host.starts.size() == 3);
+    while (lists.count() > 0) {
+        lists.remove(0);
+    }
+}
+
+namespace {
+/* @p body written to @p path, its folder made. */
+void
+write_csv(const QString& path, const QByteArray& body) {
+    check(QDir().mkpath(QFileInfo(path).absolutePath()));
+    QFile file(path);
+    check(file.open(QIODevice::WriteOnly) && file.write(body) == body.size());
+}
+
+QVariantMap
+csv_list(dsd_qt::ScanListsModel& lists, const QString& name, const QString& path) {
+    check(lists.add({{"name", name},
+                     {"sourceType", "rtltcp"},
+                     {"host", "127.0.0.1"},
+                     {"port", 1234},
+                     {"targetSource", "csv"},
+                     {"targetsCsvPath", path}}));
+    return lists.get(lists.count() - 1);
+}
+} // namespace
+
+// Issue #697: two imported lists whose files both hold ROK start as one session that runs ROK once, when the rows are
+// the same: each list runs from its own copy, so a talkgroup file both rows name is reached by two spellings (one per
+// copy's folder), and is still the one file. A ROK row that differs refuses the start, naming the column, and nothing
+// starts.
+static void
+test_scan_lists_share_a_csv_target() {
+    const QTemporaryDir dir;
+    check(dir.isValid());
+    const QString imports = dir.filePath("imports");
+    write_csv(imports + "/groups.csv", "id,mode,name\n123,B,Rock TG\n");
+    const QByteArray header = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    const QByteArray rok = "ROK,dmr-conventional,851012500,,,,,-G groups.csv\n";
+    const QString conv = imports + "/conv.csv";
+    const QString low = imports + "/low.csv";
+    const QString other = imports + "/other.csv";
+    write_csv(conv, header + rok + "A,dmr-conventional,851512500,,,,,\n");
+    write_csv(low, header + "B,p25-conventional,852012500,,,,,\n" + rok);
+    write_csv(other, header + "ROK,dmr-conventional,851025000,,,,,-G groups.csv\n");
+    const dsd_qt::AppPrefs prefs;
+    const dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    while (lists.count() > 0) {
+        lists.remove(0);
+    }
+    dsd_qt::ScanListStarter starter(&prefs, &systems);
+    starter.setTargetFileLookup([&](const QString& path) { return path == conv || path == low || path == other; });
+    StartHost host;
+    host.phase = Host::Idle;
+    const QVariantMap convList = csv_list(lists, "Conv", conv);
+    const QVariantMap lowList = csv_list(lists, "Low", low);
+    const QVariantMap otherList = csv_list(lists, "Other", other);
+
+    const QVariantMap started = starter.startLists({convList, lowList}, &host);
+    if (!started.value("started").toBool()) {
+        std::fprintf(stderr, "a shared CSV target: %s\n", qPrintable(started.value("error").toString()));
+    }
+    check(started.value("ok").toBool() && started.value("started").toBool());
+    check(started.value("targetCount").toInt() == 3 && host.starts.size() == 1);
+    const QStringList args = host.starts.value(0);
+    const QString convCopy = dsd_qt::scan_list_csv_path(convList.value("uid").toString(), "Conv", 1);
+    const QString lowCopy = dsd_qt::scan_list_csv_path(lowList.value("uid").toString(), "Low", 2);
+    const qsizetype first = args.indexOf(QStringLiteral("--trunk-scan"));
+    check(first > 0 && args.mid(first, 4) == QStringList({"--trunk-scan", convCopy, "--trunk-scan", lowCopy}));
+    // Each copy names the talkgroup file from its own folder: two spellings of one file.
+    QFile copy(lowCopy);
+    check(copy.open(QIODevice::ReadOnly)
+          && copy.readAll().contains(
+              QDir(QFileInfo(lowCopy).absolutePath()).relativeFilePath(imports + "/groups.csv").toUtf8()));
+    check(QFileInfo(convCopy).absolutePath() != QFileInfo(lowCopy).absolutePath());
+
+    const QVariantMap refused = starter.startLists({convList, otherList}, &host);
+    check(!refused.value("ok").toBool() && !refused.value("started").toBool() && host.starts.size() == 1);
+    const QString error = refused.value("error").toString();
+    if (!error.startsWith(QStringLiteral("Scan lists rejected: ")) || !error.contains(QStringLiteral("'ROK'"))
+        || !error.contains(QStringLiteral("frequency_hz"))) {
+        std::fprintf(stderr, "a ROK row that differs: %s\n", qPrintable(error));
+        check(false);
+    }
     while (lists.count() > 0) {
         lists.remove(0);
     }
@@ -1654,7 +1862,10 @@ main(int argc, char** argv) {
     test_auto_start_carries_the_scan_bundle();
     test_scan_bundle_prefs_and_uid_repair();
     test_scan_list_uid_repair_persists();
+    test_scan_list_entry_uid_repair_at_load();
+    test_scan_list_entry_uid_repair_on_save();
     test_scan_lists_start_together();
+    test_scan_lists_share_a_csv_target();
     test_attachment_kind();
     test_initial_usb_record();
     test_usb_request_record();

@@ -42,7 +42,8 @@ class ScanListToggleModel : public QAbstractListModel {
     Q_PROPERTY(bool switchable READ switchable NOTIFY stateChanged)
     /** @brief The operator paused the scan: every switch would be refused until it resumes. */
     Q_PROPERTY(bool paused READ paused NOTIFY stateChanged)
-    /** @brief The lists shown on, and the targets they hold (avoided ones included), as the rows show them. */
+    /** @brief The lists shown on, and the targets they hold (avoided ones included, a target several of them hold
+     *  counted once), as the rows show them. */
     Q_PROPERTY(int listsOn READ listsOn NOTIFY stateChanged)
     Q_PROPERTY(int targetsOn READ targetsOn NOTIFY stateChanged)
 
@@ -51,8 +52,8 @@ class ScanListToggleModel : public QAbstractListModel {
         NumberRole = Qt::UserRole + 1, /**< 1-based list number, what a switch names */
         NameRole,                      /**< the engine's name: the file name without folder and extension */
         OnRole,                        /**< what the switch shows: the state asked for while it is pending */
-        TargetsRole,                   /**< targets the list holds */
-        OnAirRole,                     /**< the target on air is one of this list's */
+        TargetsRole,                   /**< targets the list's file holds, shared ones included */
+        OnAirRole,                     /**< the list holds the target on air (a shared target marks each) */
         PendingRole,                   /**< a switch was sent and has no answer yet */
         NoteRole,                      /**< "reason": why the last switch was not applied, or empty */
     };

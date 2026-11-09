@@ -344,9 +344,9 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
   * `kind` is `none`, `channel` (the `-Y` conventional scan) or `trunk`
     (`--trunk-scan`); `state` is `off` (no scan), `running`, or `paused` (the
     operator took the tuner; `scan_resume` resumes it); `targets` is the trunk
-    scan's target count, every list included, or the `-Y` list's row count
-    (`0` with no scan). A `-Y` resume still waiting for its row's tune reads
-    `paused`.
+    scan's target count, every list included and a target several lists hold
+    counted once, or the `-Y` list's row count (`0` with no scan). A `-Y`
+    resume still waiting for its row's tune reads `paused`.
   * `hold`: `true` while the operator holds the scan on the row or target on
     air (`scan_hold_toggle`); `false` with no scan.
   * `entry_hold`: `true` while that hold is the one a frequency entry set
@@ -355,19 +355,29 @@ and `p2_voice[2]` (each `{valid,errs_per_frame,samples}`).
     `scan_hold_toggle` lets it go too. It implies `hold`; `false` with no scan.
   * `ordinal` and `count`: the trunk scan's position, as the terminal shows
     `(2/14)`. `count` is the number of targets in the lists switched on,
-    avoided ones included; `ordinal` is the target on air's place among them,
-    or `null` when it has none: no target is on air (paused), or its list was
-    just switched off and the scan leaves it as soon as another target can take
-    it (the terminal shows `(-/14)`). Outside a trunk scan `ordinal` is `null`
+    avoided ones included, a target several of them hold counted once;
+    `ordinal` is the target on air's place among them, or `null` when it has
+    none: no target is on air (paused), or every list holding it was just
+    switched off and the scan leaves it as soon as another target can take it
+    (the terminal shows `(-/14)`). Outside a trunk scan `ordinal` is `null`
     and `count` is `0`.
   * `session`, `lists_seq`, `list`, `lists`: the trunk scan's target lists
     (see [Scan lists](#scan-lists)). `session` is what `scan_list_set` must
     quote; `lists_seq` moves whenever a list changes; `list` is the number of
-    the list the target on air belongs to, or `null`; `lists` holds one
+    the list that names the target on air, or `null`; `lists` holds one
     `{number, name, enabled, targets, has_active}` per list in list order
-    (`enabled` is `0` or `1`, as `scan_list_set` takes it; `has_active` is
-    `true` for the list of the target on air). Outside a trunk scan `session`
-    and `lists_seq` are `0`, `list` is `null` and `lists` is empty.
+    (`enabled` is `0` or `1`, as `scan_list_set` takes it; `targets` is the
+    number of targets the list's file holds; `has_active` is `true` for every
+    list that holds the target on air, switched on or off). Outside a trunk
+    scan `session` and `lists_seq` are `0`, `list` is `null` and `lists` is
+    empty.
+
+    A target id found in several lists' files is one target that all of them
+    hold. It counts in each of those lists' `targets`, but only once in
+    `scan.targets` and `count`, so the lists' `targets` can add up to more
+    than either. `list` names the lowest-numbered list holding the target on
+    air that is switched on, or the lowest-numbered list holding it when all of
+    them are off.
 
   How many channels the scan avoids is in `scan_avoids.total`. `scan` is `null`
   until the decoder has published its options.
@@ -842,9 +852,9 @@ field, and the decoder refuses the rest when it applies the command.
     each ending `; scan stays paused` while the scan is paused. A trunked
     target's failed tune also names the frequency it tried, its control
     channel: `Failed: tune to #3 County (851.012500 MHz)`. A row that is
-    avoided, whose list is off, or whose width the input cannot run is not
+    avoided, in no list that is on, or whose width the input cannot run is not
     taken: the entry is a plain one, below, and its message ends with the reason
-    (`; fire-dispatch is avoided`, `; #3 County Fire is in a list that is off`,
+    (`; fire-dispatch is avoided`, `; #3 County Fire is in no list that is on`,
     `; fire-dispatch's width does not fit`; `that row` or `that target` in place
     of a name too long to fit).
   * Otherwise, with single-system P25 trunking on and no scan, it selects that
@@ -1018,16 +1028,19 @@ never written to the list files or the config.
   lists have changed again. For a refusal, show `status.scan`: its `lists_seq`
   can be behind another frontend's switch that the result already counts, and
   once it moves past the result's, the refusal no longer describes the lists.
-* Switching off the list that holds the target on air leaves that target at
-  once, as `scan_avoid` does (a hold carries over). A switch that would leave
-  nothing to scan is refused, and so is any switch while the scan is paused.
-  During a DMR repeater call, a switch that does not move the receiver waits
-  for the call to end, and its result comes then, with two exceptions: while
-  the target on air is waiting to leave (its list is off, or it is an avoided
-  target the scan fell back onto), any switch ends the call at once, since it
-  lets that target go or keeps it; and switching off the list on air when it
-  is the last one to scan is refused, yet still interrupts the call for a
-  moment. See [Switching lists](trunk-scan.md#switching-lists).
+* Switching off a list that holds the target on air leaves that target at
+  once, as `scan_avoid` does (a hold carries over), when it was the last list
+  switched on that holds it. While another list holding it is still on, the
+  target stays on air and `status.scan.list` moves to that list. A switch that
+  would leave nothing to scan is refused, and so is any switch while the scan is
+  paused. During a DMR repeater call, a switch that does not move the receiver
+  waits for the call to end, and its result comes then, with two exceptions:
+  while the target on air is waiting to leave (every list holding it is off, or
+  it is an avoided target the scan fell back onto), any switch ends the call at
+  once, since it lets that target go or keeps it; and switching off the last
+  list on that holds the target on air, when it is the last one to scan, is
+  refused, yet still interrupts the call for a moment. See
+  [Switching lists](trunk-scan.md#switching-lists).
 
 ## Examples
 
