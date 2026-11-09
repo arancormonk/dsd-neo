@@ -4627,6 +4627,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         # Issue #801: the pinned Listen shortcuts, over both models.
@@ -4639,7 +4640,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_persistence
-        PRIVATE Qt6::Core dsd-neo_runtime
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_persistence
@@ -4756,6 +4757,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -4766,7 +4768,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_site_groups
-        PRIVATE Qt6::Core dsd-neo_runtime
+        PRIVATE Qt6::Gui Qt6::Qml dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_site_groups
