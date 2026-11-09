@@ -142,16 +142,18 @@ read_snapshots(void* arg) {
                 }
             }
             ++g_snapshots;
-        }
-        if (atomic_load(&g_reads) < OVERLAPPED_READS) {
-            (void)atomic_fetch_add(&g_reads, 1);
+            if (atomic_load(&g_reads) < OVERLAPPED_READS) {
+                (void)atomic_fetch_add(&g_reads, 1);
+            }
         }
     }
     DSD_THREAD_RETURN;
 }
 
 /* The store writes while the decoder snapshots: every snapshot is one whole list with its own revision. Run under
-   TSan as well. */
+   TSan as well. The writer goes on until the reader has taken OVERLAPPED_READS snapshots of its writes: snapshots of
+   the list as it was before the first write do not count, so a reader that ran first and was then held off while the
+   writer finished cannot end the test with nothing checked. */
 static void
 test_snapshot_whole_under_writer(void) {
     g_base = dsd_signal_search_avoids_permanent_revision();
@@ -169,7 +171,7 @@ test_snapshot_whole_under_writer(void) {
     }
     atomic_store(&g_writer_done, 1);
     assert(dsd_thread_join(reader) == 0);
-    assert(!g_torn && g_snapshots > 0);
+    assert(!g_torn && g_snapshots >= OVERLAPPED_READS);
     assert(dsd_signal_search_avoids_permanent_revision() == g_base + value - 1);
     dsd_signal_search_avoids_permanent_set(NULL, 0);
 }
