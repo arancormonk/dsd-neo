@@ -629,26 +629,42 @@ test_settle(void) {
     form.content->setY(0.0);
     expect("the way back is sampled", wait_until([&host] { return host.last(OpField, 1).rect == kUsernamePixels; }));
 
-    /* Movement restarts the wait. */
-    form.elsewhere->forceActiveFocus();
-    expect("focus loss is sent", !host.last(OpField, 1).focused);
-    focusAt = host.clock.elapsed();
-    form.password->forceActiveFocus();
-    /* A short gap, so a stall here cannot outlast the first wait: a wait not restarted would end 250 ms after the
-     * move at most, which the lower bound below tells apart. */
-    wait_ms(50);
-    const qint64 movedAt = host.clock.elapsed();
-    form.content->setY(-5.0);
-    /* The sample that reports the move restarts the wait (or the first wait, ending first, finds the move and
-     * restarts itself); right after that nothing can have fired. */
-    expect("the move is sampled",
-           wait_until([&host] { return host.last(OpField, 2).rect == QRect(15, 157, 300, 46); }));
-    expect("a move restarts the wait", request_after(host, focusAt) < 0 && settle_active(relay));
-    expect("the request comes once the field is still", wait_until([&host] { return host.count(OpRequest) == 2; }));
-    op = host.last(OpRequest);
-    expect_int("for the password", op.field, 2);
-    expect_rect("at where it settled", op.rect, QRect(15, 157, 300, 46));
-    expect("a full wait after the move", request_after(host, movedAt) >= 300);
+    /* Movement restarts the wait. A runner stall that holds the short gap below past 250 ms lets the first wait end
+     * before the move is made, which proves nothing either way; the clock shows when that happened, and such an
+     * attempt is run again rather than failed. */
+    bool moved_in_time = false;
+    for (int attempt = 0; attempt < 3 && !moved_in_time; ++attempt) {
+        form.elsewhere->forceActiveFocus();
+        form.content->setY(0.0);
+        expect("the field is back in place",
+               wait_until([&host] { return host.last(OpField, 2).rect == kPasswordPixels; }));
+        expect("focus loss is sent", !host.last(OpField, 1).focused && !host.last(OpField, 2).focused);
+        const int requestsBefore = host.count(OpRequest);
+        const qint64 passwordFocusAt = host.clock.elapsed();
+        form.password->forceActiveFocus();
+        /* A short gap, so a wait not restarted would end 250 ms after the move at most, which the lower bound below
+         * tells apart. */
+        wait_ms(50);
+        const qint64 movedAt = host.clock.elapsed();
+        form.content->setY(-5.0);
+        if (movedAt - passwordFocusAt >= 250) {
+            continue;
+        }
+        moved_in_time = true;
+        /* The sample that reports the move restarts the wait (or the first wait, ending first, finds the move and
+         * restarts itself); right after that nothing can have fired. */
+        expect("the move is sampled",
+               wait_until([&host] { return host.last(OpField, 2).rect == QRect(15, 157, 300, 46); }));
+        expect("a move restarts the wait", request_after(host, passwordFocusAt) < 0 && settle_active(relay));
+        expect("the request comes once the field is still",
+               wait_until([&host, requestsBefore] { return host.count(OpRequest) == requestsBefore + 1; }));
+        op = host.last(OpRequest);
+        expect_int("for the password", op.field, 2);
+        expect_rect("at where it settled", op.rect, QRect(15, 157, 300, 46));
+        expect("a full wait after the move", request_after(host, movedAt) >= 300);
+    }
+    expect("the move was made inside the first wait in one of three tries", moved_in_time);
+    const int requests = host.count(OpRequest);
 
     /* Focus lost before the wait ends: no request. */
     form.username->forceActiveFocus();
@@ -656,15 +672,16 @@ test_settle(void) {
     form.elsewhere->forceActiveFocus();
     expect("leaving the field stops it", !settle_active(relay));
     wait_ms(600);
-    expect_int("leaving the field cancels its request", host.count(OpRequest), 2);
+    expect_int("leaving the field cancels its request", host.count(OpRequest), requests);
 
     /* Focused but hidden when the wait ends: none until it shows and settles. */
     form.username->forceActiveFocus();
     relay.track(token, 1, form.username, false);
     wait_ms(600);
-    expect_int("a hidden field is not requested", host.count(OpRequest), 2);
+    expect_int("a hidden field is not requested", host.count(OpRequest), requests);
     relay.track(token, 1, form.username, true);
-    expect("shown, it is requested after the wait", wait_until([&host] { return host.count(OpRequest) == 3; }));
+    expect("shown, it is requested after the wait",
+           wait_until([&host, requests] { return host.count(OpRequest) == requests + 1; }));
     expect_int("the username", host.last(OpRequest).field, 1);
 
     /* end stops a wait in flight. */
@@ -673,7 +690,7 @@ test_settle(void) {
     relay.end(token);
     expect("end stops the settle wait", !settle_active(relay));
     wait_ms(600);
-    expect_int("no request after end", host.count(OpRequest), 3);
+    expect_int("no request after end", host.count(OpRequest), requests + 1);
 }
 
 void
