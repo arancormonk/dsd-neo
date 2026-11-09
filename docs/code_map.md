@@ -6960,6 +6960,12 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `0.98f` is the first float at or above the double clipping threshold. Ordered double sums retain the original
   variance calculation. `IO_INPUT_LEVEL_METRICS` checks exact output bits against a scalar double reference across
   threshold neighbors, non-finite inputs, DC and mixed-exponent blocks.
+- CS16 input levels (`runtime/input_level.c`, `dsd_input_level_metrics_from_cs16()`): samples are read against the
+  full scale the caller passes (finite, in [1, 32768]; the live SoapySDR reader's `soapy_cs16_full_scale`, 32768 for
+  a cs16 replay). A sample clips at or past 0.99 of it, a clip policy separate from the scale (fullScale alone does
+  not give the converter step): at 32768 +32752 (12-bit left aligned, step 16: SoapyAirspy, LMS7) and -32760 count,
+  at 2048 |s| >= 2028. The first clipping code is computed once per call, and the per-sample test is one unsigned
+  compare against the clear range.
 - Automatic PPM (`radio/rtl_sdr_fm.cpp`, `radio/rtl_auto_ppm.cpp`): each live read synchronizes the applied PPM and
   frequency. While disabled, the controller only clears training and publishes its status; the reader skips the
   unused clock, signal estimates, configuration and request-lock snapshots. Enabled updates gather the full inputs.
@@ -7209,6 +7215,23 @@ Key public headers:
     `rtl_device_test_soapy_device()`; internal failures, restart counters, refused reader creation and competing
     grace verdicts included). Timeout, overflow and diagnostic counters reset before every reader start. Bench:
     `dsd-neo_bench_soapy_ingest`.
+  - SoapySDR CS16 full scale (issue #828): SoapySDR hands CS16 over as the driver's integers. A driver whose native
+    format is CS16 reports their full scale (`getNativeStreamFormat()`: PlutoSDR and bladeRF 2048, 12-bit LSB
+    aligned; Airspy, LMS7 and SDRplay 32767; UHD 32768); CS16 that is not native is converted at 32768, as SoapySDR's
+    converters and SoapyRemote do. `soapy_cache_identity_locked()` keeps the reported value
+    (`soapy_native_full_scale`), and `soapy_set_cached_format()`, run with every stream format choice (stream setup,
+    configure), sets `soapy_cs16_full_scale` from `dsdneo::soapy_cs16_full_scale()` (`soapy_profile.cpp`: the
+    driver's value when the stream and the native format are both CS16 and it is finite and in [1, 32768], else
+    32768) and its float inverse `soapy_cs16_scale`, which `soapy_write_cs16_to_ring()` passes to the copy, so no
+    sample pays for it. The meter reads the same full scale (`rtl_publish_cs16_input_level()`). Before, every CS16
+    stream was read at 1/32768, so PlutoSDR and bladeRF read 24.08 dB low and never showed HOT or CLIPPING; they now
+    deliver what their CF32 (code / 2048) does. A cs16 replay still reads at 32768 (`replay_convert_cs16_to_f32()`).
+    The capability log line shows `native=<format> [full-scale=N]`. Tests: `IO_SOAPY_PROFILE` (the helper's table),
+    `IO_SOAPY_CS16_COPY` (`rtl_device_test_soapy_cs16_ingest()`: the submit path at each full scale, with and
+    without the rotation, and the meter it publishes, read by `rtl_stream_test_input_level_read()`),
+    `IO_SOAPY_CS16_FULL_SCALE` (a real capture as 12-bit codes through the reader against the stand-in driver, whose
+    `full_scale` field reports a native CS16 full scale, as CS16 at 2048 and as CF32: the ring bit for bit and the
+    meter's level the same).
   - USB gain controls (`rtl_device.cpp`): demod register 0x19 holds test mode and the digital AGC both, and librtlsdr's
     setter for each writes it whole, so `rtl_usb_apply_register19()` resolves it from the record (test mode while on,
     else `digital_agc_wanted`: on only with automatic gain, per `DSD_NEO_RTL_AGC`) at every gain, AGC and test-mode

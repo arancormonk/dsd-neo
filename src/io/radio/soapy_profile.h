@@ -98,6 +98,16 @@ const char* soapy_stream_format_name(SoapyStreamFormat format);
 std::string soapy_choose_stream_format(const std::vector<std::string>& supported_formats,
                                        const std::string& requested_format, const std::string& native_format);
 
+/* SoapySDR leaves CS16 samples as the driver's integers. A driver whose native format is CS16 reports their full
+ * scale (getNativeStreamFormat(); Pluto and bladeRF 2048, for 12-bit samples LSB aligned), and CS16 that is not
+ * native is converted at 32768, as SoapySDR's converters and SoapyRemote assume. */
+constexpr double kSoapyCs16DefaultFullScale = 32768.0;
+/* The full scale a CS16 stream is read against, chosen once per stream format choice (the reader divides by it): the
+ * driver's @p native_full_scale when @p stream_format and @p native_format are both CS16 and it is finite and in
+ * [1, 32768]; else kSoapyCs16DefaultFullScale. */
+double soapy_cs16_full_scale(const std::string& stream_format, const std::string& native_format,
+                             double native_full_scale);
+
 bool soapy_name_list_contains(const std::vector<std::string>& names, const std::string& wanted);
 SoapyAntennaChoice soapy_choose_antenna(const char* profile_default_antenna, const std::string& configured_antenna,
                                         double center_freq_hz);

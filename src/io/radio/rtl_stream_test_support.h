@@ -247,6 +247,27 @@ typedef struct {
 /* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */
 int rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* request, float* output,
                                       size_t* output_count, int* out_phase);
+
+typedef struct {
+    const int16_t* samples; /* the driver's CS16 buffer: pairs complex samples, I then Q */
+    size_t pairs;
+    size_t capacity;
+    size_t start;
+    int fs4_shift;
+    int start_phase;
+    const char* native_format; /* what getNativeStreamFormat() reported ("CS16", "CS8", ...) */
+    double native_full_scale;  /* and its full scale */
+} rtl_device_test_soapy_cs16_request;
+
+/* One CS16 read of a driver whose native format and full scale are the request's, through the reader's submit path:
+ * the input-level meter, then the ring (@p output takes up to *@p output_count floats from it). Returns 1, and leaves
+ * the outputs alone, when the build has no SoapySDR. */
+int rtl_device_test_soapy_cs16_ingest(const rtl_device_test_soapy_cs16_request* request, float* output,
+                                      size_t* output_count, int* out_phase);
+/* The input level the ingest path published last (rtl_stream_input_level_publish()), whether or not a stream runs: 1
+ * with it in @p out, 0 when there is none. */
+struct dsd_input_level_snapshot;
+int rtl_stream_test_input_level_read(struct dsd_input_level_snapshot* out);
 /* The SoapySDR reader's CS16 conversion (soapy_copy_cs16_samples(), scale 1/32768): @p elem_count pairs into @p dst,
  * each rotated at fs/4 phase *phase + i when @p apply_rot is set, *phase then moved on. Returns 1, and touches nothing,
  * when the build has no SoapySDR. */
@@ -360,6 +381,9 @@ typedef struct {
     int (*read)(void* ctx, void* buff, size_t elems, long timeout_us);
     void* ctx;
     int cs16; /* the stream's format: CS16 when set, else CF32 */
+    /* CS16: the full scale the driver reports for its native CS16 (getNativeStreamFormat()); 0: CS16 is not its
+     * native format, so it is read at 32768. */
+    double full_scale;
 } rtl_device_test_soapy_driver;
 
 /* A SoapySDR device into @p ring whose stream calls reach @p driver (kept by the caller until the device is freed), not

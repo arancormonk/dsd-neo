@@ -139,7 +139,8 @@ Optional Soapy-specific keys:
 - `soapy_profile = "auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd|sddc"` selects a capability profile.
   `auto` detects from the Soapy driver/hardware strings.
 - `soapy_stream_format = "auto|cf32|cs16"` controls RX stream format selection. `auto` prefers the device native
-  format when it is `CF32` or `CS16`, then falls back to supported formats.
+  format when it is `CF32` or `CS16`, then falls back to supported formats. See [Signal levels on a CS16
+  stream](#signal-levels-on-a-cs16-stream) for how `CS16` samples are scaled.
 - `soapy_antenna = "<name>"` selects a listed RX antenna.
 - `soapy_clock = "<source>"` selects a listed clock source.
 - `soapy_settings = "key=value[,key=value...]"` writes generic Soapy device settings before stream setup. Items may be
@@ -193,6 +194,32 @@ rtl_volume = 2
 
 Set `rtl_freq` explicitly for predictable startup frequency. `rtl_volume` is a monitor/non-symbol gain field and does not
 scale SoapySDR or other RTL-family digital symbols.
+
+### Signal levels on a CS16 stream
+
+A `CS16` stream hands DSD-neo whole numbers, and the driver says how large they can get. `SoapySDRUtil --probe`
+shows it as `Native format: CS16 [full-scale=2048]`, and DSD-neo logs it at start as
+`native=CS16 [full-scale=2048]`.
+
+- When `CS16` is the radio's native format, DSD-neo divides each sample by that full scale. A sample at the radio's
+  limit then reads as 0 dBFS, as it does on a `CF32` stream.
+- When `CS16` is not native (for example an RTL-SDR forced to `cs16`), or the driver reports no usable full scale,
+  DSD-neo divides by 32768, the scale SoapySDR's own converters use.
+- The input level meter counts a `CS16` sample as clipping once it reaches 99% of full scale. That catches both
+  limits of every radio, also the ones whose top value sits a little below the bottom one.
+
+PlutoSDR and bladeRF send 12-bit samples with a full scale of 2048. DSD-neo used to divide them by 32768, so on
+`CS16` (what `auto` picks for them) every level read about 24 dB too low, and the meter never showed HOT or
+CLIPPING even when the radio was overloaded. They are now scaled by 2048:
+
+- On a PlutoSDR or bladeRF with a `CS16` stream, every level reads about 24 dB higher than before: the input level
+  meter, RF level and the low-level advice.
+- A level squelch set on one of these radios needs raising by about 24 dB, for example from -80 to -56. That covers
+  `rtl_sql` (or `sql` in the `-i soapy:` spec) and a scan row's `--squelch-db`. Auto and noise squelch learn their
+  level from the signal and need no change.
+- Decoding and audio do not change.
+- If you set `soapy_stream_format = "cf32"` to work around the low levels, nothing changes for you: the driver
+  already divided by 2048 on `CF32`. You can keep it, or go back to `auto`.
 
 ## 3a) RX-888 and other SDDC devices
 

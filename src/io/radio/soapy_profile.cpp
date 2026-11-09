@@ -395,6 +395,15 @@ soapy_choose_stream_format(const std::vector<std::string>& supported_formats, co
 }
 
 double
+soapy_cs16_full_scale(const std::string& stream_format, const std::string& native_format, double native_full_scale) {
+    if (stream_format == "CS16" && native_format == "CS16" && std::isfinite(native_full_scale)
+        && native_full_scale >= 1.0 && native_full_scale <= kSoapyCs16DefaultFullScale) {
+        return native_full_scale;
+    }
+    return kSoapyCs16DefaultFullScale;
+}
+
+double
 soapy_nearest_in_ranges(double requested, const std::vector<SoapyRange>& ranges, bool* out_supported) {
     if (out_supported) {
         *out_supported = false;

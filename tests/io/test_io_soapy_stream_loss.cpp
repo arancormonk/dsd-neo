@@ -147,7 +147,7 @@ fake_read(void* ctx, void* buff, size_t elems, long timeout_us) {
     }
 }
 
-rtl_device_test_soapy_driver g_driver = {fake_setup, fake_read, &g_fake, 1};
+rtl_device_test_soapy_driver g_driver = {fake_setup, fake_read, &g_fake, 1, 0.0};
 
 void
 reset_fake(int mode) {

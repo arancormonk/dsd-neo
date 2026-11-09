@@ -16889,6 +16889,28 @@ if(DSD_HAS_RADIO)
     )
     add_test(NAME IO_SOAPY_CS16_COPY COMMAND dsd-neo_test_io_soapy_cs16_copy)
 
+    # A 12-bit native CS16 stream (full scale 2048, Pluto and bladeRF) reaches the input ring as the driver's CF32
+    # (code / 2048) does, bit for bit: a real capture through the reader against the stand-in driver, both ways.
+    # Skips in a build without SoapySDR.
+    add_executable(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        io/test_io_soapy_cs16_full_scale.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_soapy_cs16_full_scale
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_SOAPY_CS16_FULL_SCALE
+        COMMAND
+            dsd-neo_test_io_soapy_cs16_full_scale
+            ${PROJECT_SOURCE_DIR}/tests/fixtures/iq/p25p1_c4fm_cc.iq
+    )
+
     # The narrow spectrum's frame buffers: the average carries across buffers, and a
     # frame folded while readers hold every spare buffer reaches the next one.
     add_executable(

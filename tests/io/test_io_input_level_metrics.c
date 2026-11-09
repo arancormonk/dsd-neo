@@ -278,21 +278,94 @@ test_cs16_metrics(void) {
     int16_t hot[1000] = {0};
     hot[10] = 32000;
     dsd_input_level_snapshot snapshot;
-    assert(dsd_input_level_metrics_from_cs16(hot, 1000U, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == 0);
+    assert(dsd_input_level_metrics_from_cs16(hot, 1000U, 32768.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == 0);
     classify(&snapshot);
     assert(snapshot.status == DSD_INPUT_LEVEL_HOT);
     assert(snapshot.clip_pct == 0.0);
 
     int16_t clipped[1000] = {0};
     clipped[20] = -32760;
-    assert(dsd_input_level_metrics_from_cs16(clipped, 1000U, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == 0);
+    assert(dsd_input_level_metrics_from_cs16(clipped, 1000U, 32768.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot)
+           == 0);
     classify(&snapshot);
     assert(snapshot.status == DSD_INPUT_LEVEL_CLIPPING);
     assert(fabs(snapshot.clip_pct - 0.1) < 1e-9);
 
-    assert(dsd_input_level_metrics_from_cs16(NULL, 1000U, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == -1);
-    assert(dsd_input_level_metrics_from_cs16(hot, 0U, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == -1);
-    assert(dsd_input_level_metrics_from_cs16(hot, 1000U, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, NULL) == -1);
+    assert(dsd_input_level_metrics_from_cs16(NULL, 1000U, 32768.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == -1);
+    assert(dsd_input_level_metrics_from_cs16(hot, 0U, 32768.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot) == -1);
+    assert(dsd_input_level_metrics_from_cs16(hot, 1000U, 32768.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, NULL) == -1);
+    const double bad_scales[] = {0.0, 0.5, -2048.0, 32769.0, NAN, INFINITY};
+    for (size_t i = 0U; i < sizeof bad_scales / sizeof bad_scales[0]; i++) {
+        assert(
+            dsd_input_level_metrics_from_cs16(hot, 1000U, bad_scales[i], DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot)
+            == -1);
+    }
+}
+
+/* Whether one @p sample among 999 silent ones counts as clipped at @p full_scale. */
+static int
+cs16_sample_clips(int16_t sample, double full_scale) {
+    int16_t samples[1000] = {0};
+    samples[500] = sample;
+    dsd_input_level_snapshot snapshot;
+    assert(dsd_input_level_metrics_from_cs16(samples, 1000U, full_scale, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &snapshot)
+           == 0);
+    assert(snapshot.clip_pct == 0.0 || fabs(snapshot.clip_pct - 0.1) < 1e-9);
+    return snapshot.clip_pct > 0.05;
+}
+
+/* A CS16 sample clips at or past 0.99 of its full scale, the rails and the codes next to them: at 32768 the positive
+ * rail of 12-bit samples left aligned in 16 bits (+32752, as SoapyAirspy and LMS7 deliver them) and -32760; at 2048
+ * (Pluto, bladeRF) 2028 and past. */
+static void
+test_cs16_clip_rule(void) {
+    assert(cs16_sample_clips(32752, 32768.0));
+    assert(cs16_sample_clips(-32760, 32768.0));
+    assert(cs16_sample_clips(INT16_MAX, 32768.0));
+    assert(cs16_sample_clips(INT16_MIN, 32768.0));
+    assert(cs16_sample_clips(32441, 32768.0));
+    assert(cs16_sample_clips(-32441, 32768.0));
+    assert(!cs16_sample_clips(32440, 32768.0));
+    assert(!cs16_sample_clips(-32440, 32768.0));
+    assert(cs16_sample_clips(32752, 32767.0));
+
+    assert(cs16_sample_clips(2047, 2048.0));
+    assert(cs16_sample_clips(-2048, 2048.0));
+    assert(cs16_sample_clips(2028, 2048.0));
+    assert(cs16_sample_clips(-2028, 2048.0));
+    assert(!cs16_sample_clips(2027, 2048.0));
+    assert(!cs16_sample_clips(-2027, 2048.0));
+    assert(cs16_sample_clips(2047, 2047.0));
+}
+
+/* At 2048 a 12-bit source reads as the same level as 16-bit samples sixteen times larger at 32768: its rail is full
+ * scale (HOT, then CLIPPING), and its RMS is not 24 dB low. */
+static void
+test_cs16_full_scale_levels(void) {
+    int16_t narrow[1000];
+    int16_t wide[1000];
+    for (size_t i = 0U; i < 1000U; i++) {
+        narrow[i] = (int16_t)((i & 1U) ? 512 : -512);
+        wide[i] = (int16_t)(narrow[i] * 16);
+    }
+    dsd_input_level_snapshot at_2048;
+    dsd_input_level_snapshot at_32768;
+    assert(dsd_input_level_metrics_from_cs16(narrow, 1000U, 2048.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &at_2048) == 0);
+    assert(dsd_input_level_metrics_from_cs16(wide, 1000U, 32768.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &at_32768) == 0);
+    assert(fabs(at_2048.rms_dbfs - at_32768.rms_dbfs) < 1e-9);
+    assert(fabs(at_2048.peak_dbfs - at_32768.peak_dbfs) < 1e-9);
+    assert(fabs(at_2048.rms_dbfs - (20.0 * log10(0.25))) < 1e-6);
+
+    narrow[7] = 2000;
+    assert(dsd_input_level_metrics_from_cs16(narrow, 1000U, 2048.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &at_2048) == 0);
+    classify(&at_2048);
+    assert(at_2048.status == DSD_INPUT_LEVEL_HOT);
+    assert(at_2048.clip_pct == 0.0);
+    narrow[7] = 2047;
+    assert(dsd_input_level_metrics_from_cs16(narrow, 1000U, 2048.0, DSD_INPUT_LEVEL_SOURCE_SOAPY_CS16, &at_2048) == 0);
+    classify(&at_2048);
+    assert(at_2048.status == DSD_INPUT_LEVEL_CLIPPING);
+    assert(at_2048.peak_dbfs > -0.01);
 }
 
 static void
@@ -533,6 +606,8 @@ main(void) {
     test_cu8_moment_reduction_boundaries();
     test_cu8_moment_guards_and_overflow();
     test_cs16_metrics();
+    test_cs16_clip_rule();
+    test_cs16_full_scale_levels();
     test_cf32_metrics();
     test_cf32_reduction_exact();
     test_levels_stamped_on_realtime_monotonic_ms();

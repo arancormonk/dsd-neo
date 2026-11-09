@@ -203,7 +203,7 @@ bench_soapy(PacedDriver* driver, input_ring_state* ring) {
         }
     }
     driver->read_ns = (uint64_t)driver->options.elems * 1000000000ULL / driver->options.rate;
-    const rtl_device_test_soapy_driver seam = {driver_setup, driver_read, driver, cs16};
+    const rtl_device_test_soapy_driver seam = {driver_setup, driver_read, driver, cs16, 0.0};
     rtl_device* dev = rtl_device_test_soapy_device(ring, &seam);
     if (!dev) {
         return 1;

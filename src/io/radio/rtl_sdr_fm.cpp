@@ -3152,6 +3152,16 @@ rtl_stream_input_level_read(dsd_input_level_snapshot* out) {
     return 0;
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" int
+rtl_stream_test_input_level_read(struct dsd_input_level_snapshot* out) {
+    if (!out) {
+        return 0;
+    }
+    return rtl_stream_input_level_read(out);
+}
+#endif
+
 static void
 rtl_decode_health_reset(void) {
     g_decode_health_valid.store(0, std::memory_order_release);
