@@ -959,12 +959,13 @@ struct CrashAtMove {
     ReplayStore::Move
     move(bool moves) {
         return [this, moves](const QString& staged, const QString& destination) {
-            int sourceLeft = 0;
-            const int error =
-                !moves ? EIO
-                : dsd_rename_noreplace(staged.toUtf8().constData(), destination.toUtf8().constData(), &sourceLeft) == 0
-                    ? 0
-                    : errno;
+            int error = EIO;
+            if (moves) {
+                int sourceLeft = 0;
+                const int rc =
+                    dsd_rename_noreplace(staged.toUtf8().constData(), destination.toUtf8().constData(), &sourceLeft);
+                error = rc == 0 ? 0 : errno;
+            }
             this->destination = destination;
             manifest = read_file(ReplayStore::manifestPath());
             systems = read_file(dsd_qt::json_store_path(QStringLiteral("saved_systems.json")));

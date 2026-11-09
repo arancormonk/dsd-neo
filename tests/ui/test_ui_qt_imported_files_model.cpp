@@ -1811,7 +1811,7 @@ test_reason_under_ascii_logging() {
     {
         TestHost host;
         dsd_qt::ImportedFilesModel model(&host);
-        QTemporaryDir source;
+        const QTemporaryDir source;
         const QString badMode = source.filePath("bad-mode.csv");
         expect("ASCII reason fixture", write_file(badMode, "channel,frequency,mode\n1,851012500,warp\n"));
         const QString why = importAndWait(model, badMode, "bad-mode.csv", "chan").value("detail").toString();
@@ -1831,7 +1831,7 @@ void
 test_startup_cleanup_asks_the_live_engine() {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     TestHost host;
-    QTemporaryDir source;
+    const QTemporaryDir source;
     const QString bundled = source.filePath("bundled.csv");
     expect("live-engine fixtures",
            write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
@@ -1852,7 +1852,7 @@ test_startup_cleanup_asks_the_live_engine() {
     host.running = false;
     host.engine = true;
     {
-        dsd_qt::ImportedFilesModel model(&host, &service);
+        const dsd_qt::ImportedFilesModel model(&host, &service);
         waitForWorker(service);
         expect("the startup cleanup asks the live engine, not the cached phase", QFileInfo::exists(orphan + "/0.csv"));
         expect("journal recovery asks the live engine too", QFileInfo::exists(unsaved + "/0.csv"));

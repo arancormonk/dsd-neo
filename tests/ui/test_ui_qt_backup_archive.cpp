@@ -1085,7 +1085,7 @@ test_carry_cross_bundle_reference() {
     const int bRow = row_where(out, "path", bMap);
     expect("bundle B keeps its row and root", bRow >= 0 && out.at(bRow).toObject().value("bundleRoot") == b);
 
-    QTemporaryDir staged;
+    const QTemporaryDir staged;
     for (const auto& file : parsed.files) {
         expect("stage a carried file",
                write_file(staged.filePath(file.path), built.archive.mid(file.offset, file.size)));

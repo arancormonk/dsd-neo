@@ -192,10 +192,10 @@ class Builder {
         }
         for (const auto& value : m_stores.value(QLatin1String(kImportedFilesStore))) {
             const QJsonObject row = value.toObject();
+            const QString path = variant_string(row.value(QLatin1String("path")));
+            const QString type = row.value(QLatin1String("type")).toString();
             QStringList reached;
-            if (library_reached_files({LibraryFile{variant_string(row.value(QLatin1String("path"))),
-                                                   row.value(QLatin1String("type")).toString()}},
-                                      &reached)) {
+            if (library_reached_files({LibraryFile{path, type}}, &reached)) {
                 for (const QString& file : reached) {
                     m_namedFiles.insert(file);
                 }
