@@ -26379,6 +26379,39 @@ test_refused_load_keeps_the_autosave(void) {
     return rc;
 }
 
+/*
+ * A load whose apply says something of its own keeps it on the status line, in place of "Config loaded from": also
+ * when the apply sets the very text a load just before it set, within the same second, as loading the same file twice
+ * in a row does. Every toast counts (dsd_state_toast_publish()), so the apply's is told from the one before it.
+ */
+static int
+test_config_load_keeps_a_repeated_apply_toast(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsdneoUserConfig cfg;
+    static dsd_app_config_load_payload load;
+    static const char k_path[] = "dsdneo_repeated_load.ini";
+    static const char k_note[] = "Config applied; restart to use the new frontend";
+    init_decode_mode_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_NULL;
+    opts.frontend_kind = DSD_FRONTEND_NONE;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.frontend_kind_is_set = 1;
+    cfg.frontend_kind = DSD_FRONTEND_TERMINAL;
+    int rc = drain_config_load(&opts, &state, &cfg, 1, k_path, "first load");
+    rc |= expect_str("first load: the apply's own toast", state.ui_msg, k_note);
+    DSD_MEMSET(&load, 0, sizeof load);
+    load.config = cfg;
+    load.autosave.autosave_enabled = 1;
+    DSD_SNPRINTF(load.autosave.path, sizeof load.autosave.path, "%s", k_path);
+    rc |= expect_true("second load queued", dsd_app_command_load_config(&load) > 0);
+    rc |= expect_int("second load drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("second load: the apply's repeated toast stays", state.ui_msg, k_note);
+    rc |= expect_str("second load: the autosave target", state.config_autosave_path, k_path);
+    freeState(&state);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /*
  * Issue #671: the scanner on resumes a paused -Y scan whose row's tune lands (a rigctl peer that takes it): the scan
@@ -26945,12 +26978,18 @@ test_trunk_scan_pauses_for_an_entry_and_resumes(void) {
    request of the last park is kept for a case to answer later. */
 static dsd_trunk_tune_result g_entry_park_result = DSD_TRUNK_TUNE_RESULT_OK;
 static uint64_t g_entry_park_request;
+/* When set, the park puts this on the status line, as a call the go-to makes can. */
+static const char* g_entry_park_toast;
 
 static dsd_trunk_tune_result
 entry_park_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)opts;
     (void)ted_sps;
     g_entry_park_request = request_id;
+    if (state && g_entry_park_toast) {
+        DSD_SNPRINTF(state->ui_msg, sizeof state->ui_msg, "%s", g_entry_park_toast);
+        dsd_state_toast_publish(state, dsd_realtime_time() + 4);
+    }
     if (state && dsd_trunk_tune_result_is_ok(g_entry_park_result)) {
         state->trunk_cc_freq = freq;
     }
@@ -27098,7 +27137,21 @@ test_trunk_scan_entry_holds_the_target(void) {
     rc |= entry_park_answers(&opts, &state, DSD_TRUNK_TUNE_RESULT_FAILED, "untoasted failure drained");
     rc |= expect_str("an untoasted go-to's failure is named", state.ui_msg, "Failed: tune to #2 b");
 
+    /* A go-to whose own call put a text on the status line keeps it, even when that is the text already shown within
+       the same second: every toast counts (dsd_state_toast_publish()), so the call's is told from the one before. */
     g_entry_park_result = DSD_TRUNK_TUNE_RESULT_OK;
+    static const char k_park_note[] = "Park note from the go-to's own call";
+    const uint32_t toasted = strcmp(state.trunk_scan_active_id, "b") == 0 ? 851000000U : 452000000U;
+    DSD_SNPRINTF(state.ui_msg, sizeof state.ui_msg, "%s", k_park_note);
+    dsd_state_toast_publish(&state, dsd_realtime_time() + 4);
+    g_entry_park_toast = k_park_note;
+    rc |= expect_int("repeated toast entry queued", post_u32(DSD_APP_CMD_RTL_SET_FREQ, toasted),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeated toast entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    g_entry_park_toast = NULL;
+    rc |= expect_trunk_entry_held(&state, toasted == 851000000U ? "a" : "b", "repeated toast entry holds");
+    rc |= expect_str("a go-to keeps its call's repeated toast", state.ui_msg, k_park_note);
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     g_cc_tune_through_hooks = 0;
 #endif
@@ -29430,6 +29483,7 @@ main(void) {
     rc |= test_config_judges_only_what_it_breaks();
     rc |= test_menu_refuses_what_the_next_start_refuses();
     rc |= test_refused_load_keeps_the_autosave();
+    rc |= test_config_load_keeps_a_repeated_apply_toast();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_config_resumes_a_paused_list();
 #endif

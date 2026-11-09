@@ -110,7 +110,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "key_commands.h"
@@ -10001,8 +10000,7 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
  * says what loaded, unless the apply said something of its own.
  */
 static void
-cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, const char* msg_before,
-                          time_t msg_expire_before) {
+cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, uint32_t msg_seq_before) {
     /* The fields after the config, read field by field: the payload bytes carry no alignment. */
     dsd_app_config_metadata_payload autosave;
     char profile[sizeof(((dsd_app_config_load_payload*)0)->profile)];
@@ -10012,7 +10010,8 @@ cfg_adopt_loaded_autosave(dsd_state* state, const struct dsd_app_command* c, con
     profile[sizeof profile - 1] = '\0';
     state->config_autosave_enabled = autosave.autosave_enabled ? 1 : 0;
     DSD_SNPRINTF(state->config_autosave_path, sizeof state->config_autosave_path, "%s", autosave.path);
-    if (state->ui_msg_expire != msg_expire_before || strcmp(state->ui_msg, msg_before) != 0) {
+    /* Every toast the apply set counted (dsd_state_toast_publish()), the same text set again within its second too. */
+    if (state->ui_msg_seq != msg_seq_before) {
         return;
     }
     if (profile[0] != '\0') {
@@ -10099,9 +10098,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     if (!state || c->n < sizeof(dsdneoUserConfig)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
-    char msg_before[sizeof state->ui_msg];
-    DSD_SNPRINTF(msg_before, sizeof msg_before, "%s", state->ui_msg);
-    const time_t msg_expire_before = state->ui_msg_expire;
+    const uint32_t msg_seq_before = state->ui_msg_seq;
     /* "Config not applied" leaves nothing for the next start either: a refusal has staged nothing, and a rollback puts
        back what it had left waiting (issue #671), so no save writes a config the session did not take. */
     dsd_opts_next_start* next_before = (dsd_opts_next_start*)malloc(sizeof *next_before);
@@ -10135,7 +10132,7 @@ ui_cmd_handle_config_apply(dsd_opts* opts, dsd_state* state, const struct dsd_ap
         free(saves);
     }
     if (kept && c->n >= sizeof(dsd_app_config_load_payload)) {
-        cfg_adopt_loaded_autosave(state, c, msg_before, msg_expire_before);
+        cfg_adopt_loaded_autosave(state, c, msg_seq_before);
     }
     free(next_before);
     return rc;

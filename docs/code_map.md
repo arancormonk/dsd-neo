@@ -11112,7 +11112,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (`ui_menu_follow_decoder_toast()`), since an open overlay can cover the main screen's toast line. Every toast is
     counted: each writer, `ui_set_toast()` included, ends with `dsd_state_toast_publish()` (`<dsd-neo/core/state.h>`),
     which sets `ui_msg_expire` and increments `ui_msg_seq`, so the same text twice within its second is a new toast;
-    clearing a toast or amending the one just published does not count. The menu takes a toast as new when its count,
+    clearing a toast or amending the one just published does not count. A command that keeps a handler's own toast
+    over its generic outcome (`svc_scan_goto_entry()`, a config load's `cfg_adopt_loaded_autosave()`) compares the
+    count before and after the handler. The menu takes a toast as new when its count,
     expiry or text differs from the last one it showed; sanitizes it through `ui_text_sanitize()`; and holds it no
     longer than `ui_msg_expire` (`ui_status_expire_by()`). A toast live when the menu or a modal opens is marked seen
     there, so it never replaces the open hint. Tests: `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_CSV_PICKER`,

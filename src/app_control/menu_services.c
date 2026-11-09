@@ -2804,9 +2804,7 @@ svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match
     if (!opts || !state || !match || match->scanner == DSD_SCAN_ENTRY_NONE) {
         return DSD_SCAN_GOTO_REFUSED;
     }
-    char before[sizeof state->ui_msg];
-    DSD_SNPRINTF(before, sizeof before, "%s", state->ui_msg);
-    const time_t before_expire = state->ui_msg_expire;
+    const uint32_t seq_before = state->ui_msg_seq;
     long park_hz = 0;
     dsd_scan_goto_result result;
     p25_sm_tick_guard_enter();
@@ -2820,7 +2818,8 @@ svc_scan_goto_entry(dsd_opts* opts, dsd_state* state, const dsd_scan_entry_match
     p25_sm_tick_guard_leave();
     /* A failure inside the call is the outcome named below, not a late one to name again. */
     (void)dsd_engine_scan_entry_take_failure(state, NULL);
-    const int engine_toasted = state->ui_msg_expire != before_expire || strcmp(state->ui_msg, before) != 0;
+    /* Every toast counts (dsd_state_toast_publish()): the engine's failure set again with the same text is still its. */
+    const int engine_toasted = state->ui_msg_seq != seq_before;
     svc_scan_entry_toast_outcome(state, match, result, park_hz, engine_toasted);
     return (int)result;
 }
