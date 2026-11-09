@@ -113,6 +113,12 @@ bool bundle_reached_files(const QString& path, const QString& root, const QStrin
  */
 bool bundle_reached_revisions(const QString& path, const QString& root, const QString& type, QSet<QString>* names);
 
+/**
+ * Whether @p dir holds (at any depth) a file of @p named, the clean absolute paths backup::typed_file_paths() lists: a
+ * directory holding one is kept by every cleanup, since a saved system or another store still names it.
+ */
+bool holds_named_file(const QString& dir, const QStringList& named);
+
 /** One registered bundle whose old revisions a cleanup may reclaim. */
 struct BundleRevisions {
     QString path;

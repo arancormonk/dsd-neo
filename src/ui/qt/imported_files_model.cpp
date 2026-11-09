@@ -1276,6 +1276,14 @@ ImportedFilesModel::recoverJournal(const QList<Row>& rows) {
         ImportService::journalSetAside();
         return;
     }
+    // A saved system, scan list or profile may name a file in a journaled directory (a replace whose entry outlived
+    // its commit leaves an old revision only they reach). A store that cannot be read may name any of them: then
+    // nothing goes, and the journal keeps every entry for the next start.
+    bool named_ok = false;
+    const QStringList named = backup::typed_file_paths(&named_ok);
+    if (!named_ok) {
+        return;
+    }
     QList<BundleRevisions> bundles;
     for (const Row& row : rows) {
         if (!row.bundleRoot.isEmpty()) {
@@ -1286,7 +1294,8 @@ ImportedFilesModel::recoverJournal(const QList<Row>& rows) {
     for (const QString& dir : entries) {
         const bool owned = owned_bundle_root(dir) || owned_bundle_revision(dir);
         // A crash between a commit's journal entry and its index save left this; nothing names it, so it goes.
-        if (owned && !journaled_dir_referenced(dir, bundles) && !QDir(dir).removeRecursively()) {
+        const bool unnamed = !journaled_dir_referenced(dir, bundles) && !holds_named_file(dir, named);
+        if (owned && unnamed && !QDir(dir).removeRecursively()) {
             continue;
         }
         settled.append(dir);

@@ -1856,6 +1856,69 @@ test_journal_recovery() {
     QDir(again).removeRecursively();
 }
 
+/* A journal entry that outlived its replace (its removal failed) names a revision a later replace left behind, and a
+   saved system names a file in it: recovery keeps it, as the revision cleanup does. A store that cannot be read
+   deletes nothing and keeps the journal for the next start. */
+void
+test_journal_recovery_keeps_named_revisions() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    const QTemporaryDir source;
+    const QString bundled = source.filePath("bundled.csv");
+    expect("named journal fixtures",
+           write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n")
+               && write_file(bundled, "channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n"));
+    dsd_qt::ImportService service(host.importTransport());
+    QString stored;
+    QString root;
+    QString older;
+    QString keys;
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        stored = importAndWait(model, bundled, "bundled.csv", "chan").value("path").toString();
+        root = model.get(model.rowForPath(stored)).value("bundleRoot").toString();
+        older = root + '/' + revisionsOf(root).value(0);
+        keys = firstCompanion(stored, 3);
+        waitForWorker(service);
+        // The commit's journal entry could not be removed; a saved system then picks the stored key list.
+        expect("the replaced revision's entry outlives its commit", dsd_qt::ImportService::journalAdd({older}));
+        expect("a saved system names the older revision's key list",
+               dsd_qt::json_store_save_array("saved_systems.json",
+                                             QJsonArray{QJsonObject{{"uid", "s1"}, {"keyCsvPath", keys}}}));
+        expect("later replace",
+               write_file(source.filePath("keys.csv"), "keyid,value\n02,12345\n")
+                   && importAndWait(model, bundled, "bundled.csv", "chan", stored).value("ok").toBool());
+        waitForWorker(service);
+        expect("the map now reaches a new revision", !firstCompanion(stored, 3).startsWith(older + '/'));
+    }
+    const QString unnamed = root + "/99999999-9999-9999-9999-999999999999";
+    expect("an unnamed journaled revision", QDir().mkpath(unnamed) && write_file(unnamed + "/0.csv", "x\n")
+                                                && dsd_qt::ImportService::journalAdd({unnamed}));
+    {
+        const dsd_qt::ImportedFilesModel model(&host, &service);
+        expect("recovery keeps a journaled revision a saved system names a file in", QFileInfo::exists(keys));
+        expect("recovery still removes a journaled revision nothing names", !QFileInfo::exists(unnamed));
+        expect("the journal is settled", journal().isEmpty());
+    }
+
+    // An unreadable saved_systems.json may name anything: recovery deletes nothing and keeps the entries.
+    expect("an unnamed journaled revision again", QDir().mkpath(unnamed) && write_file(unnamed + "/0.csv", "x\n")
+                                                      && dsd_qt::ImportService::journalAdd({unnamed}));
+    expect("damage saved_systems.json", write_file(dsd_qt::json_store_path("saved_systems.json"), "{not json"));
+    {
+        const dsd_qt::ImportedFilesModel model(&host, &service);
+        expect("an unreadable store deletes nothing", QFileInfo::exists(unnamed + "/0.csv") && QFileInfo::exists(keys));
+        expect("an unreadable store keeps the journal for the next start", journal() == QStringList{unnamed});
+    }
+    QFile::remove(dsd_qt::json_store_path("saved_systems.json"));
+    {
+        dsd_qt::ImportedFilesModel model(&host, &service);
+        expect("a readable store settles the kept entry", !QFileInfo::exists(unnamed) && journal().isEmpty());
+        model.remove(model.rowForPath(stored));
+        waitForWorker(service);
+    }
+}
+
 } // namespace
 
 /* Issue #526: the channel-map review carries an analog row's own channel width in Hz -- an nfm row's
@@ -2815,6 +2878,7 @@ main(int argc, char** argv) {
     test_async_target_write_failure();
     test_startup_revision_cleanup();
     test_journal_recovery();
+    test_journal_recovery_keeps_named_revisions();
     test_channel_bundle();
     test_channel_bundle_quoted_options();
     test_channel_review_bandwidth();

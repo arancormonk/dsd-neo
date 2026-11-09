@@ -330,8 +330,10 @@ class ImportedFilesModel : public QAbstractListModel {
     void load();
     /**
      * @brief Settle the commit journal a crash left (load() only, before the prune): remove each journaled directory
-     * that @p rows do not reference (a row's bundle root, or a revision its primary reaches) and that lies under
-     * imports/bundles/ with an owned name. A journal that cannot be read deletes nothing and is set aside.
+     * that @p rows do not reference (a row's bundle root, or a revision its primary reaches), that holds no file a
+     * typed path field names (backup::typed_file_paths()), and that lies under imports/bundles/ with an owned name. A
+     * journal that cannot be read deletes nothing and is set aside; a store that cannot be read deletes nothing and
+     * keeps the journal.
      */
     static void recoverJournal(const QList<Row>& rows);
     bool save() const;

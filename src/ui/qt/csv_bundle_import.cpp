@@ -881,6 +881,13 @@ bundle_reached_revisions(const QString& path, const QString& root, const QString
     return true;
 }
 
+bool
+holds_named_file(const QString& dir, const QStringList& named) {
+    const QString prefix = QDir::cleanPath(dir) + '/';
+    return std::any_of(named.cbegin(), named.cend(),
+                       [&prefix](const QString& path) { return path.startsWith(prefix); });
+}
+
 namespace {
 /* The revision directories of @p root: owned names, real directories, no link. */
 QStringList
@@ -893,13 +900,6 @@ revisionDirectories(const QString& root) {
         }
     }
     return dirs;
-}
-
-bool
-holdsNamedFile(const QString& dir, const QStringList& named) {
-    const QString prefix = dir + '/';
-    return std::any_of(named.cbegin(), named.cend(),
-                       [&prefix](const QString& path) { return path.startsWith(prefix); });
 }
 
 void
@@ -923,7 +923,7 @@ cleanBundle(const BundleRevisions& bundle, const QStringList& named,
     }
     for (const auto& name : revisions) {
         const QString dir = root + '/' + name;
-        if (!reached.contains(name) && !inFlight.contains(dir) && !holdsNamedFile(dir, named)) {
+        if (!reached.contains(name) && !inFlight.contains(dir) && !holds_named_file(dir, named)) {
             QDir(dir).removeRecursively();
         }
     }
