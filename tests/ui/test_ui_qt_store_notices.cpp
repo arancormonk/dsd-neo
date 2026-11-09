@@ -7,9 +7,9 @@
  * list on its own thread even when a worker posted them, and only once its event loop runs; a real load and save on a
  * worker go through unreadable to kept; call history's seen store is never listed; a dismissal holds for the notice as
  * it was, and a change to it shows again; a copy kept before is still named after the file is unreadable again; the
- * Signal search store's files are taken as reported; a settings file running on its scratch copy reads "unsaved", and
- * call history's settings file is named apart from AppPrefs'. Run under ThreadSanitizer with the tsan-debug preset.
- * Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
+ * Signal search store's files are taken as reported; a settings file running on its scratch copy reads "unsaved" (or
+ * "defaults" with no folder for one), and call history's settings file is named apart from AppPrefs'. Run under
+ * ThreadSanitizer with the tsan-debug preset. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QCoreApplication>
 #include <QDir>
@@ -247,6 +247,17 @@ test_settings_scratch() {
     const QString name = dsd_qt::settings_recovery_prefs_file_name();
     expect("settings: unsaved", field(name, "state") == QLatin1String("unsaved"));
     expect("settings: named Settings", field(name, "store") == name);
+    // With no folder for a scratch copy the run holds defaults in memory, and the notice says so. A new start: the
+    // format's user path back on the real folder.
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                       QFileInfo(QFileInfo(path).absolutePath()).absolutePath());
+    env.noScratchFolder = [] { return true; };
+    expect("settings: in memory",
+           dsd_qt::recover_ini_settings(QSettings::IniFormat, dsd_qt::AppPrefs::settingsOrganization(),
+                                        dsd_qt::AppPrefs::settingsApplication(), env)
+               == dsd_qt::SettingsRecovery::Scratch);
+    QCoreApplication::processEvents();
+    expect("settings: defaults", field(name, "state") == QLatin1String("defaults"));
     // Call history's settings file is named after the application, whatever its extension.
     post_from_worker(QCoreApplication::applicationName() + QStringLiteral(".conf"), QString());
     QCoreApplication::processEvents();

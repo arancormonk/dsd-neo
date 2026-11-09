@@ -36,6 +36,16 @@ Item {
         function dismiss(file) { dismissed = dismissed.concat([file]); }
         function takeUnheard() { return []; }
     }
+    // And settings with no folder for a scratch copy: defaults held in memory
+    // (settings_recovery_in_memory()).
+    QtObject {
+        id: defaultsList
+        property var notices: [
+            {file: "dsd-neo-app.ini", store: "dsd-neo-app.ini", state: "defaults", kept: "", earlierKept: ""},
+            {file: "DSD-neo.conf", store: "call-history-settings", state: "defaults", kept: "DSD-neo.conf.unreadable-3", earlierKept: ""}]
+        function dismiss(file) {}
+        function takeUnheard() { return []; }
+    }
     // A sheet over Home, as any of Main's would be.
     Ui.ModalSheet {
         id: cover
@@ -220,6 +230,16 @@ Item {
                                                 "Some entries may be missing. The file was kept as DSD-neo.conf.unreadable-2, but changes made now won't be saved."]);
             tap(findChild(c, "storeNoticeDismiss"));
             compare(scratchList.dismissed, ["dsd-neo-app.ini", "DSD-neo.conf"]);
+        }
+
+        // With no folder for a scratch copy nothing the file held is in use: default settings, not missing entries.
+        function test_j_settings_on_defaults() {
+            var c = card();
+            c.source = defaultsList;
+            tryCompare(c, "visible", true);
+            compare(texts("storeNoticeTitle"), ["Settings couldn't be read completely", "Call history settings couldn't be read completely"]);
+            compare(texts("storeNoticeDetail"), ["The file couldn't be kept aside, so default settings are in use and changes made now won't be saved.",
+                                                "The file was kept as DSD-neo.conf.unreadable-3, but default settings are in use and changes made now won't be saved."]);
         }
 
         // 360 px with the largest text: every line wraps inside the card, and the card holds them all.

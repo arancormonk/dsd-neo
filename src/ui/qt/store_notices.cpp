@@ -109,7 +109,9 @@ StoreNotices::sync() {
             continue;
         }
         Notice notice{posted.fileName, store_key(posted.fileName), QString(), posted.keptName, QString()};
-        if (settings_recovery_scratch(posted.fileName)) {
+        if (settings_recovery_in_memory(posted.fileName)) {
+            notice.state = QStringLiteral("defaults");
+        } else if (settings_recovery_scratch(posted.fileName)) {
             notice.state = QStringLiteral("unsaved");
         } else if (!posted.keptName.isEmpty()) {
             notice.state = QStringLiteral("kept");

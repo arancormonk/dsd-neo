@@ -40,7 +40,8 @@ class StoreNotices : public QObject {
      *    settings file, whose name follows the application's;
      *  - state: "unreadable" (not moved yet: it is not written over), "kept" (moved aside as `kept`), "unsaved" (a
      *    settings file that could not be kept: this run's changes are not saved; `kept` is set when it was renamed
-     *    aside before that failed) or "leftInPlace" (the Signal search history of version 1, which is never moved);
+     *    aside before that failed), "defaults" (as "unsaved", with no folder for a scratch copy: this run uses
+     *    default settings) or "leftInPlace" (the Signal search history of version 1, which is never moved);
      *  - kept: the name it was kept as, else "";
      *  - earlierKept: for "unreadable", the name an earlier copy of the same file was kept as this run, else "".
      */

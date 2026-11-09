@@ -43,6 +43,10 @@ UiPanel {
             return qsTr("It was left in place.");
         if (notice.state === "kept")
             return qsTr("Some entries may be missing. The file was kept as %1.").arg(kept);
+        // Defaults: nothing the file held is in use, so no entry is "missing".
+        if (notice.state === "defaults")
+            return kept.length ? qsTr("The file was kept as %1, but default settings are in use and changes made now won't be saved.").arg(kept)
+                : qsTr("The file couldn't be kept aside, so default settings are in use and changes made now won't be saved.");
         if (notice.state === "unsaved")
             return kept.length ? qsTr("Some entries may be missing. The file was kept as %1, but changes made now won't be saved.").arg(kept)
                 : qsTr("Some entries may be missing. The file couldn't be kept aside, so changes made now won't be saved.");

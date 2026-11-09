@@ -12671,22 +12671,31 @@ Qt Quick frontend (`src/ui/qt`):
   - A regular file that could not be opened or read through cannot be copied, so it follows the stores' rename order:
     (1) the clean file of what its readable prefix parsed is written and synced as a temp, (2) the path, never
     followed (a link moves itself), is renamed with `dsd_rename_noreplace()` to the first free `<file>.unreadable-N`,
-    (3) the temp replaces it. A path confirmed gone at (2) is just written.
+    (3) the temp replaces it. A (3) that fails leaves the file kept, nothing at the path, and the run on scratch.
+  - A file confirmed gone after it was read (removed meanwhile; at the replacement for a copy, at the rename for a
+    rename) is Missing, as if the check had found none: the copy or temp is removed, nothing is written in its place,
+    no notice is posted, and nothing stays noted from an earlier check.
   - Anything else (an unknown stat answer, a folder, FIFO or socket, no free name, a failed copy, rename or write):
     nothing may write the file this run. `QSettings::setPath(format, UserScope,
     <CacheLocation>/settings-scratch/<ini|native>)` (without an app cache, a private `QTemporaryDir` held for the
     process) re-points the format, so every later `QSettings` of it (constructor writes such as the location expiry,
     static helpers, deferred flushes, destruction) writes a scratch copy seeded with the clean file of the keys that
-    parsed (the bytes read only when nothing could be parsed). The original stays byte-identical and the next start
-    tries again. `settings_recovery_scratch(fileName)` (per file) and `settings_recovery_scratch()` (any file) report
-    it, safe from any thread, apart from QSettings' status, which reads `NoError` from the scratch copy. A pending
+    parsed (the bytes read only when nothing could be parsed). With neither folder there is no scratch copy: the
+    format points at a folder no process can create, root included (`/dev/null/…`; on Windows a name holding `|`),
+    so its settings are defaults held in memory this run and nothing is written anywhere
+    (`settings_recovery_in_memory(fileName)`). The original stays byte-identical and the next start tries again.
+    `settings_recovery_scratch(fileName)` (per file, also true in memory) and `settings_recovery_scratch()` (any
+    file) report it, safe from any thread, apart from QSettings' status, which reads `NoError` from the scratch copy.
+    Every outcome of `recover_ini_settings()` replaces what an earlier check noted for the file. A pending
     restore is Deferred while AppPrefs' file (`settings_recovery_prefs_file_name()`) is on scratch (`backup_apply.cpp`),
     so a scratch sync never counts as a restore; call history's settings alone do not hold a restore back.
   - Each kept or scratch file posts a `JsonStoreNotice` through `json_store_post_notice()`: `fileName` is the settings
     file's own name (`dsd-neo-app.ini`; call history's `<application>.conf`, `DSD-neo.conf` in the app), `reason` is
-    for the log, and `keptName` is the kept file's name, empty when nothing was kept. Whether the file runs on scratch
-    is `settings_recovery_scratch(fileName)`, not the notice (a rename can succeed and the write after it fail).
-  - `SettingsRecoveryEnv` injects a read error after N bytes and a failing copy, rename or write for tests.
+    for the log (in memory, it ends "; no folder for a scratch copy", so the notice changes and the card shows it), and
+    `keptName` is the kept file's name, empty when nothing was kept. Whether the file runs on scratch is
+    `settings_recovery_scratch(fileName)`, not the notice (a rename can succeed and the write after it fail).
+  - `SettingsRecoveryEnv` injects a read error after N bytes, a failing copy, rename, write or replacement (a step
+    callback may also remove the file, which is how the gone cases are tested) and no scratch folder, for tests.
   Documented limits: a crash between the rename and the replacement leaves no settings file at the next start
   (defaults), with the original kept; a transient read error that hits only Qt's own later read, and not the check, is
   not seen. Tests: `UI_QT_SETTINGS_RECOVERY`.
@@ -12700,7 +12709,9 @@ Qt Quick frontend (`src/ui/qt`):
   earlierKept}`: `store` is what `Util.storeLabel()` names (the file name, or `call-history-settings` for call history's
   settings file, named after the application); `state` is `unreadable` (not moved, not written over), `kept`,
   `unsaved` (a settings file on its scratch copy, `settings_recovery_scratch(fileName)`; `kept` set when a rename
-  succeeded before the write failed) or `leftInPlace` (the version 1 Signal search journal); `earlierKept` names a copy
+  succeeded before the write failed), `defaults` (as `unsaved`, on defaults in memory,
+  `settings_recovery_in_memory(fileName)`; the card says default settings are in use rather than that entries may be
+  missing) or `leftInPlace` (the version 1 Signal search journal); `earlierKept` names a copy
   kept earlier this run of a file unreadable again after a clean save (json_store's notice then names none).
   `call_history_seen.json` is never listed. Shown in two runs: json_store's notices in the order it posted them, then
   the Signal search store's. `dismiss(file)` hides the notice as it stands (file, state, kept and earlier kept
@@ -12710,12 +12721,13 @@ Qt Quick frontend (`src/ui/qt`):
   by all its text, navigation-gated, its lines plain `Text`; it announces from a `Timer` it owns, not `Qt.callLater`;
   Dismiss dismisses every shown file. Its `source` is `storeNotices` (a test may hand it another list). Labels come
   from `Util.storeLabel()`, which the backup refusal uses too, so a file has one name: the avoid file is "Signal
-  search permanent avoids" on Home, in the backup message and on the Signal search screen. Its copy never promises lost data: "Some entries may be missing" (a 0-byte store is unreadable too). Write
-  failures are not on it: they stay on their screens (the Signal search line below, each model's save error). Tests:
-  `UI_QT_STORE_NOTICES` (queued delivery from workers under TSan, a real worker load and save, the seen store,
-  dismissals, read out once, earlier kept names, the Signal search files, a scratch settings file),
-  `tst_home_store_notices.qml` (labels per store, kept name after the move, dismissal and announcements across a
-  rebuilt Home, gating, both scratch-settings sentences, 360 px at the largest text).
+  search permanent avoids" on Home, in the backup message and on the Signal search screen. Its copy never promises
+  lost data: "Some entries may be missing" (a 0-byte store is unreadable too). Write failures are not on it: they stay
+  on their screens (the Signal search line below, each model's save error). Tests: `UI_QT_STORE_NOTICES` (queued
+  delivery from workers under TSan, a real worker load and save, the seen store, dismissals, read out once, earlier kept
+  names, the Signal search files, a scratch and an in-memory settings file), `tst_home_store_notices.qml` (labels per
+  store, kept name after the move, dismissal and announcements across a rebuilt Home, gating, both scratch-settings and
+  both default-settings sentences, 360 px at the largest text).
 - `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath` and `touch` build the next rows, save them, and only then change
   the model and signal. A failed save changes nothing in memory, sends no signal and returns false (`touch` stays

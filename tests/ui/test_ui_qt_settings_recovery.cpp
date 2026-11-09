@@ -8,9 +8,11 @@
  * a read error after a valid prefix; a malformed fallback file, which is not the settings file's problem; the original
  * kept byte-identical; a copy or a rewrite that fails, after which every QSettings of the format writes a scratch copy
  * (AppPrefs' constructor write, a deferred flush, the static helpers and destruction all leave the original alone); a
- * folder or FIFO at the path; the first call-history save after a malformed file; replacePortable() after a recovery;
- * and a pending restore that waits while the settings run on the scratch copy, then applies after a later start
- * recovers them. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
+ * folder or FIFO at the path; a file gone before it is kept (missing: nothing kept or written, no notice); a failed
+ * replacement after the rename; no folder for a scratch copy (defaults in memory, nothing written anywhere); a later
+ * check forgetting an earlier scratch; the first call-history save after a malformed file; replacePortable() after a
+ * recovery; and a pending restore that waits while the settings run on the scratch copy, then applies after a later
+ * start recovers them. Registered only when the Qt frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QByteArray>
 #include <QChar>
@@ -381,6 +383,174 @@ test_preservation_failure() {
     }
 }
 
+/* A notice for AppPrefs' file that only a test posts: still there after a recovery means the recovery posted none. */
+void
+post_sentinel_notice() {
+    dsd_qt::json_store_post_notice(
+        {dsd_qt::settings_recovery_prefs_file_name(), QStringLiteral("sentinel"), QString()});
+}
+
+bool
+sentinel_notice_stands() {
+    const dsd_qt::JsonStoreNotice* notice =
+        notice_for(dsd_qt::json_store_notices(), dsd_qt::settings_recovery_prefs_file_name());
+    return notice != nullptr && notice->reason == QLatin1String("sentinel");
+}
+
+/* Puts AppPrefs' file on its scratch copy (no kept name free), then clears the taken names for the next case. */
+void
+leave_prefs_on_scratch(const QString& what) {
+    reset();
+    expect(what + ": written for the earlier check", write_file(g_paths.prefs, kUnreadSection));
+    take_every_kept_name(what, g_paths.prefs);
+    expect(what + ": the earlier check is Scratch", recover_prefs() == SettingsRecovery::Scratch);
+    reset();
+}
+
+/* A file removed by someone else after it was read and before it was kept is a missing file, as if the check had found
+   none: nothing kept, nothing written in its place, no notice, and nothing left noted from an earlier check. */
+void
+test_gone_before_kept() {
+    const QByteArray original = "[decode]\nextraArgs=-Z\n\n[zz]\nlater=1\n";
+    const QString prefsName = dsd_qt::settings_recovery_prefs_file_name();
+
+    // Read error: the file goes as its rename aside starts.
+    leave_prefs_on_scratch("gone before the rename");
+    expect("gone before the rename: written", write_file(g_paths.prefs, original));
+    SettingsRecoveryEnv renamed;
+    renamed.readFailsAfter = [&original](const QString& path) {
+        return path == g_paths.prefs ? original.indexOf("[zz]") : qint64(-1);
+    };
+    renamed.writeFails = [](const char* step, const QString& path) {
+        if (std::strcmp(step, "keep") == 0 && path == g_paths.prefs) {
+            QFile::remove(path);
+        }
+        return false;
+    };
+    post_sentinel_notice();
+    expect("gone before the rename: Missing", recover_prefs(renamed) == SettingsRecovery::Missing);
+    expect("gone before the rename: nothing written or kept",
+           !QFileInfo::exists(g_paths.prefs) && !QFileInfo::exists(kept(g_paths.prefs, 1)));
+    expect("gone before the rename: no notice", sentinel_notice_stands());
+    expect("gone before the rename: not on scratch", !dsd_qt::settings_recovery_scratch(prefsName));
+    expect("gone before the rename: the real file is used", prefs_file_now() == g_paths.prefs);
+
+    // Read whole: the file goes after its copy was made, before the clean file replaces it.
+    leave_prefs_on_scratch("gone before the replacement");
+    expect("gone before the replacement: written", write_file(g_paths.prefs, kUnreadSection));
+    SettingsRecoveryEnv copied;
+    copied.writeFails = [](const char* step, const QString& path) {
+        if (std::strcmp(step, "rewrite") == 0 && path == g_paths.prefs) {
+            QFile::remove(path);
+        }
+        return false;
+    };
+    post_sentinel_notice();
+    expect("gone before the replacement: Missing", recover_prefs(copied) == SettingsRecovery::Missing);
+    expect("gone before the replacement: nothing written, the copy removed",
+           !QFileInfo::exists(g_paths.prefs) && !QFileInfo::exists(kept(g_paths.prefs, 1)));
+    expect("gone before the replacement: no notice", sentinel_notice_stands());
+    expect("gone before the replacement: not on scratch", !dsd_qt::settings_recovery_scratch(prefsName));
+}
+
+/* A later check that finds no file forgets that an earlier one left the file on scratch. */
+void
+test_missing_forgets_scratch() {
+    leave_prefs_on_scratch("missing after scratch");
+    expect("missing after scratch: Missing", recover_prefs() == SettingsRecovery::Missing);
+    expect("missing after scratch: no longer on scratch",
+           !dsd_qt::settings_recovery_scratch(dsd_qt::settings_recovery_prefs_file_name())
+               && !dsd_qt::settings_recovery_scratch());
+}
+
+/* Renamed aside, then the clean file could not take its place: the file is kept, nothing is at the path, and the run
+   writes a scratch copy, so nothing writes the path this run either. */
+void
+test_replace_fails_after_rename() {
+    reset();
+    const QByteArray original = "[decode]\nextraArgs=-Z\n\n[zz]\nlater=1\n";
+    expect("replace fails: written", write_file(g_paths.prefs, original));
+    SettingsRecoveryEnv env;
+    env.readFailsAfter = [&original](const QString& path) {
+        return path == g_paths.prefs ? original.indexOf("[zz]") : qint64(-1);
+    };
+    env.writeFails = [](const char* step, const QString&) { return std::strcmp(step, "replace") == 0; };
+    expect("replace fails: Scratch", recover_prefs(env) == SettingsRecovery::Scratch);
+    expect("replace fails: kept byte-identical, nothing at the path",
+           read_file(kept(g_paths.prefs, 1)) == original && !QFileInfo::exists(g_paths.prefs));
+    const QString prefsName = dsd_qt::settings_recovery_prefs_file_name();
+    expect("replace fails: on scratch, not in memory",
+           dsd_qt::settings_recovery_scratch(prefsName) && !dsd_qt::settings_recovery_in_memory(prefsName));
+    const dsd_qt::JsonStoreNotice* notice = notice_for(dsd_qt::json_store_notices(), prefsName);
+    expect("replace fails: the notice names the kept file",
+           notice != nullptr && notice->keptName == "dsd-neo-app.ini.unreadable-1");
+    expect("replace fails: the scratch copy holds the prefix",
+           prefs_file_now() != g_paths.prefs && AppPrefs::readPortable().value("decode/extraArgs") == "-Z");
+    {
+        AppPrefs prefs;
+        prefs.setAutoStartOnAttach(!prefs.autoStartOnAttach());
+        QCoreApplication::processEvents();
+    }
+    expect("replace fails: AppPrefs' writes leave the path empty", !QFileInfo::exists(g_paths.prefs));
+    expect("replace fails: the kept file is untouched", read_file(kept(g_paths.prefs, 1)) == original);
+}
+
+/* With no folder for a scratch copy, nothing is written anywhere: the run holds default settings in memory, the file
+   stays as it was, and the notice says so (settings_recovery_in_memory()). */
+void
+test_no_scratch_folder() {
+    const QString prefsName = dsd_qt::settings_recovery_prefs_file_name();
+    const QString cacheScratch =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/settings-scratch");
+    reset();
+    QDir(cacheScratch).removeRecursively();
+    expect("no scratch folder: written", write_file(g_paths.prefs, kUnreadSection));
+    take_every_kept_name("no scratch folder", g_paths.prefs);
+    SettingsRecoveryEnv env;
+    env.noScratchFolder = [] { return true; };
+    expect("no scratch folder: Scratch", recover_prefs(env) == SettingsRecovery::Scratch);
+    expect("no scratch folder: in memory",
+           dsd_qt::settings_recovery_scratch(prefsName) && dsd_qt::settings_recovery_in_memory(prefsName));
+    const QString inMemory = prefs_file_now();
+    expect("no scratch folder: the format points where no folder can be made",
+           inMemory != g_paths.prefs && !QDir().mkpath(QFileInfo(inMemory).absolutePath())
+               && !QFileInfo::exists(QFileInfo(inMemory).absolutePath()));
+    expect("no scratch folder: the settings are defaults", !AppPrefs::readPortable().contains("decode/extraArgs"));
+    {
+        AppPrefs prefs;
+        QCoreApplication::processEvents();
+        prefs.setAutoStartOnAttach(!prefs.autoStartOnAttach());
+        QCoreApplication::processEvents();
+    }
+    (void)AppPrefs::replacePortable({{"decode/extraArgs", "-Y"}});
+    expect("no scratch folder: the original is untouched", read_file(g_paths.prefs) == kUnreadSection);
+    expect("no scratch folder: nothing written in the app cache", !QFileInfo::exists(cacheScratch));
+    expect("no scratch folder: nothing written where the format points", !QFileInfo::exists(inMemory));
+    expect("no scratch folder: the taken names are untouched", kept_names_untouched(g_paths.prefs));
+    const dsd_qt::JsonStoreNotice* notice = notice_for(dsd_qt::json_store_notices(), prefsName);
+    expect("no scratch folder: a notice, naming no kept file",
+           notice != nullptr && notice->keptName.isEmpty() && !notice->reason.isEmpty());
+
+    // Renamed aside before the replacement failed: still in memory, with the kept name in the notice.
+    reset();
+    const QByteArray original = "[decode]\nextraArgs=-Z\n\n[zz]\nlater=1\n";
+    expect("no scratch folder, kept: written", write_file(g_paths.prefs, original));
+    env.readFailsAfter = [&original](const QString& path) {
+        return path == g_paths.prefs ? original.indexOf("[zz]") : qint64(-1);
+    };
+    env.writeFails = [](const char* step, const QString&) { return std::strcmp(step, "replace") == 0; };
+    expect("no scratch folder, kept: Scratch", recover_prefs(env) == SettingsRecovery::Scratch);
+    expect("no scratch folder, kept: in memory", dsd_qt::settings_recovery_in_memory(prefsName));
+    notice = notice_for(dsd_qt::json_store_notices(), prefsName);
+    expect("no scratch folder, kept: the notice names the kept file",
+           notice != nullptr && notice->keptName == "dsd-neo-app.ini.unreadable-1"
+               && read_file(kept(g_paths.prefs, 1)) == original);
+
+    relaunch();
+    dsd_qt::recover_settings_files();
+    expect("no scratch folder: a later start forgets it", !dsd_qt::settings_recovery_in_memory(prefsName));
+}
+
 /* A folder or a FIFO at the path is neither read nor written, and QSettings never opens it this run. */
 void
 test_not_a_file() {
@@ -653,6 +823,10 @@ main(int argc, char** argv) {
     test_fallback_ignored();
     test_preservation_failure();
     test_not_a_file();
+    test_gone_before_kept();
+    test_missing_forgets_scratch();
+    test_replace_fails_after_rename();
+    test_no_scratch_folder();
 #ifndef _WIN32
     test_link_at_the_path();
 #endif
