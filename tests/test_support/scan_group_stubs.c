@@ -7,7 +7,6 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <stddef.h>
-#include "../../src/core/util/talkgroup_policy_internal.h"
 
 /* The isolated coordinator fixtures do not load mapping files. Real parsing,
  * profile ownership and scope restoration are covered by CORE_SCAN_PROFILE. */
@@ -16,12 +15,6 @@ dsd_dmr_key_map_load(const char* path, dsd_dmr_key_map* out) {
     (void)path;
     (void)out;
     return -1;
-}
-
-dsd_tg_policy_store*
-dsd_tg_policy_ensure(dsd_state* state) {
-    (void)state;
-    return NULL;
 }
 
 dsd_tg_policy_store*

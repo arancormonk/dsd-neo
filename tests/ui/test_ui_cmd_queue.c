@@ -24214,47 +24214,149 @@ test_group_startup_list_guards_its_file(void) {
     return rc;
 }
 
-/* A learned alias is appended to the global group file even while a -Y row's own list (another file, or the same one)
-   is in effect. The global list held aside keeps its baseline in step with that row and takes the row itself, so once
-   the row is left the next saved change goes through and keeps the alias (R4). When the append creates the global
-   file, the global list (not the row's) starts its baseline, an empty global list included. While the row's list is
-   suspended (a group import edits the global list beneath it) the global list is the effective one, and the row's
-   list for the same file follows the append too. */
+/* While a -Y row's own list (-G) is in effect, the scan option puts the row's file in opts->group_in_file, so a learned
+   alias is appended to the row's file and folded into the row's list, the file's owner. The global list held aside is
+   another file's list: it keeps its rows and its baseline, so after the row is left an edit made to the global file
+   outside dsd-neo still stops the next save, and the alias never reaches the global file. That holds when the append
+   creates the row's file (0 bytes, or deleted after the row's list loaded). A row naming the global file is the one
+   case where the held list stands for the file too: both lists take the row and keep their baselines in step, also
+   while the row's list is suspended (a group import edits the global list beneath it). An incomplete list stops an
+   append only to its own file (R1). */
 enum {
     ROW_ALIAS_OWN_FILE,
     ROW_ALIAS_SAME_FILE,
+    ROW_ALIAS_ROW_FILE_EMPTY,
+    ROW_ALIAS_ROW_FILE_DELETED,
     ROW_ALIAS_GLOBAL_MISSING,
     ROW_ALIAS_NO_GLOBAL_LIST,
+    ROW_ALIAS_GLOBAL_INCOMPLETE,
+    ROW_ALIAS_ROW_INCOMPLETE,
     ROW_ALIAS_SUSPENDED
 };
+
+static const char* const k_row_alias_excel = "id;mode;name\n100;A;Dispatch\n";
+
+/* The global list before the row is entered: a file imported live, a startup file none of whose rows load, rows
+   entered this session with no file yet, or no list at all. */
+static int
+row_alias_global_setup(int mode, dsd_opts* opts, dsd_state* state, const char* global) {
+    int rc = 0;
+    if (mode == ROW_ALIAS_GLOBAL_MISSING || mode == ROW_ALIAS_NO_GLOBAL_LIST) {
+        rc |= remove(global) != 0;
+        DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", global);
+        if (mode == ROW_ALIAS_GLOBAL_MISSING) {
+            dsd_tg_policy_entry dispatch;
+            rc |= dsd_tg_policy_make_exact_entry(100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &dispatch);
+            rc |= dsd_tg_policy_append_exact(state, &dispatch);
+        }
+    } else if (mode == ROW_ALIAS_GLOBAL_INCOMPLETE) {
+        rc |= write_file_bytes(global, k_row_alias_excel, strlen(k_row_alias_excel));
+        DSD_SNPRINTF(opts->group_in_file, sizeof opts->group_in_file, "%s", global);
+        rc |= expect_int("R4 row incomplete global loads", csvGroupImport(opts, state), 0);
+        rc |= expect_true("R4 row global list incomplete", dsd_tg_policy_incomplete(state));
+    } else {
+        post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, global);
+        rc |= expect_int("R4 row global import drained", dsd_app_drain_cmds(opts, state), 1);
+    }
+    return rc;
+}
+
+static const char*
+row_alias_row_file_content(int mode) {
+    if (mode == ROW_ALIAS_ROW_FILE_EMPTY || mode == ROW_ALIAS_ROW_FILE_DELETED) {
+        return "";
+    }
+    return mode == ROW_ALIAS_ROW_INCOMPLETE ? k_row_alias_excel : "id,mode,name\n500,A,Row\n";
+}
+
+/* What the row's file holds once the alias was appended (or refused). */
+static const char*
+row_alias_row_file_after(int mode) {
+    if (mode == ROW_ALIAS_ROW_FILE_EMPTY || mode == ROW_ALIAS_ROW_FILE_DELETED) {
+        return "id,mode,name\n300,D,Learned\n";
+    }
+    return mode == ROW_ALIAS_ROW_INCOMPLETE ? k_row_alias_excel : "id,mode,name\n500,A,Row\n300,D,Learned\n";
+}
+
+/* What the global file holds after the row is left and 100 is locked out. */
+static const char*
+row_alias_global_after(int mode) {
+    switch (mode) {
+        case ROW_ALIAS_SAME_FILE:
+        case ROW_ALIAS_SUSPENDED: return "id,mode,name\n100,B,Dispatch\n300,D,Learned\n";
+        case ROW_ALIAS_NO_GLOBAL_LIST: return "id,mode,name\n100,B,\n";
+        case ROW_ALIAS_GLOBAL_INCOMPLETE: return k_row_alias_excel;
+        default: return "id,mode,name\n100,B,Dispatch\n";
+    }
+}
+
+/* The row is entered and left the way the -Y coordinator does it: the row's options (its -G path in
+   opts->group_in_file), then its list; on leave the list, then the configured options. */
+static int
+row_alias_enter(dsd_opts* opts, dsd_state* state, const dsd_scan_option_values* values,
+                const dsd_scan_row_profile* row) {
+    int rc = expect_int("R4 row scan scope", dsd_scan_mode_begin(opts, state), 0);
+    rc |= expect_int("R4 row options", dsd_scan_mode_options(opts, state, values), 0);
+    rc |= expect_str("R4 row file in use", opts->group_in_file, values->group_file);
+    rc |= expect_int("R4 row scope", dsd_scan_groups_begin(state), 0);
+    dsd_scan_groups_enter(state, row);
+    rc |= expect_true("R4 row list in effect", dsd_scan_groups_row_active(state));
+    return rc;
+}
+
+static int
+row_alias_learn(int mode, dsd_opts* opts, dsd_state* state) {
+    dsd_tg_policy_entry alias;
+    int rc =
+        expect_int("R4 row alias entry",
+                   dsd_tg_policy_make_exact_entry(300, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias), 0);
+    rc |= expect_true("R4 row alias learned", dsd_tg_policy_learn_exact(state, &alias) == DSD_TG_POLICY_LEARN_ADDED);
+    rc |= expect_int("R4 row alias appended", dsd_tg_policy_append_group_file_row(opts, state, &alias, ""),
+                     mode == ROW_ALIAS_ROW_INCOMPLETE ? 1 : 0);
+    return rc;
+}
+
+/* After the row: the global list has the alias only when it stands for the row's file. Where the append went to
+   another file, an edit made to the global file outside dsd-neo still stops the save, so its baseline stayed. */
+static int
+row_alias_check_global(int mode, dsd_opts* opts, dsd_state* state, const char* global) {
+    const int same_file = mode == ROW_ALIAS_SAME_FILE || mode == ROW_ALIAS_SUSPENDED;
+    dsd_tg_policy_lookup lookup;
+    int rc = expect_str("R4 row left: global file in use", opts->group_in_file, global);
+    rc |= expect_int("R4 row left: global list lookup", dsd_tg_policy_lookup_id(state, 300, &lookup), 0);
+    rc |= expect_int("R4 row left: global list has the alias only for its own file",
+                     lookup.match != DSD_TG_POLICY_MATCH_NONE, same_file);
+    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
+    if (mode == ROW_ALIAS_OWN_FILE || mode == ROW_ALIAS_ROW_FILE_EMPTY || mode == ROW_ALIAS_ROW_FILE_DELETED) {
+        const char* outside = "id,mode,name\n100,A,Dispatch\n200,A,Outside\n";
+        rc |= write_file_bytes(global, outside, strlen(outside));
+        rc |= expect_true("R4 row left: edit over an outside edit queued", dsd_app_command_set_tg_listen(&edit) > 0);
+        rc |= expect_int("R4 row left: edit over an outside edit drained", dsd_app_drain_cmds(opts, state), 1);
+        rc |= expect_str("R4 row left: outside edit stops the save", state->ui_msg, k_r4_changed_toast);
+        return rc | expect_file_bytes(global, outside);
+    }
+    rc |= expect_true("R4 row edit after leave queued", dsd_app_command_set_tg_listen(&edit) > 0);
+    rc |= expect_int("R4 row edit after leave drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |=
+        expect_true("R4 row edit after leave not refused as changed", strstr(state->ui_msg, "changed on disk") == NULL);
+    rc |= expect_file_bytes(global, row_alias_global_after(mode));
+    return rc;
+}
 
 static int
 test_group_alias_learned_on_a_row_list_is_kept(int mode) {
     const int same_file = mode == ROW_ALIAS_SAME_FILE || mode == ROW_ALIAS_SUSPENDED;
-    const int no_global_file = mode == ROW_ALIAS_GLOBAL_MISSING || mode == ROW_ALIAS_NO_GLOBAL_LIST;
     static dsd_opts opts;
     static dsd_state state;
     init_test_context(&opts, &state);
     char global[DSD_TEST_PATH_MAX], row_file[DSD_TEST_PATH_MAX];
     int rc = make_group_file(global, sizeof global, "dsd_r4_row_global", "id,mode,name\n100,A,Dispatch\n");
-    rc |= make_group_file(row_file, sizeof row_file, "dsd_r4_row_own", "id,mode,name\n500,A,Row\n");
+    rc |= make_group_file(row_file, sizeof row_file, "dsd_r4_row_own", row_alias_row_file_content(mode));
     if (rc != 0) {
         freeState(&state);
         return 1;
     }
-    if (no_global_file) {
-        // No file yet: a global list with rows entered this session, or no global list at all.
-        rc |= remove(global) != 0;
-        DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", global);
-        if (mode == ROW_ALIAS_GLOBAL_MISSING) {
-            dsd_tg_policy_entry dispatch;
-            rc |= dsd_tg_policy_make_exact_entry(100, "A", "Dispatch", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &dispatch);
-            rc |= dsd_tg_policy_append_exact(&state, &dispatch);
-        }
-    } else {
-        post_string(DSD_APP_CMD_IMPORT_GROUP_LIST, global);
-        rc |= expect_int("R4 row global import drained", dsd_app_drain_cmds(&opts, &state), 1);
-    }
+    rc |= row_alias_global_setup(mode, &opts, &state, global);
 
     dsd_scan_options parsed = {0};
     parsed.values.present = DSD_SCAN_OPT_GROUP;
@@ -24262,19 +24364,14 @@ test_group_alias_learned_on_a_row_list_is_kept(int mode) {
     dsd_key_set keys = {0};
     dsd_scan_row_profile* row = NULL;
     rc |= expect_int("R4 row profile loads", dsd_scan_profile_load(&parsed, 0, &row, &keys), 0);
-    rc |= expect_int("R4 row scope", dsd_scan_groups_begin(&state), 0);
-    dsd_scan_groups_enter(&state, row);
-    rc |= expect_true("R4 row list in effect", dsd_scan_groups_row_active(&state));
+    if (mode == ROW_ALIAS_ROW_FILE_DELETED) {
+        rc |= remove(row_file) != 0;
+    }
+    rc |= row_alias_enter(&opts, &state, &parsed.values, row);
     if (mode == ROW_ALIAS_SUSPENDED) {
         rc |= expect_true("R4 row list suspended", dsd_scan_groups_suspend(&state));
     }
-
-    dsd_tg_policy_entry alias;
-    rc |=
-        expect_int("R4 row alias entry",
-                   dsd_tg_policy_make_exact_entry(300, "D", "Learned", DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias), 0);
-    rc |= expect_true("R4 row alias learned", dsd_tg_policy_learn_exact(&state, &alias) == DSD_TG_POLICY_LEARN_ADDED);
-    rc |= expect_int("R4 row alias appended", dsd_tg_policy_append_group_file_row(&opts, &state, &alias, ""), 0);
+    rc |= row_alias_learn(mode, &opts, &state);
     if (mode == ROW_ALIAS_SUSPENDED) {
         dsd_scan_groups_resume(&state);
         dsd_tg_policy_lookup lookup;
@@ -24282,16 +24379,15 @@ test_group_alias_learned_on_a_row_list_is_kept(int mode) {
                                                                    && dsd_tg_policy_lookup_id(&state, 300, &lookup) == 0
                                                                    && strcmp(lookup.entry.name, "Learned") == 0);
     }
-    dsd_scan_groups_leave(&state);
-
-    dsd_app_tg_listen_payload edit = {.id_start = 100, .id_end = 100, .listen = 0, .table_index = -1};
-    rc |= expect_true("R4 row edit after leave queued", dsd_app_command_set_tg_listen(&edit) > 0);
-    rc |= expect_int("R4 row edit after leave drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("R4 row edit after leave saved", strstr(state.ui_msg, "changed on disk") == NULL);
-    rc |= expect_file_bytes(global, mode == ROW_ALIAS_NO_GLOBAL_LIST ? "id,mode,name\n300,D,Learned\n100,B,\n"
-                                                                     : "id,mode,name\n100,B,Dispatch\n300,D,Learned\n");
     if (!same_file) {
-        rc |= expect_file_bytes(row_file, "id,mode,name\n500,A,Row\n");
+        rc |= expect_file_bytes(row_file, row_alias_row_file_after(mode));
+    }
+    dsd_scan_groups_leave(&state);
+    dsd_scan_mode_leave(&opts, &state);
+
+    rc |= row_alias_check_global(mode, &opts, &state, global);
+    if (!same_file) {
+        rc |= expect_file_bytes(row_file, row_alias_row_file_after(mode));
     }
     dsd_scan_profile_free(row);
     dsd_key_set_free(&keys);
@@ -29550,11 +29646,9 @@ main(void) {
     rc |= test_group_outside_edit_is_not_overwritten();
     rc |= test_group_replaced_file_waits_for_its_reload();
     rc |= test_group_startup_list_guards_its_file();
-    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_OWN_FILE);
-    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_SAME_FILE);
-    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_GLOBAL_MISSING);
-    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_NO_GLOBAL_LIST);
-    rc |= test_group_alias_learned_on_a_row_list_is_kept(ROW_ALIAS_SUSPENDED);
+    for (int mode = ROW_ALIAS_OWN_FILE; mode <= ROW_ALIAS_SUSPENDED; mode++) {
+        rc |= test_group_alias_learned_on_a_row_list_is_kept(mode);
+    }
     rc |= test_direct_toast_repeat_counts();
     rc |= test_group_reload_rereads_the_file();
     rc |= test_group_reload_expected_path();

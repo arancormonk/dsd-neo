@@ -2755,7 +2755,9 @@ dsd_tg_policy_write_group_file(const dsd_opts* opts, dsd_state* state) {
 
 /* The lists an append to @p path keeps in step: every store the decoder holds whose baseline names the file (the
  * effective list, and the global or the row's list held aside while a -Y row's or trunk-scan target's own list is in
- * place), plus the list that owns the file (the global list) when the append creates the file and it has none. */
+ * place), plus the list that owns the file when the append creates it and that list has no baseline for it. The file is
+ * opts->group_in_file, which names the effective list's file (a row's -G path while the row's list is in effect), so
+ * the effective list owns it unless the list held aside already stands for it (a row naming the global file). */
 typedef struct {
     dsd_tg_policy_context* stores[TG_POLICY_SINK_HASHES];
     size_t count;
@@ -2780,8 +2782,8 @@ tg_policy_append_lists_collect(dsd_state* state, const char* path, int creates, 
     dsd_tg_policy_store* held = NULL;
     DSD_MEMSET(lists, 0, sizeof *lists);
     lists->effective = tg_policy_ctx_get_mut(state, 0);
-    // While a row's own list is in effect the global list, which owns the file, is the one held aside (maybe none).
-    lists->owner = dsd_scan_groups_held_store(state, &held) == 1 ? held : lists->effective;
+    (void)dsd_scan_groups_held_store(state, &held);
+    lists->owner = tg_policy_baseline_for(held, path) ? held : lists->effective;
     dsd_tg_policy_context* candidates[2] = {lists->effective, held};
     for (size_t i = 0; i < 2; i++) {
         if (tg_policy_baseline_for(candidates[i], path)) {
@@ -2791,6 +2793,21 @@ tg_policy_append_lists_collect(dsd_state* state, const char* path, int creates, 
     if (creates && lists->owner && !tg_policy_baseline_for(lists->owner, path)) {
         tg_policy_append_lists_add(lists, lists->owner);
     }
+}
+
+/* Whether a list that stands for the file was loaded incomplete: such a list is never written back to its file
+ * (dsd_tg_policy_incomplete()), not even a row at a time. A list for another file says nothing about this one. */
+static int
+tg_policy_append_lists_incomplete(const tg_policy_append_lists* lists) {
+    if (lists->owner && lists->owner->incomplete) {
+        return 1;
+    }
+    for (size_t i = 0; i < lists->count; i++) {
+        if (lists->stores[i]->incomplete) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* A list held aside that stands for the file takes the appended row too, as its next load of the file would (the file's
@@ -2865,8 +2882,7 @@ dsd_tg_policy_append_group_file_row(const dsd_opts* opts, dsd_state* state, cons
     dsd_managed_file_lock();
     int rc = tg_policy_probe_group_file(path, &probe);
     tg_policy_append_lists_collect(state, path, probe.missing_or_empty, &lists);
-    // An incomplete list is never written back to its file (dsd_tg_policy_incomplete()), not even a row at a time.
-    if (lists.owner && lists.owner->incomplete) {
+    if (tg_policy_append_lists_incomplete(&lists)) {
         dsd_managed_file_unlock();
         return 1;
     }
@@ -3249,11 +3265,6 @@ dsd_tg_policy_store_mark_incomplete(dsd_tg_policy_store* store) {
     if (store) {
         store->incomplete = 1;
     }
-}
-
-dsd_tg_policy_store*
-dsd_tg_policy_ensure(dsd_state* state) {
-    return tg_policy_ctx_get_mut(state, 1);
 }
 
 int

@@ -18,9 +18,6 @@ int dsd_tg_policy_store_append(dsd_tg_policy_store* store, const dsd_tg_policy_e
  * replaces it. The state form returns -1 when no store could be created to carry the mark, else 0. */
 void dsd_tg_policy_store_mark_incomplete(dsd_tg_policy_store* store);
 int dsd_tg_policy_mark_incomplete(dsd_state* state);
-/* The state's effective store, created empty in place (as a decoder write creates it) when there is none; NULL only
- * when it cannot be allocated. No reference is taken. */
-dsd_tg_policy_store* dsd_tg_policy_ensure(dsd_state* state);
 
 /* A group file's rows hash: 64-bit FNV-1a over the rows the importer accepts from it, in file order, each in the
  * canonical form a store keeps it (kind, bounds or pattern, mode, name, tags, priority, preempt, media). Line endings,
