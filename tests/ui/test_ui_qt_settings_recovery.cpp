@@ -680,6 +680,45 @@ test_no_system_temp_folder() {
 }
 #endif
 
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+/* No app cache, but a system temp folder anyone could write: nothing of the settings goes there, neither a work folder
+   nor a scratch copy. A healthy file is checked in place and left alone; one that is not clean runs on defaults in
+   memory. */
+void
+test_no_cache_writes_nothing_in_temp() {
+    const QString blocker = not_a_folder();
+    const QString temp =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/tmp-open");
+    expect("no cache, open temp: an empty temp folder", QDir().mkpath(temp));
+    {
+        const ScopedEnv tmp("TMPDIR", QFile::encodeName(temp));
+        const ScopedEnv cache("XDG_CACHE_HOME", QFile::encodeName(blocker + QStringLiteral("/cache")));
+        expect("no cache, open temp: the temp folder takes a folder", QTemporaryDir().isValid());
+        expect("no cache, open temp: no app cache",
+               !QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)));
+        expect_healthy_left_alone("no cache, open temp, healthy");
+        reset();
+        expect("no cache, open temp, not clean: written", write_file(g_paths.prefs, kUnreadSection));
+        take_every_kept_name("no cache, open temp, not clean", g_paths.prefs);
+        expect("no cache, open temp, not clean: Scratch", recover_prefs() == SettingsRecovery::Scratch);
+        expect("no cache, open temp, not clean: in memory",
+               dsd_qt::settings_recovery_in_memory(dsd_qt::settings_recovery_prefs_file_name()));
+        {
+            AppPrefs prefs;
+            prefs.setAutoStartOnAttach(!prefs.autoStartOnAttach());
+            QCoreApplication::processEvents();
+        }
+        expect("no cache, open temp, not clean: the original is untouched", read_file(g_paths.prefs) == kUnreadSection);
+        expect("no cache, open temp: nothing written in the temp folder",
+               QDir(temp).entryList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot).isEmpty());
+    }
+    relaunch();
+    reset();
+    QDir(temp).removeRecursively();
+    QFile::remove(blocker);
+}
+#endif
+
 /* The app cache cannot take the scratch copy (a file stands where its folder would go): the run holds defaults in
    memory and says so, and no copy of the settings is written anywhere else, the system temp folder included. Never
    "on scratch" with nothing in the copy. */
@@ -1092,6 +1131,9 @@ main(int argc, char** argv) {
     test_no_system_temp_folder();
 #endif
     test_scratch_copy_not_in_cache();
+#if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+    test_no_cache_writes_nothing_in_temp();
+#endif
 #ifndef _WIN32
     test_link_at_the_path();
 #endif

@@ -27,7 +27,9 @@
 
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/log.h>
-#ifndef Q_OS_WIN
+#ifdef Q_OS_WIN
+#include <algorithm>
+#else
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -288,7 +290,7 @@ removable_at(int parent, const char* name, int depth) {
 /* Removes @p name in the folder open as @p parent, which removable_at() allowed, never following a link: a file or a
    link is unlinked, a folder opened no-follow, checked to be the same folder, and emptied through its descriptor. */
 bool
-remove_at(int parent, const char* name, int depth) {
+remove_at(int parent, const char* name) {
     struct stat seen{};
     if (::fstatat(parent, name, &seen, AT_SYMLINK_NOFOLLOW) != 0) {
         return errno == ENOENT;
@@ -303,7 +305,7 @@ remove_at(int parent, const char* name, int depth) {
     bool emptied = true;
     const QList<QByteArray> names = entries_at(folder);
     for (const QByteArray& entry : names) {
-        emptied = remove_at(folder, entry.constData(), depth - 1) && emptied;
+        emptied = remove_at(folder, entry.constData()) && emptied;
     }
     (void)::close(folder);
     return emptied && ::unlinkat(parent, name, AT_REMOVEDIR) == 0;
@@ -321,7 +323,7 @@ remove_folder(const QString& dir, const QString& name, int depth) {
     struct stat seen{};
     if (::fstatat(parent, native.constData(), &seen, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(seen.st_mode)
         && removable_at(parent, native.constData(), depth)) {
-        (void)remove_at(parent, native.constData(), depth);
+        (void)remove_at(parent, native.constData());
     }
     (void)::close(parent);
 }
