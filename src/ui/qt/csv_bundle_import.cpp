@@ -499,6 +499,7 @@ copyCompanions(const ImportFetch& fetch, CopyBudget& budget, const BundleTarget&
         if (copy.isEmpty() || !placeInMirror(copy, target.mirrorRoot, relative, result)) {
             return {};
         }
+        result.stagedNames.insert(relative, name);
         replacements.insert(references[i], primaryDir.relativeFilePath(target.mirrorRoot + '/' + relative));
     }
     return replacements;
@@ -552,6 +553,7 @@ writeChannelPrimary(const BundleTarget& target, const QString& text, const QMap<
         return false;
     }
     result.stagedRelative.append(result.primaryRelative);
+    result.stagedNames.insert(result.primaryRelative, result.name);
     return true;
 }
 
@@ -579,7 +581,9 @@ stage_csv_bundle(const ImportFetch& fetch, const BundleTarget& target, const QSt
         // A plain map: its own bytes, at the replaced row's place or under its own name.
         result.primaryRelative = target.primaryRelative.isEmpty() ? result.name : target.primaryRelative;
         if (insideRelative(result.primaryRelative)) {
-            (void)placeInMirror(copied, target.mirrorRoot, result.primaryRelative, result);
+            if (placeInMirror(copied, target.mirrorRoot, result.primaryRelative, result)) {
+                result.stagedNames.insert(result.primaryRelative, result.name);
+            }
         } else {
             result.error = QStringLiteral("path");
         }
@@ -679,6 +683,7 @@ class TrunkBundleStager {
             return {};
         }
         result.stagedRelative.append(relative);
+        result.stagedNames.insert(relative, copied);
         stored.insert(identity, destination);
         return destination;
     }

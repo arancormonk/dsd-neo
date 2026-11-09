@@ -70,6 +70,8 @@ struct CsvBundleImport {
     QString revisionRelative;
     /** Every file the stage wrote in the mirror, relative to it: the companions, then the primary. */
     QStringList stagedRelative;
+    /** The name the user knows each of them by (the picked document's), keyed by its stagedRelative entry. */
+    QMap<QString, QString> stagedNames;
     /** Whether rootRelative is a new root (an existing root only gains a revision). */
     bool newRoot = false;
     qint64 copiedBytes = 0;

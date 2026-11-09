@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <algorithm>
 #include <cerrno>
 #include <memory>
 #include <qflags.h>
@@ -91,14 +92,27 @@ copy_failure(int code, const ImportCopyProgress& copy) {
     }
 }
 
-/* A parser's reason names the file by the path it read, which the user knows as @p name. */
+/*
+ * A parser's reason names files by the paths it read in the request's staging folder: each of @p files (a staged
+ * path and the name the user picked it by) is put back to that name. A reason still naming the staging folder (a path
+ * no entry covers) is dropped, so the message falls back to the generic one rather than show an app-private path.
+ */
 QString
-named_reason(QString detail, const QString& path, const QString& name) {
-    const QString canonical = QFileInfo(path).canonicalFilePath();
-    if (!canonical.isEmpty() && canonical != path) {
-        detail.replace(canonical, name);
+user_reason(QString detail, QList<std::pair<QString, QString>> files, const QString& stagingDir) {
+    // Longer paths first, so no path is replaced inside a longer one.
+    std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+    for (const auto& [path, name] : files) {
+        const QString canonical = QFileInfo(path).canonicalFilePath();
+        if (!canonical.isEmpty() && canonical != path) {
+            detail.replace(canonical, name);
+        }
+        detail.replace(path, name);
     }
-    return detail.replace(path, name);
+    const QString canonicalStaging = QFileInfo(stagingDir).canonicalFilePath();
+    if (detail.contains(stagingDir) || (!canonicalStaging.isEmpty() && detail.contains(canonicalStaging))) {
+        return {};
+    }
+    return detail;
 }
 
 /*
@@ -122,7 +136,7 @@ stage_single_file(const ImportJob& job, const QString& reference, const QString&
         QString detail;
         if (!ImportedFilesModel::validate(staged, type, &accepted, &skipped, &detail)) {
             result = failure(QStringLiteral("format"));
-            result.insert(QStringLiteral("detail"), named_reason(detail, staged, name));
+            result.insert(QStringLiteral("detail"), user_reason(detail, {{staged, name}}, job.stagingDir));
         } else {
             result = {{QStringLiteral("ok"), true},
                       {QStringLiteral("staged"), staged},
@@ -216,7 +230,12 @@ stage_bundle(const ImportJob& job, const QVariantMap& request) {
                                        : stage_csv_bundle(fetch, target, reference, fileName, companions, entries);
     QVariantMap result = bundle_map(bundle, target.mirrorRoot);
     result.insert(QStringLiteral("type"), type);
+    QList<std::pair<QString, QString>> files;
+    for (auto i = bundle.stagedNames.cbegin(); i != bundle.stagedNames.cend(); ++i) {
+        files.append({target.mirrorRoot + QLatin1Char('/') + i.key(), i.value()});
+    }
     if (!bundle.error.isEmpty()) {
+        result.insert(QStringLiteral("detail"), user_reason(bundle.detail, files, job.stagingDir));
         return result;
     }
     int accepted = 0;
@@ -226,7 +245,7 @@ stage_bundle(const ImportJob& job, const QVariantMap& request) {
     if (!ImportedFilesModel::validate(staged, type, &accepted, &skipped, &detail)) {
         result.insert(QStringLiteral("ok"), false);
         result.insert(QStringLiteral("error"), QStringLiteral("format"));
-        result.insert(QStringLiteral("detail"), named_reason(detail, staged, bundle.name));
+        result.insert(QStringLiteral("detail"), user_reason(detail, files, job.stagingDir));
         return result;
     }
     result.insert(QStringLiteral("accepted"), accepted);

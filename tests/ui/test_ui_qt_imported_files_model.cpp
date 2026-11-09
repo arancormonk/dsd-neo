@@ -1053,6 +1053,24 @@ test_async_import_outcomes() {
                && QFileInfo(two.value("path").toString()).fileName() == "header (3).csv");
     expect("both copies are listed", model.count() == 5 && twice.size() == 2);
 
+    // Two different documents with the same name (two agencies both ship a "dup.csv"): both are kept.
+    QTemporaryDir agencies;
+    const QString dupA = agencies.filePath("a/dup.csv");
+    const QString dupB = agencies.filePath("b/dup.csv");
+    expect("same-name fixtures", QDir(agencies.path()).mkpath("a") && QDir(agencies.path()).mkpath("b")
+                                     && write_file(dupA, "TG,Mode,Name\n101,D,Dispatch\n")
+                                     && write_file(dupB, "TG,Mode,Name\n201,D,PD\n202,D,FD\n"));
+    const QVariantMap dupOne = importAndWait(model, dupA, "dup.csv", "group");
+    const QVariantMap dupTwo = importAndWait(model, dupB, "dup.csv", "group");
+    const QString dupOnePath = dupOne.value("path").toString();
+    const QString dupTwoPath = dupTwo.value("path").toString();
+    expect("two documents of one name are both kept, at distinct paths",
+           dupOne.value("ok").toBool() && dupTwo.value("ok").toBool() && model.count() == 7 && dupOnePath != dupTwoPath
+               && model.rowForPath(dupOnePath) >= 0 && model.rowForPath(dupTwoPath) >= 0);
+    expect("the second leaves the first document's bytes as they were",
+           read_file(dupOnePath) == "TG,Mode,Name\n101,D,Dispatch\n"
+               && read_file(dupTwoPath) == "TG,Mode,Name\n201,D,PD\n202,D,FD\n");
+
     while (model.count() > 0) {
         model.remove(0);
     }
@@ -1121,8 +1139,6 @@ test_group_replace_busy() {
     const int row = model.rowForPath(stored);
 
     host.running = true;
-    expect("a synchronous group replace is refused while decoding",
-           replaceAndWait(model, row, repick, "repick.csv").value("error") == "busy");
     const QVariantMap atStart = importAndWait(model, repick, "repick.csv", "group", stored);
     expect("a group replace is refused at the start while decoding",
            atStart.value("error") == "busy"
@@ -1801,6 +1817,10 @@ test_channel_bundle() {
     result = importAndWait(model, channels, "Bundle.csv", "chan", rowPath(model, row),
                            {{"keys.csv", replacementKey}, {"map.csv", badMap}});
     expect("invalid companion rejects whole update", !result.value("ok").toBool());
+    // The parser's reason names the companion by the file the user picked, never by its staging copy.
+    const QString why = result.value("detail").toString();
+    expect("an invalid companion's reason names the picked file",
+           why.contains("invalid.csv") && !why.contains("import-staging"));
     expect("failed update keeps previous bundle", primary.open(QIODevice::ReadOnly) && primary.readAll() == original);
     primary.close();
     model.remove(row);
@@ -2463,6 +2483,14 @@ test_target_errors_and_opaque_columns() {
         expect("bad-key error provides row without key",
                detail.contains("row 2") && !detail.contains(QString::fromUtf8(secret)));
     }
+    // A channel map the target list names that its parser refuses: the reason never shows a staging path.
+    expect("write bad channel companion",
+           write_file(source.filePath("bad-chan.csv"), "channel,frequency_hz,mode\n1,461000000,warp\n")
+               && write_file(path, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,"
+                                   "notes\nscan,dmr-trunk,461000000,bad-chan.csv,,,\n"));
+    const QString badChan = importAndWait(model, path, "Targets.csv", "trunkTargets").value("detail").toString();
+    expect("a refused companion's reason names no staging path",
+           badChan.contains("chan_csv companion") && !badChan.contains("import-staging"));
     expect("write opaque optional column", write_file(path, header + ",chan_csv\n" + row + ",unused-missing.csv\n"));
     const auto result = importAndWait(model, path, "Opaque.csv", "trunkTargets");
     expect("optional chan_csv remains opaque", result.value("ok").toBool());

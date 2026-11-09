@@ -530,6 +530,9 @@ Item {
                 // Smaller than the free space, still too large: the spare part says why.
                 {tag: "replay inside the reserve", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: 1.0e9 + 536870912, freeBytes: 1.2e9, reserveBytes: 536870912}, text: "There is not enough free space to copy cap.wav (1\u00a0GB). This device has 1.2\u00a0GB free, and DSD-neo keeps about 0.5\u00a0GB spare."},
                 {tag: "replay no space", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: -1, freeBytes: 2.5e8, reserveBytes: 536870912}, text: "There is not enough free space to copy cap.wav. This device has 250\u00a0MB free, and DSD-neo keeps about 0.5\u00a0GB spare."},
+                // A result with no reserve says nothing about one, rather than "0.0 GB".
+                {tag: "replay without a reserve", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: 3.4e9, freeBytes: 1.2e9}, text: "There is not enough free space to copy cap.wav (3.4\u00a0GB). This device has 1.2\u00a0GB free."},
+                {tag: "replay no space without a reserve", context: "replay", result: {ok: false, error: "too_large", name: "cap.wav", neededBytes: -1, freeBytes: 2.5e8}, text: "There is not enough free space to copy cap.wav. This device has 250\u00a0MB free."},
                 {tag: "replay local", context: "replay", result: {ok: false, error: "local", name: "cap.wav", noSpace: true}, text: "Could not save a copy of cap.wav on this device. Free up some storage, then try again."},
                 {tag: "replay read", context: "replay", result: {ok: false, error: "read", name: "cap.wav"}, text: "Could not read cap.wav. Check that it is still available, then try again."},
                 {tag: "replay cancelled", context: "replay", result: {ok: false, error: "cancelled", name: "cap.wav"}, text: ""}

@@ -818,11 +818,16 @@ function csvSizeMessage(result, name) {
 function replaySpaceMessage(result, name) {
     var file = name || qsTr("this file")
     var free = keptWhole(sizeText(result.freeBytes))
-    var spare = keptWhole(qsTr("%1 GB").arg(fixed((Number(result.reserveBytes) || 0) / 1e9, 1)))
-    var size = Number(result.neededBytes) - (Number(result.reserveBytes) || 0)
-    if (Number(result.neededBytes) > 0 && size >= 0)
-        return qsTr("There is not enough free space to copy %1 (%2). This device has %3 free, and DSD-neo keeps about %4 spare.").arg(file).arg(keptWhole(sizeText(size))).arg(free).arg(spare)
-    return qsTr("There is not enough free space to copy %1. This device has %2 free, and DSD-neo keeps about %3 spare.").arg(file).arg(free).arg(spare)
+    var reserve = Number(result.reserveBytes) || 0
+    var spare = keptWhole(qsTr("%1 GB").arg(fixed(reserve / 1e9, 1)))
+    var size = Number(result.neededBytes) - reserve
+    if (Number(result.neededBytes) > 0 && size >= 0) {
+        var sized = keptWhole(sizeText(size))
+        return reserve > 0 ? qsTr("There is not enough free space to copy %1 (%2). This device has %3 free, and DSD-neo keeps about %4 spare.").arg(file).arg(sized).arg(free).arg(spare)
+                           : qsTr("There is not enough free space to copy %1 (%2). This device has %3 free.").arg(file).arg(sized).arg(free)
+    }
+    return reserve > 0 ? qsTr("There is not enough free space to copy %1. This device has %2 free, and DSD-neo keeps about %3 spare.").arg(file).arg(free).arg(spare)
+                       : qsTr("There is not enough free space to copy %1. This device has %2 free.").arg(file).arg(free)
 }
 
 function localCopyMessage(noSpace, name) {

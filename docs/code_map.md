@@ -12408,8 +12408,9 @@ Qt Quick frontend (`src/ui/qt`):
   the worker, copies the document into its staging folder (at most `backup::kMaxFileBytes`, 32 MiB), names it from the
   transport's display name, else the picker's hint (`sanitized_import_name`), and validates it there; a refusal's
   `detail` is the parser's reason, which the C parsers give only to the log, so `validate()` keeps the worker thread's
-  first error (`dsd_neo_log_capture_error()`) and the stage names the file by its picked name, not the staging path
-  (none for a talkgroup list, whose parser skips bad rows rather than refusing). The commit, on the
+  first error (`dsd_neo_log_capture_error()`) and the stage names each file by its picked name, not the staging path
+  (a bundle's companions too, from `CsvBundleImport::stagedNames`; a reason still naming the staging folder is dropped
+  for the generic line; none for a talkgroup list, whose parser skips bad rows rather than refusing). The commit, on the
   Qt thread, only renames and saves the index: a new file moves in under a free name (`unique_import_destination`,
   skipping every `newTalkgroupListPath()` this process handed out, then `dsd_rename_noreplace`, the next name on
   `EEXIST`) before `saveRows`, which on failure removes it again; a replace rechecks the row's path, in-memory revision

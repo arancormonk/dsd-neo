@@ -498,8 +498,7 @@ avoids, and the imported files it used (generated scan-list CSVs and compiled de
 deletes a recording or any other file the old setup did not use. When such a file holds a name an incoming file needs,
 the incoming file takes a free name instead (`group (1).csv`) and the restored lists point to it. Call recordings stay,
 but the restored Storage limit applies to them: when it is lower than what they take, the oldest are removed once
-DSD-neo
-opens again.
+DSD-neo opens again.
 
 **Restore only backups you made or trust.** A backup carries every setting, and extra decoder options run exactly as
 typed: a crafted backup could, for example, send decoded audio to someone else's server. The confirmation therefore

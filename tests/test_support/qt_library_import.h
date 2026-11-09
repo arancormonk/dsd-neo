@@ -3,10 +3,12 @@
 #define DSD_NEO_TEST_SUPPORT_QT_LIBRARY_IMPORT_H
 
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QObject>
 #include <QString>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QVariantMap>
 
@@ -35,6 +37,21 @@ dsd_test_import_and_wait(dsd_qt::ImportedFilesModel& library, const QString& ref
     loop.exec();
     QObject::disconnect(answered);
     return result;
+}
+
+/*
+ * dsd_test_import_and_wait() of a copy of @p source picked under @p name: a copy keeps the picked file's own name, so
+ * a fixture stored under a chosen name is picked under it. {ok: false, error: "fixture"} when the copy cannot be made.
+ */
+inline QVariantMap
+dsd_test_import_named_and_wait(dsd_qt::ImportedFilesModel& library, const QString& source, const QString& name,
+                               const QString& type) {
+    QTemporaryDir picked;
+    const QString named = picked.filePath(name);
+    if (!picked.isValid() || !QFile::copy(source, named)) {
+        return {{QStringLiteral("ok"), false}, {QStringLiteral("error"), QStringLiteral("fixture")}};
+    }
+    return dsd_test_import_and_wait(library, named, type);
 }
 
 #endif

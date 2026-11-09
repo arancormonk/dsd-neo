@@ -1254,28 +1254,29 @@ remain unavailable during an active or transitioning decoder session.
 `CsvImportFlow.pick()` (primary picker) and `begin()` (already selected document)
 start an import, each with the host's context (the field it fills, the stored path of
 a row it updates, which opening of the screen it belongs to). The file is copied and
-checked in the background, so the flow's sheet shows at once with "Copying
-<name>…" and **Cancel**, and nothing behind it takes input meanwhile.
-`finished(result, context)` fires exactly once when the import succeeds, fails, or is
-cancelled, and hands the context back: a screen closed or opened again since ignores
-it, and closing the wizard, Imported files or a scan list cancels a copy still running.
-Cancel, Back/Escape, scrim dismissal, and closing the primary picker without choosing a file all cancel. While a
-copy runs, Cancel reads "Cancelling…" until the import answers: `{ok:false,
-error:"cancelled"}`, or the import's own result when the file was already stored. A
-new pick is refused while a copy runs. "Import complete bundle" reads "Importing…"
-while its copy runs. Each failure has its own message (`Util.importMessage()`): too
-large (32 MiB for a CSV, 64 MiB for a CSV and its companions together; a file over
-32 MiB names itself and that limit even inside a bundle), could not be
-read, could not be saved on this device (and, when storage is full, to free some),
-not valid for its kind (with the parser's reason when it gives one, such as
-`Channel map file 'county.csv' row 2: invalid mode; expected p25, dmr, …`), changed
-while being replaced, the decoder still running, or the library not saved. Rejecting a companion picker
-clears only that slot and returns to the still-active sheet: it does **not** finish
-the import. The user can choose again or cancel the sheet. Abandoning the flow leaves
-the library unchanged. The Home scan-list shortcut changes the draft to CSV mode only
-after successful import, so cancellation preserves the editor's prior draft and
-clean/dirty state. Cancelling the Home shortcut leaves its new editor in entries
-mode with its initial clean fingerprint; closing it does not ask to discard changes.
+checked in the background, so the flow's sheet shows at once with "Copying <name>…"
+and **Cancel**, and nothing behind it takes input meanwhile. `finished(result,
+context)` fires exactly once when the import succeeds, fails, or is cancelled, and
+hands the context back: a screen closed or opened again since ignores it, and closing
+the wizard, Imported files or a scan list cancels a copy still running. Cancel,
+Back/Escape, scrim dismissal, and closing the primary picker without choosing a file
+all cancel. While a copy runs, Cancel reads "Cancelling…" until the import answers:
+`{ok:false, error:"cancelled"}`, or the import's own result when the file was already
+stored. A new pick is refused while a copy runs. "Import complete bundle" reads
+"Importing…" while its copy runs. Each failure has its own message
+(`Util.importMessage()`): too large (32 MiB for a CSV, 64 MiB for a CSV and its
+companions together; a file over 32 MiB names itself and that limit even inside a
+bundle), could not be read, could not be saved on this device (and, when storage is
+full, to free some), not valid for its kind (with the parser's reason when it gives
+one, such as `Channel map file 'county.csv' row 2: invalid mode; expected p25, dmr,
+…`), changed while being replaced, the decoder still running, or the library not
+saved. Rejecting a companion picker clears only that slot and returns to the
+still-active sheet: it does **not** finish the import. The user can choose again or
+cancel the sheet. Abandoning the flow leaves the library unchanged. The Home scan-list
+shortcut changes the draft to CSV mode only after successful import, so cancellation
+preserves the editor's prior draft and clean/dirty state. Cancelling the Home shortcut
+leaves its new editor in entries mode with its initial clean fingerprint; closing it
+does not ask to discard changes.
 
 The file library also accepts **DMR key mappings** and **Vertex keystreams** as
 separate kinds. Vertex files are used by standalone vendor profiles, not by the

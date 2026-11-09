@@ -181,11 +181,7 @@ struct Fixture {
 
 QString
 import_path(dsd_qt::ImportedFilesModel& library, const QString& source, const QString& name, const QString& type) {
-    // A copy keeps the picked file's own name, so the fixture is picked under the name it is stored as.
-    QTemporaryDir picked;
-    const QString named = picked.filePath(name);
-    expect("fixture copied under its stored name", QFile::copy(source, named));
-    const QVariantMap result = dsd_test_import_and_wait(library, named, type);
+    const QVariantMap result = dsd_test_import_named_and_wait(library, source, name, type);
     expect("fixture import succeeds", result.value("ok").toBool());
     return result.value("path").toString();
 }
