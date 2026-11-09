@@ -12668,11 +12668,17 @@ Qt Quick frontend (`src/ui/qt`):
     Unreadable), then what was read is parsed apart from every fallback: an explicit-file `QSettings` on a copy in a
     private work folder, `allKeys()` forcing every section, and the parsed keys written back by a fresh `QSettings`
     (byte for byte what Qt's own next write would produce; empty when nothing parsed). The work folder is a
-    `QTemporaryDir` in the app cache (`<CacheLocation>/settings-check-XXXXXX`), else in the system temp folder: Android
+    `QTemporaryDir` in the app cache (`<CacheLocation>/settings-check-XXXXXX`), else in the system temp folder
+    (`dsd-neo-settings-check-XXXXXX`, named for the app since other programs share it): Android
     lets an app write no system temp folder (`QDir::tempPath()` is `/tmp`, EACCES), and a default `QTemporaryDir` there
     made every start after the first run on scratch. With neither, a file read whole is parsed in place by a read-only
     explicit-file `QSettings`, which tells a clean file (left alone) but writes no clean file for one that is not, so an
-    unavailable folder never makes a healthy file "could not be checked".
+    unavailable folder never makes a healthy file "could not be checked". A crash between a work folder's making and
+    its removal leaves a copy of the settings (which can hold RadioReference credentials), so `recover_settings_files()`
+    first removes every leftover: only folders with those exact prefixes, only in those two folders, never a link
+    with such a name, and only a folder holding nothing but files and links (each link removed itself, never what it
+    points to) (`test_leftover_work_folders`). Documented limit: a second desktop instance starting at the same instant
+    could have its own check's folder emptied under it, and that one check could then misjudge its file.
   - Read whole and parsed cleanly, or missing: nothing happens.
   - Read whole but not clean: its bytes are copied to the first free `<file>.unreadable-N` (N = 1..99,
     `dsd_fopen_private(..., "wbx")`, never replacing anything; synced), then the clean file replaces it through a

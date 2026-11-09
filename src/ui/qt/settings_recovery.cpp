@@ -17,11 +17,13 @@
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <qflags.h>
 #include <utility>
 
 #include <dsd-neo/platform/file_compat.h>
@@ -134,23 +136,79 @@ write_whole(const QString& path, const QByteArray& bytes) {
     return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
 }
 
+/* Where a parse's work folders go, each named for this code: the app cache, else the system temp folder, where the
+   name also carries the app's, since other programs share that folder. */
+struct WorkPlace {
+    QString dir;
+    QString prefix;
+};
+
+QList<WorkPlace>
+work_places() {
+    QList<WorkPlace> places;
+    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (!cache.isEmpty()) {
+        places.append({cache, QStringLiteral("settings-check-")});
+    }
+    const QString temp = QDir::tempPath(); // empty when TMPDIR names nothing
+    if (!temp.isEmpty()) {
+        places.append({temp, QStringLiteral("dsd-neo-settings-check-")});
+    }
+    return places;
+}
+
 /* A private folder for a parse's files (0700, a random name, removed with what is in it): in the app cache, else in
    the system temp folder. The app cache comes first because Android has no system temp folder an app may write:
    QDir::tempPath() is /tmp there, which refuses it (EACCES). Null when neither can be had. */
 std::unique_ptr<QTemporaryDir>
 make_work_folder() {
-    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-    if (!cache.isEmpty() && QDir().mkpath(cache)) {
-        auto work = std::make_unique<QTemporaryDir>(cache + QStringLiteral("/settings-check-XXXXXX"));
+    const QList<WorkPlace> places = work_places();
+    for (const WorkPlace& place : places) {
+        if (!QDir().mkpath(place.dir)) {
+            continue;
+        }
+        auto work =
+            std::make_unique<QTemporaryDir>(place.dir + QLatin1Char('/') + place.prefix + QStringLiteral("XXXXXX"));
         if (work->isValid()) {
             return work;
         }
     }
-    auto work = std::make_unique<QTemporaryDir>();
-    if (!work->isValid()) {
-        return nullptr;
+    return nullptr;
+}
+
+/* Empties and removes a work folder a check left: its files, and any link itself, never what a link points to. A
+   folder holding anything else (a folder, a special file) is no work folder of this code's and is left as it is. */
+void
+remove_work_folder(const QString& path) {
+    const QFileInfoList entries =
+        QDir(path).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+    const bool onlyFiles = std::all_of(entries.cbegin(), entries.cend(), [](const QFileInfo& entry) {
+        return entry.isSymLink() || entry.isJunction() || entry.isFile();
+    });
+    if (!onlyFiles) {
+        return;
     }
-    return work;
+    for (const QFileInfo& entry : entries) {
+        (void)QFile::remove(entry.absoluteFilePath()); // a link: the link alone
+    }
+    (void)QDir().rmdir(path);
+}
+
+/* A check that never finished (a crash between making its work folder and removing it) left a copy of a settings
+   file, which can hold credentials, in that folder. Removed at the next start: only folders named as this code names
+   them, in the folders it makes them in; a link with such a name is never followed. */
+void
+sweep_work_folders() {
+    const QList<WorkPlace> places = work_places();
+    for (const WorkPlace& place : places) {
+        const QFileInfoList found = QDir(place.dir).entryInfoList(
+            {place.prefix + QLatin1Char('*')}, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+        for (const QFileInfo& folder : found) {
+            if (!folder.isSymLink() && !folder.isJunction() && folder.isDir()) {
+                remove_work_folder(folder.absoluteFilePath());
+            }
+        }
+    }
 }
 
 /* Parses @p bytes with QSettings' own parser, apart from any fallback file: a copy in a private work folder, read by
@@ -555,6 +613,7 @@ recover_settings_files(const SettingsRecoveryEnv& env) {
         const std::lock_guard<std::mutex> locker(g_lock);
         g_scratchFiles.clear();
     }
+    sweep_work_folders();
     (void)recover_ini_settings(QSettings::IniFormat, AppPrefs::settingsOrganization(), AppPrefs::settingsApplication(),
                                env);
     recover_call_history_settings(env);

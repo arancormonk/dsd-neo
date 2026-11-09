@@ -702,6 +702,62 @@ test_scratch_copy_not_in_cache() {
     reset();
 }
 
+/* A check that never finished (a crash) left its work folder, with a copy of the settings, which can hold
+   credentials: the next start removes it, in the app cache and in the system temp folder, and nothing else there. A
+   link inside goes, never what it points to; a link with a work folder's name and a folder holding a folder are not
+   this code's and stay. */
+void
+test_leftover_work_folders() {
+    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString temp = data + QStringLiteral("/tmp-for-sweep");
+    const QString outside = data + QStringLiteral("/outside");
+    expect("leftovers: the outside file", write_file(outside + QStringLiteral("/target.ini"), "secret"));
+    const QStringList leftovers{cache + QStringLiteral("/settings-check-AbC123"),
+                                temp + QStringLiteral("/dsd-neo-settings-check-Xy9Z01")};
+    for (const QString& leftover : leftovers) {
+        expect("leftovers: a work folder's copy", write_file(leftover + QStringLiteral("/snapshot.ini"), "secret"));
+        expect("leftovers: its clean file", write_file(leftover + QStringLiteral("/rewritten.ini"), "secret"));
+    }
+    const QStringList kept{cache + QStringLiteral("/settings-checkup/file"), cache + QStringLiteral("/other/file"),
+                           temp + QStringLiteral("/settings-check-Q1w2E3/file"),
+                           temp + QStringLiteral("/other-app-settings-check-R4t5Y6/file"),
+                           cache + QStringLiteral("/settings-check-Nested/inner/file")};
+    for (const QString& file : kept) {
+        expect("leftovers: an unrelated file", write_file(file, "keep"));
+    }
+#ifndef Q_OS_WIN
+    expect("leftovers: a link inside a work folder",
+           QFile::link(outside + QStringLiteral("/target.ini"), leftovers[0] + QStringLiteral("/link.ini")));
+    expect("leftovers: a link named as a work folder",
+           QFile::link(outside, cache + QStringLiteral("/settings-check-Link00")));
+#endif
+    {
+        const ScopedEnv tmp("TMPDIR", QFile::encodeName(temp));
+        reset();
+        dsd_qt::recover_settings_files();
+    }
+    for (const QString& leftover : leftovers) {
+        expect(QStringLiteral("leftovers: %1 is gone").arg(QFileInfo(leftover).fileName()),
+               !QFileInfo::exists(leftover));
+    }
+    for (const QString& file : kept) {
+        expect(QStringLiteral("leftovers: %1 is untouched").arg(file.mid(data.size())), read_file(file) == "keep");
+    }
+    expect("leftovers: what a link pointed to is untouched",
+           read_file(outside + QStringLiteral("/target.ini")) == "secret");
+#ifndef Q_OS_WIN
+    expect("leftovers: a link named as a work folder stays",
+           QFileInfo(cache + QStringLiteral("/settings-check-Link00")).isSymLink());
+    QFile::remove(cache + QStringLiteral("/settings-check-Link00"));
+#endif
+    QDir(temp).removeRecursively();
+    QDir(outside).removeRecursively();
+    QDir(cache + QStringLiteral("/settings-checkup")).removeRecursively();
+    QDir(cache + QStringLiteral("/other")).removeRecursively();
+    QDir(cache + QStringLiteral("/settings-check-Nested")).removeRecursively();
+}
+
 /* A folder or a FIFO at the path is neither read nor written, and QSettings never opens it this run. */
 void
 test_not_a_file() {
@@ -969,6 +1025,7 @@ main(int argc, char** argv) {
     }
 
     test_missing();
+    test_leftover_work_folders();
     test_unread_section_kept();
     test_valid_prefix_read_error();
     test_fallback_ignored();
