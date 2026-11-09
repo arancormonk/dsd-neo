@@ -31,6 +31,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <functional>
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
@@ -72,6 +73,11 @@ class ImportedFilesModel : public QAbstractListModel {
     /** @brief The library with an import worker of its own, copying through @p host's transport (tests, fixtures). */
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
     ~ImportedFilesModel() override;
+
+    /** How a replace moves its staged copy over the stored file: 0, else -1 with errno set. */
+    using ReplaceFile = std::function<int(const QString& staged, const QString& path)>;
+    /** @brief Replace how a replace moves its file (tests: a move that fails, or does something first). */
+    void setReplaceFile(ReplaceFile replaceFile);
 
     /** @brief Every library row type the model can validate; a row of any other type cannot be used. */
     static QStringList knownTypes();
@@ -333,6 +339,7 @@ class ImportedFilesModel : public QAbstractListModel {
 
     DecoderHost* m_host = nullptr;
     QPointer<ImportService> m_imports;
+    ReplaceFile m_replaceFile;
     QList<Row> m_rows;
     QStringList m_pruned_paths;
     /* The library revision: every change takes the next one. */

@@ -40,6 +40,7 @@
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 
+#include <cerrno>
 #include <cstdlib>
 #include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -1486,6 +1487,67 @@ test_async_channel_bundles() {
     }
 }
 
+/* A replace whose move fails and whose rollback cannot be saved either: the index on disk holds the new state, so the
+ * rows in memory follow it, the answer is "save" with a detail, the stored bytes stay the old ones, and a bundle's new
+ * revision stays journaled for the next start to settle. */
+void
+test_replace_double_failure() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportService service(host.importTransport());
+    dsd_qt::ImportedFilesModel model(&host, &service);
+    QTemporaryDir source;
+    const QString groups = source.filePath("groups.csv");
+    const QString repick = source.filePath("repick.csv");
+    const QString bundled = source.filePath("bundled.csv");
+    const QByteArray kept("TG,Mode,Name\n1,D,One\n");
+    const QByteArray map("channel,frequency,mode,keys_hex_csv\n1,851012500,p25,keys.csv\n");
+    expect("double failure fixtures",
+           write_file(groups, kept) && write_file(repick, "TG,Mode,Name\n2,D,Two\n3,D,Three\n")
+               && write_file(bundled, map) && write_file(source.filePath("keys.csv"), "keyid,value\n02,ABCDE\n"));
+    const QString stored = importAndWait(model, groups, "groups.csv", "group").value("path").toString();
+    const QString storedMap = importAndWait(model, bundled, "bundled.csv", "chan").value("path").toString();
+    const QString root = model.get(model.rowForPath(storedMap)).value("bundleRoot").toString();
+    waitForWorker(service);
+    const QStringList revisions = revisionsOf(root);
+    const QByteArray mapBytes = read_file(storedMap);
+
+    // The move fails after the index saved, and the index can no longer be written for the rollback.
+    bool blocked = false;
+    model.setReplaceFile([&blocked](const QString&, const QString&) {
+        blocked = blockIndex();
+        errno = EACCES;
+        return -1;
+    });
+    QSignalSpy entries(&model, &dsd_qt::ImportedFilesModel::entriesChanged);
+    const QVariantMap single = importAndWait(model, repick, "repick.csv", "group", stored);
+    expect("the index was blocked between the save and the rollback", blocked && unblockIndex());
+    expect("a replace whose rollback cannot be saved answers save with a detail",
+           single.value("error") == "save" && !single.value("detail").toString().isEmpty());
+    expect("the rows in memory follow the index on disk", model.get(model.rowForPath(stored)).value("accepted") == 2
+                                                              && indexedAccepted(stored) == 2 && entries.size() == 1);
+    expect("the stored file keeps its old bytes", read_file(stored) == kept);
+
+    blocked = false;
+    expect("replacement companion", write_file(source.filePath("keys.csv"), "keyid,value\n02,12345\n"));
+    const QVariantMap bundle = importAndWait(model, bundled, "bundled.csv", "chan", storedMap);
+    expect("the index was blocked for the bundle's rollback", blocked && unblockIndex());
+    expect("a bundle replace whose rollback cannot be saved answers save", bundle.value("error") == "save");
+    const QStringList now = revisionsOf(root);
+    QStringList added = now;
+    for (const QString& revision : revisions) {
+        added.removeAll(revision);
+    }
+    expect("the new revision is made and the old one kept", added.size() == 1 && now.size() == revisions.size() + 1);
+    expect("the new revision stays journaled for the next start",
+           added.size() == 1 && journal().contains(QDir::cleanPath(root + '/' + added.value(0))));
+    expect("the bundle's primary keeps its old bytes", read_file(storedMap) == mapBytes);
+    waitForWorker(service);
+    while (model.count() > 0) {
+        model.remove(0);
+    }
+}
+
 /* A copy that ignores its cancel (a provider blocked in a read): Cancel is answered at once, exactly once; the copy
  * publishes nothing when it returns, and the next import waits behind it, then runs. */
 void
@@ -2741,6 +2803,7 @@ main(int argc, char** argv) {
     test_async_replace_stale();
     test_group_replace_busy();
     test_replace_failures();
+    test_replace_double_failure();
     test_cancel_does_not_wait_for_the_copy();
     test_register_unsaved_export();
     test_entries_changed_on_replace();

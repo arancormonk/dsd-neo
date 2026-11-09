@@ -313,16 +313,28 @@ place_bundle_files(const QVariantMap& staged, QStringList* created) {
     return {};
 }
 
+/* A replace's move: the staged copy over the stored file, in one rename. */
+int
+replace_with_staged(const QString& staged, const QString& path) {
+    return dsd_replace_file_with_temp(staged.toUtf8().constData(), path.toUtf8().constData());
+}
+
 } // namespace
 
 ImportedFilesModel::ImportedFilesModel(DecoderHost* host, ImportService* imports, QObject* parent)
-    : QAbstractListModel(parent), m_host(host), m_imports(imports) {
+    : QAbstractListModel(parent), m_host(host), m_imports(imports), m_replaceFile(&replace_with_staged) {
     load();
 }
 
-ImportedFilesModel::ImportedFilesModel(DecoderHost* host, QObject* parent) : QAbstractListModel(parent), m_host(host) {
+ImportedFilesModel::ImportedFilesModel(DecoderHost* host, QObject* parent)
+    : QAbstractListModel(parent), m_host(host), m_replaceFile(&replace_with_staged) {
     m_imports = new ImportService(host ? host->importTransport() : std::make_shared<DocumentImportTransport>(), this);
     load();
+}
+
+void
+ImportedFilesModel::setReplaceFile(ReplaceFile replaceFile) {
+    m_replaceFile = std::move(replaceFile);
 }
 
 // Never calls the service: the app's is destroyed before the models.
@@ -942,10 +954,7 @@ ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refr
         discard_created(created);
         return failure(QStringLiteral("save"));
     }
-    const QString path = stored.path;
-    if (dsd_replace_file_with_temp(staged.value(QStringLiteral("staged")).toString().toUtf8().constData(),
-                                   path.toUtf8().constData())
-        != 0) {
+    if (m_replaceFile(staged.value(QStringLiteral("staged")).toString(), stored.path) != 0) {
         const bool noSpace = errno == ENOSPC;
         if (saveRows(m_rows)) {
             discard_created(created);
